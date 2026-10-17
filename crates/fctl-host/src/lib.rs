@@ -7,6 +7,7 @@ pub mod agentbin;
 pub mod config;
 pub mod daemon;
 pub mod driver;
+pub mod expiry;
 pub mod image;
 pub mod login;
 pub mod service;

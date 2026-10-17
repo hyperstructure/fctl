@@ -46,7 +46,7 @@ fctl attach my-app#12            # stream it and type messages (Ctrl-C detaches)
 fctl attach --read-only my-app#12
 fctl send my-app#12 "Use the existing Button component"
 fctl interrupt my-app#12         # stop the current turn
-fctl stop my-app#12              # end the session (its sandbox is kept)
+fctl stop my-app#12              # end the session (its sandbox is kept for resuming)
 fctl resume my-app#12 "Now add tests"
 fctl open my-app#12              # in the browser
 fctl open my-app#12 --claude     # in the Claude app (Remote Control)
@@ -100,7 +100,7 @@ capacity = 4             # concurrent sessions
 image = "fctl-agent:latest"
 cpus = 4                 # per session
 memory_mb = 8192         # per session
-keep_stopped_hours = 72  # keep a stopped session's sandbox this long
+keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them)
 ```
 
 ## Admin

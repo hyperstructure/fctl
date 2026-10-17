@@ -194,6 +194,10 @@ pub struct SessionSpec {
     pub base_branch: String,
     /// The first message. Absent when resuming without a new message.
     pub prompt: Option<String>,
+    /// The session's original task, also when resuming: an agent whose
+    /// earlier conversation is gone (its sandbox expired) starts from it.
+    #[serde(default)]
+    pub task: Option<String>,
     pub author: UserRef,
     /// UUID passed to `claude --session-id` (or `--resume`).
     pub claude_session_id: String,

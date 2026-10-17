@@ -101,6 +101,7 @@ pub async fn build(
         } else {
             Some(row.prompt.clone())
         },
+        task: Some(row.prompt.clone()),
         author: row.creator_ref(),
         claude_session_id: row.claude_session_id.clone(),
         resume: row.started_at.is_some(),

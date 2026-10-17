@@ -28,4 +28,9 @@ env: { [key in string]: string },
 /**
  * Push the branch after each turn that produced commits.
  */
-push_on_commit: boolean, };
+push_on_commit: boolean, 
+/**
+ * Number events after this one: the control plane already has the
+ * session's earlier events, from a sandbox that no longer exists.
+ */
+first_agent_seq?: number, };

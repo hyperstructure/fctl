@@ -281,6 +281,9 @@ async fn run(
     let mut stop: Option<(bool, Instant)> = None;
     let mut attach_failures = 0u32;
     let mut superseded = false;
+    // A fresh agent for a resumed session numbers its events after the ones
+    // the control plane has, so it waits for the uplink's Welcome.
+    let mut configure_when_welcomed = false;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
 
     let outcome = loop {
@@ -323,7 +326,8 @@ async fn run(
                         set_report(h.status, Some(h.agent_seq));
                         if !h.configured {
                             match &spec {
-                                Some(spec) => l.send(HostToAgent::Configure { config: Box::new(agent_config(&ctx, &sb, spec)) }),
+                                Some(spec) if spec.resume && !welcomed => configure_when_welcomed = true,
+                                Some(spec) => l.send(HostToAgent::Configure { config: Box::new(agent_config(&ctx, &sb, spec, acked)) }),
                                 None => {
                                     let msg = "The sandbox lost the session's state when the host restarted. Resume the session to continue.".to_owned();
                                     uplink.state(state(SessionStatus::Stopped, &msg));
@@ -367,6 +371,12 @@ async fn run(
                     UplinkDown::Welcome { acked_agent_seq, pending } => {
                         acked = acked_agent_seq;
                         welcomed = true;
+                        if configure_when_welcomed
+                            && let (Some(spec), Some(l)) = (&spec, &link)
+                        {
+                            configure_when_welcomed = false;
+                            l.send(HostToAgent::Configure { config: Box::new(agent_config(&ctx, &sb, spec, acked)) });
+                        }
                         match &link {
                             Some(l) => {
                                 l.send(HostToAgent::Replay { after_agent_seq: acked });
@@ -445,7 +455,12 @@ async fn run(
     (status, reason)
 }
 
-fn agent_config(ctx: &HostCtx, sb: &Sandbox, spec: &SessionSpec) -> AgentConfig {
+fn agent_config(
+    ctx: &HostCtx,
+    sb: &Sandbox,
+    spec: &SessionSpec,
+    first_agent_seq: u64,
+) -> AgentConfig {
     let process = matches!(ctx.driver, Driver::Process(_));
     AgentConfig {
         spec: spec.clone(),
@@ -459,5 +474,6 @@ fn agent_config(ctx: &HostCtx, sb: &Sandbox, spec: &SessionSpec) -> AgentConfig 
         claude_args: ctx.cfg.claude_args.clone(),
         env: Default::default(),
         push_on_commit: ctx.cfg.push_on_commit,
+        first_agent_seq: (first_agent_seq > 0).then_some(first_agent_seq),
     }
 }

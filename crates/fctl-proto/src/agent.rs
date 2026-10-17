@@ -37,6 +37,10 @@ pub struct AgentConfig {
     pub env: BTreeMap<String, String>,
     /// Push the branch after each turn that produced commits.
     pub push_on_commit: bool,
+    /// Number events after this one: the control plane already has the
+    /// session's earlier events, from a sandbox that no longer exists.
+    #[serde(default)]
+    pub first_agent_seq: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

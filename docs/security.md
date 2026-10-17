@@ -96,9 +96,10 @@ it runs, and keep nothing secret on disk but their runner token
   cannot delete their account.
 - Settings → Your data (or `fctl account export`) downloads everything the
   instance keeps about you, as JSON.
-- Hosts keep a stopped session's sandbox so it can resume, and do not yet
-  remove the sandboxes of deleted sessions
-  ([#12](https://github.com/hyperstructure/fctl/issues/12)).
+- Hosts keep a stopped session's sandbox so it can resume, and remove it
+  once it has been stopped for `keep_stopped_hours` (72 by default; 0 keeps
+  them). Resuming after that starts a new sandbox on the session's branch,
+  with everything that was pushed, and a new Claude conversation.
 
 ## Reporting a vulnerability
 

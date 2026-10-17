@@ -325,6 +325,11 @@ impl Supervisor {
     // ───────────────────────────── preparation ─────────────────────────────
 
     fn configure(&mut self, config: AgentConfig) {
+        if let Some(seq) = config.first_agent_seq
+            && let Err(e) = self.journal.start_after(seq)
+        {
+            tracing::error!("journal: {e:#}");
+        }
         let home = config
             .home
             .clone()
@@ -519,7 +524,13 @@ impl Supervisor {
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
         env.insert("FCTL_SESSION_ID".into(), spec.session_id.0.clone());
         env.insert("FCTL_SESSION_URL".into(), spec.web_url.clone());
-        let resume = spec.resume || self.persisted.claude_started;
+        // Resuming needs Claude's conversation. A sandbox made for a resumed
+        // session (the stopped one expired) has none: start a new one there.
+        let wants_resume = spec.resume || self.persisted.claude_started;
+        let resume = wants_resume
+            && (self.persisted.claude_started
+                || claude::conversation_exists(&paths.home, &spec.claude_session_id));
+        let fresh_resume = wants_resume && !resume;
         let system = prompt::system_prompt(spec, &workdir);
         let bin = config.claude_bin.clone().unwrap_or_else(|| "claude".into());
         let launch = LaunchSpec {
@@ -599,7 +610,15 @@ impl Supervisor {
         }
         self.claude = Some(c);
         // The first turn, then anything that queued up meanwhile.
-        if !resume && let Some(p) = spec.prompt.clone() {
+        if fresh_resume {
+            self.log(
+                LogSource::Agent,
+                LogLevel::Info,
+                "The earlier conversation went with the old sandbox; Claude starts a new one on the branch",
+            );
+            let text = prompt::fresh_resume(&spec.branch, spec.task.as_deref());
+            self.send_turn(&text, None, None).await;
+        } else if !resume && let Some(p) = spec.prompt.clone() {
             self.send_turn(&p, None, None).await;
         }
         if self.turn_active {

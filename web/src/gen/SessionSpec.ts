@@ -21,7 +21,12 @@ base_branch: string,
 /**
  * The first message. Absent when resuming without a new message.
  */
-prompt?: string, author: UserRef, 
+prompt?: string, 
+/**
+ * The session's original task, also when resuming: an agent whose
+ * earlier conversation is gone (its sandbox expired) starts from it.
+ */
+task?: string, author: UserRef, 
 /**
  * UUID passed to `claude --session-id` (or `--resume`).
  */

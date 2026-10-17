@@ -201,6 +201,15 @@ fctl-agent runs detached inside the sandbox and listens on a unix socket; the
 host talks to it through `fctl-agent attach` over the driver's exec channel.
 Restarting or upgrading the host does not stop agents.
 
+A stopped session keeps its sandbox, so resuming continues Claude's
+conversation. The host records when each one stopped (`stopped.json` in its
+data directory) and removes those stopped for longer than
+`keep_stopped_hours` (`crates/fctl-host/src/expiry.rs`). Resuming one of those
+creates a new sandbox on the session's branch: the agent finds no
+conversation to resume, so Claude starts a new one with the session's
+original task, and the agent numbers its events after the ones the control
+plane already has (`first_agent_seq`).
+
 ## Protocols
 
 All protocols are JSON with a `type` tag and live in `fctl-proto`:

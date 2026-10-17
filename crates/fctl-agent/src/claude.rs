@@ -67,6 +67,16 @@ pub struct Claude {
     next_id: u64,
 }
 
+/// Whether Claude Code has this conversation under `home`: it keeps them as
+/// `~/.claude/projects/<working directory>/<session id>.jsonl`. A sandbox
+/// created for a resumed session (the stopped one expired) has none.
+pub fn conversation_exists(home: &Path, session_id: &str) -> bool {
+    let file = format!("{session_id}.jsonl");
+    std::fs::read_dir(home.join(".claude/projects"))
+        .map(|dirs| dirs.flatten().any(|d| d.path().join(&file).is_file()))
+        .unwrap_or(false)
+}
+
 impl Claude {
     pub fn spawn(spec: LaunchSpec<'_>, out: mpsc::UnboundedSender<ClaudeOut>) -> Result<Self> {
         let mut args: Vec<String> = vec![
@@ -333,6 +343,20 @@ pub fn project_settings_are_unsafe(repo: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_conversations() -> anyhow::Result<()> {
+        let home = tempfile::tempdir()?;
+        let id = "8d3f0c5e-0000-4000-8000-000000000001";
+        assert!(!conversation_exists(home.path(), id));
+        let project = home.path().join(".claude/projects/-home-agent-workspace");
+        std::fs::create_dir_all(&project)?;
+        std::fs::write(project.join("another.jsonl"), "{}")?;
+        assert!(!conversation_exists(home.path(), id));
+        std::fs::write(project.join(format!("{id}.jsonl")), "{}")?;
+        assert!(conversation_exists(home.path(), id));
+        Ok(())
+    }
 
     #[test]
     fn detects_unsafe_project_settings() -> anyhow::Result<()> {

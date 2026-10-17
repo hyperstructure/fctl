@@ -95,6 +95,19 @@ impl Journal {
         Ok(out)
     }
 
+    /// Continues the numbering after `seq`, which the control plane already
+    /// has (a fresh sandbox for a session that ran elsewhere). Stored as
+    /// acknowledged, so it survives a restart.
+    pub fn start_after(&mut self, seq: u64) -> Result<()> {
+        if seq <= self.last_seq {
+            return Ok(());
+        }
+        self.last_seq = seq;
+        self.acked = seq;
+        std::fs::write(&self.ack_path, seq.to_string())?;
+        Ok(())
+    }
+
     /// Records the control plane's acknowledgment; compacts when worthwhile.
     pub fn ack(&mut self, seq: u64) -> Result<()> {
         if seq <= self.acked {
@@ -138,6 +151,22 @@ mod tests {
             level: LogLevel::Info,
             text: text.into(),
         })
+    }
+
+    #[test]
+    fn continues_numbering_from_elsewhere() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut j = Journal::open(dir.path())?;
+        j.start_after(25)?;
+        assert_eq!(j.append(1, log("first here"))?.agent_seq, 26);
+        j.start_after(10)?;
+        assert_eq!(j.append(2, log("second"))?.agent_seq, 27);
+        drop(j);
+        let mut j = Journal::open(dir.path())?;
+        assert_eq!(j.last_seq(), 27);
+        assert_eq!(j.read_after(25)?.len(), 2);
+        assert_eq!(j.append(3, log("after a restart"))?.agent_seq, 28);
+        Ok(())
     }
 
     #[test]

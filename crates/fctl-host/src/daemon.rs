@@ -5,7 +5,8 @@
 //! restarted daemon finds and re-attaches to them.
 
 use crate::config::HostConfig;
-use crate::driver::{Driver, session_of};
+use crate::driver::{Driver, sandbox_name, session_of};
+use crate::expiry;
 use crate::login::{self, LoginCmd};
 use crate::session::{self, HostCtx, SessionCmd, SessionEvent, SessionHandle, Start};
 use crate::sysinfo;
@@ -14,7 +15,7 @@ use fctl_client::ws;
 use fctl_proto::runner::{FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet};
 use fctl_proto::{LoginJobId, PROTOCOL_VERSION, SessionId};
 use futures::StreamExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -36,7 +37,11 @@ pub struct Daemon {
     /// Starts that wait for the previous run of the same session to finish.
     pending_starts: HashMap<SessionId, Box<fctl_proto::runner::SessionSpec>>,
     next_request: u64,
+    /// When to remove expired stopped sandboxes (see `expiry`).
+    sweep: tokio::time::Interval,
 }
+
+const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 
 impl Daemon {
     pub async fn new(cfg: HostConfig, token: String) -> Result<Self> {
@@ -69,6 +74,7 @@ impl Daemon {
             outbox: Vec::new(),
             pending_starts: HashMap::new(),
             next_request: 0,
+            sweep: tokio::time::interval_at(tokio::time::Instant::now() + SWEEP_EVERY, SWEEP_EVERY),
         })
     }
 
@@ -89,6 +95,43 @@ impl Daemon {
                 }
             }
             Err(e) => tracing::warn!("listing sandboxes: {e:#}"),
+        }
+    }
+
+    /// Removes session sandboxes that have been stopped for longer than
+    /// `keep_stopped_hours` (0 keeps them).
+    async fn sweep_stopped(&mut self) {
+        let hours = self.ctx.cfg.keep_stopped_hours;
+        let list = match self.ctx.driver.list().await {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!("listing sandboxes: {e:#}");
+                return;
+            }
+        };
+        let in_use: HashSet<String> = self
+            .sessions
+            .keys()
+            .chain(self.pending_starts.keys())
+            .map(|id| sandbox_name(id.as_str()))
+            .collect();
+        let path = expiry::path(&self.ctx.cfg.data_dir());
+        let stopped = expiry::load(&path);
+        let now = expiry::now_ms();
+        let keep_ms = (hours > 0).then(|| i64::from(hours) * 3_600_000);
+        let (remove, mut keep) = expiry::plan(&stopped, &list, &in_use, now, keep_ms);
+        for name in remove {
+            let sb = self.ctx.driver.handle(&name);
+            match self.ctx.driver.remove(&sb).await {
+                Ok(()) => tracing::info!("removed {name}: stopped for more than {hours} hours"),
+                Err(e) => {
+                    tracing::warn!("removing {name}: {e:#}");
+                    keep.insert(name.clone(), stopped.get(&name).copied().unwrap_or(now));
+                }
+            }
+        }
+        if let Err(e) = expiry::save(&path, &keep) {
+            tracing::warn!("saving {}: {e:#}", path.display());
         }
     }
 
@@ -127,6 +170,7 @@ impl Daemon {
     pub async fn run(mut self) -> Result<()> {
         keep_awake();
         self.recover().await;
+        self.sweep_stopped().await;
         let url = format!(
             "{}/api/v1/runner/connect",
             self.ctx.cfg.server.trim_end_matches('/')
@@ -151,6 +195,7 @@ impl Daemon {
                     _ = &mut deadline => break,
                     Some(ev) = self.events_rx.recv() => { let _ = self.on_session_event(ev); }
                     Some(msg) = self.login_rx.recv() => self.outbox.push(msg),
+                    _ = self.sweep.tick() => self.sweep_stopped().await,
                     _ = shutdown_signal() => return Ok(()),
                 }
             }
@@ -191,6 +236,7 @@ impl Daemon {
                     }
                 }
                 Some(msg) = self.login_rx.recv() => ws::send_json(&mut sink, &msg).await?,
+                _ = self.sweep.tick() => self.sweep_stopped().await,
                 _ = heartbeat.tick() => {
                     let hb = HostHeartbeat {
                         sessions: self.reports(),
@@ -239,6 +285,12 @@ impl Daemon {
                     "session {session_id} ended: {status:?} {}",
                     reason.clone().unwrap_or_default()
                 );
+                // Its sandbox (if kept) expires keep_stopped_hours from now.
+                let stopped = expiry::path(&self.ctx.cfg.data_dir());
+                let name = sandbox_name(session_id.as_str());
+                if let Err(e) = expiry::note_stopped(&stopped, &name, expiry::now_ms()) {
+                    tracing::warn!("saving {}: {e:#}", stopped.display());
+                }
                 self.outbox.push(HostToFleet::SessionEnded {
                     session_id: session_id.clone(),
                     status,
