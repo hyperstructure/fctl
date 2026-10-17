@@ -13,6 +13,7 @@ mod do_session;
 mod email;
 mod error;
 mod github;
+mod housekeeping;
 mod http;
 mod internal;
 mod model;
@@ -23,7 +24,7 @@ pub use do_fleet::FleetObject;
 pub use do_session::SessionObject;
 use error::{AppError, AppResult};
 use fctl_proto::ApiError;
-use worker::{Context, Env, Method, Request, Response, event};
+use worker::{Context, Env, Method, Request, Response, ScheduleContext, ScheduledEvent, event};
 
 #[event(fetch)]
 pub async fn fetch(mut req: Request, env: Env, wctx: Context) -> worker::Result<Response> {
@@ -50,6 +51,14 @@ pub async fn fetch(mut req: Request, env: Env, wctx: Context) -> worker::Result<
         let _ = headers.append("Set-Cookie", c);
     }
     Ok(response)
+}
+
+/// The hourly cron trigger (see `housekeeping`).
+#[event(scheduled)]
+pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    if let Err(e) = housekeeping::run(&env, ctx::now_ms()).await {
+        worker::console_error!("housekeeping failed: {}", e.0.message);
+    }
 }
 
 async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Response> {

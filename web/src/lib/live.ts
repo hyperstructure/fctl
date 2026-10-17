@@ -120,6 +120,10 @@ export class LiveSession {
         this.set({ connection: "closed", error: "You no longer have access to this session." });
         return;
       }
+      if (e.code === 4404) {
+        this.set({ connection: "closed", error: "This session was deleted with its project." });
+        return;
+      }
       this.set({ connection: "reconnecting" });
       const delay = Math.min(10_000, 400 * 2 ** this.retry++) * (0.75 + Math.random() * 0.5);
       this.timer = setTimeout(() => this.connect(), delay);

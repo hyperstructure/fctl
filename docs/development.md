@@ -48,6 +48,14 @@ answer with a tool call.
 wrangler instead. Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/`
 to start over.
 
+The hourly housekeeping job (`crates/fctl-control/src/housekeeping.rs`:
+purging deleted sessions, deleting expired sign-in records) runs on a cron
+trigger. To run it locally:
+
+```sh
+curl "http://127.0.0.1:8787/cdn-cgi/handler/scheduled?cron=17+*+*+*+*"
+```
+
 ## Checks
 
 ```sh
@@ -94,8 +102,9 @@ production build of the web app.
 - Durable Object SQL must not fail on a schema that is already migrated:
   create tables with `IF NOT EXISTS` and add columns with `add_column`,
   which checks first.
-- D1 migrations are in `crates/fctl-control/migrations`; `cargo xtask deploy`
-  applies them before deploying. Never edit a migration that has shipped.
+- D1 migrations are in `crates/fctl-control/migrations`; `cargo xtask dev`
+  applies them locally and `cargo xtask deploy` before deploying. Never edit
+  a migration that has shipped.
 
 ## Working on the web app
 

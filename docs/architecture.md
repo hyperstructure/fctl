@@ -106,6 +106,13 @@ through to D1.
 **FleetDO** (one per instance) holds runner control connections, assigns
 sessions to runners, and fans out session summaries to dashboard viewers.
 
+**Deletion.** Deleting a project deletes its rows (sessions, members, secrets
+and shares cascade) and, in the same batch, queues its sessions in
+`session_purges`; their SessionDO storage, the event logs, is deleted right
+after. An hourly cron trigger (`src/housekeeping.rs`) retries what failed and
+deletes expired tokens, password resets, device codes and invites, abandoned
+Claude logins, and audit log entries older than a year.
+
 ## Sessions
 
 A session is one Claude conversation in one sandbox, on a branch of the

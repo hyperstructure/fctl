@@ -78,6 +78,21 @@ admins can rotate or revoke. Hosts receive a session's credentials only while
 it runs, and keep nothing secret on disk but their runner token
 (`~/.config/fctl/host-token`, mode 0600).
 
+## Retention
+
+- Deleting a project deletes its sessions with their transcripts (the event
+  logs in their Durable Objects) right away; an hourly job retries any that
+  fail.
+- Expired browser sessions and tokens, password resets, device codes and
+  invitations are deleted within the hour, and audit log entries after a
+  year.
+- Deleting a user deletes the account, unless they created projects or
+  sessions: then it is disabled, its password and tokens are deleted, and its
+  name and email stay on what it created.
+- Hosts keep a stopped session's sandbox so it can resume, and do not yet
+  remove the sandboxes of deleted sessions
+  ([#12](https://github.com/hyperstructure/fctl/issues/12)).
+
 ## Reporting a vulnerability
 
 Report it privately through GitHub: **Security → Report a vulnerability** on

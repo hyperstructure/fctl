@@ -158,6 +158,10 @@ simple = {{ limit = 30, period = 60 }}
 [vars]
 {vars}
 
+# Hourly housekeeping: purges deleted sessions, drops expired sign-in records.
+[triggers]
+crons = ["17 * * * *"]
+
 [observability]
 enabled = true
 "#,

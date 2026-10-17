@@ -63,9 +63,22 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
         util::build_web(root)?;
     }
 
+    // CI=1: apply without asking (they are local and recorded in d1_migrations).
+    run(util::wrangler(root)?
+        .args(["d1", "migrations", "apply", "DB", "--local"])
+        .env("CI", "1")
+        .current_dir(root.join("crates/fctl-control")))?;
+
     let mut children = Children(Vec::new());
     let wrangler = util::wrangler(root)?
-        .args(["dev", "--port", "8787", "--ip", "127.0.0.1"])
+        .args([
+            "dev",
+            "--port",
+            "8787",
+            "--ip",
+            "127.0.0.1",
+            "--test-scheduled",
+        ])
         .current_dir(root.join("crates/fctl-control"))
         .spawn()
         .context("starting wrangler dev")?;

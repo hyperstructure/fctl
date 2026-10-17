@@ -318,13 +318,31 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if active.map_or(0, |c| c.n) > 0 {
         return Err(conflict("Stop the project's sessions before deleting it"));
     }
-    q(
+    // The rows cascade; the sessions' event logs live in their Durable
+    // Objects, so they are queued for purging in the same batch.
+    batch(
         &ctx.db,
-        "DELETE FROM projects WHERE id = ?",
-        &[s(&p.row.id)],
-    )?
-    .run()
+        vec![
+            q(
+                &ctx.db,
+                "INSERT OR IGNORE INTO session_purges (session_id, queued_at) SELECT id, ? FROM sessions WHERE project_id = ?",
+                &[n(ctx.now), s(&p.row.id)],
+            )?,
+            q(
+                &ctx.db,
+                "DELETE FROM projects WHERE id = ?",
+                &[s(&p.row.id)],
+            )?,
+        ],
+    )
     .await?;
+    let env = ctx.env.clone();
+    let db = crate::db::handle(&ctx.db);
+    ctx.defer(async move {
+        crate::housekeeping::purge_sessions(&env, &db, crate::housekeeping::PURGES_PER_RUN)
+            .await
+            .map(|_| ())
+    });
     ctx.audit(
         "project.deleted",
         Some(&p.row.id),

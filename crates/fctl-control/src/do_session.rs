@@ -98,20 +98,24 @@ fn api_err(code: ErrorCode, message: &str) -> ApiError {
     ApiError::new(code, message)
 }
 
+fn create_schema(sql: &SqlStorage) {
+    for stmt in [
+        "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, agent_seq INTEGER)",
+        "CREATE INDEX IF NOT EXISTS events_agent ON events (agent_seq) WHERE agent_seq IS NOT NULL",
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, n INTEGER NOT NULL, data TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS client_keys (key TEXT PRIMARY KEY, delivery_id TEXT NOT NULL, ts INTEGER NOT NULL)",
+    ] {
+        if let Err(e) = sql.exec(stmt, None) {
+            worker::console_error!("session schema: {e}");
+        }
+    }
+}
+
 impl DurableObject for SessionObject {
     fn new(state: State, env: Env) -> Self {
         let sql = state.storage().sql();
-        for stmt in [
-            "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, agent_seq INTEGER)",
-            "CREATE INDEX IF NOT EXISTS events_agent ON events (agent_seq) WHERE agent_seq IS NOT NULL",
-            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, n INTEGER NOT NULL, data TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS client_keys (key TEXT PRIMARY KEY, delivery_id TEXT NOT NULL, ts INTEGER NOT NULL)",
-        ] {
-            if let Err(e) = sql.exec(stmt, None) {
-                worker::console_error!("session schema: {e}");
-            }
-        }
+        create_schema(&sql);
         Self {
             state,
             env,
@@ -142,6 +146,7 @@ impl DurableObject for SessionObject {
             (worker::Method::Get, "/events") => return self.events_page(&req),
             (worker::Method::Get, "/viewer") => return self.accept_viewer(&req),
             (worker::Method::Get, "/uplink") => return self.accept_uplink(&req),
+            (worker::Method::Post, "/purge") => self.purge().await,
             _ => Err(api_err(ErrorCode::NotFound, "Unknown session endpoint")),
         };
         match result {
@@ -203,6 +208,24 @@ impl DurableObject for SessionObject {
 }
 
 impl SessionObject {
+    /// Deletes everything the session stored and closes its sockets. Its
+    /// project was deleted, so nothing routes here afterwards
+    /// (`housekeeping::purge_sessions`).
+    async fn purge(&self) -> std::result::Result<serde_json::Value, ApiError> {
+        for ws in self.state.get_websockets() {
+            let _ = ws.close(Some(4404), Some("the session was deleted"));
+        }
+        let failed = |e: worker::Error| api_err(ErrorCode::Internal, &format!("purge: {e}"));
+        let storage = self.state.storage();
+        // deleteAll leaves the alarm in place.
+        storage.delete_alarm().await.map_err(failed)?;
+        storage.delete_all().await.map_err(failed)?;
+        // Empty tables, as a new object would have, for anything still in flight.
+        create_schema(&self.sql);
+        *self.mem.borrow_mut() = Mem::default();
+        Ok(serde_json::json!({ "ok": true }))
+    }
+
     fn on_close(&self, ws: &WebSocket) {
         let tags = self.state.get_tags(ws);
         if tags.iter().any(|t| t == TAG_UPLINK) {
