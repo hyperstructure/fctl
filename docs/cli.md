@@ -130,11 +130,31 @@ of that and the projects only you are a member of; sessions you started in
 shared projects stay there, credited to a deleted user. Settings in the web
 app has both, the deletion in its danger zone.
 
-## Shell completions
+## Updating
 
 ```sh
-fctl completions zsh > ~/.zfunc/_fctl      # bash, zsh, fish, elvish, powershell
+fctl self update             # to the latest release
+fctl self update --check     # is there one?
+fctl self update --version 0.1.2
 ```
+
+It downloads the release for this machine, checks its SHA-256, replaces
+`fctl` (and the Linux agent next to it), restarts a host service on the new
+version (sessions keep running) and refreshes installed completions.
+`FCTL_DOWNLOAD` points it at another release server.
+
+## Shell completions
+
+The installer sets up tab completion for your shell. To do it yourself:
+
+```sh
+fctl completions --install           # zsh, bash or fish, from $SHELL
+fctl completions zsh > ~/.zfunc/_fctl  # or print them: bash, zsh, fish, elvish, powershell
+```
+
+`--install` writes the script under `~/.local/share/fctl/completions` (fish:
+`~/.config/fish/completions`) and adds a marked block to `~/.zshrc`,
+`~/.bashrc` (`~/.bash_profile` on macOS) once. Delete both to undo it.
 
 ## Exit codes and output
 

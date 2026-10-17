@@ -17,8 +17,9 @@ email.
 curl -fsSL https://fctl.sh/install | sh
 ```
 
-The installer puts `fctl` in `~/.local/bin` after checking its SHA-256. Then
-sign in from the terminal; it opens your browser to approve the device:
+The installer puts `fctl` in `~/.local/bin` after checking its SHA-256 and
+sets up tab completion for your shell; `fctl self update` keeps it current.
+Then sign in from the terminal; it opens your browser to approve the device:
 
 ```sh
 fctl login app.fctl.sh

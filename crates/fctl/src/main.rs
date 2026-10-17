@@ -125,8 +125,20 @@ enum Command {
         #[arg(long)]
         days: Option<u32>,
     },
-    /// Print shell completions (bash, zsh, fish, …).
-    Completions { shell: clap_complete::Shell },
+    /// Update fctl itself.
+    #[command(name = "self", subcommand)]
+    SelfCmd(cmd::selfcmd::SelfCmd),
+    /// Shell completions: print them, or set them up with --install.
+    Completions {
+        /// bash, zsh, fish, elvish or powershell (with --install: yours).
+        shell: Option<clap_complete::Shell>,
+        /// Set them up for your shell (zsh, bash or fish).
+        #[arg(long)]
+        install: bool,
+        /// Rewrite the scripts installed earlier (fctl self update does this).
+        #[arg(long, conflicts_with = "install")]
+        refresh: bool,
+    },
 }
 
 fn main() {
@@ -204,11 +216,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Admin(c) => cmd::admin::run(server, c, json).await,
         Command::Account(c) => cmd::account::run(server, c, json).await,
         Command::Token { name, days } => cmd::auth::token(server, &name, days, json).await,
-        Command::Completions { shell } => {
-            use clap::CommandFactory;
-            let mut c = Cli::command();
-            clap_complete::generate(shell, &mut c, "fctl", &mut std::io::stdout());
-            Ok(())
-        }
+        Command::SelfCmd(c) => cmd::selfcmd::run(c, json).await,
+        Command::Completions {
+            shell,
+            install,
+            refresh,
+        } => cmd::completions::run(shell, install, refresh),
     }
 }

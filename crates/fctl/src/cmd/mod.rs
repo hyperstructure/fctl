@@ -3,6 +3,8 @@ pub mod admin;
 pub mod attach;
 pub mod auth;
 pub mod claude;
+pub mod completions;
 pub mod host;
 pub mod projects;
+pub mod selfcmd;
 pub mod sessions;
