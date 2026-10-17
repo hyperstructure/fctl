@@ -30,5 +30,6 @@ working in fctl sessions.
 - Publishing needs write access to Actions, which fctl session tokens do
   not have.
 - `main` is protected only by convention while the repositories are
-  private (GitHub Free has no branch rules for private repositories); see
-  the issue about branch protection.
+  private (GitHub Free has no branch rules for private repositories):
+  [#22](https://github.com/hyperstructure/fctl/issues/22) protects it once
+  they are public.
