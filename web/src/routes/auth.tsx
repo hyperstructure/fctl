@@ -56,7 +56,7 @@ export function AuthFrame({
             {title}
           </h1>
           {subtitle && <p className="mt-3 text-[15px] leading-relaxed text-ink-2">{subtitle}</p>}
-          <div className="mt-8 rounded-xl border border-line-strong bg-surface/70 p-6 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl">
+          <div className="mt-8 rounded-xl border border-line-strong bg-surface/90 p-6 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl">
             {children}
           </div>
           {footer && <div className="mt-5 text-center text-[13px] text-ink-3">{footer}</div>}

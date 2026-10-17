@@ -45,22 +45,23 @@ this file is the overview. Order within a section is priority.
 ## 0.2 — run it every day
 
 - [ ] First real-Claude runs on the hyperstructure Mac host; harden the Apple
-      container driver (DNS, clock, disk, caches) from what they show
-- [ ] CI on GitHub Actions: checks on pull requests, deploys from `main`,
+      container driver (DNS, clock, disk, caches) from what they show (#1)
+- [x] CI on GitHub Actions: checks on pull requests, deploys from `main`,
       releases from tags
-- [ ] Prebuilt sandbox images (GHCR) so `fctl host image build` is a pull
-- [ ] Shared caches per project (npm, cargo, uv) mounted into sandboxes
-- [ ] Notifications when a session waits for you or fails (email, web push)
-- [ ] Homebrew tap: `brew install hyperstructure/tap/fctl`
-- [ ] Usage view: each person's Claude plan limits as sessions report them
+- [ ] Prebuilt sandbox images (GHCR) so `fctl host image build` is a pull (#2)
+- [ ] Shared caches per project (npm, cargo, uv) mounted into sandboxes (#3)
+- [ ] Notifications when a session waits for you or fails (email, web push) (#4)
+- [ ] Homebrew tap: `brew install hyperstructure/tap/fctl` (#5)
+- [ ] Usage view: each person's Claude plan limits as sessions report them (#6)
+- [ ] macOS release binaries that run on macOS 12 and later, not only 15+ (#7)
 
 ## 0.3 — closing the loop
 
 - [ ] GitHub webhooks: agents react to CI failures and review comments on
-      their pull requests
-- [ ] Scheduled and recurring sessions (nightly dependency updates, triage)
-- [ ] Preview links: share a sandbox's dev server through a tunnel
-- [ ] Search across transcripts
+      their pull requests (#8)
+- [ ] Scheduled and recurring sessions (nightly dependency updates, triage) (#9)
+- [ ] Preview links: share a sandbox's dev server through a tunnel (#10)
+- [ ] Search across transcripts (#11)
 - [ ] Session templates and a shared library of project instructions
 
 ## Later
