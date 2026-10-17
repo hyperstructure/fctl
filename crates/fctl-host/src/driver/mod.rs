@@ -270,7 +270,7 @@ pub async fn run_cmd(program: &str, args: &[&str]) -> Result<String> {
         .stdin(std::process::Stdio::null())
         .output()
         .await
-        .map_err(|e| anyhow::anyhow!("running {program}: {e}"))?;
+        .map_err(|e| spawn_error(program, e))?;
     if !out.status.success() {
         anyhow::bail!(
             "{program} {} failed: {}",
@@ -281,9 +281,30 @@ pub async fn run_cmd(program: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Why `program` could not be started, naming a missing program plainly.
+pub fn spawn_error(program: &str, e: std::io::Error) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        anyhow::anyhow!("`{program}` is not installed (not found on the PATH)")
+    } else {
+        anyhow::anyhow!("running {program}: {e}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_missing_program_is_named() {
+        let e = run_cmd("fctl-test-missing-program", &["--version"])
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert_eq!(
+            e.as_deref(),
+            Some("`fctl-test-missing-program` is not installed (not found on the PATH)")
+        );
+    }
 
     #[test]
     fn names_roundtrip() {

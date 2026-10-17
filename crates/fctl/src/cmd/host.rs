@@ -82,23 +82,68 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             no_service,
             build_image,
         } => {
+            const SIGN_IN: &str = "Sign in as an admin first (`fctl login`), or pass --token";
             let server = config::server(server)?;
             let mut cfg = HostConfig::load().unwrap_or_default();
             cfg.server = server.clone();
             if let Some(n) = name {
                 cfg.name = n;
             }
-            cfg.driver = driver;
             cfg.capacity = capacity.max(1);
             if let Some(i) = image {
                 cfg.image = i;
             }
+            // Registering a runner leaves something behind, so it waits until
+            // everything that can fail on this machine has passed.
+            let api = if token.is_some() {
+                None
+            } else {
+                Some(config::api(Some(&server)).context(SIGN_IN)?)
+            };
+            // `auto` picks like the daemon does, except that it never settles for
+            // the process driver.
+            let driver = if driver == "auto" {
+                let infos = Driver::probe_all(&cfg.data_dir()).await;
+                let runtimes = infos.iter().filter(|i| i.name != "process");
+                match runtimes.clone().find(|i| i.available) {
+                    Some(info) => info.name.clone(),
+                    None => {
+                        let mut why =
+                            String::from("No VM or container runtime is ready on this machine:");
+                        for info in runtimes {
+                            let detail = info.detail.as_deref().unwrap_or_default();
+                            why.push_str(&format!("\n  {}: {detail}", info.name));
+                        }
+                        bail!(
+                            "{why}\nInstall one, or pass --driver process to run agents without isolation."
+                        );
+                    }
+                }
+            } else {
+                driver
+            };
+            let d = Driver::select(&driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
+            if build_image {
+                fctl_host::image::build(&d, &cfg.image).await?;
+            }
+            let info = d.probe().await;
+            if !info.available {
+                bail!(
+                    "The {} driver is not ready: {}. Nothing was registered; run this again once it is.",
+                    info.name,
+                    info.detail.unwrap_or_default()
+                );
+            }
+            println!(
+                "{} Driver: {} ({})",
+                style::accent("✓"),
+                info.name,
+                info.detail.unwrap_or_default()
+            );
             let token = match token {
                 Some(t) => t,
                 None => {
-                    let api = config::api(Some(&server))
-                        .context("Sign in as an admin first (`fctl login`), or pass --token")?;
-                    let reg = api.create_runner(&cfg.name).await?;
+                    let reg = api.context(SIGN_IN)?.create_runner(&cfg.name).await?;
                     println!(
                         "{} Registered runner {} ({})",
                         style::accent("✓"),
@@ -108,6 +153,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     reg.token
                 }
             };
+            // The service starts with the driver checked here instead of picking
+            // again, perhaps before a runtime is up.
+            cfg.driver = d.name().into();
             cfg.save()?;
             HostConfig::save_token(&token)?;
             println!(
@@ -115,17 +163,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 style::accent("✓"),
                 HostConfig::path().display()
             );
-            let d = Driver::select(&cfg.driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
-            let info = d.probe().await;
-            println!(
-                "{} Driver: {} ({})",
-                style::accent("✓"),
-                info.name,
-                info.detail.unwrap_or_default()
-            );
-            if build_image {
-                fctl_host::image::build(&d, &cfg.image).await?;
-            } else if d.needs_linux_agent() {
+            if !build_image && d.needs_linux_agent() {
                 println!(
                     "{}",
                     style::dim(&format!(

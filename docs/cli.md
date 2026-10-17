@@ -90,12 +90,17 @@ fctl host restart                # sessions keep running
 fctl host uninstall              # sandboxes are kept
 ```
 
-The host's settings are in `~/.config/fctl/host.toml`:
+`fctl host install` checks the driver before it registers anything: if the
+driver can't run sessions (Apple's `container` or Lima isn't installed, a
+service isn't running), it says what to fix and stops. `--driver auto` (the
+default) picks the first ready one of apple, docker and lima, never the
+process driver, and the driver it checked goes into the host's settings in
+`~/.config/fctl/host.toml`:
 
 ```toml
 server = "https://app.fctl.sh"
 name = "studio-mac"
-driver = "auto"          # apple | lima | docker | process | auto
+driver = "apple"         # apple | lima | docker | process | auto (picks at every start)
 capacity = 4             # concurrent sessions
 image = "fctl-agent:latest"
 cpus = 4                 # per session

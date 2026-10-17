@@ -1,7 +1,7 @@
 //! Building the default sandbox image (or the Lima base VM) on this host.
 
-use crate::driver::{Driver, lima::BASE_VM};
-use anyhow::{Context, Result, bail};
+use crate::driver::{Driver, lima::BASE_VM, spawn_error};
+use anyhow::{Result, bail};
 use std::process::Stdio;
 
 pub const DOCKERFILE: &str = include_str!("../../../images/agent/Dockerfile");
@@ -9,6 +9,17 @@ pub const PROVISION: &str = include_str!("../../../images/agent/provision.sh");
 
 /// Builds `tag` with the driver's tooling, streaming output to the terminal.
 pub async fn build(driver: &Driver, tag: &str) -> Result<()> {
+    if driver.name() != "process" {
+        let info = driver.probe().await;
+        // Lima only needs limactl here: its base VM is what this builds.
+        if !info.available && !(driver.name() == "lima" && info.version.is_some()) {
+            bail!(
+                "The {} driver is not ready: {}",
+                info.name,
+                info.detail.unwrap_or_default()
+            );
+        }
+    }
     let dir = std::env::temp_dir().join(format!("fctl-image-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("Dockerfile"), DOCKERFILE)?;
@@ -89,7 +100,7 @@ async fn run_inherit(program: &str, args: &[&str]) -> Result<()> {
         .stdin(Stdio::null())
         .status()
         .await
-        .with_context(|| format!("running {program}"))?;
+        .map_err(|e| spawn_error(program, e))?;
     if !status.success() {
         bail!(
             "{program} {} failed ({status})",
