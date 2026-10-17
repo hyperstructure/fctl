@@ -55,7 +55,11 @@ CI checks every pull request title, and again when you edit it.
 Plain prose for someone reading `git log` in a year: what was wrong or
 missing, what changed and why this way, and how you verified it (tests,
 `cargo xtask dev`, screenshots of UI in both themes). Link issues with
-`Closes #12`. End with the attribution lines your environment asks for.
+`Closes #12`.
+
+The description becomes the commit message on `main`, so it ends with
+the content: no "Generated with …" footers and no links to chat sessions.
+A link to the fctl session that made the change is welcome.
 
 ## The flow
 
