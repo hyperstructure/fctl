@@ -1,0 +1,39 @@
+# Changelog
+
+What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
+
+## 0.1.2 (2026-10-17)
+
+### Other changes
+
+- Turn on Google sign-in for app.fctl.sh ([d4a3152](https://github.com/hyperstructure/fctl/commit/d4a3152d65e3ed518470790f0221bbd54f990e55))
+- Purge deleted sessions' transcripts; delete expired records hourly ([e7571fc](https://github.com/hyperstructure/fctl/commit/e7571fc100551c48b8330ead03fa2f9eac60662c))
+- AGENTS.md: keep fctl.sh's privacy policy in step with the app ([5c7bc51](https://github.com/hyperstructure/fctl/commit/5c7bc5147d752f666ef488cfe94fa6ae8bb9ace7))
+- Export your data and delete your account from Settings ([5309ebd](https://github.com/hyperstructure/fctl/commit/5309ebd6cec2a407658c360f0a5893ce382a027a))
+- First and last names, and greetings that use all your first names ([9da1b84](https://github.com/hyperstructure/fctl/commit/9da1b842e579a62e4ce15876b664102dcd1871a6))
+- Delete a project from its settings and with `fctl projects delete` ([375d54c](https://github.com/hyperstructure/fctl/commit/375d54ca0abf01abcc952c92a2aad1ee95be0b53))
+- Remove stopped sandboxes after keep_stopped_hours ([39c5de9](https://github.com/hyperstructure/fctl/commit/39c5de93c1c142cd7174a7260123cdfcfb14f6e7))
+- fctl self update, and completions that set themselves up ([b58170a](https://github.com/hyperstructure/fctl/commit/b58170a3445433a84c3ef2a0a3b0c798c83ec89c))
+
+## 0.1.1 (2026-10-17)
+
+### Other changes
+
+- Link the roadmap to its issues; a firmer sign-in card ([74ce9d3](https://github.com/hyperstructure/fctl/commit/74ce9d3c962a92cc831d263889333fa86397da22))
+- Record the first five architecture decisions ([b76b749](https://github.com/hyperstructure/fctl/commit/b76b7494fbb1ab4f19dbdbd2a5a69634cdf8ca33))
+- Dist: macOS binaries run on macOS 12 and later ([#7](https://github.com/hyperstructure/fctl/pull/7))
+
+## 0.1.0 (2026-10-17)
+
+### Other changes
+
+- Bootstrap the protocol, domain logic and control plane ([f6a60d8](https://github.com/hyperstructure/fctl/commit/f6a60d83793e0bab1c3155c48830ae7de616d438))
+- Add fctl-agent, the in-sandbox supervisor, and fake-claude ([df58db4](https://github.com/hyperstructure/fctl/commit/df58db4027b9ef5d88903b9ec107b23176b94d8e))
+- Add the host daemon, the fctl CLI and the client library ([48d57b0](https://github.com/hyperstructure/fctl/commit/48d57b0dc946756ac5d588513ec8492adfcb9ca1))
+- Web: the fctl web app ([4190e3f](https://github.com/hyperstructure/fctl/commit/4190e3f3751cd24c8b734934fbc0958b25e968bd))
+- Web: the brand, and the foundry scene ([630260e](https://github.com/hyperstructure/fctl/commit/630260efb98f4240fa221d01547f358d44163748))
+- Add fctl.sh and the docs ([3e0a9e9](https://github.com/hyperstructure/fctl/commit/3e0a9e9d64adcd4e7dbe778a7185f112f656ce36))
+- Xtask: dev, check, deploy, secrets, dist and publish ([4235869](https://github.com/hyperstructure/fctl/commit/4235869fed78f0b14a3ae0102fee9454cb9c31eb))
+- Roadmap: split the site and the design system into their own repositories ([e98df96](https://github.com/hyperstructure/fctl/commit/e98df960d911cf98a4153f23f258e230c7f0cb49))
+- CI: checks, deploys from main, releases from tags ([02820aa](https://github.com/hyperstructure/fctl/commit/02820aa95016d59770d6419f5af14a4210d1a016))
+- Split the site and the design system into their own repositories ([bf4a8b0](https://github.com/hyperstructure/fctl/commit/bf4a8b0a208c44f41b68736b304aaf5f34b2bf16))

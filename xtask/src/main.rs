@@ -5,6 +5,7 @@ mod deploy;
 mod dev;
 mod dist;
 mod macho;
+mod release;
 mod util;
 
 use anyhow::{Context, Result, bail};
@@ -26,7 +27,13 @@ Deploy (deploy/instances/<name>.toml)
                                 Set the instance's secrets; --set reads values from stdin
   site                          Where https://fctl.sh lives now (hyperstructure/fctl-site)
 
-Release
+Release (see .claude/skills/release/SKILL.md)
+  release [--bump auto|patch|minor|major] [--dry-run]
+                                Version, CHANGELOG.md, release commit and tag from the
+                                Conventional Commits since the last tag (CI pushes them)
+  notes [<tag>]                 Release notes for <tag> (default: unreleased changes)
+  lint-commit [<subject>] [--range <a..b>]
+                                Check Conventional Commit subjects (CI: pull request titles)
   dist [--target <triple>]...   Cross-compile release archives into dist/v<version>/
   publish [<version>] [--latest]
                                 Upload dist/v<version> to the releases store (fctl.sh/releases)
@@ -89,6 +96,29 @@ fn main() -> Result<()> {
                  which CI updates when docs/ changes on main."
             );
             Ok(())
+        }
+        "release" => {
+            let bump = match a.value("--bump")? {
+                Some(b) => release::Bump::parse(&b)?,
+                None => None,
+            };
+            let dry_run = a.flag("--dry-run");
+            a.done()?;
+            release::release(&root, release::ReleaseOpts { bump, dry_run }).map(|_| ())
+        }
+        "notes" => {
+            let tag = a.optional();
+            a.done()?;
+            release::print_notes(&root, tag)
+        }
+        "lint-commit" => {
+            let range = a.value("--range")?;
+            let subject = a.optional();
+            a.done()?;
+            if subject.is_none() && range.is_none() {
+                bail!("give a subject or --range <a..b>");
+            }
+            release::lint_commits(&root, subject, range)
         }
         "dist" => {
             let targets = a.values("--target")?;
