@@ -1,0 +1,127 @@
+# The CLI
+
+`fctl` does everything the web app does, for people and for scripts and
+agents. Every command takes `--json` for machine-readable output and
+`--server <url>` (or `FCTL_SERVER`) to pick an instance; `fctl <command> --help`
+has the details.
+
+## Signing in
+
+```sh
+fctl login app.fctl.sh       # opens the browser to approve this device
+fctl login --no-browser      # prints the link and code instead (SSH, servers)
+fctl whoami
+fctl logout
+```
+
+For scripts and CI, create a personal access token and pass it as
+`FCTL_TOKEN`:
+
+```sh
+fctl token "deploy bot" --days 90
+FCTL_TOKEN=fctl_pat_… fctl sessions --json
+```
+
+Configuration lives in `~/.config/fctl/` (`config.toml`, and
+`credentials.toml` with mode 0600). `FCTL_CONFIG_DIR` moves it.
+
+## Sessions
+
+Sessions are named by their id (`ses_…`), their URL, or `project#number`.
+
+```sh
+fctl run -p my-app "Add a dark mode toggle"   # start one and follow it
+fctl run -p my-app -d -f task.md              # start from a file, don't follow
+echo "Fix the flaky test" | fctl run -p my-app
+fctl run --model opus --effort high "…"       # override the project's agent settings
+fctl run --branch fix/login --base develop "…"
+
+fctl sessions                    # recent sessions
+fctl sessions --active -p my-app
+fctl show my-app#12              # status, branch, pull request, usage
+fctl logs my-app#12              # the transcript
+fctl logs -f my-app#12           # …and keep following
+
+fctl attach my-app#12            # stream it and type messages (Ctrl-C detaches)
+fctl attach --read-only my-app#12
+fctl send my-app#12 "Use the existing Button component"
+fctl interrupt my-app#12         # stop the current turn
+fctl stop my-app#12              # end the session (its sandbox is kept)
+fctl resume my-app#12 "Now add tests"
+fctl open my-app#12              # in the browser
+fctl open my-app#12 --claude     # in the Claude app (Remote Control)
+```
+
+`fctl run` uses the project from `fctl projects use` when `-p` is missing.
+
+## Projects
+
+```sh
+fctl projects list
+fctl projects show my-app
+fctl projects create "My app" --repo my-org/my-app
+fctl projects create "New thing" --new-repo new-thing --public
+fctl projects use my-app
+```
+
+## Claude
+
+```sh
+fctl claude connect --login      # full sign-in through a host (Remote Control)
+fctl claude connect              # paste a token from `claude setup-token`
+fctl claude connect --token sk-ant-oat01-…
+fctl claude status
+```
+
+## Hosts
+
+```sh
+fctl host install                # register this machine and start the service
+fctl host install --driver lima --capacity 2 --build-image
+fctl host install --token fctl_rt_…   # with a runner token from an admin
+fctl host install --no-service   # write the config only (run it yourself)
+fctl host run                    # run in the foreground (what the service runs)
+fctl host status
+fctl host doctor                 # check the driver, image, agent binary, connection
+fctl host logs -n 200
+fctl host image build            # (re)build fctl-agent:latest for this driver
+fctl host restart                # sessions keep running
+fctl host uninstall              # sandboxes are kept
+```
+
+The host's settings are in `~/.config/fctl/host.toml`:
+
+```toml
+server = "https://app.fctl.sh"
+name = "studio-mac"
+driver = "auto"          # apple | lima | docker | process | auto
+capacity = 4             # concurrent sessions
+image = "fctl-agent:latest"
+cpus = 4                 # per session
+memory_mb = 8192         # per session
+keep_stopped_hours = 72  # keep a stopped session's sandbox this long
+```
+
+## Admin
+
+```sh
+fctl admin users
+fctl admin allowlist
+fctl admin allow ada@example.com           # also creates an invite link
+fctl admin allow '*@example.com'           # a whole domain
+fctl admin allow grace@example.com --admin
+fctl admin disallow '*@example.com'        # its users lose access
+fctl admin runners
+```
+
+## Shell completions
+
+```sh
+fctl completions zsh > ~/.zfunc/_fctl      # bash, zsh, fish, elvish, powershell
+```
+
+## Exit codes and output
+
+Commands exit non-zero on failure and print errors to stderr. With `--json`,
+results go to stdout as one JSON document (or one per line for streams such as
+`fctl logs -f --json`), using the same shapes as the HTTP API.

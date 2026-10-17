@@ -1,0 +1,27 @@
+# https://fctl.sh: the project site (cargo xtask site deploys it).
+name = "fctl-site"
+main = "worker/index.ts"
+compatibility_date = "2026-10-01"
+workers_dev = false
+preview_urls = false
+
+routes = [
+  { pattern = "fctl.sh", custom_domain = true },
+  { pattern = "www.fctl.sh", custom_domain = true },
+]
+
+[assets]
+directory = "dist"
+binding = "ASSETS"
+html_handling = "auto-trailing-slash"
+not_found_handling = "404-page"
+# Every request passes the Worker (it redirects www and serves /install and /releases).
+run_worker_first = true
+
+# Release archives, written by `cargo xtask publish`.
+[[kv_namespaces]]
+binding = "RELEASES"
+id = "18294bb05fdc4f7faad659ea4e339f0c"
+
+[observability]
+enabled = true

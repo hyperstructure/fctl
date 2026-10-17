@@ -39,7 +39,7 @@ before changing anything that crosses a component boundary.
 | `crates/fctl-agent` | The supervisor inside each sandbox: runs `claude`, journals events, prepares the workspace. | Linux sandboxes |
 | `crates/fctl` | The `fctl` binary: CLI for people and agents, plus `fctl host …`. | macOS, Linux |
 | `crates/fake-claude` | A scripted stand-in for `claude` that speaks stream-json. Used by tests and `cargo xtask dev`. | dev, CI |
-| `xtask` | Development automation (`cargo xtask dev`, `check`, `gen`, `release`). | dev, CI |
+| `xtask` | Development automation (`cargo xtask dev`, `check`, `gen`, `deploy`, `dist`, `publish`). | dev, CI |
 | `web/` | The web app (React, Vite, TypeScript, WebGL). Served by fctl-control. | browser |
 | `site/` | fctl.sh: landing page, docs, install script. | Cloudflare |
 | `images/agent` | The default sandbox image (Debian, git, gh, node, python, claude). | sandboxes |

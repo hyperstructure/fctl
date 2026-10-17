@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#171717" />
+    <title>fctl — agents that build while you sleep</title>
+    <meta
+      name="description"
+      content="fctl runs Claude Code agents in sandboxes on your own machines, around the clock, on your Claude subscription. Start work from the web, the terminal or your phone, and follow it live."
+    />
+    <meta property="og:title" content="fctl — a software factory for Claude agents" />
+    <meta
+      property="og:description"
+      content="Claude Code agents in sandboxes on machines you own, around the clock, on your Claude subscription."
+    />
+    <meta property="og:url" content="https://fctl.sh/" />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script src="/theme.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="nav">
+      <a class="brand" href="/" aria-label="fctl home">
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#171717" />
+          <rect x="0.5" y="0.5" width="31" height="31" rx="7.5" fill="none" stroke="rgb(250 250 250 / 0.12)" />
+          <path d="M7 22.5 L15 9.5 h4 L11 22.5z M14 22.5 L22 9.5 h4 L18 22.5z" fill="#ffff5d" />
+        </svg>
+        <span>fctl</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="/docs/">Docs</a>
+        <a href="/docs/self-hosting/">Self-host</a>
+        <a href="https://github.com/hyperstructure/fctl">GitHub</a>
+        <a class="nav-app" href="https://app.fctl.sh">Open the app</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero">
+        <canvas class="hero-canvas" aria-hidden="true"></canvas>
+        <div class="hero-shade" aria-hidden="true"></div>
+        <div class="hero-copy">
+          <h1 class="rise">
+            <span>Agents that build</span>
+            <span class="dim">while you</span>
+            <span class="hot">sleep<span class="dot">.</span></span>
+          </h1>
+          <p class="lede rise" style="--d: 90ms">
+            fctl is a software factory for Claude Code. Agents work in sandboxes on your own Mac, around the
+            clock, on your Claude subscription — never on API billing. Start them from the web, your terminal or
+            your phone, and follow every session live.
+          </p>
+          <div class="install-block rise" style="--d: 180ms">
+            <div class="install-tabs">
+              <span class="tab" aria-current="true">curl</span>
+              <span class="platforms">macOS · Linux</span>
+            </div>
+            <div class="install">
+              <span class="prompt" aria-hidden="true">$</span>
+              <code>curl -fsSL https://fctl.sh/install | sh</code>
+              <button type="button" class="copy" data-copy="curl -fsSL https://fctl.sh/install | sh">Copy</button>
+            </div>
+          </div>
+          <p class="works rise" style="--d: 260ms">
+            <span>Claude Code</span><span>Cloudflare Workers</span><span>Apple container</span><span>Lima</span
+            ><span>Docker</span><span>GitHub</span>
+          </p>
+        </div>
+      </section>
+
+      <section class="steps" aria-labelledby="how">
+        <h2 id="how" class="section-title reveal">Three steps from a spare Mac to agents at work.</h2>
+        <ol>
+          <li class="reveal">
+            <span class="num" aria-hidden="true">01</span>
+            <div>
+              <h3>Turn a machine into a runner</h3>
+              <p>
+                One command registers it and starts it as a service. Each session gets its own lightweight
+                Linux VM — Apple's container runtime or Lima on a Mac, Docker on Linux — with a fresh clone,
+                its own branch and your project's setup script.
+              </p>
+              <pre><code><span class="prompt">$</span> fctl host install</code></pre>
+            </div>
+          </li>
+          <li class="reveal">
+            <span class="num" aria-hidden="true">02</span>
+            <div>
+              <h3>Connect your Claude subscription</h3>
+              <p>
+                Sign in once with your Pro or Max plan. fctl refuses API keys, checks every session's billing
+                source, and pauses a session before it would draw on paid extra usage. Rate limits pause and
+                resume on their own.
+              </p>
+            </div>
+          </li>
+          <li class="reveal">
+            <span class="num" aria-hidden="true">03</span>
+            <div>
+              <h3>Give agents work</h3>
+              <p>
+                From the app, the terminal or Claude on your phone. Agents commit on their branch, push, and
+                open a pull request when they are done. Message them any time to steer.
+              </p>
+              <pre><code><span class="prompt">$</span> fctl run -p my-app "Add a dark mode toggle"</code></pre>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section class="features" aria-labelledby="features">
+        <h2 id="features" class="section-title reveal">Made for the long run.</h2>
+        <div class="grid">
+          <article class="reveal">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5" /><path d="M10.5 18.5h3" /></svg>
+            <h3>Follow along anywhere</h3>
+            <p>
+              Sessions join Claude's Remote Control, so they show up in Claude on your phone and desktop, where
+              you can read along and reply.
+            </p>
+          </article>
+          <article class="reveal">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2" /><path d="M3 20c.6-3.4 3-5.5 6-5.5s5.4 2.1 6 5.5" /><circle cx="17" cy="9" r="2.4" /><path d="M16.5 14.6c2.3.3 4 2.2 4.5 4.9" /></svg>
+            <h3>Work as a team</h3>
+            <p>
+              Share projects and sessions. Everyone sees the same live transcript, who else is watching, and
+              anyone with access can steer the agent.
+            </p>
+          </article>
+          <article class="reveal">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" /><path d="m7 9.5 3 2.5-3 2.5M12.5 15h4.5" /></svg>
+            <h3>A terminal that keeps up</h3>
+            <p>
+              <code>fctl attach</code> streams any session into your terminal, token by token. <code>send</code>,
+              <code>interrupt</code> and <code>stop</code> steer it from scripts and CI.
+            </p>
+          </article>
+          <article class="reveal">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 20 8v8l-8 4.5L4 16V8z" /><path d="M12 12.5 20 8M12 12.5V20.5M12 12.5 4 8" /></svg>
+            <h3>Yours to run</h3>
+            <p>
+              The control plane is a Cloudflare Worker with Durable Objects and D1; agents run on your
+              hardware. Deploy your own instance with one command. MIT licensed.
+            </p>
+          </article>
+          <article class="reveal">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8.7" /><path d="M20 4v4.7h-4.7" /><path d="M20 12a8 8 0 0 1-13.7 5.6L4 15.3" /><path d="M4 20v-4.7h4.7" /></svg>
+            <h3>Built not to drop work</h3>
+            <p>
+              A Rust core end to end. Agents journal every event before it leaves the sandbox, links reconnect
+              and replay, and hosts pick running sessions back up after a restart.
+            </p>
+          </article>
+          <article class="reveal">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5v5l3 2" /></svg>
+            <h3>Around the clock</h3>
+            <p>
+              Hosts keep their machine from sleeping, idle sessions wind down on their own, and a queue holds
+              work until a runner is free.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="flow" aria-labelledby="flow">
+        <h2 id="flow" class="section-title reveal">How the pieces fit.</h2>
+        <div class="diagram reveal" role="img" aria-label="Browsers, the CLI and Claude apps talk to the control plane on Cloudflare; hosts on your machines connect out to it and run each session in its own sandbox.">
+          <div class="col">
+            <div class="node">Web app</div>
+            <div class="node">fctl CLI</div>
+            <div class="node">Claude apps<small>Remote Control</small></div>
+          </div>
+          <div class="wire" aria-hidden="true"><span></span></div>
+          <div class="col">
+            <div class="node strong">Control plane<small>Worker · Durable Objects · D1</small></div>
+          </div>
+          <div class="wire" aria-hidden="true"><span></span></div>
+          <div class="col">
+            <div class="node">Your Mac<small>fctl host</small></div>
+          </div>
+          <div class="wire" aria-hidden="true"><span></span></div>
+          <div class="col">
+            <div class="node">Sandbox<small>Claude Code · fctl-agent</small></div>
+            <div class="node">Sandbox</div>
+            <div class="node">Sandbox</div>
+          </div>
+        </div>
+        <p class="flow-note reveal">
+          Hosts dial out, so nothing on your network is exposed. Every session lives in a Durable Object that
+          keeps its event log and fans it out to everyone watching.
+          <a href="/docs/architecture/">Read the architecture <span aria-hidden="true">→</span></a>
+        </p>
+      </section>
+
+      <section class="cta reveal">
+        <h2>Start a factory tonight.</h2>
+        <div class="install">
+          <span class="prompt" aria-hidden="true">$</span>
+          <code>curl -fsSL https://fctl.sh/install | sh</code>
+          <button type="button" class="copy" data-copy="curl -fsSL https://fctl.sh/install | sh">Copy</button>
+        </div>
+        <p class="hero-links">
+          <a href="/docs/getting-started/">Get started <span aria-hidden="true">→</span></a>
+          <a href="/docs/self-hosting/">Run your own instance <span aria-hidden="true">→</span></a>
+        </p>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>fctl is made by <a href="https://github.com/hyperstructure">hyperstructure</a>. MIT licensed.</span>
+      <span><a href="/docs/">Docs</a> · <a href="/docs/security/">Security</a> · <a href="https://github.com/hyperstructure/fctl">Source</a></span>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

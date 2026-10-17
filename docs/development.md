@@ -1,0 +1,131 @@
+# Development
+
+Everything runs on one machine, with one command, and needs no Claude
+subscription, Cloudflare account or GitHub App.
+
+## Setup
+
+- Rust via [rustup](https://rustup.rs) — `rust-toolchain.toml` pins the
+  version and adds the `wasm32-unknown-unknown` target.
+- Node.js 22 or newer (`npm ci` at the root installs the web app, the site
+  and wrangler).
+- Optional, for release builds: [zig](https://ziglang.org) and
+  `cargo install cargo-zigbuild`.
+
+## The local stack
+
+```sh
+cargo xtask dev
+```
+
+This starts:
+
+- the control plane under `wrangler dev` at http://127.0.0.1:8787, with local
+  D1 and Durable Objects (state in `crates/fctl-control/.wrangler/`);
+- the web app under Vite at http://localhost:5173, with hot reload, proxying
+  `/api` to the control plane;
+- a host using the `process` driver whose agents run **fake-claude**: a
+  scripted stand-in for Claude Code that speaks the same stream-json protocol.
+
+The first run creates an owner (`dev@fctl.test` / `fctl-dev-password`), a
+Claude credential, a runner and a project called Playground, and stores a CLI
+token in `.fctl-dev/token`:
+
+```sh
+export FCTL_SERVER=http://127.0.0.1:8787 FCTL_TOKEN=$(cat .fctl-dev/token)
+cargo run -p fctl -- run -p playground "write notes.md"
+```
+
+fake-claude reacts to words in the prompt: `write <name>` creates and
+commits a file, `slow` streams slowly, `limit` hits a usage limit, `overage`
+reports paid usage (the session must pause), `refresh` asks the host for a
+new OAuth token, and `crash` exits mid-turn. Anything else gets a short
+answer with a tool call.
+
+`--no-host` skips the host; `--no-vite` serves the built web app from
+wrangler instead. Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/`
+to start over.
+
+## Checks
+
+```sh
+cargo xtask check          # what CI runs
+cargo xtask check --quick  # without the production builds
+```
+
+That is `cargo fmt --check`, a check that `web/src/gen` matches the Rust
+types, Biome and TypeScript for the web app, Clippy (native and wasm) with
+warnings as errors, `cargo test`, the web app's Vitest suite, and production
+builds of the web app and the site.
+
+## Repository map
+
+| Path | What |
+|---|---|
+| `crates/fctl-proto` | Wire types for every protocol; TypeScript is generated from them |
+| `crates/fctl-domain` | Pure logic: permissions, validation, tokens, naming, scheduling, event shaping |
+| `crates/fctl-control` | The control plane Worker (Rust → wasm): API, auth, Durable Objects, GitHub |
+| `crates/fctl-client` | HTTP and WebSocket client used by the CLI and hosts |
+| `crates/fctl-host` | The host daemon: control connection, sessions, sandbox drivers, images |
+| `crates/fctl-agent` | The supervisor inside each sandbox: runs Claude, journals events, prepares git |
+| `crates/fctl` | The `fctl` binary: CLI plus `fctl host` |
+| `crates/fake-claude` | The scripted Claude stand-in |
+| `xtask` | `cargo xtask`: dev, check, gen, deploy, secrets, dist, publish |
+| `web` | The web app (React, TanStack Router and Query, Tailwind, WebGL) |
+| `site` | fctl.sh: landing page, these docs, `/install`, `/releases` |
+| `images/agent` | The default sandbox image |
+| `deploy/instances` | Instance descriptions for `cargo xtask deploy` |
+| `docs` | These docs; `docs/adr` records decisions |
+
+## Changing a protocol
+
+1. Change the types in `crates/fctl-proto` — add fields as `Option` (with
+   `#[serde(default)]` where needed), never repurpose a `type` tag.
+2. `cargo xtask gen` regenerates `web/src/gen`.
+3. Keep older peers working: hosts and agents can lag the control plane by a
+   version, and the web app talks to whatever is deployed.
+
+## Working on the control plane
+
+- It compiles to `wasm32-unknown-unknown` and runs on workers-rs. No
+  `unwrap`, `expect` or panics (Clippy denies them): a panic kills the
+  request, and in a Durable Object it can poison the instance.
+- Durable Object SQL must not fail on a schema that is already migrated:
+  create tables with `IF NOT EXISTS` and add columns with `add_column`,
+  which checks first.
+- D1 migrations are in `crates/fctl-control/migrations`; `cargo xtask deploy`
+  applies them before deploying. Never edit a migration that has shipped.
+
+## Working on the web app
+
+```sh
+cd web
+npm run dev        # with the control plane from `cargo xtask dev --no-vite`, or any instance via FCTL_API
+npm run check      # Biome and TypeScript
+npm test
+```
+
+Design tokens live in `web/src/styles/tokens.css` (shared with the site).
+Use the semantic colors (`canvas`, `surface`, `ink`, `accent`, `highlight`,
+`pink`, `blue`…) rather than raw values. The scenes in `web/src/gl` render
+dithered to the brand palette; they pause when hidden and render one still
+frame for people who prefer reduced motion.
+
+## Releasing
+
+1. Bump `version` in the root `Cargo.toml` and commit.
+2. Tag it: `git tag v0.2.0 && git push --tags`. CI builds the archives
+   (`cargo xtask dist`: fctl for macOS and Linux on arm64 and x86_64, and the
+   Linux agent), attaches them to a GitHub release, and publishes them to
+   `https://fctl.sh/releases` (`cargo xtask publish --latest`).
+
+To build locally: `cargo xtask dist` (or `--target aarch64-apple-darwin`).
+
+## Deploying
+
+`main` deploys to `app.fctl.sh` and `fctl.sh` from CI. By hand:
+
+```sh
+cargo xtask deploy fctl-sh
+cargo xtask site
+```
