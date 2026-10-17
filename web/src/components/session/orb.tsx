@@ -5,15 +5,15 @@ import { cssColor } from "@/gl/core";
 import { type OrbState, orb } from "@/gl/orb";
 
 const PALETTE: Record<G.SessionStatus, [string, string, number]> = {
-  queued: ["--c-amber", "--c-violet", 0.4],
-  provisioning: ["--c-amber", "--c-blue", 0.2],
-  preparing: ["--c-amber", "--c-accent", 0.1],
-  running: ["--c-accent", "--c-blue", 0],
-  idle: ["--c-blue", "--c-violet", 0.15],
-  paused: ["--c-amber", "--c-amber", 0.35],
+  queued: ["--c-ink-3", "--c-blue", 0.45],
+  provisioning: ["--c-ink-2", "--c-blue", 0.25],
+  preparing: ["--c-ink-2", "--c-highlight", 0.15],
+  running: ["--c-highlight", "--c-pink", 0],
+  idle: ["--c-blue", "--c-pink", 0.15],
+  paused: ["--c-pink", "--c-blue", 0.3],
   stopping: ["--c-ink-3", "--c-blue", 0.5],
   stopped: ["--c-ink-3", "--c-ink-4", 0.75],
-  failed: ["--c-danger", "--c-violet", 0.4],
+  failed: ["--c-danger", "--c-ink-4", 0.4],
 };
 
 /** The agent's orb: its color is the session's state, its motion the agent's activity. */
@@ -42,7 +42,7 @@ export function AgentOrb({
   };
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
-      <GLCanvas scene={() => orb(() => state.current)} options={{ scale: 1, maxDpr: 2, fps: 45 }} />
+      <GLCanvas scene={() => orb(() => state.current)} options={{ pixel: 2, fps: 30 }} />
     </div>
   );
 }

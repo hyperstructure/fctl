@@ -43,7 +43,7 @@ export function ProjectPage() {
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
       {p ? (
         <header className="animate-rise">
-          <h1 className="font-serif text-[38px] leading-[1.1] font-medium tracking-[-0.022em]">{p.name}</h1>
+          <h1 className="font-display text-[38px] leading-[1.1] font-medium tracking-[-0.022em]">{p.name}</h1>
           {p.description && (
             <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ink-3">{p.description}</p>
           )}
@@ -144,7 +144,7 @@ function Sessions({ project }: { project: G.Project }) {
               }
             }}
             placeholder={`What should an agent do in ${project.name}?`}
-            className="block px-5 pt-4 pb-14 font-serif text-[17px] leading-[1.5] placeholder:text-ink-4"
+            className="block px-5 pt-4 pb-14 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
           />
           <div className="absolute right-3 bottom-3 flex items-center gap-3">
             <span className="text-[11.5px] text-ink-4">⌘↵</span>

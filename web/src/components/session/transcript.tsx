@@ -82,7 +82,7 @@ function Thinking({ text }: { text: string }) {
         <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} />
       </button>
       {open && (
-        <div className="mt-2 ml-5.5 animate-rise border-l border-violet/25 pl-4 font-serif text-[15px] leading-relaxed whitespace-pre-wrap text-ink-3 italic">
+        <div className="mt-2 ml-5.5 animate-rise border-l border-violet/25 pl-4 font-display text-[15px] leading-relaxed whitespace-pre-wrap text-ink-3 italic">
           {text}
         </div>
       )}

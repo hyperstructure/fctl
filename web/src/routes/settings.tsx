@@ -25,7 +25,7 @@ export function SettingsPage() {
   if (!me) return null;
   return (
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
-      <h1 className="font-serif text-[34px] leading-tight font-medium tracking-[-0.02em]">Settings</h1>
+      <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">Settings</h1>
       {search.linked === "google" && (
         <Banner tone="ok" className="mt-6">
           Google is linked. You can sign in with it from now on.

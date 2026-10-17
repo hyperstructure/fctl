@@ -24,7 +24,7 @@ export function Admin() {
     );
   return (
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
-      <h1 className="font-serif text-[34px] leading-tight font-medium tracking-[-0.02em]">Admin</h1>
+      <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">Admin</h1>
       <nav className="mt-8 flex gap-1 border-b border-line">
         {(["access", "users", "runners", "audit"] as Tab[]).map((t) => (
           <Link

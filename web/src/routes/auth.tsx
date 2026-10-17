@@ -5,7 +5,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Banner, Button, Field, GLCanvas, Input, Logo } from "@/components/ui";
-import { aurora } from "@/gl/aurora";
+import { foundry } from "@/gl/foundry";
 import { ApiFailure, api } from "@/lib/api";
 import { keys, queryClient, useInstance } from "@/lib/queries";
 
@@ -41,7 +41,10 @@ export function AuthFrame({
   return (
     <div className="relative flex min-h-dvh flex-col overflow-hidden bg-canvas">
       <div className="absolute inset-0">
-        <GLCanvas scene={aurora} options={{ scale: 0.45, fps: 30 }} />
+        <GLCanvas
+          scene={() => foundry({ planet: [1.02, -0.75, 1.15], density: 0.6 }).scene}
+          options={{ pixel: 3, fps: 30 }}
+        />
       </div>
       <div className="relative z-10 flex items-center justify-between px-6 py-5">
         <Logo />
@@ -49,7 +52,7 @@ export function AuthFrame({
       </div>
       <div className="relative z-10 flex flex-1 items-center justify-center px-5 pb-16">
         <div className="w-full max-w-[400px] animate-rise">
-          <h1 className="font-serif text-[34px] leading-[1.1] font-medium tracking-[-0.02em] text-ink">
+          <h1 className="font-display text-[34px] leading-[1.1] font-medium tracking-[-0.02em] text-ink">
             {title}
           </h1>
           {subtitle && <p className="mt-3 text-[15px] leading-relaxed text-ink-2">{subtitle}</p>}

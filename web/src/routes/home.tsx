@@ -6,7 +6,7 @@ import { ArrowRight, ArrowUp, Check, Cpu, FolderPlus, KeyRound } from "lucide-re
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, Button, GLCanvas, Skeleton, StatusDot, Textarea, toast } from "@/components/ui";
 import type * as G from "@/gen";
-import { LANES, type ThreadLane, type ThreadsHandle, threads } from "@/gl/threads";
+import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@/gl/foundry";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
@@ -29,11 +29,13 @@ function greeting(name: string) {
   return `${part}, ${name.split(" ")[0]}.`;
 }
 
+/** Palette index in the floor scene: 0 neutral, 1 working, 2 waiting, 3 paused, 4 failed. */
 function laneColor(s: G.SessionStatus): number {
   if (s === "running") return 1;
   if (s === "idle") return 2;
+  if (s === "paused") return 3;
   if (s === "failed") return 4;
-  return 3;
+  return 0;
 }
 
 /** Spreads n sessions over the lanes, evenly. */
@@ -41,7 +43,7 @@ function lanesFor(n: number): number[] {
   return Array.from({ length: n }, (_, i) => Math.round(((i + 0.5) * LANES) / Math.max(n, 1) - 0.5));
 }
 
-function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<ThreadsHandle | null> }) {
+function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<FoundryHandle | null> }) {
   const energy = useRef(new Map<string, number>());
   // Keyed on ids and statuses: the list itself is a new array on every render.
   const key = [...active]
@@ -57,11 +59,11 @@ function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<Thre
 
   useEffect(() => {
     const apply = () => {
-      const m = new Map<number, ThreadLane>();
+      const m = new Map<number, FoundryLane>();
       for (const [id, l] of lanes) {
         const e = energy.current.get(id) ?? 0;
         m.set(l.lane, {
-          lit: l.status === "stopping" ? 0.4 : 1,
+          lit: ["running", "idle", "paused", "failed"].includes(l.status) ? 1 : 0.55,
           color: laneColor(l.status),
           energy: Math.min(1, e),
         });
@@ -92,11 +94,11 @@ function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<Thre
     <div className="absolute inset-0">
       <GLCanvas
         scene={() => {
-          const h = threads();
+          const h = foundry({ planet: [0.95, -0.85, 1.4], density: 0.5 });
           handle.current = h;
           return h.scene;
         }}
-        options={{ scale: 1, maxDpr: 2 }}
+        options={{ pixel: 3 }}
       />
     </div>
   );
@@ -137,7 +139,7 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
           }
         }}
         placeholder="What should an agent build next?"
-        className="block px-5 pt-4 pb-14 font-serif text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
+        className="block px-5 pt-4 pb-14 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
         aria-label="Task for a new session"
       />
       <div className="absolute right-3 bottom-3 left-4 flex items-center gap-3">
@@ -188,7 +190,7 @@ function Step({
       <span
         className={cn(
           "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border transition-colors",
-          done ? "border-accent bg-accent text-accent-ink" : "border-line-strong text-ink-4",
+          done ? "border-highlight bg-highlight text-highlight-ink" : "border-line-strong text-ink-4",
         )}
       >
         {done ? <Check className="size-3.5" /> : <span className="size-1.5 rounded-full bg-ink-4" />}
@@ -217,7 +219,7 @@ function GettingStarted({ me, runners, projects }: { me: G.Me; runners: G.Runner
   if (claude && runner && project) return null;
   return (
     <section className="animate-rise">
-      <h2 className="font-serif text-[22px] tracking-[-0.01em] text-ink">Set up your factory</h2>
+      <h2 className="font-display text-[22px] tracking-[-0.01em] text-ink">Set up your factory</h2>
       <p className="mt-1 text-[14px] text-ink-3">Three steps, and agents start working for you.</p>
       <ol className="mt-3 divide-y divide-line border-y border-line">
         <Step
@@ -322,7 +324,7 @@ export function Home() {
   const online = (f.runners.length ? f.runners : (runners.data?.runners ?? [])).filter(
     (r) => r.status === "online",
   ).length;
-  const floor = useRef<ThreadsHandle | null>(null);
+  const floor = useRef<FoundryHandle | null>(null);
 
   return (
     <div>
@@ -337,7 +339,7 @@ export function Home() {
         <Floor active={activeList} handle={floor} />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-canvas" />
         <div className="relative z-[1] mx-auto flex h-full max-w-[920px] flex-col justify-end px-6 pb-10">
-          <h1 className="animate-rise font-serif text-[40px] leading-[1.08] font-medium tracking-[-0.022em] text-ink">
+          <h1 className="animate-rise font-display text-[40px] leading-[1.08] font-medium tracking-[-0.022em] text-ink">
             {me ? greeting(me.user.name) : " "}
           </h1>
           <p className="mt-3 animate-rise text-[15px] text-ink-2 [animation-delay:80ms]">

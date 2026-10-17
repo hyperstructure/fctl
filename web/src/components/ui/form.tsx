@@ -110,13 +110,13 @@ export function Switch({
       onClick={() => onChange(!checked)}
       className={cn(
         "relative h-5 w-9 shrink-0 rounded-full border transition-colors duration-200",
-        checked ? "border-accent/50 bg-accent/80" : "border-line-strong bg-raised",
+        checked ? "border-highlight bg-highlight" : "border-line-strong bg-raised",
       )}
     >
       <span
         className={cn(
-          "absolute top-0.5 left-0.5 size-3.5 rounded-full bg-white shadow-sm transition-transform duration-250 ease-[var(--ease-spring)]",
-          checked && "translate-x-4",
+          "absolute top-0.5 left-0.5 size-3.5 rounded-full shadow-sm transition-[translate,background-color] duration-250 ease-[var(--ease-spring)]",
+          checked ? "translate-x-4 bg-highlight-ink" : "bg-ink-3",
         )}
       />
     </button>

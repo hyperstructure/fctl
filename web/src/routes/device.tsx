@@ -27,7 +27,7 @@ export function DevicePage() {
         <div className="mb-6 flex size-12 items-center justify-center rounded-xl border border-line-strong bg-raised text-accent">
           <Laptop className="size-5" />
         </div>
-        <h1 className="font-serif text-[30px] leading-tight font-medium tracking-[-0.02em]">
+        <h1 className="font-display text-[30px] leading-tight font-medium tracking-[-0.02em]">
           Sign in on another device
         </h1>
         {decide.isSuccess ? (

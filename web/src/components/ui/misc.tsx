@@ -8,22 +8,9 @@ export function Logo({ className, withWord = true }: { className?: string; withW
   return (
     <span className={cn("inline-flex items-center gap-2", className)}>
       <svg viewBox="0 0 32 32" className="size-[22px]" aria-hidden="true">
-        <defs>
-          <linearGradient id="fctl-mark" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="var(--c-accent)" />
-            <stop offset="1" stopColor="var(--c-blue)" />
-          </linearGradient>
-        </defs>
-        <rect
-          x="0.5"
-          y="0.5"
-          width="31"
-          height="31"
-          rx="8"
-          fill="var(--c-raised)"
-          stroke="var(--c-line-strong)"
-        />
-        <path d="M7 22.5 L15 9.5 h4 L11 22.5z M14 22.5 L22 9.5 h4 L18 22.5z" fill="url(#fctl-mark)" />
+        <rect width="32" height="32" rx="8" fill="#171717" />
+        <rect x="0.5" y="0.5" width="31" height="31" rx="7.5" fill="none" stroke="rgb(250 250 250 / 0.12)" />
+        <path d="M7 22.5 L15 9.5 h4 L11 22.5z M14 22.5 L22 9.5 h4 L18 22.5z" fill="#ffff5d" />
       </svg>
       {withWord && <span className="font-semibold tracking-[-0.02em] text-ink text-[15px]">fctl</span>}
     </span>
@@ -63,12 +50,15 @@ export function Avatar({
     <span
       className={cls}
       title={user.name}
-      style={{ ...style, background: `oklch(0.42 0.09 ${h})`, color: `oklch(0.94 0.04 ${h})` }}
+      style={{ ...style, background: AVATAR_FILLS[h % AVATAR_FILLS.length], color: "#171717" }}
     >
       {initials(user.name)}
     </span>
   );
 }
+
+/** Initials sit on one of the brand colors, picked by the user's id. */
+const AVATAR_FILLS = ["#ffff5d", "#ff00d8", "#007eff", "#eaff81"];
 
 export function AvatarStack({
   users,
@@ -106,12 +96,12 @@ export function Kbd({ children }: { children: ReactNode }) {
 }
 
 const STATUS: Record<G.SessionStatus, { label: string; tone: string; dot: string; live?: boolean }> = {
-  queued: { label: "Queued", tone: "text-amber", dot: "bg-amber" },
-  provisioning: { label: "Starting", tone: "text-amber", dot: "bg-amber", live: true },
-  preparing: { label: "Preparing", tone: "text-amber", dot: "bg-amber", live: true },
+  queued: { label: "Queued", tone: "text-ink-3", dot: "bg-ink-3" },
+  provisioning: { label: "Starting", tone: "text-ink-2", dot: "bg-ink-2", live: true },
+  preparing: { label: "Preparing", tone: "text-ink-2", dot: "bg-ink-2", live: true },
   running: { label: "Working", tone: "text-accent", dot: "bg-accent", live: true },
   idle: { label: "Waiting", tone: "text-blue", dot: "bg-blue" },
-  paused: { label: "Paused", tone: "text-amber", dot: "bg-amber" },
+  paused: { label: "Paused", tone: "text-pink", dot: "bg-pink" },
   stopping: { label: "Stopping", tone: "text-ink-3", dot: "bg-ink-3", live: true },
   stopped: { label: "Stopped", tone: "text-ink-3", dot: "bg-ink-4" },
   failed: { label: "Failed", tone: "text-danger", dot: "bg-danger" },

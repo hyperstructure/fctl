@@ -36,7 +36,7 @@ export function Empty({
   return (
     <div className="flex animate-rise flex-col items-center px-6 py-16 text-center">
       {icon && <div className="mb-4 text-ink-4">{icon}</div>}
-      <h3 className="font-serif text-xl text-ink">{title}</h3>
+      <h3 className="font-display text-xl text-ink">{title}</h3>
       {children && <div className="mt-2 max-w-md text-[14px] leading-relaxed text-ink-3">{children}</div>}
       {action && <div className="mt-6">{action}</div>}
     </div>

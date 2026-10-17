@@ -18,6 +18,11 @@ export interface Scene {
   init(gl: WebGL2RenderingContext): void;
   frame(ctx: SceneContext): void;
   dispose?(gl: WebGL2RenderingContext): void;
+  /**
+   * Set by mount(): call it when the scene's inputs change. It draws a new
+   * still frame when motion is reduced (otherwise the next frame shows it).
+   */
+  invalidate?: () => void;
 }
 
 export interface StageOptions {
@@ -28,6 +33,11 @@ export interface StageOptions {
   alwaysAnimate?: boolean;
   /** Frames per second cap (default 60). */
   fps?: number;
+  /**
+   * Render chunky: one scene pixel per this many device pixels, upscaled
+   * without smoothing (for dithered scenes). Overrides `scale`.
+   */
+  pixel?: number;
 }
 
 export function prefersReducedMotion(): boolean {
@@ -135,11 +145,13 @@ export function mount(canvas: HTMLCanvasElement, scene: Scene, opts: StageOption
   let alive = true;
   let ready = false;
 
+  if (opts.pixel) canvas.style.imageRendering = "pixelated";
   const resize = () => {
     dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
     const r = canvas.getBoundingClientRect();
-    width = Math.max(1, Math.round(r.width * dpr * scale));
-    height = Math.max(1, Math.round(r.height * dpr * scale));
+    const k = opts.pixel ? (window.devicePixelRatio || 1) / opts.pixel : dpr * scale;
+    width = Math.max(1, Math.round(r.width * k));
+    height = Math.max(1, Math.round(r.height * k));
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
       canvas.height = height;
@@ -164,7 +176,14 @@ export function mount(canvas: HTMLCanvasElement, scene: Scene, opts: StageOption
     last = now;
     gl.viewport(0, 0, width, height);
     try {
-      scene.frame({ gl, width, height, time, dt, dpr: dpr * scale });
+      scene.frame({
+        gl,
+        width,
+        height,
+        time,
+        dt,
+        dpr: opts.pixel ? (window.devicePixelRatio || 1) / opts.pixel : dpr * scale,
+      });
     } catch (e) {
       console.warn("fctl: scene frame failed", e);
       ready = false;
@@ -215,6 +234,9 @@ export function mount(canvas: HTMLCanvasElement, scene: Scene, opts: StageOption
 
   resize();
   init();
+  scene.invalidate = () => {
+    if (reduced && alive) draw(performance.now());
+  };
   if (reduced) draw(performance.now());
   else kick();
   start = performance.now();

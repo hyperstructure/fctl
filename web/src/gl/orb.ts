@@ -1,5 +1,5 @@
-// The agent orb in a session's header: a small sphere of flowing light whose
-// color follows the session's state and whose motion follows its activity.
+// The agent orb in a session's header: a small dithered planet whose colors
+// follow the session's state and whose motion follows its activity.
 
 import { compile, FULLSCREEN_VS, GLSL_NOISE, isDark, type Scene } from "./core";
 
@@ -18,31 +18,44 @@ float noise3(vec3 p) {
   // Two offset 2D noises make a cheap 3D-ish field over the sphere.
   return vnoise(p.xy + p.z * 1.7) * 0.5 + vnoise(p.yz * 1.3 - p.x * 0.9) * 0.5;
 }
+float bayer8(vec2 p) {
+  ivec2 q = ivec2(mod(p, 8.0));
+  int a = q.x ^ q.y;
+  int y = q.y;
+  int v = ((a & 1) << 5) | ((y & 1) << 4) | ((a & 2) << 2) | ((y & 2) << 1) | ((a & 4) >> 1) | ((y & 4) >> 2);
+  return (float(v) + 0.5) / 64.0;
+}
 void main() {
-  vec2 p = (gl_FragCoord.xy - 0.5 * uRes) / (0.5 * min(uRes.x, uRes.y));
+  // A tiny dithered planet, like the foundry's: two brand colors, no blending.
+  vec2 px = floor(gl_FragCoord.xy);
+  vec2 p = (gl_FragCoord.xy - 0.5 * uRes) / (0.5 * min(uRes.x, uRes.y)) * 1.16;
   float r = length(p);
+  float th = bayer8(px);
+  float th2 = bayer8(px + vec2(3.0, 5.0));
   float t = uTime * (0.25 + uEnergy * 1.4);
   vec3 col = vec3(0.0);
   float alpha = 0.0;
   if (r < 1.0) {
     vec3 n = vec3(p, sqrt(1.0 - r * r));
-    // Rotate the field over time.
     float c = cos(t * 0.6), s = sin(t * 0.6);
     vec3 q = vec3(c * n.x - s * n.z, n.y, s * n.x + c * n.z);
     float f = noise3(q * 3.2 + vec3(0.0, t * 0.4, 0.0));
     float g = noise3(q * 6.5 - vec3(t * 0.3, 0.0, 0.0));
-    float swirl = smoothstep(0.35, 0.85, f * 0.7 + g * 0.45);
-    col = mix(uA, uB, swirl);
-    float light = 0.45 + 0.55 * pow(max(dot(n, normalize(vec3(-0.4, 0.5, 0.75))), 0.0), 1.5);
-    float rim = pow(1.0 - n.z, 2.5);
-    col = col * (0.35 + light * (0.55 + uEnergy * 0.5)) + uB * rim * (0.6 + uEnergy);
-    col *= mix(1.0, 0.45, uDim);
-    alpha = smoothstep(1.0, 0.96, r);
+    float swirl = smoothstep(0.3, 0.85, f * 0.7 + g * 0.45);
+    float light = pow(max(dot(n, normalize(vec3(-0.45, 0.55, 0.7))), 0.0), 1.1);
+    float rim = pow(1.0 - n.z, 3.0);
+    float b = (0.18 + 0.82 * light) * (0.62 + uEnergy * 0.38) * mix(1.0, 0.45, uDim) + rim * 0.35;
+    if (b > th) {
+      col = swirl > th2 ? uB : uA;
+      alpha = 1.0;
+    }
+  } else {
+    float halo = exp(-(r - 1.0) * 9.0) * (0.18 + uEnergy * 0.55) * (1.0 - uDim * 0.8);
+    if (halo > th) {
+      col = uB;
+      alpha = 1.0;
+    }
   }
-  // Soft halo outside the sphere.
-  float halo = exp(-max(r - 1.0, 0.0) * 6.0) * (0.22 + uEnergy * 0.5) * (1.0 - uDim * 0.7);
-  col += mix(uA, uB, 0.5) * halo * (1.0 - alpha);
-  alpha = max(alpha, halo * 0.9);
   outColor = vec4(col * alpha, alpha);
 }`;
 

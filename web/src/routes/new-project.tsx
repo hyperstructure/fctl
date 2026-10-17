@@ -55,7 +55,7 @@ export function NewProject() {
   const ready = mode === "link" ? !!repo : mode === "create" ? !!(newRepo || name) : !!name.trim();
   return (
     <div className="mx-auto max-w-[680px] px-6 py-14">
-      <h1 className="font-serif text-[34px] leading-tight font-medium tracking-[-0.02em]">A new project</h1>
+      <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">A new project</h1>
       <p className="mt-2 text-[15px] text-ink-3">
         A project is a repository plus what agents need to know to work in it.
       </p>
