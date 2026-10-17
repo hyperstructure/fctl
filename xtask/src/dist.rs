@@ -6,8 +6,8 @@
 //!   fctl-agent-<arch>-linux     standalone agents (hosts download these on demand)
 //!   *.sha256, SHA256SUMS, manifest.json
 //!
-//! `cargo xtask publish` uploads a dist directory to the releases store that
-//! https://fctl.sh/releases serves.
+//! `cargo xtask publish` uploads a dist directory to the releases store
+//! (deploy/releases.toml) that https://fctl.sh/releases serves.
 
 use crate::util::{self, run};
 use anyhow::{Result, bail};
@@ -154,9 +154,14 @@ pub fn dist(root: &Path, targets: &[String]) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// The KV namespace (bound as RELEASES in site/wrangler.toml) that serves
-/// https://fctl.sh/releases/<key>.
-const RELEASES_BINDING: &str = "RELEASES";
+/// deploy/releases.toml: where releases are published.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Releases {
+    kv_namespace_id: String,
+    public_url: String,
+}
+
 /// Values larger than this do not fit in KV.
 const KV_MAX: u64 = 25 * 1024 * 1024;
 
@@ -172,7 +177,8 @@ pub fn publish(root: &Path, version: Option<String>, latest: bool) -> Result<()>
             dir.display()
         );
     }
-    let site = root.join("site");
+    let config: Releases =
+        toml::from_str(&std::fs::read_to_string(root.join("deploy/releases.toml"))?)?;
     let mut names: Vec<String> = std::fs::read_dir(&dir)?
         .filter_map(|e| e.ok())
         .filter_map(|e| e.file_name().into_string().ok())
@@ -181,43 +187,35 @@ pub fn publish(root: &Path, version: Option<String>, latest: bool) -> Result<()>
     // The manifest goes last: its presence means the release is complete.
     names.retain(|n| n != "manifest.json");
     names.push("manifest.json".into());
+    let put = |key: &str| -> Result<Command> {
+        let mut cmd = util::wrangler(root)?;
+        cmd.args([
+            "kv",
+            "key",
+            "put",
+            "--remote",
+            "--namespace-id",
+            &config.kv_namespace_id,
+            key,
+        ])
+        .current_dir(root);
+        Ok(cmd)
+    };
     for n in &names {
         let path = dir.join(n);
         let size = std::fs::metadata(&path)?.len();
         if size > KV_MAX {
             bail!("{n} is {size} bytes, over the 25 MiB a KV value can hold");
         }
-        run(util::wrangler(root)?
-            .args([
-                "kv",
-                "key",
-                "put",
-                "--remote",
-                "--binding",
-                RELEASES_BINDING,
-            ])
-            .arg(format!("v{version}/{n}"))
-            .arg("--path")
-            .arg(&path)
-            .current_dir(&site))?;
+        run(put(&format!("v{version}/{n}"))?.arg("--path").arg(&path))?;
     }
     if latest {
-        run(util::wrangler(root)?
-            .args([
-                "kv",
-                "key",
-                "put",
-                "--remote",
-                "--binding",
-                RELEASES_BINDING,
-                "latest",
-                &version,
-            ])
-            .current_dir(&site))?;
+        run(put("latest")?.arg(&version))?;
     }
     eprintln!(
-        "published v{version}{}",
-        if latest { " (latest)" } else { "" }
+        "published v{version}{} to {}/v{version}/",
+        if latest { " (latest)" } else { "" },
+        config.public_url
     );
     Ok(())
 }

@@ -1,0 +1,5 @@
+# Where `cargo xtask publish` puts release archives: the Workers KV namespace
+# that the fctl.sh site Worker serves https://fctl.sh/releases from (bound as
+# RELEASES there). The two share this namespace, not code.
+kv_namespace_id = "18294bb05fdc4f7faad659ea4e339f0c"
+public_url = "https://fctl.sh/releases"

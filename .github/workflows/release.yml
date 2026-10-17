@@ -1,0 +1,76 @@
+# Tags (v1.2.3) build release archives, attach them to a GitHub release and
+# publish them to https://fctl.sh/releases.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+      - name: The tag matches the workspace version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          test "v$version" = "$TAG" || { echo "Cargo.toml says $version, the tag is $TAG"; exit 1; }
+      - name: Rust toolchain and targets
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: true
+          key: dist
+      - name: zig and cargo-zigbuild
+        run: |
+          # cargo-zigbuild finds zig through `python3 -m ziglang`.
+          python3 -m pip install --user --break-system-packages ziglang==0.17.0
+          command -v cargo-zigbuild || cargo install cargo-zigbuild --version 0.23.4 --locked
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Build the archives
+        run: cargo xtask dist
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dir="dist/$TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$dir"/* --clobber
+          else
+            gh release create "$TAG" "$dir"/* --title "fctl ${TAG#v}" --generate-notes --verify-tag
+          fi
+      - name: Publish to fctl.sh/releases
+        run: cargo xtask publish "$TAG" --latest
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: The installer sees it
+        run: |
+          test "$(curl -fsS https://fctl.sh/releases/latest)" = "${TAG#v}"
+          curl -fsSL https://fctl.sh/install | FCTL_INSTALL_DIR="$RUNNER_TEMP/bin" sh
+          "$RUNNER_TEMP/bin/fctl" --version
