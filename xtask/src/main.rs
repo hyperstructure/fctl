@@ -4,6 +4,7 @@ mod check;
 mod deploy;
 mod dev;
 mod dist;
+mod macho;
 mod util;
 
 use anyhow::{Context, Result, bail};

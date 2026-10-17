@@ -116,8 +116,22 @@ pub fn dist(root: &Path, targets: &[String]) -> Result<PathBuf> {
         let bin = build(root, "fctl-agent", &agent_target(a))?;
         std::fs::copy(&bin, out.join(agent_asset(a)))?;
     }
+    let work = util::target_dir(root).join("xtask-dist");
+    std::fs::create_dir_all(&work)?;
     for target in &targets {
-        let fctl = build(root, "fctl", target)?;
+        let mut fctl = build(root, "fctl", target)?;
+        if target.ends_with("apple-darwin") {
+            // zig links with its own deployment target; lower it (see macho.rs).
+            let mut bytes = std::fs::read(&fctl)?;
+            let before = crate::macho::set_min_macos(&mut bytes, MACOS_DEPLOYMENT_TARGET)?;
+            eprintln!(
+                "{target}: minimum macOS {} → {MACOS_DEPLOYMENT_TARGET}",
+                crate::macho::decode_version(before)
+            );
+            let patched = work.join(format!("fctl-{target}"));
+            std::fs::write(&patched, bytes)?;
+            fctl = patched;
+        }
         let agent = out.join(agent_asset(arch(target)));
         tarball(
             &out.join(format!("fctl-{target}.tar.gz")),
