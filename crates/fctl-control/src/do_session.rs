@@ -535,10 +535,11 @@ impl SessionObject {
         }
         let mut status_changed = false;
         if let Some(st) = b.status
-            && (st != s.status || b.reason != s.status_reason) {
-                status_changed = true;
-                self.set_status(&mut s, st, b.reason.clone(), None, now);
-            }
+            && (st != s.status || b.reason != s.status_reason)
+        {
+            status_changed = true;
+            self.set_status(&mut s, st, b.reason.clone(), None, now);
+        }
         s.updated_at = now;
         self.save_summary(&s);
         self.broadcast_summary(&s);
@@ -933,10 +934,11 @@ impl SessionObject {
         match kind {
             ClaudeKind::Init => {
                 if let Some(m) = v.get("model").and_then(serde_json::Value::as_str)
-                    && s.model.as_deref() != Some(m) {
-                        s.model = Some(m.to_owned());
-                        changed = true;
-                    }
+                    && s.model.as_deref() != Some(m)
+                {
+                    s.model = Some(m.to_owned());
+                    changed = true;
+                }
             }
             ClaudeKind::Assistant => {
                 // A complete block arrived: the live buffer is now stale.

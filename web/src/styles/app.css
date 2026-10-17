@@ -1,0 +1,351 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter/wght.css";
+@import "@fontsource-variable/source-serif-4/opsz.css";
+@import "@fontsource-variable/source-serif-4/opsz-italic.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
+
+/*
+ * fctl design tokens. Colors are semantic (surface, ink, line, accent…) and
+ * defined per theme below; Tailwind utilities read them (bg-surface, text-ink,
+ * border-line, text-accent…). Motion uses two curves: `out` for things that
+ * arrive, `spring` for things that respond.
+ */
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "Source Serif 4 Variable", ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --color-canvas: var(--c-canvas);
+  --color-surface: var(--c-surface);
+  --color-raised: var(--c-raised);
+  --color-sunken: var(--c-sunken);
+  --color-ink: var(--c-ink);
+  --color-ink-2: var(--c-ink-2);
+  --color-ink-3: var(--c-ink-3);
+  --color-ink-4: var(--c-ink-4);
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+  --color-accent: var(--c-accent);
+  --color-accent-ink: var(--c-accent-ink);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-blue: var(--c-blue);
+  --color-blue-soft: var(--c-blue-soft);
+  --color-violet: var(--c-violet);
+  --color-violet-soft: var(--c-violet-soft);
+  --color-amber: var(--c-amber);
+  --color-amber-soft: var(--c-amber-soft);
+  --color-danger: var(--c-danger);
+  --color-danger-soft: var(--c-danger-soft);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 13px;
+  --radius-xl: 18px;
+
+  --animate-rise: rise 420ms var(--ease-out) both;
+  --animate-fade: fade 300ms var(--ease-out) both;
+  --animate-pulse-soft: pulse-soft 2.4s var(--ease-in-out) infinite;
+  --animate-shimmer: shimmer 2.2s linear infinite;
+  --animate-caret: caret 1.05s steps(1) infinite;
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px) scale(0.995);
+      filter: blur(2px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+      filter: none;
+    }
+  }
+  @keyframes fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes pulse-soft {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.55;
+      transform: scale(0.82);
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: -200% 0;
+    }
+    to {
+      background-position: 200% 0;
+    }
+  }
+  @keyframes caret {
+    0%,
+    50% {
+      opacity: 1;
+    }
+    50.01%,
+    100% {
+      opacity: 0;
+    }
+  }
+}
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --c-canvas: #08090b;
+  --c-surface: #0d0f12;
+  --c-raised: #14171c;
+  --c-sunken: #060708;
+  --c-ink: #ecedee;
+  --c-ink-2: #b4b8bf;
+  --c-ink-3: #80858f;
+  --c-ink-4: #565b64;
+  --c-line: rgb(255 255 255 / 0.065);
+  --c-line-strong: rgb(255 255 255 / 0.12);
+  --c-accent: #4fe0c9;
+  --c-accent-ink: #052520;
+  --c-accent-soft: rgb(79 224 201 / 0.12);
+  --c-blue: #85adff;
+  --c-blue-soft: rgb(133 173 255 / 0.12);
+  --c-violet: #b9a4ff;
+  --c-violet-soft: rgb(185 164 255 / 0.12);
+  --c-amber: #f4b860;
+  --c-amber-soft: rgb(244 184 96 / 0.13);
+  --c-danger: #ff8278;
+  --c-danger-soft: rgb(255 130 120 / 0.12);
+  --c-selection: rgb(79 224 201 / 0.28);
+  --c-glow: rgb(79 224 201 / 0.16);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --c-canvas: #f6f5f1;
+  --c-surface: #fbfaf7;
+  --c-raised: #ffffff;
+  --c-sunken: #efeee9;
+  --c-ink: #121417;
+  --c-ink-2: #3c4148;
+  --c-ink-3: #6a707a;
+  --c-ink-4: #9aa0a8;
+  --c-line: rgb(18 20 23 / 0.08);
+  --c-line-strong: rgb(18 20 23 / 0.14);
+  --c-accent: #0c8a78;
+  --c-accent-ink: #ffffff;
+  --c-accent-soft: rgb(12 138 120 / 0.1);
+  --c-blue: #2f5fd0;
+  --c-blue-soft: rgb(47 95 208 / 0.09);
+  --c-violet: #6a4fd8;
+  --c-violet-soft: rgb(106 79 216 / 0.09);
+  --c-amber: #a8630b;
+  --c-amber-soft: rgb(168 99 11 / 0.1);
+  --c-danger: #c6382d;
+  --c-danger-soft: rgb(198 56 45 / 0.08);
+  --c-selection: rgb(12 138 120 / 0.2);
+  --c-glow: rgb(12 138 120 / 0.12);
+}
+
+@layer base {
+  html {
+    background: var(--c-canvas);
+    color: var(--c-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    min-height: 100dvh;
+    background: var(--c-canvas);
+  }
+  ::selection {
+    background: var(--c-selection);
+  }
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--c-line-strong) transparent;
+  }
+  button,
+  [role="button"] {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: default;
+  }
+}
+
+/* Editorial prose: agent answers, project descriptions. */
+.prose-fctl {
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  font-size: 1.0625rem;
+  line-height: 1.68;
+  color: var(--c-ink);
+  letter-spacing: -0.003em;
+}
+.prose-fctl > * + * {
+  margin-top: 0.78em;
+}
+.prose-fctl h1,
+.prose-fctl h2,
+.prose-fctl h3,
+.prose-fctl h4 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+  margin-top: 1.4em;
+}
+.prose-fctl h1 {
+  font-size: 1.45em;
+}
+.prose-fctl h2 {
+  font-size: 1.25em;
+}
+.prose-fctl h3 {
+  font-size: 1.1em;
+}
+.prose-fctl a {
+  color: var(--c-accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--c-accent) 35%, transparent);
+  text-underline-offset: 3px;
+}
+.prose-fctl ul,
+.prose-fctl ol {
+  padding-left: 1.3em;
+}
+.prose-fctl ul {
+  list-style: disc;
+}
+.prose-fctl ol {
+  list-style: decimal;
+}
+.prose-fctl li + li {
+  margin-top: 0.3em;
+}
+.prose-fctl li::marker {
+  color: var(--c-ink-3);
+}
+.prose-fctl blockquote {
+  border-left: 2px solid var(--c-line-strong);
+  padding-left: 1em;
+  color: var(--c-ink-2);
+  font-style: italic;
+}
+.prose-fctl code:not(pre code) {
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+  padding: 0.12em 0.36em;
+  border-radius: 5px;
+  background: var(--c-raised);
+  border: 1px solid var(--c-line);
+}
+.prose-fctl pre {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  background: var(--c-sunken);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+}
+.prose-fctl table {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  border-collapse: collapse;
+  width: 100%;
+}
+.prose-fctl th,
+.prose-fctl td {
+  border-bottom: 1px solid var(--c-line);
+  padding: 0.4em 0.6em;
+  text-align: left;
+}
+.prose-fctl hr {
+  border: 0;
+  border-top: 1px solid var(--c-line);
+}
+
+/* Shiki: dual themes through CSS variables. */
+.shiki,
+.shiki span {
+  color: var(--shiki-dark);
+  background-color: transparent !important;
+}
+:root[data-theme="light"] .shiki,
+:root[data-theme="light"] .shiki span {
+  color: var(--shiki-light);
+}
+
+/* Offscreen transcript items skip layout and paint. */
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}
+
+/* A hairline that fades at both ends. */
+.rule-fade {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--c-line-strong) 18%,
+    var(--c-line-strong) 82%,
+    transparent
+  );
+}
+
+/* The shimmer used for "working" labels. */
+.text-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--c-ink-3) 0%,
+    var(--c-ink-3) 38%,
+    var(--c-ink) 50%,
+    var(--c-ink-3) 62%,
+    var(--c-ink-3) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: var(--animate-shimmer);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 220ms;
+  animation-timing-function: var(--ease-out);
+}

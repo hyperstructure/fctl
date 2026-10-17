@@ -1,0 +1,558 @@
+// A session: the agent at work, live.
+
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Link, useParams } from "@tanstack/react-router";
+import {
+  ArrowUpRight,
+  Ellipsis,
+  ExternalLink,
+  GitBranch,
+  GitPullRequest,
+  PanelRight,
+  Play,
+  Share2,
+  Square,
+  Terminal,
+  Users,
+} from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Composer } from "@/components/session/composer";
+import { AgentOrb } from "@/components/session/orb";
+import { Transcript } from "@/components/session/transcript";
+import {
+  Avatar,
+  AvatarStack,
+  Banner,
+  Button,
+  CopyButton,
+  Dialog,
+  Field,
+  IconButton,
+  Input,
+  Menu,
+  MenuItem,
+  Skeleton,
+  StatusPill,
+  toast,
+} from "@/components/ui";
+import type * as G from "@/gen";
+import { api } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import { ago, duration, num, until } from "@/lib/format";
+import { useLiveSession } from "@/lib/live";
+import { keys, useMe } from "@/lib/queries";
+
+export function SessionPage() {
+  const { id } = useParams({ from: "/app/s/$id" });
+  const { data: me } = useMe();
+  const initial = useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) });
+  const [s, store] = useLiveSession(id, initial.data);
+  const session = s.session ?? initial.data;
+  const [rail, setRail] = useState(true);
+  const [share, setShare] = useState(false);
+  const scroller = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+
+  // Follow the bottom while the reader is there; let them scroll back freely.
+  useEffect(() => {
+    const el = scroller.current?.closest("main")?.parentElement ?? document.scrollingElement;
+    const onScroll = () => {
+      const doc = document.scrollingElement;
+      if (!doc) return;
+      stick.current = doc.scrollHeight - doc.scrollTop - window.innerHeight < 160;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    void el;
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: follow new content as it arrives
+  useLayoutEffect(() => {
+    if (stick.current)
+      window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" as ScrollBehavior });
+  }, [s.items.length, s.live]);
+
+  useEffect(() => {
+    if (session) document.title = `${session.title} · ${session.project_slug}#${session.number}`;
+    return () => {
+      document.title = "fctl";
+    };
+  }, [session]);
+
+  const resume = useMutation({ mutationFn: (prompt?: string) => api.resume(id, prompt) });
+  const stop = useMutation({
+    mutationFn: () => api.stop(id),
+    onSuccess: () => toast("Stopping the session"),
+  });
+
+  if (initial.isError && !session) {
+    return (
+      <div className="mx-auto max-w-xl px-6 py-24">
+        <Banner tone="error">This session does not exist, or you cannot see it.</Banner>
+      </div>
+    );
+  }
+
+  const status = session?.status;
+  const rc = session?.remote_control;
+  const role = s.role ?? session?.role;
+  const isOwner = role === "owner";
+
+  return (
+    <div className="flex min-h-dvh">
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Header */}
+        <header className="sticky top-0 z-10 border-b border-line bg-canvas/80 backdrop-blur-xl">
+          <div className="flex items-center gap-4 px-6 py-3.5">
+            <AgentOrb status={status} activity={s.activity} />
+            <div className="min-w-0 flex-1">
+              {session ? (
+                <>
+                  <h1 className="truncate font-serif text-[21px] leading-tight font-medium tracking-[-0.012em] text-ink">
+                    {session.title}
+                  </h1>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
+                    <Link
+                      to="/p/$slug"
+                      params={{ slug: session.project_slug }}
+                      search={{ tab: undefined }}
+                      className="font-mono text-ink-2 hover:text-ink"
+                    >
+                      {session.project_slug}#{session.number}
+                    </Link>
+                    <StatusPill status={session.status} />
+                    {session.status_reason && session.status !== "running" && session.status !== "idle" && (
+                      <span className="truncate text-ink-4">{session.status_reason}</span>
+                    )}
+                    {session.resume_at && (
+                      <span className="text-amber">resumes in {until(session.resume_at)}</span>
+                    )}
+                    {session.branch && (
+                      <span className="inline-flex items-center gap-1 font-mono text-[12px] text-ink-3">
+                        <GitBranch className="size-3" />
+                        {session.branch}
+                      </span>
+                    )}
+                    {session.pull_request && (
+                      <a
+                        href={session.pull_request.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
+                      >
+                        <GitPullRequest className="size-3" />#{session.pull_request.number}
+                      </a>
+                    )}
+                    {s.connection === "reconnecting" && <span className="text-amber">Reconnecting…</span>}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Skeleton className="h-6 w-80" />
+                  <Skeleton className="mt-2 h-3.5 w-56" />
+                </>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {s.viewers.length > 1 && <AvatarStack users={s.viewers.map((v) => v.user)} />}
+              {rc?.session_url && (
+                <a
+                  href={rc.session_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 sm:inline-flex"
+                >
+                  Open in Claude <ArrowUpRight className="size-3.5" />
+                </a>
+              )}
+              {isOwner && (
+                <IconButton label="Share" onClick={() => setShare(true)}>
+                  <Share2 className="size-4" />
+                </IconButton>
+              )}
+              <IconButton
+                label="Details"
+                onClick={() => setRail(!rail)}
+                className={cn("hidden lg:inline-flex", rail && "text-ink")}
+              >
+                <PanelRight className="size-4" />
+              </IconButton>
+              <Menu
+                trigger={(toggle) => (
+                  <IconButton label="More" onClick={toggle}>
+                    <Ellipsis className="size-4" />
+                  </IconButton>
+                )}
+              >
+                {(close) => (
+                  <>
+                    {isOwner && status && !["stopped", "failed"].includes(status) && (
+                      <MenuItem
+                        icon={<Square />}
+                        onClick={() => {
+                          close();
+                          stop.mutate();
+                        }}
+                      >
+                        Stop the session
+                      </MenuItem>
+                    )}
+                    {isOwner && (status === "stopped" || status === "failed") && (
+                      <MenuItem
+                        icon={<Play />}
+                        onClick={() => {
+                          close();
+                          resume.mutate(undefined);
+                        }}
+                      >
+                        Resume
+                      </MenuItem>
+                    )}
+                    <MenuItem
+                      icon={<Terminal />}
+                      onClick={() => {
+                        close();
+                        void navigator.clipboard.writeText(`fctl attach ${id}`);
+                        toast("Copied `fctl attach` command");
+                      }}
+                    >
+                      Copy `fctl attach`
+                    </MenuItem>
+                    <MenuItem
+                      icon={<ExternalLink />}
+                      onClick={() => {
+                        close();
+                        void navigator.clipboard.writeText(location.href);
+                        toast("Link copied");
+                      }}
+                    >
+                      Copy link
+                    </MenuItem>
+                  </>
+                )}
+              </Menu>
+            </div>
+          </div>
+        </header>
+
+        {/* Transcript */}
+        <div ref={scroller} className="mx-auto w-full max-w-[760px] flex-1 px-6 pt-6 pb-4">
+          {s.error && (
+            <Banner tone="error" className="mb-4">
+              {s.error}
+            </Banner>
+          )}
+          {!session || (s.connection === "connecting" && !s.items.length) ? (
+            <div className="space-y-4 pt-4">
+              <Skeleton className="h-16 w-3/4" />
+              <Skeleton className="h-4 w-1/2" />
+              <Skeleton className="h-24 w-full" />
+            </div>
+          ) : (
+            <Transcript
+              items={s.items}
+              live={s.live}
+              status={status}
+              onLoadOlder={() => void store.loadOlder()}
+              hasMoreBefore={s.hasMoreBefore}
+              loadingOlder={s.loadingOlder}
+            />
+          )}
+        </div>
+
+        {/* Composer */}
+        <div className="sticky bottom-0 z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-5">
+          <div className="mx-auto w-full max-w-[760px] px-6">
+            <Composer
+              status={status}
+              role={role}
+              viewers={s.viewers}
+              meId={me?.user.id}
+              onSend={(t) =>
+                store.send(
+                  t,
+                  me?.user
+                    ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
+                    : undefined,
+                )
+              }
+              onInterrupt={() => store.interrupt()}
+              onTyping={() => store.typing()}
+              onResume={async (t) => {
+                await resume.mutateAsync(t);
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {rail && session && (
+        <Rail
+          session={session}
+          git={s.git}
+          viewers={s.viewers}
+          model={s.model}
+          runnerConnected={s.runnerConnected}
+        />
+      )}
+      {session && <ShareDialog open={share} onClose={() => setShare(false)} session={session} />}
+    </div>
+  );
+}
+
+function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="border-b border-line px-5 py-4 last:border-b-0">
+      <h3 className="mb-2.5 text-[12.5px] font-medium text-ink-3">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function Row({ k, v }: { k: string; v: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-0.5 text-[12.5px]">
+      <span className="text-ink-4">{k}</span>
+      <span className="min-w-0 truncate text-right text-ink-2">{v}</span>
+    </div>
+  );
+}
+
+function Rail({
+  session,
+  git,
+  viewers,
+  model,
+  runnerConnected,
+}: {
+  session: G.Session;
+  git?: G.GitState;
+  viewers: G.Presence[];
+  model?: string;
+  runnerConnected: boolean;
+}) {
+  const st = session.stats;
+  const files = git?.files ?? [];
+  const maxChange = Math.max(1, ...files.map((f) => (f.additions ?? 0) + (f.deletions ?? 0)));
+  return (
+    <aside className="sticky top-0 hidden h-dvh w-[300px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
+      <RailSection title="Changes">
+        {files.length === 0 ? (
+          <p className="text-[12.5px] text-ink-4">No changes yet.</p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {files.slice(0, 60).map((f) => {
+              const a = f.additions ?? 0;
+              const d = f.deletions ?? 0;
+              return (
+                <li key={f.path} className="flex items-center gap-2 text-[12px]">
+                  <span
+                    className={cn(
+                      "w-3 shrink-0 text-center font-mono text-[11px]",
+                      f.status === "added" || f.status === "untracked"
+                        ? "text-accent"
+                        : f.status === "deleted"
+                          ? "text-danger"
+                          : "text-blue",
+                    )}
+                  >
+                    {f.status === "added" || f.status === "untracked"
+                      ? "A"
+                      : f.status === "deleted"
+                        ? "D"
+                        : f.status === "renamed"
+                          ? "R"
+                          : "M"}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-ink-2" title={f.path}>
+                    {f.path}
+                  </span>
+                  <span className="flex h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-raised">
+                    <span className="bg-accent/80" style={{ width: `${(a / maxChange) * 100}%` }} />
+                    <span className="bg-danger/70" style={{ width: `${(d / maxChange) * 100}%` }} />
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {git && (
+          <div className="mt-3 flex flex-wrap gap-x-3 text-[12px] text-ink-4">
+            <span>
+              <span className="text-accent">+{st.additions}</span>{" "}
+              <span className="text-danger">−{st.deletions}</span>
+            </span>
+            {git.ahead > 0 && (
+              <span>
+                {git.ahead} {git.ahead === 1 ? "commit" : "commits"}
+              </span>
+            )}
+            <span>{git.pushed ? "pushed" : git.ahead > 0 ? "not pushed yet" : ""}</span>
+          </div>
+        )}
+        {session.pull_request && (
+          <a
+            href={session.pull_request.url}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-3 flex items-center gap-2 rounded-md border border-line px-3 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
+          >
+            <GitPullRequest className="size-3.5 text-accent" />
+            <span className="min-w-0 flex-1 truncate">
+              {session.pull_request.title ?? `Pull request #${session.pull_request.number}`}
+            </span>
+            <ArrowUpRight className="size-3.5 text-ink-4" />
+          </a>
+        )}
+      </RailSection>
+      <RailSection title="Work">
+        <Row k="Turns" v={st.turns} />
+        <Row k="Tool calls" v={st.tool_calls} />
+        <Row k="Agent time" v={duration(st.busy_ms)} />
+        <Row k="Tokens in / out" v={`${num(st.input_tokens)} / ${num(st.output_tokens)}`} />
+        <Row k="Cache reads" v={num(st.cache_read_tokens)} />
+      </RailSection>
+      <RailSection title="Session">
+        <Row
+          k="Started by"
+          v={
+            <span className="inline-flex items-center gap-1.5">
+              <Avatar user={session.created_by} size={16} />
+              {session.created_by.name}
+            </span>
+          }
+        />
+        <Row k="Created" v={ago(session.created_at)} />
+        {session.base_branch && <Row k="From" v={<span className="font-mono">{session.base_branch}</span>} />}
+        {(model ?? session.model) && <Row k="Model" v={model ?? session.model} />}
+        {session.runner && (
+          <Row
+            k="Runner"
+            v={
+              <span className="inline-flex items-center gap-1.5">
+                <span className={cn("size-1.5 rounded-full", runnerConnected ? "bg-accent" : "bg-ink-4")} />
+                {session.runner.name}
+              </span>
+            }
+          />
+        )}
+        <Row k="Billing" v="Claude subscription" />
+      </RailSection>
+      <RailSection title="Follow along">
+        {session.remote_control?.session_url ? (
+          <a
+            href={session.remote_control.session_url}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center justify-between rounded-md border border-accent/25 bg-accent-soft px-3 py-2 text-[12.5px] text-accent"
+          >
+            Open in the Claude apps <ArrowUpRight className="size-3.5" />
+          </a>
+        ) : (
+          <p className="text-[12.5px] leading-relaxed text-ink-4">
+            {session.remote_control?.unavailable_reason ??
+              "Remote Control appears here when the session's Claude login supports it."}
+          </p>
+        )}
+        <div className="mt-3 flex items-center justify-between">
+          <span className="text-[12.5px] text-ink-4">CLI</span>
+          <CopyButton text={`fctl attach ${session.id}`} label="fctl attach" />
+        </div>
+      </RailSection>
+      <RailSection title={`Watching (${viewers.length})`}>
+        <ul className="flex flex-col gap-1.5">
+          {viewers.map((v) => (
+            <li key={v.user.id} className="flex items-center gap-2 text-[12.5px] text-ink-2">
+              <Avatar user={v.user} size={18} />
+              <span className="min-w-0 flex-1 truncate">{v.user.name}</span>
+              {v.connections > 1 && <span className="text-ink-4">×{v.connections}</span>}
+            </li>
+          ))}
+        </ul>
+      </RailSection>
+    </aside>
+  );
+}
+
+function ShareDialog({ open, onClose, session }: { open: boolean; onClose: () => void; session: G.Session }) {
+  const shares = useQuery({
+    queryKey: keys.shares(session.id),
+    queryFn: () => api.shares(session.id),
+    enabled: open,
+  });
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<G.SessionRole>("editor");
+  const add = useMutation({
+    mutationFn: () => api.share(session.id, { email, role }),
+    onSuccess: (r) => {
+      shares.refetch();
+      setEmail("");
+      toast(`Shared with ${r.shares[r.shares.length - 1]?.user.name ?? email}`);
+    },
+  });
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Share this session"
+      description="Project members already see it. Share it with anyone else on this instance."
+    >
+      <form
+        className="flex items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          add.mutate();
+        }}
+      >
+        <Field label="Email" className="flex-1" error={add.error?.message}>
+          {(id) => (
+            <Input
+              id={id}
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="teammate@example.com"
+            />
+          )}
+        </Field>
+        <select
+          value={role}
+          onChange={(e) => setRole(e.target.value as G.SessionRole)}
+          className="h-9.5 rounded-md border border-line-strong bg-sunken/60 px-2 text-[13px] text-ink"
+        >
+          <option value="viewer">Can view</option>
+          <option value="editor">Can message</option>
+        </select>
+        <Button type="submit" variant="primary" loading={add.isPending}>
+          Share
+        </Button>
+      </form>
+      <ul className="mt-5 flex flex-col gap-2">
+        {shares.data?.shares.map((sh) => (
+          <li key={sh.user.id} className="flex items-center gap-2.5 text-[13px]">
+            <Avatar user={sh.user} size={22} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-ink">{sh.user.name}</span>
+              <span className="block truncate text-[12px] text-ink-4">{sh.email}</span>
+            </span>
+            <span className="text-[12px] text-ink-3">
+              {sh.role === "viewer" ? "Can view" : sh.role === "editor" ? "Can message" : "Owner"}
+            </span>
+            <button
+              type="button"
+              className="text-[12px] text-ink-4 hover:text-danger"
+              onClick={() => api.unshare(session.id, sh.user.id).then(() => shares.refetch())}
+            >
+              Remove
+            </button>
+          </li>
+        ))}
+        {shares.data?.shares.length === 0 && (
+          <li className="flex items-center gap-2 text-[12.5px] text-ink-4">
+            <Users className="size-3.5" /> Not shared with anyone outside the project.
+          </li>
+        )}
+      </ul>
+    </Dialog>
+  );
+}

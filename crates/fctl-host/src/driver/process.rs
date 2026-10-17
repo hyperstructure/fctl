@@ -194,9 +194,10 @@ impl ProcessDriver {
     pub async fn remove(&self, sb: &Sandbox) -> Result<()> {
         self.stop(sb).await?;
         if let Some(root) = &sb.root
-            && root.starts_with(&self.root) {
-                let _ = std::fs::remove_dir_all(root);
-            }
+            && root.starts_with(&self.root)
+        {
+            let _ = std::fs::remove_dir_all(root);
+        }
         Ok(())
     }
 

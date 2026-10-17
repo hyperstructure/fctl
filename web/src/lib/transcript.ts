@@ -1,0 +1,404 @@
+// Turns the session event log into transcript items, incrementally.
+//
+// The builder keeps item objects stable: adding events copies the items
+// array but only replaces items that changed, so memoized rows re-render
+// only when their own content moves.
+
+import type * as G from "@/gen";
+import {
+  type ClaudeMessage,
+  isAssistant,
+  isInit,
+  isRateLimit,
+  isResult,
+  isUserTool,
+  type Json,
+  resultText,
+  type ToolResultBlock,
+} from "./claude-types";
+
+interface Base {
+  key: string;
+  seq: number;
+  ts: number;
+}
+
+export type Item =
+  | (Base & { kind: "user"; author?: G.UserRef; text: string; source: G.MessageSource; pending?: boolean })
+  | (Base & { kind: "prose"; text: string })
+  | (Base & { kind: "thinking"; text: string })
+  | (Base & {
+      kind: "tool";
+      id: string;
+      name: string;
+      input: Record<string, Json>;
+      result?: { text: string; isError: boolean; structured?: unknown };
+      /** Tool calls a subagent made inside this one. */
+      children: number;
+      childLast?: string;
+    })
+  | (Base & { kind: "turn"; durationMs: number; ok: boolean; text?: string })
+  | (Base & {
+      kind: "setup";
+      steps: { status: G.SessionStatus; reason?: string; ts: number }[];
+      logs: G.LogLine[];
+      done: boolean;
+      endTs: number;
+    })
+  | (Base & { kind: "status"; status: G.SessionStatus; reason?: string; resumeAt?: number })
+  | (Base & { kind: "logs"; lines: G.LogLine[] })
+  | (Base & { kind: "notice"; notice: G.Notice })
+  | (Base & { kind: "git"; git: G.GitState })
+  | (Base & { kind: "remote"; rc: G.RemoteControlState })
+  | (Base & { kind: "interrupt"; by?: G.UserRef })
+  | (Base & { kind: "init"; model: string; version?: string })
+  | (Base & { kind: "limit"; status: string; resetsAt?: number; limit?: string });
+
+/** Statuses shown in the transcript after setup (others live in the header). */
+const SHOWN_STATUSES = new Set<G.SessionStatus>(["paused", "stopped", "failed", "queued"]);
+
+export class TranscriptBuilder {
+  /** Only ever appended to or replaced in place: `tools` holds indices into it. */
+  items: Item[] = [];
+  latestGit?: G.GitState;
+  model?: string;
+  private tools = new Map<string, number>();
+  private seen = new Set<number>();
+  private setupOpen = true;
+
+  /** Appends events (in seq order); returns the new items array. */
+  add(events: G.SessionEvent[]): Item[] {
+    if (!events.length) return this.items;
+    const items = this.items.slice();
+    for (const ev of events) {
+      if (this.seen.has(ev.seq)) continue;
+      this.seen.add(ev.seq);
+      this.apply(items, ev);
+    }
+    this.items = items;
+    return items;
+  }
+
+  private replace(items: Item[], i: number, next: Item) {
+    items[i] = next;
+  }
+
+  private setup(items: Item[], ev: G.SessionEvent): Extract<Item, { kind: "setup" }> | undefined {
+    if (!this.setupOpen) return undefined;
+    const i = items.findIndex((x) => x.kind === "setup");
+    if (i >= 0) return items[i] as Extract<Item, { kind: "setup" }>;
+    const s: Item = {
+      kind: "setup",
+      key: `setup-${ev.seq}`,
+      seq: ev.seq,
+      ts: ev.ts,
+      steps: [],
+      logs: [],
+      done: false,
+      endTs: ev.ts,
+    };
+    items.push(s);
+    return s;
+  }
+
+  private updateSetup(
+    items: Item[],
+    fn: (s: Extract<Item, { kind: "setup" }>) => Extract<Item, { kind: "setup" }>,
+  ) {
+    const i = items.findIndex((x) => x.kind === "setup");
+    if (i >= 0) this.replace(items, i, fn(items[i] as Extract<Item, { kind: "setup" }>));
+  }
+
+  private closeSetup(items: Item[], ts: number) {
+    if (!this.setupOpen) return;
+    this.setupOpen = false;
+    this.updateSetup(items, (s) => ({ ...s, done: true, endTs: ts }));
+  }
+
+  private apply(items: Item[], ev: G.SessionEvent) {
+    const base = { seq: ev.seq, ts: ev.ts };
+    switch (ev.kind) {
+      case "user_message":
+        items.push({
+          ...base,
+          kind: "user",
+          key: `u-${ev.seq}`,
+          author: ev.data.author,
+          text: ev.data.text,
+          source: ev.data.source,
+        });
+        return;
+      case "status": {
+        const st = ev.data.status;
+        if (this.setupOpen && (st === "queued" || st === "provisioning" || st === "preparing")) {
+          if (!this.setup(items, ev)) return;
+          this.updateSetup(items, (s) => ({
+            ...s,
+            steps: [...s.steps, { status: st, reason: ev.data.reason, ts: ev.ts }],
+            endTs: ev.ts,
+          }));
+          return;
+        }
+        if (st === "running" || st === "idle") {
+          this.closeSetup(items, ev.ts);
+          return;
+        }
+        if (SHOWN_STATUSES.has(st)) {
+          if (st === "queued") this.setupOpen = true; // a resume sets up again
+          items.push({
+            ...base,
+            kind: "status",
+            key: `s-${ev.seq}`,
+            status: st,
+            reason: ev.data.reason,
+            resumeAt: ev.data.resume_at,
+          });
+          if (st === "failed" || st === "stopped") this.closeSetup(items, ev.ts);
+        }
+        return;
+      }
+      case "log": {
+        if (this.setupOpen && this.setup(items, ev)) {
+          this.updateSetup(items, (s) => ({ ...s, logs: [...s.logs, ev.data], endTs: ev.ts }));
+          return;
+        }
+        const last = items[items.length - 1];
+        if (last?.kind === "logs") {
+          this.replace(items, items.length - 1, { ...last, lines: [...last.lines, ev.data] });
+        } else {
+          items.push({ ...base, kind: "logs", key: `l-${ev.seq}`, lines: [ev.data] });
+        }
+        return;
+      }
+      case "notice":
+        items.push({ ...base, kind: "notice", key: `n-${ev.seq}`, notice: ev.data });
+        return;
+      case "git":
+        this.latestGit = ev.data;
+        items.push({ ...base, kind: "git", key: `g-${ev.seq}`, git: ev.data });
+        return;
+      case "remote_control":
+        items.push({ ...base, kind: "remote", key: `r-${ev.seq}`, rc: ev.data });
+        return;
+      case "interrupt":
+        items.push({ ...base, kind: "interrupt", key: `i-${ev.seq}`, by: ev.data.by });
+        return;
+      case "claude":
+        this.claude(items, ev, ev.data as ClaudeMessage);
+        return;
+    }
+  }
+
+  private claude(items: Item[], ev: G.SessionEvent, m: ClaudeMessage) {
+    const base = { seq: ev.seq, ts: ev.ts };
+    if (isInit(m)) {
+      this.closeSetup(items, ev.ts);
+      this.model = m.model;
+      if (!items.some((x) => x.kind === "init")) {
+        items.push({
+          ...base,
+          kind: "init",
+          key: `init-${ev.seq}`,
+          model: m.model,
+          version: m.claude_code_version,
+        });
+      }
+      return;
+    }
+    if (isAssistant(m)) {
+      const parent = m.parent_tool_use_id;
+      if (parent) {
+        // Subagent activity: count it on the tool that started the subagent.
+        const i = this.tools.get(parent);
+        const blocks = m.message.content ?? [];
+        const calls = blocks.filter((b) => b.type === "tool_use").length;
+        if (i !== undefined && calls) {
+          const t = items[i] as Extract<Item, { kind: "tool" }>;
+          const last = blocks.findLast((b) => b.type === "tool_use") as { name?: string } | undefined;
+          this.replace(items, i, {
+            ...t,
+            children: t.children + calls,
+            childLast: last?.name ?? t.childLast,
+          });
+        }
+        return;
+      }
+      this.closeSetup(items, ev.ts);
+      m.message.content.forEach((b, n) => {
+        const key = `${m.message.id}-${ev.seq}-${n}`;
+        if (b.type === "text" && "text" in b && b.text.trim()) {
+          const last = items[items.length - 1];
+          // Consecutive text blocks of one message read as one passage.
+          if (last?.kind === "prose" && last.key.startsWith(m.message.id)) {
+            this.replace(items, items.length - 1, { ...last, text: `${last.text}\n\n${b.text}` });
+          } else {
+            items.push({ ...base, kind: "prose", key, text: b.text });
+          }
+        } else if (b.type === "thinking" && "thinking" in b && b.thinking.trim()) {
+          items.push({ ...base, kind: "thinking", key, text: b.thinking });
+        } else if (b.type === "tool_use" && "id" in b) {
+          this.tools.set(b.id, items.length);
+          items.push({
+            ...base,
+            kind: "tool",
+            key,
+            id: b.id,
+            name: b.name,
+            input: b.input ?? {},
+            children: 0,
+          });
+        }
+      });
+      if (m.error === "rate_limit") {
+        items.push({ ...base, kind: "limit", key: `lim-${ev.seq}`, status: "rejected" });
+      }
+      return;
+    }
+    if (isUserTool(m)) {
+      if (m.parent_tool_use_id) return;
+      const content = m.message.content;
+      if (typeof content === "string") return;
+      for (const b of content) {
+        if (b.type !== "tool_result") continue;
+        const r = b as ToolResultBlock;
+        const i = this.tools.get(r.tool_use_id);
+        if (i === undefined) continue;
+        const t = items[i] as Extract<Item, { kind: "tool" }>;
+        this.replace(items, i, {
+          ...t,
+          result: { text: resultText(r.content), isError: !!r.is_error, structured: m.tool_use_result },
+        });
+      }
+      return;
+    }
+    if (isResult(m)) {
+      items.push({
+        ...base,
+        kind: "turn",
+        key: `t-${ev.seq}`,
+        durationMs: m.duration_ms,
+        ok: !m.is_error,
+        text: m.result,
+      });
+      return;
+    }
+    if (isRateLimit(m)) {
+      const info = m.rate_limit_info;
+      if (info.status !== "allowed") {
+        items.push({
+          ...base,
+          kind: "limit",
+          key: `lim-${ev.seq}`,
+          status: info.status,
+          resetsAt: info.resetsAt ? (info.resetsAt < 1e11 ? info.resetsAt * 1000 : info.resetsAt) : undefined,
+          limit: info.rateLimitType,
+        });
+      }
+    }
+  }
+}
+
+/** The text being streamed right now (from `stream_event`s), per block. */
+export interface LiveBlock {
+  index: number;
+  type: "text" | "thinking" | "tool_use";
+  text: string;
+  name?: string;
+  done: boolean;
+}
+
+export interface LiveTurn {
+  messageId?: string;
+  blocks: LiveBlock[];
+  /** Tool heartbeats: which tool is running and for how long. */
+  tool?: { id: string; name: string; seconds: number };
+  updatedAt: number;
+}
+
+export const emptyLive = (): LiveTurn => ({ blocks: [], updatedAt: 0 });
+
+/** Applies one `stream_event` or `tool_progress` to the live turn (returns a new object when it changed). */
+export function applyStream(
+  live: LiveTurn,
+  e: {
+    type: string;
+    event?: unknown;
+    parent_tool_use_id?: string | null;
+    tool_use_id?: string;
+    tool_name?: string;
+    elapsed_time_seconds?: number;
+  },
+): LiveTurn {
+  if (e.parent_tool_use_id) return live;
+  const now = Date.now();
+  if (e.type === "tool_progress") {
+    return {
+      ...live,
+      tool: { id: e.tool_use_id ?? "", name: e.tool_name ?? "tool", seconds: e.elapsed_time_seconds ?? 0 },
+      updatedAt: now,
+    };
+  }
+  const ev = e.event as
+    | {
+        type: string;
+        index?: number;
+        message?: { id: string };
+        content_block?: { type: string; name?: string };
+        delta?: { type: string; text?: string; thinking?: string; partial_json?: string };
+      }
+    | undefined;
+  if (!ev) return live;
+  switch (ev.type) {
+    case "message_start":
+      return { messageId: ev.message?.id, blocks: [], updatedAt: now };
+    case "content_block_start": {
+      const t = ev.content_block?.type;
+      if (t !== "text" && t !== "thinking" && t !== "tool_use") return live;
+      return {
+        ...live,
+        tool: t === "tool_use" ? undefined : live.tool,
+        blocks: [
+          ...live.blocks,
+          { index: ev.index ?? 0, type: t, text: "", name: ev.content_block?.name, done: false },
+        ],
+        updatedAt: now,
+      };
+    }
+    case "content_block_delta": {
+      const d = ev.delta;
+      const piece = d?.text ?? d?.thinking ?? d?.partial_json ?? "";
+      if (!piece) return live;
+      return {
+        ...live,
+        blocks: live.blocks.map((b) =>
+          b.index === ev.index && !b.done ? { ...b, text: b.text + piece } : b,
+        ),
+        updatedAt: now,
+      };
+    }
+    case "content_block_stop":
+      return {
+        ...live,
+        blocks: live.blocks.map((b) => (b.index === ev.index ? { ...b, done: true } : b)),
+        updatedAt: now,
+      };
+    default:
+      return live;
+  }
+}
+
+/** Drops finished live blocks once their stored message arrived. */
+export function settleLive(live: LiveTurn, events: G.SessionEvent[]): LiveTurn {
+  if (!live.blocks.length && !live.tool) return live;
+  let next = live;
+  for (const ev of events) {
+    if (ev.kind !== "claude") continue;
+    const m = ev.data as ClaudeMessage;
+    if (isAssistant(m) && !m.parent_tool_use_id) {
+      next = { ...next, blocks: next.blocks.filter((b) => !b.done) };
+    }
+    if (isUserTool(m) || isResult(m)) next = { ...next, tool: undefined };
+    if (isResult(m)) next = { ...next, blocks: [] };
+  }
+  return next;
+}

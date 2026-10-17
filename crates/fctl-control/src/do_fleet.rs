@@ -34,6 +34,27 @@ const MAX_ATTEMPTS: i64 = 5;
 const RUNNER_GRACE_MS: i64 = 10 * 60 * 1000;
 const TICK_MS: i64 = 30_000;
 
+/// `ALTER TABLE … ADD COLUMN` only when the column is missing.
+fn add_column(sql: &SqlStorage, table: &str, column: &str, ty: &str) {
+    #[derive(Deserialize)]
+    struct Col {
+        name: String,
+    }
+    let cols: Vec<Col> = sql
+        .exec(&format!("PRAGMA table_info({table})"), None)
+        .and_then(|c| c.to_array::<Col>())
+        .unwrap_or_default();
+    if !cols.is_empty()
+        && !cols.iter().any(|c| c.name == column)
+        && let Err(e) = sql.exec(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"),
+            None,
+        )
+    {
+        worker::console_error!("migration {table}.{column}: {e}");
+    }
+}
+
 fn runner_tag(id: &str) -> String {
     format!("runner:{id}")
 }
@@ -104,8 +125,9 @@ impl DurableObject for FleetObject {
                 worker::console_error!("fleet schema: {e}");
             }
         }
-        // Columns added after the first release (fails harmlessly when present).
-        let _ = sql.exec("ALTER TABLE assignments ADD COLUMN run_id TEXT", None);
+        // Columns added after the first release. A failing statement throws past
+        // Rust (workers-rs does not catch every SQL error), so check first.
+        add_column(&sql, "assignments", "run_id", "TEXT");
         Self {
             state,
             env,
@@ -413,9 +435,10 @@ impl FleetObject {
                         &db,
                         "UPDATE runners SET last_seen_at = ? WHERE id = ?",
                         &[crate::db::n(now), crate::db::s(&rs.id)],
-                    ) {
-                        let _ = q.run().await;
-                    }
+                    )
+                {
+                    let _ = q.run().await;
+                }
                 self.dispatch().await;
             }
             HostToFleet::StartResult {
@@ -513,9 +536,10 @@ impl FleetObject {
                 &db,
                 "UPDATE runners SET info = ?, last_seen_at = ? WHERE id = ?",
                 &[crate::db::s(&info), crate::db::n(now), crate::db::s(&rs.id)],
-            ) {
-                let _ = q.run().await;
-            }
+            )
+        {
+            let _ = q.run().await;
+        }
         let welcome = FleetToHost::Welcome {
             runner: RunnerRef {
                 id: RunnerId(rs.id.clone()),
@@ -981,13 +1005,14 @@ impl FleetObject {
         }
         if clear_runner
             && let Ok(db) = self.env.d1("DB")
-                && let Ok(q) = crate::db::q(
-                    &db,
-                    "UPDATE sessions SET runner_id = NULL WHERE id = ?",
-                    &[crate::db::s(session_id.as_str())],
-                ) {
-                    let _ = q.run().await;
-                }
+            && let Ok(q) = crate::db::q(
+                &db,
+                "UPDATE sessions SET runner_id = NULL WHERE id = ?",
+                &[crate::db::s(session_id.as_str())],
+            )
+        {
+            let _ = q.run().await;
+        }
     }
 
     // ───────────────────────────── credentials ─────────────────────────────

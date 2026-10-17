@@ -72,12 +72,13 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             }
             println!("{} Allowed {}", style::accent("✓"), created.entry.pattern);
             if let Some(inv) = created.invite
-                && let Some(url) = inv.url {
-                    println!(
-                        "Invitation link (valid 14 days{}):\n  {url}",
-                        if inv.emailed { ", also emailed" } else { "" }
-                    );
-                }
+                && let Some(url) = inv.url
+            {
+                println!(
+                    "Invitation link (valid 14 days{}):\n  {url}",
+                    if inv.emailed { ", also emailed" } else { "" }
+                );
+            }
         }
         AdminCmd::Disallow { pattern } => {
             let list = api.allowlist().await?;

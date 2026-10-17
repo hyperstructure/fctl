@@ -87,9 +87,10 @@ impl Journal {
         for line in BufReader::new(f).lines() {
             let line = line?;
             if let Ok(ev) = serde_json::from_str::<AgentEvent>(&line)
-                && ev.agent_seq > after {
-                    out.push(ev);
-                }
+                && ev.agent_seq > after
+            {
+                out.push(ev);
+            }
         }
         Ok(out)
     }

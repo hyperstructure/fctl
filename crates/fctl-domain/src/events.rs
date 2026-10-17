@@ -194,9 +194,10 @@ pub fn shape_for_storage(v: &mut Value) -> bool {
     let mut changed = truncate_strings(v, MAX_STORED_STRING_BYTES);
     if serialized_len(v) > MAX_STORED_EVENT_BYTES
         && let Some(obj) = v.as_object_mut()
-            && obj.remove("tool_use_result").is_some() {
-                changed = true;
-            }
+        && obj.remove("tool_use_result").is_some()
+    {
+        changed = true;
+    }
     let mut limit = MAX_STORED_STRING_BYTES / 2;
     while serialized_len(v) > MAX_STORED_EVENT_BYTES && limit >= 256 {
         changed |= truncate_strings(v, limit);

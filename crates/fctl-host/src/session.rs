@@ -427,10 +427,9 @@ async fn run(
     if let Err(e) = ctx.driver.stop(&sb).await {
         tracing::warn!("stopping {}: {e:#}", sb.name);
     }
-    if destroy
-        && let Err(e) = ctx.driver.remove(&sb).await {
-            tracing::warn!("removing {}: {e:#}", sb.name);
-        }
+    if destroy && let Err(e) = ctx.driver.remove(&sb).await {
+        tracing::warn!("removing {}: {e:#}", sb.name);
+    }
     let (status, reason) = outcome;
     // Drain a late Superseded so the next run's status is not overwritten.
     while let Ok(c) = cmds.try_recv() {

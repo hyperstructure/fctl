@@ -41,23 +41,24 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
         .await?
         .ok_or_else(|| not_found("User"))?;
     if let Some(role) = body.role
-        && role != target.role() {
-            if !perm::can_assign_instance_role(actor.role(), target.role(), role) {
-                return Err(forbidden("You cannot give this role"));
-            }
-            if target.role() == InstanceRole::Owner && role != InstanceRole::Owner {
-                let owners: Vec<crate::db::Count> = q(
-                    &ctx.db,
-                    "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND status = 'active'",
-                    &[],
-                )?
-                .all()
-                .await?;
-                if owners.first().map_or(0, |c| c.n) <= 1 {
-                    return Err(conflict("The instance needs at least one owner"));
-                }
+        && role != target.role()
+    {
+        if !perm::can_assign_instance_role(actor.role(), target.role(), role) {
+            return Err(forbidden("You cannot give this role"));
+        }
+        if target.role() == InstanceRole::Owner && role != InstanceRole::Owner {
+            let owners: Vec<crate::db::Count> = q(
+                &ctx.db,
+                "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND status = 'active'",
+                &[],
+            )?
+            .all()
+            .await?;
+            if owners.first().map_or(0, |c| c.n) <= 1 {
+                return Err(conflict("The instance needs at least one owner"));
             }
         }
+    }
     if let Some(status) = body.status {
         if target.id == actor.id && status == UserStatus::Disabled {
             return Err(conflict("You cannot disable yourself"));

@@ -386,7 +386,8 @@ pub async fn state(p: &Paths, spec: &SessionSpec) -> Result<GitState> {
             .collect();
         for line in numstat.stdout.lines() {
             let mut parts = line.split('\t');
-            let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next_back()) else {
+            let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next_back())
+            else {
                 continue;
             };
             let path = path.to_owned();

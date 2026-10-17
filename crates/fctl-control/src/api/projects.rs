@@ -69,20 +69,23 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
         s.instructions = (!t.is_empty()).then_some(t);
     }
     if let Some(c) = s.cpus
-        && !(1..=64).contains(&c) {
-            return Err(validation("settings.cpus", "Use 1–64 CPUs"));
-        }
+        && !(1..=64).contains(&c)
+    {
+        return Err(validation("settings.cpus", "Use 1–64 CPUs"));
+    }
     if let Some(m) = s.memory_mb
-        && !(512..=262_144).contains(&m) {
-            return Err(validation("settings.memory_mb", "Use 512 MiB – 256 GiB"));
-        }
+        && !(512..=262_144).contains(&m)
+    {
+        return Err(validation("settings.memory_mb", "Use 512 MiB – 256 GiB"));
+    }
     if let Some(t) = s.idle_timeout_minutes
-        && !(1..=10_080).contains(&t) {
-            return Err(validation(
-                "settings.idle_timeout_minutes",
-                "Use 1 minute – 7 days",
-            ));
-        }
+        && !(1..=10_080).contains(&t)
+    {
+        return Err(validation(
+            "settings.idle_timeout_minutes",
+            "Use 1 minute – 7 days",
+        ));
+    }
     let mut env = std::collections::BTreeMap::new();
     for (k, v) in &s.env {
         let k = validate::env_name("settings.env", k)?;

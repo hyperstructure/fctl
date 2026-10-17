@@ -340,14 +340,15 @@ impl Daemon {
                 error,
             } => {
                 if let Some((sid, agent_request)) = self.pending_creds.remove(&request_id)
-                    && let Some(h) = self.sessions.get(&sid) {
-                        let _ = h.tx.send(SessionCmd::Credentials {
-                            request_id: Some(agent_request),
-                            claude,
-                            github,
-                            error,
-                        });
-                    }
+                    && let Some(h) = self.sessions.get(&sid)
+                {
+                    let _ = h.tx.send(SessionCmd::Credentials {
+                        request_id: Some(agent_request),
+                        claude,
+                        github,
+                        error,
+                    });
+                }
                 vec![]
             }
             FleetToHost::ClaudeLoginStart { job_id, user } => {

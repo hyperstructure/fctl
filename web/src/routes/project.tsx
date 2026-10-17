@@ -1,0 +1,676 @@
+// A project: its sessions, settings, people and secrets.
+
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { ArrowRight, ArrowUp, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  Avatar,
+  Banner,
+  Button,
+  Empty,
+  Field,
+  GithubIcon,
+  Input,
+  Section,
+  Skeleton,
+  StatusDot,
+  Switch,
+  Textarea,
+  toast,
+} from "@/components/ui";
+import type * as G from "@/gen";
+import { api } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import { ago, agoShort, stamp } from "@/lib/format";
+import { keys, queryClient, useMe, useProject, useSessions } from "@/lib/queries";
+
+type Tab = "sessions" | "settings" | "members" | "secrets";
+
+export function ProjectPage() {
+  const { slug } = useParams({ from: "/app/p/$slug" });
+  const { tab = "sessions" } = useSearch({ from: "/app/p/$slug" });
+  const project = useProject(slug);
+  const p = project.data;
+  const manage = p?.role === "owner" || p?.role === "maintainer";
+  if (project.isError)
+    return (
+      <div className="mx-auto max-w-xl px-6 py-24">
+        <Banner tone="error">This project does not exist, or you cannot see it.</Banner>
+      </div>
+    );
+  return (
+    <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
+      {p ? (
+        <header className="animate-rise">
+          <h1 className="font-serif text-[38px] leading-[1.1] font-medium tracking-[-0.022em]">{p.name}</h1>
+          {p.description && (
+            <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ink-3">{p.description}</p>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-ink-3">
+            {p.repo ? (
+              <a
+                href={`https://github.com/${p.repo.owner}/${p.repo.name}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 font-mono text-ink-2 transition-colors hover:text-ink"
+              >
+                <GithubIcon className="size-3.5" />
+                {p.repo.owner}/{p.repo.name}
+              </a>
+            ) : (
+              <span>No repository</span>
+            )}
+            <span className="inline-flex items-center gap-1.5 font-mono">
+              <GitBranch className="size-3.5 text-ink-4" />
+              {p.default_branch}
+            </span>
+            <span>
+              {p.total_sessions} {p.total_sessions === 1 ? "session" : "sessions"}
+              {p.active_sessions > 0 && <span className="text-accent"> · {p.active_sessions} active</span>}
+            </span>
+          </div>
+        </header>
+      ) : (
+        <div>
+          <Skeleton className="h-10 w-80" />
+          <Skeleton className="mt-4 h-4 w-48" />
+        </div>
+      )}
+      <nav className="mt-8 flex gap-1 border-b border-line">
+        {(["sessions", "settings", "members", "secrets"] as Tab[])
+          .filter((t) => t === "sessions" || t === "members" || manage)
+          .map((t) => (
+            <Link
+              key={t}
+              to="/p/$slug"
+              params={{ slug }}
+              search={{ tab: t === "sessions" ? undefined : t }}
+              className={cn(
+                "relative px-3 py-2.5 text-[13.5px] capitalize transition-colors",
+                tab === t ? "text-ink" : "text-ink-3 hover:text-ink",
+              )}
+            >
+              {t}
+              {tab === t && <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent" />}
+            </Link>
+          ))}
+      </nav>
+      <div className="mt-8">
+        {p && tab === "sessions" && <Sessions project={p} />}
+        {p && tab === "settings" && manage && <Settings project={p} />}
+        {p && tab === "members" && <Members project={p} />}
+        {p && tab === "secrets" && manage && <Secrets project={p} />}
+      </div>
+    </div>
+  );
+}
+
+function Sessions({ project }: { project: G.Project }) {
+  const navigate = useNavigate();
+  const [filter, setFilter] = useState<"active" | "all" | "mine">("all");
+  const list = useSessions({
+    project: project.slug,
+    status: filter === "active" ? "active" : undefined,
+    mine: filter === "mine",
+    limit: 100,
+  });
+  const [prompt, setPrompt] = useState("");
+  const canStart = project.role !== "viewer";
+  const start = useMutation({
+    mutationFn: () => api.createSession(project.slug, { prompt }),
+    onSuccess: (s) => navigate({ to: "/s/$id", params: { id: s.id } }),
+    onError: (e) => toast(e.message, "error"),
+  });
+  return (
+    <div className="flex flex-col gap-10">
+      {canStart && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (prompt.trim()) start.mutate();
+          }}
+          className="relative rounded-2xl border border-line-strong bg-surface/80 transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-[0_0_0_4px_var(--c-accent-soft)]"
+        >
+          <Textarea
+            bare
+            minRows={2}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && prompt.trim()) {
+                e.preventDefault();
+                start.mutate();
+              }
+            }}
+            placeholder={`What should an agent do in ${project.name}?`}
+            className="block px-5 pt-4 pb-14 font-serif text-[17px] leading-[1.5] placeholder:text-ink-4"
+          />
+          <div className="absolute right-3 bottom-3 flex items-center gap-3">
+            <span className="text-[11.5px] text-ink-4">⌘↵</span>
+            <button
+              type="submit"
+              disabled={!prompt.trim() || start.isPending}
+              className={cn(
+                "flex h-9 items-center gap-2 rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all",
+                prompt.trim() ? "bg-ink text-canvas" : "bg-raised text-ink-4",
+              )}
+            >
+              Start a session <ArrowUp className="size-4" />
+            </button>
+          </div>
+        </form>
+      )}
+      <section>
+        <div className="mb-2 flex items-center gap-1">
+          {(["all", "active", "mine"] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={cn(
+                "rounded-full px-3 py-1 text-[12.5px] capitalize transition-colors",
+                filter === f ? "bg-raised text-ink" : "text-ink-3 hover:text-ink",
+              )}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+        {list.isPending ? (
+          <div className="space-y-3 py-3">
+            <Skeleton className="h-11" />
+            <Skeleton className="h-11" />
+          </div>
+        ) : list.data?.sessions.length === 0 ? (
+          <Empty title="No sessions yet">
+            Describe a task above and an agent starts on it in a fresh sandbox.
+          </Empty>
+        ) : (
+          <div className="border-t border-line">
+            {list.data?.sessions.map((s) => (
+              <Link
+                key={s.id}
+                to="/s/$id"
+                params={{ id: s.id }}
+                className="group flex items-center gap-3.5 border-b border-line py-3 transition-colors hover:bg-raised/30"
+              >
+                <span className="w-9 shrink-0 text-right font-mono text-[12px] text-ink-4">#{s.number}</span>
+                <StatusDot status={s.status} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[14.5px] text-ink">{s.title}</div>
+                  <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
+                    {s.branch && <span className="truncate font-mono">{s.branch}</span>}
+                    {s.pull_request && <span>· PR #{s.pull_request.number}</span>}
+                  </div>
+                </div>
+                <Avatar user={s.created_by} size={20} />
+                <time
+                  dateTime={new Date(s.last_activity_at ?? s.created_at).toISOString()}
+                  title={stamp(s.last_activity_at ?? s.created_at)}
+                  className="w-10 shrink-0 text-right text-[12px] whitespace-nowrap text-ink-4 tabular-nums"
+                >
+                  {agoShort(s.last_activity_at ?? s.created_at)}
+                </time>
+                <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all group-hover:opacity-100" />
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Settings({ project }: { project: G.Project }) {
+  const [s, setS] = useState<G.ProjectSettings>(project.settings);
+  const [name, setName] = useState(project.name);
+  const [description, setDescription] = useState(project.description ?? "");
+  const [branch, setBranch] = useState(project.default_branch);
+  const [envText, setEnvText] = useState(
+    Object.entries(project.settings.env)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n"),
+  );
+  useEffect(() => setS(project.settings), [project.settings]);
+  const save = useMutation({
+    mutationFn: () => {
+      const env: Record<string, string> = {};
+      for (const line of envText.split("\n")) {
+        const t = line.trim();
+        if (!t || t.startsWith("#")) continue;
+        const i = t.indexOf("=");
+        if (i > 0) env[t.slice(0, i).trim()] = t.slice(i + 1);
+      }
+      return api.updateProject(project.id, {
+        name,
+        description,
+        default_branch: branch,
+        settings: { ...s, env },
+      });
+    },
+    onSuccess: (p) => {
+      queryClient.setQueryData(keys.project(project.slug), p);
+      void queryClient.invalidateQueries({ queryKey: keys.projects });
+      toast("Settings saved");
+    },
+  });
+  const set = <K extends keyof G.ProjectSettings>(k: K, v: G.ProjectSettings[K]) =>
+    setS((x) => ({ ...x, [k]: v }));
+  const err = (f: string) =>
+    (save.error as { field?: string } | null)?.field === f ? save.error?.message : undefined;
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        save.mutate();
+      }}
+    >
+      <Section title="Project" description="How people find it.">
+        <div className="flex flex-col gap-4">
+          <Field label="Name" error={err("name")}>
+            {(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} />}
+          </Field>
+          <Field label="Description">
+            {(id) => <Input id={id} value={description} onChange={(e) => setDescription(e.target.value)} />}
+          </Field>
+          <Field
+            label="Default branch"
+            hint="Sessions start from it unless told otherwise."
+            error={err("default_branch")}
+          >
+            {(id) => (
+              <Input
+                id={id}
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                className="font-mono"
+              />
+            )}
+          </Field>
+        </div>
+      </Section>
+      <Section title="Agents" description="What Claude is told and how it works in this project.">
+        <div className="flex flex-col gap-4">
+          <Field
+            label="Instructions"
+            hint="Appended to Claude's system prompt in every session. CLAUDE.md in the repository is read too."
+            error={err("settings.instructions")}
+          >
+            {(id) => (
+              <Textarea
+                id={id}
+                value={s.instructions ?? ""}
+                onChange={(e) => set("instructions", e.target.value)}
+                minRows={4}
+                placeholder="Run `npm test` before you commit. Keep components small."
+              />
+            )}
+          </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Model" hint="opus, sonnet, fable, or a model id." error={err("model")}>
+              {(id) => (
+                <Input
+                  id={id}
+                  value={s.model ?? ""}
+                  onChange={(e) => set("model", e.target.value || undefined)}
+                  placeholder="Claude's default"
+                />
+              )}
+            </Field>
+            <Field label="Effort" error={err("effort")}>
+              {(id) => (
+                <select
+                  id={id}
+                  value={s.effort ?? ""}
+                  onChange={(e) => set("effort", e.target.value || undefined)}
+                  className="h-9.5 rounded-md border border-line-strong bg-sunken/60 px-3 text-[14px]"
+                >
+                  <option value="">Claude's default</option>
+                  {["low", "medium", "high", "xhigh", "max"].map((x) => (
+                    <option key={x} value={x}>
+                      {x}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+          </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Open a pull request when done
+              <span className="block text-[12.5px] text-ink-4">
+                Agents are asked to open one with gh when the task is complete.
+              </span>
+            </span>
+            <Switch
+              checked={s.auto_pull_request}
+              onChange={(v) => set("auto_pull_request", v)}
+              label="Open pull requests"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Remote Control
+              <span className="block text-[12.5px] text-ink-4">
+                Follow sessions in claude.ai/code and the Claude apps (needs a full Claude login).
+              </span>
+            </span>
+            <Switch
+              checked={s.remote_control}
+              onChange={(v) => set("remote_control", v)}
+              label="Remote Control"
+            />
+          </div>
+        </div>
+      </Section>
+      <Section title="Sandbox" description="Where agents run.">
+        <div className="flex flex-col gap-4">
+          <Field
+            label="Setup script"
+            hint="Runs in the repository after cloning."
+            error={err("settings.setup_script")}
+          >
+            {(id) => (
+              <Textarea
+                id={id}
+                value={s.setup_script ?? ""}
+                onChange={(e) => set("setup_script", e.target.value)}
+                minRows={3}
+                className="font-mono text-[12.5px]"
+                placeholder={"npm ci\nnpx playwright install chromium"}
+              />
+            )}
+          </Field>
+          <Field
+            label="Image"
+            hint="An OCI image with git and Claude Code. Empty: the host's default."
+            error={err("image")}
+          >
+            {(id) => (
+              <Input
+                id={id}
+                value={s.image ?? ""}
+                onChange={(e) => set("image", e.target.value || undefined)}
+                className="font-mono"
+                placeholder="fctl-agent:latest"
+              />
+            )}
+          </Field>
+          <div className="grid grid-cols-3 gap-4">
+            <Field label="CPUs" error={err("settings.cpus")}>
+              {(id) => (
+                <Input
+                  id={id}
+                  type="number"
+                  min={1}
+                  max={64}
+                  value={s.cpus ?? ""}
+                  onChange={(e) => set("cpus", e.target.value ? Number(e.target.value) : undefined)}
+                  placeholder="host"
+                />
+              )}
+            </Field>
+            <Field label="Memory (MiB)" error={err("settings.memory_mb")}>
+              {(id) => (
+                <Input
+                  id={id}
+                  type="number"
+                  min={512}
+                  step={512}
+                  value={s.memory_mb ?? ""}
+                  onChange={(e) => set("memory_mb", e.target.value ? Number(e.target.value) : undefined)}
+                  placeholder="host"
+                />
+              )}
+            </Field>
+            <Field label="Idle timeout (min)" error={err("settings.idle_timeout_minutes")}>
+              {(id) => (
+                <Input
+                  id={id}
+                  type="number"
+                  min={1}
+                  value={s.idle_timeout_minutes ?? ""}
+                  onChange={(e) =>
+                    set("idle_timeout_minutes", e.target.value ? Number(e.target.value) : undefined)
+                  }
+                  placeholder="120"
+                />
+              )}
+            </Field>
+          </div>
+          <Field
+            label="Environment"
+            hint="KEY=value per line. Not secret; use Secrets for credentials."
+            error={err("settings.env")}
+          >
+            {(id) => (
+              <Textarea
+                id={id}
+                value={envText}
+                onChange={(e) => setEnvText(e.target.value)}
+                minRows={2}
+                className="font-mono text-[12.5px]"
+                placeholder="NODE_ENV=development"
+              />
+            )}
+          </Field>
+        </div>
+      </Section>
+      <div className="sticky bottom-4 mt-4 flex justify-end">
+        <Button type="submit" variant="primary" loading={save.isPending}>
+          Save settings
+        </Button>
+      </div>
+      {save.error && !(save.error as { field?: string }).field && (
+        <Banner tone="error" className="mt-4">
+          {save.error.message}
+        </Banner>
+      )}
+    </form>
+  );
+}
+
+function Members({ project }: { project: G.Project }) {
+  const { data: me } = useMe();
+  const members = useQuery({ queryKey: keys.members(project.id), queryFn: () => api.members(project.id) });
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<G.ProjectRole>("editor");
+  const manage = project.role === "owner" || project.role === "maintainer";
+  const add = useMutation({
+    mutationFn: () => api.addMember(project.id, { email, role }),
+    onSuccess: (r) => {
+      queryClient.setQueryData(keys.members(project.id), r);
+      setEmail("");
+    },
+  });
+  const change = useMutation({
+    mutationFn: (v: { user: string; role: G.ProjectRole }) =>
+      api.setMemberRole(project.id, v.user, { role: v.role }),
+    onSuccess: (r) => queryClient.setQueryData(keys.members(project.id), r),
+    onError: (e) => toast(e.message, "error"),
+  });
+  const remove = useMutation({
+    mutationFn: (user: string) => api.removeMember(project.id, user),
+    onSuccess: () => members.refetch(),
+    onError: (e) => toast(e.message, "error"),
+  });
+  return (
+    <div>
+      {manage && (
+        <form
+          className="mb-6 flex items-end gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add.mutate();
+          }}
+        >
+          <Field label="Add someone by email" className="flex-1" error={add.error?.message}>
+            {(id) => (
+              <Input
+                id={id}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="teammate@example.com"
+              />
+            )}
+          </Field>
+          <select
+            value={role}
+            onChange={(e) => setRole(e.target.value as G.ProjectRole)}
+            className="h-9.5 rounded-md border border-line-strong bg-sunken/60 px-2 text-[13px]"
+          >
+            <option value="viewer">Viewer</option>
+            <option value="editor">Editor</option>
+            <option value="maintainer">Maintainer</option>
+            {project.role === "owner" && <option value="owner">Owner</option>}
+          </select>
+          <Button
+            type="submit"
+            variant="primary"
+            icon={<Plus className="size-3.5" />}
+            loading={add.isPending}
+            disabled={!email}
+          >
+            Add
+          </Button>
+        </form>
+      )}
+      <ul className="border-t border-line">
+        {members.data?.members.map((m) => (
+          <li key={m.user.id} className="flex items-center gap-3 border-b border-line py-3">
+            <Avatar user={m.user} size={28} />
+            <div className="min-w-0 flex-1">
+              <div className="text-[14px] text-ink">
+                {m.user.name}
+                {m.user.id === me?.user.id && <span className="ml-1.5 text-[12px] text-ink-4">you</span>}
+              </div>
+              <div className="text-[12px] text-ink-4">{m.email}</div>
+            </div>
+            {manage ? (
+              <select
+                value={m.role}
+                onChange={(e) => change.mutate({ user: m.user.id, role: e.target.value as G.ProjectRole })}
+                className="rounded-md border border-line bg-transparent px-2 py-1 text-[12.5px] text-ink-2"
+              >
+                {(["viewer", "editor", "maintainer", "owner"] as G.ProjectRole[]).map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-[12.5px] text-ink-3 capitalize">{m.role}</span>
+            )}
+            {(manage || m.user.id === me?.user.id) && (
+              <button
+                type="button"
+                aria-label="Remove"
+                className="rounded p-1.5 text-ink-4 hover:text-danger"
+                onClick={() => remove.mutate(m.user.id)}
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-4 text-[12.5px] leading-relaxed text-ink-4">
+        Viewers follow sessions. Editors also start sessions and message agents. Maintainers manage settings,
+        secrets and members.
+      </p>
+    </div>
+  );
+}
+
+function Secrets({ project }: { project: G.Project }) {
+  const secrets = useQuery({ queryKey: keys.secrets(project.id), queryFn: () => api.secrets(project.id) });
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const set = useMutation({
+    mutationFn: () => api.setSecret(project.id, name.trim().toUpperCase(), value),
+    onSuccess: (r) => {
+      queryClient.setQueryData(keys.secrets(project.id), r);
+      setName("");
+      setValue("");
+      toast("Secret saved");
+    },
+  });
+  const del = useMutation({
+    mutationFn: (n: string) => api.deleteSecret(project.id, n),
+    onSuccess: (r) => queryClient.setQueryData(keys.secrets(project.id), r),
+  });
+  return (
+    <div>
+      <Banner tone="info" className="mb-6">
+        Secrets are encrypted at rest and handed to sandboxes as environment variables. They are never shown
+        again — not even to you. Names that would change how Claude bills (ANTHROPIC_*) are refused.
+      </Banner>
+      <form
+        className="mb-6 grid grid-cols-[1fr_1.4fr_auto] items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          set.mutate();
+        }}
+      >
+        <Field
+          label="Name"
+          error={(set.error as { field?: string } | null)?.field === "name" ? set.error?.message : undefined}
+        >
+          {(id) => (
+            <Input
+              id={id}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="font-mono uppercase"
+              placeholder="STRIPE_KEY"
+            />
+          )}
+        </Field>
+        <Field label="Value">
+          {(id) => (
+            <Input
+              id={id}
+              type="password"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              autoComplete="off"
+            />
+          )}
+        </Field>
+        <Button
+          type="submit"
+          variant="primary"
+          icon={<KeyRound className="size-3.5" />}
+          loading={set.isPending}
+          disabled={!name || !value}
+        >
+          Save
+        </Button>
+      </form>
+      <ul className="border-t border-line">
+        {secrets.data?.secrets.map((x) => (
+          <li key={x.name} className="flex items-center gap-3 border-b border-line py-3">
+            <code className="min-w-0 flex-1 font-mono text-[13px] text-ink">{x.name}</code>
+            <span className="text-[12px] text-ink-4">
+              updated {ago(x.updated_at)}
+              {x.updated_by ? ` by ${x.updated_by.name}` : ""}
+            </span>
+            <button
+              type="button"
+              aria-label={`Delete ${x.name}`}
+              className="rounded p-1.5 text-ink-4 hover:text-danger"
+              onClick={() => del.mutate(x.name)}
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          </li>
+        ))}
+        {secrets.data?.secrets.length === 0 && (
+          <li className="py-6 text-[13px] text-ink-4">No secrets yet.</li>
+        )}
+      </ul>
+    </div>
+  );
+}

@@ -599,10 +599,9 @@ impl Supervisor {
         }
         self.claude = Some(c);
         // The first turn, then anything that queued up meanwhile.
-        if !resume
-            && let Some(p) = spec.prompt.clone() {
-                self.send_turn(&p, None, None).await;
-            }
+        if !resume && let Some(p) = spec.prompt.clone() {
+            self.send_turn(&p, None, None).await;
+        }
         if self.turn_active {
             self.set_status(SessionStatus::Running, None);
         } else {
@@ -668,9 +667,10 @@ impl Supervisor {
             }
             DeliveryKind::Interrupt { .. } => {
                 if let Some(c) = self.claude.as_mut()
-                    && self.turn_active {
-                        c.request_nowait(json!({ "subtype": "interrupt" }));
-                    }
+                    && self.turn_active
+                {
+                    c.request_nowait(json!({ "subtype": "interrupt" }));
+                }
                 self.queue
                     .retain(|q| !matches!(q.kind, DeliveryKind::Message { .. }));
                 self.mark_delivered(&d.id);
@@ -724,9 +724,10 @@ impl Supervisor {
             return;
         }
         if kind == ClaudeKind::Init
-            && let Some(m) = v.get("model").and_then(Value::as_str) {
-                self.state.model = Some(m.to_owned());
-            }
+            && let Some(m) = v.get("model").and_then(Value::as_str)
+        {
+            self.state.model = Some(m.to_owned());
+        }
         let is_result = kind == ClaudeKind::Result;
         let more_queued = v
             .get("queued_turn_count")
@@ -780,9 +781,10 @@ impl Supervisor {
                 }
             }
             if st.pushed
-                && let Some(b) = st.branch.clone() {
-                    st.pull_request = workspace::pull_request(&paths, &b).await;
-                }
+                && let Some(b) = st.branch.clone()
+            {
+                st.pull_request = workspace::pull_request(&paths, &b).await;
+            }
             let _ = work.send(Work::Git(st));
         });
     }
@@ -1001,15 +1003,17 @@ impl Supervisor {
         // Idle timeout.
         if let (Some(since), Some(cfg)) = (self.idle_since, self.config.as_ref())
             && since.elapsed() > Duration::from_secs(cfg.spec.idle_timeout_secs.max(60))
-                && self.stopping.is_none()
-            {
-                self.begin_stop(StopReason::Idle, 30_000).await;
-            }
+            && self.stopping.is_none()
+        {
+            self.begin_stop(StopReason::Idle, 30_000).await;
+        }
         // A stop whose grace period ran out.
         if let Some((_, deadline)) = self.stopping
-            && Instant::now() >= deadline && self.exit_after.is_none() {
-                self.finish().await;
-            }
+            && Instant::now() >= deadline
+            && self.exit_after.is_none()
+        {
+            self.finish().await;
+        }
     }
 
     async fn begin_stop(&mut self, reason: StopReason, grace_ms: u64) {
@@ -1037,17 +1041,19 @@ impl Supervisor {
             c.kill().await;
         }
         if let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone())
-            && let Ok(mut st) = workspace::state(&paths, &config.spec).await {
-                if config.spec.project.repo.is_some()
-                    && config.push_on_commit
-                    && st.ahead > 0
-                    && !st.pushed
-                    && workspace::push(&paths, &st).await.is_ok()
-                        && let Ok(fresh) = workspace::state(&paths, &config.spec).await {
-                            st = fresh;
-                        }
-                self.emit(EventBody::Git(st));
+            && let Ok(mut st) = workspace::state(&paths, &config.spec).await
+        {
+            if config.spec.project.repo.is_some()
+                && config.push_on_commit
+                && st.ahead > 0
+                && !st.pushed
+                && workspace::push(&paths, &st).await.is_ok()
+                && let Ok(fresh) = workspace::state(&paths, &config.spec).await
+            {
+                st = fresh;
             }
+            self.emit(EventBody::Git(st));
+        }
         let (status, reason) = match self.stopping {
             Some((r, _)) => (SessionStatus::Stopped, Some(stop_text(r).to_owned())),
             None if self.state.status == SessionStatus::Failed => {

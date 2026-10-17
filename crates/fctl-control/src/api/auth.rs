@@ -365,15 +365,15 @@ pub async fn forgot_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let (Some(mail), Some(user)) = (
         ctx.cfg.email.clone(),
         auth::user_by_email(ctx, &email).await?,
-    )
-        && user.is_active() {
-            let url = create_reset_link(ctx, &user.id, None).await?;
-            let text = format!(
-                "Someone asked to reset the password of your {} account.\n\nChoose a new password: {url}\n\nThe link works for one hour. If it wasn't you, ignore this email.",
-                ctx.cfg.instance_name
-            );
-            crate::email::send(&mail, &user.email, "Reset your password", &text).await?;
-        }
+    ) && user.is_active()
+    {
+        let url = create_reset_link(ctx, &user.id, None).await?;
+        let text = format!(
+            "Someone asked to reset the password of your {} account.\n\nChoose a new password: {url}\n\nThe link works for one hour. If it wasn't you, ignore this email.",
+            ctx.cfg.instance_name
+        );
+        crate::email::send(&mail, &user.email, "Reset your password", &text).await?;
+    }
     http::ok(&Ok { ok: true })
 }
 

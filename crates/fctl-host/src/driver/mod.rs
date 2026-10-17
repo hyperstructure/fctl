@@ -103,9 +103,10 @@ impl Driver {
         }
         for candidate in ["apple", "docker", "lima"] {
             if let Some(d) = pick(candidate)
-                && d.probe().await.available {
-                    return Ok(d);
-                }
+                && d.probe().await.available
+            {
+                return Ok(d);
+            }
         }
         tracing::warn!("no VM or container runtime found; using the process driver (no isolation)");
         Ok(Driver::Process(process::ProcessDriver::new(

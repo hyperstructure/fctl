@@ -105,13 +105,15 @@ impl HttpClient {
                 HeaderValue::from_static("application/json"),
             );
             if let Some(t) = token
-                && let Ok(v) = HeaderValue::from_str(&format!("Bearer {t}")) {
-                    h.insert(http::header::AUTHORIZATION, v);
-                }
+                && let Ok(v) = HeaderValue::from_str(&format!("Bearer {t}"))
+            {
+                h.insert(http::header::AUTHORIZATION, v);
+            }
             if let Some(ct) = content_type
-                && let Ok(v) = HeaderValue::from_str(ct) {
-                    h.insert(http::header::CONTENT_TYPE, v);
-                }
+                && let Ok(v) = HeaderValue::from_str(ct)
+            {
+                h.insert(http::header::CONTENT_TYPE, v);
+            }
         }
         let req = req
             .body(Full::new(Bytes::from(body.unwrap_or_default())))

@@ -162,9 +162,10 @@ async fn bot_identity(cfg: &Config, _now: i64) -> GitIdentity {
         }
         if let Ok(mut res) = Fetch::Request(req).send().await
             && let Ok(v) = res.json::<serde_json::Value>().await
-                && let Some(id) = v.get("id").and_then(serde_json::Value::as_u64) {
-                    email = format!("{id}+{login}@users.noreply.github.com");
-                }
+            && let Some(id) = v.get("id").and_then(serde_json::Value::as_u64)
+        {
+            email = format!("{id}+{login}@users.noreply.github.com");
+        }
     }
     BOT_EMAIL.with(|b| *b.borrow_mut() = Some((login.clone(), email.clone())));
     GitIdentity { name: login, email }
