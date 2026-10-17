@@ -72,8 +72,16 @@ impl UserRow {
 /// The SELECT list for [`UserRow`], prefixed with a table alias.
 pub fn user_columns(alias: &str) -> String {
     [
-        "id", "email", "name", "avatar_url", "password_hash", "role", "status",
-        "default_credential_id", "created_at", "last_login_at",
+        "id",
+        "email",
+        "name",
+        "avatar_url",
+        "password_hash",
+        "role",
+        "status",
+        "default_credential_id",
+        "created_at",
+        "last_login_at",
     ]
     .iter()
     .map(|c| format!("{alias}.{c} AS {c}"))
@@ -149,8 +157,6 @@ pub struct ProjectRow {
     pub repo_name: Option<String>,
     pub default_branch: String,
     pub settings: String,
-    #[serde(deserialize_with = "int")]
-    pub session_counter: i64,
     pub created_by: String,
     pub creator_name: Option<String>,
     pub creator_avatar: Option<String>,
@@ -371,7 +377,9 @@ pub struct RunnerRow {
 
 impl RunnerRow {
     pub fn hello(&self) -> Option<HostHello> {
-        self.info.as_deref().and_then(|s| serde_json::from_str(s).ok())
+        self.info
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
     }
 
     pub fn to_runner(&self, online: bool) -> Runner {
@@ -391,7 +399,10 @@ impl RunnerRow {
             os: hello.as_ref().map(|h| h.os.clone()),
             arch: hello.as_ref().map(|h| h.arch.clone()),
             driver: hello.as_ref().map(|h| h.driver.clone()),
-            drivers: hello.as_ref().map(|h| h.drivers.clone()).unwrap_or_default(),
+            drivers: hello
+                .as_ref()
+                .map(|h| h.drivers.clone())
+                .unwrap_or_default(),
             capacity: hello.as_ref().map_or(0, |h| h.capacity),
             active_sessions: self.active_sessions.max(0) as u32,
             cpus: hello.as_ref().map(|h| h.cpus),
@@ -446,12 +457,15 @@ impl CredentialRow {
     }
 
     pub fn account(&self) -> Option<ClaudeAccount> {
-        self.account.as_deref().and_then(|s| serde_json::from_str(s).ok())
+        self.account
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
     }
 
     /// Remote Control needs a full-scope login (with `user:profile`).
     pub fn supports_remote_control(&self) -> bool {
-        self.kind() == ClaudeCredentialKind::Oauth && self.scopes().iter().any(|s| s == "user:profile")
+        self.kind() == ClaudeCredentialKind::Oauth
+            && self.scopes().iter().any(|s| s == "user:profile")
     }
 
     /// The AAD binding a credential's ciphertext to its record.

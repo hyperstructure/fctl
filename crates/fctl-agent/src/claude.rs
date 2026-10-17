@@ -5,7 +5,7 @@
 //! requests (`initialize`, `interrupt`, `remote_control`).
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::process::Stdio;
@@ -35,7 +35,10 @@ pub enum ClaudeOut {
     /// A stream-json message.
     Message(Value),
     /// Claude asks us something (`oauth_token_refresh`, `can_use_tool`, …).
-    ControlRequest { request_id: String, request: Value },
+    ControlRequest {
+        request_id: String,
+        request: Value,
+    },
     Stderr(String),
     Exited(Option<i32>),
 }
@@ -103,7 +106,9 @@ impl Claude {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        for key in ["PATH", "LANG", "LC_ALL", "TZ", "TMPDIR", "USER", "LOGNAME", "SHELL", "TERM"] {
+        for key in [
+            "PATH", "LANG", "LC_ALL", "TZ", "TMPDIR", "USER", "LOGNAME", "SHELL", "TERM",
+        ] {
             if let Ok(v) = std::env::var(key) {
                 cmd.env(key, v);
             }
@@ -149,29 +154,50 @@ impl Claude {
                     continue;
                 }
                 let Ok(v) = serde_json::from_str::<Value>(text) else {
-                    let _ = out_stdout.send(ClaudeOut::Stderr(format!("non-JSON output: {}", truncate(text, 500))));
+                    let _ = out_stdout.send(ClaudeOut::Stderr(format!(
+                        "non-JSON output: {}",
+                        truncate(text, 500)
+                    )));
                     continue;
                 };
                 match v.get("type").and_then(Value::as_str) {
                     Some("control_response") => {
                         let resp = v.get("response").cloned().unwrap_or(Value::Null);
-                        let id = resp.get("request_id").and_then(Value::as_str).unwrap_or_default().to_owned();
+                        let id = resp
+                            .get("request_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
                         let tx = pending_reader.lock().ok().and_then(|mut p| p.remove(&id));
                         if let Some(tx) = tx {
-                            let result = if resp.get("subtype").and_then(Value::as_str) == Some("success") {
-                                Ok(resp.get("response").cloned().unwrap_or(Value::Null))
-                            } else {
-                                Err(resp.get("error").and_then(Value::as_str).unwrap_or("control request failed").to_owned())
-                            };
+                            let result =
+                                if resp.get("subtype").and_then(Value::as_str) == Some("success") {
+                                    Ok(resp.get("response").cloned().unwrap_or(Value::Null))
+                                } else {
+                                    Err(resp
+                                        .get("error")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("control request failed")
+                                        .to_owned())
+                                };
                             let _ = tx.send(result);
                         }
                     }
                     Some("control_request") => {
-                        let request_id = v.get("request_id").and_then(Value::as_str).unwrap_or_default().to_owned();
+                        let request_id = v
+                            .get("request_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
                         let request = v.get("request").cloned().unwrap_or(Value::Null);
-                        let _ = out_stdout.send(ClaudeOut::ControlRequest { request_id, request });
+                        let _ = out_stdout.send(ClaudeOut::ControlRequest {
+                            request_id,
+                            request,
+                        });
                     }
-                    Some("keep_alive") | Some("transcript_mirror") | Some("control_cancel_request") => {}
+                    Some("keep_alive")
+                    | Some("transcript_mirror")
+                    | Some("control_cancel_request") => {}
                     _ => {
                         let _ = out_stdout.send(ClaudeOut::Message(v));
                     }
@@ -189,7 +215,12 @@ impl Claude {
                 }
             }
         });
-        Ok(Self { child, stdin: stdin_tx, pending, next_id: 0 })
+        Ok(Self {
+            child,
+            stdin: stdin_tx,
+            pending,
+            next_id: 0,
+        })
     }
 
     fn write(&self, v: &Value) {
@@ -197,7 +228,11 @@ impl Claude {
     }
 
     /// Sends a control request and waits for the answer.
-    pub async fn request(&mut self, request: Value, timeout: Duration) -> std::result::Result<Value, String> {
+    pub async fn request(
+        &mut self,
+        request: Value,
+        timeout: Duration,
+    ) -> std::result::Result<Value, String> {
         self.next_id += 1;
         let id = format!("fctl_{}", self.next_id);
         let (tx, rx) = oneshot::channel();
@@ -275,7 +310,9 @@ pub fn truncate(s: &str, max: usize) -> String {
 pub fn project_settings_are_unsafe(repo: &Path) -> Option<String> {
     for name in [".claude/settings.json", ".claude/settings.local.json"] {
         let path = repo.join(name);
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let Ok(v) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
@@ -304,9 +341,15 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".claude"))?;
         std::fs::write(dir.path().join(".claude/settings.json"), r#"{"hooks": {}}"#)?;
         assert_eq!(project_settings_are_unsafe(dir.path()), None);
-        std::fs::write(dir.path().join(".claude/settings.json"), r#"{"env": {"ANTHROPIC_API_KEY": "x"}}"#)?;
+        std::fs::write(
+            dir.path().join(".claude/settings.json"),
+            r#"{"env": {"ANTHROPIC_API_KEY": "x"}}"#,
+        )?;
         assert!(project_settings_are_unsafe(dir.path()).is_some());
-        std::fs::write(dir.path().join(".claude/settings.json"), r#"{"apiKeyHelper": "echo key"}"#)?;
+        std::fs::write(
+            dir.path().join(".claude/settings.json"),
+            r#"{"apiKeyHelper": "echo key"}"#,
+        )?;
         assert!(project_settings_are_unsafe(dir.path()).is_some());
         Ok(())
     }

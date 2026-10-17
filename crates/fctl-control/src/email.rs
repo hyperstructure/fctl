@@ -1,11 +1,12 @@
 //! Transactional email through Resend (optional; see config.rs).
 
 use crate::config::EmailConfig;
-use crate::error::{unavailable, AppResult};
+use crate::error::{AppResult, unavailable};
 use worker::{Fetch, Headers, Method, Request, RequestInit};
 
 pub async fn send(cfg: &EmailConfig, to: &str, subject: &str, text: &str) -> AppResult<()> {
-    let body = serde_json::json!({ "from": cfg.from, "to": [to], "subject": subject, "text": text });
+    let body =
+        serde_json::json!({ "from": cfg.from, "to": [to], "subject": subject, "text": text });
     let headers = Headers::new();
     headers.set("Authorization", &format!("Bearer {}", cfg.resend_api_key))?;
     headers.set("Content-Type", "application/json")?;

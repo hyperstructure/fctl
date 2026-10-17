@@ -4,6 +4,7 @@
 //! status from [`crate::ErrorCode::http_status`]; times are [`crate::Millis`];
 //! list endpoints return objects (`{"sessions": [...]}`) so they can grow.
 
+use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo};
 use crate::session::{
     InstanceRole, Project, ProjectRole, ProjectSettings, Session, SessionRole, UserRef,
@@ -12,7 +13,6 @@ use crate::{
     AllowId, CredentialId, DeliveryId, IdentityId, InviteId, LoginJobId, Millis, ProjectId,
     RunnerId, SessionId, TokenId, UserId,
 };
-use crate::event::SessionEvent;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -290,7 +290,10 @@ pub enum DevicePollResponse {
     SlowDown,
     Denied,
     Expired,
-    Approved { token: String, me: Box<Me> },
+    Approved {
+        token: String,
+        me: Box<Me>,
+    },
 }
 
 /// `GET /api/v1/auth/device/{user_code}`: what the approval page shows.
@@ -749,10 +752,16 @@ pub enum ClaudeLoginState {
     Pending,
     Starting,
     /// Open `url`, approve, then submit the code claude.ai shows.
-    AwaitingCode { url: String },
+    AwaitingCode {
+        url: String,
+    },
     Verifying,
-    Succeeded { credential_id: CredentialId },
-    Failed { error: String },
+    Succeeded {
+        credential_id: CredentialId,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -784,10 +793,16 @@ pub enum FeedServer {
         server_time: Millis,
     },
     /// A session the person can see changed.
-    Session { session: Box<Session> },
+    Session {
+        session: Box<Session>,
+    },
     /// A session was deleted or the person lost access.
-    SessionRemoved { session_id: SessionId },
-    Runner { runner: Box<Runner> },
+    SessionRemoved {
+        session_id: SessionId,
+    },
+    Runner {
+        runner: Box<Runner>,
+    },
     /// Agent activity for the visualization: one pulse per event, by session.
     Activity {
         session_id: SessionId,
@@ -797,7 +812,9 @@ pub enum FeedServer {
         /// Rough size, for the visual weight of the pulse.
         weight: u32,
     },
-    ClaudeLogin { job: Box<ClaudeLoginJob> },
+    ClaudeLogin {
+        job: Box<ClaudeLoginJob>,
+    },
     Pong,
 }
 

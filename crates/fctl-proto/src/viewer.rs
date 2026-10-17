@@ -4,10 +4,10 @@
 //! The first server frame is always [`ViewerServer::Snapshot`]. Clients that
 //! reconnect pass `?after=<seq>` and get only newer events in the snapshot.
 
+use crate::Millis;
 use crate::error::ApiError;
 use crate::event::SessionEvent;
 use crate::session::{Session, SessionRole, UserRef};
-use crate::Millis;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -37,7 +37,10 @@ pub struct Snapshot {
     pub next_seq: u64,
     /// `stream_event` messages of the turn in progress, so a viewer that joins
     /// mid-turn sees the text being written.
-    #[cfg_attr(feature = "ts", ts(type = "Array<import('../lib/claude-types').ClaudeStreamEvent>"))]
+    #[cfg_attr(
+        feature = "ts",
+        ts(type = "Array<import('../lib/claude-types').ClaudeStreamEvent>")
+    )]
     pub live: Vec<serde_json::Value>,
     pub viewers: Vec<Presence>,
     /// Whether a runner is connected for this session right now.
@@ -50,16 +53,27 @@ pub struct Snapshot {
 pub enum ViewerServer {
     Snapshot(Box<Snapshot>),
     /// New stored events, in order.
-    Events { events: Vec<SessionEvent> },
+    Events {
+        events: Vec<SessionEvent>,
+    },
     /// An ephemeral Claude `stream_event` (token deltas). Not stored.
     Stream {
-        #[cfg_attr(feature = "ts", ts(type = "import('../lib/claude-types').ClaudeStreamEvent"))]
+        #[cfg_attr(
+            feature = "ts",
+            ts(type = "import('../lib/claude-types').ClaudeStreamEvent")
+        )]
         event: serde_json::Value,
     },
     /// The session summary changed (status, title, stats, pull request).
-    Session { session: Box<Session> },
-    Presence { viewers: Vec<Presence> },
-    RunnerConnected { connected: bool },
+    Session {
+        session: Box<Session>,
+    },
+    Presence {
+        viewers: Vec<Presence>,
+    },
+    RunnerConnected {
+        connected: bool,
+    },
     /// The outcome of a client command, matched by `client_id`.
     Result {
         client_id: String,
@@ -68,7 +82,9 @@ pub enum ViewerServer {
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<ApiError>,
     },
-    Error { error: ApiError },
+    Error {
+        error: ApiError,
+    },
     Pong,
 }
 
@@ -77,9 +93,14 @@ pub enum ViewerServer {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ViewerClient {
     /// Message the agent. Queued if it is busy.
-    Send { client_id: String, text: String },
+    Send {
+        client_id: String,
+        text: String,
+    },
     /// Stop the agent's current turn.
-    Interrupt { client_id: String },
+    Interrupt {
+        client_id: String,
+    },
     /// The person is typing (sent at most every few seconds).
     Typing,
     Ping,

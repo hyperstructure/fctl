@@ -120,8 +120,11 @@ impl Ctx {
         };
         match limiter.limit(key.to_owned()).await {
             Ok(outcome) if !outcome.success => Err(AppError(
-                ApiError::new(ErrorCode::RateLimited, "Too many attempts. Wait a minute and try again.")
-                    .with_retry_after(60),
+                ApiError::new(
+                    ErrorCode::RateLimited,
+                    "Too many attempts. Wait a minute and try again.",
+                )
+                .with_retry_after(60),
             )),
             _ => Ok(()),
         }

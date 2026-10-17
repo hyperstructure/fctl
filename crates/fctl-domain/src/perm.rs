@@ -46,7 +46,10 @@ fn rank(r: SessionRole) -> u8 {
 }
 
 /// The effective project role: instance admins act as project owners.
-pub fn project_role(instance_role: InstanceRole, member_role: Option<ProjectRole>) -> Option<ProjectRole> {
+pub fn project_role(
+    instance_role: InstanceRole,
+    member_role: Option<ProjectRole>,
+) -> Option<ProjectRole> {
     if instance_role.is_admin() {
         Some(ProjectRole::Owner)
     } else {
@@ -79,7 +82,11 @@ pub fn can_assign_project_role(actor: Option<ProjectRole>, target_role: ProjectR
 }
 
 /// Whether `actor` may change `target`'s instance role to `new_role`.
-pub fn can_assign_instance_role(actor: InstanceRole, target: InstanceRole, new_role: InstanceRole) -> bool {
+pub fn can_assign_instance_role(
+    actor: InstanceRole,
+    target: InstanceRole,
+    new_role: InstanceRole,
+) -> bool {
     match actor {
         InstanceRole::Owner => true,
         InstanceRole::Admin => target == InstanceRole::Member && new_role != InstanceRole::Owner,
@@ -91,20 +98,58 @@ pub fn can_assign_instance_role(actor: InstanceRole, target: InstanceRole, new_r
 mod tests {
     use super::*;
 
-    fn access(i: InstanceRole, p: Option<ProjectRole>, s: Option<SessionRole>, c: bool) -> SessionAccess {
-        SessionAccess { instance_role: i, project_role: p, share_role: s, is_creator: c }
+    fn access(
+        i: InstanceRole,
+        p: Option<ProjectRole>,
+        s: Option<SessionRole>,
+        c: bool,
+    ) -> SessionAccess {
+        SessionAccess {
+            instance_role: i,
+            project_role: p,
+            share_role: s,
+            is_creator: c,
+        }
     }
 
     #[test]
     fn session_roles() {
         use InstanceRole::*;
         assert_eq!(session_role(access(Member, None, None, false)), None);
-        assert_eq!(session_role(access(Member, Some(ProjectRole::Viewer), None, false)), Some(SessionRole::Viewer));
-        assert_eq!(session_role(access(Member, Some(ProjectRole::Viewer), Some(SessionRole::Editor), false)), Some(SessionRole::Editor));
-        assert_eq!(session_role(access(Member, Some(ProjectRole::Editor), Some(SessionRole::Viewer), false)), Some(SessionRole::Editor));
-        assert_eq!(session_role(access(Member, Some(ProjectRole::Editor), None, true)), Some(SessionRole::Owner));
-        assert_eq!(session_role(access(Admin, None, None, false)), Some(SessionRole::Owner));
-        assert_eq!(session_role(access(Member, Some(ProjectRole::Maintainer), None, false)), Some(SessionRole::Owner));
+        assert_eq!(
+            session_role(access(Member, Some(ProjectRole::Viewer), None, false)),
+            Some(SessionRole::Viewer)
+        );
+        assert_eq!(
+            session_role(access(
+                Member,
+                Some(ProjectRole::Viewer),
+                Some(SessionRole::Editor),
+                false
+            )),
+            Some(SessionRole::Editor)
+        );
+        assert_eq!(
+            session_role(access(
+                Member,
+                Some(ProjectRole::Editor),
+                Some(SessionRole::Viewer),
+                false
+            )),
+            Some(SessionRole::Editor)
+        );
+        assert_eq!(
+            session_role(access(Member, Some(ProjectRole::Editor), None, true)),
+            Some(SessionRole::Owner)
+        );
+        assert_eq!(
+            session_role(access(Admin, None, None, false)),
+            Some(SessionRole::Owner)
+        );
+        assert_eq!(
+            session_role(access(Member, Some(ProjectRole::Maintainer), None, false)),
+            Some(SessionRole::Owner)
+        );
     }
 
     #[test]
@@ -112,10 +157,28 @@ mod tests {
         assert!(can_start_sessions(Some(ProjectRole::Editor)));
         assert!(!can_start_sessions(Some(ProjectRole::Viewer)));
         assert!(can_manage_project(project_role(InstanceRole::Admin, None)));
-        assert!(!can_assign_project_role(Some(ProjectRole::Maintainer), ProjectRole::Owner));
-        assert!(can_assign_project_role(Some(ProjectRole::Maintainer), ProjectRole::Editor));
-        assert!(!can_assign_instance_role(InstanceRole::Admin, InstanceRole::Admin, InstanceRole::Member));
-        assert!(can_assign_instance_role(InstanceRole::Admin, InstanceRole::Member, InstanceRole::Admin));
-        assert!(!can_assign_instance_role(InstanceRole::Admin, InstanceRole::Member, InstanceRole::Owner));
+        assert!(!can_assign_project_role(
+            Some(ProjectRole::Maintainer),
+            ProjectRole::Owner
+        ));
+        assert!(can_assign_project_role(
+            Some(ProjectRole::Maintainer),
+            ProjectRole::Editor
+        ));
+        assert!(!can_assign_instance_role(
+            InstanceRole::Admin,
+            InstanceRole::Admin,
+            InstanceRole::Member
+        ));
+        assert!(can_assign_instance_role(
+            InstanceRole::Admin,
+            InstanceRole::Member,
+            InstanceRole::Admin
+        ));
+        assert!(!can_assign_instance_role(
+            InstanceRole::Admin,
+            InstanceRole::Member,
+            InstanceRole::Owner
+        ));
     }
 }

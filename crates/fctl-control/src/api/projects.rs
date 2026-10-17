@@ -2,15 +2,15 @@
 
 use crate::access;
 use crate::ctx::Ctx;
-use crate::db::{batch, n, os, q, s, Count};
-use crate::error::{conflict, forbidden, not_found, validation, AppResult};
+use crate::db::{Count, batch, n, os, q, s};
+use crate::error::{AppResult, conflict, forbidden, not_found, validation};
 use crate::github;
 use crate::http;
-use crate::model::{ProjectRow, PROJECT_SELECT};
+use crate::model::{PROJECT_SELECT, ProjectRow};
 use fctl_domain::{naming, perm, validate};
+use fctl_proto::UserId;
 use fctl_proto::api::*;
 use fctl_proto::session::{ProjectRole, ProjectSettings, RepoRef, UserRef};
-use fctl_proto::UserId;
 use worker::{Request, Response};
 
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
@@ -40,13 +40,25 @@ pub async fn get(ctx: &Ctx, id: &str) -> AppResult<Response> {
 /// Validates and normalizes project settings.
 fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
     if let Some(img) = s.image.as_deref() {
-        s.image = if img.trim().is_empty() { None } else { Some(validate::image(img)?) };
+        s.image = if img.trim().is_empty() {
+            None
+        } else {
+            Some(validate::image(img)?)
+        };
     }
     if let Some(m) = s.model.as_deref() {
-        s.model = if m.trim().is_empty() { None } else { Some(validate::model(m)?) };
+        s.model = if m.trim().is_empty() {
+            None
+        } else {
+            Some(validate::model(m)?)
+        };
     }
     if let Some(e) = s.effort.as_deref() {
-        s.effort = if e.trim().is_empty() { None } else { Some(validate::effort(e)?) };
+        s.effort = if e.trim().is_empty() {
+            None
+        } else {
+            Some(validate::effort(e)?)
+        };
     }
     if let Some(script) = s.setup_script.as_deref() {
         let t = validate::text("settings.setup_script", script, 20_000)?;
@@ -56,26 +68,29 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
         let t = validate::text("settings.instructions", i, 20_000)?;
         s.instructions = (!t.is_empty()).then_some(t);
     }
-    if let Some(c) = s.cpus {
-        if !(1..=64).contains(&c) {
+    if let Some(c) = s.cpus
+        && !(1..=64).contains(&c) {
             return Err(validation("settings.cpus", "Use 1–64 CPUs"));
         }
-    }
-    if let Some(m) = s.memory_mb {
-        if !(512..=262_144).contains(&m) {
+    if let Some(m) = s.memory_mb
+        && !(512..=262_144).contains(&m) {
             return Err(validation("settings.memory_mb", "Use 512 MiB – 256 GiB"));
         }
-    }
-    if let Some(t) = s.idle_timeout_minutes {
-        if !(1..=10_080).contains(&t) {
-            return Err(validation("settings.idle_timeout_minutes", "Use 1 minute – 7 days"));
+    if let Some(t) = s.idle_timeout_minutes
+        && !(1..=10_080).contains(&t) {
+            return Err(validation(
+                "settings.idle_timeout_minutes",
+                "Use 1 minute – 7 days",
+            ));
         }
-    }
     let mut env = std::collections::BTreeMap::new();
     for (k, v) in &s.env {
         let k = validate::env_name("settings.env", k)?;
         if v.len() > 10_000 {
-            return Err(validation("settings.env", "Values can be at most 10 000 characters"));
+            return Err(validation(
+                "settings.env",
+                "Values can be at most 10 000 characters",
+            ));
         }
         env.insert(k, v.clone());
     }
@@ -87,9 +102,13 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
 }
 
 async fn slug_taken(ctx: &Ctx, slug: &str) -> AppResult<bool> {
-    let c: Option<Count> = q(&ctx.db, "SELECT COUNT(*) AS n FROM projects WHERE slug = ?", &[s(slug)])?
-        .first()
-        .await?;
+    let c: Option<Count> = q(
+        &ctx.db,
+        "SELECT COUNT(*) AS n FROM projects WHERE slug = ?",
+        &[s(slug)],
+    )?
+    .first()
+    .await?;
     Ok(c.map_or(0, |c| c.n) > 0)
 }
 
@@ -113,7 +132,9 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         }
         None => {
             let base = naming::project_slug(&name);
-            let base = validate::slug(&base).unwrap_or_else(|_| format!("project-{}", &fctl_domain::ids::ulid(ctx.now)[20..]).to_lowercase());
+            let base = validate::slug(&base).unwrap_or_else(|_| {
+                format!("project-{}", &fctl_domain::ids::ulid(ctx.now)[20..]).to_lowercase()
+            });
             let mut candidate = base.clone();
             let mut i = 2;
             while slug_taken(ctx, &candidate).await? {
@@ -136,26 +157,40 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .transpose()?;
     if let Some(create) = &body.create_repo {
         let gh = github::from_config(&ctx.cfg, ctx.now)?;
-        let owner = gh
-            .default_owner()
-            .map(str::to_owned)
-            .ok_or_else(|| validation("create_repo", "Set GITHUB_DEFAULT_OWNER to create repositories"))?;
+        let owner = gh.default_owner().map(str::to_owned).ok_or_else(|| {
+            validation(
+                "create_repo",
+                "Set GITHUB_DEFAULT_OWNER to create repositories",
+            )
+        })?;
         let repo_name = naming::slugify(&create.name, 100);
         if repo_name.is_empty() {
             return Err(validation("create_repo.name", "Enter a repository name"));
         }
         let created = gh
-            .create_repo(&owner, &repo_name, create.private, create.description.as_deref())
+            .create_repo(
+                &owner,
+                &repo_name,
+                create.private,
+                create.description.as_deref(),
+            )
             .await?;
         default_branch = default_branch.or(Some(created.default_branch.clone()));
-        repo = Some(RepoRef { owner: created.owner, name: created.name });
+        repo = Some(RepoRef {
+            owner: created.owner,
+            name: created.name,
+        });
     } else if let Some(r) = body.repo.as_deref().filter(|r| !r.trim().is_empty()) {
-        let parsed = RepoRef::parse(r).ok_or_else(|| validation("repo", "Use owner/name, like hyperstructure/fctl"))?;
+        let parsed = RepoRef::parse(r)
+            .ok_or_else(|| validation("repo", "Use owner/name, like hyperstructure/fctl"))?;
         if ctx.cfg.github.is_some() {
             let gh = github::from_config(&ctx.cfg, ctx.now)?;
             let found = gh.get_repo(&parsed).await?;
             default_branch = default_branch.or(Some(found.default_branch.clone()));
-            repo = Some(RepoRef { owner: found.owner, name: found.name });
+            repo = Some(RepoRef {
+                owner: found.owner,
+                name: found.name,
+            });
         } else {
             repo = Some(parsed);
         }
@@ -190,7 +225,11 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         ],
     )
     .await?;
-    ctx.audit("project.created", Some(id.as_str()), Some(serde_json::json!({ "slug": slug })));
+    ctx.audit(
+        "project.created",
+        Some(id.as_str()),
+        Some(serde_json::json!({ "slug": slug })),
+    );
     let p = access::project(ctx, id.as_str()).await?;
     http::created(&p.row.to_project(p.role))
 }
@@ -200,7 +239,12 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let p = access::project(ctx, id).await?;
     p.require_maintainer()?;
     let row = &p.row;
-    let name = body.name.as_deref().map(|v| validate::name("name", v)).transpose()?.unwrap_or_else(|| row.name.clone());
+    let name = body
+        .name
+        .as_deref()
+        .map(|v| validate::name("name", v))
+        .transpose()?
+        .unwrap_or_else(|| row.name.clone());
     let description = match body.description.as_deref() {
         Some(d) => Some(validate::text("description", d, 500)?).filter(|d| !d.is_empty()),
         None => row.description.clone(),
@@ -213,7 +257,9 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         } else {
             let parsed = RepoRef::parse(r).ok_or_else(|| validation("repo", "Use owner/name"))?;
             if ctx.cfg.github.is_some() {
-                github::from_config(&ctx.cfg, ctx.now)?.get_repo(&parsed).await?;
+                github::from_config(&ctx.cfg, ctx.now)?
+                    .get_repo(&parsed)
+                    .await?;
             }
             owner = Some(parsed.owner);
             repo_name = Some(parsed.name);
@@ -269,8 +315,18 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if active.map_or(0, |c| c.n) > 0 {
         return Err(conflict("Stop the project's sessions before deleting it"));
     }
-    q(&ctx.db, "DELETE FROM projects WHERE id = ?", &[s(&p.row.id)])?.run().await?;
-    ctx.audit("project.deleted", Some(&p.row.id), Some(serde_json::json!({ "slug": p.row.slug })));
+    q(
+        &ctx.db,
+        "DELETE FROM projects WHERE id = ?",
+        &[s(&p.row.id)],
+    )?
+    .run()
+    .await?;
+    ctx.audit(
+        "project.deleted",
+        Some(&p.row.id),
+        Some(serde_json::json!({ "slug": p.row.slug })),
+    );
     http::ok(&Ok { ok: true })
 }
 
@@ -301,7 +357,11 @@ pub async fn members(ctx: &Ctx, id: &str) -> AppResult<Response> {
         members: rows
             .into_iter()
             .map(|r| ProjectMember {
-                user: UserRef { id: UserId(r.user_id), name: r.name, avatar_url: r.avatar_url },
+                user: UserRef {
+                    id: UserId(r.user_id),
+                    name: r.name,
+                    avatar_url: r.avatar_url,
+                },
                 email: r.email,
                 role: ProjectRole::parse(&r.role).unwrap_or(ProjectRole::Viewer),
                 added_at: r.created_at,
@@ -318,7 +378,12 @@ pub async fn add_member(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult
     }
     let target = crate::api::auth::lookup_user_by_email(ctx, &body.email)
         .await?
-        .ok_or_else(|| validation("email", "No one with this email has an account yet. Invite them to the instance first."))?;
+        .ok_or_else(|| {
+            validation(
+                "email",
+                "No one with this email has an account yet. Invite them to the instance first.",
+            )
+        })?;
     q(
         &ctx.db,
         "INSERT INTO project_members (project_id, user_id, role, added_by, created_at) VALUES (?, ?, ?, ?, ?) \
@@ -327,7 +392,11 @@ pub async fn add_member(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult
     )?
     .run()
     .await?;
-    ctx.audit("project.member_added", Some(&p.row.id), Some(serde_json::json!({ "user": target.id, "role": body.role.as_str() })));
+    ctx.audit(
+        "project.member_added",
+        Some(&p.row.id),
+        Some(serde_json::json!({ "user": target.id, "role": body.role.as_str() })),
+    );
     members(ctx, &p.row.id).await
 }
 
@@ -357,14 +426,26 @@ async fn member_role(ctx: &Ctx, project_id: &str, user_id: &str) -> AppResult<Op
     Ok(r.and_then(|r| ProjectRole::parse(&r.role)))
 }
 
-pub async fn set_member_role(ctx: &mut Ctx, req: &mut Request, id: &str, user_id: &str) -> AppResult<Response> {
+pub async fn set_member_role(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    id: &str,
+    user_id: &str,
+) -> AppResult<Response> {
     let body: SetRoleRequest = http::body(req).await?;
     let p = access::project(ctx, id).await?;
-    let current = member_role(ctx, &p.row.id, user_id).await?.ok_or_else(|| not_found("Member"))?;
-    if !perm::can_assign_project_role(p.role, body.role) || !perm::can_assign_project_role(p.role, current) {
+    let current = member_role(ctx, &p.row.id, user_id)
+        .await?
+        .ok_or_else(|| not_found("Member"))?;
+    if !perm::can_assign_project_role(p.role, body.role)
+        || !perm::can_assign_project_role(p.role, current)
+    {
         return Err(forbidden("You cannot change this member's role"));
     }
-    if current == ProjectRole::Owner && body.role != ProjectRole::Owner && owner_count(ctx, &p.row.id).await? <= 1 {
+    if current == ProjectRole::Owner
+        && body.role != ProjectRole::Owner
+        && owner_count(ctx, &p.row.id).await? <= 1
+    {
         return Err(conflict("A project needs at least one owner"));
     }
     q(
@@ -380,7 +461,9 @@ pub async fn set_member_role(ctx: &mut Ctx, req: &mut Request, id: &str, user_id
 pub async fn remove_member(ctx: &mut Ctx, id: &str, user_id: &str) -> AppResult<Response> {
     let p = access::project(ctx, id).await?;
     let me = ctx.user()?.id.clone();
-    let current = member_role(ctx, &p.row.id, user_id).await?.ok_or_else(|| not_found("Member"))?;
+    let current = member_role(ctx, &p.row.id, user_id)
+        .await?
+        .ok_or_else(|| not_found("Member"))?;
     let leaving = me == user_id;
     if !leaving && !perm::can_assign_project_role(p.role, current) {
         return Err(forbidden("You cannot remove this member"));
@@ -434,7 +517,11 @@ pub async fn secrets(ctx: &Ctx, id: &str) -> AppResult<Response> {
                 name: r.name,
                 updated_at: r.updated_at,
                 updated_by: match (r.updated_by, r.updater_name) {
-                    (Some(id), Some(name)) => Some(UserRef { id: UserId(id), name, avatar_url: None }),
+                    (Some(id), Some(name)) => Some(UserRef {
+                        id: UserId(id),
+                        name,
+                        avatar_url: None,
+                    }),
                     _ => None,
                 },
             })
@@ -442,7 +529,12 @@ pub async fn secrets(ctx: &Ctx, id: &str) -> AppResult<Response> {
     })
 }
 
-pub async fn set_secret(ctx: &mut Ctx, req: &mut Request, id: &str, name: &str) -> AppResult<Response> {
+pub async fn set_secret(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    id: &str,
+    name: &str,
+) -> AppResult<Response> {
     let body: SetSecretRequest = http::body(req).await?;
     let p = access::project(ctx, id).await?;
     p.require_maintainer()?;
@@ -450,7 +542,9 @@ pub async fn set_secret(ctx: &mut Ctx, req: &mut Request, id: &str, name: &str) 
     if body.value.len() > 64 * 1024 {
         return Err(validation("value", "Secrets can be at most 64 KiB"));
     }
-    let sealed = ctx.keys()?.seal(&secret_aad(&p.row.id, &name), body.value.as_bytes())?;
+    let sealed = ctx
+        .keys()?
+        .seal(&secret_aad(&p.row.id, &name), body.value.as_bytes())?;
     q(
         &ctx.db,
         "INSERT INTO project_secrets (project_id, name, value_enc, updated_by, updated_at) VALUES (?, ?, ?, ?, ?) \
@@ -459,7 +553,11 @@ pub async fn set_secret(ctx: &mut Ctx, req: &mut Request, id: &str, name: &str) 
     )?
     .run()
     .await?;
-    ctx.audit("project.secret_set", Some(&p.row.id), Some(serde_json::json!({ "name": name })));
+    ctx.audit(
+        "project.secret_set",
+        Some(&p.row.id),
+        Some(serde_json::json!({ "name": name })),
+    );
     secrets(ctx, &p.row.id).await
 }
 
@@ -473,7 +571,11 @@ pub async fn delete_secret(ctx: &mut Ctx, id: &str, name: &str) -> AppResult<Res
     )?
     .run()
     .await?;
-    ctx.audit("project.secret_deleted", Some(&p.row.id), Some(serde_json::json!({ "name": name })));
+    ctx.audit(
+        "project.secret_deleted",
+        Some(&p.row.id),
+        Some(serde_json::json!({ "name": name })),
+    );
     secrets(ctx, &p.row.id).await
 }
 
@@ -488,9 +590,13 @@ pub async fn decrypted_secrets(
         name: String,
         value_enc: String,
     }
-    let rows: Vec<R> = q(db, "SELECT name, value_enc FROM project_secrets WHERE project_id = ?", &[s(project_id)])?
-        .all()
-        .await?;
+    let rows: Vec<R> = q(
+        db,
+        "SELECT name, value_enc FROM project_secrets WHERE project_id = ?",
+        &[s(project_id)],
+    )?
+    .all()
+    .await?;
     let mut out = std::collections::BTreeMap::new();
     for r in rows {
         let bytes = keys.open(&secret_aad(project_id, &r.name), &r.value_enc)?;
@@ -504,14 +610,26 @@ pub async fn decrypted_secrets(
 pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
     ctx.user()?;
     let Some(cfg) = ctx.cfg.github.as_ref() else {
-        return http::ok(&GithubInfo { configured: false, app_slug: None, install_url: None, accounts: vec![] });
+        return http::ok(&GithubInfo {
+            configured: false,
+            app_slug: None,
+            install_url: None,
+            accounts: vec![],
+        });
     };
     let gh = github::from_config(&ctx.cfg, ctx.now)?;
-    let accounts = gh.installations().await.map(|v| v.into_iter().map(|(_, a)| a).collect()).unwrap_or_default();
+    let accounts = gh
+        .installations()
+        .await
+        .map(|v| v.into_iter().map(|(_, a)| a).collect())
+        .unwrap_or_default();
     http::ok(&GithubInfo {
         configured: true,
         app_slug: Some(cfg.slug.clone()),
-        install_url: Some(format!("https://github.com/apps/{}/installations/new", cfg.slug)),
+        install_url: Some(format!(
+            "https://github.com/apps/{}/installations/new",
+            cfg.slug
+        )),
         accounts,
     })
 }
@@ -536,7 +654,10 @@ pub async fn github_repos(ctx: &Ctx) -> AppResult<Response> {
     for r in &mut repos {
         r.project_id = linked
             .iter()
-            .find(|l| l.repo_owner.eq_ignore_ascii_case(&r.owner) && l.repo_name.eq_ignore_ascii_case(&r.name))
+            .find(|l| {
+                l.repo_owner.eq_ignore_ascii_case(&r.owner)
+                    && l.repo_name.eq_ignore_ascii_case(&r.name)
+            })
             .map(|l| fctl_proto::ProjectId(l.id.clone()));
     }
     http::ok(&GithubRepoList { repos })

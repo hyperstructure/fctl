@@ -3,10 +3,15 @@
 use crate::config::Config;
 use crate::crypto::Keys;
 use crate::db::{n, on, q, s};
-use crate::error::{internal, AppError, AppResult};
+use crate::error::{AppError, AppResult, internal};
 use crate::github;
-use crate::model::{CredentialRow, CredentialSecret, ProjectRow, SessionRow, PROJECT_SELECT, SESSION_SELECT};
-use fctl_proto::runner::{ClaudeCredential, ClaudeCredentialKind, GitIdentity, GithubCredential, ProjectSpec, SessionCredentials, SessionSpec};
+use crate::model::{
+    CredentialRow, CredentialSecret, PROJECT_SELECT, ProjectRow, SESSION_SELECT, SessionRow,
+};
+use fctl_proto::runner::{
+    ClaudeCredential, ClaudeCredentialKind, GitIdentity, GithubCredential, ProjectSpec,
+    SessionCredentials, SessionSpec,
+};
 use fctl_proto::session::RepoRef;
 use fctl_proto::{ApiError, CredentialId, ErrorCode, ProjectId};
 use std::cell::RefCell;
@@ -24,20 +29,44 @@ thread_local! {
 }
 
 pub async fn session_row(db: &D1Database, id: &str) -> AppResult<Option<SessionRow>> {
-    q(db, &format!("{SESSION_SELECT} WHERE s.id = ?2"), &[s(""), s(id)])?.first().await
+    q(
+        db,
+        &format!("{SESSION_SELECT} WHERE s.id = ?2"),
+        &[s(""), s(id)],
+    )?
+    .first()
+    .await
 }
 
 pub async fn project_row(db: &D1Database, id: &str) -> AppResult<Option<ProjectRow>> {
-    q(db, &format!("{PROJECT_SELECT} WHERE p.id = ?2"), &[s(""), s(id)])?.first().await
+    q(
+        db,
+        &format!("{PROJECT_SELECT} WHERE p.id = ?2"),
+        &[s(""), s(id)],
+    )?
+    .first()
+    .await
 }
 
-pub async fn build(db: &D1Database, cfg: &Config, keys: &Keys, session_id: &str, now: i64) -> AppResult<SessionSpec> {
-    let row = session_row(db, session_id).await?.ok_or_else(|| internal("session vanished"))?;
-    let project = project_row(db, &row.project_id).await?.ok_or_else(|| internal("project vanished"))?;
-    let cred_id = row
-        .credential_id
-        .clone()
-        .ok_or_else(|| AppError(ApiError::new(ErrorCode::NotConfigured, "The session has no Claude credential")))?;
+pub async fn build(
+    db: &D1Database,
+    cfg: &Config,
+    keys: &Keys,
+    session_id: &str,
+    now: i64,
+) -> AppResult<SessionSpec> {
+    let row = session_row(db, session_id)
+        .await?
+        .ok_or_else(|| internal("session vanished"))?;
+    let project = project_row(db, &row.project_id)
+        .await?
+        .ok_or_else(|| internal("project vanished"))?;
+    let cred_id = row.credential_id.clone().ok_or_else(|| {
+        AppError(ApiError::new(
+            ErrorCode::NotConfigured,
+            "The session has no Claude credential",
+        ))
+    })?;
     let claude = claude_credential(db, keys, &cred_id, now).await?;
     let repo = project.repo();
     let github = match (&repo, cfg.github.is_some()) {
@@ -59,9 +88,19 @@ pub async fn build(db: &D1Database, cfg: &Config, keys: &Keys, session_id: &str,
             default_branch: project.default_branch.clone(),
             settings: project.settings(),
         },
-        branch: row.branch.clone().unwrap_or_else(|| format!("fctl/{}", row.number)),
-        base_branch: row.base_branch.clone().unwrap_or_else(|| project.default_branch.clone()),
-        prompt: if row.started_at.is_some() { None } else { Some(row.prompt.clone()) },
+        branch: row
+            .branch
+            .clone()
+            .unwrap_or_else(|| format!("fctl/{}", row.number)),
+        base_branch: row
+            .base_branch
+            .clone()
+            .unwrap_or_else(|| project.default_branch.clone()),
+        prompt: if row.started_at.is_some() {
+            None
+        } else {
+            Some(row.prompt.clone())
+        },
         author: row.creator_ref(),
         claude_session_id: row.claude_session_id.clone(),
         resume: row.started_at.is_some(),
@@ -72,7 +111,11 @@ pub async fn build(db: &D1Database, cfg: &Config, keys: &Keys, session_id: &str,
         git_author,
         co_authors: author.into_iter().collect(),
         web_url: cfg.url(&format!("/s/{}", row.id)),
-        idle_timeout_secs: project.settings().idle_timeout_minutes.map_or(2 * 60 * 60, |m| m as u64 * 60),
+        idle_timeout_secs: project
+            .settings()
+            .idle_timeout_minutes
+            .map_or(2 * 60 * 60, |m| m as u64 * 60),
+        run_id: None,
     })
 }
 
@@ -82,33 +125,46 @@ async fn creator(db: &D1Database, user_id: &str) -> AppResult<Option<GitIdentity
         name: String,
         email: String,
     }
-    let u: Option<U> = q(db, "SELECT name, email FROM users WHERE id = ?", &[s(user_id)])?.first().await?;
-    Ok(u.map(|u| GitIdentity { name: u.name, email: u.email }))
+    let u: Option<U> = q(
+        db,
+        "SELECT name, email FROM users WHERE id = ?",
+        &[s(user_id)],
+    )?
+    .first()
+    .await?;
+    Ok(u.map(|u| GitIdentity {
+        name: u.name,
+        email: u.email,
+    }))
 }
 
 /// Commits are authored by the GitHub App's bot account.
 async fn bot_identity(cfg: &Config, _now: i64) -> GitIdentity {
     let Some(gh) = cfg.github.as_ref() else {
-        return GitIdentity { name: "fctl agent".into(), email: "agent@fctl.invalid".into() };
+        return GitIdentity {
+            name: "fctl agent".into(),
+            email: "agent@fctl.invalid".into(),
+        };
     };
     let login = format!("{}[bot]", gh.slug);
     if let Some((name, email)) = BOT_EMAIL.with(|b| b.borrow().clone()) {
         return GitIdentity { name, email };
     }
     let mut email = format!("{login}@users.noreply.github.com");
-    if let Ok(req) = Request::new(&format!("https://api.github.com/users/{}%5Bbot%5D", gh.slug), Method::Get) {
+    if let Ok(req) = Request::new(
+        &format!("https://api.github.com/users/{}%5Bbot%5D", gh.slug),
+        Method::Get,
+    ) {
         let mut req = req;
         if let Ok(h) = req.headers_mut() {
             let _ = h.set("User-Agent", "fctl-control");
             let _ = h.set("Accept", "application/vnd.github+json");
         }
-        if let Ok(mut res) = Fetch::Request(req).send().await {
-            if let Ok(v) = res.json::<serde_json::Value>().await {
-                if let Some(id) = v.get("id").and_then(serde_json::Value::as_u64) {
+        if let Ok(mut res) = Fetch::Request(req).send().await
+            && let Ok(v) = res.json::<serde_json::Value>().await
+                && let Some(id) = v.get("id").and_then(serde_json::Value::as_u64) {
                     email = format!("{id}+{login}@users.noreply.github.com");
                 }
-            }
-        }
     }
     BOT_EMAIL.with(|b| *b.borrow_mut() = Some((login.clone(), email.clone())));
     GitIdentity { name: login, email }
@@ -120,9 +176,25 @@ pub async fn github_token(cfg: &Config, repo: &RepoRef, now: i64) -> AppResult<G
 
 /// The credential with a valid access token, refreshing an OAuth login when
 /// it is about to expire. Callers serialize refreshes per credential.
-pub async fn claude_credential(db: &D1Database, keys: &Keys, id: &str, now: i64) -> AppResult<ClaudeCredential> {
-    let row: Option<CredentialRow> = q(db, "SELECT * FROM claude_credentials WHERE id = ?", &[s(id)])?.first().await?;
-    let row = row.ok_or_else(|| AppError(ApiError::new(ErrorCode::NotConfigured, "The Claude credential was removed")))?;
+pub async fn claude_credential(
+    db: &D1Database,
+    keys: &Keys,
+    id: &str,
+    now: i64,
+) -> AppResult<ClaudeCredential> {
+    let row: Option<CredentialRow> = q(
+        db,
+        "SELECT * FROM claude_credentials WHERE id = ?",
+        &[s(id)],
+    )?
+    .first()
+    .await?;
+    let row = row.ok_or_else(|| {
+        AppError(ApiError::new(
+            ErrorCode::NotConfigured,
+            "The Claude credential was removed",
+        ))
+    })?;
     if row.status != "active" {
         return Err(AppError(ApiError::new(
             ErrorCode::NotConfigured,
@@ -132,12 +204,20 @@ pub async fn claude_credential(db: &D1Database, keys: &Keys, id: &str, now: i64)
     let aad = CredentialRow::aad(&row.id, &row.user_id);
     let mut secret: CredentialSecret = keys.open_json(&aad, &row.secret_enc)?;
     let kind = row.kind();
-    if kind == ClaudeCredentialKind::Oauth && secret.expires_at.is_some_and(|e| e - now < REFRESH_MARGIN_MS) {
+    if kind == ClaudeCredentialKind::Oauth
+        && secret
+            .expires_at
+            .is_some_and(|e| e - now < REFRESH_MARGIN_MS)
+    {
         secret = refresh(db, keys, &row, &secret, now).await?;
     }
-    q(db, "UPDATE claude_credentials SET last_used_at = ? WHERE id = ?", &[n(now), s(&row.id)])?
-        .run()
-        .await?;
+    q(
+        db,
+        "UPDATE claude_credentials SET last_used_at = ? WHERE id = ?",
+        &[n(now), s(&row.id)],
+    )?
+    .run()
+    .await?;
     Ok(ClaudeCredential {
         id: CredentialId(row.id.clone()),
         kind,
@@ -149,11 +229,19 @@ pub async fn claude_credential(db: &D1Database, keys: &Keys, id: &str, now: i64)
     })
 }
 
-async fn refresh(db: &D1Database, keys: &Keys, row: &CredentialRow, secret: &CredentialSecret, now: i64) -> AppResult<CredentialSecret> {
-    let refresh_token = secret
-        .refresh_token
-        .clone()
-        .ok_or_else(|| AppError(ApiError::new(ErrorCode::NotConfigured, "This Claude login cannot be refreshed. Connect Claude again.")))?;
+async fn refresh(
+    db: &D1Database,
+    keys: &Keys,
+    row: &CredentialRow,
+    secret: &CredentialSecret,
+    now: i64,
+) -> AppResult<CredentialSecret> {
+    let refresh_token = secret.refresh_token.clone().ok_or_else(|| {
+        AppError(ApiError::new(
+            ErrorCode::NotConfigured,
+            "This Claude login cannot be refreshed. Connect Claude again.",
+        ))
+    })?;
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -163,22 +251,33 @@ async fn refresh(db: &D1Database, keys: &Keys, row: &CredentialRow, secret: &Cre
     let headers = Headers::new();
     headers.set("Content-Type", "application/json")?;
     let mut init = RequestInit::new();
-    init.with_method(Method::Post).with_headers(headers).with_body(Some(body.to_string().into()));
-    let mut res = Fetch::Request(Request::new_with_init(CLAUDE_TOKEN_URL, &init)?).send().await?;
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(body.to_string().into()));
+    let mut res = Fetch::Request(Request::new_with_init(CLAUDE_TOKEN_URL, &init)?)
+        .send()
+        .await?;
     let status = res.status_code();
     let v: serde_json::Value = res.json().await.unwrap_or(serde_json::Value::Null);
     if status == 400 || status == 401 {
         // invalid_grant: the login was revoked or used elsewhere.
-        q(db, "UPDATE claude_credentials SET status = 'invalid', updated_at = ? WHERE id = ?", &[n(now), s(&row.id)])?
-            .run()
-            .await?;
+        q(
+            db,
+            "UPDATE claude_credentials SET status = 'invalid', updated_at = ? WHERE id = ?",
+            &[n(now), s(&row.id)],
+        )?
+        .run()
+        .await?;
         return Err(AppError(ApiError::new(
             ErrorCode::NotConfigured,
             "Claude rejected the stored login. Connect Claude again in Settings.",
         )));
     }
     if status != 200 {
-        return Err(AppError(ApiError::new(ErrorCode::Unavailable, format!("Claude's token service answered {status}"))));
+        return Err(AppError(ApiError::new(
+            ErrorCode::Unavailable,
+            format!("Claude's token service answered {status}"),
+        )));
     }
     let access_token = v
         .get("access_token")
@@ -192,7 +291,10 @@ async fn refresh(db: &D1Database, keys: &Keys, row: &CredentialRow, secret: &Cre
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
             .or(secret.refresh_token.clone()),
-        expires_at: v.get("expires_in").and_then(serde_json::Value::as_i64).map(|s| now + s * 1000),
+        expires_at: v
+            .get("expires_in")
+            .and_then(serde_json::Value::as_i64)
+            .map(|s| now + s * 1000),
     };
     let sealed = keys.seal_json(&CredentialRow::aad(&row.id, &row.user_id), &new)?;
     q(

@@ -45,7 +45,14 @@ impl Journal {
             .append(true)
             .open(&path)
             .with_context(|| format!("opening {}", path.display()))?;
-        Ok(Self { path, ack_path, file, last_seq, acked, bytes })
+        Ok(Self {
+            path,
+            ack_path,
+            file,
+            last_seq,
+            acked,
+            bytes,
+        })
     }
 
     pub fn last_seq(&self) -> u64 {
@@ -59,7 +66,11 @@ impl Journal {
 
     /// Appends an event body with the next sequence number.
     pub fn append(&mut self, ts: i64, body: fctl_proto::event::EventBody) -> Result<AgentEvent> {
-        let ev = AgentEvent { agent_seq: self.last_seq + 1, ts, body };
+        let ev = AgentEvent {
+            agent_seq: self.last_seq + 1,
+            ts,
+            body,
+        };
         let mut line = serde_json::to_string(&ev)?;
         line.push('\n');
         self.file.write_all(line.as_bytes())?;
@@ -75,11 +86,10 @@ impl Journal {
         let mut out = Vec::new();
         for line in BufReader::new(f).lines() {
             let line = line?;
-            if let Ok(ev) = serde_json::from_str::<AgentEvent>(&line) {
-                if ev.agent_seq > after {
+            if let Ok(ev) = serde_json::from_str::<AgentEvent>(&line)
+                && ev.agent_seq > after {
                     out.push(ev);
                 }
-            }
         }
         Ok(out)
     }
@@ -122,7 +132,11 @@ mod tests {
     use fctl_proto::event::{EventBody, LogLevel, LogLine, LogSource};
 
     fn log(text: &str) -> EventBody {
-        EventBody::Log(LogLine { source: LogSource::Agent, level: LogLevel::Info, text: text.into() })
+        EventBody::Log(LogLine {
+            source: LogSource::Agent,
+            level: LogLevel::Info,
+            text: text.into(),
+        })
     }
 
     #[test]
@@ -142,7 +156,10 @@ mod tests {
         assert_eq!(ev.agent_seq, 6);
         j.compact()?;
         let rest = j.read_after(0)?;
-        assert_eq!(rest.iter().map(|e| e.agent_seq).collect::<Vec<_>>(), vec![4, 5, 6]);
+        assert_eq!(
+            rest.iter().map(|e| e.agent_seq).collect::<Vec<_>>(),
+            vec![4, 5, 6]
+        );
         Ok(())
     }
 }

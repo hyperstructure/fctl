@@ -18,7 +18,7 @@ use fctl_proto::session::{RemoteControlState, SessionStatus};
 use fctl_proto::uplink::{AgentEvent, Delivery, DeliveryKind, SessionState};
 use fctl_proto::{DeliveryId, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -82,7 +82,13 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    pub fn new(state_dir: PathBuf) -> Result<(Self, mpsc::UnboundedReceiver<ClaudeOut>, mpsc::UnboundedReceiver<Work>)> {
+    pub fn new(
+        state_dir: PathBuf,
+    ) -> Result<(
+        Self,
+        mpsc::UnboundedReceiver<ClaudeOut>,
+        mpsc::UnboundedReceiver<Work>,
+    )> {
         let journal = Journal::open(&state_dir)?;
         let persisted = std::fs::read_to_string(state_dir.join("state.json"))
             .ok()
@@ -213,7 +219,11 @@ impl Supervisor {
                 if self.config.is_none() {
                     self.configure(*config);
                 } else {
-                    self.log(LogSource::Agent, LogLevel::Debug, "Already configured; ignoring a repeated Configure");
+                    self.log(
+                        LogSource::Agent,
+                        LogLevel::Debug,
+                        "Already configured; ignoring a repeated Configure",
+                    );
                 }
             }
             HostToAgent::Replay { after_agent_seq } => {
@@ -221,12 +231,16 @@ impl Supervisor {
                 match self.journal.read_after(after_agent_seq) {
                     Ok(events) => {
                         for chunk in events.chunks(100) {
-                            self.send(&AgentToHost::Events { events: chunk.to_vec() });
+                            self.send(&AgentToHost::Events {
+                                events: chunk.to_vec(),
+                            });
                         }
                     }
                     Err(e) => tracing::error!("journal replay failed: {e:#}"),
                 }
-                self.send(&AgentToHost::State { state: self.state.clone() });
+                self.send(&AgentToHost::State {
+                    state: self.state.clone(),
+                });
             }
             HostToAgent::Ack { agent_seq } => {
                 if let Err(e) = self.journal.ack(agent_seq) {
@@ -234,7 +248,12 @@ impl Supervisor {
                 }
             }
             HostToAgent::Deliver { delivery } => self.on_delivery(delivery).await,
-            HostToAgent::Credentials { request_id, claude, github, error } => {
+            HostToAgent::Credentials {
+                request_id,
+                claude,
+                github,
+                error,
+            } => {
                 self.on_credentials(request_id, claude, github, error);
             }
             HostToAgent::Stop { reason, grace_ms } => self.begin_stop(reason, grace_ms).await,
@@ -251,11 +270,20 @@ impl Supervisor {
     }
 
     fn log(&mut self, source: LogSource, level: LogLevel, text: &str) {
-        self.emit(EventBody::Log(LogLine { source, level, text: text.to_owned() }));
+        self.emit(EventBody::Log(LogLine {
+            source,
+            level,
+            text: text.to_owned(),
+        }));
     }
 
     fn notice(&mut self, level: NoticeLevel, code: &str, message: &str, until: Option<i64>) {
-        self.emit(EventBody::Notice(Notice { level, code: code.into(), message: message.into(), until }));
+        self.emit(EventBody::Notice(Notice {
+            level,
+            code: code.into(),
+            message: message.into(),
+            until,
+        }));
     }
 
     fn set_status(&mut self, status: SessionStatus, reason: Option<String>) {
@@ -264,10 +292,16 @@ impl Supervisor {
         }
         self.state.status = status;
         self.state.reason = reason;
-        self.state.resume_at = if status == SessionStatus::Paused { self.resume_at } else { None };
+        self.state.resume_at = if status == SessionStatus::Paused {
+            self.resume_at
+        } else {
+            None
+        };
         self.idle_since = (status == SessionStatus::Idle).then(Instant::now);
         self.flush();
-        self.send(&AgentToHost::State { state: self.state.clone() });
+        self.send(&AgentToHost::State {
+            state: self.state.clone(),
+        });
     }
 
     fn persist(&self) {
@@ -297,7 +331,14 @@ impl Supervisor {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("/root"));
-        let paths = Paths::new(std::path::Path::new(&config.workdir), &home, &self.state_dir);
+        // `~/workspace` (container sandboxes) is relative to HOME.
+        let workdir = match config.workdir.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(&config.workdir),
+        };
+        let mut config = config;
+        config.workdir = workdir.display().to_string();
+        let paths = Paths::new(&workdir, &home, &self.state_dir);
         self.state.branch = Some(config.spec.branch.clone());
         self.state.claude_session_id = Some(config.spec.claude_session_id.clone());
         if let Some(gh) = &config.spec.credentials.github {
@@ -307,7 +348,10 @@ impl Supervisor {
         self.paths = Some(paths.clone());
         let spec = config.spec.clone();
         self.config = Some(config);
-        self.set_status(SessionStatus::Preparing, Some("Preparing the workspace".into()));
+        self.set_status(
+            SessionStatus::Preparing,
+            Some("Preparing the workspace".into()),
+        );
         let work = self.work_tx.clone();
         tokio::spawn(async move {
             let (log_tx, mut log_rx) = mpsc::unbounded_channel::<(LogLevel, String)>();
@@ -323,7 +367,13 @@ impl Supervisor {
                     workspace::write_github_token(&paths, gh)?;
                 }
                 workspace::prepare(&paths, &spec, &log_tx).await?;
-                if let Some(script) = spec.project.settings.setup_script.as_deref().filter(|s| !s.trim().is_empty()) {
+                if let Some(script) = spec
+                    .project
+                    .settings
+                    .setup_script
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                {
                     let env: Vec<(String, String)> = spec
                         .project
                         .settings
@@ -343,7 +393,10 @@ impl Supervisor {
                     drop(setup_tx);
                     let _ = setup_fwd.await;
                     if !ok {
-                        let _ = log_tx.send((LogLevel::Warn, "The setup script failed; continuing so the agent can fix it".into()));
+                        let _ = log_tx.send((
+                            LogLevel::Warn,
+                            "The setup script failed; continuing so the agent can fix it".into(),
+                        ));
                     }
                 }
                 anyhow::Ok(())
@@ -395,7 +448,12 @@ impl Supervisor {
         cfg["autoUpdates"] = json!(false);
         cfg["projects"][workdir]["hasTrustDialogAccepted"] = json!(true);
         cfg["projects"][workdir]["hasCompletedProjectOnboarding"] = json!(true);
-        if let Some(raw) = self.claude_credential.as_ref().and_then(|c| c.account.as_ref()).and_then(|a| a.raw.clone()) {
+        if let Some(raw) = self
+            .claude_credential
+            .as_ref()
+            .and_then(|c| c.account.as_ref())
+            .and_then(|a| a.raw.clone())
+        {
             cfg["oauthAccount"] = raw;
         }
         std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
@@ -405,7 +463,10 @@ impl Supervisor {
             "permissions": { "defaultMode": "bypassPermissions" },
             "env": { "DISABLE_AUTOUPDATER": "1" }
         });
-        std::fs::write(claude_dir.join("settings.json"), serde_json::to_string_pretty(&settings)?)?;
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            serde_json::to_string_pretty(&settings)?,
+        )?;
         Ok(())
     }
 
@@ -418,21 +479,37 @@ impl Supervisor {
         self.write_claude_config(&paths.home, &workdir)?;
         let setting_sources = match claude::project_settings_are_unsafe(&paths.workdir) {
             Some(why) => {
-                let msg = format!("Ignoring the repository's Claude settings because {why}: fctl only runs Claude on subscriptions.");
+                let msg = format!(
+                    "Ignoring the repository's Claude settings because {why}: fctl only runs Claude on subscriptions."
+                );
                 self.notice(NoticeLevel::Warn, "project_settings_ignored", &msg, None);
                 "user"
             }
             None => "user,project,local",
         };
-        let cred = self.claude_credential.clone().unwrap_or_else(|| spec.credentials.claude.clone());
+        let cred = self
+            .claude_credential
+            .clone()
+            .unwrap_or_else(|| spec.credentials.claude.clone());
         let mut env = std::collections::BTreeMap::new();
-        for (k, v) in spec.project.settings.env.iter().chain(spec.secrets.iter()).chain(config.env.iter()) {
+        for (k, v) in spec
+            .project
+            .settings
+            .env
+            .iter()
+            .chain(spec.secrets.iter())
+            .chain(config.env.iter())
+        {
             env.insert(k.clone(), v.clone());
         }
         env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), cred.access_token.clone());
         env.insert(
             "CLAUDE_CODE_OAUTH_SCOPES".into(),
-            if cred.scopes.is_empty() { "user:inference".into() } else { cred.scopes.join(" ") },
+            if cred.scopes.is_empty() {
+                "user:inference".into()
+            } else {
+                cred.scopes.join(" ")
+            },
         );
         if let Some(t) = &cred.subscription_type {
             env.insert("CLAUDE_CODE_SUBSCRIPTION_TYPE".into(), t.clone());
@@ -451,16 +528,28 @@ impl Supervisor {
             home: &paths.home,
             claude_session_id: &spec.claude_session_id,
             resume,
-            model: spec.model.as_deref().or(spec.project.settings.model.as_deref()),
-            effort: spec.effort.as_deref().or(spec.project.settings.effort.as_deref()),
+            model: spec
+                .model
+                .as_deref()
+                .or(spec.project.settings.model.as_deref()),
+            effort: spec
+                .effort
+                .as_deref()
+                .or(spec.project.settings.effort.as_deref()),
             append_system_prompt: &system,
             setting_sources,
             extra_args: &config.claude_args,
             env,
         };
         let mut c = Claude::spawn(launch, self.claude_tx.clone())?;
-        self.log(LogSource::Agent, LogLevel::Info, &format!("Started Claude Code (pid {})", c.pid().unwrap_or(0)));
-        let init = c.request(json!({ "subtype": "initialize" }), Duration::from_secs(90)).await;
+        self.log(
+            LogSource::Agent,
+            LogLevel::Info,
+            &format!("Started Claude Code (pid {})", c.pid().unwrap_or(0)),
+        );
+        let init = c
+            .request(json!({ "subtype": "initialize" }), Duration::from_secs(90))
+            .await;
         if let Err(e) = init {
             c.kill().await;
             anyhow::bail!("Claude did not initialize: {e}");
@@ -469,15 +558,30 @@ impl Supervisor {
         self.persist();
         // Remote Control: follow the session in claude.ai/code and the apps.
         if spec.project.settings.remote_control {
-            let rc = if cred.kind == ClaudeCredentialKind::Oauth && cred.scopes.iter().any(|s| s == "user:profile") {
+            let rc = if cred.kind == ClaudeCredentialKind::Oauth
+                && cred.scopes.iter().any(|s| s == "user:profile")
+            {
                 let name = format!("{} · {}", spec.project.name, spec.title);
-                match c.request(json!({ "subtype": "remote_control", "enabled": true, "name": name }), Duration::from_secs(45)).await {
+                match c
+                    .request(
+                        json!({ "subtype": "remote_control", "enabled": true, "name": name }),
+                        Duration::from_secs(45),
+                    )
+                    .await
+                {
                     Ok(v) => RemoteControlState {
                         enabled: true,
-                        session_url: v.get("session_url").and_then(Value::as_str).map(str::to_owned),
+                        session_url: v
+                            .get("session_url")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         unavailable_reason: None,
                     },
-                    Err(e) => RemoteControlState { enabled: false, session_url: None, unavailable_reason: Some(e) },
+                    Err(e) => RemoteControlState {
+                        enabled: false,
+                        session_url: None,
+                        unavailable_reason: Some(e),
+                    },
                 }
             } else {
                 RemoteControlState {
@@ -495,11 +599,10 @@ impl Supervisor {
         }
         self.claude = Some(c);
         // The first turn, then anything that queued up meanwhile.
-        if !resume {
-            if let Some(p) = spec.prompt.clone() {
+        if !resume
+            && let Some(p) = spec.prompt.clone() {
                 self.send_turn(&p, None, None).await;
             }
-        }
         if self.turn_active {
             self.set_status(SessionStatus::Running, None);
         } else {
@@ -512,7 +615,11 @@ impl Supervisor {
     }
 
     async fn send_turn(&mut self, text: &str, author: Option<&str>, delivery: Option<&DeliveryId>) {
-        let starter = self.config.as_ref().map(|c| c.spec.author.name.clone()).unwrap_or_default();
+        let starter = self
+            .config
+            .as_ref()
+            .map(|c| c.spec.author.name.clone())
+            .unwrap_or_default();
         let content = prompt::user_turn(text, author, &starter);
         if let Some(c) = &self.claude {
             c.send_user(&content, &fctl_domain::ids::uuid_v4());
@@ -520,7 +627,11 @@ impl Supervisor {
             self.idle_since = None;
             if let Some(id) = delivery {
                 self.mark_delivered(id);
-                self.send(&AgentToHost::Delivered { delivery_id: id.clone(), ok: true, error: None });
+                self.send(&AgentToHost::Delivered {
+                    delivery_id: id.clone(),
+                    ok: true,
+                    error: None,
+                });
             }
             if self.state.status != SessionStatus::Running {
                 self.set_status(SessionStatus::Running, None);
@@ -530,17 +641,21 @@ impl Supervisor {
 
     async fn on_delivery(&mut self, d: Delivery) {
         if self.was_delivered(&d.id) {
-            self.send(&AgentToHost::Delivered { delivery_id: d.id, ok: true, error: None });
+            self.send(&AgentToHost::Delivered {
+                delivery_id: d.id,
+                ok: true,
+                error: None,
+            });
             return;
         }
         match &d.kind {
             DeliveryKind::Message { text, author } => {
-                if self.claude.is_none() || self.stopping.is_some() {
-                    if self.stopping.is_some() {
-                        self.send(&AgentToHost::Delivered { delivery_id: d.id, ok: false, error: Some("The session is stopping".into()) });
-                    } else {
-                        self.queue.push_back(d.clone());
-                    }
+                if self.stopping.is_some() {
+                    // Leave it unconfirmed: the control plane keeps it for the next run.
+                    return;
+                }
+                if self.claude.is_none() {
+                    self.queue.push_back(d.clone());
                     return;
                 }
                 let (text, author) = (text.clone(), author.as_ref().map(|a| a.name.clone()));
@@ -552,14 +667,18 @@ impl Supervisor {
                 self.send_turn(&text, author.as_deref(), Some(&d.id)).await;
             }
             DeliveryKind::Interrupt { .. } => {
-                if let Some(c) = self.claude.as_mut() {
-                    if self.turn_active {
+                if let Some(c) = self.claude.as_mut()
+                    && self.turn_active {
                         c.request_nowait(json!({ "subtype": "interrupt" }));
                     }
-                }
-                self.queue.retain(|q| !matches!(q.kind, DeliveryKind::Message { .. }));
+                self.queue
+                    .retain(|q| !matches!(q.kind, DeliveryKind::Message { .. }));
                 self.mark_delivered(&d.id);
-                self.send(&AgentToHost::Delivered { delivery_id: d.id, ok: true, error: None });
+                self.send(&AgentToHost::Delivered {
+                    delivery_id: d.id,
+                    ok: true,
+                    error: None,
+                });
             }
         }
     }
@@ -567,7 +686,10 @@ impl Supervisor {
     async fn on_claude(&mut self, out: ClaudeOut) {
         match out {
             ClaudeOut::Message(v) => self.on_claude_message(v).await,
-            ClaudeOut::ControlRequest { request_id, request } => self.on_claude_request(request_id, request),
+            ClaudeOut::ControlRequest {
+                request_id,
+                request,
+            } => self.on_claude_request(request_id, request),
             ClaudeOut::Stderr(line) => {
                 // At most 60 stderr lines a minute reach the transcript.
                 let (since, n) = self.stderr_budget;
@@ -579,7 +701,11 @@ impl Supervisor {
                     self.log(LogSource::Claude, LogLevel::Warn, &line);
                 } else if n == 60 {
                     self.stderr_budget.1 += 1;
-                    self.log(LogSource::Claude, LogLevel::Warn, "(more stderr output suppressed)");
+                    self.log(
+                        LogSource::Claude,
+                        LogLevel::Warn,
+                        "(more stderr output suppressed)",
+                    );
                 }
             }
             ClaudeOut::Exited(code) => self.on_claude_exit(code).await,
@@ -597,17 +723,23 @@ impl Supervisor {
             self.on_billing_guard(guard).await;
             return;
         }
-        if kind == ClaudeKind::Init {
-            if let Some(m) = v.get("model").and_then(Value::as_str) {
+        if kind == ClaudeKind::Init
+            && let Some(m) = v.get("model").and_then(Value::as_str) {
                 self.state.model = Some(m.to_owned());
             }
-        }
         let is_result = kind == ClaudeKind::Result;
-        let more_queued = v.get("queued_turn_count").and_then(Value::as_u64).unwrap_or(0) > 0;
+        let more_queued = v
+            .get("queued_turn_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0;
         self.emit(EventBody::Claude(v));
         if is_result {
             self.turn_active = more_queued;
-            if !more_queued && self.stopping.is_none() && self.state.status == SessionStatus::Running {
+            if !more_queued
+                && self.stopping.is_none()
+                && self.state.status == SessionStatus::Running
+            {
                 self.set_status(SessionStatus::Idle, Some("Waiting for a message".into()));
             }
             self.after_turn();
@@ -616,30 +748,41 @@ impl Supervisor {
 
     /// After each turn: git state, push, pull request.
     fn after_turn(&mut self) {
-        let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) else { return };
+        let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) else {
+            return;
+        };
         let work = self.work_tx.clone();
         tokio::spawn(async move {
             let spec = &config.spec;
-            let Ok(mut st) = workspace::state(&paths, spec).await else { return };
+            let Ok(mut st) = workspace::state(&paths, spec).await else {
+                return;
+            };
             if spec.project.repo.is_some() && config.push_on_commit && st.ahead > 0 && !st.pushed {
                 match workspace::push(&paths, &st).await {
                     Ok(true) => {
-                        let _ = work.send(Work::Log(LogLevel::Info, format!("Pushed {}", st.branch.clone().unwrap_or_default()), LogSource::Agent));
+                        let _ = work.send(Work::Log(
+                            LogLevel::Info,
+                            format!("Pushed {}", st.branch.clone().unwrap_or_default()),
+                            LogSource::Agent,
+                        ));
                         if let Ok(fresh) = workspace::state(&paths, spec).await {
                             st = fresh;
                         }
                     }
                     Ok(false) => {}
                     Err(e) => {
-                        let _ = work.send(Work::Log(LogLevel::Warn, format!("{e:#}"), LogSource::Agent));
+                        let _ = work.send(Work::Log(
+                            LogLevel::Warn,
+                            format!("{e:#}"),
+                            LogSource::Agent,
+                        ));
                     }
                 }
             }
-            if st.pushed {
-                if let Some(b) = st.branch.clone() {
+            if st.pushed
+                && let Some(b) = st.branch.clone() {
                     st.pull_request = workspace::pull_request(&paths, &b).await;
                 }
-            }
             let _ = work.send(Work::Git(st));
         });
     }
@@ -669,7 +812,10 @@ impl Supervisor {
                     "Claude started using paid extra usage, so fctl interrupted it. The session continues when the subscription limit resets.",
                     Some(until),
                 );
-                self.set_status(SessionStatus::Paused, Some("Paused to avoid paid extra usage".into()));
+                self.set_status(
+                    SessionStatus::Paused,
+                    Some("Paused to avoid paid extra usage".into()),
+                );
             }
             BillingGuard::LimitReached { resets_at, limit } => {
                 let until = resets_at.unwrap_or(now_ms() + 60 * 60 * 1000) + 30_000;
@@ -681,28 +827,44 @@ impl Supervisor {
                     &format!("The Claude {which} limit is reached. fctl continues the session when it resets."),
                     Some(until),
                 );
-                self.set_status(SessionStatus::Paused, Some("Waiting for the usage limit to reset".into()));
+                self.set_status(
+                    SessionStatus::Paused,
+                    Some("Waiting for the usage limit to reset".into()),
+                );
             }
         }
     }
 
     fn on_claude_request(&mut self, request_id: String, request: Value) {
-        let subtype = request.get("subtype").and_then(Value::as_str).unwrap_or_default();
+        let subtype = request
+            .get("subtype")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         match subtype {
             "oauth_token_refresh" => {
                 let rid = self.request_id();
-                self.pending_creds.insert(rid.clone(), CredFor::ClaudeRefresh(request_id));
-                self.send(&AgentToHost::CredentialRequest { request_id: rid, kind: CredentialKind::Claude });
+                self.pending_creds
+                    .insert(rid.clone(), CredFor::ClaudeRefresh(request_id));
+                self.send(&AgentToHost::CredentialRequest {
+                    request_id: rid,
+                    kind: CredentialKind::Claude,
+                });
             }
             "can_use_tool" => {
                 let input = request.get("input").cloned().unwrap_or_else(|| json!({}));
                 if let Some(c) = &self.claude {
-                    c.respond(&request_id, Ok(json!({ "behavior": "allow", "updatedInput": input })));
+                    c.respond(
+                        &request_id,
+                        Ok(json!({ "behavior": "allow", "updatedInput": input })),
+                    );
                 }
             }
             other => {
                 if let Some(c) = &self.claude {
-                    c.respond(&request_id, Err(format!("fctl-agent does not handle {other}")));
+                    c.respond(
+                        &request_id,
+                        Err(format!("fctl-agent does not handle {other}")),
+                    );
                 }
             }
         }
@@ -735,7 +897,12 @@ impl Supervisor {
                 let answer = match (claude, error) {
                     (Some(c), _) => Ok(json!({ "accessToken": c.access_token })),
                     (None, Some(e)) => {
-                        self.notice(NoticeLevel::Error, "credential_expired", &format!("Claude's credential could not be refreshed: {e}"), None);
+                        self.notice(
+                            NoticeLevel::Error,
+                            "credential_expired",
+                            &format!("Claude's credential could not be refreshed: {e}"),
+                            None,
+                        );
                         Ok(json!({ "accessToken": null, "reason": "host_declined" }))
                     }
                     (None, None) => Ok(json!({ "accessToken": null })),
@@ -746,7 +913,11 @@ impl Supervisor {
             }
             Some(CredFor::GithubRefresh) => {
                 if let Some(e) = error {
-                    self.log(LogSource::Agent, LogLevel::Warn, &format!("GitHub token refresh failed: {e}"));
+                    self.log(
+                        LogSource::Agent,
+                        LogLevel::Warn,
+                        &format!("GitHub token refresh failed: {e}"),
+                    );
                 }
             }
             None => {}
@@ -755,7 +926,10 @@ impl Supervisor {
 
     async fn on_claude_exit(&mut self, _code: Option<i32>) {
         let code = match self.claude.take() {
-            Some(mut c) => tokio::time::timeout(Duration::from_secs(5), c.wait()).await.ok().flatten(),
+            Some(mut c) => tokio::time::timeout(Duration::from_secs(5), c.wait())
+                .await
+                .ok()
+                .flatten(),
             None => return,
         };
         self.turn_active = false;
@@ -763,9 +937,13 @@ impl Supervisor {
             return;
         }
         let now = Instant::now();
-        self.restarts.retain(|t| now.duration_since(*t) < Duration::from_secs(600));
+        self.restarts
+            .retain(|t| now.duration_since(*t) < Duration::from_secs(600));
         if self.restarts.len() >= 3 {
-            let msg = format!("Claude exited (code {}) three times in ten minutes", code.map_or("?".into(), |c| c.to_string()));
+            let msg = format!(
+                "Claude exited (code {}) three times in ten minutes",
+                code.map_or("?".into(), |c| c.to_string())
+            );
             self.notice(NoticeLevel::Error, "claude_crashed", &msg, None);
             self.set_status(SessionStatus::Failed, Some(msg));
             self.finish().await;
@@ -775,7 +953,10 @@ impl Supervisor {
         self.notice(
             NoticeLevel::Warn,
             "claude_restarted",
-            &format!("Claude exited unexpectedly (code {}); resuming the conversation", code.map_or("?".into(), |c| c.to_string())),
+            &format!(
+                "Claude exited unexpectedly (code {}); resuming the conversation",
+                code.map_or("?".into(), |c| c.to_string())
+            ),
             None,
         );
         if let Err(e) = self.start_claude().await {
@@ -792,8 +973,16 @@ impl Supervisor {
         // Usage limit reset: continue.
         if self.state.status == SessionStatus::Paused && self.resume_at.is_some_and(|t| now >= t) {
             self.resume_at = None;
-            self.set_status(SessionStatus::Running, Some("Resuming after the usage limit reset".into()));
-            self.send_turn("The usage limit has reset. Continue where you left off.", None, None).await;
+            self.set_status(
+                SessionStatus::Running,
+                Some("Resuming after the usage limit reset".into()),
+            );
+            self.send_turn(
+                "The usage limit has reset. Continue where you left off.",
+                None,
+                None,
+            )
+            .await;
             while let Some(d) = self.queue.pop_front() {
                 self.on_delivery(d).await;
             }
@@ -802,21 +991,25 @@ impl Supervisor {
         if self.github_expires_at - now < 10 * 60 * 1000 && self.host.is_some() {
             self.github_expires_at = now + 5 * 60 * 1000; // retry in five minutes if this fails
             let rid = self.request_id();
-            self.pending_creds.insert(rid.clone(), CredFor::GithubRefresh);
-            self.send(&AgentToHost::CredentialRequest { request_id: rid, kind: CredentialKind::Github });
+            self.pending_creds
+                .insert(rid.clone(), CredFor::GithubRefresh);
+            self.send(&AgentToHost::CredentialRequest {
+                request_id: rid,
+                kind: CredentialKind::Github,
+            });
         }
         // Idle timeout.
-        if let (Some(since), Some(cfg)) = (self.idle_since, self.config.as_ref()) {
-            if since.elapsed() > Duration::from_secs(cfg.spec.idle_timeout_secs.max(60)) && self.stopping.is_none() {
+        if let (Some(since), Some(cfg)) = (self.idle_since, self.config.as_ref())
+            && since.elapsed() > Duration::from_secs(cfg.spec.idle_timeout_secs.max(60))
+                && self.stopping.is_none()
+            {
                 self.begin_stop(StopReason::Idle, 30_000).await;
             }
-        }
         // A stop whose grace period ran out.
-        if let Some((_, deadline)) = self.stopping {
-            if Instant::now() >= deadline && self.exit_after.is_none() {
+        if let Some((_, deadline)) = self.stopping
+            && Instant::now() >= deadline && self.exit_after.is_none() {
                 self.finish().await;
             }
-        }
     }
 
     async fn begin_stop(&mut self, reason: StopReason, grace_ms: u64) {
@@ -843,21 +1036,23 @@ impl Supervisor {
         if let Some(mut c) = self.claude.take() {
             c.kill().await;
         }
-        if let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) {
-            if let Ok(mut st) = workspace::state(&paths, &config.spec).await {
-                if config.spec.project.repo.is_some() && config.push_on_commit && st.ahead > 0 && !st.pushed {
-                    if workspace::push(&paths, &st).await.is_ok() {
-                        if let Ok(fresh) = workspace::state(&paths, &config.spec).await {
+        if let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone())
+            && let Ok(mut st) = workspace::state(&paths, &config.spec).await {
+                if config.spec.project.repo.is_some()
+                    && config.push_on_commit
+                    && st.ahead > 0
+                    && !st.pushed
+                    && workspace::push(&paths, &st).await.is_ok()
+                        && let Ok(fresh) = workspace::state(&paths, &config.spec).await {
                             st = fresh;
                         }
-                    }
-                }
                 self.emit(EventBody::Git(st));
             }
-        }
         let (status, reason) = match self.stopping {
             Some((r, _)) => (SessionStatus::Stopped, Some(stop_text(r).to_owned())),
-            None if self.state.status == SessionStatus::Failed => (SessionStatus::Failed, self.state.reason.clone()),
+            None if self.state.status == SessionStatus::Failed => {
+                (SessionStatus::Failed, self.state.reason.clone())
+            }
             None => (SessionStatus::Stopped, Some("Stopped".into())),
         };
         self.set_status(status, reason.clone());

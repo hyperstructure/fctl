@@ -19,8 +19,8 @@ use fctl_proto::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use worker::{
-    durable_object, DurableObject, Env, Request, Response, Result, SqlStorage, SqlStorageValue,
-    State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
+    DurableObject, Env, Request, Response, Result, SqlStorage, SqlStorageValue, State, WebSocket,
+    WebSocketIncomingMessage, WebSocketPair, durable_object,
 };
 
 const TAG_VIEWER: &str = "viewer";
@@ -112,7 +112,12 @@ impl DurableObject for SessionObject {
                 worker::console_error!("session schema: {e}");
             }
         }
-        Self { state, env, sql, mem: RefCell::new(Mem::default()) }
+        Self {
+            state,
+            env,
+            sql,
+            mem: RefCell::new(Mem::default()),
+        }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -145,7 +150,11 @@ impl DurableObject for SessionObject {
         }
     }
 
-    async fn websocket_message(&self, ws: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
+    async fn websocket_message(
+        &self,
+        ws: WebSocket,
+        message: WebSocketIncomingMessage,
+    ) -> Result<()> {
         let WebSocketIncomingMessage::String(text) = message else {
             return Ok(());
         };
@@ -168,7 +177,13 @@ impl DurableObject for SessionObject {
         Ok(())
     }
 
-    async fn websocket_close(&self, ws: WebSocket, _code: usize, _reason: String, _clean: bool) -> Result<()> {
+    async fn websocket_close(
+        &self,
+        ws: WebSocket,
+        _code: usize,
+        _reason: String,
+        _clean: bool,
+    ) -> Result<()> {
         self.on_close(&ws);
         Ok(())
     }
@@ -192,7 +207,12 @@ impl SessionObject {
         let tags = self.state.get_tags(ws);
         if tags.iter().any(|t| t == TAG_UPLINK) {
             // Another uplink may already have replaced this one.
-            let others = self.state.get_websockets_with_tag(TAG_UPLINK).into_iter().filter(|w| w != ws).count();
+            let others = self
+                .state
+                .get_websockets_with_tag(TAG_UPLINK)
+                .into_iter()
+                .filter(|w| w != ws)
+                .count();
             if others == 0 {
                 self.broadcast(r#"{"type":"runner_connected","connected":false}"#);
             }
@@ -240,20 +260,31 @@ impl SessionObject {
     }
 
     fn acked_agent_seq(&self) -> u64 {
-        self.meta("acked_agent_seq").and_then(|v| v.parse().ok()).unwrap_or(0)
+        self.meta("acked_agent_seq")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
     }
 
     /// Stores an event and returns its JSON (for broadcasting).
     fn append(&self, ts: i64, body: &EventBody, agent_seq: Option<u64>) -> Option<String> {
         let kind = body.kind();
         let data = match serde_json::to_value(body) {
-            Ok(v) => v.get("data").map(|d| d.to_string()).unwrap_or_else(|| "null".to_owned()),
+            Ok(v) => v
+                .get("data")
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "null".to_owned()),
             Err(_) => return None,
         };
         self.append_raw(ts, kind, &data, agent_seq)
     }
 
-    fn append_raw(&self, ts: i64, kind: &str, data: &str, agent_seq: Option<u64>) -> Option<String> {
+    fn append_raw(
+        &self,
+        ts: i64,
+        kind: &str,
+        data: &str,
+        agent_seq: Option<u64>,
+    ) -> Option<String> {
         let seq_param = agent_seq.map_or(SqlStorageValue::Null, |s| iv(s as i64));
         let rows = self
             .sql
@@ -263,7 +294,9 @@ impl SessionObject {
             )
             .and_then(|c| c.to_array::<SeqRow>());
         match rows {
-            Ok(r) => r.first().map(|row| event_json(row.seq as i64, ts, kind, data)),
+            Ok(r) => r
+                .first()
+                .map(|row| event_json(row.seq as i64, ts, kind, data)),
             Err(e) => {
                 worker::console_error!("event insert failed: {e}");
                 None
@@ -323,11 +356,17 @@ impl SessionObject {
         if events.is_empty() {
             return;
         }
-        self.broadcast(&format!(r#"{{"type":"events","events":[{}]}}"#, events.join(",")));
+        self.broadcast(&format!(
+            r#"{{"type":"events","events":[{}]}}"#,
+            events.join(",")
+        ));
     }
 
     fn uplink(&self) -> Option<WebSocket> {
-        self.state.get_websockets_with_tag(TAG_UPLINK).into_iter().last()
+        self.state
+            .get_websockets_with_tag(TAG_UPLINK)
+            .into_iter()
+            .last()
     }
 
     fn send_uplink(&self, msg: &UplinkDown) {
@@ -366,7 +405,9 @@ impl SessionObject {
 
     fn broadcast_presence(&self, exclude: Option<&WebSocket>) {
         let viewers = self.presence(exclude);
-        if let Ok(text) = serde_json::to_string(&fctl_proto::viewer::ViewerServer::Presence { viewers }) {
+        if let Ok(text) =
+            serde_json::to_string(&fctl_proto::viewer::ViewerServer::Presence { viewers })
+        {
             for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
                 if exclude.is_some_and(|x| x == &ws) {
                     continue;
@@ -386,7 +427,9 @@ impl SessionObject {
                 .and_then(|i| i.viewer.map(|v| v.role));
             let mut copy = s.clone();
             copy.role = role;
-            if let Ok(text) = serde_json::to_string(&fctl_proto::viewer::ViewerServer::Session { session: Box::new(copy) }) {
+            if let Ok(text) = serde_json::to_string(&fctl_proto::viewer::ViewerServer::Session {
+                session: Box::new(copy),
+            }) {
                 let _ = ws.send_with_str(&text);
             }
         }
@@ -405,7 +448,11 @@ impl SessionObject {
         self.append(now, &EventBody::UserMessage(b.prompt), None);
         self.append(
             now,
-            &EventBody::Status(StatusChange { status: SessionStatus::Queued, reason: None, resume_at: None }),
+            &EventBody::Status(StatusChange {
+                status: SessionStatus::Queued,
+                reason: None,
+                resume_at: None,
+            }),
             None,
         );
         Ok(serde_json::json!({ "ok": true }))
@@ -420,19 +467,28 @@ impl SessionObject {
             }
             let existing = self
                 .sql
-                .exec("SELECT delivery_id FROM client_keys WHERE key = ?", Some(vec![sv(key)]))
+                .exec(
+                    "SELECT delivery_id FROM client_keys WHERE key = ?",
+                    Some(vec![sv(key)]),
+                )
                 .and_then(|c| c.to_array::<K>())
                 .unwrap_or_default();
             if let Some(k) = existing.first() {
-                return Ok(Delivered { delivery_id: fctl_proto::DeliveryId(k.delivery_id.clone()) });
+                return Ok(Delivered {
+                    delivery_id: fctl_proto::DeliveryId(k.delivery_id.clone()),
+                });
             }
             let _ = self.sql.exec(
                 "INSERT INTO client_keys (key, delivery_id, ts) VALUES (?, ?, ?)",
                 Some(vec![sv(key), sv(b.delivery.id.as_str()), iv(now)]),
             );
-            let _ = self.sql.exec("DELETE FROM client_keys WHERE ts < ?", Some(vec![iv(now - 24 * 3600 * 1000)]));
+            let _ = self.sql.exec(
+                "DELETE FROM client_keys WHERE ts < ?",
+                Some(vec![iv(now - 24 * 3600 * 1000)]),
+            );
         }
-        let data = serde_json::to_string(&b.delivery).map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
+        let data = serde_json::to_string(&b.delivery)
+            .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
         #[derive(Deserialize)]
         struct N {
             n: Option<f64>,
@@ -452,8 +508,12 @@ impl SessionObject {
             self.broadcast_events(&[json]);
         }
         self.touch_activity(now);
-        self.send_uplink(&UplinkDown::Deliver { delivery: b.delivery.clone() });
-        Ok(Delivered { delivery_id: b.delivery.id })
+        self.send_uplink(&UplinkDown::Deliver {
+            delivery: b.delivery.clone(),
+        });
+        Ok(Delivered {
+            delivery_id: b.delivery.id,
+        })
     }
 
     async fn control(&self, b: ControlState) -> std::result::Result<serde_json::Value, ApiError> {
@@ -474,12 +534,11 @@ impl SessionObject {
             s.runner = None;
         }
         let mut status_changed = false;
-        if let Some(st) = b.status {
-            if st != s.status || b.reason != s.status_reason {
+        if let Some(st) = b.status
+            && (st != s.status || b.reason != s.status_reason) {
                 status_changed = true;
                 self.set_status(&mut s, st, b.reason.clone(), None, now);
             }
-        }
         s.updated_at = now;
         self.save_summary(&s);
         self.broadcast_summary(&s);
@@ -490,11 +549,19 @@ impl SessionObject {
         Ok(serde_json::json!({ "ok": true }))
     }
 
-    fn set_status(&self, s: &mut Session, status: SessionStatus, reason: Option<String>, resume_at: Option<i64>, now: i64) {
+    fn set_status(
+        &self,
+        s: &mut Session,
+        status: SessionStatus,
+        reason: Option<String>,
+        resume_at: Option<i64>,
+        now: i64,
+    ) {
         s.status = status;
         s.status_reason = reason.clone();
         s.resume_at = resume_at;
-        if matches!(status, SessionStatus::Running | SessionStatus::Idle) && s.started_at.is_none() {
+        if matches!(status, SessionStatus::Running | SessionStatus::Idle) && s.started_at.is_none()
+        {
             s.started_at = Some(now);
         }
         if status.is_terminal() {
@@ -502,7 +569,15 @@ impl SessionObject {
         } else {
             s.ended_at = None;
         }
-        if let Some(json) = self.append(now, &EventBody::Status(StatusChange { status, reason, resume_at }), None) {
+        if let Some(json) = self.append(
+            now,
+            &EventBody::Status(StatusChange {
+                status,
+                reason,
+                resume_at,
+            }),
+            None,
+        ) {
             self.broadcast_events(&[json]);
         }
     }
@@ -532,8 +607,14 @@ impl SessionObject {
         let rows: Vec<EventRow> = rows.into_iter().take(limit as usize).collect();
         let (events, truncated) = Self::render(rows, SNAPSHOT_BYTES, newest_first);
         let has_more = more_rows || truncated;
-        let body = format!(r#"{{"events":[{}],"has_more":{has_more}}}"#, events.join(","));
-        let _ = EventPage { events: vec![], has_more };
+        let body = format!(
+            r#"{{"events":[{}],"has_more":{has_more}}}"#,
+            events.join(",")
+        );
+        let _ = EventPage {
+            events: vec![],
+            has_more,
+        };
         let h = worker::Headers::new();
         h.set("Content-Type", "application/json")?;
         Ok(Response::ok(body)?.with_headers(h))
@@ -546,7 +627,9 @@ impl SessionObject {
             .and_then(|h| serde_json::from_str(&h).ok())
         {
             Some(i) => i,
-            None => return internal::do_error(&api_err(ErrorCode::Unauthorized, "No viewer identity")),
+            None => {
+                return internal::do_error(&api_err(ErrorCode::Unauthorized, "No viewer identity"));
+            }
         };
         let Some(summary) = self.summary() else {
             return internal::do_error(&api_err(ErrorCode::NotFound, "Session not initialized"));
@@ -555,8 +638,14 @@ impl SessionObject {
         let pair = WebSocketPair::new()?;
         let now = now_ms();
         let role = ident.role;
-        let info = SocketInfo { viewer: Some(ident), runner_id: None, since: now, typing_at: None };
-        self.state.accept_websocket_with_tags(&pair.server, &[TAG_VIEWER]);
+        let info = SocketInfo {
+            viewer: Some(ident),
+            runner_id: None,
+            since: now,
+            typing_at: None,
+        };
+        self.state
+            .accept_websocket_with_tags(&pair.server, &[TAG_VIEWER]);
         pair.server.serialize_attachment(&info)?;
         let snapshot = self.snapshot(summary, role, after);
         pair.server.send_with_str(&snapshot)?;
@@ -602,11 +691,21 @@ impl SessionObject {
         let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() else {
             return;
         };
-        let Some(viewer) = info.viewer.clone() else { return };
+        let Some(viewer) = info.viewer.clone() else {
+            return;
+        };
         let reply = |client_id: &str, result: std::result::Result<(), ApiError>| {
             let msg = match result {
-                Ok(()) => fctl_proto::viewer::ViewerServer::Result { client_id: client_id.to_owned(), ok: true, error: None },
-                Err(e) => fctl_proto::viewer::ViewerServer::Result { client_id: client_id.to_owned(), ok: false, error: Some(e) },
+                Ok(()) => fctl_proto::viewer::ViewerServer::Result {
+                    client_id: client_id.to_owned(),
+                    ok: true,
+                    error: None,
+                },
+                Err(e) => fctl_proto::viewer::ViewerServer::Result {
+                    client_id: client_id.to_owned(),
+                    ok: false,
+                    error: Some(e),
+                },
             };
             if let Ok(t) = serde_json::to_string(&msg) {
                 let _ = ws.send_with_str(&t);
@@ -636,22 +735,44 @@ impl SessionObject {
         }
     }
 
-    async fn viewer_send(&self, viewer: &ViewerIdentity, client_id: &str, text: String) -> std::result::Result<(), ApiError> {
+    async fn viewer_send(
+        &self,
+        viewer: &ViewerIdentity,
+        client_id: &str,
+        text: String,
+    ) -> std::result::Result<(), ApiError> {
         if !viewer.role.can_message() {
-            return Err(api_err(ErrorCode::Forbidden, "You can view this session but not message the agent"));
+            return Err(api_err(
+                ErrorCode::Forbidden,
+                "You can view this session but not message the agent",
+            ));
         }
         let text = fctl_domain::validate::message("text", &text)?;
         let status = self.summary().map(|s| s.status);
         if !status.is_some_and(|s| s.accepts_messages()) {
-            return Err(api_err(ErrorCode::Conflict, "The session has ended. Resume it to continue."));
+            return Err(api_err(
+                ErrorCode::Conflict,
+                "The session has ended. Resume it to continue.",
+            ));
         }
         let now = now_ms();
         let id = fctl_domain::ids::delivery_id(now);
         let author = viewer.user.clone();
         self.deliver(Deliver {
-            delivery: Delivery { id: id.clone(), kind: DeliveryKind::Message { text: text.clone(), author: Some(author.clone()) } },
+            delivery: Delivery {
+                id: id.clone(),
+                kind: DeliveryKind::Message {
+                    text: text.clone(),
+                    author: Some(author.clone()),
+                },
+            },
             client_key: Some(format!("{}:{client_id}", author.id)),
-            event: EventBody::UserMessage(UserMessage { id, author: Some(author), text, source: fctl_proto::event::MessageSource::Web }),
+            event: EventBody::UserMessage(UserMessage {
+                id,
+                author: Some(author),
+                text,
+                source: fctl_proto::event::MessageSource::Web,
+            }),
         })
         .await
         .map(|_| ())
@@ -659,13 +780,21 @@ impl SessionObject {
 
     async fn viewer_interrupt(&self, viewer: &ViewerIdentity) -> std::result::Result<(), ApiError> {
         if !viewer.role.can_message() {
-            return Err(api_err(ErrorCode::Forbidden, "You can view this session but not interrupt the agent"));
+            return Err(api_err(
+                ErrorCode::Forbidden,
+                "You can view this session but not interrupt the agent",
+            ));
         }
         let now = now_ms();
         let id = fctl_domain::ids::delivery_id(now);
         let by: UserRef = viewer.user.clone();
         self.deliver(Deliver {
-            delivery: Delivery { id: id.clone(), kind: DeliveryKind::Interrupt { by: Some(by.clone()) } },
+            delivery: Delivery {
+                id: id.clone(),
+                kind: DeliveryKind::Interrupt {
+                    by: Some(by.clone()),
+                },
+            },
             client_key: None,
             event: EventBody::Interrupt(fctl_proto::event::Interrupt { id, by: Some(by) }),
         })
@@ -683,8 +812,14 @@ impl SessionObject {
             let _ = old.close(Some(4001), Some("replaced by a newer connection"));
         }
         let pair = WebSocketPair::new()?;
-        self.state.accept_websocket_with_tags(&pair.server, &[TAG_UPLINK]);
-        pair.server.serialize_attachment(&SocketInfo { viewer: None, runner_id: Some(runner_id), since: now_ms(), typing_at: None })?;
+        self.state
+            .accept_websocket_with_tags(&pair.server, &[TAG_UPLINK]);
+        pair.server.serialize_attachment(&SocketInfo {
+            viewer: None,
+            runner_id: Some(runner_id),
+            since: now_ms(),
+            typing_at: None,
+        })?;
         let pending: Vec<Delivery> = self
             .sql
             .exec("SELECT data FROM outbox ORDER BY n ASC", None)
@@ -693,7 +828,10 @@ impl SessionObject {
             .into_iter()
             .filter_map(|r| serde_json::from_str(&r.data).ok())
             .collect();
-        let welcome = UplinkDown::Welcome { acked_agent_seq: self.acked_agent_seq(), pending };
+        let welcome = UplinkDown::Welcome {
+            acked_agent_seq: self.acked_agent_seq(),
+            pending,
+        };
         if let Ok(text) = serde_json::to_string(&welcome) {
             pair.server.send_with_str(&text)?;
         }
@@ -761,13 +899,21 @@ impl SessionObject {
                     self.broadcast_events(&[json]);
                 }
             }
-            UplinkUp::Delivered { delivery_id, ok, error } => {
-                let _ = self.sql.exec("DELETE FROM outbox WHERE id = ?", Some(vec![sv(delivery_id.as_str())]));
+            UplinkUp::Delivered {
+                delivery_id,
+                ok,
+                error,
+            } => {
+                let _ = self.sql.exec(
+                    "DELETE FROM outbox WHERE id = ?",
+                    Some(vec![sv(delivery_id.as_str())]),
+                );
                 if !ok {
                     let notice = fctl_proto::event::Notice {
                         level: fctl_proto::event::NoticeLevel::Warn,
                         code: "delivery_failed".into(),
-                        message: error.unwrap_or_else(|| "The agent could not take a message".into()),
+                        message: error
+                            .unwrap_or_else(|| "The agent could not take a message".into()),
                         until: None,
                     };
                     if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
@@ -786,12 +932,11 @@ impl SessionObject {
         let mut changed = before != s.stats;
         match kind {
             ClaudeKind::Init => {
-                if let Some(m) = v.get("model").and_then(serde_json::Value::as_str) {
-                    if s.model.as_deref() != Some(m) {
+                if let Some(m) = v.get("model").and_then(serde_json::Value::as_str)
+                    && s.model.as_deref() != Some(m) {
                         s.model = Some(m.to_owned());
                         changed = true;
                     }
-                }
             }
             ClaudeKind::Assistant => {
                 // A complete block arrived: the live buffer is now stale.
@@ -815,9 +960,15 @@ impl SessionObject {
     }
 
     fn track_live(&self, event: &serde_json::Value, text: &str) {
-        let inner = event.pointer("/event/type").and_then(serde_json::Value::as_str);
+        let inner = event
+            .pointer("/event/type")
+            .and_then(serde_json::Value::as_str);
         let mut mem = self.mem.borrow_mut();
-        if inner == Some("message_start") && event.get("parent_tool_use_id").is_none_or(serde_json::Value::is_null) {
+        if inner == Some("message_start")
+            && event
+                .get("parent_tool_use_id")
+                .is_none_or(serde_json::Value::is_null)
+        {
             mem.live.clear();
         }
         if mem.live.len() >= LIVE_MAX_EVENTS {
@@ -829,9 +980,18 @@ impl SessionObject {
     async fn apply_state(&self, state: SessionState, now: i64) {
         let Some(mut s) = self.summary() else { return };
         let mut status_changed = false;
-        if state.status != s.status || state.reason != s.status_reason || state.resume_at != s.resume_at {
+        if state.status != s.status
+            || state.reason != s.status_reason
+            || state.resume_at != s.resume_at
+        {
             status_changed = state.status != s.status;
-            self.set_status(&mut s, state.status, state.reason.clone(), state.resume_at, now);
+            self.set_status(
+                &mut s,
+                state.status,
+                state.reason.clone(),
+                state.resume_at,
+                now,
+            );
         }
         if let Some(b) = state.branch {
             s.branch = Some(b);
@@ -845,7 +1005,10 @@ impl SessionObject {
         if let Some(st) = state.stats {
             s.stats = st;
         }
-        if matches!(state.status, SessionStatus::Idle | SessionStatus::Stopped | SessionStatus::Failed) {
+        if matches!(
+            state.status,
+            SessionStatus::Idle | SessionStatus::Stopped | SessionStatus::Failed
+        ) {
             self.mem.borrow_mut().live.clear();
         }
         s.updated_at = now;
@@ -892,7 +1055,10 @@ impl SessionObject {
         }
         let Ok(db) = self.env.d1("DB") else { return };
         let stats = serde_json::to_string(&s.stats).unwrap_or_else(|_| "{}".into());
-        let rc = s.remote_control.as_ref().and_then(|r| serde_json::to_string(r).ok());
+        let rc = s
+            .remote_control
+            .as_ref()
+            .and_then(|r| serde_json::to_string(r).ok());
         let pr = s.pull_request.clone();
         let res = crate::db::q(
             &db,
@@ -933,8 +1099,12 @@ impl SessionObject {
         let session = s.clone();
         self.state.wait_until(async move {
             if let Ok(stub) = internal::fleet_stub(&env) {
-                let _: std::result::Result<serde_json::Value, _> =
-                    internal::post(&stub, "/notify-session", &internal::NotifySession { session }).await;
+                let _: std::result::Result<serde_json::Value, _> = internal::post(
+                    &stub,
+                    "/notify-session",
+                    &internal::NotifySession { session },
+                )
+                .await;
             }
         });
     }
@@ -968,10 +1138,16 @@ impl SessionObject {
         let Some(weight) = send else { return };
         let Some(s) = self.summary() else { return };
         let env = self.env.clone();
-        let activity = internal::Activity { session_id: s.id, project_id: s.project_id, kind: kind.to_owned(), weight };
+        let activity = internal::Activity {
+            session_id: s.id,
+            project_id: s.project_id,
+            kind: kind.to_owned(),
+            weight,
+        };
         self.state.wait_until(async move {
             if let Ok(stub) = internal::fleet_stub(&env) {
-                let _: std::result::Result<serde_json::Value, _> = internal::post(&stub, "/activity", &activity).await;
+                let _: std::result::Result<serde_json::Value, _> =
+                    internal::post(&stub, "/activity", &activity).await;
             }
         });
     }

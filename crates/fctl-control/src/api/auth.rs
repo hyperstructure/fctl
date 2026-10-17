@@ -2,12 +2,12 @@
 
 use crate::auth::{self, DAY_MS};
 use crate::ctx::Ctx;
-use crate::db::{batch, n, os, q, s, Count};
-use crate::error::{conflict, not_found, validation, AppError, AppResult};
+use crate::db::{Count, batch, n, os, q, s};
+use crate::error::{AppError, AppResult, conflict, not_found, validation};
 use crate::http;
 use crate::model::user_columns;
 use fctl_domain::allowlist;
-use fctl_domain::tokens::{self, hash_secret, new_secret, SecretKind};
+use fctl_domain::tokens::{self, SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
 use fctl_proto::api::*;
 use fctl_proto::session::InstanceRole;
@@ -15,13 +15,24 @@ use fctl_proto::{ApiError, ErrorCode};
 use worker::{Request, Response};
 
 pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
-    let owners: Option<Count> = q(&ctx.db, "SELECT COUNT(*) AS n FROM users WHERE role = 'owner'", &[])?
-        .first()
-        .await?;
-    let name: Option<SettingRow> =
-        q(&ctx.db, "SELECT value FROM settings WHERE key = 'instance_name'", &[])?.first().await?;
+    let owners: Option<Count> = q(
+        &ctx.db,
+        "SELECT COUNT(*) AS n FROM users WHERE role = 'owner'",
+        &[],
+    )?
+    .first()
+    .await?;
+    let name: Option<SettingRow> = q(
+        &ctx.db,
+        "SELECT value FROM settings WHERE key = 'instance_name'",
+        &[],
+    )?
+    .first()
+    .await?;
     http::ok(&InstanceInfo {
-        name: name.map(|r| r.value).unwrap_or_else(|| ctx.cfg.instance_name.clone()),
+        name: name
+            .map(|r| r.value)
+            .unwrap_or_else(|| ctx.cfg.instance_name.clone()),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         setup_required: owners.map_or(0, |c| c.n) == 0,
         features: Features {
@@ -48,14 +59,21 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         )));
     };
     if !tokens::constant_time_eq(body.token.trim().as_bytes(), expected.as_bytes()) {
-        return Err(AppError(ApiError::new(ErrorCode::Forbidden, "The setup link is not valid")));
+        return Err(AppError(ApiError::new(
+            ErrorCode::Forbidden,
+            "The setup link is not valid",
+        )));
     }
     let email = validate::email(&body.email)?;
     let name = validate::name("name", &body.name)?;
     validate::password(&body.password, Some(&email))?;
-    let owners: Option<Count> = q(&ctx.db, "SELECT COUNT(*) AS n FROM users WHERE role = 'owner'", &[])?
-        .first()
-        .await?;
+    let owners: Option<Count> = q(
+        &ctx.db,
+        "SELECT COUNT(*) AS n FROM users WHERE role = 'owner'",
+        &[],
+    )?
+    .first()
+    .await?;
     if owners.map_or(0, |c| c.n) > 0 {
         return Err(conflict("Setup is already complete. Sign in instead."));
     }
@@ -91,7 +109,9 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         via_cookie: true,
     });
     ctx.audit("instance.setup", Some(&user.id), None);
-    http::created(&AuthResponse { me: auth::me(ctx, &user).await? })
+    http::created(&AuthResponse {
+        me: auth::me(ctx, &user).await?,
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -139,14 +159,17 @@ struct AllowPatternRow {
 
 /// The allowlist entry that lets `email` in, if any.
 pub async fn allow_match(ctx: &Ctx, email: &str) -> AppResult<Option<(String, InstanceRole)>> {
-    let rows: Vec<AllowPatternRow> =
-        q(&ctx.db, "SELECT pattern, role FROM allowlist", &[])?.all().await?;
-    Ok(allowlist::best_match(&rows, email, |r| r.pattern.as_str()).map(|r| {
-        (
-            r.pattern.clone(),
-            InstanceRole::parse(&r.role).unwrap_or(InstanceRole::Member),
-        )
-    }))
+    let rows: Vec<AllowPatternRow> = q(&ctx.db, "SELECT pattern, role FROM allowlist", &[])?
+        .all()
+        .await?;
+    Ok(
+        allowlist::best_match(&rows, email, |r| r.pattern.as_str()).map(|r| {
+            (
+                r.pattern.clone(),
+                InstanceRole::parse(&r.role).unwrap_or(InstanceRole::Member),
+            )
+        }),
+    )
 }
 
 /// Password sign-up needs an invitation for the email: without email
@@ -158,7 +181,9 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let name = validate::name("name", &body.name)?;
     validate::password(&body.password, Some(&email))?;
     if auth::user_by_email(ctx, &email).await?.is_some() {
-        return Err(conflict("An account with this email already exists. Sign in instead."));
+        return Err(conflict(
+            "An account with this email already exists. Sign in instead.",
+        ));
     }
     let invite = match body.invite.as_deref() {
         Some(token) => find_invite(ctx, token)
@@ -173,7 +198,10 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         )));
     };
     if invite.email != email {
-        return Err(validation("email", "This invitation is for a different email address"));
+        return Err(validation(
+            "email",
+            "This invitation is for a different email address",
+        ));
     }
     if allow_match(ctx, &email).await?.is_none() {
         return Err(AppError(ApiError::new(
@@ -207,14 +235,21 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .await?
         .ok_or_else(|| crate::error::internal("user vanished after insert"))?;
     auth::start_web_session(ctx, &user).await?;
-    ctx.audit("user.signup", Some(&user.id), Some(serde_json::json!({ "via": "invite" })));
-    http::created(&AuthResponse { me: auth::me(ctx, &user).await? })
+    ctx.audit(
+        "user.signup",
+        Some(&user.id),
+        Some(serde_json::json!({ "via": "invite" })),
+    );
+    http::created(&AuthResponse {
+        me: auth::me(ctx, &user).await?,
+    })
 }
 
 pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: LoginRequest = http::body(req).await?;
     let email = body.email.trim().to_lowercase();
-    ctx.rate_limit(&format!("login:{}:{email}", ctx.ip_key())).await?;
+    ctx.rate_limit(&format!("login:{}:{email}", ctx.ip_key()))
+        .await?;
     ctx.rate_limit(&format!("login-email:{email}")).await?;
     let user = auth::user_by_email(ctx, &email).await?;
     let ok = match user.as_ref().and_then(|u| u.password_hash.as_deref()) {
@@ -244,14 +279,20 @@ pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         via_cookie: true,
     });
     ctx.audit("user.login", Some(&user.id), None);
-    http::ok(&AuthResponse { me: auth::me(ctx, &user).await? })
+    http::ok(&AuthResponse {
+        me: auth::me(ctx, &user).await?,
+    })
 }
 
 pub async fn logout(ctx: &mut Ctx) -> AppResult<Response> {
     if let Some(a) = ctx.auth.clone() {
-        q(&ctx.db, "DELETE FROM tokens WHERE id = ?", &[s(&a.token_id)])?
-            .run()
-            .await?;
+        q(
+            &ctx.db,
+            "DELETE FROM tokens WHERE id = ?",
+            &[s(&a.token_id)],
+        )?
+        .run()
+        .await?;
     }
     auth::clear_session_cookie(ctx);
     http::ok(&Ok { ok: true })
@@ -282,7 +323,9 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     )?
     .run()
     .await?;
-    let user = auth::user_by_id(ctx, &user.id).await?.ok_or_else(|| not_found("User"))?;
+    let user = auth::user_by_id(ctx, &user.id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
     http::ok(&auth::me(ctx, &user).await?)
 }
 
@@ -293,7 +336,10 @@ pub async fn change_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(phc) = user.password_hash.as_deref() {
         let current = body.current_password.as_deref().unwrap_or_default();
         if !auth::verify_password(current, phc) {
-            return Err(validation("current_password", "That isn't your current password"));
+            return Err(validation(
+                "current_password",
+                "That isn't your current password",
+            ));
         }
     }
     validate::password(&body.new_password, Some(&user.email))?;
@@ -316,8 +362,11 @@ pub async fn forgot_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     let body: ForgotPasswordRequest = http::body(req).await?;
     ctx.rate_limit(&format!("forgot:{}", ctx.ip_key())).await?;
     let email = body.email.trim().to_lowercase();
-    if let (Some(mail), Some(user)) = (ctx.cfg.email.clone(), auth::user_by_email(ctx, &email).await?) {
-        if user.is_active() {
+    if let (Some(mail), Some(user)) = (
+        ctx.cfg.email.clone(),
+        auth::user_by_email(ctx, &email).await?,
+    )
+        && user.is_active() {
             let url = create_reset_link(ctx, &user.id, None).await?;
             let text = format!(
                 "Someone asked to reset the password of your {} account.\n\nChoose a new password: {url}\n\nThe link works for one hour. If it wasn't you, ignore this email.",
@@ -325,12 +374,15 @@ pub async fn forgot_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
             );
             crate::email::send(&mail, &user.email, "Reset your password", &text).await?;
         }
-    }
     http::ok(&Ok { ok: true })
 }
 
 /// A one-hour password reset link for `user_id`.
-pub async fn create_reset_link(ctx: &Ctx, user_id: &str, created_by: Option<&str>) -> AppResult<String> {
+pub async fn create_reset_link(
+    ctx: &Ctx,
+    user_id: &str,
+    created_by: Option<&str>,
+) -> AppResult<String> {
     let secret = new_secret(SecretKind::PasswordReset);
     q(
         &ctx.db,
@@ -368,24 +420,43 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
             "This reset link has expired. Ask for a new one.",
         )));
     };
-    let user = auth::user_by_id(ctx, &row.user_id).await?.ok_or_else(|| not_found("User"))?;
+    let user = auth::user_by_id(ctx, &row.user_id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
     if !user.is_active() {
-        return Err(AppError(ApiError::new(ErrorCode::AccessDenied, "Your account is disabled.")));
+        return Err(AppError(ApiError::new(
+            ErrorCode::AccessDenied,
+            "Your account is disabled.",
+        )));
     }
     validate::password(&body.new_password, Some(&user.email))?;
     let phc = auth::hash_password(&body.new_password)?;
     batch(
         &ctx.db,
         vec![
-            q(&ctx.db, "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?", &[s(&phc), n(ctx.now), s(&user.id)])?,
-            q(&ctx.db, "UPDATE password_resets SET used_at = ? WHERE token_hash = ?", &[n(ctx.now), s(&hash)])?,
-            q(&ctx.db, "DELETE FROM tokens WHERE user_id = ?", &[s(&user.id)])?,
+            q(
+                &ctx.db,
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                &[s(&phc), n(ctx.now), s(&user.id)],
+            )?,
+            q(
+                &ctx.db,
+                "UPDATE password_resets SET used_at = ? WHERE token_hash = ?",
+                &[n(ctx.now), s(&hash)],
+            )?,
+            q(
+                &ctx.db,
+                "DELETE FROM tokens WHERE user_id = ?",
+                &[s(&user.id)],
+            )?,
         ],
     )
     .await?;
     auth::start_web_session(ctx, &user).await?;
     ctx.audit("user.password_reset", Some(&user.id), None);
-    http::ok(&AuthResponse { me: auth::me(ctx, &user).await? })
+    http::ok(&AuthResponse {
+        me: auth::me(ctx, &user).await?,
+    })
 }
 
 // ───────────────────────────── tokens ─────────────────────────────
@@ -406,7 +477,11 @@ struct TokenRow {
 
 pub async fn list_tokens(ctx: &Ctx) -> AppResult<Response> {
     let user = ctx.user()?;
-    let current = ctx.auth.as_ref().map(|a| a.token_id.clone()).unwrap_or_default();
+    let current = ctx
+        .auth
+        .as_ref()
+        .map(|a| a.token_id.clone())
+        .unwrap_or_default();
     let rows: Vec<TokenRow> = q(
         &ctx.db,
         "SELECT id, kind, name, user_agent, created_at, last_used_at, expires_at FROM tokens \
@@ -441,8 +516,13 @@ pub async fn create_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respons
         Some(d) if d <= 3650 => Some(ctx.now + d as i64 * DAY_MS),
         Some(_) => return Err(validation("expires_in_days", "Use at most 3650 days")),
     };
-    let (id, secret) = auth::issue_token(ctx, &user.id, TokenKind::Pat, Some(&name), expires_at).await?;
-    ctx.audit("token.created", Some(&id), Some(serde_json::json!({ "name": name })));
+    let (id, secret) =
+        auth::issue_token(ctx, &user.id, TokenKind::Pat, Some(&name), expires_at).await?;
+    ctx.audit(
+        "token.created",
+        Some(&id),
+        Some(serde_json::json!({ "name": name })),
+    );
     http::created(&CreatedToken {
         token: TokenInfo {
             id: fctl_proto::TokenId(id),
@@ -460,13 +540,21 @@ pub async fn create_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respons
 
 pub async fn delete_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let user = ctx.user()?.clone();
-    let changed = q(&ctx.db, "DELETE FROM tokens WHERE id = ? AND user_id = ?", &[s(id), s(&user.id)])?
-        .run()
-        .await?;
+    let changed = q(
+        &ctx.db,
+        "DELETE FROM tokens WHERE id = ? AND user_id = ?",
+        &[s(id), s(&user.id)],
+    )?
+    .run()
+    .await?;
     if changed == 0 {
         return Err(not_found("Token"));
     }
-    if ctx.auth.as_ref().is_some_and(|a| a.token_id == id && a.via_cookie) {
+    if ctx
+        .auth
+        .as_ref()
+        .is_some_and(|a| a.token_id == id && a.via_cookie)
+    {
         auth::clear_session_cookie(ctx);
     }
     http::ok(&Ok { ok: true })
@@ -485,10 +573,13 @@ pub async fn device_start(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respons
     // Retry on the (unlikely) user code collision.
     let mut user_code = tokens::new_user_code();
     for _ in 0..3 {
-        let taken: Option<Count> =
-            q(&ctx.db, "SELECT COUNT(*) AS n FROM device_codes WHERE user_code = ?", &[s(&user_code)])?
-                .first()
-                .await?;
+        let taken: Option<Count> = q(
+            &ctx.db,
+            "SELECT COUNT(*) AS n FROM device_codes WHERE user_code = ?",
+            &[s(&user_code)],
+        )?
+        .first()
+        .await?;
         if taken.map_or(0, |c| c.n) == 0 {
             break;
         }
@@ -549,10 +640,13 @@ struct DeviceRow {
 pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: DevicePollRequest = http::body(req).await?;
     let hash = hash_secret(body.device_code.trim());
-    let row: Option<DeviceRow> =
-        q(&ctx.db, "SELECT * FROM device_codes WHERE device_hash = ?", &[s(&hash)])?
-            .first()
-            .await?;
+    let row: Option<DeviceRow> = q(
+        &ctx.db,
+        "SELECT * FROM device_codes WHERE device_hash = ?",
+        &[s(&hash)],
+    )?
+    .first()
+    .await?;
     let Some(row) = row else {
         return http::ok(&DevicePollResponse::Expired);
     };
@@ -565,11 +659,19 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
     let too_fast = row
         .last_poll_at
         .is_some_and(|t| ctx.now - t < (DEVICE_INTERVAL_S as i64 * 1000) - 250);
-    q(&ctx.db, "UPDATE device_codes SET last_poll_at = ? WHERE device_hash = ?", &[n(ctx.now), s(&hash)])?
-        .run()
-        .await?;
+    q(
+        &ctx.db,
+        "UPDATE device_codes SET last_poll_at = ? WHERE device_hash = ?",
+        &[n(ctx.now), s(&hash)],
+    )?
+    .run()
+    .await?;
     if row.status == "pending" {
-        return http::ok(if too_fast { &DevicePollResponse::SlowDown } else { &DevicePollResponse::Pending });
+        return http::ok(if too_fast {
+            &DevicePollResponse::SlowDown
+        } else {
+            &DevicePollResponse::Pending
+        });
     }
     // Approved: issue the CLI token exactly once.
     let claimed = q(
@@ -582,23 +684,38 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
     let Some(user_id) = row.user_id.filter(|_| claimed == 1) else {
         return http::ok(&DevicePollResponse::Expired);
     };
-    let user = auth::user_by_id(ctx, &user_id).await?.ok_or_else(|| not_found("User"))?;
+    let user = auth::user_by_id(ctx, &user_id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
     if !user.is_active() {
         return http::ok(&DevicePollResponse::Denied);
     }
-    let (_, token) = auth::issue_token(ctx, &user.id, TokenKind::Cli, Some(&row.client_name), None).await?;
+    let (_, token) =
+        auth::issue_token(ctx, &user.id, TokenKind::Cli, Some(&row.client_name), None).await?;
     let me = auth::me(ctx, &user).await?;
-    http::ok(&DevicePollResponse::Approved { token, me: Box::new(me) })
+    http::ok(&DevicePollResponse::Approved {
+        token,
+        me: Box::new(me),
+    })
 }
 
 async fn device_by_user_code(ctx: &Ctx, code: &str) -> AppResult<DeviceRow> {
-    let code = tokens::normalize_user_code(code).ok_or_else(|| validation("code", "Check the code and try again"))?;
-    let row: Option<DeviceRow> =
-        q(&ctx.db, "SELECT * FROM device_codes WHERE user_code = ?", &[s(&code)])?
-            .first()
-            .await?;
+    let code = tokens::normalize_user_code(code)
+        .ok_or_else(|| validation("code", "Check the code and try again"))?;
+    let row: Option<DeviceRow> = q(
+        &ctx.db,
+        "SELECT * FROM device_codes WHERE user_code = ?",
+        &[s(&code)],
+    )?
+    .first()
+    .await?;
     row.filter(|r| r.expires_at > ctx.now && r.status == "pending")
-        .ok_or_else(|| validation("code", "This code has expired or was already used. Run fctl login again."))
+        .ok_or_else(|| {
+            validation(
+                "code",
+                "This code has expired or was already used. Run fctl login again.",
+            )
+        })
 }
 
 pub async fn device_info(ctx: &Ctx, code: &str) -> AppResult<Response> {
@@ -628,7 +745,11 @@ pub async fn device_decide(ctx: &mut Ctx, req: &mut Request, code: &str) -> AppR
     .run()
     .await?;
     ctx.audit(
-        if body.approve { "device.approved" } else { "device.denied" },
+        if body.approve {
+            "device.approved"
+        } else {
+            "device.denied"
+        },
         Some(&user.id),
         Some(serde_json::json!({ "client": row.client_name })),
     );
@@ -636,11 +757,17 @@ pub async fn device_decide(ctx: &mut Ctx, req: &mut Request, code: &str) -> AppR
 }
 
 /// Users by email for sharing and membership dialogs.
-pub async fn lookup_user_by_email(ctx: &Ctx, email: &str) -> AppResult<Option<crate::model::UserRow>> {
+pub async fn lookup_user_by_email(
+    ctx: &Ctx,
+    email: &str,
+) -> AppResult<Option<crate::model::UserRow>> {
     let email = validate::email(email)?;
     q(
         &ctx.db,
-        &format!("SELECT {} FROM users u WHERE u.email = ? AND u.status = 'active'", user_columns("u")),
+        &format!(
+            "SELECT {} FROM users u WHERE u.email = ? AND u.status = 'active'",
+            user_columns("u")
+        ),
         &[s(&email)],
     )?
     .first()

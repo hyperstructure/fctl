@@ -213,6 +213,9 @@ pub struct SessionSpec {
     /// The web URL of the session, for links in pull requests.
     pub web_url: String,
     pub idle_timeout_secs: u64,
+    /// Identifies this run of the session; echoed in `SessionEnded` so a late
+    /// report from an earlier run cannot end a newer one.
+    pub run_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,10 +253,16 @@ pub struct ClaudeOauthBundle {
 pub enum ClaudeLoginUpdate {
     Starting,
     /// Open `url`, approve, and paste the code shown.
-    AwaitingCode { url: String },
+    AwaitingCode {
+        url: String,
+    },
     Verifying,
-    Succeeded { bundle: Box<ClaudeOauthBundle> },
-    Failed { error: String },
+    Succeeded {
+        bundle: Box<ClaudeOauthBundle>,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -277,6 +286,9 @@ pub enum HostToFleet {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        run_id: Option<String>,
     },
     CredentialRequest {
         request_id: String,
@@ -299,7 +311,9 @@ pub enum FleetToHost {
         heartbeat_secs: u32,
         server_time: Millis,
     },
-    StartSession { spec: Box<SessionSpec> },
+    StartSession {
+        spec: Box<SessionSpec>,
+    },
     StopSession {
         session_id: SessionId,
         reason: StopReason,
@@ -319,9 +333,17 @@ pub enum FleetToHost {
         error: Option<String>,
     },
     /// Run `claude auth login` in a fresh sandbox for this person.
-    ClaudeLoginStart { job_id: LoginJobId, user: UserRef },
+    ClaudeLoginStart {
+        job_id: LoginJobId,
+        user: UserRef,
+    },
     /// The code the person pasted after approving.
-    ClaudeLoginCode { job_id: LoginJobId, code: String },
-    ClaudeLoginCancel { job_id: LoginJobId },
+    ClaudeLoginCode {
+        job_id: LoginJobId,
+        code: String,
+    },
+    ClaudeLoginCancel {
+        job_id: LoginJobId,
+    },
     Ping,
 }

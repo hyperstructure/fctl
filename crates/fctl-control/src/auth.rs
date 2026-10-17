@@ -4,12 +4,12 @@ use crate::ctx::{Authed, Ctx};
 use crate::db::{n, on, os, q, s};
 use crate::error::{AppError, AppResult};
 use crate::http::{self, SESSION_COOKIE};
-use crate::model::{user_columns, CredentialRow, IdentityRow, UserRow};
-use argon2::password_hash::{phc::PasswordHash, PasswordHasher, PasswordVerifier};
+use crate::model::{CredentialRow, IdentityRow, UserRow, user_columns};
 use argon2::Argon2;
-use fctl_domain::tokens::{hash_secret, new_secret, SecretKind};
-use fctl_proto::api::{Me, TokenKind};
+use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
+use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_proto::ApiError;
+use fctl_proto::api::{Me, TokenKind};
 use worker::Request;
 
 pub const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -35,7 +35,9 @@ pub fn hash_password(password: &str) -> AppResult<String> {
 
 pub fn verify_password(password: &str, phc: &str) -> bool {
     match PasswordHash::new(phc) {
-        Ok(parsed) => argon2().verify_password(password.as_bytes(), &parsed).is_ok(),
+        Ok(parsed) => argon2()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok(),
         Err(_) => false,
     }
 }
@@ -90,8 +92,12 @@ pub async fn issue_token(
     .await?;
     if kind == TokenKind::Web {
         let max_age = (WEB_SESSION_TTL_MS / 1000) as u64;
-        ctx.cookies
-            .push(http::set_cookie(SESSION_COOKIE, &secret, max_age, ctx.cfg.secure_cookies()));
+        ctx.cookies.push(http::set_cookie(
+            SESSION_COOKIE,
+            &secret,
+            max_age,
+            ctx.cfg.secure_cookies(),
+        ));
     }
     Ok((id.0, secret))
 }
@@ -110,8 +116,12 @@ pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow) -> AppResult<()> {
 }
 
 pub fn clear_session_cookie(ctx: &mut Ctx) {
-    ctx.cookies
-        .push(http::set_cookie(SESSION_COOKIE, "", 0, ctx.cfg.secure_cookies()));
+    ctx.cookies.push(http::set_cookie(
+        SESSION_COOKIE,
+        "",
+        0,
+        ctx.cfg.secure_cookies(),
+    ));
 }
 
 #[derive(serde::Deserialize)]
@@ -129,7 +139,9 @@ struct TokenLookup {
 /// The bearer token or session cookie of a request, if any.
 pub fn presented_secret(req: &Request) -> Option<(String, bool)> {
     if let Some(h) = http::header(req, "Authorization") {
-        let token = h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer "))?;
+        let token = h
+            .strip_prefix("Bearer ")
+            .or_else(|| h.strip_prefix("bearer "))?;
         return Some((token.trim().to_owned(), false));
     }
     http::cookie(req, SESSION_COOKIE).map(|c| (c, true))
@@ -144,7 +156,14 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     let Some(kind) = SecretKind::of(&secret) else {
         return Err(AppError(ApiError::unauthorized()));
     };
-    if !matches!(kind, SecretKind::WebSession | SecretKind::Cli | SecretKind::Pat) {
+    // Runner tokens are checked by the runner endpoints themselves.
+    if kind == SecretKind::Runner {
+        return Ok(());
+    }
+    if !matches!(
+        kind,
+        SecretKind::WebSession | SecretKind::Cli | SecretKind::Pat
+    ) {
         return Err(AppError(ApiError::unauthorized()));
     }
     let sql = format!(
@@ -152,7 +171,9 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
          FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?",
         user_columns("u")
     );
-    let found: Option<TokenLookup> = q(&ctx.db, &sql, &[s(&hash_secret(&secret))])?.first().await?;
+    let found: Option<TokenLookup> = q(&ctx.db, &sql, &[s(&hash_secret(&secret))])?
+        .first()
+        .await?;
     let Some(found) = found else {
         if via_cookie {
             clear_session_cookie(ctx);
@@ -178,7 +199,9 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     }
     let kind = TokenKind::parse(&found.kind).unwrap_or(TokenKind::Pat);
     // Touch the token at most every 10 minutes; slide web and CLI expiry.
-    let stale = found.last_used_at.is_none_or(|t| ctx.now - t > 10 * 60 * 1000);
+    let stale = found
+        .last_used_at
+        .is_none_or(|t| ctx.now - t > 10 * 60 * 1000);
     if stale {
         let new_expiry = match kind {
             TokenKind::Web => Some(ctx.now + WEB_SESSION_TTL_MS),
@@ -200,8 +223,12 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         });
         if kind == TokenKind::Web && via_cookie {
             let max_age = (WEB_SESSION_TTL_MS / 1000) as u64;
-            ctx.cookies
-                .push(http::set_cookie(SESSION_COOKIE, &secret, max_age, ctx.cfg.secure_cookies()));
+            ctx.cookies.push(http::set_cookie(
+                SESSION_COOKIE,
+                &secret,
+                max_age,
+                ctx.cfg.secure_cookies(),
+            ));
         }
     }
     ctx.auth = Some(Authed {
@@ -218,7 +245,10 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
 pub async fn user_by_email(ctx: &Ctx, email: &str) -> AppResult<Option<UserRow>> {
     q(
         &ctx.db,
-        &format!("SELECT {} FROM users u WHERE u.email = ?", user_columns("u")),
+        &format!(
+            "SELECT {} FROM users u WHERE u.email = ?",
+            user_columns("u")
+        ),
         &[s(email)],
     )?
     .first()
@@ -251,14 +281,19 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
     )?
     .all()
     .await?;
-    let default_id = user
-        .default_credential_id
-        .clone()
-        .or_else(|| creds.iter().find(|c| c.status == "active").map(|c| c.id.clone()));
+    let default_id = user.default_credential_id.clone().or_else(|| {
+        creds
+            .iter()
+            .find(|c| c.status == "active")
+            .map(|c| c.id.clone())
+    });
     Ok(Me {
         user: user.to_user(),
         identities: identities.iter().map(IdentityRow::to_identity).collect(),
-        claude: creds.iter().map(|c| c.to_info(default_id.as_deref())).collect(),
+        claude: creds
+            .iter()
+            .map(|c| c.to_info(default_id.as_deref()))
+            .collect(),
     })
 }
 

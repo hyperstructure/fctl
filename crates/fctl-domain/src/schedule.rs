@@ -35,10 +35,38 @@ mod tests {
         let none: Vec<String> = vec![];
         let gpu = vec!["gpu".to_string()];
         let slots = vec![
-            Slot { id: "a", online: true, enabled: true, capacity: 4, active: 2, labels: &none },
-            Slot { id: "b", online: true, enabled: true, capacity: 8, active: 2, labels: &gpu },
-            Slot { id: "c", online: false, enabled: true, capacity: 8, active: 0, labels: &none },
-            Slot { id: "d", online: true, enabled: true, capacity: 1, active: 1, labels: &none },
+            Slot {
+                id: "a",
+                online: true,
+                enabled: true,
+                capacity: 4,
+                active: 2,
+                labels: &none,
+            },
+            Slot {
+                id: "b",
+                online: true,
+                enabled: true,
+                capacity: 8,
+                active: 2,
+                labels: &gpu,
+            },
+            Slot {
+                id: "c",
+                online: false,
+                enabled: true,
+                capacity: 8,
+                active: 0,
+                labels: &none,
+            },
+            Slot {
+                id: "d",
+                online: true,
+                enabled: true,
+                capacity: 1,
+                active: 1,
+                labels: &none,
+            },
         ];
         assert_eq!(pick(&slots, &[]).map(|s| s.id), Some("b"));
         assert_eq!(pick(&slots, &gpu).map(|s| s.id), Some("b"));

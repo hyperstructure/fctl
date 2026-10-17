@@ -1,1 +1,193 @@
-fn main() {}
+//! `fctl`: the command line for fctl, the software factory.
+//!
+//! People and agents use the same commands; every command that prints data
+//! accepts `--json`. `FCTL_SERVER` and `FCTL_TOKEN` configure it without a
+//! sign-in (CI, agents). `fctl host …` runs this machine as a runner.
+
+mod cmd;
+mod config;
+mod render;
+mod style;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(
+    name = "fctl",
+    version,
+    about = "A software factory: start Claude agents, follow them, run a host",
+    long_about = "fctl starts Claude Code agents on your projects, streams what they do, and lets you message them. \
+                  `fctl host` turns this machine into a runner that executes sessions in sandboxes.",
+    after_help = "Examples:\n  fctl login https://app.fctl.sh\n  fctl run -p my-app \"Add a dark mode toggle\"\n  fctl sessions --active\n  fctl attach my-app#12\n  fctl host install"
+)]
+struct Cli {
+    /// The fctl instance (default: the one you signed in to).
+    #[arg(long, global = true, env = "FCTL_SERVER", hide_env_values = true)]
+    server: Option<String>,
+    /// Print machine-readable JSON.
+    #[arg(long, global = true)]
+    json: bool,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Sign in (opens the browser to approve this device).
+    Login {
+        /// Instance URL, e.g. https://app.fctl.sh
+        url: Option<String>,
+        /// Print the link instead of opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Sign out on this machine.
+    Logout,
+    /// Show who you are signed in as.
+    Whoami,
+    /// List, create and inspect projects.
+    #[command(subcommand)]
+    Projects(cmd::projects::ProjectsCmd),
+    /// Start a session: an agent working on a task.
+    Run(cmd::sessions::RunArgs),
+    /// List sessions.
+    Sessions(cmd::sessions::ListArgs),
+    /// Show a session's details.
+    Show { session: String },
+    /// Follow a session live and message the agent (Ctrl-C detaches).
+    Attach {
+        session: String,
+        /// Follow without sending messages.
+        #[arg(long)]
+        read_only: bool,
+    },
+    /// Print a session's transcript.
+    Logs {
+        session: String,
+        /// Keep following new events.
+        #[arg(short, long)]
+        follow: bool,
+    },
+    /// Send a message to a session's agent.
+    Send {
+        session: String,
+        message: Vec<String>,
+    },
+    /// Interrupt the agent's current turn.
+    Interrupt { session: String },
+    /// Stop a session (its sandbox is kept so it can resume).
+    Stop { session: String },
+    /// Resume a stopped session, optionally with a new message.
+    Resume {
+        session: String,
+        message: Vec<String>,
+    },
+    /// Open a session or project in the browser (or the Claude app with --claude).
+    Open {
+        target: Option<String>,
+        /// Open the session's Remote Control link (Claude apps) instead.
+        #[arg(long)]
+        claude: bool,
+    },
+    /// Connect your Claude subscription.
+    #[command(subcommand)]
+    Claude(cmd::claude::ClaudeCmd),
+    /// Run this machine as a host for agent sandboxes.
+    #[command(subcommand)]
+    Host(cmd::host::HostCmd),
+    /// Manage access, users and runners (admins).
+    #[command(subcommand)]
+    Admin(cmd::admin::AdminCmd),
+    /// Create a personal access token for scripts and CI.
+    Token {
+        name: String,
+        /// Expire after this many days (default: never).
+        #[arg(long)]
+        days: Option<u32>,
+    },
+    /// Print shell completions (bash, zsh, fish, …).
+    Completions { shell: clap_complete::Shell },
+}
+
+fn main() {
+    let cli = Cli::parse();
+    let filter = tracing_subscriber::EnvFilter::try_from_env("FCTL_LOG").unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(
+            if matches!(cli.command, Command::Host(cmd::host::HostCmd::Run)) {
+                "info"
+            } else {
+                "warn"
+            },
+        )
+    });
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .init();
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("fctl: {e}");
+            std::process::exit(70);
+        }
+    };
+    let code = match rt.block_on(run(cli)) {
+        Ok(()) => 0,
+        Err(e) => {
+            if let Some(api) = e.downcast_ref::<fctl_client::Error>().and_then(|e| e.api()) {
+                eprintln!("{} {}", style::red("error:"), api.message);
+            } else {
+                eprintln!("{} {e:#}", style::red("error:"));
+            }
+            1
+        }
+    };
+    std::process::exit(code);
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
+    let server = cli.server.as_deref();
+    let json = cli.json;
+    match cli.command {
+        Command::Login { url, no_browser } => {
+            cmd::auth::login(url.as_deref().or(server), no_browser, json).await
+        }
+        Command::Logout => cmd::auth::logout(server).await,
+        Command::Whoami => cmd::auth::whoami(server, json).await,
+        Command::Projects(c) => cmd::projects::run(server, c, json).await,
+        Command::Run(args) => cmd::sessions::start(server, args, json).await,
+        Command::Sessions(args) => cmd::sessions::list(server, args, json).await,
+        Command::Show { session } => cmd::sessions::show(server, &session, json).await,
+        Command::Attach { session, read_only } => {
+            cmd::attach::attach(server, &session, read_only).await
+        }
+        Command::Logs { session, follow } => {
+            cmd::sessions::logs(server, &session, follow, json).await
+        }
+        Command::Send { session, message } => {
+            cmd::sessions::send(server, &session, &message.join(" "), json).await
+        }
+        Command::Interrupt { session } => cmd::sessions::interrupt(server, &session).await,
+        Command::Stop { session } => cmd::sessions::stop(server, &session, json).await,
+        Command::Resume { session, message } => {
+            cmd::sessions::resume(server, &session, &message.join(" "), json).await
+        }
+        Command::Open { target, claude } => {
+            cmd::sessions::open(server, target.as_deref(), claude).await
+        }
+        Command::Claude(c) => cmd::claude::run(server, c, json).await,
+        Command::Host(c) => cmd::host::run(server, c, json).await,
+        Command::Admin(c) => cmd::admin::run(server, c, json).await,
+        Command::Token { name, days } => cmd::auth::token(server, &name, days, json).await,
+        Command::Completions { shell } => {
+            use clap::CommandFactory;
+            let mut c = Cli::command();
+            clap_complete::generate(shell, &mut c, "fctl", &mut std::io::stdout());
+            Ok(())
+        }
+    }
+}

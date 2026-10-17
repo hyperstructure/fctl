@@ -16,7 +16,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "fctl-agent", version, about = "Runs Claude Code for fctl inside a sandbox")]
+#[command(
+    name = "fctl-agent",
+    version,
+    about = "Runs Claude Code for fctl inside a sandbox"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -27,7 +31,11 @@ enum Command {
     /// Run the supervisor.
     Serve {
         /// Unix socket the host attaches to.
-        #[arg(long, env = "FCTL_AGENT_SOCKET", default_value = "/tmp/fctl/agent.sock")]
+        #[arg(
+            long,
+            env = "FCTL_AGENT_SOCKET",
+            default_value = "/tmp/fctl/agent.sock"
+        )]
         socket: PathBuf,
         /// Where the journal and state live.
         #[arg(long, env = "FCTL_AGENT_STATE", default_value = "/tmp/fctl/state")]
@@ -38,7 +46,11 @@ enum Command {
     },
     /// Bridge stdin/stdout to a running supervisor.
     Attach {
-        #[arg(long, env = "FCTL_AGENT_SOCKET", default_value = "/tmp/fctl/agent.sock")]
+        #[arg(
+            long,
+            env = "FCTL_AGENT_SOCKET",
+            default_value = "/tmp/fctl/agent.sock"
+        )]
         socket: PathBuf,
     },
 }
@@ -52,7 +64,11 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve { socket, state, log } => {
             init_logging(log.as_deref())?;
-            rt.block_on(supervisor::serve(socket, state))
+            let r = rt.block_on(supervisor::serve(socket, state));
+            if let Err(e) = &r {
+                tracing::error!("fctl-agent stopped: {e:#}");
+            }
+            r
         }
         Command::Attach { socket } => rt.block_on(link::attach(&socket)),
     }
@@ -66,10 +82,20 @@ fn init_logging(path: Option<&std::path::Path>) -> anyhow::Result<()> {
             if let Some(dir) = p.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            let file = std::fs::OpenOptions::new().create(true).append(true).open(p)?;
-            tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(std::sync::Mutex::new(file)).init();
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)?;
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .init();
         }
-        None => tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init(),
+        None => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init(),
     }
     Ok(())
 }

@@ -62,8 +62,16 @@ pub fn password(pw: &str, email: Option<&str>) -> Result<()> {
         }
     }
     const COMMON: &[&str] = &[
-        "password123", "1234567890", "qwertyuiop", "password1234", "letmein123",
-        "iloveyou123", "0123456789", "1q2w3e4r5t", "qwerty1234", "administrator",
+        "password123",
+        "1234567890",
+        "qwertyuiop",
+        "password1234",
+        "letmein123",
+        "iloveyou123",
+        "0123456789",
+        "1q2w3e4r5t",
+        "qwerty1234",
+        "administrator",
     ];
     if COMMON.contains(&pw.to_lowercase().as_str()) {
         return Err(ApiError::validation(
@@ -95,7 +103,9 @@ pub fn text(field: &str, input: &str, max: usize) -> Result<String> {
             format!("Use at most {max} characters"),
         ));
     }
-    if s.chars().any(|c| c.is_control() && c != '\n' && c != '\t' && c != '\r') {
+    if s.chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t' && c != '\r')
+    {
         return Err(ApiError::validation(field, "Remove control characters"));
     }
     Ok(s)
@@ -118,7 +128,10 @@ pub fn slug(input: &str) -> Result<String> {
     if s.len() < 2 || s.len() > 48 {
         return Err(bad("Use 2–48 characters"));
     }
-    if !s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
         return Err(bad("Use lowercase letters, digits and dashes"));
     }
     if s.starts_with('-') || s.ends_with('-') || s.contains("--") {
@@ -148,7 +161,8 @@ pub fn branch(field: &str, input: &str) -> Result<String> {
         || s.contains("//")
         || s.contains("@{")
         || s == "@"
-        || s.split('/').any(|part| part.starts_with('.') || part.ends_with(".lock"))
+        || s.split('/')
+            .any(|part| part.starts_with('.') || part.ends_with(".lock"))
     {
         return Err(bad());
     }
@@ -159,8 +173,16 @@ pub fn branch(field: &str, input: &str) -> Result<String> {
 /// API billing or redirect its traffic, or break the sandbox.
 pub fn is_reserved_env(name: &str) -> bool {
     const EXACT: &[&str] = &[
-        "HOME", "PATH", "USER", "SHELL", "PWD", "GH_TOKEN", "GITHUB_TOKEN",
-        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+        "HOME",
+        "PATH",
+        "USER",
+        "SHELL",
+        "PWD",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
         "AWS_BEARER_TOKEN_BEDROCK",
     ];
     const PREFIXES: &[&str] = &["ANTHROPIC_", "CLAUDE_CODE_OAUTH", "CLAUDE_CONFIG", "FCTL_"];
@@ -172,7 +194,8 @@ pub fn env_name(field: &str, input: &str) -> Result<String> {
     let s = input.trim();
     let ok = !s.is_empty()
         && s.len() <= 128
-        && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        && s.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
         && !s.as_bytes()[0].is_ascii_digit();
     if !ok {
         return Err(ApiError::validation(
@@ -250,8 +273,20 @@ mod tests {
 
     #[test]
     fn emails() {
-        assert_eq!(email("  Ada@Example.COM ").ok().as_deref(), Some("ada@example.com"));
-        for bad in ["", "ada", "ada@", "@x.com", "a b@x.com", "ada@x", "ada@x..com", "a@@x.com"] {
+        assert_eq!(
+            email("  Ada@Example.COM ").ok().as_deref(),
+            Some("ada@example.com")
+        );
+        for bad in [
+            "",
+            "ada",
+            "ada@",
+            "@x.com",
+            "a b@x.com",
+            "ada@x",
+            "ada@x..com",
+            "a@@x.com",
+        ] {
             assert!(email(bad).is_err(), "{bad}");
         }
     }
@@ -278,7 +313,9 @@ mod tests {
         for ok in ["main", "fctl/12-add-login", "feature/x.y"] {
             assert!(branch("branch", ok).is_ok(), "{ok}");
         }
-        for bad in ["", "-x", "a..b", "a b", "x.lock", "a//b", "a/.b", "a@{b", "x/", "a~b"] {
+        for bad in [
+            "", "-x", "a..b", "a b", "x.lock", "a//b", "a/.b", "a@{b", "x/", "a~b",
+        ] {
             assert!(branch("branch", bad).is_err(), "{bad}");
         }
     }
@@ -286,7 +323,15 @@ mod tests {
     #[test]
     fn env_names() {
         assert!(env_name("name", "API_URL").is_ok());
-        for bad in ["api_url", "1X", "", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "PATH"] {
+        for bad in [
+            "api_url",
+            "1X",
+            "",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "PATH",
+        ] {
             assert!(env_name("name", bad).is_err(), "{bad}");
         }
     }

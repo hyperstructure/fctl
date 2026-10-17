@@ -71,9 +71,21 @@ mod tests {
 
     #[test]
     fn parses() {
-        assert_eq!(AllowPattern::parse(" Ada@X.com").ok(), Some(AllowPattern::Email("ada@x.com".into())));
-        assert_eq!(AllowPattern::parse("*@Corp.io").ok(), Some(AllowPattern::Domain("corp.io".into())));
-        assert_eq!(AllowPattern::parse("@corp.io").map(|p| p.canonical()).ok().as_deref(), Some("*@corp.io"));
+        assert_eq!(
+            AllowPattern::parse(" Ada@X.com").ok(),
+            Some(AllowPattern::Email("ada@x.com".into()))
+        );
+        assert_eq!(
+            AllowPattern::parse("*@Corp.io").ok(),
+            Some(AllowPattern::Domain("corp.io".into()))
+        );
+        assert_eq!(
+            AllowPattern::parse("@corp.io")
+                .map(|p| p.canonical())
+                .ok()
+                .as_deref(),
+            Some("*@corp.io")
+        );
         assert!(AllowPattern::parse("*@nodot").is_err());
         assert!(AllowPattern::parse("nobody").is_err());
     }
@@ -85,8 +97,14 @@ mod tests {
         assert!(!d.matches("ada@evilcorp.io"));
         assert!(!d.matches("ada@corp.io.evil.com"));
         let entries = vec!["*@corp.io", "ada@corp.io"];
-        assert_eq!(best_match(&entries, "ada@corp.io", |s| s), Some(&"ada@corp.io"));
-        assert_eq!(best_match(&entries, "bob@corp.io", |s| s), Some(&"*@corp.io"));
+        assert_eq!(
+            best_match(&entries, "ada@corp.io", |s| s),
+            Some(&"ada@corp.io")
+        );
+        assert_eq!(
+            best_match(&entries, "bob@corp.io", |s| s),
+            Some(&"*@corp.io")
+        );
         assert_eq!(best_match(&entries, "bob@x.io", |s| s), None);
     }
 }

@@ -175,7 +175,10 @@ mod tests {
     fn user_codes_roundtrip() {
         let c = new_user_code();
         assert_eq!(c.len(), 9);
-        assert_eq!(normalize_user_code(&c.to_lowercase().replace('-', " ")), Some(c));
+        assert_eq!(
+            normalize_user_code(&c.to_lowercase().replace('-', " ")),
+            Some(c)
+        );
         assert_eq!(normalize_user_code("AEIO-UUUU"), None);
         assert_eq!(normalize_user_code("BCDF"), None);
     }

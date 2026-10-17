@@ -7,11 +7,11 @@
 //! - Short-lived state (the OAuth cookie) is HMAC-SHA256 signed.
 //! - RS256 (GitHub App JWTs) uses WebCrypto, which is constant time and fast.
 
-use crate::error::{internal, AppError, AppResult};
+use crate::error::{AppError, AppResult, internal};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use fctl_domain::random_bytes;
 use fctl_proto::ApiError;
 use hmac::{Hmac, Mac};
@@ -42,7 +42,13 @@ impl Keys {
         let nonce_bytes: [u8; 12] = random_bytes();
         let nonce = Nonce::from(nonce_bytes);
         let ct = cipher
-            .encrypt(&nonce, Payload { msg: plaintext, aad: aad.as_bytes() })
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: plaintext,
+                    aad: aad.as_bytes(),
+                },
+            )
             .map_err(|_| internal("encryption failed"))?;
         let mut out = Vec::with_capacity(12 + ct.len());
         out.extend_from_slice(&nonce_bytes);
@@ -63,7 +69,13 @@ impl Keys {
         let nonce_arr: [u8; 12] = nonce_bytes.try_into().map_err(internal)?;
         let cipher = Aes256Gcm::new_from_slice(&self.enc).map_err(internal)?;
         cipher
-            .decrypt(&Nonce::from(nonce_arr), Payload { msg: ct, aad: aad.as_bytes() })
+            .decrypt(
+                &Nonce::from(nonce_arr),
+                Payload {
+                    msg: ct,
+                    aad: aad.as_bytes(),
+                },
+            )
             .map_err(|_| internal("decryption failed (wrong key or record)"))
     }
 
@@ -71,7 +83,11 @@ impl Keys {
         self.seal(aad, &serde_json::to_vec(value)?)
     }
 
-    pub fn open_json<T: serde::de::DeserializeOwned>(&self, aad: &str, sealed: &str) -> AppResult<T> {
+    pub fn open_json<T: serde::de::DeserializeOwned>(
+        &self,
+        aad: &str,
+        sealed: &str,
+    ) -> AppResult<T> {
         Ok(serde_json::from_slice(&self.open(aad, sealed)?)?)
     }
 
@@ -104,15 +120,12 @@ fn hmac_raw(key: &[u8], data: &[u8]) -> [u8; 32] {
 
 /// The instance's keys, or a clear error when `FCTL_MASTER_KEY` is missing.
 pub fn keys(cfg: &crate::config::Config) -> AppResult<Keys> {
-    cfg.master_key
-        .as_ref()
-        .map(Keys::derive)
-        .ok_or_else(|| {
-            AppError(ApiError::new(
-                fctl_proto::ErrorCode::NotConfigured,
-                "FCTL_MASTER_KEY is not set on this instance",
-            ))
-        })
+    cfg.master_key.as_ref().map(Keys::derive).ok_or_else(|| {
+        AppError(ApiError::new(
+            fctl_proto::ErrorCode::NotConfigured,
+            "FCTL_MASTER_KEY is not set on this instance",
+        ))
+    })
 }
 
 pub fn b64url(bytes: &[u8]) -> String {
@@ -153,8 +166,8 @@ pub async fn rs256_sign(pem: &str, data: &[u8]) -> AppResult<Vec<u8>> {
     let key_data = js_sys::Uint8Array::from(der.as_slice());
     let promise = subtle.import_key_with_object("pkcs8", &key_data, &algo, false, &usages)?;
     let key: web_sys::CryptoKey = JsFuture::from(promise).await?.dyn_into()?;
-    let mut data_vec = data.to_vec();
-    let sig = subtle.sign_with_str_and_u8_array("RSASSA-PKCS1-v1_5", &key, &mut data_vec)?;
+    let data_vec = data.to_vec();
+    let sig = subtle.sign_with_str_and_u8_array("RSASSA-PKCS1-v1_5", &key, &data_vec)?;
     let buf = JsFuture::from(sig).await?;
     Ok(js_sys::Uint8Array::new(&buf).to_vec())
 }

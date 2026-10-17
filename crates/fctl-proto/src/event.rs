@@ -30,7 +30,10 @@ pub enum EventBody {
     /// A message from Claude Code's stream-json output (`assistant`, `user`
     /// tool results, `system`, `result`, `rate_limit_event`, …), verbatim.
     Claude(
-        #[cfg_attr(feature = "ts", ts(type = "import('../lib/claude-types').ClaudeMessage"))]
+        #[cfg_attr(
+            feature = "ts",
+            ts(type = "import('../lib/claude-types').ClaudeMessage")
+        )]
         serde_json::Value,
     ),
     /// A person (or automation) wrote to the agent.
@@ -247,8 +250,9 @@ mod tests {
     #[test]
     fn claude_messages_are_verbatim() -> Result<(), serde_json::Error> {
         let raw = serde_json::json!({"type": "assistant", "message": {"content": []}, "extra": 1});
-        let ev: SessionEvent =
-            serde_json::from_value(serde_json::json!({"seq": 1, "ts": 2, "kind": "claude", "data": raw}))?;
+        let ev: SessionEvent = serde_json::from_value(
+            serde_json::json!({"seq": 1, "ts": 2, "kind": "claude", "data": raw}),
+        )?;
         assert_eq!(ev.body.claude_type(), Some("assistant"));
         let EventBody::Claude(v) = &ev.body else {
             panic!("expected a claude event");

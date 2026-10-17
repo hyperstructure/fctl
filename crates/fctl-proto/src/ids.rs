@@ -117,7 +117,10 @@ mod tests {
         assert!(!UserId::is_valid("usr_"));
         assert!(!UserId::is_valid("usr-01JABC"));
         assert!(!UserId::is_valid("usr_01J/../x"));
-        assert_eq!(SessionId::parse("ses_abc").map(|s| s.0), Some("ses_abc".into()));
+        assert_eq!(
+            SessionId::parse("ses_abc").map(|s| s.0),
+            Some("ses_abc".into())
+        );
     }
 
     #[test]

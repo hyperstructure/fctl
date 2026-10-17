@@ -18,12 +18,12 @@ mod internal;
 mod model;
 mod spec;
 
+use ctx::Ctx;
 pub use do_fleet::FleetObject;
 pub use do_session::SessionObject;
-use ctx::Ctx;
 use error::{AppError, AppResult};
 use fctl_proto::ApiError;
-use worker::{event, Context, Env, Method, Request, Response};
+use worker::{Context, Env, Method, Request, Response, event};
 
 #[event(fetch)]
 pub async fn fetch(mut req: Request, env: Env, wctx: Context) -> worker::Result<Response> {
@@ -55,7 +55,6 @@ pub async fn fetch(mut req: Request, env: Env, wctx: Context) -> worker::Result<
 async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Response> {
     let method = req.method();
     let segs: Vec<&str> = path.trim_end_matches('/').split('/').skip(3).collect();
-    let segs: Vec<&str> = segs.iter().map(|s| *s).collect();
     if !path.starts_with("/api/v1/") {
         return Err(AppError(ApiError::not_found("Endpoint")));
     }
@@ -87,7 +86,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["auth", "device", "token"]) => api::auth::device_poll(ctx, req).await,
         (Get, ["auth", "device", code]) => api::auth::device_info(ctx, code).await,
         (Post, ["auth", "device", code]) => api::auth::device_decide(ctx, req, code).await,
-        (Get, ["health"]) => http::ok(&serde_json::json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") })),
+        (Get, ["health"]) => {
+            http::ok(&serde_json::json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+        }
 
         // Admin
         (Get, ["admin", "users"]) => api::admin::users(ctx).await,
@@ -119,11 +120,19 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Delete, ["projects", id]) => api::projects::delete(ctx, id).await,
         (Get, ["projects", id, "members"]) => api::projects::members(ctx, id).await,
         (Post, ["projects", id, "members"]) => api::projects::add_member(ctx, req, id).await,
-        (Patch, ["projects", id, "members", user]) => api::projects::set_member_role(ctx, req, id, user).await,
-        (Delete, ["projects", id, "members", user]) => api::projects::remove_member(ctx, id, user).await,
+        (Patch, ["projects", id, "members", user]) => {
+            api::projects::set_member_role(ctx, req, id, user).await
+        }
+        (Delete, ["projects", id, "members", user]) => {
+            api::projects::remove_member(ctx, id, user).await
+        }
         (Get, ["projects", id, "secrets"]) => api::projects::secrets(ctx, id).await,
-        (Put, ["projects", id, "secrets", name]) => api::projects::set_secret(ctx, req, id, name).await,
-        (Delete, ["projects", id, "secrets", name]) => api::projects::delete_secret(ctx, id, name).await,
+        (Put, ["projects", id, "secrets", name]) => {
+            api::projects::set_secret(ctx, req, id, name).await
+        }
+        (Delete, ["projects", id, "secrets", name]) => {
+            api::projects::delete_secret(ctx, id, name).await
+        }
         (Post, ["projects", id, "sessions"]) => api::sessions::create(ctx, req, id).await,
         (Get, ["github"]) => api::projects::github_info(ctx).await,
         (Get, ["github", "repos"]) => api::projects::github_repos(ctx).await,
@@ -140,14 +149,18 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["sessions", id, "ws"]) => api::sessions::websocket(ctx, req, id).await,
         (Get, ["sessions", id, "shares"]) => api::sessions::shares(ctx, id).await,
         (Post, ["sessions", id, "shares"]) => api::sessions::add_share(ctx, req, id).await,
-        (Delete, ["sessions", id, "shares", user]) => api::sessions::remove_share(ctx, id, user).await,
+        (Delete, ["sessions", id, "shares", user]) => {
+            api::sessions::remove_share(ctx, id, user).await
+        }
 
         // Claude credentials
         (Get, ["me", "claude"]) => api::claude::list(ctx).await,
         (Post, ["me", "claude", "token"]) => api::claude::add_token(ctx, req).await,
         (Post, ["me", "claude", "login"]) => api::claude::start_login(ctx).await,
         (Get, ["me", "claude", "login", id]) => api::claude::job(ctx, id).await,
-        (Post, ["me", "claude", "login", id, "code"]) => api::claude::submit_code(ctx, req, id).await,
+        (Post, ["me", "claude", "login", id, "code"]) => {
+            api::claude::submit_code(ctx, req, id).await
+        }
         (Post, ["me", "claude", id, "default"]) => api::claude::set_default(ctx, id).await,
         (Delete, ["me", "claude", id]) => api::claude::remove(ctx, id).await,
         _ => Err(AppError(ApiError::not_found("Endpoint"))),

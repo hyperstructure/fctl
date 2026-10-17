@@ -5,13 +5,13 @@
 
 use crate::config::GithubConfig;
 use crate::crypto;
-use crate::error::{internal, not_configured, unavailable, AppError, AppResult};
+use crate::error::{AppError, AppResult, internal, not_configured, unavailable};
 use fctl_proto::api::GithubRepo;
 use fctl_proto::runner::GithubCredential;
 use fctl_proto::session::RepoRef;
 use fctl_proto::{ApiError, ErrorCode};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use worker::{Fetch, Headers, Method, Request, RequestInit};
@@ -83,10 +83,6 @@ pub fn from_config(cfg: &crate::config::Config, now: i64) -> AppResult<Github<'_
 }
 
 impl<'a> Github<'a> {
-    pub fn slug(&self) -> &str {
-        &self.cfg.slug
-    }
-
     pub fn default_owner(&self) -> Option<&str> {
         self.cfg.default_owner.as_deref()
     }
@@ -96,14 +92,22 @@ impl<'a> Github<'a> {
         let iat = self.now / 1000 - 60;
         let header = crypto::b64url(br#"{"alg":"RS256","typ":"JWT"}"#);
         let claims = crypto::b64url(
-            json!({ "iat": iat, "exp": iat + 540, "iss": self.cfg.app_id }).to_string().as_bytes(),
+            json!({ "iat": iat, "exp": iat + 540, "iss": self.cfg.app_id })
+                .to_string()
+                .as_bytes(),
         );
         let signing_input = format!("{header}.{claims}");
         let sig = crypto::rs256_sign(&self.cfg.private_key_pem, signing_input.as_bytes()).await?;
         Ok(format!("{signing_input}.{}", crypto::b64url(&sig)))
     }
 
-    async fn call(&self, method: Method, path: &str, auth: &str, body: Option<Value>) -> AppResult<(u16, Value)> {
+    async fn call(
+        &self,
+        method: Method,
+        path: &str,
+        auth: &str,
+        body: Option<Value>,
+    ) -> AppResult<(u16, Value)> {
         let headers = Headers::new();
         headers.set("Authorization", auth)?;
         headers.set("Accept", "application/vnd.github+json")?;
@@ -122,20 +126,32 @@ impl<'a> Github<'a> {
         Ok((status, value))
     }
 
-    async fn app_call(&self, method: Method, path: &str, body: Option<Value>) -> AppResult<(u16, Value)> {
+    async fn app_call(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> AppResult<(u16, Value)> {
         let jwt = self.app_jwt().await?;
-        self.call(method, path, &format!("Bearer {jwt}"), body).await
+        self.call(method, path, &format!("Bearer {jwt}"), body)
+            .await
     }
 
     /// The installation id for an account (organization or user).
     pub async fn installation_id(&self, owner: &str) -> AppResult<u64> {
         let key = owner.to_lowercase();
         if let Some(id) = INSTALLATIONS.with(|m| {
-            m.borrow().get(&key).filter(|(_, at)| self.now - at < 10 * 60 * 1000).map(|(id, _)| *id)
+            m.borrow()
+                .get(&key)
+                .filter(|(_, at)| self.now - at < 10 * 60 * 1000)
+                .map(|(id, _)| *id)
         }) {
             return Ok(id);
         }
-        for path in [format!("/orgs/{owner}/installation"), format!("/users/{owner}/installation")] {
+        for path in [
+            format!("/orgs/{owner}/installation"),
+            format!("/users/{owner}/installation"),
+        ] {
             let (status, v) = self.app_call(Method::Get, &path, None).await?;
             if status == 200 {
                 let inst: Installation = serde_json::from_value(v)?;
@@ -145,13 +161,18 @@ impl<'a> Github<'a> {
         }
         Err(AppError(ApiError::new(
             ErrorCode::Forbidden,
-            format!("The {} GitHub App is not installed on {owner}", self.cfg.slug),
+            format!(
+                "The {} GitHub App is not installed on {owner}",
+                self.cfg.slug
+            ),
         )))
     }
 
     /// Accounts the app is installed on.
     pub async fn installations(&self) -> AppResult<Vec<(u64, String)>> {
-        let (status, v) = self.app_call(Method::Get, "/app/installations?per_page=100", None).await?;
+        let (status, v) = self
+            .app_call(Method::Get, "/app/installations?per_page=100", None)
+            .await?;
         if status != 200 {
             return Err(unavailable("GitHub did not list the app's installations"));
         }
@@ -184,36 +205,62 @@ impl<'a> Github<'a> {
             )
             .await?;
         if status != 201 {
-            let msg = v.get("message").and_then(Value::as_str).unwrap_or("unknown error");
+            let msg = v
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
             worker::console_error!("installation token failed: {status} {msg}");
             return Err(unavailable(&format!("GitHub refused a token: {msg}")));
         }
         let t: TokenResponse = serde_json::from_value(v)?;
         let expires_at = parse_rfc3339_ms(&t.expires_at).unwrap_or(self.now + 55 * 60 * 1000);
-        Ok(GithubCredential { token: t.token, expires_at })
+        Ok(GithubCredential {
+            token: t.token,
+            expires_at,
+        })
     }
 
     /// A token for agents working on `repo`.
     pub async fn session_token(&self, repo: &RepoRef) -> AppResult<GithubCredential> {
         let inst = self.installation_id(&repo.owner).await?;
-        self.installation_token(inst, Some(&[repo.name.as_str()]), Some(session_permissions()))
-            .await
+        self.installation_token(
+            inst,
+            Some(&[repo.name.as_str()]),
+            Some(session_permissions()),
+        )
+        .await
     }
 
-    async fn installation_call(&self, owner: &str, method: Method, path: &str, body: Option<Value>) -> AppResult<(u16, Value)> {
+    async fn installation_call(
+        &self,
+        owner: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> AppResult<(u16, Value)> {
         let inst = self.installation_id(owner).await?;
         let token = self.installation_token(inst, None, None).await?;
-        self.call(method, path, &format!("token {}", token.token), body).await
+        self.call(method, path, &format!("token {}", token.token), body)
+            .await
     }
 
     pub async fn get_repo(&self, repo: &RepoRef) -> AppResult<GithubRepo> {
         let (status, v) = self
-            .installation_call(&repo.owner, Method::Get, &format!("/repos/{}/{}", repo.owner, repo.name), None)
+            .installation_call(
+                &repo.owner,
+                Method::Get,
+                &format!("/repos/{}/{}", repo.owner, repo.name),
+                None,
+            )
             .await?;
         if status == 404 {
             return Err(AppError(ApiError::validation(
                 "repo",
-                format!("{} was not found, or the {} app cannot access it", repo.full_name(), self.cfg.slug),
+                format!(
+                    "{} was not found, or the {} app cannot access it",
+                    repo.full_name(),
+                    self.cfg.slug
+                ),
             )));
         }
         if status != 200 {
@@ -252,7 +299,13 @@ impl<'a> Github<'a> {
     }
 
     /// Creates a repository in `owner` (an organization the app is installed on).
-    pub async fn create_repo(&self, owner: &str, name: &str, private: bool, description: Option<&str>) -> AppResult<GithubRepo> {
+    pub async fn create_repo(
+        &self,
+        owner: &str,
+        name: &str,
+        private: bool,
+        description: Option<&str>,
+    ) -> AppResult<GithubRepo> {
         let body = json!({
             "name": name,
             "private": private,
@@ -261,7 +314,12 @@ impl<'a> Github<'a> {
             "has_wiki": false,
         });
         let (status, v) = self
-            .installation_call(owner, Method::Post, &format!("/orgs/{owner}/repos"), Some(body))
+            .installation_call(
+                owner,
+                Method::Post,
+                &format!("/orgs/{owner}/repos"),
+                Some(body),
+            )
             .await?;
         if status == 422 {
             return Err(AppError(ApiError::validation(
@@ -272,7 +330,10 @@ impl<'a> Github<'a> {
             )));
         }
         if status != 201 {
-            let msg = v.get("message").and_then(Value::as_str).unwrap_or("unknown error");
+            let msg = v
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
             return Err(internal(format!("create repo: {status} {msg}")));
         }
         Ok(to_repo(serde_json::from_value(v)?))

@@ -195,7 +195,12 @@ impl SessionStatus {
     pub fn accepts_messages(self) -> bool {
         matches!(
             self,
-            Self::Queued | Self::Provisioning | Self::Preparing | Self::Running | Self::Idle | Self::Paused
+            Self::Queued
+                | Self::Provisioning
+                | Self::Preparing
+                | Self::Running
+                | Self::Idle
+                | Self::Paused
         )
     }
 
@@ -248,7 +253,8 @@ impl RepoRef {
         let ok = |p: &str| {
             !p.is_empty()
                 && p.len() <= 100
-                && p.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                && p.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
                 && p != "."
                 && p != ".."
         };

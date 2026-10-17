@@ -1,7 +1,7 @@
 //! The session's repository: cloning, branches, the setup script, git state
 //! after each turn, pushing, and the credentials git and `gh` use.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use fctl_proto::event::{CommitInfo, FileChange, GitState, LogLevel};
 use fctl_proto::runner::{GitIdentity, GithubCredential, SessionSpec};
 use fctl_proto::session::PullRequestRef;
@@ -123,7 +123,19 @@ pub async fn configure_git(p: &Paths, author: &GitIdentity) -> Result<()> {
     ] {
         run(&p.home, &p.home, "git", &["config", "--global", k, v]).await?;
     }
-    run(&p.home, &p.home, "git", &["config", "--global", "--add", "credential.https://github.com.helper", &helper_path]).await?;
+    run(
+        &p.home,
+        &p.home,
+        "git",
+        &[
+            "config",
+            "--global",
+            "--add",
+            "credential.https://github.com.helper",
+            &helper_path,
+        ],
+    )
+    .await?;
     Ok(())
 }
 
@@ -136,52 +148,137 @@ pub async fn prepare(p: &Paths, spec: &SessionSpec, log: &LogSink) -> Result<()>
         // No repository: an empty git workspace so diffs still work.
         if !p.workdir.join(".git").exists() {
             git_ok(p, &["init", "-q", "-b", &spec.branch]).await?;
-            let _ = log.send((LogLevel::Info, "No repository linked; started an empty workspace".into()));
+            let _ = log.send((
+                LogLevel::Info,
+                "No repository linked; started an empty workspace".into(),
+            ));
         }
         return Ok(());
     };
     if p.workdir.join(".git").exists() {
-        let _ = log.send((LogLevel::Info, format!("Reusing the checkout of {}", repo.full_name())));
+        let _ = log.send((
+            LogLevel::Info,
+            format!("Reusing the checkout of {}", repo.full_name()),
+        ));
         let f = git(p, &["fetch", "--prune", "origin"]).await?;
         if !f.ok {
-            let _ = log.send((LogLevel::Warn, format!("git fetch failed: {}", f.stderr.trim())));
+            let _ = log.send((
+                LogLevel::Warn,
+                format!("git fetch failed: {}", f.stderr.trim()),
+            ));
         }
         return Ok(());
     }
     let _ = log.send((LogLevel::Info, format!("Cloning {}", repo.full_name())));
     let parent = p.workdir.parent().unwrap_or(Path::new("/"));
-    let name = p.workdir.file_name().and_then(|n| n.to_str()).unwrap_or("workspace");
+    let name = p
+        .workdir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("workspace");
     // Clone into an empty directory (the workdir may already exist).
-    let is_empty = std::fs::read_dir(&p.workdir).map(|mut d| d.next().is_none()).unwrap_or(true);
+    let is_empty = std::fs::read_dir(&p.workdir)
+        .map(|mut d| d.next().is_none())
+        .unwrap_or(true);
     let clone = if is_empty {
         std::fs::remove_dir(&p.workdir).ok();
-        run(parent, &p.home, "git", &["clone", "--quiet", &repo.clone_url(), name]).await?
+        run(
+            parent,
+            &p.home,
+            "git",
+            &["clone", "--quiet", &repo.clone_url(), name],
+        )
+        .await?
     } else {
-        run(&p.workdir, &p.home, "git", &["clone", "--quiet", &repo.clone_url(), "."]).await?
+        run(
+            &p.workdir,
+            &p.home,
+            "git",
+            &["clone", "--quiet", &repo.clone_url(), "."],
+        )
+        .await?
     };
     if !clone.ok {
-        bail!("cloning {} failed: {}", repo.full_name(), clone.stderr.trim());
+        bail!(
+            "cloning {} failed: {}",
+            repo.full_name(),
+            clone.stderr.trim()
+        );
     }
-    let remote_branch = git(p, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{}", spec.branch)]).await?;
+    let remote_branch = git(
+        p,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{}", spec.branch),
+        ],
+    )
+    .await?;
     if remote_branch.ok {
         let _ = log.send((LogLevel::Info, format!("Continuing on {}", spec.branch)));
-        git_ok(p, &["checkout", "-q", "-B", &spec.branch, &format!("origin/{}", spec.branch)]).await?;
+        git_ok(
+            p,
+            &[
+                "checkout",
+                "-q",
+                "-B",
+                &spec.branch,
+                &format!("origin/{}", spec.branch),
+            ],
+        )
+        .await?;
         return Ok(());
     }
-    let base = git(p, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{}", spec.base_branch)]).await?;
+    let base = git(
+        p,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{}", spec.base_branch),
+        ],
+    )
+    .await?;
     if base.ok {
-        git_ok(p, &["checkout", "-q", "-b", &spec.branch, &format!("origin/{}", spec.base_branch)]).await?;
-        let _ = log.send((LogLevel::Info, format!("Created {} from {}", spec.branch, spec.base_branch)));
+        git_ok(
+            p,
+            &[
+                "checkout",
+                "-q",
+                "-b",
+                &spec.branch,
+                &format!("origin/{}", spec.base_branch),
+            ],
+        )
+        .await?;
+        let _ = log.send((
+            LogLevel::Info,
+            format!("Created {} from {}", spec.branch, spec.base_branch),
+        ));
     } else {
         // An empty repository: start the branch from nothing.
         git_ok(p, &["checkout", "-q", "--orphan", &spec.branch]).await?;
-        let _ = log.send((LogLevel::Warn, format!("{} has no {} branch; starting {} empty", repo.full_name(), spec.base_branch, spec.branch)));
+        let _ = log.send((
+            LogLevel::Warn,
+            format!(
+                "{} has no {} branch; starting {} empty",
+                repo.full_name(),
+                spec.base_branch,
+                spec.branch
+            ),
+        ));
     }
     Ok(())
 }
 
 /// Runs the project's setup script, streaming its output.
-pub async fn setup_script(p: &Paths, script: &str, env: &[(String, String)], log: &LogSink) -> Result<bool> {
+pub async fn setup_script(
+    p: &Paths,
+    script: &str,
+    env: &[(String, String)],
+    log: &LogSink,
+) -> Result<bool> {
     let _ = log.send((LogLevel::Info, "Running the setup script".into()));
     let mut cmd = Command::new("bash");
     cmd.args(["-lc", script])
@@ -222,21 +319,52 @@ pub async fn state(p: &Paths, spec: &SessionSpec) -> Result<GitState> {
     if !p.workdir.join(".git").exists() {
         return Ok(GitState::default());
     }
-    let branch = git_ok(p, &["rev-parse", "--abbrev-ref", "HEAD"]).await.ok().map(|s| s.trim().to_owned());
-    let head = git_ok(p, &["rev-parse", "HEAD"]).await.ok().map(|s| s.trim().to_owned());
+    let branch = git_ok(p, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .ok()
+        .map(|s| s.trim().to_owned());
+    let head = git_ok(p, &["rev-parse", "HEAD"])
+        .await
+        .ok()
+        .map(|s| s.trim().to_owned());
     let base_ref = format!("origin/{}", spec.base_branch);
-    let has_base = git(p, &["rev-parse", "--verify", "--quiet", &base_ref]).await?.ok;
+    let has_base = git(p, &["rev-parse", "--verify", "--quiet", &base_ref])
+        .await?
+        .ok;
     let (behind, ahead) = if has_base && head.is_some() {
-        let counts = git_ok(p, &["rev-list", "--left-right", "--count", &format!("{base_ref}...HEAD")]).await.unwrap_or_default();
-        let mut it = counts.split_whitespace().filter_map(|n| n.parse::<u32>().ok());
+        let counts = git_ok(
+            p,
+            &[
+                "rev-list",
+                "--left-right",
+                "--count",
+                &format!("{base_ref}...HEAD"),
+            ],
+        )
+        .await
+        .unwrap_or_default();
+        let mut it = counts
+            .split_whitespace()
+            .filter_map(|n| n.parse::<u32>().ok());
         (it.next().unwrap_or(0), it.next().unwrap_or(0))
     } else {
-        (0, git_ok(p, &["rev-list", "--count", "HEAD"]).await.ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0))
+        (
+            0,
+            git_ok(p, &["rev-list", "--count", "HEAD"])
+                .await
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0),
+        )
     };
     let mut files: Vec<FileChange> = Vec::new();
     // Without a base branch, everything is new: diff against the empty tree.
     const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-    let diff_target = if has_base { base_ref.clone() } else { EMPTY_TREE.to_owned() };
+    let diff_target = if has_base {
+        base_ref.clone()
+    } else {
+        EMPTY_TREE.to_owned()
+    };
     if head.is_some() {
         let numstat = git(p, &["diff", "--numstat", "-M", &diff_target]).await?;
         let names = git(p, &["diff", "--name-status", "-M", &diff_target]).await?;
@@ -246,7 +374,7 @@ pub async fn state(p: &Paths, spec: &SessionSpec) -> Result<GitState> {
             .filter_map(|l| {
                 let mut parts = l.split('\t');
                 let code = parts.next()?.chars().next()?;
-                let path = parts.last()?.to_owned();
+                let path = parts.next_back()?.to_owned();
                 let status = match code {
                     'A' => "added",
                     'D' => "deleted",
@@ -258,10 +386,20 @@ pub async fn state(p: &Paths, spec: &SessionSpec) -> Result<GitState> {
             .collect();
         for line in numstat.stdout.lines() {
             let mut parts = line.split('\t');
-            let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.last()) else { continue };
+            let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next_back()) else {
+                continue;
+            };
             let path = path.to_owned();
-            let status = statuses.iter().find(|(p2, _)| *p2 == path).map_or("modified".to_owned(), |(_, s)| s.clone());
-            files.push(FileChange { path, status, additions: a.parse().ok(), deletions: d.parse().ok() });
+            let status = statuses
+                .iter()
+                .find(|(p2, _)| *p2 == path)
+                .map_or("modified".to_owned(), |(_, s)| s.clone());
+            files.push(FileChange {
+                path,
+                status,
+                additions: a.parse().ok(),
+                deletions: d.parse().ok(),
+            });
         }
     }
     let porcelain = git(p, &["status", "--porcelain"]).await?;
@@ -271,19 +409,43 @@ pub async fn state(p: &Paths, spec: &SessionSpec) -> Result<GitState> {
         if let Some(path) = line.strip_prefix("?? ") {
             let path = path.trim_matches('"').to_owned();
             if !path.ends_with('/') && !files.iter().any(|f| f.path == path) {
-                let lines = std::fs::read_to_string(p.workdir.join(&path)).map(|t| t.lines().count() as u32).ok();
-                files.push(FileChange { path, status: "untracked".into(), additions: lines, deletions: Some(0) });
+                let lines = std::fs::read_to_string(p.workdir.join(&path))
+                    .map(|t| t.lines().count() as u32)
+                    .ok();
+                files.push(FileChange {
+                    path,
+                    status: "untracked".into(),
+                    additions: lines,
+                    deletions: Some(0),
+                });
             }
         }
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files.truncate(500);
-    let last_commit = git_ok(p, &["log", "-1", "--format=%H%x00%s"]).await.ok().and_then(|s| {
-        let (sha, subject) = s.trim().split_once('\0')?;
-        Some(CommitInfo { sha: sha.to_owned(), subject: subject.to_owned() })
-    });
+    let last_commit = git_ok(p, &["log", "-1", "--format=%H%x00%s"])
+        .await
+        .ok()
+        .and_then(|s| {
+            let (sha, subject) = s.trim().split_once('\0')?;
+            Some(CommitInfo {
+                sha: sha.to_owned(),
+                subject: subject.to_owned(),
+            })
+        });
     let remote_head = match &branch {
-        Some(b) => git_ok(p, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{b}")]).await.ok().map(|s| s.trim().to_owned()),
+        Some(b) => git_ok(
+            p,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/origin/{b}"),
+            ],
+        )
+        .await
+        .ok()
+        .map(|s| s.trim().to_owned()),
         None => None,
     };
     Ok(GitState {
@@ -302,7 +464,9 @@ pub async fn state(p: &Paths, spec: &SessionSpec) -> Result<GitState> {
 
 /// Pushes the session branch when it has commits the remote lacks.
 pub async fn push(p: &Paths, st: &GitState) -> Result<bool> {
-    let Some(branch) = st.branch.as_deref() else { return Ok(false) };
+    let Some(branch) = st.branch.as_deref() else {
+        return Ok(false);
+    };
     if st.pushed || st.head.is_none() || branch == "HEAD" {
         return Ok(false);
     }
@@ -315,19 +479,42 @@ pub async fn push(p: &Paths, st: &GitState) -> Result<bool> {
 
 /// The pull request of the session branch, through `gh`.
 pub async fn pull_request(p: &Paths, branch: &str) -> Option<PullRequestRef> {
-    let o = run(&p.workdir, &p.home, "gh", &["pr", "view", branch, "--json", "number,url,title,state,isDraft"]).await.ok()?;
+    let o = run(
+        &p.workdir,
+        &p.home,
+        "gh",
+        &[
+            "pr",
+            "view",
+            branch,
+            "--json",
+            "number,url,title,state,isDraft",
+        ],
+    )
+    .await
+    .ok()?;
     if !o.ok {
         return None;
     }
     let v: serde_json::Value = serde_json::from_str(&o.stdout).ok()?;
-    let draft = v.get("isDraft").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let draft = v
+        .get("isDraft")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     let state = v.get("state").and_then(serde_json::Value::as_str).map(|s| {
-        if draft && s == "OPEN" { "draft".to_owned() } else { s.to_lowercase() }
+        if draft && s == "OPEN" {
+            "draft".to_owned()
+        } else {
+            s.to_lowercase()
+        }
     });
     Some(PullRequestRef {
         number: v.get("number").and_then(serde_json::Value::as_u64)?,
         url: v.get("url").and_then(serde_json::Value::as_str)?.to_owned(),
-        title: v.get("title").and_then(serde_json::Value::as_str).map(str::to_owned),
+        title: v
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
         state,
     })
 }

@@ -2,8 +2,8 @@
 
 use crate::ctx::Ctx;
 use crate::db::{q, s};
-use crate::error::{forbidden, not_found, AppResult};
-use crate::model::{ProjectRow, SessionRow, PROJECT_SELECT, SESSION_SELECT};
+use crate::error::{AppResult, forbidden, not_found};
+use crate::model::{PROJECT_SELECT, ProjectRow, SESSION_SELECT, SessionRow};
 use fctl_domain::perm::{self, SessionAccess};
 use fctl_proto::session::{ProjectRole, SessionRole};
 
@@ -17,7 +17,9 @@ pub struct ProjectAccess {
 pub async fn project(ctx: &Ctx, id_or_slug: &str) -> AppResult<ProjectAccess> {
     let user = ctx.user()?;
     let sql = format!("{PROJECT_SELECT} WHERE p.id = ?2 OR p.slug = ?2");
-    let row: Option<ProjectRow> = q(&ctx.db, &sql, &[s(&user.id), s(id_or_slug)])?.first().await?;
+    let row: Option<ProjectRow> = q(&ctx.db, &sql, &[s(&user.id), s(id_or_slug)])?
+        .first()
+        .await?;
     let row = row.ok_or_else(|| not_found("Project"))?;
     let role = perm::project_role(user.role(), row.member_role());
     if role.is_none() {
@@ -81,7 +83,9 @@ impl SessionAccessRow {
         if self.role.can_message() {
             Ok(())
         } else {
-            Err(forbidden("You can view this session but not message the agent"))
+            Err(forbidden(
+                "You can view this session but not message the agent",
+            ))
         }
     }
 

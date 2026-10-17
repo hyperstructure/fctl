@@ -4,6 +4,7 @@ members = [
     "crates/fctl-proto",
     "crates/fctl-domain",
     "crates/fctl-control",
+    "crates/fctl-client",
     "crates/fctl-host",
     "crates/fctl-agent",
     "crates/fctl",
@@ -14,6 +15,7 @@ members = [
 default-members = [
     "crates/fctl-proto",
     "crates/fctl-domain",
+    "crates/fctl-client",
     "crates/fctl-host",
     "crates/fctl-agent",
     "crates/fctl",
@@ -34,6 +36,7 @@ authors = ["The fctl authors"]
 fctl-proto = { path = "crates/fctl-proto" }
 fctl-domain = { path = "crates/fctl-domain" }
 fctl-host = { path = "crates/fctl-host" }
+fctl-client = { path = "crates/fctl-client" }
 
 anyhow = "1.0.104"
 base64 = "0.23.1"
@@ -57,11 +60,16 @@ serde_with = { version = "3", default-features = false, features = ["macros"] }
 sha2 = "0.11.1"
 thiserror = "2.0.21"
 tokio = { version = "1.53.3", features = ["full"] }
+toml = "1.1.8"
+tempfile = "3.27.0"
+regex = "1.13.1"
 tokio-tungstenite = { version = "0.30.0", features = ["connect", "rustls-tls-webpki-roots"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 ts-rs = { version = "12.0.1", features = ["serde-json-impl", "no-serde-warnings"] }
 url = "2.5.8"
+webpki-roots = "1.0.9"
+rustls-pki-types = { version = "1", features = ["std"] }
 uuid = { version = "1.28.0", features = ["v4", "v7", "serde"] }
 
 [workspace.lints.rust]
@@ -73,6 +81,8 @@ dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
 expect_used = "warn"
+# Protocol messages are moved, not stored in bulk; boxing them is noise.
+large_enum_variant = "allow"
 
 [profile.release]
 lto = "thin"

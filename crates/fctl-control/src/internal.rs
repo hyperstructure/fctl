@@ -4,17 +4,15 @@
 //! trusted; the Worker never forwards client headers to them (it builds new
 //! requests), and identity travels in `X-Fctl-*` headers it sets itself.
 
-use crate::error::{internal, AppError, AppResult};
+use crate::error::{AppError, AppResult, internal};
 use fctl_proto::event::UserMessage;
 use fctl_proto::runner::StopReason;
 use fctl_proto::session::{RunnerRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::Delivery;
 use fctl_proto::{ApiError, DeliveryId, LoginJobId, Millis, ProjectId, SessionId};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use worker::{Env, Headers, Method, Request, RequestInit, Response, Stub};
 
-pub const HDR_USER: &str = "X-Fctl-User";
-pub const HDR_ROLE: &str = "X-Fctl-Role";
 pub const HDR_RUNNER: &str = "X-Fctl-Runner";
 pub const HDR_VIEWER: &str = "X-Fctl-Viewer";
 
@@ -120,14 +118,25 @@ pub struct LoginCode {
 // ───────────────────────────── calling ─────────────────────────────
 
 pub fn session_stub(env: &Env, session_id: &str) -> AppResult<Stub> {
-    Ok(env.durable_object("SESSION")?.id_from_name(session_id)?.get_stub()?)
+    Ok(env
+        .durable_object("SESSION")?
+        .id_from_name(session_id)?
+        .get_stub()?)
 }
 
 pub fn fleet_stub(env: &Env) -> AppResult<Stub> {
-    Ok(env.durable_object("FLEET")?.id_from_name("fleet")?.get_stub()?)
+    Ok(env
+        .durable_object("FLEET")?
+        .id_from_name("fleet")?
+        .get_stub()?)
 }
 
-fn build(method: Method, path: &str, body: Option<String>, headers: &[(&str, &str)]) -> AppResult<Request> {
+fn build(
+    method: Method,
+    path: &str,
+    body: Option<String>,
+    headers: &[(&str, &str)],
+) -> AppResult<Request> {
     let h = Headers::new();
     if body.is_some() {
         h.set("Content-Type", "application/json")?;
@@ -140,7 +149,10 @@ fn build(method: Method, path: &str, body: Option<String>, headers: &[(&str, &st
     if let Some(b) = body {
         init.with_body(Some(b.into()));
     }
-    Ok(Request::new_with_init(&format!("https://internal{path}"), &init)?)
+    Ok(Request::new_with_init(
+        &format!("https://internal{path}"),
+        &init,
+    )?)
 }
 
 async fn decode<T: DeserializeOwned>(mut res: Response) -> AppResult<T> {
@@ -157,7 +169,11 @@ async fn decode<T: DeserializeOwned>(mut res: Response) -> AppResult<T> {
 }
 
 /// POSTs JSON to a Durable Object and decodes the JSON answer.
-pub async fn post<B: Serialize, T: DeserializeOwned>(stub: &Stub, path: &str, body: &B) -> AppResult<T> {
+pub async fn post<B: Serialize, T: DeserializeOwned>(
+    stub: &Stub,
+    path: &str,
+    body: &B,
+) -> AppResult<T> {
     let req = build(Method::Post, path, Some(serde_json::to_string(body)?), &[])?;
     decode(stub.fetch_with_request(req).await?).await
 }

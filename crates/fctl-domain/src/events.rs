@@ -58,20 +58,28 @@ pub enum BillingGuard {
     /// Claude started drawing on paid extra usage. Interrupt and pause.
     Overage,
     /// The subscription limit is reached; pause until `resets_at` (ms).
-    LimitReached { resets_at: Option<i64>, limit: Option<String> },
+    LimitReached {
+        resets_at: Option<i64>,
+        limit: Option<String>,
+    },
 }
 
 /// Checks a Claude message against the subscription-only rules.
 pub fn billing_guard(v: &Value) -> Option<BillingGuard> {
     match classify(v) {
         ClaudeKind::Init => {
-            let source = v.get("apiKeySource").and_then(Value::as_str).unwrap_or("none");
+            let source = v
+                .get("apiKeySource")
+                .and_then(Value::as_str)
+                .unwrap_or("none");
             // 'none' means no API key (claude.ai OAuth). 'oauth' is a legacy
             // spelling of the same. Everything else bills an API account.
             if source == "none" || source == "oauth" {
                 None
             } else {
-                Some(BillingGuard::ApiKey { source: source.to_owned() })
+                Some(BillingGuard::ApiKey {
+                    source: source.to_owned(),
+                })
             }
         }
         ClaudeKind::RateLimit => {
@@ -86,7 +94,13 @@ pub fn billing_guard(v: &Value) -> Option<BillingGuard> {
                     .get("resetsAt")
                     .and_then(Value::as_f64)
                     // The CLI reports seconds; accept milliseconds too.
-                    .map(|t| if t < 1e11 { (t * 1000.0) as i64 } else { t as i64 });
+                    .map(|t| {
+                        if t < 1e11 {
+                            (t * 1000.0) as i64
+                        } else {
+                            t as i64
+                        }
+                    });
                 return Some(BillingGuard::LimitReached {
                     resets_at,
                     limit: limit_type.map(str::to_owned),
@@ -122,7 +136,10 @@ pub fn apply_stats(stats: &mut SessionStats, v: &Value) {
             // modelUsage is cumulative for the process: the latest result wins.
             if let Some(models) = v.get("modelUsage").and_then(Value::as_object) {
                 let sum = |key: &str| -> u64 {
-                    models.values().filter_map(|m| m.get(key).and_then(Value::as_u64)).sum()
+                    models
+                        .values()
+                        .filter_map(|m| m.get(key).and_then(Value::as_u64))
+                        .sum()
                 };
                 stats.input_tokens = stats.input_tokens.max(sum("inputTokens"));
                 stats.output_tokens = stats.output_tokens.max(sum("outputTokens"));
@@ -138,9 +155,15 @@ pub fn activity(v: &Value) -> Option<(&'static str, u32)> {
     match classify(v) {
         ClaudeKind::Assistant => {
             let blocks = v.pointer("/message/content").and_then(Value::as_array)?;
-            let kind = if blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")) {
+            let kind = if blocks
+                .iter()
+                .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+            {
                 "tool_use"
-            } else if blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("thinking")) {
+            } else if blocks
+                .iter()
+                .any(|b| b.get("type").and_then(Value::as_str) == Some("thinking"))
+            {
                 "thinking"
             } else {
                 "text"
@@ -169,13 +192,11 @@ pub fn activity(v: &Value) -> Option<(&'static str, u32)> {
 /// Returns whether anything was removed.
 pub fn shape_for_storage(v: &mut Value) -> bool {
     let mut changed = truncate_strings(v, MAX_STORED_STRING_BYTES);
-    if serialized_len(v) > MAX_STORED_EVENT_BYTES {
-        if let Some(obj) = v.as_object_mut() {
-            if obj.remove("tool_use_result").is_some() {
+    if serialized_len(v) > MAX_STORED_EVENT_BYTES
+        && let Some(obj) = v.as_object_mut()
+            && obj.remove("tool_use_result").is_some() {
                 changed = true;
             }
-        }
-    }
     let mut limit = MAX_STORED_STRING_BYTES / 2;
     while serialized_len(v) > MAX_STORED_EVENT_BYTES && limit >= 256 {
         changed |= truncate_strings(v, limit);
@@ -200,8 +221,12 @@ fn truncate_strings(v: &mut Value, max: usize) -> bool {
             s.push_str(&format!("\n… [{removed} bytes truncated by fctl]"));
             true
         }
-        Value::Array(items) => items.iter_mut().fold(false, |acc, i| truncate_strings(i, max) | acc),
-        Value::Object(map) => map.values_mut().fold(false, |acc, i| truncate_strings(i, max) | acc),
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |acc, i| truncate_strings(i, max) | acc),
+        Value::Object(map) => map
+            .values_mut()
+            .fold(false, |acc, i| truncate_strings(i, max) | acc),
         _ => false,
     }
 }
@@ -231,9 +256,15 @@ mod tests {
         let ok = json!({"type": "system", "subtype": "init", "apiKeySource": "none"});
         assert_eq!(billing_guard(&ok), None);
         let bad = json!({"type": "system", "subtype": "init", "apiKeySource": "ANTHROPIC_API_KEY"});
-        assert!(matches!(billing_guard(&bad), Some(BillingGuard::ApiKey { .. })));
+        assert!(matches!(
+            billing_guard(&bad),
+            Some(BillingGuard::ApiKey { .. })
+        ));
         let helper = json!({"type": "system", "subtype": "init", "apiKeySource": "apiKeyHelper"});
-        assert!(matches!(billing_guard(&helper), Some(BillingGuard::ApiKey { .. })));
+        assert!(matches!(
+            billing_guard(&helper),
+            Some(BillingGuard::ApiKey { .. })
+        ));
     }
 
     #[test]
@@ -245,7 +276,10 @@ mod tests {
         let limit = json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1_760_000_000, "rateLimitType": "five_hour"}});
         assert_eq!(
             billing_guard(&limit),
-            Some(BillingGuard::LimitReached { resets_at: Some(1_760_000_000_000), limit: Some("five_hour".into()) })
+            Some(BillingGuard::LimitReached {
+                resets_at: Some(1_760_000_000_000),
+                limit: Some("five_hour".into())
+            })
         );
         let fine = json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "utilization": 0.9}});
         assert_eq!(billing_guard(&fine), None);
@@ -254,11 +288,23 @@ mod tests {
     #[test]
     fn stats() {
         let mut s = SessionStats::default();
-        apply_stats(&mut s, &json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "x"}, {"type": "tool_use", "id": "1"}, {"type": "tool_use", "id": "2"}]}}));
-        apply_stats(&mut s, &json!({"type": "result", "duration_ms": 1500, "modelUsage": {"a": {"inputTokens": 10, "outputTokens": 5, "cacheReadInputTokens": 100}, "b": {"inputTokens": 1, "outputTokens": 1, "cacheReadInputTokens": 0}}}));
-        apply_stats(&mut s, &json!({"type": "result", "duration_ms": 500, "modelUsage": {"a": {"inputTokens": 20, "outputTokens": 9, "cacheReadInputTokens": 150}}}));
+        apply_stats(
+            &mut s,
+            &json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "x"}, {"type": "tool_use", "id": "1"}, {"type": "tool_use", "id": "2"}]}}),
+        );
+        apply_stats(
+            &mut s,
+            &json!({"type": "result", "duration_ms": 1500, "modelUsage": {"a": {"inputTokens": 10, "outputTokens": 5, "cacheReadInputTokens": 100}, "b": {"inputTokens": 1, "outputTokens": 1, "cacheReadInputTokens": 0}}}),
+        );
+        apply_stats(
+            &mut s,
+            &json!({"type": "result", "duration_ms": 500, "modelUsage": {"a": {"inputTokens": 20, "outputTokens": 9, "cacheReadInputTokens": 150}}}),
+        );
         assert_eq!((s.tool_calls, s.turns, s.busy_ms), (2, 2, 2000));
-        assert_eq!((s.input_tokens, s.output_tokens, s.cache_read_tokens), (20, 9, 150));
+        assert_eq!(
+            (s.input_tokens, s.output_tokens, s.cache_read_tokens),
+            (20, 9, 150)
+        );
     }
 
     #[test]
@@ -272,7 +318,10 @@ mod tests {
 
     #[test]
     fn user_texts() {
-        assert_eq!(user_text(&json!({"message": {"content": "hi"}})).as_deref(), Some("hi"));
+        assert_eq!(
+            user_text(&json!({"message": {"content": "hi"}})).as_deref(),
+            Some("hi")
+        );
         assert_eq!(
             user_text(&json!({"message": {"content": [{"type": "text", "text": "a"}, {"type": "tool_result"}, {"type": "text", "text": "b"}]}})).as_deref(),
             Some("a\nb")

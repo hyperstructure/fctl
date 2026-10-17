@@ -89,7 +89,10 @@ pub fn int_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error
 pub fn int<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     let v: serde_json::Value = serde::Deserialize::deserialize(d)?;
     Ok(match v {
-        serde_json::Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).unwrap_or(0),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .unwrap_or(0),
         _ => 0,
     })
 }

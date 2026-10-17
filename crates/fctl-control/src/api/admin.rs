@@ -3,12 +3,12 @@
 use crate::auth;
 use crate::ctx::Ctx;
 use crate::db::{n, os, q, s};
-use crate::error::{conflict, forbidden, not_found, validation, AppResult};
+use crate::error::{AppResult, conflict, forbidden, not_found, validation};
 use crate::http;
-use crate::model::{user_columns, AllowRow, UserRow};
+use crate::model::{AllowRow, UserRow, user_columns};
 use fctl_domain::allowlist::AllowPattern;
 use fctl_domain::perm;
-use fctl_domain::tokens::{hash_secret, new_secret, SecretKind};
+use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
 use fctl_proto::api::*;
 use fctl_proto::session::{InstanceRole, UserRef};
@@ -21,34 +21,43 @@ pub async fn users(ctx: &Ctx) -> AppResult<Response> {
     ctx.admin()?;
     let rows: Vec<UserRow> = q(
         &ctx.db,
-        &format!("SELECT {} FROM users u ORDER BY u.created_at", user_columns("u")),
+        &format!(
+            "SELECT {} FROM users u ORDER BY u.created_at",
+            user_columns("u")
+        ),
         &[],
     )?
     .all()
     .await?;
-    http::ok(&UserList { users: rows.iter().map(UserRow::to_user).collect() })
+    http::ok(&UserList {
+        users: rows.iter().map(UserRow::to_user).collect(),
+    })
 }
 
 pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: UpdateUserRequest = http::body(req).await?;
     let actor = ctx.admin()?.clone();
-    let target = auth::user_by_id(ctx, id).await?.ok_or_else(|| not_found("User"))?;
-    if let Some(role) = body.role {
-        if role != target.role() {
+    let target = auth::user_by_id(ctx, id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
+    if let Some(role) = body.role
+        && role != target.role() {
             if !perm::can_assign_instance_role(actor.role(), target.role(), role) {
                 return Err(forbidden("You cannot give this role"));
             }
             if target.role() == InstanceRole::Owner && role != InstanceRole::Owner {
-                let owners: Vec<crate::db::Count> =
-                    q(&ctx.db, "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND status = 'active'", &[])?
-                        .all()
-                        .await?;
+                let owners: Vec<crate::db::Count> = q(
+                    &ctx.db,
+                    "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND status = 'active'",
+                    &[],
+                )?
+                .all()
+                .await?;
                 if owners.first().map_or(0, |c| c.n) <= 1 {
                     return Err(conflict("The instance needs at least one owner"));
                 }
             }
         }
-    }
     if let Some(status) = body.status {
         if target.id == actor.id && status == UserStatus::Disabled {
             return Err(conflict("You cannot disable yourself"));
@@ -57,7 +66,11 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
             return Err(forbidden("Only owners can disable owners"));
         }
     }
-    let name = body.name.as_deref().map(|v| validate::name("name", v)).transpose()?;
+    let name = body
+        .name
+        .as_deref()
+        .map(|v| validate::name("name", v))
+        .transpose()?;
     q(
         &ctx.db,
         "UPDATE users SET role = COALESCE(?, role), status = COALESCE(?, status), name = COALESCE(?, name), updated_at = ? WHERE id = ?",
@@ -79,18 +92,24 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
         Some(&target.id),
         Some(serde_json::json!({ "role": body.role.map(|r| r.as_str()), "status": body.status.map(|s| s.as_str()) })),
     );
-    let updated = auth::user_by_id(ctx, &target.id).await?.ok_or_else(|| not_found("User"))?;
+    let updated = auth::user_by_id(ctx, &target.id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
     http::ok(&updated.to_user())
 }
 
 pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let actor = ctx.admin()?.clone();
-    let target = auth::user_by_id(ctx, id).await?.ok_or_else(|| not_found("User"))?;
+    let target = auth::user_by_id(ctx, id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
     if target.id == actor.id {
         return Err(conflict("You cannot delete yourself"));
     }
     if target.role() == InstanceRole::Owner {
-        return Err(forbidden("Owners cannot be deleted; make them a member first"));
+        return Err(forbidden(
+            "Owners cannot be deleted; make them a member first",
+        ));
     }
     // Sessions and projects they created stay; their memberships and tokens go.
     let created: Vec<crate::db::Count> = q(
@@ -107,17 +126,31 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             .await?;
         auth::revoke_tokens(ctx, &target.id, None).await?;
     } else {
-        q(&ctx.db, "DELETE FROM users WHERE id = ?", &[s(&target.id)])?.run().await?;
+        q(&ctx.db, "DELETE FROM users WHERE id = ?", &[s(&target.id)])?
+            .run()
+            .await?;
     }
-    q(&ctx.db, "DELETE FROM allowlist WHERE pattern = ?", &[s(&target.email)])?.run().await?;
-    ctx.audit("user.deleted", Some(&target.id), Some(serde_json::json!({ "email": target.email })));
+    q(
+        &ctx.db,
+        "DELETE FROM allowlist WHERE pattern = ?",
+        &[s(&target.email)],
+    )?
+    .run()
+    .await?;
+    ctx.audit(
+        "user.deleted",
+        Some(&target.id),
+        Some(serde_json::json!({ "email": target.email })),
+    );
     http::ok(&Ok { ok: true })
 }
 
 /// A password reset link an admin can hand over (when email is not set up).
 pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let actor = ctx.admin()?.clone();
-    let target = auth::user_by_id(ctx, id).await?.ok_or_else(|| not_found("User"))?;
+    let target = auth::user_by_id(ctx, id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
     if target.role() == InstanceRole::Owner && actor.role() != InstanceRole::Owner {
         return Err(forbidden("Only owners can reset an owner's password"));
     }
@@ -134,10 +167,16 @@ const ALLOW_SELECT: &str = "SELECT a.id, a.pattern, a.role, a.note, a.created_at
 
 pub async fn allowlist(ctx: &Ctx) -> AppResult<Response> {
     ctx.admin()?;
-    let rows: Vec<AllowRow> = q(&ctx.db, &format!("{ALLOW_SELECT} ORDER BY a.created_at"), &[])?
-        .all()
-        .await?;
-    http::ok(&AllowList { entries: rows.iter().map(AllowRow::to_entry).collect() })
+    let rows: Vec<AllowRow> = q(
+        &ctx.db,
+        &format!("{ALLOW_SELECT} ORDER BY a.created_at"),
+        &[],
+    )?
+    .all()
+    .await?;
+    http::ok(&AllowList {
+        entries: rows.iter().map(AllowRow::to_entry).collect(),
+    })
 }
 
 pub async fn add_allow(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
@@ -145,13 +184,20 @@ pub async fn add_allow(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     let actor = ctx.admin()?.clone();
     let pattern = AllowPattern::parse(&body.pattern)?;
     let role = match body.role.unwrap_or(InstanceRole::Member) {
-        InstanceRole::Owner => return Err(validation("role", "Owners are made from existing members")),
+        InstanceRole::Owner => {
+            return Err(validation("role", "Owners are made from existing members"));
+        }
         InstanceRole::Admin if actor.role() != InstanceRole::Owner => {
-            return Err(forbidden("Only owners can allow new admins"))
+            return Err(forbidden("Only owners can allow new admins"));
         }
         r => r,
     };
-    let note = body.note.as_deref().map(|v| validate::text("note", v, 200)).transpose()?.filter(|v| !v.is_empty());
+    let note = body
+        .note
+        .as_deref()
+        .map(|v| validate::text("note", v, 200))
+        .transpose()?
+        .filter(|v| !v.is_empty());
     let canonical = pattern.canonical();
     let id = fctl_domain::ids::allow_id(ctx.now);
     let inserted = q(
@@ -176,10 +222,18 @@ pub async fn add_allow(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         }
         _ => None,
     };
-    ctx.audit("allowlist.added", Some(&canonical), Some(serde_json::json!({ "role": role.as_str() })));
-    let row: Option<AllowRow> = q(&ctx.db, &format!("{ALLOW_SELECT} WHERE a.id = ?"), &[s(id.as_str())])?
-        .first()
-        .await?;
+    ctx.audit(
+        "allowlist.added",
+        Some(&canonical),
+        Some(serde_json::json!({ "role": role.as_str() })),
+    );
+    let row: Option<AllowRow> = q(
+        &ctx.db,
+        &format!("{ALLOW_SELECT} WHERE a.id = ?"),
+        &[s(id.as_str())],
+    )?
+    .first()
+    .await?;
     let entry = row.ok_or_else(|| not_found("Allowlist entry"))?.to_entry();
     http::created(&CreatedAllow { entry, invite })
 }
@@ -194,30 +248,49 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if row.pattern == actor.email {
         return Err(conflict("You cannot remove your own access"));
     }
-    q(&ctx.db, "DELETE FROM allowlist WHERE id = ?", &[s(id)])?.run().await?;
-    // Every non-owner user no longer matching any entry is disabled.
-    let remaining: Vec<AllowRow> = q(&ctx.db, &format!("{ALLOW_SELECT} ORDER BY a.created_at"), &[])?
-        .all()
+    q(&ctx.db, "DELETE FROM allowlist WHERE id = ?", &[s(id)])?
+        .run()
         .await?;
+    // Every non-owner user no longer matching any entry is disabled.
+    let remaining: Vec<AllowRow> = q(
+        &ctx.db,
+        &format!("{ALLOW_SELECT} ORDER BY a.created_at"),
+        &[],
+    )?
+    .all()
+    .await?;
     let users: Vec<UserRow> = q(
         &ctx.db,
-        &format!("SELECT {} FROM users u WHERE u.status = 'active' AND u.role != 'owner'", user_columns("u")),
+        &format!(
+            "SELECT {} FROM users u WHERE u.status = 'active' AND u.role != 'owner'",
+            user_columns("u")
+        ),
         &[],
     )?
     .all()
     .await?;
     let mut disabled = Vec::new();
     for u in users {
-        let still = fctl_domain::allowlist::best_match(&remaining, &u.email, |r| r.pattern.as_str()).is_some();
+        let still =
+            fctl_domain::allowlist::best_match(&remaining, &u.email, |r| r.pattern.as_str())
+                .is_some();
         if !still {
-            q(&ctx.db, "UPDATE users SET status = 'disabled', updated_at = ? WHERE id = ?", &[n(ctx.now), s(&u.id)])?
-                .run()
-                .await?;
+            q(
+                &ctx.db,
+                "UPDATE users SET status = 'disabled', updated_at = ? WHERE id = ?",
+                &[n(ctx.now), s(&u.id)],
+            )?
+            .run()
+            .await?;
             auth::revoke_tokens(ctx, &u.id, None).await?;
             disabled.push(u.email);
         }
     }
-    ctx.audit("allowlist.removed", Some(&row.pattern), Some(serde_json::json!({ "disabled": disabled })));
+    ctx.audit(
+        "allowlist.removed",
+        Some(&row.pattern),
+        Some(serde_json::json!({ "disabled": disabled })),
+    );
     http::ok(&serde_json::json!({ "ok": true, "disabled": disabled }))
 }
 
@@ -243,16 +316,32 @@ async fn create_invite_for(ctx: &Ctx, email: &str, role: InstanceRole) -> AppRes
     let url = ctx.cfg.url(&format!("/invite#token={secret}"));
     let mut emailed = false;
     if let Some(mail) = ctx.cfg.email.clone() {
-        let inviter = ctx.auth.as_ref().map(|a| a.user.name.clone()).unwrap_or_else(|| "An admin".into());
+        let inviter = ctx
+            .auth
+            .as_ref()
+            .map(|a| a.user.name.clone())
+            .unwrap_or_else(|| "An admin".into());
         let text = format!(
             "{inviter} invited you to {}, a software factory where Claude agents build software.\n\nCreate your account: {url}\n\nThe link works for 14 days.",
             ctx.cfg.instance_name
         );
-        emailed = crate::email::send(&mail, email, &format!("You're invited to {}", ctx.cfg.instance_name), &text)
-            .await
-            .is_ok();
+        emailed = crate::email::send(
+            &mail,
+            email,
+            &format!("You're invited to {}", ctx.cfg.instance_name),
+            &text,
+        )
+        .await
+        .is_ok();
     }
-    Ok(Invite { id, email: email.to_owned(), url: Some(url), role, expires_at, emailed })
+    Ok(Invite {
+        id,
+        email: email.to_owned(),
+        url: Some(url),
+        role,
+        expires_at,
+        emailed,
+    })
 }
 
 pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
@@ -260,7 +349,9 @@ pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respon
     let actor = ctx.admin()?.clone();
     let email = validate::email(&body.email)?;
     let role = body.role.unwrap_or(InstanceRole::Member);
-    if role == InstanceRole::Owner || (role == InstanceRole::Admin && actor.role() != InstanceRole::Owner) {
+    if role == InstanceRole::Owner
+        || (role == InstanceRole::Admin && actor.role() != InstanceRole::Owner)
+    {
         return Err(forbidden("You cannot invite with this role"));
     }
     if auth::user_by_email(ctx, &email).await?.is_some() {
@@ -296,7 +387,9 @@ struct AuditRow {
 
 pub async fn audit(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     ctx.admin()?;
-    let before = http::query(req, "before").and_then(|b| b.parse::<i64>().ok()).unwrap_or(i64::MAX / 2);
+    let before = http::query(req, "before")
+        .and_then(|b| b.parse::<i64>().ok())
+        .unwrap_or(i64::MAX / 2);
     let rows: Vec<AuditRow> = q(
         &ctx.db,
         "SELECT a.id, a.ts, a.actor_id, u.name AS actor_name, a.action, a.target, a.data, a.ip FROM audit_log a \
@@ -313,7 +406,11 @@ pub async fn audit(ctx: &Ctx, req: &Request) -> AppResult<Response> {
             id: r.id,
             ts: r.ts,
             actor: match (r.actor_id, r.actor_name) {
-                (Some(id), Some(name)) => Some(UserRef { id: UserId(id), name, avatar_url: None }),
+                (Some(id), Some(name)) => Some(UserRef {
+                    id: UserId(id),
+                    name,
+                    avatar_url: None,
+                }),
                 _ => None,
             },
             action: r.action,
@@ -322,16 +419,27 @@ pub async fn audit(ctx: &Ctx, req: &Request) -> AppResult<Response> {
             ip: r.ip,
         })
         .collect();
-    let next_before = if more { entries.last().map(|e| e.ts) } else { None };
-    http::ok(&AuditList { entries, next_before })
+    let next_before = if more {
+        entries.last().map(|e| e.ts)
+    } else {
+        None
+    };
+    http::ok(&AuditList {
+        entries,
+        next_before,
+    })
 }
 
 /// Unused invite ids are listed for revocation.
 pub async fn revoke_invite(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     ctx.admin()?;
-    let changed = q(&ctx.db, "DELETE FROM invites WHERE id = ? AND accepted_at IS NULL", &[s(id)])?
-        .run()
-        .await?;
+    let changed = q(
+        &ctx.db,
+        "DELETE FROM invites WHERE id = ? AND accepted_at IS NULL",
+        &[s(id)],
+    )?
+    .run()
+    .await?;
     if changed == 0 {
         return Err(not_found("Invitation"));
     }

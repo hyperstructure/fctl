@@ -2,8 +2,8 @@
 
 use crate::error::{AppError, AppResult};
 use fctl_proto::{ApiError, ErrorCode};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use worker::{Headers, Method, Request, Response};
 
 /// Largest JSON body accepted.
@@ -39,15 +39,10 @@ pub fn created<T: Serialize>(body: &T) -> AppResult<Response> {
     json(201, body)
 }
 
-pub fn no_content() -> AppResult<Response> {
-    Ok(Response::empty()?.with_status(204).with_headers(api_headers()))
-}
-
 pub fn error_response(e: &ApiError) -> Response {
     let status = e.code.http_status();
-    let body = serde_json::to_string(e).unwrap_or_else(|_| {
-        r#"{"code":"internal","message":"Something went wrong"}"#.to_owned()
-    });
+    let body = serde_json::to_string(e)
+        .unwrap_or_else(|_| r#"{"code":"internal","message":"Something went wrong"}"#.to_owned());
     let headers = api_headers();
     if let Some(s) = e.retry_after {
         let _ = headers.set("Retry-After", &s.to_string());
@@ -81,11 +76,12 @@ pub async fn body<T: DeserializeOwned>(req: &mut Request) -> AppResult<T> {
     }
     let bytes = req.bytes().await?;
     if bytes.len() > MAX_BODY_BYTES {
-        return Err(AppError(ApiError::bad_request("The request body is too large")));
+        return Err(AppError(ApiError::bad_request(
+            "The request body is too large",
+        )));
     }
-    serde_json::from_slice(&bytes).map_err(|e| {
-        AppError(ApiError::bad_request(format!("Invalid request body: {e}")))
-    })
+    serde_json::from_slice(&bytes)
+        .map_err(|e| AppError(ApiError::bad_request(format!("Invalid request body: {e}"))))
 }
 
 /// A query parameter.
@@ -98,7 +94,11 @@ pub fn query(req: &Request, name: &str) -> Option<String> {
 }
 
 pub fn header(req: &Request, name: &str) -> Option<String> {
-    req.headers().get(name).ok().flatten().filter(|v| !v.is_empty())
+    req.headers()
+        .get(name)
+        .ok()
+        .flatten()
+        .filter(|v| !v.is_empty())
 }
 
 /// Reads a cookie by name.
@@ -128,7 +128,9 @@ pub fn is_safe_method(m: &Method) -> bool {
 /// from the app itself. Non-browser clients use bearer tokens and skip this.
 pub fn check_same_origin(req: &Request, origin: &str, dev: bool) -> AppResult<()> {
     if let Some(o) = header(req, "Origin") {
-        if o == origin || (dev && (o.starts_with("http://localhost:") || o.starts_with("http://127.0.0.1:"))) {
+        if o == origin
+            || (dev && (o.starts_with("http://localhost:") || o.starts_with("http://127.0.0.1:")))
+        {
             return Ok(());
         }
         return Err(AppError(ApiError::new(

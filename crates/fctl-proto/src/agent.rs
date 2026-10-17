@@ -7,11 +7,11 @@
 //! a session are normal: after each one the host sends `Replay` with the last
 //! `agent_seq` the control plane acknowledged.
 
+use crate::DeliveryId;
 use crate::event::LogLine;
 use crate::runner::{ClaudeCredential, CredentialKind, GithubCredential, SessionSpec, StopReason};
 use crate::session::SessionStatus;
 use crate::uplink::{AgentEvent, Delivery, SessionState};
-use crate::DeliveryId;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use std::collections::BTreeMap;
@@ -44,12 +44,20 @@ pub struct AgentConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostToAgent {
     /// Start the session. Ignored (with a log line) when already configured.
-    Configure { config: Box<AgentConfig> },
+    Configure {
+        config: Box<AgentConfig>,
+    },
     /// Send every journaled event with `agent_seq` greater than this.
-    Replay { after_agent_seq: u64 },
+    Replay {
+        after_agent_seq: u64,
+    },
     /// The control plane stored events up to this; the journal may drop them.
-    Ack { agent_seq: u64 },
-    Deliver { delivery: Delivery },
+    Ack {
+        agent_seq: u64,
+    },
+    Deliver {
+        delivery: Delivery,
+    },
     /// Fresh credentials, pushed or in answer to `CredentialRequest`.
     Credentials {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,7 +74,10 @@ pub enum HostToAgent {
         error: Option<String>,
     },
     /// Finish: interrupt Claude, wait up to `grace_ms`, then exit.
-    Stop { reason: StopReason, grace_ms: u64 },
+    Stop {
+        reason: StopReason,
+        grace_ms: u64,
+    },
     Ping,
 }
 
@@ -88,15 +99,21 @@ pub struct AgentHello {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentToHost {
     Hello(AgentHello),
-    Events { events: Vec<AgentEvent> },
+    Events {
+        events: Vec<AgentEvent>,
+    },
     /// An ephemeral Claude `stream_event`.
     Stream {
         #[cfg_attr(feature = "ts", ts(type = "unknown"))]
         event: serde_json::Value,
     },
-    State { state: SessionState },
+    State {
+        state: SessionState,
+    },
     /// A log line that should not be journaled (progress noise).
-    Log { line: LogLine },
+    Log {
+        line: LogLine,
+    },
     Delivered {
         delivery_id: DeliveryId,
         ok: bool,
@@ -104,7 +121,10 @@ pub enum AgentToHost {
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<String>,
     },
-    CredentialRequest { request_id: String, kind: CredentialKind },
+    CredentialRequest {
+        request_id: String,
+        kind: CredentialKind,
+    },
     /// The supervisor is exiting.
     Exited {
         status: SessionStatus,

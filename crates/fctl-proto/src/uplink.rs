@@ -9,7 +9,7 @@
 //! which ignores ids it has already handled.
 
 use crate::event::{EventBody, LogLine};
-use crate::session::{RemoteControlState, SessionStatus, SessionStats, UserRef};
+use crate::session::{RemoteControlState, SessionStats, SessionStatus, UserRef};
 use crate::{DeliveryId, Millis, RunnerId};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -78,15 +78,21 @@ pub enum UplinkUp {
         protocol: u32,
     },
     /// Events in `agent_seq` order. SessionDO ignores ones it already has.
-    Events { events: Vec<AgentEvent> },
+    Events {
+        events: Vec<AgentEvent>,
+    },
     /// An ephemeral Claude `stream_event`.
     Stream {
         #[cfg_attr(feature = "ts", ts(type = "unknown"))]
         event: serde_json::Value,
     },
-    State { state: SessionState },
+    State {
+        state: SessionState,
+    },
     /// A best-effort log line from the host itself (before the agent runs).
-    Log { line: LogLine },
+    Log {
+        line: LogLine,
+    },
     /// The agent handled a delivery.
     Delivered {
         delivery_id: DeliveryId,
@@ -108,7 +114,11 @@ pub enum UplinkDown {
         /// Deliveries the agent has not confirmed yet, oldest first.
         pending: Vec<Delivery>,
     },
-    Ack { agent_seq: u64 },
-    Deliver { delivery: Delivery },
+    Ack {
+        agent_seq: u64,
+    },
+    Deliver {
+        delivery: Delivery,
+    },
     Pong,
 }

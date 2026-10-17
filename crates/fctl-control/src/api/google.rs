@@ -8,12 +8,12 @@
 //! Core §3.1.3.7) after checking issuer, audience, expiry and nonce.
 
 use crate::auth;
-use crate::ctx::Ctx;
 use crate::crypto;
-use crate::db::{n, os, q, s, Count};
-use crate::error::{not_configured, not_found, AppError, AppResult};
+use crate::ctx::Ctx;
+use crate::db::{Count, n, os, q, s};
+use crate::error::{AppError, AppResult, not_configured, not_found};
 use crate::http::{self, OAUTH_COOKIE};
-use crate::model::{user_columns, UserRow};
+use crate::model::{UserRow, user_columns};
 use fctl_proto::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use worker::{Fetch, Headers, Method, Request, RequestInit, Response};
@@ -61,12 +61,20 @@ fn redirect_uri(ctx: &Ctx) -> String {
 }
 
 pub async fn start(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
-    let google = ctx.cfg.google.clone().ok_or_else(|| not_configured("Google sign-in is not configured"))?;
+    let google = ctx
+        .cfg
+        .google
+        .clone()
+        .ok_or_else(|| not_configured("Google sign-in is not configured"))?;
     let intent = http::query(req, "intent").unwrap_or_else(|| "login".into());
     let user_id = match intent.as_str() {
         "link" => Some(ctx.user()?.id.clone()),
         "login" => None,
-        _ => return Err(AppError(ApiError::bad_request("intent must be login or link"))),
+        _ => {
+            return Err(AppError(ApiError::bad_request(
+                "intent must be login or link",
+            )));
+        }
     };
     let (verifier, challenge) = crypto::pkce_pair();
     let st = OAuthState {
@@ -79,9 +87,14 @@ pub async fn start(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         exp: ctx.now + STATE_TTL_MS,
     };
     let signed = ctx.keys()?.sign(&serde_json::to_vec(&st)?);
-    ctx.cookies
-        .push(http::set_cookie(OAUTH_COOKIE, &signed, (STATE_TTL_MS / 1000) as u64, ctx.cfg.secure_cookies()));
-    let mut url = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").map_err(crate::error::internal)?;
+    ctx.cookies.push(http::set_cookie(
+        OAUTH_COOKIE,
+        &signed,
+        (STATE_TTL_MS / 1000) as u64,
+        ctx.cfg.secure_cookies(),
+    ));
+    let mut url = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")
+        .map_err(crate::error::internal)?;
     url.query_pairs_mut()
         .append_pair("client_id", &google.client_id)
         .append_pair("redirect_uri", &redirect_uri(ctx))
@@ -97,13 +110,22 @@ pub async fn start(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
 
 /// Redirects back into the app with an error the page can show.
 fn fail(ctx: &mut Ctx, return_to: &str, code: &str) -> AppResult<Response> {
-    ctx.cookies.push(http::set_cookie(OAUTH_COOKIE, "", 0, ctx.cfg.secure_cookies()));
+    ctx.cookies.push(http::set_cookie(
+        OAUTH_COOKIE,
+        "",
+        0,
+        ctx.cfg.secure_cookies(),
+    ));
     let sep = if return_to.contains('?') { '&' } else { '?' };
     http::redirect(&format!("{return_to}{sep}error={code}"))
 }
 
 pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
-    let google = ctx.cfg.google.clone().ok_or_else(|| not_configured("Google sign-in is not configured"))?;
+    let google = ctx
+        .cfg
+        .google
+        .clone()
+        .ok_or_else(|| not_configured("Google sign-in is not configured"))?;
     let cookie = http::cookie(req, OAUTH_COOKIE);
     let st: Option<OAuthState> = cookie
         .and_then(|c| ctx.keys().ok()?.verify(&c))
@@ -111,7 +133,11 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let Some(st) = st.filter(|s| s.exp > ctx.now) else {
         return fail(ctx, "/login", "google_expired");
     };
-    let failure_page = if st.intent == "link" { "/settings" } else { "/login" };
+    let failure_page = if st.intent == "link" {
+        "/settings"
+    } else {
+        "/login"
+    };
     if http::query(req, "state").as_deref() != Some(st.state.as_str()) {
         return fail(ctx, failure_page, "google_state");
     }
@@ -133,10 +159,15 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let headers = Headers::new();
     headers.set("Content-Type", "application/x-www-form-urlencoded")?;
     let mut init = RequestInit::new();
-    init.with_method(Method::Post).with_headers(headers).with_body(Some(form.into()));
-    let mut res = Fetch::Request(Request::new_with_init("https://oauth2.googleapis.com/token", &init)?)
-        .send()
-        .await?;
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(form.into()));
+    let mut res = Fetch::Request(Request::new_with_init(
+        "https://oauth2.googleapis.com/token",
+        &init,
+    )?)
+    .send()
+    .await?;
     if res.status_code() != 200 {
         worker::console_error!("google token exchange: HTTP {}", res.status_code());
         return fail(ctx, failure_page, "google_exchange");
@@ -151,7 +182,8 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let Some(claims) = claims else {
         return fail(ctx, failure_page, "google_exchange");
     };
-    let valid = (claims.iss == "https://accounts.google.com" || claims.iss == "accounts.google.com")
+    let valid = (claims.iss == "https://accounts.google.com"
+        || claims.iss == "accounts.google.com")
         && claims.aud == google.client_id
         && claims.exp * 1000 > ctx.now
         && claims.nonce.as_deref() == Some(st.nonce.as_str());
@@ -160,7 +192,12 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     }
     let email = claims.email.as_deref().map(str::to_lowercase);
     let verified = claims.email_verified.unwrap_or(false);
-    ctx.cookies.push(http::set_cookie(OAUTH_COOKIE, "", 0, ctx.cfg.secure_cookies()));
+    ctx.cookies.push(http::set_cookie(
+        OAUTH_COOKIE,
+        "",
+        0,
+        ctx.cfg.secure_cookies(),
+    ));
 
     let linked: Option<UserRow> = q(
         &ctx.db,
@@ -185,12 +222,23 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         }
         insert_identity(ctx, user_id, &claims, email.as_deref()).await?;
         if let Some(pic) = claims.picture.as_deref() {
-            q(&ctx.db, "UPDATE users SET avatar_url = COALESCE(avatar_url, ?) WHERE id = ?", &[s(pic), s(user_id)])?
-                .run()
-                .await?;
+            q(
+                &ctx.db,
+                "UPDATE users SET avatar_url = COALESCE(avatar_url, ?) WHERE id = ?",
+                &[s(pic), s(user_id)],
+            )?
+            .run()
+            .await?;
         }
-        ctx.audit("identity.linked", Some(user_id), Some(serde_json::json!({ "provider": "google" })));
-        return http::redirect(&format!("{}?linked=google", safe_return(Some(st.return_to))));
+        ctx.audit(
+            "identity.linked",
+            Some(user_id),
+            Some(serde_json::json!({ "provider": "google" })),
+        );
+        return http::redirect(&format!(
+            "{}?linked=google",
+            safe_return(Some(st.return_to))
+        ));
     }
 
     // Sign in.
@@ -199,7 +247,11 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
             return fail(ctx, "/login", "disabled");
         }
         auth::start_web_session(ctx, &user).await?;
-        ctx.audit("user.login", Some(&user.id), Some(serde_json::json!({ "via": "google" })));
+        ctx.audit(
+            "user.login",
+            Some(&user.id),
+            Some(serde_json::json!({ "via": "google" })),
+        );
         return http::redirect(&st.return_to);
     }
     let Some(email) = email.filter(|_| verified) else {
@@ -214,8 +266,15 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         return fail(ctx, "/login", "not_allowed");
     };
     let id = fctl_domain::ids::user_id(ctx.now);
-    let role = if role == fctl_proto::session::InstanceRole::Admin { "admin" } else { "member" };
-    let name = claims.name.clone().unwrap_or_else(|| email.split('@').next().unwrap_or("New user").to_owned());
+    let role = if role == fctl_proto::session::InstanceRole::Admin {
+        "admin"
+    } else {
+        "member"
+    };
+    let name = claims
+        .name
+        .clone()
+        .unwrap_or_else(|| email.split('@').next().unwrap_or("New user").to_owned());
     q(
         &ctx.db,
         "INSERT INTO users (id, email, name, avatar_url, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
@@ -224,13 +283,24 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     .run()
     .await?;
     insert_identity(ctx, id.as_str(), &claims, Some(&email)).await?;
-    let user = auth::user_by_id(ctx, id.as_str()).await?.ok_or_else(|| not_found("User"))?;
+    let user = auth::user_by_id(ctx, id.as_str())
+        .await?
+        .ok_or_else(|| not_found("User"))?;
     auth::start_web_session(ctx, &user).await?;
-    ctx.audit("user.signup", Some(&user.id), Some(serde_json::json!({ "via": "google" })));
+    ctx.audit(
+        "user.signup",
+        Some(&user.id),
+        Some(serde_json::json!({ "via": "google" })),
+    );
     http::redirect(&st.return_to)
 }
 
-async fn insert_identity(ctx: &Ctx, user_id: &str, c: &Claims, email: Option<&str>) -> AppResult<()> {
+async fn insert_identity(
+    ctx: &Ctx,
+    user_id: &str,
+    c: &Claims,
+    email: Option<&str>,
+) -> AppResult<()> {
     q(
         &ctx.db,
         "INSERT INTO identities (id, user_id, provider, subject, email, name, avatar_url, created_at) VALUES (?, ?, 'google', ?, ?, ?, ?, ?)",
@@ -264,9 +334,13 @@ pub async fn unlink(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             "Set a password first, or you would have no way to sign in",
         )));
     }
-    let changed = q(&ctx.db, "DELETE FROM identities WHERE id = ? AND user_id = ?", &[s(id), s(&user.id)])?
-        .run()
-        .await?;
+    let changed = q(
+        &ctx.db,
+        "DELETE FROM identities WHERE id = ? AND user_id = ?",
+        &[s(id), s(&user.id)],
+    )?
+    .run()
+    .await?;
     if changed == 0 {
         return Err(not_found("Linked account"));
     }

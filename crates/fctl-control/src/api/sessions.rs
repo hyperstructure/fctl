@@ -2,11 +2,13 @@
 
 use crate::access;
 use crate::ctx::Ctx;
-use crate::db::{n, on, os, q, s};
-use crate::error::{conflict, forbidden, not_found, validation, AppError, AppResult};
+use crate::db::{n, os, q, s};
+use crate::error::{AppError, AppResult, conflict, forbidden, not_found, validation};
 use crate::http;
-use crate::internal::{self, ControlState, Deliver, Delivered, InitSession, Schedule, Stop, ViewerIdentity};
-use crate::model::{CredentialRow, SessionRow, SESSION_SELECT};
+use crate::internal::{
+    self, ControlState, Deliver, Delivered, InitSession, Schedule, Stop, ViewerIdentity,
+};
+use crate::model::{CredentialRow, SESSION_SELECT, SessionRow};
 use fctl_domain::{naming, validate};
 use fctl_proto::api::*;
 use fctl_proto::event::{EventBody, Interrupt, MessageSource, UserMessage};
@@ -17,7 +19,10 @@ use fctl_proto::{ApiError, ErrorCode, UserId};
 use worker::{Request, Response};
 
 /// The credential a new session of `user` runs on.
-pub async fn default_credential(ctx: &Ctx, user: &crate::model::UserRow) -> AppResult<CredentialRow> {
+pub async fn default_credential(
+    ctx: &Ctx,
+    user: &crate::model::UserRow,
+) -> AppResult<CredentialRow> {
     let creds: Vec<CredentialRow> = q(
         &ctx.db,
         "SELECT * FROM claude_credentials WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC",
@@ -56,12 +61,27 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     }
     let user = ctx.user()?.clone();
     let prompt = validate::message("prompt", &body.prompt)?;
-    let title = match body.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+    let title = match body
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
         Some(t) => validate::name("title", t)?,
         None => naming::title_from_prompt(&prompt),
     };
-    let model = body.model.as_deref().filter(|m| !m.trim().is_empty()).map(validate::model).transpose()?;
-    let effort = body.effort.as_deref().filter(|e| !e.trim().is_empty()).map(validate::effort).transpose()?;
+    let model = body
+        .model
+        .as_deref()
+        .filter(|m| !m.trim().is_empty())
+        .map(validate::model)
+        .transpose()?;
+    let effort = body
+        .effort
+        .as_deref()
+        .filter(|e| !e.trim().is_empty())
+        .map(validate::effort)
+        .transpose()?;
     let base_branch = body
         .base_branch
         .as_deref()
@@ -118,10 +138,29 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         text: prompt,
         source: source_of(ctx),
     };
-    let _: serde_json::Value = internal::post(&stub, "/init", &InitSession { session: session.clone(), prompt: prompt_msg }).await?;
+    let _: serde_json::Value = internal::post(
+        &stub,
+        "/init",
+        &InitSession {
+            session: session.clone(),
+            prompt: prompt_msg,
+        },
+    )
+    .await?;
     let fleet = internal::fleet_stub(&ctx.env)?;
-    let _: serde_json::Value = internal::post(&fleet, "/schedule", &Schedule { session_id: id.clone() }).await?;
-    ctx.audit("session.created", Some(id.as_str()), Some(serde_json::json!({ "project": p.row.slug, "number": number })));
+    let _: serde_json::Value = internal::post(
+        &fleet,
+        "/schedule",
+        &Schedule {
+            session_id: id.clone(),
+        },
+    )
+    .await?;
+    ctx.audit(
+        "session.created",
+        Some(id.as_str()),
+        Some(serde_json::json!({ "project": p.row.slug, "number": number })),
+    );
     http::created(&session)
 }
 
@@ -135,7 +174,10 @@ fn source_of(ctx: &Ctx) -> MessageSource {
 
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let user = ctx.user()?;
-    let limit = http::query(req, "limit").and_then(|l| l.parse::<i64>().ok()).unwrap_or(50).clamp(1, 200);
+    let limit = http::query(req, "limit")
+        .and_then(|l| l.parse::<i64>().ok())
+        .unwrap_or(50)
+        .clamp(1, 200);
     let before = http::query(req, "before").and_then(|b| b.parse::<i64>().ok());
     let mut sql = format!("{SESSION_SELECT} WHERE 1 = 1");
     let mut params = vec![s(&user.id)];
@@ -169,13 +211,23 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         sql.push_str(&format!(" AND s.created_at < ?{}", params.len()));
     }
     params.push(n(limit + 1));
-    sql.push_str(&format!(" ORDER BY s.created_at DESC LIMIT ?{}", params.len()));
+    sql.push_str(&format!(
+        " ORDER BY s.created_at DESC LIMIT ?{}",
+        params.len()
+    ));
     let mut rows: Vec<SessionRow> = q(&ctx.db, &sql, &params)?.all().await?;
     let more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
-    let next_before = if more { rows.last().map(|r| r.created_at) } else { None };
+    let next_before = if more {
+        rows.last().map(|r| r.created_at)
+    } else {
+        None
+    };
     http::ok(&SessionList {
-        sessions: rows.iter().map(|r| r.to_session(access::session_role(user, r))).collect(),
+        sessions: rows
+            .iter()
+            .map(|r| r.to_session(access::session_role(user, r)))
+            .collect(),
         next_before,
     })
 }
@@ -189,7 +241,11 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let body: UpdateSessionRequest = http::body(req).await?;
     let a = access::session(ctx, id).await?;
     a.require_owner()?;
-    let title = body.title.as_deref().map(|t| validate::name("title", t)).transpose()?;
+    let title = body
+        .title
+        .as_deref()
+        .map(|t| validate::name("title", t))
+        .transpose()?;
     q(
         &ctx.db,
         "UPDATE sessions SET title = COALESCE(?, title), archived = COALESCE(?, archived), updated_at = ? WHERE id = ?",
@@ -201,7 +257,11 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let _: serde_json::Value = internal::post(
         &stub,
         "/control",
-        &ControlState { title, archived: body.archived, ..Default::default() },
+        &ControlState {
+            title,
+            archived: body.archived,
+            ..Default::default()
+        },
     )
     .await?;
     get(ctx, id).await
@@ -216,7 +276,8 @@ pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResu
         return Err(conflict("The session has ended. Resume it to continue."));
     }
     let author = ctx.user()?.to_ref();
-    let delivery_id = deliver_message(ctx, id, text, author, source_of(ctx), body.client_id).await?;
+    let delivery_id =
+        deliver_message(ctx, id, text, author, source_of(ctx), body.client_id).await?;
     http::ok(&SendMessageResponse { delivery_id })
 }
 
@@ -238,10 +299,18 @@ pub async fn deliver_message(
         &Deliver {
             delivery: Delivery {
                 id: delivery_id.clone(),
-                kind: DeliveryKind::Message { text: text.clone(), author: Some(author.clone()) },
+                kind: DeliveryKind::Message {
+                    text: text.clone(),
+                    author: Some(author.clone()),
+                },
             },
             client_key,
-            event: EventBody::UserMessage(UserMessage { id: delivery_id, author: Some(author), text, source }),
+            event: EventBody::UserMessage(UserMessage {
+                id: delivery_id,
+                author: Some(author),
+                text,
+                source,
+            }),
         },
     )
     .await?;
@@ -258,13 +327,23 @@ pub async fn interrupt(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         &stub,
         "/deliver",
         &Deliver {
-            delivery: Delivery { id: delivery_id.clone(), kind: DeliveryKind::Interrupt { by: Some(by.clone()) } },
+            delivery: Delivery {
+                id: delivery_id.clone(),
+                kind: DeliveryKind::Interrupt {
+                    by: Some(by.clone()),
+                },
+            },
             client_key: None,
-            event: EventBody::Interrupt(Interrupt { id: delivery_id, by: Some(by) }),
+            event: EventBody::Interrupt(Interrupt {
+                id: delivery_id,
+                by: Some(by),
+            }),
         },
     )
     .await?;
-    http::ok(&SendMessageResponse { delivery_id: out.delivery_id })
+    http::ok(&SendMessageResponse {
+        delivery_id: out.delivery_id,
+    })
 }
 
 pub async fn stop(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
@@ -278,7 +357,11 @@ pub async fn stop(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let _: serde_json::Value = internal::post(
         &fleet,
         "/stop",
-        &Stop { session_id: a.row.session_id(), reason: StopReason::User, destroy: false },
+        &Stop {
+            session_id: a.row.session_id(),
+            reason: StopReason::User,
+            destroy: false,
+        },
     )
     .await?;
     ctx.audit("session.stopped", Some(id), None);
@@ -310,7 +393,12 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let _: serde_json::Value = internal::post(
         &stub,
         "/control",
-        &ControlState { status: Some(SessionStatus::Queued), reason: Some("Resuming".into()), clear_runner: true, ..Default::default() },
+        &ControlState {
+            status: Some(SessionStatus::Queued),
+            reason: Some("Resuming".into()),
+            clear_runner: true,
+            ..Default::default()
+        },
     )
     .await?;
     if let Some(prompt) = body.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
@@ -318,7 +406,14 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         deliver_message(ctx, id, text, user.to_ref(), source_of(ctx), None).await?;
     }
     let fleet = internal::fleet_stub(&ctx.env)?;
-    let _: serde_json::Value = internal::post(&fleet, "/schedule", &Schedule { session_id: a.row.session_id() }).await?;
+    let _: serde_json::Value = internal::post(
+        &fleet,
+        "/schedule",
+        &Schedule {
+            session_id: a.row.session_id(),
+        },
+    )
+    .await?;
     ctx.audit("session.resumed", Some(id), None);
     get(ctx, id).await
 }
@@ -339,16 +434,22 @@ pub async fn events(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
 /// Upgrades to the viewer WebSocket of a session.
 pub async fn websocket(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
     if !http::is_websocket_upgrade(req) {
-        return Err(AppError(ApiError::bad_request("Expected a WebSocket upgrade")));
+        return Err(AppError(ApiError::bad_request(
+            "Expected a WebSocket upgrade",
+        )));
     }
     // Browsers: the socket must be opened by the app itself.
     if ctx.auth.as_ref().is_some_and(|a| a.via_cookie) {
         http::check_same_origin(req, ctx.cfg.origin(), ctx.cfg.dev)?;
     }
     let a = access::session(ctx, id).await?;
-    let ident = ViewerIdentity { user: ctx.user()?.to_ref(), role: a.role };
+    let ident = ViewerIdentity {
+        user: ctx.user()?.to_ref(),
+        role: a.role,
+    };
     let mut path = String::from("/viewer");
-    if let Some(after) = http::query(req, "after").filter(|v| v.bytes().all(|b| b.is_ascii_digit())) {
+    if let Some(after) = http::query(req, "after").filter(|v| v.bytes().all(|b| b.is_ascii_digit()))
+    {
         path.push_str(&format!("?after={after}"));
     }
     let stub = internal::session_stub(&ctx.env, id)?;
@@ -383,7 +484,11 @@ pub async fn shares(ctx: &Ctx, id: &str) -> AppResult<Response> {
         shares: rows
             .into_iter()
             .map(|r| SessionShare {
-                user: UserRef { id: UserId(r.user_id), name: r.name, avatar_url: r.avatar_url },
+                user: UserRef {
+                    id: UserId(r.user_id),
+                    name: r.name,
+                    avatar_url: r.avatar_url,
+                },
                 email: r.email,
                 role: SessionRole::parse(&r.role).unwrap_or(SessionRole::Viewer),
                 created_at: r.created_at,
@@ -396,8 +501,13 @@ pub async fn add_share(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<
     let body: CreateShareRequest = http::body(req).await?;
     let a = access::session(ctx, id).await?;
     a.require_owner()?;
-    if body.role == SessionRole::Owner && a.row.created_by != ctx.user()?.id && !ctx.user()?.is_admin() {
-        return Err(forbidden("Only the person who started the session can share ownership"));
+    if body.role == SessionRole::Owner
+        && a.row.created_by != ctx.user()?.id
+        && !ctx.user()?.is_admin()
+    {
+        return Err(forbidden(
+            "Only the person who started the session can share ownership",
+        ));
     }
     let target = crate::api::auth::lookup_user_by_email(ctx, &body.email)
         .await?
@@ -410,7 +520,11 @@ pub async fn add_share(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<
     )?
     .run()
     .await?;
-    ctx.audit("session.shared", Some(id), Some(serde_json::json!({ "user": target.id, "role": body.role.as_str() })));
+    ctx.audit(
+        "session.shared",
+        Some(id),
+        Some(serde_json::json!({ "user": target.id, "role": body.role.as_str() })),
+    );
     shares(ctx, id).await
 }
 
@@ -419,30 +533,15 @@ pub async fn remove_share(ctx: &mut Ctx, id: &str, user_id: &str) -> AppResult<R
     if ctx.user()?.id != user_id {
         a.require_owner()?;
     }
-    let changed = q(&ctx.db, "DELETE FROM session_shares WHERE session_id = ? AND user_id = ?", &[s(id), s(user_id)])?
-        .run()
-        .await?;
+    let changed = q(
+        &ctx.db,
+        "DELETE FROM session_shares WHERE session_id = ? AND user_id = ?",
+        &[s(id), s(user_id)],
+    )?
+    .run()
+    .await?;
     if changed == 0 {
         return Err(not_found("Share"));
     }
     shares(ctx, id).await
-}
-
-/// Marks a session row (status and timestamps) from a control-plane decision.
-pub async fn set_status_row(
-    db: &worker::D1Database,
-    id: &str,
-    status: SessionStatus,
-    reason: Option<&str>,
-    now: i64,
-) -> AppResult<()> {
-    let ended = status.is_terminal().then_some(now);
-    q(
-        db,
-        "UPDATE sessions SET status = ?, status_reason = ?, ended_at = COALESCE(?, ended_at), updated_at = ? WHERE id = ?",
-        &[s(status.as_str()), os(reason), on(ended), n(now), s(id)],
-    )?
-    .run()
-    .await?;
-    Ok(())
 }

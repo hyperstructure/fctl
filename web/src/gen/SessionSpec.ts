@@ -53,4 +53,9 @@ co_authors: Array<GitIdentity>,
 /**
  * The web URL of the session, for links in pull requests.
  */
-web_url: string, idle_timeout_secs: number, };
+web_url: string, idle_timeout_secs: number, 
+/**
+ * Identifies this run of the session; echoed in `SessionEnded` so a late
+ * report from an earlier run cannot end a newer one.
+ */
+run_id?: string, };

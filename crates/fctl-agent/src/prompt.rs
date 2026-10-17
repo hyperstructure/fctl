@@ -26,7 +26,13 @@ pub fn system_prompt(spec: &SessionSpec, workdir: &str) -> String {
     s.push_str("- Messages from people other than the session's starter begin with their name.\n");
     s.push_str("- Never print, log or commit secrets. Project secrets are available as environment variables.\n");
     s.push_str("- If you are blocked on a decision only a person can make, say so plainly and stop; someone will answer.\n");
-    if let Some(extra) = spec.project.settings.instructions.as_deref().filter(|t| !t.trim().is_empty()) {
+    if let Some(extra) = spec
+        .project
+        .settings
+        .instructions
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+    {
         s.push_str("\nProject instructions:\n");
         s.push_str(extra.trim());
         s.push('\n');

@@ -1,0 +1,464 @@
+//! One task per session: sandbox, fctl-agent, and the bridge between the
+//! agent and the session's uplink.
+
+use crate::config::HostConfig;
+use crate::driver::{Driver, Sandbox, SandboxSpec, sandbox_name};
+use crate::uplink::Uplink;
+use anyhow::{Context, Result};
+use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES};
+use fctl_proto::event::{LogLevel, LogLine, LogSource};
+use fctl_proto::runner::{
+    ClaudeCredential, CredentialKind, GithubCredential, SessionSpec, StopReason,
+};
+use fctl_proto::session::SessionStatus;
+use fctl_proto::uplink::{Delivery, SessionState, UplinkDown};
+use fctl_proto::{RunnerId, SessionId};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
+
+/// What every session task shares.
+pub struct HostCtx {
+    pub cfg: HostConfig,
+    pub driver: Driver,
+    pub token: String,
+    pub runner_id: Mutex<Option<RunnerId>>,
+}
+
+impl HostCtx {
+    pub fn runner_id(&self) -> RunnerId {
+        self.runner_id
+            .lock()
+            .ok()
+            .and_then(|r| r.clone())
+            .unwrap_or_else(|| RunnerId("rnr_unknown".into()))
+    }
+
+    pub fn uplink_url(&self, session: &SessionId) -> String {
+        format!(
+            "{}/api/v1/runner/sessions/{}/uplink",
+            self.cfg.server.trim_end_matches('/'),
+            session
+        )
+    }
+}
+
+pub enum Start {
+    New(Box<SessionSpec>),
+    /// A sandbox found running after a host restart.
+    Recover(SessionId),
+}
+
+pub enum SessionCmd {
+    Stop {
+        reason: StopReason,
+        destroy: bool,
+    },
+    /// A newer run of this session waits to start: skip the final status.
+    Superseded,
+    Credentials {
+        request_id: Option<String>,
+        claude: Option<ClaudeCredential>,
+        github: Option<GithubCredential>,
+        error: Option<String>,
+    },
+}
+
+pub enum SessionEvent {
+    CredentialRequest {
+        session_id: SessionId,
+        request_id: String,
+        kind: CredentialKind,
+    },
+    Ended {
+        session_id: SessionId,
+        status: SessionStatus,
+        reason: Option<String>,
+        run_id: Option<String>,
+    },
+}
+
+#[derive(Clone)]
+pub struct Report {
+    pub status: SessionStatus,
+    pub agent_seq: u64,
+}
+
+pub struct SessionHandle {
+    pub tx: mpsc::UnboundedSender<SessionCmd>,
+    pub report: Arc<Mutex<Report>>,
+}
+
+pub fn spawn(
+    ctx: Arc<HostCtx>,
+    start: Start,
+    events: mpsc::UnboundedSender<SessionEvent>,
+) -> SessionHandle {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let report = Arc::new(Mutex::new(Report {
+        status: SessionStatus::Provisioning,
+        agent_seq: 0,
+    }));
+    let r = report.clone();
+    tokio::spawn(async move {
+        let (id, run_id) = match &start {
+            Start::New(spec) => (spec.session_id.clone(), spec.run_id.clone()),
+            Start::Recover(id) => (id.clone(), None),
+        };
+        let (status, reason) = run(ctx, start, rx, events.clone(), r).await;
+        let _ = events.send(SessionEvent::Ended {
+            session_id: id,
+            status,
+            reason,
+            run_id,
+        });
+    });
+    SessionHandle { tx, report }
+}
+
+/// A framed connection to fctl-agent.
+struct AgentLink {
+    tx: mpsc::UnboundedSender<HostToAgent>,
+    rx: mpsc::UnboundedReceiver<AgentToHost>,
+    _child: Option<tokio::process::Child>,
+}
+
+impl AgentLink {
+    fn open(io: crate::driver::AgentIo) -> Self {
+        let (tx, mut out_rx) = mpsc::unbounded_channel::<HostToAgent>();
+        let (in_tx, rx) = mpsc::unbounded_channel::<AgentToHost>();
+        let mut writer = io.writer;
+        tokio::spawn(async move {
+            while let Some(msg) = out_rx.recv().await {
+                let Ok(mut line) = serde_json::to_string(&msg) else {
+                    continue;
+                };
+                line.push('\n');
+                if writer.write_all(line.as_bytes()).await.is_err() || writer.flush().await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let reader = io.reader;
+        tokio::spawn(async move {
+            let mut reader = BufReader::with_capacity(256 * 1024, reader);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) if n > MAX_FRAME_BYTES => break,
+                    Ok(_) => {}
+                }
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<AgentToHost>(line.trim()) {
+                    Ok(m) => {
+                        if in_tx.send(m).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => tracing::warn!("malformed frame from fctl-agent: {e}"),
+                }
+            }
+        });
+        Self {
+            tx,
+            rx,
+            _child: io.child,
+        }
+    }
+
+    fn send(&self, msg: HostToAgent) {
+        let _ = self.tx.send(msg);
+    }
+}
+
+fn state(status: SessionStatus, reason: &str) -> SessionState {
+    SessionState {
+        status,
+        reason: Some(reason.to_owned()),
+        resume_at: None,
+        branch: None,
+        model: None,
+        claude_session_id: None,
+        remote_control: None,
+        stats: None,
+    }
+}
+
+fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
+    uplink.log(LogLine {
+        source: LogSource::Host,
+        level,
+        text,
+    });
+}
+
+async fn prepare(ctx: &HostCtx, spec: &SessionSpec, uplink: &Uplink) -> Result<Sandbox> {
+    let image = spec
+        .project
+        .settings
+        .image
+        .clone()
+        .unwrap_or_else(|| ctx.cfg.image.clone());
+    let sspec = SandboxSpec {
+        name: sandbox_name(spec.session_id.as_str()),
+        image,
+        cpus: spec.project.settings.cpus.unwrap_or(ctx.cfg.cpus),
+        memory_mb: spec.project.settings.memory_mb.unwrap_or(ctx.cfg.memory_mb),
+    };
+    let log_uplink = |line: String| host_log(uplink, LogLevel::Info, line);
+    let sb = ctx.driver.ensure(&sspec, &log_uplink).await?;
+    if ctx.driver.needs_linux_agent() {
+        let bin = crate::agentbin::linux_agent(&ctx.cfg)
+            .await
+            .context("getting fctl-agent for the sandbox")?;
+        ctx.driver.install_agent(&sb, &bin).await?;
+    }
+    ctx.driver.start_agent(&sb).await?;
+    Ok(sb)
+}
+
+async fn run(
+    ctx: Arc<HostCtx>,
+    start: Start,
+    mut cmds: mpsc::UnboundedReceiver<SessionCmd>,
+    events: mpsc::UnboundedSender<SessionEvent>,
+    report: Arc<Mutex<Report>>,
+) -> (SessionStatus, Option<String>) {
+    let (session_id, spec) = match start {
+        Start::New(spec) => (spec.session_id.clone(), Some(spec)),
+        Start::Recover(id) => (id, None),
+    };
+    let (uplink, mut down) = Uplink::start(
+        ctx.uplink_url(&session_id),
+        ctx.token.clone(),
+        ctx.runner_id(),
+    );
+    let set_report = |status: SessionStatus, seq: Option<u64>| {
+        if let Ok(mut r) = report.lock() {
+            r.status = status;
+            if let Some(s) = seq {
+                r.agent_seq = r.agent_seq.max(s);
+            }
+        }
+    };
+    let sb = match &spec {
+        Some(spec) => {
+            uplink.state(state(
+                SessionStatus::Provisioning,
+                &format!("Creating the sandbox on {}", ctx.cfg.name),
+            ));
+            match prepare(&ctx, spec, &uplink).await {
+                Ok(sb) => sb,
+                Err(e) => {
+                    let msg = format!("{e:#}");
+                    host_log(&uplink, LogLevel::Error, msg.clone());
+                    uplink.state(state(SessionStatus::Failed, &msg));
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    return (SessionStatus::Failed, Some(msg));
+                }
+            }
+        }
+        None => {
+            let sb = ctx.driver.handle(&sandbox_name(session_id.as_str()));
+            if let Err(e) = ctx.driver.start_agent(&sb).await {
+                tracing::warn!("restarting fctl-agent in {}: {e:#}", sb.name);
+            }
+            sb
+        }
+    };
+
+    let mut acked: u64 = 0;
+    let mut welcomed = false;
+    let mut link: Option<AgentLink> = None;
+    let mut queued: Vec<Delivery> = Vec::new();
+    let mut exited: Option<(SessionStatus, Option<String>)> = None;
+    let mut stop: Option<(bool, Instant)> = None;
+    let mut attach_failures = 0u32;
+    let mut superseded = false;
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+
+    let outcome = loop {
+        if link.is_none() && exited.is_none() {
+            match ctx.driver.attach(&sb).await {
+                Ok(io) => {
+                    attach_failures = 0;
+                    link = Some(AgentLink::open(io));
+                }
+                Err(e) => {
+                    attach_failures += 1;
+                    tracing::warn!("attaching to {}: {e:#}", sb.name);
+                    if attach_failures >= 5 {
+                        let msg = "fctl-agent stopped responding in the sandbox".to_owned();
+                        uplink.state(state(SessionStatus::Failed, &msg));
+                        break (SessionStatus::Failed, Some(msg));
+                    }
+                    let _ = ctx.driver.start_agent(&sb).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            }
+        }
+        tokio::select! {
+            msg = async { match link.as_mut() { Some(l) => l.rx.recv().await, None => std::future::pending().await } } => {
+                let Some(msg) = msg else {
+                    link = None;
+                    if let Some(done) = exited.clone() {
+                        break done;
+                    }
+                    if stop.is_some() {
+                        break (SessionStatus::Stopped, Some("Stopped".into()));
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                };
+                let Some(l) = link.as_ref() else { continue };
+                match msg {
+                    AgentToHost::Hello(h) => {
+                        set_report(h.status, Some(h.agent_seq));
+                        if !h.configured {
+                            match &spec {
+                                Some(spec) => l.send(HostToAgent::Configure { config: Box::new(agent_config(&ctx, &sb, spec)) }),
+                                None => {
+                                    let msg = "The sandbox lost the session's state when the host restarted. Resume the session to continue.".to_owned();
+                                    uplink.state(state(SessionStatus::Stopped, &msg));
+                                    break (SessionStatus::Stopped, Some(msg));
+                                }
+                            }
+                        }
+                        if welcomed {
+                            l.send(HostToAgent::Replay { after_agent_seq: acked });
+                            for d in queued.drain(..) {
+                                l.send(HostToAgent::Deliver { delivery: d });
+                            }
+                        }
+                    }
+                    AgentToHost::Events { events: evs } => {
+                        set_report(report.lock().map(|r| r.status).unwrap_or(SessionStatus::Running), evs.last().map(|e| e.agent_seq));
+                        uplink.events(evs);
+                    }
+                    AgentToHost::Stream { event } => uplink.send(fctl_proto::uplink::UplinkUp::Stream { event }),
+                    AgentToHost::State { state: st } => {
+                        set_report(st.status, None);
+                        uplink.state(st);
+                    }
+                    AgentToHost::Log { line } => uplink.log(line),
+                    AgentToHost::Delivered { delivery_id, ok, error } => {
+                        uplink.send(fctl_proto::uplink::UplinkUp::Delivered { delivery_id, ok, error });
+                    }
+                    AgentToHost::CredentialRequest { request_id, kind } => {
+                        let _ = events.send(SessionEvent::CredentialRequest { session_id: session_id.clone(), request_id, kind });
+                    }
+                    AgentToHost::Exited { status, reason } => {
+                        set_report(status, None);
+                        exited = Some((status, reason));
+                    }
+                    AgentToHost::Pong => {}
+                }
+            }
+            d = down.recv() => {
+                let Some(d) = d else { break (SessionStatus::Failed, Some("uplink task ended".into())) };
+                match d {
+                    UplinkDown::Welcome { acked_agent_seq, pending } => {
+                        acked = acked_agent_seq;
+                        welcomed = true;
+                        match &link {
+                            Some(l) => {
+                                l.send(HostToAgent::Replay { after_agent_seq: acked });
+                                for p in pending {
+                                    l.send(HostToAgent::Deliver { delivery: p });
+                                }
+                            }
+                            None => queued.extend(pending),
+                        }
+                    }
+                    UplinkDown::Ack { agent_seq } => {
+                        acked = acked.max(agent_seq);
+                        if let Some(l) = &link {
+                            l.send(HostToAgent::Ack { agent_seq });
+                        }
+                    }
+                    UplinkDown::Deliver { delivery } => match &link {
+                        Some(l) => l.send(HostToAgent::Deliver { delivery }),
+                        None => queued.push(delivery),
+                    },
+                    UplinkDown::Pong => {}
+                }
+            }
+            c = cmds.recv() => match c {
+                Some(SessionCmd::Stop { reason, destroy }) => {
+                    if stop.is_none() {
+                        stop = Some((destroy, Instant::now() + Duration::from_secs(60)));
+                        match &link {
+                            Some(l) => l.send(HostToAgent::Stop { reason, grace_ms: 30_000 }),
+                            None => break (SessionStatus::Stopped, Some("Stopped".into())),
+                        }
+                    }
+                }
+                Some(SessionCmd::Superseded) => superseded = true,
+                Some(SessionCmd::Credentials { request_id, claude, github, error }) => {
+                    if let Some(l) = &link {
+                        l.send(HostToAgent::Credentials { request_id, claude, github, error });
+                    }
+                }
+                None => break (SessionStatus::Stopped, Some("host shutting down".into())),
+            },
+            _ = tick.tick() => {
+                if let Some((_, deadline)) = stop
+                    && Instant::now() > deadline {
+                        break exited.clone().unwrap_or((SessionStatus::Stopped, Some("Stopped (forced)".into())));
+                    }
+                if exited.is_some() && link.is_none()
+                    && let Some(done) = exited.clone() {
+                        break done;
+                    }
+            }
+        }
+    };
+
+    // Give the uplink a moment to deliver the agent's last events.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let destroy = stop.map(|(d, _)| d).unwrap_or(false);
+    if let Err(e) = ctx.driver.stop(&sb).await {
+        tracing::warn!("stopping {}: {e:#}", sb.name);
+    }
+    if destroy
+        && let Err(e) = ctx.driver.remove(&sb).await {
+            tracing::warn!("removing {}: {e:#}", sb.name);
+        }
+    let (status, reason) = outcome;
+    // Drain a late Superseded so the next run's status is not overwritten.
+    while let Ok(c) = cmds.try_recv() {
+        if matches!(c, SessionCmd::Superseded) {
+            superseded = true;
+        }
+    }
+    if !superseded {
+        uplink.state(state(status, reason.as_deref().unwrap_or("Stopped")));
+    }
+    set_report(status, None);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    (status, reason)
+}
+
+fn agent_config(ctx: &HostCtx, sb: &Sandbox, spec: &SessionSpec) -> AgentConfig {
+    let process = matches!(ctx.driver, Driver::Process(_));
+    AgentConfig {
+        spec: spec.clone(),
+        workdir: ctx.driver.workdir(sb),
+        home: ctx.driver.home(sb),
+        claude_bin: if process {
+            ctx.cfg.claude_bin.clone()
+        } else {
+            None
+        },
+        claude_args: ctx.cfg.claude_args.clone(),
+        env: Default::default(),
+        push_on_commit: ctx.cfg.push_on_commit,
+    }
+}
