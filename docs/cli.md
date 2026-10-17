@@ -153,8 +153,11 @@ fctl completions zsh > ~/.zfunc/_fctl  # or print them: bash, zsh, fish, elvish,
 ```
 
 `--install` writes the script under `~/.local/share/fctl/completions` (fish:
-`~/.config/fish/completions`) and adds a marked block to `~/.zshrc`,
-`~/.bashrc` (`~/.bash_profile` on macOS) once. Delete both to undo it.
+`~/.config/fish/completions`) and adds a marked block once to the end of
+`~/.zshrc` or `~/.bashrc`. Bash on macOS starts as a login shell, which reads
+only the first of `~/.bash_profile`, `~/.bash_login` and `~/.profile` that
+exists, so the block goes in that file (a new `~/.profile` if there is none).
+Delete the script and the block to undo it.
 
 ## Exit codes and output
 
