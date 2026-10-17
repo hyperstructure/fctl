@@ -152,5 +152,5 @@ jobs:
           git add fctl-docs.ref
           git diff --cached --quiet && { echo "already at $GITHUB_SHA"; exit 0; }
           git -c user.name="fctl-sh[bot]" -c user.email="343971779+fctl-sh[bot]@users.noreply.github.com" \
-            commit --quiet -m "Docs: hyperstructure/fctl@${GITHUB_SHA::12}"
+            commit --quiet -m "docs: pin hyperstructure/fctl@${GITHUB_SHA::12}"
           git push --quiet origin HEAD:main || { git pull --quiet --rebase origin main && git push --quiet origin HEAD:main; }
