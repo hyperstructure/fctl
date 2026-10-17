@@ -462,15 +462,9 @@ impl Supervisor {
             cfg["oauthAccount"] = raw;
         }
         std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
-        // User settings: no API key helper, ever.
-        let settings = json!({
-            "$schema": "https://json.schemastore.org/claude-code-settings.json",
-            "permissions": { "defaultMode": "bypassPermissions" },
-            "env": { "DISABLE_AUTOUPDATER": "1" }
-        });
         std::fs::write(
             claude_dir.join("settings.json"),
-            serde_json::to_string_pretty(&settings)?,
+            serde_json::to_string_pretty(&claude::user_settings())?,
         )?;
         Ok(())
     }
