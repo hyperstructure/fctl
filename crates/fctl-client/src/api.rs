@@ -1,6 +1,6 @@
 //! A typed client for the control plane's REST API (`/api/v1`).
 
-use crate::http::{HttpClient, Result};
+use crate::http::{Error, HttpClient, Result};
 use fctl_proto::api::*;
 use fctl_proto::session::{Project, Session};
 use http::Method;
@@ -96,6 +96,49 @@ impl Api {
 
     pub async fn logout(&self) -> Result<Ok> {
         self.post("/auth/logout", &serde_json::json!({})).await
+    }
+
+    // ── your account ──
+
+    /// Your personal data, as the JSON document `GET /me/export` streams.
+    pub async fn export(&self) -> Result<Vec<u8>> {
+        // Transcripts can be large: allow far longer than a normal request.
+        let http = HttpClient::new(std::time::Duration::from_secs(600));
+        let (status, _, bytes) = http
+            .send(
+                Method::GET,
+                &self.url("/me/export"),
+                self.token(),
+                None,
+                None,
+            )
+            .await?;
+        if !status.is_success() {
+            if let Ok(e) = serde_json::from_slice::<fctl_proto::ApiError>(&bytes) {
+                return Err(Error::Api(e));
+            }
+            return Err(Error::Status {
+                status: status.as_u16(),
+                body: String::from_utf8_lossy(&bytes).chars().take(500).collect(),
+            });
+        }
+        Ok(bytes.to_vec())
+    }
+
+    /// What deleting your account would delete, and whether it can be deleted now.
+    pub async fn account_deletion(&self) -> Result<AccountDeletion> {
+        self.get("/me/deletion").await
+    }
+
+    /// Deletes your account; `email` is your address, typed to confirm.
+    pub async fn delete_account(&self, email: &str) -> Result<Ok> {
+        self.post(
+            "/me/delete",
+            &DeleteAccountRequest {
+                email: email.to_owned(),
+            },
+        )
+        .await
     }
 
     pub async fn tokens(&self) -> Result<TokenList> {

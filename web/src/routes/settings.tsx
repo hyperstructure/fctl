@@ -1,10 +1,33 @@
-// Settings: profile, Claude, sign-in methods, devices and tokens, appearance.
+// Settings: profile, Claude, sign-in methods, devices and tokens, appearance,
+// your data (export) and the danger zone (deleting the account).
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
-import { ArrowUpRight, KeyRound, Laptop, Monitor, Moon, Radio, Sun, Terminal, Trash2 } from "lucide-react";
+import {
+  ArrowUpRight,
+  Download,
+  KeyRound,
+  Laptop,
+  Monitor,
+  Moon,
+  Radio,
+  Sun,
+  Terminal,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
-import { Avatar, Banner, Button, CodeBox, Field, Input, Section, Spinner, toast } from "@/components/ui";
+import {
+  Avatar,
+  Banner,
+  Button,
+  CodeBox,
+  Dialog,
+  Field,
+  Input,
+  Section,
+  Spinner,
+  toast,
+} from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -42,7 +65,9 @@ export function SettingsPage() {
         <SignIn me={me} />
         <Tokens />
         <Appearance />
+        <YourData />
       </div>
+      <DangerZone me={me} />
     </div>
   );
 }
@@ -591,5 +616,174 @@ function Appearance() {
         ))}
       </div>
     </Section>
+  );
+}
+
+function YourData() {
+  return (
+    <Section
+      title="Your data"
+      description="A copy of everything this instance keeps about you, as one JSON file."
+    >
+      <div className="flex flex-col items-start gap-4">
+        <p className="max-w-xl text-[13.5px] leading-relaxed text-ink-3">
+          Your account, sign-in methods, devices and tokens, Claude connections (without their secrets),
+          projects, the sessions you started with their full transcripts, and your activity log.
+        </p>
+        <a
+          href="/api/v1/me/export"
+          download
+          className="inline-flex h-8.5 items-center gap-2 rounded-md border border-line-strong bg-raised px-3.5 text-[13.5px] font-medium text-ink transition-colors hover:border-ink-4"
+        >
+          <Download className="size-3.5" />
+          Export your data
+        </a>
+      </div>
+    </Section>
+  );
+}
+
+function DangerZone({ me }: { me: G.Me }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section aria-labelledby="danger-zone" className="mt-6 rounded-xl border border-danger/30 p-6">
+      <h2 id="danger-zone" className="text-[14px] font-semibold text-danger">
+        Danger zone
+      </h2>
+      <div className="mt-4 flex flex-col gap-4 border-t border-danger/20 pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="max-w-xl">
+          <div className="text-[13.5px] font-medium text-ink">Delete your account</div>
+          <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
+            Deletes your account, sign-in methods, devices, tokens and Claude connections, and the projects
+            only you are a member of, with their sessions. This cannot be undone.
+          </p>
+        </div>
+        <Button variant="danger" className="self-start sm:self-auto" onClick={() => setOpen(true)}>
+          Delete account…
+        </Button>
+      </div>
+      <DeleteAccount me={me} open={open} onClose={() => setOpen(false)} />
+    </section>
+  );
+}
+
+const sameEmail = (typed: string, email: string) => typed.trim().toLowerCase() === email.trim().toLowerCase();
+
+function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose: () => void }) {
+  const [typed, setTyped] = useState("");
+  const plan = useQuery({ queryKey: keys.accountDeletion, queryFn: api.accountDeletion, enabled: open });
+  const remove = useMutation({
+    mutationFn: () => api.deleteAccount({ email: typed }),
+    onSuccess: () => {
+      queryClient.clear();
+      window.location.assign("/login?deleted=1");
+    },
+  });
+  useEffect(() => {
+    if (!open) {
+      setTyped("");
+      remove.reset();
+    }
+  }, [open, remove.reset]);
+  const p = plan.data;
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Delete your account?"
+      description="This deletes your data for good. It cannot be undone."
+    >
+      {plan.isPending ? (
+        <div className="flex justify-center py-6">
+          <Spinner className="size-5" />
+        </div>
+      ) : plan.error ? (
+        <Banner tone="error">{plan.error.message}</Banner>
+      ) : p?.blocked ? (
+        <div className="flex flex-col gap-5">
+          <Banner tone="warn">{p.blocked}</Banner>
+          <div className="flex justify-end">
+            <Button onClick={onClose}>Close</Button>
+          </div>
+        </div>
+      ) : (
+        <form
+          className="flex flex-col gap-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (sameEmail(typed, me.user.email)) remove.mutate();
+          }}
+        >
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-[13.5px] leading-relaxed text-ink-2 marker:text-ink-4">
+            <li>
+              Your account <span className="text-ink">{me.user.email}</span>, sign-in methods, devices and
+              tokens, and Claude connections are deleted.
+            </li>
+            {p?.projects.map((project) => (
+              <li key={project.slug}>
+                <span className="text-ink">{project.name}</span> is deleted
+                {project.sessions === 0
+                  ? ""
+                  : project.sessions === 1
+                    ? " with its session and transcript"
+                    : ` with its ${project.sessions} sessions and their transcripts`}
+                . No one else is a member.
+              </li>
+            ))}
+            {p && p.kept_sessions > 0 && (
+              <li>
+                {p.kept_sessions === 1 ? "The session" : `The ${p.kept_sessions} sessions`} you started in
+                shared projects {p.kept_sessions === 1 ? "stays" : "stay"} there, shown as started by a
+                deleted user.
+              </li>
+            )}
+            <li>Repositories on GitHub are not touched.</li>
+          </ul>
+          <p className="text-[13px] leading-relaxed text-ink-3">
+            Want a copy first?{" "}
+            <a
+              href="/api/v1/me/export"
+              download
+              className="text-ink underline decoration-accent underline-offset-2"
+            >
+              Export your data
+            </a>
+            .
+          </p>
+          <Field
+            label={
+              <>
+                Type <span className="font-mono text-ink">{me.user.email}</span> to confirm
+              </>
+            }
+            error={remove.error?.message}
+          >
+            {(id) => (
+              <Input
+                id={id}
+                value={typed}
+                onChange={(e) => setTyped(e.target.value)}
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+            )}
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="danger"
+              loading={remove.isPending}
+              disabled={!sameEmail(typed, me.user.email)}
+            >
+              Delete my account
+            </Button>
+          </div>
+        </form>
+      )}
+    </Dialog>
   );
 }

@@ -146,6 +146,11 @@ export function LoginPage() {
           : undefined
       }
     >
+      {search.deleted && !external && (
+        <Banner tone="ok" className="mb-4">
+          Your account was deleted.
+        </Banner>
+      )}
       {external && (
         <Banner tone="error" className="mb-4">
           {external}
@@ -244,7 +249,9 @@ export function SetupPage() {
           variant="primary"
           size="lg"
           className="w-full"
-          onClick={() => navigate({ to: "/login", search: { next: undefined, error: undefined } })}
+          onClick={() =>
+            navigate({ to: "/login", search: { next: undefined, error: undefined, deleted: undefined } })
+          }
         >
           Sign in
         </Button>

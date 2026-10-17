@@ -112,32 +112,13 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             "Owners cannot be deleted; make them a member first",
         ));
     }
-    // Sessions and projects they created stay; their memberships and tokens go.
-    let created: Vec<crate::db::Count> = q(
-        &ctx.db,
-        "SELECT (SELECT COUNT(*) FROM sessions WHERE created_by = ?1) + (SELECT COUNT(*) FROM projects WHERE created_by = ?1) AS n",
-        &[s(&target.id)],
-    )?
-    .all()
-    .await?;
-    if created.first().map_or(0, |c| c.n) > 0 {
-        // Keep the account for attribution, but lock it.
-        q(&ctx.db, "UPDATE users SET status = 'disabled', password_hash = NULL, updated_at = ? WHERE id = ?", &[n(ctx.now), s(&target.id)])?
-            .run()
-            .await?;
-        auth::revoke_tokens(ctx, &target.id, None).await?;
-    } else {
-        q(&ctx.db, "DELETE FROM users WHERE id = ?", &[s(&target.id)])?
-            .run()
-            .await?;
+    // The same as deleting your own account (api::account): their projects
+    // with no other members go, what others use stays, without their name.
+    let plan = crate::api::account::plan(ctx, &target).await?;
+    if plan.running() > 0 {
+        return Err(conflict("Stop their running sessions first"));
     }
-    q(
-        &ctx.db,
-        "DELETE FROM allowlist WHERE pattern = ?",
-        &[s(&target.email)],
-    )?
-    .run()
-    .await?;
+    crate::api::account::erase(ctx, &target, &plan).await?;
     ctx.audit(
         "user.deleted",
         Some(&target.id),

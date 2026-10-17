@@ -114,6 +114,9 @@ enum Command {
     /// Manage access, users and runners (admins).
     #[command(subcommand)]
     Admin(cmd::admin::AdminCmd),
+    /// Export your data or delete your account.
+    #[command(subcommand)]
+    Account(cmd::account::AccountCmd),
     /// Create a personal access token for scripts and CI.
     Token {
         /// What the token is for, e.g. "deploy bot".
@@ -199,6 +202,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Claude(c) => cmd::claude::run(server, c, json).await,
         Command::Host(c) => cmd::host::run(server, c, json).await,
         Command::Admin(c) => cmd::admin::run(server, c, json).await,
+        Command::Account(c) => cmd::account::run(server, c, json).await,
         Command::Token { name, days } => cmd::auth::token(server, &name, days, json).await,
         Command::Completions { shell } => {
             use clap::CommandFactory;

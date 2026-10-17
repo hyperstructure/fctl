@@ -172,6 +172,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         }
         (Post, ["me", "claude", id, "default"]) => api::claude::set_default(ctx, id).await,
         (Delete, ["me", "claude", id]) => api::claude::remove(ctx, id).await,
+        (Get, ["me", "export"]) => api::account::export(ctx).await,
+        (Get, ["me", "deletion"]) => api::account::deletion(ctx).await,
+        (Post, ["me", "delete"]) => api::account::delete(ctx, req).await,
         _ => Err(AppError(ApiError::not_found("Endpoint"))),
     }
 }

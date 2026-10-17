@@ -55,6 +55,8 @@ export const api = {
   createToken: (b: G.CreateTokenRequest) => request<G.CreatedToken>("POST", "/auth/tokens", b),
   deleteToken: (id: string) => request<G.Ok>("DELETE", `/auth/tokens/${enc(id)}`),
   unlinkIdentity: (id: string) => request<G.Me>("DELETE", `/auth/identities/${enc(id)}`),
+  accountDeletion: () => request<G.AccountDeletion>("GET", "/me/deletion"),
+  deleteAccount: (b: G.DeleteAccountRequest) => request<G.Ok>("POST", "/me/delete", b),
   device: (code: string) => request<G.DeviceInfo>("GET", `/auth/device/${enc(code)}`),
   decideDevice: (code: string, approve: boolean) =>
     request<G.Ok>("POST", `/auth/device/${enc(code)}`, { approve }),

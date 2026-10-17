@@ -32,12 +32,18 @@ async function me() {
 const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound });
 
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+// Search values arrive JSON-parsed (`?deleted=1` is the number 1).
+const flag = (v: unknown) => (v === undefined || v === null || v === false || v === "" ? undefined : true);
 
 const login = createRoute({
   getParentRoute: () => root,
   path: "/login",
   component: LoginPage,
-  validateSearch: (s: Record<string, unknown>) => ({ next: str(s.next), error: str(s.error) }),
+  validateSearch: (s: Record<string, unknown>) => ({
+    next: str(s.next),
+    error: str(s.error),
+    deleted: flag(s.deleted),
+  }),
   beforeLoad: async () => {
     const info = await queryClient.ensureQueryData({ queryKey: keys.instance, queryFn: api.instance });
     if (info.setup_required) throw redirect({ to: "/setup" });
@@ -57,7 +63,7 @@ const app = createRoute({
     if (!user) {
       const info = await queryClient.ensureQueryData({ queryKey: keys.instance, queryFn: api.instance });
       if (info.setup_required) throw redirect({ to: "/setup" });
-      throw redirect({ to: "/login", search: { next: location.href, error: undefined } });
+      throw redirect({ to: "/login", search: { next: location.href, error: undefined, deleted: undefined } });
     }
   },
 });

@@ -86,9 +86,16 @@ it runs, and keep nothing secret on disk but their runner token
 - Expired browser sessions and tokens, password resets, device codes and
   invitations are deleted within the hour, and audit log entries after a
   year.
-- Deleting a user deletes the account, unless they created projects or
-  sessions: then it is disabled, its password and tokens are deleted, and its
-  name and email stay on what it created.
+- People delete their own account in Settings (Danger zone) or with
+  `fctl account delete`, and admins can delete anyone's but an owner's. Both
+  delete the account's sign-in methods, tokens, Claude connections,
+  memberships and shares, and the projects only it is a member of, with their
+  sessions. Sessions and projects it created that others still use stay,
+  credited to "Deleted user": the account remains only as a disabled
+  placeholder, without its name, email or picture. An instance's last owner
+  cannot delete their account.
+- Settings → Your data (or `fctl account export`) downloads everything the
+  instance keeps about you, as JSON.
 - Hosts keep a stopped session's sandbox so it can resume, and do not yet
   remove the sandboxes of deleted sessions
   ([#12](https://github.com/hyperstructure/fctl/issues/12)).

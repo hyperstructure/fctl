@@ -3,6 +3,7 @@
 //! Nothing here does I/O or reads the clock: callers pass `now` (milliseconds
 //! since the epoch) so the same code runs in a Worker and in tests.
 
+pub mod account;
 pub mod allowlist;
 pub mod events;
 pub mod ids;

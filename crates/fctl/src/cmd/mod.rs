@@ -1,3 +1,4 @@
+pub mod account;
 pub mod admin;
 pub mod attach;
 pub mod auth;

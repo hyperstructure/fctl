@@ -114,6 +114,21 @@ fctl admin disallow '*@example.com'        # its users lose access
 fctl admin runners
 ```
 
+## Your account
+
+```sh
+fctl account export                        # your data as JSON: fctl-export-<date>.json
+fctl account export -o - | jq .sessions    # or print it
+fctl account delete                        # shows what goes, asks for your email address
+```
+
+The export holds your account, sign-in methods, devices and tokens, Claude
+connections (without their secrets), projects, the sessions you started with
+their transcripts, and your activity log. Deleting your account deletes all
+of that and the projects only you are a member of; sessions you started in
+shared projects stay there, credited to a deleted user. Settings in the web
+app has both, the deletion in its danger zone.
+
 ## Shell completions
 
 ```sh

@@ -111,7 +111,10 @@ and shares cascade) and, in the same batch, queues its sessions in
 `session_purges`; their SessionDO storage, the event logs, is deleted right
 after. An hourly cron trigger (`src/housekeeping.rs`) retries what failed and
 deletes expired tokens, password resets, device codes and invites, abandoned
-Claude logins, and audit log entries older than a year.
+Claude logins, and audit log entries older than a year. Deleting an account
+(`src/api/account.rs`) does the same for the projects only that account is a
+member of, deletes its personal rows in the same batch, and keeps a nameless
+placeholder row only while sessions or projects it created remain.
 
 ## Sessions
 

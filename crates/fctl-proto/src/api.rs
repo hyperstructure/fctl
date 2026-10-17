@@ -171,6 +171,36 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+/// `GET /api/v1/me/deletion`: what deleting your account would delete.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AccountDeletion {
+    /// Why the account cannot be deleted now; absent when it can.
+    pub blocked: Option<String>,
+    /// Projects only you are a member of: deleted, with their sessions.
+    pub projects: Vec<DeletedProject>,
+    /// Sessions you started in projects others are members of: they stay
+    /// with those projects, attributed to a deleted user.
+    pub kept_sessions: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DeletedProject {
+    pub slug: String,
+    pub name: String,
+    pub sessions: u32,
+}
+
+/// `POST /api/v1/me/delete`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DeleteAccountRequest {
+    /// The account's email address, typed to confirm.
+    pub email: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ForgotPasswordRequest {

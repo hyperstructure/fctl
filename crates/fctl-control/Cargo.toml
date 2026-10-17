@@ -23,7 +23,7 @@ hex.workspace = true
 hmac = "0.13.0"
 js-sys = "0.3.106"
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
 url.workspace = true
 wasm-bindgen = "0.2.129"
