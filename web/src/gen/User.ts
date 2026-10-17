@@ -3,7 +3,15 @@ import type { InstanceRole } from "./InstanceRole";
 import type { UserId } from "./UserId";
 import type { UserStatus } from "./UserStatus";
 
-export type User = { id: UserId, email: string, name: string, avatar_url?: string, role: InstanceRole, status: UserStatus, 
+export type User = { id: UserId, email: string, 
+/**
+ * The full name everyone sees.
+ */
+name: string, 
+/**
+ * First names, all of them ("Carl Oscar"); what greetings use.
+ */
+given_name?: string, family_name?: string, avatar_url?: string, role: InstanceRole, status: UserStatus, 
 /**
  * Whether the account can sign in with a password.
  */

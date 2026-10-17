@@ -46,6 +46,8 @@ struct Claims {
     email: Option<String>,
     email_verified: Option<bool>,
     name: Option<String>,
+    given_name: Option<String>,
+    family_name: Option<String>,
     picture: Option<String>,
 }
 
@@ -271,14 +273,33 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     } else {
         "member"
     };
-    let name = claims
+    // Google's first and last name when it has them; else its full name or
+    // the email's local part.
+    let fallback = claims
         .name
         .clone()
         .unwrap_or_else(|| email.split('@').next().unwrap_or("New user").to_owned());
+    let person = fctl_domain::validate::person_name(
+        claims.given_name.as_deref(),
+        claims.family_name.as_deref(),
+        None,
+    )
+    .or_else(|_| fctl_domain::validate::person_name(None, None, Some(&fallback)))
+    .or_else(|_| fctl_domain::validate::person_name(None, None, Some("New user")))?;
     q(
         &ctx.db,
-        "INSERT INTO users (id, email, name, avatar_url, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
-        &[s(id.as_str()), s(&email), s(&name), os(claims.picture.as_deref()), s(role), n(ctx.now), n(ctx.now)],
+        "INSERT INTO users (id, email, name, given_name, family_name, avatar_url, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+        &[
+            s(id.as_str()),
+            s(&email),
+            s(&person.full),
+            os(person.given.as_deref()),
+            os(person.family.as_deref()),
+            os(claims.picture.as_deref()),
+            s(role),
+            n(ctx.now),
+            n(ctx.now),
+        ],
     )?
     .run()
     .await?;

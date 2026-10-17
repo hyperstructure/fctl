@@ -5,7 +5,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, ArrowUp, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { Avatar, Button, GLCanvas, Skeleton, StatusDot, Textarea, toast } from "@/components/ui";
+import { Avatar, Button, firstNames, GLCanvas, Skeleton, StatusDot, Textarea, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -23,10 +23,10 @@ const ACTIVE: G.SessionStatus[] = [
   "stopping",
 ];
 
-function greeting(name: string) {
+function greeting(user: G.User) {
   const h = new Date().getHours();
   const part = h < 5 ? "Working late" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
-  return `${part}, ${name.split(" ")[0]}.`;
+  return `${part}, ${firstNames(user)}.`;
 }
 
 /** Palette index in the floor scene: 0 neutral, 1 working, 2 waiting, 3 paused, 4 failed. */
@@ -340,7 +340,7 @@ export function Home() {
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-canvas" />
         <div className="relative z-[1] mx-auto flex h-full max-w-[920px] flex-col justify-end px-6 pb-10">
           <h1 className="animate-rise font-display text-[40px] leading-[1.08] font-medium tracking-[-0.022em] text-ink">
-            {me ? greeting(me.user.name) : " "}
+            {me ? greeting(me.user) : " "}
           </h1>
           <p className="mt-3 animate-rise text-[15px] text-ink-2 [animation-delay:80ms]">
             {working > 0 ? (

@@ -18,6 +18,10 @@ pub struct UserRow {
     pub id: String,
     pub email: String,
     pub name: String,
+    #[serde(default)]
+    pub given_name: Option<String>,
+    #[serde(default)]
+    pub family_name: Option<String>,
     pub avatar_url: Option<String>,
     pub password_hash: Option<String>,
     pub role: String,
@@ -51,6 +55,8 @@ impl UserRow {
             id: self.user_id(),
             email: self.email.clone(),
             name: self.name.clone(),
+            given_name: self.given_name.clone(),
+            family_name: self.family_name.clone(),
             avatar_url: self.avatar_url.clone(),
             role: self.role(),
             status: UserStatus::parse(&self.status).unwrap_or(UserStatus::Disabled),
@@ -75,6 +81,8 @@ pub fn user_columns(alias: &str) -> String {
         "id",
         "email",
         "name",
+        "given_name",
+        "family_name",
         "avatar_url",
         "password_hash",
         "role",

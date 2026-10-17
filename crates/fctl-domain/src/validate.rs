@@ -94,6 +94,50 @@ pub fn name(field: &str, input: &str) -> Result<String> {
     Ok(s)
 }
 
+/// A person's names, cleaned. `full` is what everyone sees; `given` (first
+/// names, all of them: "Carl Oscar") is what greetings use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersonName {
+    pub full: String,
+    pub given: Option<String>,
+    pub family: Option<String>,
+}
+
+/// From first names and an optional last name, or, when `given` is absent
+/// (older clients), from one full name whose parts are then unknown.
+pub fn person_name(
+    given: Option<&str>,
+    family: Option<&str>,
+    full: Option<&str>,
+) -> Result<PersonName> {
+    let Some(given) = given else {
+        return Ok(PersonName {
+            full: name("name", full.unwrap_or_default())?,
+            given: None,
+            family: None,
+        });
+    };
+    let given = name("given_name", given)
+        .map_err(|_| ApiError::validation("given_name", "Enter your first name (all of them)"))?;
+    let family = collapse_spaces(family.unwrap_or_default());
+    if family.chars().count() > 80 {
+        return Err(ApiError::validation(
+            "family_name",
+            "Use at most 80 characters",
+        ));
+    }
+    let family = (!family.is_empty()).then_some(family);
+    let full = match &family {
+        Some(f) => format!("{given} {f}"),
+        None => given.clone(),
+    };
+    Ok(PersonName {
+        full,
+        given: Some(given),
+        family,
+    })
+}
+
 /// Optional free text (descriptions): at most `max` characters.
 pub fn text(field: &str, input: &str, max: usize) -> Result<String> {
     let s = input.trim().to_owned();
@@ -270,6 +314,27 @@ pub fn image(input: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn person_names() {
+        let n = person_name(Some(" Carl  Oscar "), Some("Aaro"), None)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(n.full, "Carl Oscar Aaro");
+        assert_eq!(n.given.as_deref(), Some("Carl Oscar"));
+        assert_eq!(n.family.as_deref(), Some("Aaro"));
+        let mononym =
+            person_name(Some("Cher"), Some("  "), None).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!((mononym.full.as_str(), mononym.family), ("Cher", None));
+        let legacy =
+            person_name(None, None, Some("Ada Lovelace")).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!((legacy.full.as_str(), legacy.given), ("Ada Lovelace", None));
+        assert_eq!(
+            person_name(Some(" "), Some("Aaro"), None).map_err(|e| e.field),
+            Err(Some("given_name".into()))
+        );
+        assert!(person_name(None, None, None).is_err());
+        assert!(person_name(Some("Ada"), Some(&"x".repeat(81)), None).is_err());
+    }
 
     #[test]
     fn emails() {

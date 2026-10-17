@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
-import { Banner, Button, Field, GLCanvas, Input, Logo } from "@/components/ui";
+import { Banner, Button, Field, GLCanvas, Input, Logo, NameFields } from "@/components/ui";
 import { ApiFailure, api } from "@/lib/api";
 import { keys, queryClient, useInstance } from "@/lib/queries";
 
@@ -234,11 +234,12 @@ export function LoginPage() {
 export function SetupPage() {
   const navigate = useNavigate();
   const token = hashToken();
-  const [name, setName] = useState("");
+  const [given, setGiven] = useState("");
+  const [family, setFamily] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const { busy, error, submit, fieldError } = useSubmit(
-    () => api.setup({ token, name, email, password }),
+    () => api.setup({ token, given_name: given, family_name: family, email, password }),
     (r) => signedIn(r.me),
   );
   const { data: instance } = useInstance();
@@ -266,18 +267,14 @@ export function SetupPage() {
         </Banner>
       )}
       <form onSubmit={submit} className="flex flex-col gap-4">
-        <Field label="Your name" error={fieldError("name")}>
-          {(id) => (
-            <Input
-              id={id}
-              required
-              autoComplete="name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-            />
-          )}
-        </Field>
+        <NameFields
+          given={given}
+          family={family}
+          onGiven={setGiven}
+          onFamily={setFamily}
+          error={fieldError}
+          autoFocus
+        />
         <Field label="Email" error={fieldError("email")}>
           {(id) => (
             <Input
@@ -326,11 +323,12 @@ export function InvitePage() {
     enabled: !!token,
     retry: false,
   });
-  const [name, setName] = useState("");
+  const [given, setGiven] = useState("");
+  const [family, setFamily] = useState("");
   const [password, setPassword] = useState("");
   const email = preview.data?.email ?? "";
   const { busy, error, submit, fieldError } = useSubmit(
-    () => api.signup({ email, name, password, invite: token }),
+    () => api.signup({ email, given_name: given, family_name: family, password, invite: token }),
     (r) => signedIn(r.me),
   );
   const { data: instance } = useInstance();
@@ -375,18 +373,14 @@ export function InvitePage() {
       )}
       <form onSubmit={submit} className="flex flex-col gap-4">
         <Field label="Email">{(id) => <Input id={id} value={email} readOnly className="text-ink-3" />}</Field>
-        <Field label="Your name" error={fieldError("name")}>
-          {(id) => (
-            <Input
-              id={id}
-              required
-              autoComplete="name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-            />
-          )}
-        </Field>
+        <NameFields
+          given={given}
+          family={family}
+          onGiven={setGiven}
+          onFamily={setFamily}
+          error={fieldError}
+          autoFocus
+        />
         <Field label="Password" hint="At least 10 characters." error={fieldError("password")}>
           {(id) => (
             <Input

@@ -229,7 +229,7 @@ fn bootstrap(state: &Path) -> Result<String> {
             "/setup",
             None,
             Some(
-                json!({ "token": SETUP_TOKEN, "email": DEV_EMAIL, "name": "Dev Owner", "password": DEV_PASSWORD }),
+                json!({ "token": SETUP_TOKEN, "email": DEV_EMAIL, "given_name": "Dev", "family_name": "Owner", "password": DEV_PASSWORD }),
             ),
         )?
     } else {

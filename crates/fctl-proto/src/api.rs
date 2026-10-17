@@ -41,12 +41,16 @@ pub struct Features {
 }
 
 /// `POST /api/v1/setup`: create the owner account with the setup token.
+#[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct SetupRequest {
     pub token: String,
     pub email: String,
-    pub name: String,
+    /// First and last name; or `name`, the full name (older clients).
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
+    pub name: Option<String>,
     pub password: String,
 }
 
@@ -83,7 +87,11 @@ impl UserStatus {
 pub struct User {
     pub id: UserId,
     pub email: String,
+    /// The full name everyone sees.
     pub name: String,
+    /// First names, all of them ("Carl Oscar"); what greetings use.
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
     pub avatar_url: Option<String>,
     pub role: InstanceRole,
     pub status: UserStatus,
@@ -131,7 +139,10 @@ pub struct Me {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct SignupRequest {
     pub email: String,
-    pub name: String,
+    /// First and last name; or `name`, the full name (older clients).
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
+    pub name: Option<String>,
     pub password: String,
     /// The token from an invitation link.
     pub invite: Option<String>,
@@ -158,6 +169,10 @@ pub struct AuthResponse {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct UpdateMeRequest {
+    /// First and last name (send both; an empty last name clears it).
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
+    /// The full name alone, from older clients: the parts become unknown.
     pub name: Option<String>,
     pub avatar_url: Option<String>,
 }

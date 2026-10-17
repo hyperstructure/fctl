@@ -3,4 +3,8 @@
 /**
  * `POST /api/v1/setup`: create the owner account with the setup token.
  */
-export type SetupRequest = { token: string, email: string, name: string, password: string, };
+export type SetupRequest = { token: string, email: string, 
+/**
+ * First and last name; or `name`, the full name (older clients).
+ */
+given_name?: string, family_name?: string, name?: string, password: string, };

@@ -70,8 +70,7 @@ export function Composer({
       <div className="h-4 pl-3 text-[11.5px] text-ink-4">
         {typing.length > 0 && (
           <span className="animate-fade">
-            {typing.map((v) => v.user.name.split(" ")[0]).join(", ")} {typing.length === 1 ? "is" : "are"}{" "}
-            typing…
+            {typing.map((v) => v.user.name).join(", ")} {typing.length === 1 ? "is" : "are"} typing…
           </span>
         )}
       </div>

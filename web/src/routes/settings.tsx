@@ -24,6 +24,8 @@ import {
   Dialog,
   Field,
   Input,
+  NameFields,
+  nameParts,
   Section,
   Spinner,
   toast,
@@ -73,10 +75,11 @@ export function SettingsPage() {
 }
 
 function Profile({ me }: { me: G.Me }) {
-  const [name, setName] = useState(me.user.name);
+  const [given, setGiven] = useState(() => nameParts(me.user).given);
+  const [family, setFamily] = useState(() => nameParts(me.user).family);
   const [avatar, setAvatar] = useState(me.user.avatar_url ?? "");
   const save = useMutation({
-    mutationFn: () => api.updateMe({ name, avatar_url: avatar }),
+    mutationFn: () => api.updateMe({ given_name: given, family_name: family, avatar_url: avatar }),
     onSuccess: (m) => {
       queryClient.setQueryData(keys.me, m);
       toast("Profile saved");
@@ -100,14 +103,15 @@ function Profile({ me }: { me: G.Me }) {
             </div>
           </div>
         </div>
-        <Field
-          label="Name"
-          error={
-            (save.error as { field?: string } | null)?.field === "name" ? save.error?.message : undefined
+        <NameFields
+          given={given}
+          family={family}
+          onGiven={setGiven}
+          onFamily={setFamily}
+          error={(f) =>
+            (save.error as { field?: string } | null)?.field === f ? save.error?.message : undefined
           }
-        >
-          {(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} />}
-        </Field>
+        />
         <Field
           label="Avatar URL"
           hint="An https:// image. Linking Google fills this in."

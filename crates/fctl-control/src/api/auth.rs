@@ -65,7 +65,11 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         )));
     }
     let email = validate::email(&body.email)?;
-    let name = validate::name("name", &body.name)?;
+    let person = validate::person_name(
+        body.given_name.as_deref(),
+        body.family_name.as_deref(),
+        body.name.as_deref(),
+    )?;
     validate::password(&body.password, Some(&email))?;
     let owners: Option<Count> = q(
         &ctx.db,
@@ -86,9 +90,9 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         vec![
             q(
                 &ctx.db,
-                "INSERT INTO users (id, email, name, password_hash, role, status, created_at, updated_at) \
-                 SELECT ?, ?, ?, ?, 'owner', 'active', ?, ? WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'owner')",
-                &[s(id.as_str()), s(&email), s(&name), s(&hash), n(ctx.now), n(ctx.now)],
+                "INSERT INTO users (id, email, name, given_name, family_name, password_hash, role, status, created_at, updated_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, 'owner', 'active', ?, ? WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'owner')",
+                &[s(id.as_str()), s(&email), s(&person.full), os(person.given.as_deref()), os(person.family.as_deref()), s(&hash), n(ctx.now), n(ctx.now)],
             )?,
             q(
                 &ctx.db,
@@ -178,7 +182,11 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     ctx.rate_limit(&format!("signup:{}", ctx.ip_key())).await?;
     let body: SignupRequest = http::body(req).await?;
     let email = validate::email(&body.email)?;
-    let name = validate::name("name", &body.name)?;
+    let person = validate::person_name(
+        body.given_name.as_deref(),
+        body.family_name.as_deref(),
+        body.name.as_deref(),
+    )?;
     validate::password(&body.password, Some(&email))?;
     if auth::user_by_email(ctx, &email).await?.is_some() {
         return Err(conflict(
@@ -220,8 +228,8 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         vec![
             q(
                 &ctx.db,
-                "INSERT INTO users (id, email, name, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
-                &[s(id.as_str()), s(&email), s(&name), s(&hash), s(role), n(ctx.now), n(ctx.now)],
+                "INSERT INTO users (id, email, name, given_name, family_name, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+                &[s(id.as_str()), s(&email), s(&person.full), os(person.given.as_deref()), os(person.family.as_deref()), s(&hash), s(role), n(ctx.now), n(ctx.now)],
             )?,
             q(
                 &ctx.db,
@@ -306,9 +314,18 @@ pub async fn get_me(ctx: &Ctx) -> AppResult<Response> {
 pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: UpdateMeRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
-    let name = match body.name.as_deref() {
-        Some(n) => validate::name("name", n)?,
-        None => user.name.clone(),
+    let person = if body.given_name.is_some() || body.name.is_some() {
+        validate::person_name(
+            body.given_name.as_deref(),
+            body.family_name.as_deref(),
+            body.name.as_deref(),
+        )?
+    } else {
+        validate::PersonName {
+            full: user.name.clone(),
+            given: user.given_name.clone(),
+            family: user.family_name.clone(),
+        }
     };
     let avatar = match body.avatar_url.as_deref().map(str::trim) {
         Some("") => None,
@@ -318,8 +335,15 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     };
     q(
         &ctx.db,
-        "UPDATE users SET name = ?, avatar_url = ?, updated_at = ? WHERE id = ?",
-        &[s(&name), os(avatar.as_deref()), n(ctx.now), s(&user.id)],
+        "UPDATE users SET name = ?, given_name = ?, family_name = ?, avatar_url = ?, updated_at = ? WHERE id = ?",
+        &[
+            s(&person.full),
+            os(person.given.as_deref()),
+            os(person.family.as_deref()),
+            os(avatar.as_deref()),
+            n(ctx.now),
+            s(&user.id),
+        ],
     )?
     .run()
     .await?;
