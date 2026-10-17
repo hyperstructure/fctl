@@ -1,0 +1,42 @@
+[package]
+name = "fctl-control"
+description = "The fctl control plane: a Cloudflare Worker with Durable Objects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "alloc"] }
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash"] }
+base64.workspace = true
+fctl-domain.workspace = true
+fctl-proto.workspace = true
+futures.workspace = true
+getrandom = { workspace = true, features = ["wasm_js"] }
+hex.workspace = true
+hmac = "0.13.0"
+js-sys = "0.3.106"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+url.workspace = true
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Crypto", "SubtleCrypto", "CryptoKey"] }
+worker = { version = "0.8.7", features = ["d1"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "warn"
+todo = "deny"

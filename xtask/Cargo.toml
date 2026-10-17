@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+description = "Development automation: cargo xtask <command>"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+fctl-proto = { workspace = true, features = ["ts"] }

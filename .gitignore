@@ -1,0 +1,26 @@
+# Rust
+/target
+**/build/worker/
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+# Wrangler / local state
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+# fctl local dev state
+/.fctl-dev/
+# Secrets never belong in the repo
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+cloudflare*.txt
+# OS / editors
+.DS_Store
+.idea/
+*.swp

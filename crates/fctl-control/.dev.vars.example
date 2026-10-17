@@ -1,0 +1,7 @@
+# Copy to .dev.vars for local development (cargo xtask dev writes one for you).
+FCTL_MASTER_KEY=<32 random bytes, base64>
+FCTL_SETUP_TOKEN=dev-setup-token
+# GITHUB_APP_ID=
+# GITHUB_APP_PRIVATE_KEY=
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=

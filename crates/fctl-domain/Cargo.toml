@@ -1,0 +1,19 @@
+[package]
+name = "fctl-domain"
+description = "Pure fctl logic: validation, tokens, permissions, scheduling, event shaping"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fctl-proto.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

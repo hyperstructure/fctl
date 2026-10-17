@@ -1,0 +1,275 @@
+//! Authentication: passwords, tokens, the session cookie, and `Me`.
+
+use crate::ctx::{Authed, Ctx};
+use crate::db::{n, on, os, q, s};
+use crate::error::{AppError, AppResult};
+use crate::http::{self, SESSION_COOKIE};
+use crate::model::{user_columns, CredentialRow, IdentityRow, UserRow};
+use argon2::password_hash::{phc::PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::Argon2;
+use fctl_domain::tokens::{hash_secret, new_secret, SecretKind};
+use fctl_proto::api::{Me, TokenKind};
+use fctl_proto::ApiError;
+use worker::Request;
+
+pub const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+/// Web sessions expire this long after their last use.
+pub const WEB_SESSION_TTL_MS: i64 = 30 * DAY_MS;
+/// CLI tokens expire this long after their last use.
+pub const CLI_TOKEN_TTL_MS: i64 = 180 * DAY_MS;
+
+// ───────────────────────────── passwords ─────────────────────────────
+
+/// argon2id with the OWASP-recommended parameters (19 MiB, 2 passes, 1 lane).
+fn argon2() -> Argon2<'static> {
+    Argon2::default()
+}
+
+pub fn hash_password(password: &str) -> AppResult<String> {
+    let salt: [u8; 16] = fctl_domain::random_bytes();
+    let hash = argon2()
+        .hash_password_with_salt(password.as_bytes(), &salt)
+        .map_err(|e| crate::error::internal(format!("argon2: {e}")))?;
+    Ok(hash.to_string())
+}
+
+pub fn verify_password(password: &str, phc: &str) -> bool {
+    match PasswordHash::new(phc) {
+        Ok(parsed) => argon2().verify_password(password.as_bytes(), &parsed).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Burns the same time as a real verification, so unknown emails and wrong
+/// passwords are indistinguishable by timing.
+pub fn dummy_verify(password: &str) {
+    let _ = hash_password(password);
+}
+
+// ───────────────────────────── tokens ─────────────────────────────
+
+/// Creates a web session, CLI token or PAT and returns the secret. Web
+/// sessions also set the cookie on `ctx`.
+pub async fn issue_token(
+    ctx: &mut Ctx,
+    user_id: &str,
+    kind: TokenKind,
+    name: Option<&str>,
+    expires_at: Option<i64>,
+) -> AppResult<(String, String)> {
+    let secret_kind = match kind {
+        TokenKind::Web => SecretKind::WebSession,
+        TokenKind::Cli => SecretKind::Cli,
+        TokenKind::Pat => SecretKind::Pat,
+    };
+    let secret = new_secret(secret_kind);
+    let id = fctl_domain::ids::token_id(ctx.now);
+    let expires_at = expires_at.or(match kind {
+        TokenKind::Web => Some(ctx.now + WEB_SESSION_TTL_MS),
+        TokenKind::Cli => Some(ctx.now + CLI_TOKEN_TTL_MS),
+        TokenKind::Pat => None,
+    });
+    q(
+        &ctx.db,
+        "INSERT INTO tokens (id, hash, kind, user_id, name, user_agent, ip, created_at, last_used_at, expires_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            s(id.as_str()),
+            s(&hash_secret(&secret)),
+            s(kind.as_str()),
+            s(user_id),
+            os(name),
+            os(ctx.user_agent.as_deref()),
+            os(ctx.ip.as_deref()),
+            n(ctx.now),
+            n(ctx.now),
+            on(expires_at),
+        ],
+    )?
+    .run()
+    .await?;
+    if kind == TokenKind::Web {
+        let max_age = (WEB_SESSION_TTL_MS / 1000) as u64;
+        ctx.cookies
+            .push(http::set_cookie(SESSION_COOKIE, &secret, max_age, ctx.cfg.secure_cookies()));
+    }
+    Ok((id.0, secret))
+}
+
+/// Signs in `user` in the browser: a new web session, and `last_login_at`.
+pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow) -> AppResult<()> {
+    issue_token(ctx, &user.id, TokenKind::Web, None, None).await?;
+    q(
+        &ctx.db,
+        "UPDATE users SET last_login_at = ? WHERE id = ?",
+        &[n(ctx.now), s(&user.id)],
+    )?
+    .run()
+    .await?;
+    Ok(())
+}
+
+pub fn clear_session_cookie(ctx: &mut Ctx) {
+    ctx.cookies
+        .push(http::set_cookie(SESSION_COOKIE, "", 0, ctx.cfg.secure_cookies()));
+}
+
+#[derive(serde::Deserialize)]
+struct TokenLookup {
+    token_id: String,
+    kind: String,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    expires_at: Option<i64>,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    last_used_at: Option<i64>,
+    #[serde(flatten)]
+    user: UserRow,
+}
+
+/// The bearer token or session cookie of a request, if any.
+pub fn presented_secret(req: &Request) -> Option<(String, bool)> {
+    if let Some(h) = http::header(req, "Authorization") {
+        let token = h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer "))?;
+        return Some((token.trim().to_owned(), false));
+    }
+    http::cookie(req, SESSION_COOKIE).map(|c| (c, true))
+}
+
+/// Resolves the caller from the bearer token or the session cookie. Invalid
+/// or expired credentials are treated as signed out (and the cookie cleared).
+pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
+    let Some((secret, via_cookie)) = presented_secret(req) else {
+        return Ok(());
+    };
+    let Some(kind) = SecretKind::of(&secret) else {
+        return Err(AppError(ApiError::unauthorized()));
+    };
+    if !matches!(kind, SecretKind::WebSession | SecretKind::Cli | SecretKind::Pat) {
+        return Err(AppError(ApiError::unauthorized()));
+    }
+    let sql = format!(
+        "SELECT t.id AS token_id, t.kind AS kind, t.expires_at AS expires_at, t.last_used_at AS last_used_at, {} \
+         FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?",
+        user_columns("u")
+    );
+    let found: Option<TokenLookup> = q(&ctx.db, &sql, &[s(&hash_secret(&secret))])?.first().await?;
+    let Some(found) = found else {
+        if via_cookie {
+            clear_session_cookie(ctx);
+            return Ok(());
+        }
+        return Err(AppError(ApiError::unauthorized()));
+    };
+    if found.expires_at.is_some_and(|e| e <= ctx.now) {
+        if via_cookie {
+            clear_session_cookie(ctx);
+            return Ok(());
+        }
+        return Err(AppError(ApiError::new(
+            fctl_proto::ErrorCode::Unauthorized,
+            "Your token has expired. Sign in again.",
+        )));
+    }
+    if !found.user.is_active() {
+        return Err(AppError(ApiError::new(
+            fctl_proto::ErrorCode::AccessDenied,
+            "Your account is disabled. Ask an admin for access.",
+        )));
+    }
+    let kind = TokenKind::parse(&found.kind).unwrap_or(TokenKind::Pat);
+    // Touch the token at most every 10 minutes; slide web and CLI expiry.
+    let stale = found.last_used_at.is_none_or(|t| ctx.now - t > 10 * 60 * 1000);
+    if stale {
+        let new_expiry = match kind {
+            TokenKind::Web => Some(ctx.now + WEB_SESSION_TTL_MS),
+            TokenKind::Cli => Some(ctx.now + CLI_TOKEN_TTL_MS),
+            TokenKind::Pat => found.expires_at,
+        };
+        let db = crate::db::handle(&ctx.db);
+        let id = found.token_id.clone();
+        let now = ctx.now;
+        ctx.defer(async move {
+            q(
+                &db,
+                "UPDATE tokens SET last_used_at = ?, expires_at = ? WHERE id = ?",
+                &[n(now), on(new_expiry), s(&id)],
+            )?
+            .run()
+            .await?;
+            Ok(())
+        });
+        if kind == TokenKind::Web && via_cookie {
+            let max_age = (WEB_SESSION_TTL_MS / 1000) as u64;
+            ctx.cookies
+                .push(http::set_cookie(SESSION_COOKIE, &secret, max_age, ctx.cfg.secure_cookies()));
+        }
+    }
+    ctx.auth = Some(Authed {
+        user: found.user,
+        token_id: found.token_id,
+        kind,
+        via_cookie,
+    });
+    Ok(())
+}
+
+// ───────────────────────────── users ─────────────────────────────
+
+pub async fn user_by_email(ctx: &Ctx, email: &str) -> AppResult<Option<UserRow>> {
+    q(
+        &ctx.db,
+        &format!("SELECT {} FROM users u WHERE u.email = ?", user_columns("u")),
+        &[s(email)],
+    )?
+    .first()
+    .await
+}
+
+pub async fn user_by_id(ctx: &Ctx, id: &str) -> AppResult<Option<UserRow>> {
+    q(
+        &ctx.db,
+        &format!("SELECT {} FROM users u WHERE u.id = ?", user_columns("u")),
+        &[s(id)],
+    )?
+    .first()
+    .await
+}
+
+/// `GET /auth/me` for `user`.
+pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
+    let identities: Vec<IdentityRow> = q(
+        &ctx.db,
+        "SELECT id, provider, email, name, avatar_url, created_at FROM identities WHERE user_id = ? ORDER BY created_at",
+        &[s(&user.id)],
+    )?
+    .all()
+    .await?;
+    let creds: Vec<CredentialRow> = q(
+        &ctx.db,
+        "SELECT * FROM claude_credentials WHERE user_id = ? ORDER BY created_at",
+        &[s(&user.id)],
+    )?
+    .all()
+    .await?;
+    let default_id = user
+        .default_credential_id
+        .clone()
+        .or_else(|| creds.iter().find(|c| c.status == "active").map(|c| c.id.clone()));
+    Ok(Me {
+        user: user.to_user(),
+        identities: identities.iter().map(IdentityRow::to_identity).collect(),
+        claude: creds.iter().map(|c| c.to_info(default_id.as_deref())).collect(),
+    })
+}
+
+/// Revokes every token of a user (password change or reset), except `keep`.
+pub async fn revoke_tokens(ctx: &Ctx, user_id: &str, keep: Option<&str>) -> AppResult<()> {
+    q(
+        &ctx.db,
+        "DELETE FROM tokens WHERE user_id = ? AND id != ?",
+        &[s(user_id), s(keep.unwrap_or(""))],
+    )?
+    .run()
+    .await?;
+    Ok(())
+}

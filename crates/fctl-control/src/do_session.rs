@@ -1,0 +1,978 @@
+//! SessionObject: one Durable Object per session.
+//!
+//! It stores the event log (SQLite), serves viewer WebSockets (browsers and
+//! the CLI), holds the host's uplink, delivers messages to the agent, and
+//! writes summary changes through to D1 and the dashboard feed.
+//!
+//! Sockets use the hibernation API, so the object can leave memory while
+//! connections stay open; everything that must survive lives in SQLite.
+
+use crate::ctx::now_ms;
+use crate::internal::{self, ControlState, Deliver, Delivered, InitSession, ViewerIdentity};
+use fctl_domain::events::{self as ev, ClaudeKind};
+use fctl_proto::api::EventPage;
+use fctl_proto::event::{EventBody, GitState, StatusChange, UserMessage};
+use fctl_proto::session::{Session, SessionRole, SessionStatus, UserRef};
+use fctl_proto::uplink::{Delivery, DeliveryKind, SessionState, UplinkDown, UplinkUp};
+use fctl_proto::viewer::{Presence, ViewerClient};
+use fctl_proto::{ApiError, ErrorCode};
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use worker::{
+    durable_object, DurableObject, Env, Request, Response, Result, SqlStorage, SqlStorageValue,
+    State, WebSocket, WebSocketIncomingMessage, WebSocketPair,
+};
+
+const TAG_VIEWER: &str = "viewer";
+const TAG_UPLINK: &str = "uplink";
+/// Events in a snapshot without `?after=`.
+const SNAPSHOT_EVENTS: i64 = 400;
+/// Byte budget of the events in one snapshot or page.
+const SNAPSHOT_BYTES: usize = 3_000_000;
+const LIVE_MAX_EVENTS: usize = 6_000;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SocketInfo {
+    viewer: Option<ViewerIdentity>,
+    runner_id: Option<String>,
+    since: i64,
+    #[serde(default)]
+    typing_at: Option<i64>,
+}
+
+#[derive(Default)]
+struct Mem {
+    summary: Option<Session>,
+    /// `stream_event`s of the block being written.
+    live: Vec<String>,
+    last_pulse: i64,
+    pulse_weight: u32,
+    last_d1_write: i64,
+    d1_dirty: bool,
+}
+
+#[durable_object]
+pub struct SessionObject {
+    state: State,
+    env: Env,
+    sql: SqlStorage,
+    mem: RefCell<Mem>,
+}
+
+#[derive(Deserialize)]
+struct EventRow {
+    seq: f64,
+    ts: f64,
+    kind: String,
+    data: String,
+}
+
+#[derive(Deserialize)]
+struct MetaRow {
+    value: String,
+}
+
+#[derive(Deserialize)]
+struct OutboxRow {
+    data: String,
+}
+
+#[derive(Deserialize)]
+struct SeqRow {
+    seq: f64,
+}
+
+fn sv(s: &str) -> SqlStorageValue {
+    SqlStorageValue::from(s)
+}
+
+fn iv(n: i64) -> SqlStorageValue {
+    SqlStorageValue::from(n)
+}
+
+fn event_json(seq: i64, ts: i64, kind: &str, data: &str) -> String {
+    format!(r#"{{"seq":{seq},"ts":{ts},"kind":"{kind}","data":{data}}}"#)
+}
+
+fn api_err(code: ErrorCode, message: &str) -> ApiError {
+    ApiError::new(code, message)
+}
+
+impl DurableObject for SessionObject {
+    fn new(state: State, env: Env) -> Self {
+        let sql = state.storage().sql();
+        for stmt in [
+            "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, agent_seq INTEGER)",
+            "CREATE INDEX IF NOT EXISTS events_agent ON events (agent_seq) WHERE agent_seq IS NOT NULL",
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, n INTEGER NOT NULL, data TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS client_keys (key TEXT PRIMARY KEY, delivery_id TEXT NOT NULL, ts INTEGER NOT NULL)",
+        ] {
+            if let Err(e) = sql.exec(stmt, None) {
+                worker::console_error!("session schema: {e}");
+            }
+        }
+        Self { state, env, sql, mem: RefCell::new(Mem::default()) }
+    }
+
+    async fn fetch(&self, mut req: Request) -> Result<Response> {
+        let path = req.path();
+        let result = match (req.method(), path.as_str()) {
+            (worker::Method::Post, "/init") => match req.json::<InitSession>().await {
+                Ok(b) => self.init(b).await,
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
+            (worker::Method::Post, "/deliver") => match req.json::<Deliver>().await {
+                Ok(b) => self.deliver(b).await.map(|d| serde_json::json!(d)),
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
+            (worker::Method::Post, "/control") => match req.json::<ControlState>().await {
+                Ok(b) => self.control(b).await,
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
+            (worker::Method::Get, "/summary") => match self.summary() {
+                Some(s) => Ok(serde_json::json!(s)),
+                None => Err(api_err(ErrorCode::NotFound, "Session not initialized")),
+            },
+            (worker::Method::Get, "/events") => return self.events_page(&req),
+            (worker::Method::Get, "/viewer") => return self.accept_viewer(&req),
+            (worker::Method::Get, "/uplink") => return self.accept_uplink(&req),
+            _ => Err(api_err(ErrorCode::NotFound, "Unknown session endpoint")),
+        };
+        match result {
+            Ok(v) => internal::do_json(&v),
+            Err(e) => internal::do_error(&e),
+        }
+    }
+
+    async fn websocket_message(&self, ws: WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
+        let WebSocketIncomingMessage::String(text) = message else {
+            return Ok(());
+        };
+        let tags = self.state.get_tags(&ws);
+        if tags.iter().any(|t| t == TAG_UPLINK) {
+            match serde_json::from_str::<UplinkUp>(&text) {
+                Ok(msg) => self.on_uplink(&ws, msg).await,
+                Err(e) => worker::console_error!("bad uplink message: {e}"),
+            }
+        } else if tags.iter().any(|t| t == TAG_VIEWER) {
+            match serde_json::from_str::<ViewerClient>(&text) {
+                Ok(msg) => self.on_viewer(&ws, msg).await,
+                Err(_) => {
+                    let _ = ws.send_with_str(
+                        r#"{"type":"error","error":{"code":"bad_request","message":"Unknown message"}}"#,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn websocket_close(&self, ws: WebSocket, _code: usize, _reason: String, _clean: bool) -> Result<()> {
+        self.on_close(&ws);
+        Ok(())
+    }
+
+    async fn websocket_error(&self, ws: WebSocket, _error: worker::Error) -> Result<()> {
+        self.on_close(&ws);
+        Ok(())
+    }
+
+    async fn alarm(&self) -> Result<Response> {
+        // Flush summary changes that were throttled.
+        if self.mem.borrow().d1_dirty {
+            self.write_through().await;
+        }
+        Response::ok("ok")
+    }
+}
+
+impl SessionObject {
+    fn on_close(&self, ws: &WebSocket) {
+        let tags = self.state.get_tags(ws);
+        if tags.iter().any(|t| t == TAG_UPLINK) {
+            // Another uplink may already have replaced this one.
+            let others = self.state.get_websockets_with_tag(TAG_UPLINK).into_iter().filter(|w| w != ws).count();
+            if others == 0 {
+                self.broadcast(r#"{"type":"runner_connected","connected":false}"#);
+            }
+        } else {
+            self.broadcast_presence(Some(ws));
+        }
+    }
+
+    // ───────────────────────────── storage ─────────────────────────────
+
+    fn meta(&self, key: &str) -> Option<String> {
+        self.sql
+            .exec("SELECT value FROM meta WHERE key = ?", Some(vec![sv(key)]))
+            .ok()?
+            .to_array::<MetaRow>()
+            .ok()?
+            .into_iter()
+            .next()
+            .map(|r| r.value)
+    }
+
+    fn set_meta(&self, key: &str, value: &str) {
+        if let Err(e) = self.sql.exec(
+            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            Some(vec![sv(key), sv(value)]),
+        ) {
+            worker::console_error!("meta write: {e}");
+        }
+    }
+
+    fn summary(&self) -> Option<Session> {
+        if let Some(s) = self.mem.borrow().summary.clone() {
+            return Some(s);
+        }
+        let s: Session = serde_json::from_str(&self.meta("summary")?).ok()?;
+        self.mem.borrow_mut().summary = Some(s.clone());
+        Some(s)
+    }
+
+    fn save_summary(&self, s: &Session) {
+        if let Ok(text) = serde_json::to_string(s) {
+            self.set_meta("summary", &text);
+        }
+        self.mem.borrow_mut().summary = Some(s.clone());
+    }
+
+    fn acked_agent_seq(&self) -> u64 {
+        self.meta("acked_agent_seq").and_then(|v| v.parse().ok()).unwrap_or(0)
+    }
+
+    /// Stores an event and returns its JSON (for broadcasting).
+    fn append(&self, ts: i64, body: &EventBody, agent_seq: Option<u64>) -> Option<String> {
+        let kind = body.kind();
+        let data = match serde_json::to_value(body) {
+            Ok(v) => v.get("data").map(|d| d.to_string()).unwrap_or_else(|| "null".to_owned()),
+            Err(_) => return None,
+        };
+        self.append_raw(ts, kind, &data, agent_seq)
+    }
+
+    fn append_raw(&self, ts: i64, kind: &str, data: &str, agent_seq: Option<u64>) -> Option<String> {
+        let seq_param = agent_seq.map_or(SqlStorageValue::Null, |s| iv(s as i64));
+        let rows = self
+            .sql
+            .exec(
+                "INSERT INTO events (ts, kind, data, agent_seq) VALUES (?, ?, ?, ?) RETURNING seq",
+                Some(vec![iv(ts), sv(kind), sv(data), seq_param]),
+            )
+            .and_then(|c| c.to_array::<SeqRow>());
+        match rows {
+            Ok(r) => r.first().map(|row| event_json(row.seq as i64, ts, kind, data)),
+            Err(e) => {
+                worker::console_error!("event insert failed: {e}");
+                None
+            }
+        }
+    }
+
+    fn next_seq(&self) -> i64 {
+        #[derive(Deserialize)]
+        struct M {
+            m: Option<f64>,
+        }
+        self.sql
+            .exec("SELECT MAX(seq) AS m FROM events", None)
+            .and_then(|c| c.to_array::<M>())
+            .ok()
+            .and_then(|r| r.first().and_then(|m| m.m))
+            .map_or(1, |m| m as i64 + 1)
+    }
+
+    fn load_events(&self, sql: &str, params: Vec<SqlStorageValue>) -> Vec<EventRow> {
+        self.sql
+            .exec(sql, Some(params))
+            .and_then(|c| c.to_array::<EventRow>())
+            .unwrap_or_default()
+    }
+
+    /// Events as JSON strings within a byte budget, oldest first.
+    fn render(rows: Vec<EventRow>, budget: usize, newest_first: bool) -> (Vec<String>, bool) {
+        let mut out = Vec::new();
+        let mut bytes = 0usize;
+        let mut truncated = false;
+        for r in rows {
+            let json = event_json(r.seq as i64, r.ts as i64, &r.kind, &r.data);
+            bytes += json.len();
+            if bytes > budget && !out.is_empty() {
+                truncated = true;
+                break;
+            }
+            out.push(json);
+        }
+        if newest_first {
+            out.reverse();
+        }
+        (out, truncated)
+    }
+
+    // ───────────────────────────── broadcasting ─────────────────────────────
+
+    fn broadcast(&self, text: &str) {
+        for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
+            let _ = ws.send_with_str(text);
+        }
+    }
+
+    fn broadcast_events(&self, events: &[String]) {
+        if events.is_empty() {
+            return;
+        }
+        self.broadcast(&format!(r#"{{"type":"events","events":[{}]}}"#, events.join(",")));
+    }
+
+    fn uplink(&self) -> Option<WebSocket> {
+        self.state.get_websockets_with_tag(TAG_UPLINK).into_iter().last()
+    }
+
+    fn send_uplink(&self, msg: &UplinkDown) {
+        if let (Some(ws), Ok(text)) = (self.uplink(), serde_json::to_string(msg)) {
+            let _ = ws.send_with_str(&text);
+        }
+    }
+
+    fn presence(&self, exclude: Option<&WebSocket>) -> Vec<Presence> {
+        let mut by_user: Vec<Presence> = Vec::new();
+        for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
+            if exclude.is_some_and(|x| x == &ws) {
+                continue;
+            }
+            let Ok(Some(info)) = ws.deserialize_attachment::<SocketInfo>() else {
+                continue;
+            };
+            let Some(viewer) = info.viewer else { continue };
+            match by_user.iter_mut().find(|p| p.user.id == viewer.user.id) {
+                Some(p) => {
+                    p.connections += 1;
+                    p.since = p.since.min(info.since);
+                    p.typing_at = p.typing_at.max(info.typing_at);
+                }
+                None => by_user.push(Presence {
+                    user: viewer.user,
+                    connections: 1,
+                    since: info.since,
+                    typing_at: info.typing_at,
+                }),
+            }
+        }
+        by_user.sort_by_key(|p| p.since);
+        by_user
+    }
+
+    fn broadcast_presence(&self, exclude: Option<&WebSocket>) {
+        let viewers = self.presence(exclude);
+        if let Ok(text) = serde_json::to_string(&fctl_proto::viewer::ViewerServer::Presence { viewers }) {
+            for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
+                if exclude.is_some_and(|x| x == &ws) {
+                    continue;
+                }
+                let _ = ws.send_with_str(&text);
+            }
+        }
+    }
+
+    fn broadcast_summary(&self, s: &Session) {
+        // Each viewer gets the summary with their own role.
+        for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
+            let role = ws
+                .deserialize_attachment::<SocketInfo>()
+                .ok()
+                .flatten()
+                .and_then(|i| i.viewer.map(|v| v.role));
+            let mut copy = s.clone();
+            copy.role = role;
+            if let Ok(text) = serde_json::to_string(&fctl_proto::viewer::ViewerServer::Session { session: Box::new(copy) }) {
+                let _ = ws.send_with_str(&text);
+            }
+        }
+    }
+
+    // ───────────────────────────── control-plane requests ─────────────────────────────
+
+    async fn init(&self, b: InitSession) -> std::result::Result<serde_json::Value, ApiError> {
+        if self.summary().is_some() {
+            return Ok(serde_json::json!({ "ok": true, "existing": true }));
+        }
+        let mut s = b.session;
+        s.role = None;
+        self.save_summary(&s);
+        let now = now_ms();
+        self.append(now, &EventBody::UserMessage(b.prompt), None);
+        self.append(
+            now,
+            &EventBody::Status(StatusChange { status: SessionStatus::Queued, reason: None, resume_at: None }),
+            None,
+        );
+        Ok(serde_json::json!({ "ok": true }))
+    }
+
+    async fn deliver(&self, b: Deliver) -> std::result::Result<Delivered, ApiError> {
+        let now = now_ms();
+        if let Some(key) = b.client_key.as_deref() {
+            #[derive(Deserialize)]
+            struct K {
+                delivery_id: String,
+            }
+            let existing = self
+                .sql
+                .exec("SELECT delivery_id FROM client_keys WHERE key = ?", Some(vec![sv(key)]))
+                .and_then(|c| c.to_array::<K>())
+                .unwrap_or_default();
+            if let Some(k) = existing.first() {
+                return Ok(Delivered { delivery_id: fctl_proto::DeliveryId(k.delivery_id.clone()) });
+            }
+            let _ = self.sql.exec(
+                "INSERT INTO client_keys (key, delivery_id, ts) VALUES (?, ?, ?)",
+                Some(vec![sv(key), sv(b.delivery.id.as_str()), iv(now)]),
+            );
+            let _ = self.sql.exec("DELETE FROM client_keys WHERE ts < ?", Some(vec![iv(now - 24 * 3600 * 1000)]));
+        }
+        let data = serde_json::to_string(&b.delivery).map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
+        #[derive(Deserialize)]
+        struct N {
+            n: Option<f64>,
+        }
+        let next = self
+            .sql
+            .exec("SELECT MAX(n) AS n FROM outbox", None)
+            .and_then(|c| c.to_array::<N>())
+            .ok()
+            .and_then(|r| r.first().and_then(|x| x.n))
+            .map_or(1, |n| n as i64 + 1);
+        let _ = self.sql.exec(
+            "INSERT OR REPLACE INTO outbox (id, n, data) VALUES (?, ?, ?)",
+            Some(vec![sv(b.delivery.id.as_str()), iv(next), sv(&data)]),
+        );
+        if let Some(json) = self.append(now, &b.event, None) {
+            self.broadcast_events(&[json]);
+        }
+        self.touch_activity(now);
+        self.send_uplink(&UplinkDown::Deliver { delivery: b.delivery.clone() });
+        Ok(Delivered { delivery_id: b.delivery.id })
+    }
+
+    async fn control(&self, b: ControlState) -> std::result::Result<serde_json::Value, ApiError> {
+        let Some(mut s) = self.summary() else {
+            return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        let now = now_ms();
+        if let Some(t) = b.title {
+            s.title = t;
+        }
+        if let Some(a) = b.archived {
+            s.archived = a;
+        }
+        if let Some(r) = b.runner {
+            s.runner = Some(r);
+        }
+        if b.clear_runner {
+            s.runner = None;
+        }
+        let mut status_changed = false;
+        if let Some(st) = b.status {
+            if st != s.status || b.reason != s.status_reason {
+                status_changed = true;
+                self.set_status(&mut s, st, b.reason.clone(), None, now);
+            }
+        }
+        s.updated_at = now;
+        self.save_summary(&s);
+        self.broadcast_summary(&s);
+        if status_changed {
+            self.write_through().await;
+        }
+        self.notify_fleet(&s);
+        Ok(serde_json::json!({ "ok": true }))
+    }
+
+    fn set_status(&self, s: &mut Session, status: SessionStatus, reason: Option<String>, resume_at: Option<i64>, now: i64) {
+        s.status = status;
+        s.status_reason = reason.clone();
+        s.resume_at = resume_at;
+        if matches!(status, SessionStatus::Running | SessionStatus::Idle) && s.started_at.is_none() {
+            s.started_at = Some(now);
+        }
+        if status.is_terminal() {
+            s.ended_at = Some(now);
+        } else {
+            s.ended_at = None;
+        }
+        if let Some(json) = self.append(now, &EventBody::Status(StatusChange { status, reason, resume_at }), None) {
+            self.broadcast_events(&[json]);
+        }
+    }
+
+    fn events_page(&self, req: &Request) -> Result<Response> {
+        let param = |k: &str| crate::http::query(req, k).and_then(|v| v.parse::<i64>().ok());
+        let limit = param("limit").unwrap_or(200).clamp(1, 1000);
+        let (rows, newest_first) = if let Some(before) = param("before") {
+            (
+                self.load_events(
+                    "SELECT seq, ts, kind, data FROM events WHERE seq < ? ORDER BY seq DESC LIMIT ?",
+                    vec![iv(before), iv(limit + 1)],
+                ),
+                true,
+            )
+        } else {
+            let after = param("after").unwrap_or(0);
+            (
+                self.load_events(
+                    "SELECT seq, ts, kind, data FROM events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+                    vec![iv(after), iv(limit + 1)],
+                ),
+                false,
+            )
+        };
+        let more_rows = rows.len() as i64 > limit;
+        let rows: Vec<EventRow> = rows.into_iter().take(limit as usize).collect();
+        let (events, truncated) = Self::render(rows, SNAPSHOT_BYTES, newest_first);
+        let has_more = more_rows || truncated;
+        let body = format!(r#"{{"events":[{}],"has_more":{has_more}}}"#, events.join(","));
+        let _ = EventPage { events: vec![], has_more };
+        let h = worker::Headers::new();
+        h.set("Content-Type", "application/json")?;
+        Ok(Response::ok(body)?.with_headers(h))
+    }
+
+    // ───────────────────────────── viewers ─────────────────────────────
+
+    fn accept_viewer(&self, req: &Request) -> Result<Response> {
+        let ident: ViewerIdentity = match crate::http::header(req, internal::HDR_VIEWER)
+            .and_then(|h| serde_json::from_str(&h).ok())
+        {
+            Some(i) => i,
+            None => return internal::do_error(&api_err(ErrorCode::Unauthorized, "No viewer identity")),
+        };
+        let Some(summary) = self.summary() else {
+            return internal::do_error(&api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        let after = crate::http::query(req, "after").and_then(|v| v.parse::<i64>().ok());
+        let pair = WebSocketPair::new()?;
+        let now = now_ms();
+        let role = ident.role;
+        let info = SocketInfo { viewer: Some(ident), runner_id: None, since: now, typing_at: None };
+        self.state.accept_websocket_with_tags(&pair.server, &[TAG_VIEWER]);
+        pair.server.serialize_attachment(&info)?;
+        let snapshot = self.snapshot(summary, role, after);
+        pair.server.send_with_str(&snapshot)?;
+        self.broadcast_presence(None);
+        Response::from_websocket(pair.client)
+    }
+
+    fn snapshot(&self, mut summary: Session, role: SessionRole, after: Option<i64>) -> String {
+        summary.role = Some(role);
+        let (events, has_more_before) = match after {
+            Some(a) => {
+                let rows = self.load_events(
+                    "SELECT seq, ts, kind, data FROM events WHERE seq > ? ORDER BY seq ASC LIMIT 5000",
+                    vec![iv(a)],
+                );
+                let (ev, _) = Self::render(rows, SNAPSHOT_BYTES * 3, false);
+                (ev, a > 0)
+            }
+            None => {
+                let rows = self.load_events(
+                    "SELECT seq, ts, kind, data FROM events ORDER BY seq DESC LIMIT ?",
+                    vec![iv(SNAPSHOT_EVENTS + 1)],
+                );
+                let more = rows.len() as i64 > SNAPSHOT_EVENTS;
+                let rows: Vec<EventRow> = rows.into_iter().take(SNAPSHOT_EVENTS as usize).collect();
+                let (ev, truncated) = Self::render(rows, SNAPSHOT_BYTES, true);
+                (ev, more || truncated)
+            }
+        };
+        let live = self.mem.borrow().live.join(",");
+        let viewers = serde_json::to_string(&self.presence(None)).unwrap_or_else(|_| "[]".into());
+        let session = serde_json::to_string(&summary).unwrap_or_else(|_| "null".into());
+        let role = serde_json::to_string(&role).unwrap_or_else(|_| "\"viewer\"".into());
+        format!(
+            r#"{{"type":"snapshot","session":{session},"role":{role},"events":[{}],"has_more_before":{has_more_before},"next_seq":{},"live":[{live}],"viewers":{viewers},"runner_connected":{}}}"#,
+            events.join(","),
+            self.next_seq(),
+            self.uplink().is_some()
+        )
+    }
+
+    async fn on_viewer(&self, ws: &WebSocket, msg: ViewerClient) {
+        let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() else {
+            return;
+        };
+        let Some(viewer) = info.viewer.clone() else { return };
+        let reply = |client_id: &str, result: std::result::Result<(), ApiError>| {
+            let msg = match result {
+                Ok(()) => fctl_proto::viewer::ViewerServer::Result { client_id: client_id.to_owned(), ok: true, error: None },
+                Err(e) => fctl_proto::viewer::ViewerServer::Result { client_id: client_id.to_owned(), ok: false, error: Some(e) },
+            };
+            if let Ok(t) = serde_json::to_string(&msg) {
+                let _ = ws.send_with_str(&t);
+            }
+        };
+        match msg {
+            ViewerClient::Ping => {
+                let _ = ws.send_with_str(r#"{"type":"pong"}"#);
+            }
+            ViewerClient::Typing => {
+                info.typing_at = Some(now_ms());
+                let _ = ws.serialize_attachment(&info);
+                self.broadcast_presence(None);
+            }
+            ViewerClient::Send { client_id, text } => {
+                let r = self.viewer_send(&viewer, &client_id, text).await;
+                if r.is_ok() {
+                    info.typing_at = None;
+                    let _ = ws.serialize_attachment(&info);
+                }
+                reply(&client_id, r);
+            }
+            ViewerClient::Interrupt { client_id } => {
+                let r = self.viewer_interrupt(&viewer).await;
+                reply(&client_id, r);
+            }
+        }
+    }
+
+    async fn viewer_send(&self, viewer: &ViewerIdentity, client_id: &str, text: String) -> std::result::Result<(), ApiError> {
+        if !viewer.role.can_message() {
+            return Err(api_err(ErrorCode::Forbidden, "You can view this session but not message the agent"));
+        }
+        let text = fctl_domain::validate::message("text", &text)?;
+        let status = self.summary().map(|s| s.status);
+        if !status.is_some_and(|s| s.accepts_messages()) {
+            return Err(api_err(ErrorCode::Conflict, "The session has ended. Resume it to continue."));
+        }
+        let now = now_ms();
+        let id = fctl_domain::ids::delivery_id(now);
+        let author = viewer.user.clone();
+        self.deliver(Deliver {
+            delivery: Delivery { id: id.clone(), kind: DeliveryKind::Message { text: text.clone(), author: Some(author.clone()) } },
+            client_key: Some(format!("{}:{client_id}", author.id)),
+            event: EventBody::UserMessage(UserMessage { id, author: Some(author), text, source: fctl_proto::event::MessageSource::Web }),
+        })
+        .await
+        .map(|_| ())
+    }
+
+    async fn viewer_interrupt(&self, viewer: &ViewerIdentity) -> std::result::Result<(), ApiError> {
+        if !viewer.role.can_message() {
+            return Err(api_err(ErrorCode::Forbidden, "You can view this session but not interrupt the agent"));
+        }
+        let now = now_ms();
+        let id = fctl_domain::ids::delivery_id(now);
+        let by: UserRef = viewer.user.clone();
+        self.deliver(Deliver {
+            delivery: Delivery { id: id.clone(), kind: DeliveryKind::Interrupt { by: Some(by.clone()) } },
+            client_key: None,
+            event: EventBody::Interrupt(fctl_proto::event::Interrupt { id, by: Some(by) }),
+        })
+        .await
+        .map(|_| ())
+    }
+
+    // ───────────────────────────── uplink ─────────────────────────────
+
+    fn accept_uplink(&self, req: &Request) -> Result<Response> {
+        let Some(runner_id) = crate::http::header(req, internal::HDR_RUNNER) else {
+            return internal::do_error(&api_err(ErrorCode::Unauthorized, "No runner identity"));
+        };
+        for old in self.state.get_websockets_with_tag(TAG_UPLINK) {
+            let _ = old.close(Some(4001), Some("replaced by a newer connection"));
+        }
+        let pair = WebSocketPair::new()?;
+        self.state.accept_websocket_with_tags(&pair.server, &[TAG_UPLINK]);
+        pair.server.serialize_attachment(&SocketInfo { viewer: None, runner_id: Some(runner_id), since: now_ms(), typing_at: None })?;
+        let pending: Vec<Delivery> = self
+            .sql
+            .exec("SELECT data FROM outbox ORDER BY n ASC", None)
+            .and_then(|c| c.to_array::<OutboxRow>())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|r| serde_json::from_str(&r.data).ok())
+            .collect();
+        let welcome = UplinkDown::Welcome { acked_agent_seq: self.acked_agent_seq(), pending };
+        if let Ok(text) = serde_json::to_string(&welcome) {
+            pair.server.send_with_str(&text)?;
+        }
+        self.broadcast(r#"{"type":"runner_connected","connected":true}"#);
+        Response::from_websocket(pair.client)
+    }
+
+    async fn on_uplink(&self, ws: &WebSocket, msg: UplinkUp) {
+        let now = now_ms();
+        match msg {
+            UplinkUp::Hello { .. } => {}
+            UplinkUp::Ping => {
+                let _ = ws.send_with_str(r#"{"type":"pong"}"#);
+            }
+            UplinkUp::Events { events } => {
+                let mut acked = self.acked_agent_seq();
+                let mut out = Vec::new();
+                let mut summary = self.summary();
+                let mut summary_changed = false;
+                for e in events {
+                    if e.agent_seq <= acked {
+                        continue;
+                    }
+                    acked = e.agent_seq;
+                    let mut body = e.body;
+                    if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
+                        summary_changed |= Self::apply_claude(s, v, &self.mem);
+                        ev::shape_for_storage(v);
+                    }
+                    if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
+                        Self::apply_git(s, g);
+                        summary_changed = true;
+                    }
+                    if let (EventBody::RemoteControl(rc), Some(s)) = (&body, summary.as_mut()) {
+                        s.remote_control = Some(rc.clone());
+                        summary_changed = true;
+                    }
+                    if let Some(json) = self.append(e.ts, &body, Some(e.agent_seq)) {
+                        out.push(json);
+                    }
+                    self.pulse(&body, now);
+                }
+                self.set_meta("acked_agent_seq", &acked.to_string());
+                self.broadcast_events(&out);
+                self.send_uplink(&UplinkDown::Ack { agent_seq: acked });
+                if let Some(mut s) = summary {
+                    s.last_activity_at = Some(now);
+                    s.updated_at = now;
+                    self.save_summary(&s);
+                    if summary_changed {
+                        self.broadcast_summary(&s);
+                    }
+                    self.mark_dirty(now).await;
+                }
+            }
+            UplinkUp::Stream { event } => {
+                let text = event.to_string();
+                self.track_live(&event, &text);
+                self.broadcast(&format!(r#"{{"type":"stream","event":{text}}}"#));
+                self.pulse_kind("delta", 1, now);
+            }
+            UplinkUp::State { state } => self.apply_state(state, now).await,
+            UplinkUp::Log { line } => {
+                if let Some(json) = self.append(now, &EventBody::Log(line), None) {
+                    self.broadcast_events(&[json]);
+                }
+            }
+            UplinkUp::Delivered { delivery_id, ok, error } => {
+                let _ = self.sql.exec("DELETE FROM outbox WHERE id = ?", Some(vec![sv(delivery_id.as_str())]));
+                if !ok {
+                    let notice = fctl_proto::event::Notice {
+                        level: fctl_proto::event::NoticeLevel::Warn,
+                        code: "delivery_failed".into(),
+                        message: error.unwrap_or_else(|| "The agent could not take a message".into()),
+                        until: None,
+                    };
+                    if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+                        self.broadcast_events(&[json]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Updates the summary from a Claude message; returns whether it changed visibly.
+    fn apply_claude(s: &mut Session, v: &serde_json::Value, mem: &RefCell<Mem>) -> bool {
+        let kind = ev::classify(v);
+        let before = s.stats.clone();
+        ev::apply_stats(&mut s.stats, v);
+        let mut changed = before != s.stats;
+        match kind {
+            ClaudeKind::Init => {
+                if let Some(m) = v.get("model").and_then(serde_json::Value::as_str) {
+                    if s.model.as_deref() != Some(m) {
+                        s.model = Some(m.to_owned());
+                        changed = true;
+                    }
+                }
+            }
+            ClaudeKind::Assistant => {
+                // A complete block arrived: the live buffer is now stale.
+                mem.borrow_mut().live.clear();
+            }
+            _ => {}
+        }
+        changed
+    }
+
+    fn apply_git(s: &mut Session, g: &GitState) {
+        if let Some(b) = &g.branch {
+            s.branch = Some(b.clone());
+        }
+        s.stats.files_changed = g.files.len() as u32;
+        s.stats.additions = g.files.iter().filter_map(|f| f.additions).sum();
+        s.stats.deletions = g.files.iter().filter_map(|f| f.deletions).sum();
+        if let Some(pr) = &g.pull_request {
+            s.pull_request = Some(pr.clone());
+        }
+    }
+
+    fn track_live(&self, event: &serde_json::Value, text: &str) {
+        let inner = event.pointer("/event/type").and_then(serde_json::Value::as_str);
+        let mut mem = self.mem.borrow_mut();
+        if inner == Some("message_start") && event.get("parent_tool_use_id").is_none_or(serde_json::Value::is_null) {
+            mem.live.clear();
+        }
+        if mem.live.len() >= LIVE_MAX_EVENTS {
+            mem.live.clear();
+        }
+        mem.live.push(text.to_owned());
+    }
+
+    async fn apply_state(&self, state: SessionState, now: i64) {
+        let Some(mut s) = self.summary() else { return };
+        let mut status_changed = false;
+        if state.status != s.status || state.reason != s.status_reason || state.resume_at != s.resume_at {
+            status_changed = state.status != s.status;
+            self.set_status(&mut s, state.status, state.reason.clone(), state.resume_at, now);
+        }
+        if let Some(b) = state.branch {
+            s.branch = Some(b);
+        }
+        if let Some(m) = state.model {
+            s.model = Some(m);
+        }
+        if let Some(rc) = state.remote_control {
+            s.remote_control = Some(rc);
+        }
+        if let Some(st) = state.stats {
+            s.stats = st;
+        }
+        if matches!(state.status, SessionStatus::Idle | SessionStatus::Stopped | SessionStatus::Failed) {
+            self.mem.borrow_mut().live.clear();
+        }
+        s.updated_at = now;
+        self.save_summary(&s);
+        self.broadcast_summary(&s);
+        if status_changed {
+            self.write_through().await;
+        } else {
+            self.mark_dirty(now).await;
+        }
+        self.notify_fleet(&s);
+    }
+
+    // ───────────────────────────── write-through ─────────────────────────────
+
+    fn touch_activity(&self, now: i64) {
+        if let Some(mut s) = self.summary() {
+            s.last_activity_at = Some(now);
+            self.save_summary(&s);
+            self.mem.borrow_mut().d1_dirty = true;
+        }
+    }
+
+    /// Schedules a D1 write within 5 s (throttled).
+    async fn mark_dirty(&self, now: i64) {
+        let due = {
+            let mut mem = self.mem.borrow_mut();
+            mem.d1_dirty = true;
+            now - mem.last_d1_write > 5_000
+        };
+        if due {
+            self.write_through().await;
+        } else if let Ok(None) = self.state.storage().get_alarm().await {
+            let _ = self.state.storage().set_alarm(5_000).await;
+        }
+    }
+
+    async fn write_through(&self) {
+        let Some(s) = self.summary() else { return };
+        {
+            let mut mem = self.mem.borrow_mut();
+            mem.d1_dirty = false;
+            mem.last_d1_write = now_ms();
+        }
+        let Ok(db) = self.env.d1("DB") else { return };
+        let stats = serde_json::to_string(&s.stats).unwrap_or_else(|_| "{}".into());
+        let rc = s.remote_control.as_ref().and_then(|r| serde_json::to_string(r).ok());
+        let pr = s.pull_request.clone();
+        let res = crate::db::q(
+            &db,
+            "UPDATE sessions SET status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), branch = COALESCE(?, branch), \
+             remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, updated_at = ?, last_activity_at = ?, \
+             started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
+            &[
+                crate::db::s(s.status.as_str()),
+                crate::db::os(s.status_reason.as_deref()),
+                crate::db::on(s.resume_at),
+                crate::db::os(s.model.as_deref()),
+                crate::db::os(s.branch.as_deref()),
+                crate::db::os(rc.as_deref()),
+                crate::db::s(&stats),
+                crate::db::on(pr.as_ref().map(|p| p.number as i64)),
+                crate::db::os(pr.as_ref().map(|p| p.url.as_str())),
+                crate::db::os(pr.as_ref().and_then(|p| p.title.as_deref())),
+                crate::db::os(pr.as_ref().and_then(|p| p.state.as_deref())),
+                crate::db::n(s.updated_at),
+                crate::db::on(s.last_activity_at),
+                crate::db::on(s.started_at),
+                crate::db::on(s.ended_at),
+                crate::db::s(s.id.as_str()),
+            ],
+        );
+        match res {
+            Ok(query) => {
+                if let Err(e) = query.run().await {
+                    worker::console_error!("session write-through failed: {}", e.0.message);
+                }
+            }
+            Err(e) => worker::console_error!("session write-through failed: {}", e.0.message),
+        }
+    }
+
+    fn notify_fleet(&self, s: &Session) {
+        let env = self.env.clone();
+        let session = s.clone();
+        self.state.wait_until(async move {
+            if let Ok(stub) = internal::fleet_stub(&env) {
+                let _: std::result::Result<serde_json::Value, _> =
+                    internal::post(&stub, "/notify-session", &internal::NotifySession { session }).await;
+            }
+        });
+    }
+
+    fn pulse(&self, body: &EventBody, now: i64) {
+        let (kind, weight) = match body {
+            EventBody::Claude(v) => match ev::activity(v) {
+                Some(kw) => kw,
+                None => return,
+            },
+            EventBody::UserMessage(_) => ("user_message", 50),
+            _ => return,
+        };
+        self.pulse_kind(kind, weight, now);
+    }
+
+    /// Activity pulses for the dashboard, at most four per second.
+    fn pulse_kind(&self, kind: &str, weight: u32, now: i64) {
+        let send = {
+            let mut mem = self.mem.borrow_mut();
+            mem.pulse_weight = mem.pulse_weight.saturating_add(weight);
+            if now - mem.last_pulse < 250 {
+                None
+            } else {
+                mem.last_pulse = now;
+                let w = mem.pulse_weight;
+                mem.pulse_weight = 0;
+                Some(w)
+            }
+        };
+        let Some(weight) = send else { return };
+        let Some(s) = self.summary() else { return };
+        let env = self.env.clone();
+        let activity = internal::Activity { session_id: s.id, project_id: s.project_id, kind: kind.to_owned(), weight };
+        self.state.wait_until(async move {
+            if let Ok(stub) = internal::fleet_stub(&env) {
+                let _: std::result::Result<serde_json::Value, _> = internal::post(&stub, "/activity", &activity).await;
+            }
+        });
+    }
+}

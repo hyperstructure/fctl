@@ -1,0 +1,21 @@
+[package]
+name = "fctl-proto"
+description = "Wire types shared by every fctl component"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Derive TypeScript bindings (used by `cargo xtask gen`).
+ts = ["dep:ts-rs"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_with.workspace = true
+ts-rs = { workspace = true, optional = true }
+
+[lints]
+workspace = true
