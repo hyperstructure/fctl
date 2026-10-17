@@ -166,6 +166,12 @@ impl Api {
         self.get(&format!("/projects/{}", enc(id_or_slug))).await
     }
 
+    /// Deletes a project with its sessions and their transcripts (owners only;
+    /// its sessions must be stopped).
+    pub async fn delete_project(&self, id: &str) -> Result<Ok> {
+        self.delete(&format!("/projects/{}", enc(id))).await
+    }
+
     pub async fn create_project(&self, req: &CreateProjectRequest) -> Result<Project> {
         self.post("/projects", req).await
     }

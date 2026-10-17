@@ -1,4 +1,5 @@
 export * from "./button";
+export * from "./danger-zone";
 export * from "./feedback";
 export * from "./form";
 export * from "./gl-canvas";

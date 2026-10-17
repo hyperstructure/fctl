@@ -21,6 +21,7 @@ import {
   Banner,
   Button,
   CodeBox,
+  DangerZone,
   Dialog,
   Field,
   Input,
@@ -69,7 +70,7 @@ export function SettingsPage() {
         <Appearance />
         <YourData />
       </div>
-      <DangerZone me={me} />
+      <AccountDangerZone me={me} />
     </div>
   );
 }
@@ -647,27 +648,17 @@ function YourData() {
   );
 }
 
-function DangerZone({ me }: { me: G.Me }) {
+function AccountDangerZone({ me }: { me: G.Me }) {
   const [open, setOpen] = useState(false);
   return (
-    <section aria-labelledby="danger-zone" className="mt-6 rounded-xl border border-danger/30 p-6">
-      <h2 id="danger-zone" className="text-[14px] font-semibold text-danger">
-        Danger zone
-      </h2>
-      <div className="mt-4 flex flex-col gap-4 border-t border-danger/20 pt-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="max-w-xl">
-          <div className="text-[13.5px] font-medium text-ink">Delete your account</div>
-          <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
-            Deletes your account, sign-in methods, devices, tokens and Claude connections, and the projects
-            only you are a member of, with their sessions. This cannot be undone.
-          </p>
-        </div>
-        <Button variant="danger" className="self-start sm:self-auto" onClick={() => setOpen(true)}>
-          Delete account…
-        </Button>
-      </div>
+    <DangerZone
+      title="Delete your account"
+      description="Deletes your account, sign-in methods, devices, tokens and Claude connections, and the projects only you are a member of, with their sessions. This cannot be undone."
+      action="Delete account…"
+      onAction={() => setOpen(true)}
+    >
       <DeleteAccount me={me} open={open} onClose={() => setOpen(false)} />
-    </section>
+    </DangerZone>
   );
 }
 

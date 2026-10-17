@@ -2,9 +2,10 @@
 
 use crate::config;
 use crate::style;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Subcommand;
 use fctl_proto::api::{CreateProjectRequest, CreateRepoRequest};
+use std::io::{BufRead, IsTerminal, Write};
 
 #[derive(Subcommand)]
 pub enum ProjectsCmd {
@@ -36,6 +37,15 @@ pub enum ProjectsCmd {
     Use {
         /// The project (slug or id).
         project: String,
+    },
+    /// Delete a project with its sessions and their transcripts (owners only).
+    /// Its repository on GitHub stays. This cannot be undone.
+    Delete {
+        /// The project (slug or id).
+        project: String,
+        /// The project's slug, to confirm without being asked (for scripts).
+        #[arg(long, value_name = "SLUG")]
+        confirm: Option<String>,
     },
 }
 
@@ -134,6 +144,53 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             cfg.project = Some(p.slug.clone());
             cfg.save()?;
             println!("Using {} by default", style::bold(&p.slug));
+        }
+        ProjectsCmd::Delete { project, confirm } => {
+            let p = api.project(&project).await?;
+            if p.active_sessions > 0 {
+                bail!(
+                    "stop the project's {} running session(s) first",
+                    p.active_sessions
+                );
+            }
+            let typed = match confirm {
+                Some(slug) => slug,
+                None => {
+                    if !std::io::stdin().is_terminal() {
+                        bail!(
+                            "pass --confirm {} to delete the project without a terminal",
+                            p.slug
+                        );
+                    }
+                    println!(
+                        "{} deletes {} and its {} session(s) with their transcripts.",
+                        style::red("This cannot be undone:"),
+                        style::bold(&p.name),
+                        p.total_sessions
+                    );
+                    if let Some(r) = &p.repo {
+                        println!("The repository {} on GitHub stays.", r.full_name());
+                    }
+                    print!("Type the project's slug ({}) to confirm: ", p.slug);
+                    std::io::stdout().flush()?;
+                    let mut line = String::new();
+                    std::io::stdin().lock().read_line(&mut line)?;
+                    line.trim().to_owned()
+                }
+            };
+            if typed.trim() != p.slug {
+                bail!("that is not the project's slug; nothing was deleted");
+            }
+            let done = api.delete_project(p.id.as_str()).await?;
+            if json {
+                return style::print_json(&done);
+            }
+            println!("Deleted {}", style::bold(&p.name));
+            let mut cfg = config::CliConfig::load();
+            if cfg.project.as_deref() == Some(p.slug.as_str()) {
+                cfg.project = None;
+                cfg.save()?;
+            }
         }
     }
     Ok(())

@@ -8,6 +8,8 @@ import {
   Avatar,
   Banner,
   Button,
+  DangerZone,
+  Dialog,
   Empty,
   Field,
   GithubIcon,
@@ -99,6 +101,7 @@ export function ProjectPage() {
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
         {p && tab === "settings" && manage && <Settings project={p} />}
+        {p && tab === "settings" && p.role === "owner" && <ProjectDangerZone project={p} />}
         {p && tab === "members" && <Members project={p} />}
         {p && tab === "secrets" && manage && <Secrets project={p} />}
       </div>
@@ -468,6 +471,136 @@ function Settings({ project }: { project: G.Project }) {
         </Banner>
       )}
     </form>
+  );
+}
+
+function ProjectDangerZone({ project }: { project: G.Project }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-10">
+      <DangerZone
+        title="Delete this project"
+        description={`Deletes the project with its sessions, their transcripts, its secrets and its members' access.${project.repo ? " The repository on GitHub stays." : ""} This cannot be undone.`}
+        action="Delete project…"
+        onAction={() => setOpen(true)}
+      >
+        <DeleteProject project={project} open={open} onClose={() => setOpen(false)} />
+      </DangerZone>
+    </div>
+  );
+}
+
+function DeleteProject({
+  project,
+  open,
+  onClose,
+}: {
+  project: G.Project;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const navigate = useNavigate();
+  const [typed, setTyped] = useState("");
+  const remove = useMutation({
+    mutationFn: () => api.deleteProject(project.id),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: keys.project(project.slug) });
+      void queryClient.invalidateQueries({ queryKey: keys.projects });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      toast(`Deleted ${project.name}`);
+      void navigate({ to: "/" });
+    },
+  });
+  useEffect(() => {
+    if (!open) {
+      setTyped("");
+      remove.reset();
+    }
+  }, [open, remove.reset]);
+  const running = project.active_sessions;
+  const sessions = project.total_sessions;
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={`Delete ${project.name}?`}
+      description="This deletes the project for good. It cannot be undone."
+    >
+      {running > 0 ? (
+        <div className="flex flex-col gap-5">
+          <Banner tone="warn">
+            Stop the project's {running === 1 ? "running session" : `${running} running sessions`} first.
+          </Banner>
+          <div className="flex justify-end">
+            <Button onClick={onClose}>Close</Button>
+          </div>
+        </div>
+      ) : (
+        <form
+          className="flex flex-col gap-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (typed.trim() === project.slug) remove.mutate();
+          }}
+        >
+          <ul className="flex list-disc flex-col gap-1.5 pl-5 text-[13.5px] leading-relaxed text-ink-2 marker:text-ink-4">
+            <li>
+              {sessions === 0
+                ? "It has no sessions."
+                : sessions === 1
+                  ? "Its session and transcript are deleted."
+                  : `Its ${sessions} sessions and their transcripts are deleted.`}
+            </li>
+            <li>Its secrets and settings are deleted, and its members lose access.</li>
+            <li>
+              {project.repo ? (
+                <>
+                  The repository{" "}
+                  <span className="font-mono text-ink">
+                    {project.repo.owner}/{project.repo.name}
+                  </span>{" "}
+                  on GitHub is not touched.
+                </>
+              ) : (
+                "Nothing outside fctl is touched."
+              )}
+            </li>
+          </ul>
+          <Field
+            label={
+              <>
+                Type <span className="font-mono text-ink">{project.slug}</span> to confirm
+              </>
+            }
+            error={remove.error?.message}
+          >
+            {(id) => (
+              <Input
+                id={id}
+                value={typed}
+                onChange={(e) => setTyped(e.target.value)}
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+            )}
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="danger"
+              loading={remove.isPending}
+              disabled={typed.trim() !== project.slug}
+            >
+              Delete project
+            </Button>
+          </div>
+        </form>
+      )}
+    </Dialog>
   );
 }
 
