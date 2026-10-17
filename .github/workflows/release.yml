@@ -1,35 +1,105 @@
-# Tags (v1.2.3) build release archives, attach them to a GitHub release and
-# publish them to https://fctl.sh/releases.
+# Releases fctl. Start it from Actions → Release → Run workflow, or
+# `gh workflow run release.yml -f bump=auto` (see .claude/skills/release).
+#
+# "Version and notes" picks the next version from the Conventional Commits
+# since the last tag (`cargo xtask release`), writes CHANGELOG.md and the
+# version, and pushes the release commit and tag to main. "Build and publish"
+# then builds the archives, makes the GitHub release with the notes, publishes
+# to https://fctl.sh/releases and starts CI on main, which redeploys
+# app.fctl.sh. `tag` rebuilds an existing release tag from main; `dry_run`
+# only shows what would ship. Tags pushed by hand do not publish anything:
+# starting this workflow takes write access to Actions, which agents running
+# in fctl sessions do not have.
 name: Release
 
 on:
-  push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
   workflow_dispatch:
     inputs:
+      bump:
+        description: Version bump (auto follows the commits since the last release)
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      dry_run:
+        description: Only show the next version and its notes
+        type: boolean
+        default: false
       tag:
-        description: Existing tag to (re)build, e.g. v0.1.0
-        required: true
+        description: Rebuild this existing tag instead (e.g. v0.1.2)
+        required: false
 
 permissions:
   contents: write
+  # Starting CI on main after the release commit (it redeploys app.fctl.sh).
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  TAG: ${{ inputs.tag || github.ref_name }}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: Version and notes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: xtask
+      - name: Release commit and tag
+        id: release
+        env:
+          BUMP: ${{ inputs.bump }}
+          DRY_RUN: ${{ inputs.dry_run && 'yes' || '' }}
+          REBUILD: ${{ inputs.tag }}
+        run: |
+          if [ -n "$REBUILD" ]; then
+            git rev-parse -q --verify "refs/tags/$REBUILD" >/dev/null || { echo "::error::$REBUILD does not exist"; exit 1; }
+            git merge-base --is-ancestor "$REBUILD" origin/main || { echo "::error::$REBUILD is not on main"; exit 1; }
+            echo "tag=$REBUILD" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$DRY_RUN" ]; then
+            cargo xtask release --bump "$BUMP" --dry-run
+            exit 0
+          fi
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Releases are made from main (this run is on $GITHUB_REF_NAME); a dry run works anywhere."
+            exit 1
+          fi
+          git config user.name "fctl-sh[bot]"
+          git config user.email "343971779+fctl-sh[bot]@users.noreply.github.com"
+          cargo xtask release --bump "$BUMP"
+          tag=$(git describe --tags --exact-match HEAD)
+          # Both or neither: a main that moved meanwhile rejects the push.
+          git push --atomic origin HEAD:main "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   release:
+    name: Build and publish
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    concurrency:
-      group: release
-      cancel-in-progress: false
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
+          fetch-depth: 0
+          fetch-tags: true
       - name: The tag matches the workspace version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -63,10 +133,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           dir="dist/$TAG"
+          cargo xtask notes "$TAG" > "$RUNNER_TEMP/notes.md"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$dir"/* --clobber
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
           else
-            gh release create "$TAG" "$dir"/* --title "fctl ${TAG#v}" --generate-notes --verify-tag
+            gh release create "$TAG" "$dir"/* --title "fctl ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
           fi
       - name: Publish to fctl.sh/releases
         run: cargo xtask publish "$TAG" --latest
@@ -78,3 +150,9 @@ jobs:
           test "$(curl -fsS https://fctl.sh/releases/latest)" = "${TAG#v}"
           curl -fsSL https://fctl.sh/install | FCTL_INSTALL_DIR="$RUNNER_TEMP/bin" sh
           "$RUNNER_TEMP/bin/fctl" --version
+      - name: Redeploy app.fctl.sh on the release commit
+        if: inputs.tag == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Pushes made with this workflow's token start no workflows; a dispatch does.
+        run: gh workflow run ci.yml --ref main

@@ -15,6 +15,8 @@ cargo xtask check --quick  # the same without production builds
 cargo xtask gen            # regenerate web/src/gen after changing crates/fctl-proto
 cargo test -p fctl-domain  # one crate's tests
 cd web && npm run check    # Biome + TypeScript for the web app
+cargo xtask lint-commit "feat(cli): add x"   # a pull request title
+cargo xtask release --dry-run                # the next version and its notes
 ```
 
 `cargo xtask dev` signs you in as `dev@fctl.test` / `fctl-dev-password` at
@@ -92,9 +94,22 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
 Both are private for now: `npm ci` reaches the design package over git, so
 it needs GitHub access (CI uses a read-only deploy key).
 
-## Git
+## Commits, pull requests and releases
 
-Small, focused commits with an imperative subject line ("Add session
-resume to the CLI"). Update docs in the same change when behavior changes.
-Record significant decisions in `docs/adr/` (copy the newest one's format).
-The roadmap is in [ROADMAP.md](ROADMAP.md) and GitHub issues.
+- Changes reach `main` as squash-merged pull requests. The pull request
+  title becomes the commit, so it is a
+  [Conventional Commit](https://www.conventionalcommits.org):
+  `type(scope): what changed` (`feat(cli): add fctl self update`). CI checks
+  it. Types, scopes, breaking changes and the flow:
+  [.claude/skills/commit/SKILL.md](.claude/skills/commit/SKILL.md).
+- One focused change per pull request; update docs in the same change when
+  behavior changes. A person merges agents' pull requests unless they ask
+  the agent to.
+- Never push to `main` directly. Only the Release workflow does (its
+  release commits).
+- Releases are made by the Release workflow from those commits: version,
+  CHANGELOG.md, notes, archives on fctl.sh, the redeploy. It needs write
+  access to Actions:
+  [.claude/skills/release/SKILL.md](.claude/skills/release/SKILL.md).
+- Record significant decisions in `docs/adr/` (copy the newest one's
+  format). The roadmap is in [ROADMAP.md](ROADMAP.md) and GitHub issues.

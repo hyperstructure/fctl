@@ -1,0 +1,86 @@
+---
+name: release
+description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases, updates the CHANGELOG and redeploys app.fctl.sh. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
+---
+
+# Releasing fctl
+
+Releases are made from `main` by the **Release** workflow
+(`.github/workflows/release.yml`). Never edit the version, write
+CHANGELOG.md or push tags by hand: the workflow does all three, and tags
+pushed by hand publish nothing.
+
+Starting the workflow needs write access to Actions. Agents in fctl
+sessions have read access only, so if you are one, ask a person to start
+it (or to give you access) and stop there.
+
+## 1. Before
+
+- CI passed on the newest commit of `main`, and everything meant for the
+  release is merged.
+- Preview the version and notes:
+
+  ```sh
+  git switch main && git pull
+  cargo xtask release --dry-run
+  ```
+
+  or run the workflow with `dry_run`; its summary shows the same. The
+  version follows the commits since the last tag: a breaking change bumps
+  the minor version (the major one from 1.0), a `feat` the minor version,
+  anything else the patch. Override it only for a reason, with
+  `bump=patch|minor|major`.
+- Read the notes as a user would. A badly worded title cannot be changed
+  on `main`, but you can edit the GitHub release text and CHANGELOG.md
+  afterwards (a `docs:` pull request).
+
+## 2. Release
+
+```sh
+gh workflow run release.yml --ref main -f bump=auto
+```
+
+or GitHub → Actions → Release → Run workflow. With the GitHub App API:
+`POST /repos/hyperstructure/fctl/actions/workflows/release.yml/dispatches`
+with `{"ref": "main", "inputs": {"bump": "auto"}}`.
+
+It runs two jobs:
+
+1. **Version and notes**: `cargo xtask release` sets the version in
+   `Cargo.toml` and `Cargo.lock`, adds the notes to `CHANGELOG.md`, commits
+   `chore(release): vX.Y.Z`, tags it, and pushes both to `main` at once (a
+   `main` that moved meanwhile rejects the push; start it again).
+2. **Build and publish**: builds fctl for macOS and Linux (arm64 and
+   x86_64) and the Linux agents, creates the GitHub release with the
+   notes, publishes the files to https://fctl.sh/releases (moving
+   `latest`), installs it with the installer as a check, and starts CI on
+   `main`, which redeploys app.fctl.sh.
+
+Follow it with `gh run watch` or in the Actions tab; it takes about 20
+minutes.
+
+## 3. After
+
+- `curl -fsS https://fctl.sh/releases/latest` prints the new version, and
+  `fctl self update --check` sees it.
+- The GitHub release and `CHANGELOG.md` on `main` have the notes.
+- `https://app.fctl.sh/api/v1/health` reports the version once CI is done.
+- Hosts update with `fctl self update` (it restarts the host service;
+  running sessions keep going).
+
+## When something fails
+
+- **Before the release commit** (version and notes failed): fix the cause
+  in a pull request, merge it, start the workflow again.
+- **After the tag was pushed** (build or publish failed): if it was the
+  infrastructure, rebuild the tag with
+  `gh workflow run release.yml --ref main -f tag=vX.Y.Z`. If the code is
+  broken, fix it and release a patch.
+- Never move or delete a published tag or its files on fctl.sh: installed
+  CLIs and hosts download releases by version.
+
+## Other repositories
+
+- **hyperstructure/design** releases are tags as well; see its AGENTS.md
+  and release skill.
+- **hyperstructure/fctl-site** deploys from `main` and has no releases.

@@ -132,11 +132,24 @@ who prefer reduced motion.
 
 ## Releasing
 
-1. Bump `version` in the root `Cargo.toml` and commit.
-2. Tag it: `git tag v0.2.0 && git push --tags`. CI builds the archives
-   (`cargo xtask dist`: fctl for macOS and Linux on arm64 and x86_64, and the
-   Linux agent), attaches them to a GitHub release, and publishes them to
-   `https://fctl.sh/releases` (`cargo xtask publish --latest`).
+Releases come from `main` through the **Release** workflow: Actions →
+Release → Run workflow, or `gh workflow run release.yml --ref main -f
+bump=auto`. It picks the version from the Conventional Commits since the
+last tag, adds the notes to `CHANGELOG.md`, pushes the release commit and
+tag, builds the archives (`cargo xtask dist`: fctl for macOS and Linux on
+arm64 and x86_64, and the Linux agents), creates the GitHub release with
+the notes, publishes to `https://fctl.sh/releases` (`cargo xtask publish
+--latest`) and redeploys app.fctl.sh.
+
+```sh
+cargo xtask release --dry-run   # the next version and its notes
+cargo xtask notes v0.1.2        # one release's notes
+```
+
+The steps and what to do when one fails are in
+[.claude/skills/release/SKILL.md](../.claude/skills/release/SKILL.md);
+commit and pull request conventions in
+[.claude/skills/commit/SKILL.md](../.claude/skills/commit/SKILL.md).
 
 To build locally: `cargo xtask dist` (or `--target aarch64-apple-darwin`).
 
