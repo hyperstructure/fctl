@@ -21,5 +21,10 @@ client_id = "Iv23liRKQScqi5ySeiBr"
 # Where "New repository" creates repositories.
 default_owner = "hyperstructure"
 
+# "Sign in with Google": the OAuth client in the fctl-sh Google Cloud project
+# (GOOGLE_CLIENT_SECRET is a Worker secret).
+[google]
+client_id = "940932092920-siou1a3hvqfl6p1s39lgr93iodpoaflo.apps.googleusercontent.com"
+
 [email]
 from = "fctl <noreply@fctl.sh>"
