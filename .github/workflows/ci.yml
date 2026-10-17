@@ -1,20 +1,17 @@
 # Checks every pull request and push; deploys app.fctl.sh from main (also when
 # started by hand, as the Release workflow does after its release commit), and
 # pins fctl.sh (hyperstructure/fctl-site) to the new docs when docs/ changed.
-# Pull request titles must be Conventional Commits: they become the
-# squash-merged commits the release notes are made from.
+# Pull request titles are checked in commits.yml.
 name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  # A title edit only checks the title; it must not cancel the code checks.
-  group: ci-${{ github.ref }}-${{ github.event.action == 'edited' && 'title' || 'code' }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -25,36 +22,8 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  commits:
-    name: Conventional Commits
-    if: github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: xtask
-      - name: The pull request title (it becomes the commit on main)
-        if: github.event_name == 'pull_request'
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-        run: cargo xtask lint-commit "$TITLE"
-      - name: Commits pushed to main
-        if: github.event_name == 'push'
-        env:
-          BEFORE: ${{ github.event.before }}
-        run: |
-          git cat-file -e "$BEFORE^{commit}" 2>/dev/null || exit 0
-          cargo xtask lint-commit --range "$BEFORE..$GITHUB_SHA" ||
-            echo "::warning::Commits on main should be Conventional Commits; see .claude/skills/commit/SKILL.md"
-
   check:
     name: cargo xtask check
-    if: github.event.action != 'edited'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
