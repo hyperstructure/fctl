@@ -14,13 +14,17 @@ pub enum AdminCmd {
     Allowlist,
     /// Allow an email (invites them) or a domain (`*@example.com`).
     Allow {
+        /// An email address, or `*@example.com` for a whole domain.
         pattern: String,
         /// Make them an admin.
         #[arg(long)]
         admin: bool,
     },
     /// Remove an allowlist entry (by its pattern or id); its users lose access.
-    Disallow { pattern: String },
+    Disallow {
+        /// The entry's pattern or id.
+        pattern: String,
+    },
     /// List runners.
     Runners,
 }

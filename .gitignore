@@ -13,6 +13,8 @@ dist/
 !.dev.vars.example
 # fctl local dev state
 /.fctl-dev/
+# Rendered by cargo xtask deploy
+crates/fctl-control/wrangler.deploy.toml
 # Secrets never belong in the repo
 *.pem
 *.key

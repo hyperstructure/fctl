@@ -14,6 +14,8 @@ pub struct Renderer {
     in_text: bool,
     pub last_seq: u64,
     pub quiet_logs: bool,
+    /// Print each stored event as one line of JSON instead (for scripts).
+    pub json: bool,
 }
 
 fn out(s: &str) {
@@ -77,6 +79,12 @@ impl Renderer {
 
     pub fn event(&mut self, ev: &SessionEvent) {
         self.last_seq = self.last_seq.max(ev.seq);
+        if self.json {
+            if let Ok(line) = serde_json::to_string(ev) {
+                out(&format!("{line}\n"));
+            }
+            return;
+        }
         match &ev.body {
             EventBody::UserMessage(m) => {
                 self.end_text();
@@ -265,6 +273,9 @@ impl Renderer {
 
     /// An ephemeral `stream_event` (token deltas).
     pub fn stream(&mut self, v: &Value) {
+        if self.json {
+            return; // streaming deltas are not events; the stored message follows
+        }
         let Some(ev) = v.get("event") else { return };
         if v.get("parent_tool_use_id").is_some_and(|p| !p.is_null()) {
             return; // subagent output stays out of the main transcript

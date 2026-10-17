@@ -57,8 +57,10 @@ pub enum HostCmd {
 pub enum ImageCmd {
     /// Build `fctl-agent:latest` (or the Lima base VM).
     Build {
+        /// apple, docker or lima (default: the host's driver).
         #[arg(long)]
         driver: Option<String>,
+        /// Image tag (default: the host's image, fctl-agent:latest).
         #[arg(long)]
         tag: Option<String>,
     },

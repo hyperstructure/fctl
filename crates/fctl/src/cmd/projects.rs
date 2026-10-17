@@ -14,6 +14,7 @@ pub enum ProjectsCmd {
     Show { project: String },
     /// Create a project.
     Create {
+        /// The project's name.
         name: String,
         /// Link an existing GitHub repository (owner/name).
         #[arg(long)]
@@ -24,13 +25,18 @@ pub enum ProjectsCmd {
         /// Make the new repository public.
         #[arg(long, requires = "new_repo")]
         public: bool,
+        /// URL name (default: from the name).
         #[arg(long)]
         slug: Option<String>,
+        /// A sentence for people (agents do not see it).
         #[arg(long)]
         description: Option<String>,
     },
     /// Use this project by default for `fctl run` and `fctl sessions`.
-    Use { project: String },
+    Use {
+        /// The project (slug or id).
+        project: String,
+    },
 }
 
 pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<()> {

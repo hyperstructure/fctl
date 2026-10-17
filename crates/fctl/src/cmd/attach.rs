@@ -75,7 +75,7 @@ pub async fn follow_after(
                     };
                     match m {
                         ViewerServer::Snapshot(snap) => {
-                            if after.is_none() {
+                            if after.is_none() && !r.json {
                                 println!("{} {}", style::bold(&format!("{}#{}", snap.session.project_slug, snap.session.number)), snap.session.title);
                             }
                             for ev in &snap.events {

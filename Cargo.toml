@@ -89,7 +89,12 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 
+# wasm-bindgen needs the Worker's symbols (worker-build runs wasm-opt after it).
+[profile.release.package.fctl-control]
+strip = "none"
+
+# Release archives (`cargo xtask dist`). Panics unwind: the host daemon and
+# the agent supervisor survive a panicking task.
 [profile.dist]
 inherits = "release"
 lto = "fat"
-panic = "abort"

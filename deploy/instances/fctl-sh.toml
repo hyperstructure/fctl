@@ -1,0 +1,25 @@
+# The hyperstructure instance at https://app.fctl.sh.
+#
+# Deploy with `cargo xtask deploy fctl-sh`. Nothing in this file is secret:
+# secrets live in the Worker (see `cargo xtask secrets fctl-sh`).
+
+# The Worker's name in the Cloudflare account.
+worker = "fctl"
+# Shown in the app's title bar and in emails.
+instance_name = "fctl"
+# The app's origin. Its host becomes the Worker's custom domain.
+public_url = "https://app.fctl.sh"
+
+[d1]
+database_name = "fctl-sh"
+database_id = "e84e35ee-6755-4bff-a1ff-ba2539406ba0"
+
+[github]
+app_id = "5357932"
+app_slug = "fctl-sh"
+client_id = "Iv23liRKQScqi5ySeiBr"
+# Where "New repository" creates repositories.
+default_owner = "hyperstructure"
+
+[email]
+from = "fctl <noreply@fctl.sh>"

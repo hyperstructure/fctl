@@ -20,6 +20,7 @@ pub struct RunArgs {
     /// Read the prompt from a file.
     #[arg(short, long)]
     pub file: Option<std::path::PathBuf>,
+    /// Session title (default: from the prompt).
     #[arg(long)]
     pub title: Option<String>,
     /// Branch to work on (default: fctl/<number>-<title>).
@@ -41,11 +42,13 @@ pub struct RunArgs {
 
 #[derive(Args)]
 pub struct ListArgs {
+    /// Only this project's sessions (slug or id).
     #[arg(short, long)]
     pub project: Option<String>,
     /// Only active sessions.
     #[arg(short, long)]
     pub active: bool,
+    /// How many to show.
     #[arg(long, default_value_t = 30)]
     pub limit: u32,
 }
@@ -214,16 +217,13 @@ pub async fn logs(server: Option<&str>, reference: &str, follow: bool, json: boo
     let api = config::api(server)?;
     let s = resolve(&api, reference).await?;
     let mut r = Renderer::default();
+    r.json = json;
     let mut after = 0u64;
     loop {
         let page = api.events(&s.id.0, after, 1000).await?;
         for ev in &page.events {
             after = after.max(ev.seq);
-            if json {
-                println!("{}", serde_json::to_string(ev)?);
-            } else {
-                r.event(ev);
-            }
+            r.event(ev);
         }
         if !page.has_more {
             break;

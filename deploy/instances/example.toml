@@ -1,0 +1,39 @@
+# A template for your own instance. Copy it to deploy/instances/<name>.toml,
+# then run:
+#
+#   cargo xtask deploy <name> --create   # creates the D1 database, deploys
+#   cargo xtask secrets <name>           # master key, setup link, GitHub key
+#
+# See docs/self-hosting.md for the whole walkthrough.
+
+# The Worker's name in your Cloudflare account.
+worker = "fctl"
+# Shown in the app's title bar and in emails.
+instance_name = "fctl"
+# The app's origin. Its host becomes the Worker's custom domain, so its zone
+# must be on your Cloudflare account.
+public_url = "https://fctl.example.com"
+
+[d1]
+database_name = "fctl"
+# Filled in by `cargo xtask deploy <name> --create`.
+database_id = ""
+# Optional: where D1 keeps the primary copy (weur, eeur, wnam, enam, apac, oc).
+# location = "weur"
+
+# Optional: link repositories through your own GitHub App (docs/github-app.md).
+# [github]
+# app_id = "123456"
+# app_slug = "my-fctl"
+# client_id = "Iv23li..."
+# default_owner = "my-org"
+
+# Optional: send invites and password resets by email through Resend
+# (set RESEND_API_KEY with `cargo xtask secrets <name>`). Without it, admins
+# copy invite and reset links from the app.
+# [email]
+# from = "fctl <noreply@example.com>"
+
+# Optional: "Sign in with Google" (set GOOGLE_CLIENT_SECRET as a secret).
+# [google]
+# client_id = "1234-abc.apps.googleusercontent.com"

@@ -53,9 +53,13 @@ enum Command {
     /// List sessions.
     Sessions(cmd::sessions::ListArgs),
     /// Show a session's details.
-    Show { session: String },
+    Show {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
+    },
     /// Follow a session live and message the agent (Ctrl-C detaches).
     Attach {
+        /// A session: its id (ses_…), its URL, or project#number.
         session: String,
         /// Follow without sending messages.
         #[arg(long)]
@@ -63,6 +67,7 @@ enum Command {
     },
     /// Print a session's transcript.
     Logs {
+        /// A session: its id (ses_…), its URL, or project#number.
         session: String,
         /// Keep following new events.
         #[arg(short, long)]
@@ -70,20 +75,31 @@ enum Command {
     },
     /// Send a message to a session's agent.
     Send {
+        /// A session: its id (ses_…), its URL, or project#number.
         session: String,
+        /// The message (or pipe it in).
         message: Vec<String>,
     },
     /// Interrupt the agent's current turn.
-    Interrupt { session: String },
+    Interrupt {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
+    },
     /// Stop a session (its sandbox is kept so it can resume).
-    Stop { session: String },
+    Stop {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
+    },
     /// Resume a stopped session, optionally with a new message.
     Resume {
+        /// A session: its id (ses_…), its URL, or project#number.
         session: String,
+        /// A message for the agent when it resumes.
         message: Vec<String>,
     },
     /// Open a session or project in the browser (or the Claude app with --claude).
     Open {
+        /// A session or project (default: the instance).
         target: Option<String>,
         /// Open the session's Remote Control link (Claude apps) instead.
         #[arg(long)]
@@ -100,6 +116,7 @@ enum Command {
     Admin(cmd::admin::AdminCmd),
     /// Create a personal access token for scripts and CI.
     Token {
+        /// What the token is for, e.g. "deploy bot".
         name: String,
         /// Expire after this many days (default: never).
         #[arg(long)]
