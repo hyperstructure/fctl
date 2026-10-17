@@ -1,0 +1,13 @@
+# Architecture decision records
+
+Short records of decisions that shape fctl, so nobody has to rediscover why.
+One file per decision, numbered, never rewritten: a later record can
+supersede an earlier one. Copy the newest record to start a new one.
+
+| # | Decision |
+|---|---|
+| [0001](0001-control-plane-on-cloudflare.md) | The control plane is a Cloudflare Worker with Durable Objects, written in Rust |
+| [0002](0002-subscription-only.md) | Agents only ever run on Claude subscriptions |
+| [0003](0003-hosts-dial-out.md) | Hosts dial out, and every session gets its own VM |
+| [0004](0004-events-are-journaled.md) | Agent events are journaled in the sandbox and acknowledged |
+| [0005](0005-three-repositories.md) | fctl, fctl-site and design are separate repositories |
