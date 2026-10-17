@@ -84,7 +84,10 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   fctl.sh. It renders this repository's `docs/` at a pinned commit; CI here
   pins it when `docs/` changes on `main`, so write docs in this repository.
   `cargo xtask publish` writes releases to the KV namespace in
-  `deploy/releases.toml`, which the site's Worker serves.
+  `deploy/releases.toml`, which the site's Worker serves. Its privacy
+  policy (`legal/privacy.md`) says what app.fctl.sh stores, who receives it
+  and how long it is kept: a change here that alters any of that needs a
+  matching change there.
 
 Both are private for now: `npm ci` reaches the design package over git, so
 it needs GitHub access (CI uses a read-only deploy key).
