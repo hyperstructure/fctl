@@ -1,7 +1,18 @@
 [package]
 name = "fake-claude"
+description = "A scripted stand-in for `claude -p --input-format stream-json` used by tests and local development"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+publish = false
+
+[[bin]]
+name = "fake-claude"
+path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

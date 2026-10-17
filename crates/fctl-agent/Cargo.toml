@@ -1,7 +1,29 @@
 [package]
 name = "fctl-agent"
+description = "The fctl supervisor that runs Claude Code inside a sandbox"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fctl-agent"
+path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+clap.workspace = true
+fctl-domain.workspace = true
+fctl-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
