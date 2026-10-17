@@ -1,8 +1,8 @@
+import { cssColor } from "@hyperstructure/design/gl/core";
+import { type OrbState, orb } from "@hyperstructure/design/gl/orb";
 import { useRef } from "react";
 import { GLCanvas } from "@/components/ui";
 import type * as G from "@/gen";
-import { cssColor } from "@/gl/core";
-import { type OrbState, orb } from "@/gl/orb";
 
 const PALETTE: Record<G.SessionStatus, [string, string, number]> = {
   queued: ["--c-ink-3", "--c-blue", 0.45],

@@ -1,8 +1,10 @@
 {
   "name": "fctl-monorepo",
   "private": true,
-  "description": "JavaScript tooling for fctl: the web app, the site, and wrangler",
-  "workspaces": ["web", "site"],
+  "description": "JavaScript tooling for fctl: the web app and wrangler",
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
     "wrangler": "wrangler"
   },

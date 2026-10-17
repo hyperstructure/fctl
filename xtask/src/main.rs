@@ -8,7 +8,6 @@ mod util;
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const HELP: &str = "\
 cargo xtask <command>
@@ -24,7 +23,7 @@ Deploy (deploy/instances/<name>.toml)
                                 Build and deploy an instance (--create makes its D1 database)
   secrets <name> [--github-key <pem>] [--set <NAME>]... [--new-setup-token]
                                 Set the instance's secrets; --set reads values from stdin
-  site [--dry-run]              Build and deploy https://fctl.sh (site/)
+  site                          Where https://fctl.sh lives now (hyperstructure/fctl-site)
 
 Release
   dist [--target <triple>]...   Cross-compile release archives into dist/v<version>/
@@ -82,9 +81,13 @@ fn main() -> Result<()> {
             deploy::secrets(&root, &name, opts)
         }
         "site" => {
-            let dry_run = a.flag("--dry-run");
             a.done()?;
-            deploy_site(&root, dry_run)
+            println!(
+                "https://fctl.sh is built and deployed from hyperstructure/fctl-site.\n\
+                 It renders this repository's docs/ at the commit pinned in its fctl-docs.ref,\n\
+                 which CI updates when docs/ changes on main."
+            );
+            Ok(())
         }
         "dist" => {
             let targets = a.values("--target")?;
@@ -153,26 +156,6 @@ impl Args {
         }
         Ok(())
     }
-}
-
-/// Builds and deploys the project site (site/) to fctl.sh.
-fn deploy_site(root: &Path, dry_run: bool) -> Result<()> {
-    if !root.join("node_modules").exists() {
-        util::npm_install(root)?;
-    }
-    util::run(
-        Command::new("npm")
-            .args(["run", "build", "--workspace", "site"])
-            .current_dir(root),
-    )?;
-    if dry_run {
-        return Ok(());
-    }
-    util::run(
-        util::wrangler(root)?
-            .arg("deploy")
-            .current_dir(root.join("site")),
-    )
 }
 
 /// Regenerates `web/src/gen` from the Rust protocol types.

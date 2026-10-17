@@ -48,11 +48,6 @@ pub fn check(root: &Path, quick: bool) -> Result<()> {
         .current_dir(root))?;
     if !quick {
         util::build_web(root)?;
-        if root.join("site/package.json").exists() {
-            run(Command::new("npm")
-                .args(["run", "build", "--workspace", "site"])
-                .current_dir(root))?;
-        }
     }
     eprintln!("\nall checks passed");
     Ok(())

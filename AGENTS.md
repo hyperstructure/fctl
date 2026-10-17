@@ -49,7 +49,7 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   `fctl-domain` with unit tests; I/O stays at the edges.
 - The web app: React 19, TanStack Router (routes in `web/src/router.tsx`) and
   Query (keys and hooks in `web/src/lib/queries.ts`), Tailwind 4 with the
-  tokens in `web/src/styles/tokens.css`, Biome formatting. Live session state
+  tokens from `@hyperstructure/design`, Biome formatting. Live session state
   goes through `web/src/lib/live.ts`; do not open extra WebSockets.
 - Design: the brand palette is yellow `#ffff5d` (lime `#eaff81` on light
   backgrounds), hot pink `#ff00d8`, blue `#007eff`, blackish `#171717`,
@@ -57,8 +57,10 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   optical sizes) for text and display, JetBrains Mono for code and small
   labels. Sentence case everywhere, no decorative uppercase eyebrows above
   headings, no card grids for prose. Motion is quick and purposeful and
-  respects `prefers-reduced-motion`. WebGL scenes live in `web/src/gl`,
-  render dithered to the palette, and pause when hidden.
+  respects `prefers-reduced-motion`. The tokens, fonts, WebGL scenes and the
+  mark live in [hyperstructure/design](https://github.com/hyperstructure/design)
+  (`@hyperstructure/design`, pinned to a tag in `web/package.json`): change
+  them there, tag a release, then bump the tag here.
 - Copy is plain and specific: say what happens ("The agent reads your message
   at its next step"), not what is possible.
 - Every capability is reachable from the CLI with `--json`. When you add an
@@ -73,6 +75,19 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   `fctl attach`, `fctl logs --json`) or the browser. fake-claude makes runs
   deterministic and free.
 - UI: look at it in both themes (Settings → Appearance) and at a phone width.
+
+## Other repositories
+
+- [hyperstructure/design](https://github.com/hyperstructure/design): the
+  design system the web app imports.
+- [hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site):
+  fctl.sh. It renders this repository's `docs/` at a pinned commit; CI here
+  pins it when `docs/` changes on `main`, so write docs in this repository.
+  `cargo xtask publish` writes releases to the KV namespace in
+  `deploy/releases.toml`, which the site's Worker serves.
+
+Both are private for now: `npm ci` reaches the design package over git, so
+it needs GitHub access (CI uses a read-only deploy key).
 
 ## Git
 

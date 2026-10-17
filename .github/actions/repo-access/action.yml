@@ -1,0 +1,27 @@
+name: Access to a private hyperstructure repository
+description: >
+  Lets git (and so npm) reach one private repository over SSH with its deploy
+  key, through a host alias so that several keys can coexist.
+inputs:
+  repo:
+    description: The repository name in hyperstructure, e.g. design
+    required: true
+  key:
+    description: The deploy key (private, OpenSSH format)
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        REPO: ${{ inputs.repo }}
+        KEY: ${{ inputs.key }}
+      run: |
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        printf '%s\n' "$KEY" > ~/.ssh/"$REPO" && chmod 600 ~/.ssh/"$REPO"
+        grep -q "^github.com ssh-ed25519" ~/.ssh/known_hosts 2>/dev/null ||
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+        printf 'Host github-%s\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/%s\n  IdentitiesOnly yes\n' "$REPO" "$REPO" >> ~/.ssh/config
+        for form in "ssh://git@github.com/" "git@github.com:" "https://github.com/"; do
+          git config --global --add "url.git@github-$REPO:hyperstructure/$REPO.git.insteadOf" "${form}hyperstructure/$REPO.git"
+        done

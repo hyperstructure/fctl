@@ -1,12 +1,12 @@
 // The floor: every agent at work as a thread of light, and what to do next.
 
+import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstructure/design/gl/foundry";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, ArrowUp, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, Button, GLCanvas, Skeleton, StatusDot, Textarea, toast } from "@/components/ui";
 import type * as G from "@/gen";
-import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@/gl/foundry";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";

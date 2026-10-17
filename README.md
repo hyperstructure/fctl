@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/mark.svg" width="56" height="56" alt="">
+  <img src="https://fctl.sh/favicon.svg" width="56" height="56" alt="">
 </p>
 
 <h1 align="center">fctl</h1>
@@ -62,7 +62,9 @@ cargo xtask check   # what CI checks
 
 Start with [AGENTS.md](AGENTS.md) (written for coding agents, useful for
 people) and [docs/development.md](docs/development.md). The plan is in
-[ROADMAP.md](ROADMAP.md).
+[ROADMAP.md](ROADMAP.md). The design system lives in
+[hyperstructure/design](https://github.com/hyperstructure/design) and fctl.sh
+in [hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site).
 
 ## License
 

@@ -21,7 +21,7 @@ env:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     concurrency:
       group: release
@@ -51,6 +51,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: ./.github/actions/repo-access
+        with:
+          repo: design
+          key: ${{ secrets.DESIGN_DEPLOY_KEY }}
       - run: npm ci --no-audit --no-fund
       - name: Build the archives
         run: cargo xtask dist

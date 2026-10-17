@@ -1,5 +1,5 @@
+import { mount, type Scene, type StageOptions } from "@hyperstructure/design/gl/core";
 import { useEffect, useRef } from "react";
-import { mount, type Scene, type StageOptions } from "@/gl/core";
 import { cn } from "@/lib/cn";
 
 /**

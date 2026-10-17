@@ -1,4 +1,5 @@
-# Checks every pull request and push; deploys app.fctl.sh from main.
+# Checks every pull request and push; deploys app.fctl.sh from main, and pins
+# fctl.sh (hyperstructure/fctl-site) to the new docs when docs/ changed.
 name: CI
 
 on:
@@ -21,7 +22,7 @@ env:
 jobs:
   check:
     name: cargo xtask check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,6 +33,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: ./.github/actions/repo-access
+        with:
+          repo: design
+          key: ${{ secrets.DESIGN_DEPLOY_KEY }}
       - run: npm ci --no-audit --no-fund
       - run: cargo xtask check
 
@@ -39,7 +44,7 @@ jobs:
     name: Deploy app.fctl.sh
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment:
       name: production
@@ -58,6 +63,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: ./.github/actions/repo-access
+        with:
+          repo: design
+          key: ${{ secrets.DESIGN_DEPLOY_KEY }}
       - run: npm ci --no-audit --no-fund
       - name: worker-build
         run: command -v worker-build || cargo install worker-build --version 0.8.7 --locked
@@ -70,3 +79,45 @@ jobs:
         run: |
           curl -fsS https://app.fctl.sh/api/v1/health
           curl -fsS -o /dev/null https://app.fctl.sh/login
+
+  site-docs:
+    name: Pin fctl.sh to these docs
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: site-docs
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Did docs/ change?
+        id: docs
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "changed=yes" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$BEFORE" HEAD -- docs; then
+            echo "changed=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=yes" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.docs.outputs.changed == 'yes'
+        uses: ./.github/actions/repo-access
+        with:
+          repo: fctl-site
+          key: ${{ secrets.SITE_DEPLOY_KEY }}
+      - name: Pin fctl-docs.ref (fctl-site deploys on the push)
+        if: steps.docs.outputs.changed == 'yes'
+        run: |
+          git clone --quiet --depth 1 git@github-fctl-site:hyperstructure/fctl-site.git "$RUNNER_TEMP/site"
+          cd "$RUNNER_TEMP/site"
+          echo "$GITHUB_SHA" > fctl-docs.ref
+          git add fctl-docs.ref
+          git diff --cached --quiet && { echo "already at $GITHUB_SHA"; exit 0; }
+          git -c user.name="fctl-sh[bot]" -c user.email="343971779+fctl-sh[bot]@users.noreply.github.com" \
+            commit --quiet -m "Docs: hyperstructure/fctl@${GITHUB_SHA::12}"
+          git push --quiet origin HEAD:main || { git pull --quiet --rebase origin main && git push --quiet origin HEAD:main; }

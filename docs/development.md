@@ -7,8 +7,10 @@ subscription, Cloudflare account or GitHub App.
 
 - Rust via [rustup](https://rustup.rs) — `rust-toolchain.toml` pins the
   version and adds the `wasm32-unknown-unknown` target.
-- Node.js 22 or newer (`npm ci` at the root installs the web app, the site
-  and wrangler).
+- Node.js 22 or newer (`npm ci` at the root installs the web app and
+  wrangler). The web app depends on
+  [@hyperstructure/design](https://github.com/hyperstructure/design) through
+  git, so `npm ci` needs read access to that repository while it is private.
 - Optional, for release builds: [zig](https://ziglang.org) and
   `cargo install cargo-zigbuild`.
 
@@ -55,8 +57,8 @@ cargo xtask check --quick  # without the production builds
 
 That is `cargo fmt --check`, a check that `web/src/gen` matches the Rust
 types, Biome and TypeScript for the web app, Clippy (native and wasm) with
-warnings as errors, `cargo test`, the web app's Vitest suite, and production
-builds of the web app and the site.
+warnings as errors, `cargo test`, the web app's Vitest suite, and a
+production build of the web app.
 
 ## Repository map
 
@@ -72,7 +74,6 @@ builds of the web app and the site.
 | `crates/fake-claude` | The scripted Claude stand-in |
 | `xtask` | `cargo xtask`: dev, check, gen, deploy, secrets, dist, publish |
 | `web` | The web app (React, TanStack Router and Query, Tailwind, WebGL) |
-| `site` | fctl.sh: landing page, these docs, `/install`, `/releases` |
 | `images/agent` | The default sandbox image |
 | `deploy/instances` | Instance descriptions for `cargo xtask deploy` |
 | `docs` | These docs; `docs/adr` records decisions |
@@ -105,11 +106,20 @@ npm run check      # Biome and TypeScript
 npm test
 ```
 
-Design tokens live in `web/src/styles/tokens.css` (shared with the site).
+Design tokens, fonts, the WebGL scenes and the mark come from
+[@hyperstructure/design](https://github.com/hyperstructure/design), pinned
+to a tag in `web/package.json` (it has a playground showing all of them).
 Use the semantic colors (`canvas`, `surface`, `ink`, `accent`, `highlight`,
-`pink`, `blue`…) rather than raw values. The scenes in `web/src/gl` render
-dithered to the brand palette; they pause when hidden and render one still
-frame for people who prefer reduced motion.
+`pink`, `blue`…) rather than raw values. The scenes render dithered to the
+brand palette; they pause when hidden and render one still frame for people
+who prefer reduced motion.
+
+## Other repositories
+
+| Repository | What | How it connects |
+|---|---|---|
+| [hyperstructure/design](https://github.com/hyperstructure/design) | Tokens, fonts, WebGL scenes, the marks | `web/` depends on a tag; bumps arrive as pull requests |
+| [hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site) | fctl.sh: landing page, these docs, `/install`, `/releases` | renders `docs/` at the commit in its `fctl-docs.ref`, which this repository's CI updates when `docs/` changes on `main`; serves the releases `cargo xtask publish` writes to the KV namespace in `deploy/releases.toml` |
 
 ## Releasing
 
@@ -123,9 +133,9 @@ To build locally: `cargo xtask dist` (or `--target aarch64-apple-darwin`).
 
 ## Deploying
 
-`main` deploys to `app.fctl.sh` and `fctl.sh` from CI. By hand:
+`main` deploys `app.fctl.sh` from CI (fctl.sh deploys from
+hyperstructure/fctl-site). By hand:
 
 ```sh
 cargo xtask deploy fctl-sh
-cargo xtask site
 ```

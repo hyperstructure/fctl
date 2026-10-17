@@ -1,11 +1,11 @@
 // Sign-in, setup, invitations and password resets.
 
+import { foundry } from "@hyperstructure/design/gl/foundry";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Banner, Button, Field, GLCanvas, Input, Logo } from "@/components/ui";
-import { foundry } from "@/gl/foundry";
 import { ApiFailure, api } from "@/lib/api";
 import { keys, queryClient, useInstance } from "@/lib/queries";
 

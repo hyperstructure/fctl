@@ -41,8 +41,15 @@ before changing anything that crosses a component boundary.
 | `crates/fake-claude` | A scripted stand-in for `claude` that speaks stream-json. Used by tests and `cargo xtask dev`. | dev, CI |
 | `xtask` | Development automation (`cargo xtask dev`, `check`, `gen`, `deploy`, `dist`, `publish`). | dev, CI |
 | `web/` | The web app (React, Vite, TypeScript, WebGL). Served by fctl-control. | browser |
-| `site/` | fctl.sh: landing page, docs, install script. | Cloudflare |
 | `images/agent` | The default sandbox image (Debian, git, gh, node, python, claude). | sandboxes |
+
+Two more repositories complete the picture:
+[hyperstructure/design](https://github.com/hyperstructure/design)
+(`@hyperstructure/design`: tokens, fonts, the WebGL scenes and the marks,
+used by `web/`) and
+[hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site)
+(fctl.sh: the landing page, these docs rendered from `docs/`, the installer
+and release downloads).
 
 ## Principles
 
@@ -202,7 +209,10 @@ control plane by a version. Add fields as optional; never repurpose a tag.
 ## Deployment
 
 - `app.<domain>` — fctl-control and the web app (one Worker).
-- `<domain>` — the site Worker (landing page, docs, `/install`, `/releases`).
+- `<domain>` — the site Worker from hyperstructure/fctl-site (landing page,
+  docs, `/install`, `/releases`). It reads releases from a KV namespace that
+  `cargo xtask publish` writes (`deploy/releases.toml`); the two share the
+  namespace, not code.
 - Hosts install with `curl -fsSL https://<domain>/install | sh`, then
   `fctl login` and `fctl host install` (launchd on macOS, systemd on Linux).
 

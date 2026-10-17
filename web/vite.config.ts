@@ -1,13 +1,35 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
+
+const require = createRequire(import.meta.url);
+
+/** Serves and emits /favicon.svg from @hyperstructure/design (one source for the mark). */
+function brandAssets(): Plugin {
+  const favicon = () => readFileSync(require.resolve("@hyperstructure/design/assets/favicon.svg"));
+  return {
+    name: "brand-assets",
+    configureServer(server) {
+      server.middlewares.use("/favicon.svg", (_req, res) => {
+        res.setHeader("content-type", "image/svg+xml");
+        res.end(favicon());
+      });
+    },
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "favicon.svg", source: favicon() });
+    },
+  };
+}
 
 // In development the control plane runs on :8787 (`cargo xtask dev`).
 const api = process.env.FCTL_API ?? "http://127.0.0.1:8787";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), brandAssets()],
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   server: {
     port: 5173,

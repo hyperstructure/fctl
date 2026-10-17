@@ -1,3 +1,4 @@
+import { mark } from "@hyperstructure/design/brand";
 import { Check, Copy } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type * as G from "@/gen";
@@ -7,10 +8,18 @@ import { hue, initials } from "@/lib/format";
 export function Logo({ className, withWord = true }: { className?: string; withWord?: boolean }) {
   return (
     <span className={cn("inline-flex items-center gap-2", className)}>
-      <svg viewBox="0 0 32 32" className="size-[22px]" aria-hidden="true">
-        <rect width="32" height="32" rx="8" fill="#171717" />
-        <rect x="0.5" y="0.5" width="31" height="31" rx="7.5" fill="none" stroke="rgb(250 250 250 / 0.12)" />
-        <path d="M7 22.5 L15 9.5 h4 L11 22.5z M14 22.5 L22 9.5 h4 L18 22.5z" fill="#ffff5d" />
+      <svg viewBox={mark.viewBox} className="size-[22px]" aria-hidden="true">
+        <rect width="32" height="32" rx={mark.radius} fill={mark.background} />
+        <rect
+          x="0.5"
+          y="0.5"
+          width="31"
+          height="31"
+          rx={mark.radius - 0.5}
+          fill="none"
+          stroke="rgb(250 250 250 / 0.12)"
+        />
+        <path d={mark.path} fill={mark.foreground} />
       </svg>
       {withWord && <span className="font-semibold tracking-[-0.02em] text-ink text-[15px]">fctl</span>}
     </span>
