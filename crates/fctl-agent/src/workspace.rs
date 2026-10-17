@@ -241,11 +241,15 @@ pub async fn prepare(p: &Paths, spec: &SessionSpec, log: &LogSink) -> Result<()>
     )
     .await?;
     if base.ok {
+        // Without an upstream, a plain `git push` publishes the branch under
+        // its own name (`push.autoSetupRemote`) instead of failing on a
+        // mismatch with the base branch.
         git_ok(
             p,
             &[
                 "checkout",
                 "-q",
+                "--no-track",
                 "-b",
                 &spec.branch,
                 &format!("origin/{}", spec.base_branch),
@@ -518,4 +522,79 @@ pub async fn pull_request(p: &Paths, branch: &str) -> Option<PullRequestRef> {
             .map(str::to_owned),
         state,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec() -> Result<SessionSpec> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "session_id": "ses_test",
+            "number": 1,
+            "title": "Test",
+            "project": {
+                "id": "prj_test",
+                "slug": "widgets",
+                "name": "Widgets",
+                "repo": { "owner": "acme", "name": "widgets" },
+                "default_branch": "main",
+                "settings": {}
+            },
+            "branch": "fctl/1-test",
+            "base_branch": "main",
+            "author": { "id": "usr_test", "name": "Ada" },
+            "claude_session_id": "00000000-0000-0000-0000-000000000000",
+            "resume": false,
+            "secrets": {},
+            "credentials": {
+                "claude": {
+                    "id": "crd_test",
+                    "kind": "setup_token",
+                    "access_token": "test",
+                    "scopes": []
+                }
+            },
+            "git_author": { "name": "fctl", "email": "fctl@example.com" },
+            "co_authors": [],
+            "web_url": "https://fctl.test/s/ses_test",
+            "idle_timeout_secs": 600
+        }))?)
+    }
+
+    #[tokio::test]
+    async fn plain_push_publishes_a_new_branch_under_its_own_name() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = Paths::new(
+            &dir.path().join("workspace"),
+            &dir.path().join("home"),
+            &dir.path().join("state"),
+        );
+        std::fs::create_dir_all(&p.home)?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        // A local repository stands in for GitHub.
+        let origin = dir.path().join("origin");
+        std::fs::create_dir_all(&origin)?;
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["commit", "-q", "--allow-empty", "-m", "Initial commit"],
+        ] {
+            assert!(run(&origin, &p.home, "git", args).await?.ok);
+        }
+        let clone_url = spec.project.repo.as_ref().context("repo")?.clone_url();
+        let rewrite = format!("url.{}.insteadOf", origin.display());
+        let config = ["config", "--global", rewrite.as_str(), clone_url.as_str()];
+        assert!(run(&p.home, &p.home, "git", &config).await?.ok);
+
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let push = git(&p, &["push", "--quiet"]).await?;
+        assert!(push.ok, "git push failed: {}", push.stderr);
+        let upstream = git_ok(&p, &["rev-parse", "--abbrev-ref", "@{upstream}"]).await?;
+        assert_eq!(upstream.trim(), "origin/fctl/1-test");
+        let pushed = ["rev-parse", "--verify", "--quiet", "refs/heads/fctl/1-test"];
+        assert!(run(&origin, &p.home, "git", &pushed).await?.ok);
+        Ok(())
+    }
 }
