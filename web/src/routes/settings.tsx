@@ -87,15 +87,25 @@ function Profile({ me }: { me: G.Me }) {
   const [given, setGiven] = useState(() => nameParts(me.user).given);
   const [family, setFamily] = useState(() => nameParts(me.user).family);
   const [avatar, setAvatar] = useState(me.user.avatar_url ?? "");
+  const [commitEmail, setCommitEmail] = useState(me.commit_email ?? "");
   const save = useMutation({
-    mutationFn: () => api.updateMe({ given_name: given, family_name: family, avatar_url: avatar }),
+    mutationFn: () =>
+      api.updateMe({
+        given_name: given,
+        family_name: family,
+        avatar_url: avatar,
+        commit_email: commitEmail,
+      }),
     onSuccess: (m) => {
       queryClient.setQueryData(keys.me, m);
+      setCommitEmail(m.commit_email ?? "");
       toast("Profile saved");
     },
   });
+  const err = (f: string) =>
+    (save.error as { field?: string } | null)?.field === f ? save.error?.message : undefined;
   return (
-    <Section title="Profile" description="How you appear in sessions and to your team.">
+    <Section title="Profile" description="How you appear in sessions, in commits and to your team.">
       <form
         className="flex flex-col gap-4"
         onSubmit={(e) => {
@@ -112,23 +122,11 @@ function Profile({ me }: { me: G.Me }) {
             </div>
           </div>
         </div>
-        <NameFields
-          given={given}
-          family={family}
-          onGiven={setGiven}
-          onFamily={setFamily}
-          error={(f) =>
-            (save.error as { field?: string } | null)?.field === f ? save.error?.message : undefined
-          }
-        />
+        <NameFields given={given} family={family} onGiven={setGiven} onFamily={setFamily} error={err} />
         <Field
           label="Avatar URL"
           hint="An https:// image. Linking Google fills this in."
-          error={
-            (save.error as { field?: string } | null)?.field === "avatar_url"
-              ? save.error?.message
-              : undefined
-          }
+          error={err("avatar_url")}
         >
           {(id) => (
             <Input
@@ -136,6 +134,38 @@ function Profile({ me }: { me: G.Me }) {
               value={avatar}
               onChange={(e) => setAvatar(e.target.value)}
               placeholder="https://…"
+            />
+          )}
+        </Field>
+        <Field
+          label="Commit email"
+          hint={
+            <>
+              Commits in the sessions you start credit you as a co-author with this address, which anyone who
+              can read the repository sees; a project can turn this off. Use one your GitHub account has, such
+              as your{" "}
+              <a
+                href="https://github.com/settings/emails"
+                target="_blank"
+                rel="noreferrer"
+                className="text-ink underline decoration-accent underline-offset-2"
+              >
+                noreply address
+              </a>
+              , so GitHub links the commits to you.
+            </>
+          }
+          error={err("commit_email")}
+        >
+          {(id) => (
+            <Input
+              id={id}
+              type="email"
+              value={commitEmail}
+              onChange={(e) => setCommitEmail(e.target.value)}
+              placeholder="None: commits don't credit you"
+              autoComplete="off"
+              spellCheck={false}
             />
           )}
         </Field>

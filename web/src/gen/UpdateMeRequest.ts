@@ -8,4 +8,9 @@ given_name?: string, family_name?: string,
 /**
  * The full name alone, from older clients: the parts become unknown.
  */
-name?: string, avatar_url?: string, };
+name?: string, avatar_url?: string, 
+/**
+ * The address commits credit you with (`Me.commit_email`); an empty
+ * one removes it.
+ */
+commit_email?: string, };

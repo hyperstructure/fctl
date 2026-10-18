@@ -121,9 +121,14 @@ pub async fn build(
             .collect()
     });
     let secrets = crate::api::projects::decrypted_secrets(db, keys, &project.id).await?;
-    let author = creator(db, &row.created_by).await?;
     let git_author = bot_identity(cfg, now).await;
     let mut settings = project.settings();
+    // A project that credits nobody never sends a commit email to a sandbox.
+    let author = if settings.credit_people {
+        creator(db, &row.created_by).await?
+    } else {
+        None
+    };
     // Agents from before `claude_ai_connectors` ignore it, but every agent
     // passes the project's environment on to Claude. Not stored.
     settings.env = fctl_domain::settings::session_env(&settings);
@@ -171,7 +176,8 @@ pub async fn build(
             github_read: tokens.read,
         },
         git_author,
-        co_authors: author.into_iter().collect(),
+        co_authors: Vec::new(),
+        co_authored_by: author.into_iter().collect(),
         web_url: cfg.url(&format!("/s/{}", row.id)),
         idle_timeout_secs: project
             .settings()
@@ -181,22 +187,26 @@ pub async fn build(
     })
 }
 
+/// The person who started the session, as its commits credit them: with
+/// the commit email they chose, never their sign-in email. `None` without
+/// one, and then commits don't name them.
 async fn creator(db: &D1Database, user_id: &str) -> AppResult<Option<GitIdentity>> {
     #[derive(serde::Deserialize)]
     struct U {
         name: String,
-        email: String,
+        commit_email: Option<String>,
     }
     let u: Option<U> = q(
         db,
-        "SELECT name, email FROM users WHERE id = ?",
+        "SELECT name, commit_email FROM users WHERE id = ?",
         &[s(user_id)],
     )?
     .first()
     .await?;
-    Ok(u.map(|u| GitIdentity {
-        name: u.name,
-        email: u.email,
+    Ok(u.and_then(|U { name, commit_email }| {
+        commit_email
+            .filter(|e| !e.is_empty())
+            .map(|email| GitIdentity { name, email })
     }))
 }
 

@@ -82,6 +82,11 @@ impl Api {
         self.get("/auth/me").await
     }
 
+    /// Changes your profile; fields left out stay as they are.
+    pub async fn update_me(&self, body: &UpdateMeRequest) -> Result<Me> {
+        self.patch("/auth/me", body).await
+    }
+
     pub async fn device_start(&self, client_name: &str) -> Result<DeviceStartResponse> {
         self.post(
             "/auth/device",

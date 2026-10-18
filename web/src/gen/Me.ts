@@ -6,4 +6,10 @@ import type { User } from "./User";
 /**
  * `GET /api/v1/auth/me`.
  */
-export type Me = { user: User, identities: Array<Identity>, claude: Array<ClaudeCredentialInfo>, };
+export type Me = { user: User, identities: Array<Identity>, claude: Array<ClaudeCredentialInfo>, 
+/**
+ * The address the commits of sessions you start credit you with, in a
+ * `Co-authored-by` trailer. Only you see it here; absent when you have
+ * none, and then commits don't name you.
+ */
+commit_email?: string, };

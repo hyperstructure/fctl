@@ -296,6 +296,7 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
             .iter()
             .map(|c| c.to_info(default_id.as_deref()))
             .collect(),
+        commit_email: user.commit_email.clone(),
     })
 }
 

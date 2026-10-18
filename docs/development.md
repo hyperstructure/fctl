@@ -56,7 +56,12 @@ five-hour and weekly windows that follow the clock, so Settings → Claude,
 the floor and `fctl claude status` show it. Its `system/init` message lists a
 claude.ai connector, `claude.ai Fake Docs`, unless
 `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, so sessions in a project with
-claude.ai connectors turned off show none (`fctl logs --json`).
+claude.ai connectors turned off show none (`fctl logs --json`). Its commits
+end as Claude Code's do: with Claude's trailer, or with the
+`attribution.commit` fctl-agent writes into Claude's settings. To see
+yours, set a commit email
+(`cargo run -p fctl -- account set --commit-email 1+dev@users.noreply.github.com`);
+to see Claude's go, `cargo run -p fctl -- projects set --credit-claude off`.
 
 Notifications work locally too: `http://localhost:5173` is a secure
 context, so turn them on in Settings → Notifications, follow a session and

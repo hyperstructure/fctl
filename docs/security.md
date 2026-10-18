@@ -101,6 +101,22 @@ outside it except through these channels:
 
 The `process` driver has no isolation at all and is for development only.
 
+## Commits
+
+Agents' commits are authored by the GitHub App's bot. They carry Claude's
+`Co-authored-by` trailer unless the project turns off **Credit Claude in
+commits**. They name the person who started the session only when that
+person chose a commit email (Settings → Profile, or `fctl account set
+--commit-email`) and the project credits people: a trailer then carries
+their name and that address. Maintainers turn that off with **Credit people
+in commits** in the project's settings (`fctl projects set --credit-people
+off`); its sessions then don't receive the address at all. Everyone who can
+read the repository sees the address in the commits, and
+people who can see the session see it in the transcript; commits keep it
+after it is removed or the account deleted. Settings and the API show the
+address only to its owner, not to admins. fctl never puts sign-in emails in
+commits.
+
 ## Billing
 
 fctl is built so agents only ever use Claude **subscriptions**:
@@ -149,7 +165,8 @@ its sessions ([Sandbox images](sandbox-images.md)).
   memberships, shares, follows and notification settings and browsers, and
   the projects only it is a member of, with their sessions. Sessions and projects it created that others still use stay,
   credited to "Deleted user": the account remains only as a disabled
-  placeholder, without its name, email or picture. An instance's last owner
+  placeholder, without its name, email, commit email or picture. Commits
+  already pushed keep the trailers in them. An instance's last owner
   cannot delete their account.
 - Settings → Your data (or `fctl account export`) downloads everything the
   instance keeps about you, as JSON. Files you attached are listed in the

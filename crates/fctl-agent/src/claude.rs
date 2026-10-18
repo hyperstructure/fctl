@@ -5,6 +5,8 @@
 //! requests (`initialize`, `interrupt`, `remote_control`).
 
 use anyhow::{Context, Result};
+use fctl_proto::runner::GitIdentity;
+use fctl_proto::session::ProjectSettings;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -73,21 +75,83 @@ pub struct Claude {
 /// `attribution.pr` is the long-supported form: a Claude Code that rejects a
 /// key skips the whole file, permissions included.
 ///
+/// `attribution.commit` ends commits with the trailers the project wants
+/// ([`commit_attribution`]); it came with `attribution.pr`, in Claude Code
+/// 2.0.62. A project that doesn't credit Claude also gets
+/// `attribution.sessionUrl: false`, so Remote Control sessions leave out
+/// the claude.ai link (Claude Code 2.1.183 and later; were an older one to
+/// skip the file over it, it would credit Claude as by default, and the
+/// command line still sets the permission mode). A repository's Claude
+/// settings or its CLAUDE.md can still replace them.
+///
 /// Without `claude_ai_connectors`, `disableClaudeAiConnectors` too: a
 /// repository's settings can set `ENABLE_CLAUDEAI_MCP_SERVERS` back on, but
 /// no settings source can undo this one. Claude Code skips keys it doesn't
 /// know (2.1.302 does), so one from before the key only has the variable.
-pub fn user_settings(claude_ai_connectors: bool) -> Value {
+pub fn user_settings(project: &ProjectSettings, co_authors: &[GitIdentity]) -> Value {
     let mut settings = json!({
         "$schema": "https://json.schemastore.org/claude-code-settings.json",
         "permissions": { "defaultMode": "bypassPermissions" },
         "env": { "DISABLE_AUTOUPDATER": "1" },
         "attribution": { "pr": "" }
     });
-    if !claude_ai_connectors {
+    if let Some(commit) = commit_attribution(project.credit_claude, co_authors) {
+        settings["attribution"]["commit"] = json!(commit);
+    }
+    if !project.credit_claude {
+        settings["attribution"]["sessionUrl"] = json!(false);
+    }
+    if !project.claude_ai_connectors {
         settings["disableClaudeAiConnectors"] = json!(true);
     }
     settings
+}
+
+/// Claude's trailer in commits that credit people too. Claude Code's own
+/// names the model, which isn't known before Claude starts; Claude Code
+/// writes this one itself when it can't tell the model's version.
+const CLAUDE_TRAILER: &str = "Co-authored-by: Claude <noreply@anthropic.com>";
+
+/// The text Claude ends commits with: Claude's trailer if the project
+/// credits Claude, then a `Co-authored-by` trailer for each person the
+/// session credits; empty for no trailers at all. `None` when only Claude
+/// is credited, which keeps Claude Code's default trailer, naming the model.
+pub fn commit_attribution(credit_claude: bool, co_authors: &[GitIdentity]) -> Option<String> {
+    let people: Vec<String> = co_authors.iter().filter_map(co_author_trailer).collect();
+    if credit_claude && people.is_empty() {
+        return None;
+    }
+    let claude = credit_claude.then(|| CLAUDE_TRAILER.to_owned());
+    Some(
+        claude
+            .into_iter()
+            .chain(people)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// `Co-authored-by: Name <email>`, on one line with one address. The
+/// control plane checks both; this keeps an odd one from adding lines.
+fn co_author_trailer(person: &GitIdentity) -> Option<String> {
+    let name: String = person
+        .name
+        .chars()
+        .map(|c| {
+            if c.is_control() || c == '<' || c == '>' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let email = person.email.trim();
+    let odd = |c: char| c.is_whitespace() || c.is_control() || c == '<' || c == '>';
+    if name.is_empty() || !email.contains('@') || email.chars().any(odd) {
+        return None;
+    }
+    Some(format!("Co-authored-by: {name} <{email}>"))
 }
 
 /// The line in `~/.claude/CLAUDE.md`, Claude's user memory, that loads
@@ -391,9 +455,16 @@ pub fn project_settings_are_unsafe(repo: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn project(credit_claude: bool) -> ProjectSettings {
+        ProjectSettings {
+            credit_claude,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn user_settings_keep_pull_requests_plain() {
-        let s = user_settings(true);
+        let s = user_settings(&project(true), &[]);
         assert_eq!(s["attribution"]["pr"], "");
         assert_eq!(s["permissions"]["defaultMode"], "bypassPermissions");
         assert!(s.get("apiKeyHelper").is_none());
@@ -402,13 +473,83 @@ mod tests {
     #[test]
     fn user_settings_turn_connectors_off() {
         assert!(
-            user_settings(true)
+            user_settings(&project(true), &[])
                 .get("disableClaudeAiConnectors")
                 .is_none()
         );
-        let s = user_settings(false);
+        let off = ProjectSettings {
+            claude_ai_connectors: false,
+            ..Default::default()
+        };
+        let s = user_settings(&off, &[]);
         assert_eq!(s["disableClaudeAiConnectors"], true);
         assert_eq!(s["permissions"]["defaultMode"], "bypassPermissions");
+    }
+
+    fn person(name: &str, email: &str) -> GitIdentity {
+        GitIdentity {
+            name: name.into(),
+            email: email.into(),
+        }
+    }
+
+    #[test]
+    fn commits_credit_the_people_the_session_names() {
+        // Nobody to credit: Claude Code's own trailer, which names the model.
+        let s = user_settings(&project(true), &[]);
+        assert!(s["attribution"].get("commit").is_none());
+        assert!(s["attribution"].get("sessionUrl").is_none());
+        let s = user_settings(
+            &project(true),
+            &[person("Ada Lovelace", "1+ada@users.noreply.github.com")],
+        );
+        assert_eq!(
+            s["attribution"]["commit"],
+            "Co-authored-by: Claude <noreply@anthropic.com>\n\
+             Co-authored-by: Ada Lovelace <1+ada@users.noreply.github.com>"
+        );
+        assert_eq!(s["attribution"]["pr"], "");
+    }
+
+    #[test]
+    fn projects_that_dont_credit_claude_leave_its_trailer_out() {
+        // No trailers at all, and no claude.ai link from Remote Control.
+        let s = user_settings(&project(false), &[]);
+        assert_eq!(s["attribution"]["commit"], "");
+        assert_eq!(s["attribution"]["sessionUrl"], false);
+        assert_eq!(s["attribution"]["pr"], "");
+        // The people the session credits stay.
+        let s = user_settings(
+            &project(false),
+            &[person("Ada Lovelace", "1+ada@users.noreply.github.com")],
+        );
+        assert_eq!(
+            s["attribution"]["commit"],
+            "Co-authored-by: Ada Lovelace <1+ada@users.noreply.github.com>"
+        );
+        assert_eq!(s["attribution"]["sessionUrl"], false);
+    }
+
+    #[test]
+    fn co_author_trailers_stay_one_line() {
+        assert_eq!(
+            commit_attribution(true, &[person(" Ada\n<b>Lovelace ", "ada@example.com")]).as_deref(),
+            Some(
+                "Co-authored-by: Claude <noreply@anthropic.com>\n\
+                 Co-authored-by: Ada b Lovelace <ada@example.com>"
+            )
+        );
+        for email in ["ada", "ada@example.com>\nFixes: #1", "a b@example.com", ""] {
+            assert_eq!(
+                commit_attribution(true, &[person("Ada", email)]),
+                None,
+                "{email:?}"
+            );
+        }
+        assert_eq!(
+            commit_attribution(true, &[person(" <> ", "ada@example.com")]),
+            None
+        );
     }
 
     #[test]

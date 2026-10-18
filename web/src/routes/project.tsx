@@ -633,6 +633,34 @@ function Settings({ project }: { project: G.Project }) {
               label="claude.ai connectors"
             />
           </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Credit people in commits
+              <span className="block text-[12.5px] text-ink-4">
+                Commits name the person who started the session as a co-author, with the commit email in their
+                profile.
+              </span>
+            </span>
+            <Switch
+              checked={s.credit_people}
+              onChange={(v) => set("credit_people", v)}
+              label="Credit people in commits"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Credit Claude in commits
+              <span className="block text-[12.5px] text-ink-4">
+                Commits name Claude as a co-author, Claude Code's default. Off: they leave out its trailer and
+                the claude.ai session link.
+              </span>
+            </span>
+            <Switch
+              checked={s.credit_claude}
+              onChange={(v) => set("credit_claude", v)}
+              label="Credit Claude in commits"
+            />
+          </div>
         </div>
       </Section>
       <Section title="Sandbox" description="Where agents run.">

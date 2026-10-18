@@ -326,6 +326,7 @@ mod tests {
                 email: "agent@fctl.invalid".into(),
             },
             co_authors: vec![],
+            co_authored_by: vec![],
             web_url: "https://app.fctl.sh/s/ses_1".into(),
             idle_timeout_secs: 7200,
             run_id: None,

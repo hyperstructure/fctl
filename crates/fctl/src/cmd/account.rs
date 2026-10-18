@@ -1,14 +1,28 @@
-//! `fctl account …`: export your data, delete your account.
+//! `fctl account …`: the address commits credit you with, export your
+//! data, delete your account.
 
 use crate::config::{self, Credentials};
 use crate::style;
 use anyhow::{Result, bail};
 use clap::Subcommand;
+use fctl_proto::api::UpdateMeRequest;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 #[derive(Subcommand)]
 pub enum AccountCmd {
+    /// Change your profile: the address commits credit you with.
+    #[command(
+        after_help = "Examples:\n  fctl account set --commit-email 1234+ada@users.noreply.github.com\n  fctl account set --commit-email \"\"   # commits don't credit you"
+    )]
+    Set {
+        /// Commits in the sessions you start credit you with this address, in
+        /// a Co-authored-by trailer anyone who can read the repository sees.
+        /// Use one your GitHub account has (its noreply address works), so
+        /// GitHub links the commits to you. "" removes it.
+        #[arg(long, value_name = "EMAIL")]
+        commit_email: String,
+    },
     /// Download your personal data as JSON: your account, sign-in methods,
     /// devices and tokens, Claude connections (without secrets), notification
     /// settings and browsers, projects, the sessions you started with their
@@ -30,6 +44,33 @@ pub enum AccountCmd {
 pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()> {
     let api = config::api(server)?;
     match cmd {
+        AccountCmd::Set { commit_email } => {
+            let me = api
+                .update_me(&UpdateMeRequest {
+                    commit_email: Some(commit_email),
+                    ..Default::default()
+                })
+                .await?;
+            if json {
+                return style::print_json(&me);
+            }
+            match &me.commit_email {
+                Some(email) => println!(
+                    "{} Commits in the sessions you start credit you as {} <{email}>",
+                    style::accent("✓"),
+                    me.user.name
+                ),
+                None => println!(
+                    "{} Commits in the sessions you start don't credit you",
+                    style::accent("✓")
+                ),
+            }
+            println!(
+                "{}",
+                style::dim("Sessions take the change when they next start or resume.")
+            );
+            Ok(())
+        }
         AccountCmd::Export { output } => {
             let data = api.export().await?;
             if output.as_deref().is_some_and(|p| p.as_os_str() == "-") {
