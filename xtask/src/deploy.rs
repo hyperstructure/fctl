@@ -144,11 +144,16 @@ migrations_dir = "migrations"
 bindings = [
   {{ name = "SESSION", class_name = "SessionObject" }},
   {{ name = "FLEET", class_name = "FleetObject" }},
+  {{ name = "FILES", class_name = "FilesObject" }},
 ]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionObject", "FleetObject"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["FilesObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"
@@ -388,6 +393,14 @@ app_slug = "acme-fctl"
             Some("https://fctl.acme.dev")
         );
         assert_eq!(doc["routes"][0]["pattern"].as_str(), Some("fctl.acme.dev"));
+        assert_eq!(
+            doc["durable_objects"]["bindings"][2]["class_name"].as_str(),
+            Some("FilesObject")
+        );
+        assert_eq!(
+            doc["migrations"][1]["new_sqlite_classes"][0].as_str(),
+            Some("FilesObject")
+        );
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
     }
 }

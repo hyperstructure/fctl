@@ -3,6 +3,7 @@
 
 use crate::config::HostConfig;
 use crate::driver::{Driver, Sandbox, SandboxSpec, sandbox_name};
+use crate::files;
 use crate::uplink::Uplink;
 use anyhow::{Context, Result};
 use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES};
@@ -11,7 +12,7 @@ use fctl_proto::runner::{
     ClaudeCredential, CredentialKind, GithubCredential, SessionSpec, StopReason,
 };
 use fctl_proto::session::SessionStatus;
-use fctl_proto::uplink::{Delivery, SessionState, UplinkDown};
+use fctl_proto::uplink::{Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown};
 use fctl_proto::{RunnerId, SessionId};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -190,6 +191,47 @@ fn state(status: SessionStatus, reason: &str) -> SessionState {
     }
 }
 
+/// A delivery from the control plane: messages wait for their files (in
+/// order), interrupts go straight to the agent.
+fn route(
+    delivery: Delivery,
+    jobs: &mpsc::UnboundedSender<files::Job>,
+    link: Option<&AgentLink>,
+    queued: &mut Vec<HostToAgent>,
+) {
+    if matches!(delivery.kind, DeliveryKind::Message { .. }) {
+        let _ = jobs.send(files::Job::Deliver(delivery));
+        return;
+    }
+    match link {
+        Some(l) => l.send(HostToAgent::Deliver { delivery }),
+        None => queued.push(HostToAgent::Deliver { delivery }),
+    }
+}
+
+/// Sends a frame to the agent. An agent older than attachments gets its
+/// messages without their files, and the transcript says so.
+fn to_agent(l: &AgentLink, frame: HostToAgent, agent_files: bool, uplink: &Uplink) {
+    if !agent_files {
+        match &frame {
+            HostToAgent::File { .. } => return,
+            HostToAgent::Deliver {
+                delivery:
+                    Delivery {
+                        kind: DeliveryKind::Message { attachments, .. },
+                        ..
+                    },
+            } if !attachments.is_empty() => host_log(
+                uplink,
+                LogLevel::Warn,
+                "The agent in this sandbox started on an older fctl and cannot take files, so it gets this message without its attachments. Stop and resume the session to update it.".into(),
+            ),
+            _ => {}
+        }
+    }
+    l.send(frame);
+}
+
 fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     uplink.log(LogLine {
         source: LogSource::Host,
@@ -239,6 +281,10 @@ async fn run(
         ctx.token.clone(),
         ctx.runner_id(),
     );
+    let (jobs, mut ready) = files::start(
+        fctl_client::Api::new(&ctx.cfg.server, Some(ctx.token.clone())),
+        session_id.clone(),
+    );
     let set_report = |status: SessionStatus, seq: Option<u64>| {
         if let Ok(mut r) = report.lock() {
             r.status = status;
@@ -276,7 +322,10 @@ async fn run(
     let mut acked: u64 = 0;
     let mut welcomed = false;
     let mut link: Option<AgentLink> = None;
-    let mut queued: Vec<Delivery> = Vec::new();
+    // Frames for the agent while none is attached, in order.
+    let mut queued: Vec<HostToAgent> = Vec::new();
+    // Whether the attached agent takes `File` frames.
+    let mut agent_files = false;
     let mut exited: Option<(SessionStatus, Option<String>)> = None;
     let mut stop: Option<(bool, Instant)> = None;
     let mut attach_failures = 0u32;
@@ -324,10 +373,13 @@ async fn run(
                 match msg {
                     AgentToHost::Hello(h) => {
                         set_report(h.status, Some(h.agent_seq));
+                        agent_files = h.features.iter().any(|f| f == FEATURE_ATTACHMENTS);
                         if !h.configured {
                             match &spec {
                                 Some(spec) if spec.resume && !welcomed => configure_when_welcomed = true,
-                                Some(spec) => l.send(HostToAgent::Configure { config: Box::new(agent_config(&ctx, &sb, spec, acked)) }),
+                                Some(spec) => {
+                                    let _ = jobs.send(files::Job::Configure(Box::new(agent_config(&ctx, &sb, spec, acked))));
+                                }
                                 None => {
                                     let msg = "The sandbox lost the session's state when the host restarted. Resume the session to continue.".to_owned();
                                     uplink.state(state(SessionStatus::Stopped, &msg));
@@ -337,8 +389,8 @@ async fn run(
                         }
                         if welcomed {
                             l.send(HostToAgent::Replay { after_agent_seq: acked });
-                            for d in queued.drain(..) {
-                                l.send(HostToAgent::Deliver { delivery: d });
+                            for frame in queued.drain(..) {
+                                to_agent(l, frame, agent_files, &uplink);
                             }
                         }
                     }
@@ -372,19 +424,16 @@ async fn run(
                         acked = acked_agent_seq;
                         welcomed = true;
                         if configure_when_welcomed
-                            && let (Some(spec), Some(l)) = (&spec, &link)
+                            && let (Some(spec), Some(_)) = (&spec, &link)
                         {
                             configure_when_welcomed = false;
-                            l.send(HostToAgent::Configure { config: Box::new(agent_config(&ctx, &sb, spec, acked)) });
+                            let _ = jobs.send(files::Job::Configure(Box::new(agent_config(&ctx, &sb, spec, acked))));
                         }
-                        match &link {
-                            Some(l) => {
-                                l.send(HostToAgent::Replay { after_agent_seq: acked });
-                                for p in pending {
-                                    l.send(HostToAgent::Deliver { delivery: p });
-                                }
-                            }
-                            None => queued.extend(pending),
+                        if let Some(l) = &link {
+                            l.send(HostToAgent::Replay { after_agent_seq: acked });
+                        }
+                        for p in pending {
+                            route(p, &jobs, link.as_ref(), &mut queued);
                         }
                     }
                     UplinkDown::Ack { agent_seq } => {
@@ -393,13 +442,31 @@ async fn run(
                             l.send(HostToAgent::Ack { agent_seq });
                         }
                     }
-                    UplinkDown::Deliver { delivery } => match &link {
-                        Some(l) => l.send(HostToAgent::Deliver { delivery }),
-                        None => queued.push(delivery),
-                    },
+                    UplinkDown::Deliver { delivery } => route(delivery, &jobs, link.as_ref(), &mut queued),
                     UplinkDown::Pong => {}
                 }
             }
+            Some(r) = ready.recv() => match r {
+                files::Ready::File(frame) => match &link {
+                    Some(l) => to_agent(l, *frame, agent_files, &uplink),
+                    None => queued.push(*frame),
+                },
+                files::Ready::Failed(att, why) => host_log(
+                    &uplink,
+                    LogLevel::Warn,
+                    format!("Could not fetch {} for the agent: {why}", att.name),
+                ),
+                // Without an agent the next one's hello configures it again.
+                files::Ready::Job(files::Job::Configure(config)) => {
+                    if let Some(l) = &link {
+                        l.send(HostToAgent::Configure { config });
+                    }
+                }
+                files::Ready::Job(files::Job::Deliver(delivery)) => match &link {
+                    Some(l) => to_agent(l, HostToAgent::Deliver { delivery }, agent_files, &uplink),
+                    None => queued.push(HostToAgent::Deliver { delivery }),
+                },
+            },
             c = cmds.recv() => match c {
                 Some(SessionCmd::Stop { reason, destroy }) => {
                     if stop.is_none() {

@@ -278,13 +278,13 @@ impl Claude {
         self.write(&json!({ "type": "control_response", "response": response }));
     }
 
-    /// A user turn.
-    pub fn send_user(&self, text: &str, uuid: &str) {
+    /// A user turn: text and image blocks.
+    pub fn send_user(&self, content: Vec<Value>, uuid: &str) {
         self.write(&json!({
             "type": "user",
             "session_id": "",
             "uuid": uuid,
-            "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+            "message": { "role": "user", "content": content },
             "parent_tool_use_id": null
         }));
     }

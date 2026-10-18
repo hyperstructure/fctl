@@ -11,7 +11,7 @@ use crate::internal::{
 use crate::model::{CredentialRow, SESSION_SELECT, SessionRow};
 use fctl_domain::{naming, validate};
 use fctl_proto::api::*;
-use fctl_proto::event::{EventBody, Interrupt, MessageSource, UserMessage};
+use fctl_proto::event::{Attachment, EventBody, Interrupt, MessageSource, UserMessage};
 use fctl_proto::runner::StopReason;
 use fctl_proto::session::{SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{Delivery, DeliveryKind};
@@ -60,16 +60,15 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         return Err(conflict("This project is archived"));
     }
     let user = ctx.user()?.clone();
-    let prompt = validate::message("prompt", &body.prompt)?;
-    let title = match body
+    let files = validate::attachment_ids(&body.attachments)?;
+    let prompt = validate::message_with_files("prompt", &body.prompt, files.len())?;
+    let title = body
         .title
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty())
-    {
-        Some(t) => validate::name("title", t)?,
-        None => naming::title_from_prompt(&prompt),
-    };
+        .map(|t| validate::name("title", t))
+        .transpose()?;
     let model = body
         .model
         .as_deref()
@@ -90,6 +89,22 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         .transpose()?
         .unwrap_or_else(|| p.row.default_branch.clone());
     let credential = default_credential(ctx, &user).await?;
+    let id = fctl_domain::ids::session_id(ctx.now);
+    // The task's files belong to the new session from here on.
+    let attachments = internal::claim_files(&ctx.env, &p.row.id, &id, &user.id, &files).await?;
+    let title = title.unwrap_or_else(|| {
+        if prompt.is_empty() {
+            let names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
+            naming::title_from_files(&names)
+        } else {
+            naming::title_from_prompt(&prompt)
+        }
+    });
+    let prompt_attachments = if attachments.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&attachments)?)
+    };
     // A per-project sequence number (#12).
     let counter: Option<Counter> = q(
         &ctx.db,
@@ -103,18 +118,18 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         Some(b) => validate::branch("branch", b)?,
         None => naming::session_branch(number as u32, &title),
     };
-    let id = fctl_domain::ids::session_id(ctx.now);
     let claude_session_id = fctl_domain::ids::uuid_v4();
     q(
         &ctx.db,
-        "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, credential_id, branch, base_branch, model, effort, \
-         claude_session_id, stats, created_at, updated_at, last_activity_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)",
+        "INSERT INTO sessions (id, project_id, number, title, prompt, prompt_attachments, status, created_by, credential_id, branch, base_branch, model, effort, \
+         claude_session_id, stats, created_at, updated_at, last_activity_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&p.row.id),
             n(number),
             s(&title),
             s(&prompt),
+            os(prompt_attachments.as_deref()),
             s(&user.id),
             s(&credential.id),
             s(&branch),
@@ -137,6 +152,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         author: Some(user.to_ref()),
         text: prompt,
         source: source_of(ctx),
+        attachments,
     };
     let _: serde_json::Value = internal::post(
         &stub,
@@ -271,13 +287,30 @@ pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResu
     let body: SendMessageRequest = http::body(req).await?;
     let a = access::session(ctx, id).await?;
     a.require_editor()?;
-    let text = validate::message("text", &body.text)?;
+    let files = validate::attachment_ids(&body.attachments)?;
+    let text = validate::message_with_files("text", &body.text, files.len())?;
     if !a.row.status().accepts_messages() {
         return Err(conflict("The session has ended. Resume it to continue."));
     }
     let author = ctx.user()?.to_ref();
-    let delivery_id =
-        deliver_message(ctx, id, text, author, source_of(ctx), body.client_id).await?;
+    let attachments = internal::claim_files(
+        &ctx.env,
+        &a.row.project_id,
+        &a.row.session_id(),
+        author.id.as_str(),
+        &files,
+    )
+    .await?;
+    let delivery_id = deliver_message(
+        ctx,
+        id,
+        text,
+        author,
+        source_of(ctx),
+        body.client_id,
+        attachments,
+    )
+    .await?;
     http::ok(&SendMessageResponse { delivery_id })
 }
 
@@ -290,6 +323,7 @@ pub async fn deliver_message(
     author: UserRef,
     source: MessageSource,
     client_key: Option<String>,
+    attachments: Vec<Attachment>,
 ) -> AppResult<fctl_proto::DeliveryId> {
     let delivery_id = fctl_domain::ids::delivery_id(ctx.now);
     let stub = internal::session_stub(&ctx.env, session_id)?;
@@ -302,6 +336,7 @@ pub async fn deliver_message(
                 kind: DeliveryKind::Message {
                     text: text.clone(),
                     author: Some(author.clone()),
+                    attachments: attachments.clone(),
                 },
             },
             client_key,
@@ -310,6 +345,7 @@ pub async fn deliver_message(
                 author: Some(author),
                 text,
                 source,
+                attachments,
             }),
         },
     )
@@ -372,7 +408,10 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let body: ResumeSessionRequest = if http::header(req, "Content-Type").is_some() {
         http::body(req).await?
     } else {
-        ResumeSessionRequest { prompt: None }
+        ResumeSessionRequest {
+            prompt: None,
+            attachments: Vec::new(),
+        }
     };
     let a = access::session(ctx, id).await?;
     a.require_owner()?;
@@ -380,8 +419,23 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         return Err(conflict("The session is still running"));
     }
     let user = ctx.user()?.clone();
+    let files = validate::attachment_ids(&body.attachments)?;
+    let prompt = body.prompt.as_deref().unwrap_or_default();
+    let message = if files.is_empty() && prompt.trim().is_empty() {
+        None
+    } else {
+        Some(validate::message_with_files("prompt", prompt, files.len())?)
+    };
     // Resumed sessions run on the resumer's subscription.
     let credential = default_credential(ctx, &user).await?;
+    let attachments = internal::claim_files(
+        &ctx.env,
+        &a.row.project_id,
+        &a.row.session_id(),
+        &user.id,
+        &files,
+    )
+    .await?;
     q(
         &ctx.db,
         "UPDATE sessions SET status = 'queued', status_reason = NULL, credential_id = ?, ended_at = NULL, updated_at = ? WHERE id = ?",
@@ -401,9 +455,17 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         },
     )
     .await?;
-    if let Some(prompt) = body.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
-        let text = validate::message("prompt", prompt)?;
-        deliver_message(ctx, id, text, user.to_ref(), source_of(ctx), None).await?;
+    if let Some(text) = message {
+        deliver_message(
+            ctx,
+            id,
+            text,
+            user.to_ref(),
+            source_of(ctx),
+            None,
+            attachments,
+        )
+        .await?;
     }
     let fleet = internal::fleet_stub(&ctx.env)?;
     let _: serde_json::Value = internal::post(

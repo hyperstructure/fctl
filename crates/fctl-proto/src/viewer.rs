@@ -4,10 +4,10 @@
 //! The first server frame is always [`ViewerServer::Snapshot`]. Clients that
 //! reconnect pass `?after=<seq>` and get only newer events in the snapshot.
 
-use crate::Millis;
 use crate::error::ApiError;
 use crate::event::SessionEvent;
 use crate::session::{Session, SessionRole, UserRef};
+use crate::{AttachmentId, Millis};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -95,7 +95,12 @@ pub enum ViewerClient {
     /// Message the agent. Queued if it is busy.
     Send {
         client_id: String,
+        /// May be empty when `attachments` are given.
         text: String,
+        /// Uploaded files to send with it (see `SendMessageRequest`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<Vec<AttachmentId>>", optional))]
+        attachments: Vec<AttachmentId>,
     },
     /// Stop the agent's current turn.
     Interrupt {

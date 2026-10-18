@@ -14,6 +14,19 @@ pub fn title_from_prompt(prompt: &str) -> String {
     truncate_words(line, 72)
 }
 
+/// A title for a task that is only files: `screenshot.png`, or
+/// `screenshot.png and 2 more files`.
+pub fn title_from_files(names: &[&str]) -> String {
+    match names {
+        [] => "Untitled session".to_owned(),
+        [one] => truncate_words(one, 72),
+        [first, rest @ ..] => {
+            let more = if rest.len() == 1 { "file" } else { "files" };
+            truncate_words(&format!("{first} and {} more {more}", rest.len()), 72)
+        }
+    }
+}
+
 /// Truncates at a word boundary, adding `…` when shortened.
 pub fn truncate_words(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
@@ -90,6 +103,20 @@ pub fn project_slug(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn titles_from_files() {
+        assert_eq!(title_from_files(&["shot.png"]), "shot.png");
+        assert_eq!(
+            title_from_files(&["a.png", "b.pdf"]),
+            "a.png and 1 more file"
+        );
+        assert_eq!(
+            title_from_files(&["a.png", "b", "c"]),
+            "a.png and 2 more files"
+        );
+        assert_eq!(title_from_files(&[]), "Untitled session");
+    }
 
     #[test]
     fn titles() {

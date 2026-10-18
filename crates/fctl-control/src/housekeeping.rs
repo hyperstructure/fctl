@@ -1,6 +1,7 @@
 //! Deleting what is no longer needed: the event logs of deleted sessions,
-//! expired sign-in records and old audit entries. Runs from the Worker's
-//! hourly cron trigger; deleting a project also purges its sessions right away.
+//! the files of deleted projects, expired sign-in records and old audit
+//! entries. Runs from the Worker's hourly cron trigger; deleting a project
+//! also purges its sessions and files right away.
 
 use crate::db::{n, q, s};
 use crate::error::AppResult;
@@ -62,10 +63,62 @@ pub async fn purge_sessions(env: &Env, db: &D1Database, limit: i64) -> AppResult
     Ok(purged)
 }
 
+#[derive(Deserialize)]
+struct QueuedFiles {
+    project_id: String,
+}
+
+/// Deletes the files of deleted projects (see `file_purges`), like
+/// [`purge_sessions`].
+pub async fn purge_files(env: &Env, db: &D1Database, limit: i64) -> AppResult<usize> {
+    q(
+        db,
+        "DELETE FROM file_purges WHERE project_id IN (SELECT id FROM projects)",
+        &[],
+    )?
+    .run()
+    .await?;
+    let queued: Vec<QueuedFiles> = q(
+        db,
+        "SELECT project_id FROM file_purges ORDER BY attempts, queued_at LIMIT ?",
+        &[n(limit)],
+    )?
+    .all()
+    .await?;
+    let mut purged = 0;
+    for row in queued {
+        let result: AppResult<serde_json::Value> = async {
+            let stub = internal::files_stub(env, &row.project_id)?;
+            internal::post(&stub, "/purge", &serde_json::json!({})).await
+        }
+        .await;
+        let next = match result {
+            Ok(_) => {
+                purged += 1;
+                "DELETE FROM file_purges WHERE project_id = ?"
+            }
+            Err(e) => {
+                worker::console_error!("purging files of {}: {}", row.project_id, e.0.message);
+                "UPDATE file_purges SET attempts = attempts + 1 WHERE project_id = ?"
+            }
+        };
+        q(db, next, &[s(&row.project_id)])?.run().await?;
+    }
+    Ok(purged)
+}
+
+/// Purges what deleting projects left behind: session event logs and files.
+pub async fn purge_deleted(env: &Env, db: &D1Database) -> AppResult<()> {
+    purge_sessions(env, db, PURGES_PER_RUN).await?;
+    purge_files(env, db, PURGES_PER_RUN).await?;
+    Ok(())
+}
+
 /// The hourly job.
 pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     let db = env.d1("DB")?;
     let purged = purge_sessions(env, &db, PURGES_PER_RUN).await?;
+    let purged_files = purge_files(env, &db, PURGES_PER_RUN).await?;
     let mut deleted = 0;
     for (sql, cutoff) in [
         // Expired tokens are already refused and hidden from Settings.
@@ -87,8 +140,10 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     ] {
         deleted += q(&db, sql, &[n(cutoff)])?.run().await?;
     }
-    if purged > 0 || deleted > 0 {
-        worker::console_log!("housekeeping: purged {purged} sessions, deleted {deleted} rows");
+    if purged > 0 || purged_files > 0 || deleted > 0 {
+        worker::console_log!(
+            "housekeeping: purged {purged} sessions and the files of {purged_files} projects, deleted {deleted} rows"
+        );
     }
     Ok(())
 }

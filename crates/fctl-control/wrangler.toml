@@ -23,11 +23,16 @@ migrations_dir = "migrations"
 bindings = [
   { name = "SESSION", class_name = "SessionObject" },
   { name = "FLEET", class_name = "FleetObject" },
+  { name = "FILES", class_name = "FilesObject" },
 ]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SessionObject", "FleetObject"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["FilesObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"

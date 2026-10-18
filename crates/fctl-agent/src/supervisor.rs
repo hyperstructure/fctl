@@ -4,6 +4,7 @@
 //! work (cloning, git state), and a clock. Outputs: journaled events, state
 //! and ephemeral streams to the host, and stdin for Claude.
 
+use crate::attachments;
 use crate::claude::{self, Claude, ClaudeOut, LaunchSpec};
 use crate::journal::Journal;
 use crate::link::{self, LinkEvent};
@@ -12,10 +13,12 @@ use crate::workspace::{self, Paths};
 use anyhow::Result;
 use fctl_domain::events::{self as ev, BillingGuard, ClaudeKind};
 use fctl_proto::agent::{AgentConfig, AgentHello, AgentToHost, HostToAgent};
-use fctl_proto::event::{EventBody, GitState, LogLevel, LogLine, LogSource, Notice, NoticeLevel};
+use fctl_proto::event::{
+    Attachment, EventBody, GitState, LogLevel, LogLine, LogSource, Notice, NoticeLevel,
+};
 use fctl_proto::runner::{ClaudeCredential, ClaudeCredentialKind, CredentialKind, StopReason};
 use fctl_proto::session::{RemoteControlState, SessionStatus};
-use fctl_proto::uplink::{AgentEvent, Delivery, DeliveryKind, SessionState};
+use fctl_proto::uplink::{AgentEvent, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState};
 use fctl_proto::{DeliveryId, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -79,6 +82,9 @@ pub struct Supervisor {
     stderr_budget: (Instant, u32),
     claude_credential: Option<ClaudeCredential>,
     exit_after: Option<Instant>,
+    /// Files that came before `Configure` (the task's): saved once the
+    /// sandbox's home is known.
+    pending_files: Vec<(Attachment, String)>,
 }
 
 impl Supervisor {
@@ -130,6 +136,7 @@ impl Supervisor {
                 stderr_budget: (Instant::now(), 0),
                 claude_credential: None,
                 exit_after: None,
+                pending_files: Vec::new(),
             },
             claude_rx,
             work_rx,
@@ -189,6 +196,7 @@ impl Supervisor {
             status: self.state.status,
             agent_seq: self.journal.last_seq(),
             claude_version: None,
+            features: vec![FEATURE_ATTACHMENTS.to_owned()],
         })
     }
 
@@ -248,6 +256,7 @@ impl Supervisor {
                 }
             }
             HostToAgent::Deliver { delivery } => self.on_delivery(delivery).await,
+            HostToAgent::File { attachment, data } => self.on_file(attachment, data),
             HostToAgent::Credentials {
                 request_id,
                 claude,
@@ -304,6 +313,25 @@ impl Supervisor {
         });
     }
 
+    // ───────────────────────────── attachments ─────────────────────────────
+
+    fn on_file(&mut self, attachment: Attachment, data: String) {
+        match self.paths.as_ref().map(|p| p.attachments.clone()) {
+            Some(dir) => self.save_file(&dir, &attachment, &data),
+            None => self.pending_files.push((attachment, data)),
+        }
+    }
+
+    fn save_file(&mut self, dir: &std::path::Path, attachment: &Attachment, data: &str) {
+        if let Err(e) = attachments::save(dir, attachment, data) {
+            self.log(
+                LogSource::Agent,
+                LogLevel::Warn,
+                &format!("Could not save {}: {e:#}", attachment.name),
+            );
+        }
+    }
+
     fn persist(&self) {
         if let Ok(text) = serde_json::to_string(&self.persisted) {
             let _ = std::fs::write(self.state_dir.join("state.json"), text);
@@ -351,6 +379,9 @@ impl Supervisor {
         }
         self.claude_credential = Some(config.spec.credentials.claude.clone());
         self.paths = Some(paths.clone());
+        for (att, data) in std::mem::take(&mut self.pending_files) {
+            self.save_file(&paths.attachments, &att, &data);
+        }
         let spec = config.spec.clone();
         self.config = Some(config);
         self.set_status(
@@ -616,10 +647,16 @@ impl Supervisor {
                 LogLevel::Info,
                 "The earlier conversation went with the old sandbox; Claude starts a new one on the branch",
             );
-            let text = prompt::fresh_resume(&spec.branch, spec.task.as_deref());
-            self.send_turn(&text, None, None).await;
+            // The task's files came along again, into the new sandbox.
+            let files = self.prepare_files(&spec.task_attachments);
+            let task = spec
+                .task
+                .as_deref()
+                .map(|t| prompt::with_files(t, &files.note));
+            let text = prompt::fresh_resume(&spec.branch, task.as_deref());
+            self.send_content(&text, files.images, None).await;
         } else if !resume && let Some(p) = spec.prompt.clone() {
-            self.send_turn(&p, None, None).await;
+            self.send_turn(&p, None, None, &spec.task_attachments).await;
         }
         if self.turn_active {
             self.set_status(SessionStatus::Running, None);
@@ -632,15 +669,38 @@ impl Supervisor {
         Ok(())
     }
 
-    async fn send_turn(&mut self, text: &str, author: Option<&str>, delivery: Option<&DeliveryId>) {
+    fn prepare_files(&self, files: &[Attachment]) -> attachments::Prepared {
+        attachments::prepare(self.paths.as_ref().map(|p| p.attachments.as_path()), files)
+    }
+
+    /// A message for Claude, with its files.
+    async fn send_turn(
+        &mut self,
+        text: &str,
+        author: Option<&str>,
+        delivery: Option<&DeliveryId>,
+        files: &[Attachment],
+    ) {
         let starter = self
             .config
             .as_ref()
             .map(|c| c.spec.author.name.clone())
             .unwrap_or_default();
-        let content = prompt::user_turn(text, author, &starter);
+        let files = self.prepare_files(files);
+        let text = prompt::user_turn(&prompt::with_files(text, &files.note), author, &starter);
+        self.send_content(&text, files.images, delivery).await;
+    }
+
+    async fn send_content(
+        &mut self,
+        text: &str,
+        images: Vec<Value>,
+        delivery: Option<&DeliveryId>,
+    ) {
         if let Some(c) = &self.claude {
-            c.send_user(&content, &fctl_domain::ids::uuid_v4());
+            let mut content = vec![json!({ "type": "text", "text": text })];
+            content.extend(images);
+            c.send_user(content, &fctl_domain::ids::uuid_v4());
             self.turn_active = true;
             self.idle_since = None;
             if let Some(id) = delivery {
@@ -667,7 +727,11 @@ impl Supervisor {
             return;
         }
         match &d.kind {
-            DeliveryKind::Message { text, author } => {
+            DeliveryKind::Message {
+                text,
+                author,
+                attachments,
+            } => {
                 if self.stopping.is_some() {
                     // Leave it unconfirmed: the control plane keeps it for the next run.
                     return;
@@ -677,12 +741,14 @@ impl Supervisor {
                     return;
                 }
                 let (text, author) = (text.clone(), author.as_ref().map(|a| a.name.clone()));
+                let files = attachments.clone();
                 // A message during a usage-limit pause waits for the reset.
                 if self.state.status == SessionStatus::Paused {
                     self.queue.push_back(d.clone());
                     return;
                 }
-                self.send_turn(&text, author.as_deref(), Some(&d.id)).await;
+                self.send_turn(&text, author.as_deref(), Some(&d.id), &files)
+                    .await;
             }
             DeliveryKind::Interrupt { .. } => {
                 if let Some(c) = self.claude.as_mut()
@@ -1002,6 +1068,7 @@ impl Supervisor {
                 "The usage limit has reset. Continue where you left off.",
                 None,
                 None,
+                &[],
             )
             .await;
             while let Some(d) = self.queue.pop_front() {

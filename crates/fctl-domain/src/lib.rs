@@ -6,6 +6,7 @@
 pub mod account;
 pub mod allowlist;
 pub mod events;
+pub mod files;
 pub mod ids;
 pub mod naming;
 pub mod perm;

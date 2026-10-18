@@ -79,6 +79,9 @@ enum Command {
         session: String,
         /// The message (or pipe it in).
         message: Vec<String>,
+        /// Send a file with it (repeat for more, up to 10).
+        #[arg(short, long = "attach", value_name = "FILE")]
+        attach: Vec<std::path::PathBuf>,
     },
     /// Interrupt the agent's current turn.
     Interrupt {
@@ -96,6 +99,9 @@ enum Command {
         session: String,
         /// A message for the agent when it resumes.
         message: Vec<String>,
+        /// Send a file with the message (repeat for more, up to 10).
+        #[arg(short, long = "attach", value_name = "FILE")]
+        attach: Vec<std::path::PathBuf>,
     },
     /// Open a session or project in the browser (or the Claude app with --claude).
     Open {
@@ -200,14 +206,18 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Logs { session, follow } => {
             cmd::sessions::logs(server, &session, follow, json).await
         }
-        Command::Send { session, message } => {
-            cmd::sessions::send(server, &session, &message.join(" "), json).await
-        }
+        Command::Send {
+            session,
+            message,
+            attach,
+        } => cmd::sessions::send(server, &session, &message.join(" "), &attach, json).await,
         Command::Interrupt { session } => cmd::sessions::interrupt(server, &session).await,
         Command::Stop { session } => cmd::sessions::stop(server, &session, json).await,
-        Command::Resume { session, message } => {
-            cmd::sessions::resume(server, &session, &message.join(" "), json).await
-        }
+        Command::Resume {
+            session,
+            message,
+            attach,
+        } => cmd::sessions::resume(server, &session, &message.join(" "), &attach, json).await,
         Command::Open { target, claude } => {
             cmd::sessions::open(server, target.as_deref(), claude).await
         }

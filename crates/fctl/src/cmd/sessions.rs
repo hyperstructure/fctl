@@ -6,9 +6,12 @@ use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use fctl_client::Api;
+use fctl_domain::files;
+use fctl_proto::AttachmentId;
 use fctl_proto::api::CreateSessionRequest;
 use fctl_proto::session::Session;
 use std::io::{IsTerminal, Read};
+use std::path::PathBuf;
 
 #[derive(Args)]
 pub struct RunArgs {
@@ -38,6 +41,9 @@ pub struct RunArgs {
     /// Start it and return instead of following along.
     #[arg(short, long)]
     pub detach: bool,
+    /// Send a file with the task (repeat for more, up to 10).
+    #[arg(short, long = "attach", value_name = "FILE")]
+    pub attach: Vec<PathBuf>,
 }
 
 #[derive(Args)]
@@ -81,6 +87,41 @@ fn project_or_default(p: Option<String>) -> Result<String> {
     )
 }
 
+/// Uploads files to send with a message; returns their ids.
+pub async fn upload(api: &Api, project: &str, paths: &[PathBuf]) -> Result<Vec<AttachmentId>> {
+    if paths.len() > files::MAX_FILES_PER_MESSAGE {
+        bail!(
+            "Attach at most {} files to one message",
+            files::MAX_FILES_PER_MESSAGE
+        );
+    }
+    let mut ids = Vec::with_capacity(paths.len());
+    for path in paths {
+        let size = std::fs::metadata(path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .len();
+        if size > files::MAX_FILE_BYTES {
+            bail!(
+                "{} is {}; files can be at most {}",
+                path.display(),
+                files::human_size(size),
+                files::human_size(files::MAX_FILE_BYTES)
+            );
+        }
+        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".into());
+        let att = api
+            .upload_attachment(project, &name, Some(files::guess_media_type(&name)), bytes)
+            .await
+            .with_context(|| format!("uploading {}", path.display()))?;
+        ids.push(att.id);
+    }
+    Ok(ids)
+}
+
 pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()> {
     let api = config::api(server)?;
     let project = project_or_default(args.project)?;
@@ -92,9 +133,12 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
         let mut s = String::new();
         std::io::stdin().read_to_string(&mut s)?;
         s
+    } else if !args.attach.is_empty() {
+        String::new()
     } else {
         bail!("What should the agent do? `fctl run -p {project} \"Fix the flaky login test\"`");
     };
+    let attachments = upload(&api, &project, &args.attach).await?;
     let session = api
         .create_session(
             &project,
@@ -105,6 +149,7 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
                 branch: args.branch,
                 model: args.model,
                 effort: args.effort,
+                attachments,
             },
         )
         .await?;
@@ -235,7 +280,13 @@ pub async fn logs(server: Option<&str>, reference: &str, follow: bool, json: boo
     Ok(())
 }
 
-pub async fn send(server: Option<&str>, reference: &str, message: &str, json: bool) -> Result<()> {
+pub async fn send(
+    server: Option<&str>,
+    reference: &str,
+    message: &str,
+    attach: &[PathBuf],
+    json: bool,
+) -> Result<()> {
     let api = config::api(server)?;
     let s = resolve(&api, reference).await?;
     let text = if message.trim().is_empty() && !std::io::stdin().is_terminal() {
@@ -245,7 +296,8 @@ pub async fn send(server: Option<&str>, reference: &str, message: &str, json: bo
     } else {
         message.to_owned()
     };
-    let r = api.send_message(&s.id.0, &text, None).await?;
+    let attachments = upload(&api, s.project_id.as_str(), attach).await?;
+    let r = api.send_message(&s.id.0, &text, None, attachments).await?;
     if json {
         return style::print_json(&r);
     }
@@ -286,12 +338,14 @@ pub async fn resume(
     server: Option<&str>,
     reference: &str,
     message: &str,
+    attach: &[PathBuf],
     json: bool,
 ) -> Result<()> {
     let api = config::api(server)?;
     let s = resolve(&api, reference).await?;
     let prompt = (!message.trim().is_empty()).then(|| message.to_owned());
-    let s = api.resume(&s.id.0, prompt).await?;
+    let attachments = upload(&api, s.project_id.as_str(), attach).await?;
+    let s = api.resume(&s.id.0, prompt, attachments).await?;
     if json {
         return style::print_json(&s);
     }

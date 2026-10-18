@@ -8,11 +8,15 @@
 //! host replays the journal from there and re-sends deliveries to the agent,
 //! which ignores ids it has already handled.
 
-use crate::event::{EventBody, LogLine};
+use crate::event::{Attachment, EventBody, LogLine};
 use crate::session::{RemoteControlState, SessionStats, SessionStatus, UserRef};
 use crate::{DeliveryId, Millis, RunnerId};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
+
+/// A host or fctl-agent that passes attachments to Claude (`UplinkUp::Hello`,
+/// `AgentHello`).
+pub const FEATURE_ATTACHMENTS: &str = "attachments";
 
 /// An event produced in the sandbox.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -45,6 +49,12 @@ pub enum DeliveryKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         author: Option<UserRef>,
+        /// Files sent with the message. The host fetches their bytes
+        /// (`GET /api/v1/runner/sessions/{id}/attachments/{attachment}`) and
+        /// hands them to fctl-agent before the message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Attachment>>", optional))]
+        attachments: Vec<Attachment>,
     },
     /// Abort the current turn.
     Interrupt {
@@ -76,6 +86,11 @@ pub enum UplinkUp {
     Hello {
         runner_id: RunnerId,
         protocol: u32,
+        /// What this host can do beyond the protocol version, for example
+        /// [`FEATURE_ATTACHMENTS`]. Older hosts send none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+        features: Vec<String>,
     },
     /// Events in `agent_seq` order. SessionDO ignores ones it already has.
     Events {

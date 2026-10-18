@@ -102,6 +102,11 @@ pub async fn build(
             Some(row.prompt.clone())
         },
         task: Some(row.prompt.clone()),
+        task_attachments: row
+            .prompt_attachments
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok())
+            .unwrap_or_default(),
         author: row.creator_ref(),
         claude_session_id: row.claude_session_id.clone(),
         resume: row.started_at.is_some(),

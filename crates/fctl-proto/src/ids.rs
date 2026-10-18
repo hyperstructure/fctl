@@ -105,6 +105,11 @@ id_type!(
     IdentityId,
     "idn"
 );
+id_type!(
+    /// A file someone attached to a message.
+    AttachmentId,
+    "att"
+);
 
 #[cfg(test)]
 mod tests {
