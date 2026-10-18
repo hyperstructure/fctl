@@ -44,7 +44,7 @@ import {
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, duration, num, until } from "@/lib/format";
+import { ago, duration, num, statusReason, until } from "@/lib/format";
 import { hasChanges, type RepoChanges, repoChanges } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
@@ -161,8 +161,8 @@ export function SessionPage() {
                       {session.project_slug}#{session.number}
                     </Link>
                     <StatusPill status={session.status} />
-                    {session.status_reason && session.status !== "running" && session.status !== "idle" && (
-                      <span className="truncate text-ink-4">{session.status_reason}</span>
+                    {statusReason(session) && (
+                      <span className="truncate text-ink-4">{statusReason(session)}</span>
                     )}
                     {session.resume_at && (
                       <span className="text-amber">resumes in {until(session.resume_at)}</span>

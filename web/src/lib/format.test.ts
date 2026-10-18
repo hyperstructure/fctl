@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { agoShort, browserName, cpus, duration, initials, memory, sandboxLimits, until } from "./format";
+import {
+  agoShort,
+  browserName,
+  cpus,
+  duration,
+  initials,
+  memory,
+  sandboxLimits,
+  statusReason,
+  until,
+} from "./format";
 
 describe("format", () => {
   const now = Date.UTC(2026, 9, 17, 12, 0, 0);
@@ -39,6 +49,20 @@ describe("format", () => {
     expect(
       sandboxLimits({ default: { cpus: 4, memory_mb: 8192 }, max: { cpus: 10, memory_mb: 15_990 } }),
     ).toBe("4 CPUs and 8 GiB by default, at most 10 CPUs and 15.6 GiB");
+  });
+
+  it("shows the reasons the status pill doesn't give", () => {
+    expect(statusReason({ status: "idle", status_reason: "Waiting for a message" })).toBeUndefined();
+    expect(statusReason({ status: "idle", status_reason: "Waiting for 2 background tasks" })).toBe(
+      "Waiting for 2 background tasks",
+    );
+    expect(
+      statusReason({ status: "running", status_reason: "Resuming after the usage limit reset" }),
+    ).toBeUndefined();
+    expect(statusReason({ status: "stopped", status_reason: "Stopped after being idle" })).toBe(
+      "Stopped after being idle",
+    );
+    expect(statusReason({ status: "queued" })).toBeUndefined();
   });
 
   it("derives initials", () => {

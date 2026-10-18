@@ -18,7 +18,7 @@ import type * as G from "@/gen";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
-import { agoShort, stamp } from "@/lib/format";
+import { agoShort, stamp, statusReason } from "@/lib/format";
 import { useMe, useProjects, useRunners, useSessions } from "@/lib/queries";
 
 const ACTIVE: G.SessionStatus[] = [
@@ -313,9 +313,7 @@ function SessionRow({ s }: { s: G.Session }) {
           <span className="font-mono">
             {s.project_slug}#{s.number}
           </span>
-          {s.status_reason && s.status !== "running" && s.status !== "idle" && (
-            <span className="truncate">· {s.status_reason}</span>
-          )}
+          {statusReason(s) && <span className="truncate">· {statusReason(s)}</span>}
           {s.stats.files_changed > 0 && (
             <span>
               · <span className="text-accent/80">+{s.stats.additions}</span>{" "}

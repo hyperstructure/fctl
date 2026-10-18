@@ -125,3 +125,12 @@ export function browserName(ua?: string): string {
             : "";
   return os ? `${name} on ${os}` : name;
 }
+
+/** What sits beside a session's status pill: its reason, unless the pill
+ * says it all (a session at work, or one waiting for a message). A session
+ * that waits for its agent's background tasks says so. */
+export function statusReason(s: Pick<G.Session, "status" | "status_reason">): string | undefined {
+  if (!s.status_reason || s.status === "running") return undefined;
+  if (s.status === "idle" && s.status_reason === "Waiting for a message") return undefined;
+  return s.status_reason;
+}
