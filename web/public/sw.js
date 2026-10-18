@@ -27,6 +27,8 @@ async function show(data) {
     return self.registration.showNotification("fctl", {
       body: "A session you follow changed.",
       tag: "fctl",
+      icon: "/icon-192.png",
+      badge: "/badge-96.png",
       data: { url: "/" },
     });
   }
@@ -42,6 +44,8 @@ async function show(data) {
     // A newer notification about the same session alerts again.
     renotify: Boolean(message.tag),
     timestamp: message.at,
+    icon: "/icon-192.png",
+    badge: "/badge-96.png",
     data: { url: message.url },
   });
 }

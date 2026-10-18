@@ -76,6 +76,8 @@ describe("the service worker", () => {
       tag: "ses_12",
       renotify: true,
       timestamp: message.at,
+      icon: "/icon-192.png",
+      badge: "/badge-96.png",
       data: { url: "/s/ses_12" },
     });
     expect(w.shown.every((n) => n.close.mock.calls.length === 0)).toBe(true);

@@ -1,16 +1,20 @@
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
+import { brandIcons, favicon } from "./brand-icons.ts";
 
-const require = createRequire(import.meta.url);
-
-/** Serves and emits /favicon.svg from @hyperstructure/design (one source for the mark). */
+/**
+ * Serves and emits /favicon.svg from @hyperstructure/design, and PNG icons
+ * drawn from its mark (brand-icons.ts): one source for the mark.
+ */
 function brandAssets(): Plugin {
-  const favicon = () => readFileSync(require.resolve("@hyperstructure/design/assets/favicon.svg"));
+  let icons: Record<string, Buffer> | undefined;
+  const pngs = () => {
+    icons ??= brandIcons();
+    return icons;
+  };
   return {
     name: "brand-assets",
     configureServer(server) {
@@ -18,9 +22,17 @@ function brandAssets(): Plugin {
         res.setHeader("content-type", "image/svg+xml");
         res.end(favicon());
       });
+      server.middlewares.use((req, res, next) => {
+        const icon = pngs()[req.url?.slice(1) ?? ""];
+        if (!icon) return next();
+        res.setHeader("content-type", "image/png");
+        res.end(icon);
+      });
     },
     generateBundle() {
       this.emitFile({ type: "asset", fileName: "favicon.svg", source: favicon() });
+      for (const [fileName, source] of Object.entries(pngs()))
+        this.emitFile({ type: "asset", fileName, source });
     },
   };
 }
