@@ -351,10 +351,11 @@ commits to you. A project's maintainers can turn this off for its sessions
 (`fctl projects set --credit-people off`). Sessions take a change when they
 next start or resume; `fctl whoami` shows the address.
 
-The export holds your account, sign-in methods, devices and tokens, Claude
-connections (without their secrets), notification settings and browsers,
-projects, the sessions you started with their transcripts, the sessions you
-follow, and your activity log. Deleting your account deletes all
+The export holds your account, sign-in methods and two-factor sign-in
+(without the authenticator app's secret or the recovery codes), devices and
+tokens, Claude connections (without their secrets), notification settings
+and browsers, projects, the sessions you started with their transcripts,
+the sessions you follow, and your activity log. Deleting your account deletes all
 of that and the projects only you are a member of; sessions you started in
 shared projects stay there, credited to a deleted user. Settings in the web
 app has both, the deletion in its danger zone.

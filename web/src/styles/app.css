@@ -248,25 +248,26 @@
   }
 }
 
-/* Printing recovery codes prints only them (components/two-factor). */
+/* Printing recovery codes prints a page of only them (components/two-factor). */
+.print-sheet {
+  display: none;
+}
 @media print {
-  html.printing-codes body * {
-    visibility: hidden;
+  html.printing-codes body > :not(.print-sheet) {
+    display: none !important;
   }
-  html.printing-codes .print-codes,
-  html.printing-codes .print-codes * {
-    visibility: visible;
+  html.printing-codes,
+  html.printing-codes body {
+    background: #ffffff;
+  }
+  html.printing-codes .print-sheet {
+    display: block;
+    max-width: 720px;
+    padding: 56px;
+  }
+  html.printing-codes .print-sheet,
+  html.printing-codes .print-sheet * {
     color: #171717 !important;
-    background: none !important;
-    box-shadow: none !important;
-  }
-  html.printing-codes .print-codes {
-    position: fixed;
-    inset: 0;
-    padding: 48px;
-  }
-  html.printing-codes .print-codes .print-hide {
-    display: none;
   }
 }
 

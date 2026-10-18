@@ -27,10 +27,11 @@ pub enum AccountCmd {
     /// password, and recovery codes.
     #[command(subcommand, visible_alias = "2fa")]
     TwoFactor(super::two_factor::TwoFactorCmd),
-    /// Download your personal data as JSON: your account, sign-in methods,
-    /// devices and tokens, Claude connections (without secrets), notification
-    /// settings and browsers, projects, the sessions you started with their
-    /// transcripts, the sessions you follow, and your activity.
+    /// Download your personal data as JSON: your account, sign-in methods
+    /// and two-factor sign-in, devices and tokens, Claude connections
+    /// (without secrets), notification settings and browsers, projects, the
+    /// sessions you started with their transcripts, the sessions you follow,
+    /// and your activity.
     Export {
         /// Where to write it (default: fctl-export-<date>.json here; `-` prints it).
         #[arg(short, long)]

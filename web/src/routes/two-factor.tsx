@@ -55,7 +55,11 @@ function TwoFactorRequired({ me }: { me: G.Me }) {
   return (
     <AuthFrame
       wide
-      title="Set up two-factor sign-in."
+      title={
+        <>
+          Set up two-factor <span className="whitespace-nowrap">sign-in.</span>
+        </>
+      }
       subtitle={`${instance?.name ?? "This instance"} asks everyone to confirm their sign-ins with a code from an app on their phone. It takes about a minute.`}
       footer={
         <>

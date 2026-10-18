@@ -116,7 +116,7 @@ export function SecondFactorStep({
         ? "error"
         : "idle";
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex animate-rise flex-col gap-5">
       <div className="flex items-center gap-3 rounded-lg border border-line bg-sunken/50 px-3 py-2.5">
         <Avatar
           user={{ id: challenge.email, name: challenge.name, avatar_url: challenge.avatar_url }}

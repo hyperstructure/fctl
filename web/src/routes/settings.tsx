@@ -1083,9 +1083,9 @@ function YourData() {
     >
       <div className="flex flex-col items-start gap-4">
         <p className="max-w-xl text-[13.5px] leading-relaxed text-ink-3">
-          Your account, sign-in methods, devices and tokens, Claude connections (without their secrets),
-          notification settings and browsers, projects, the sessions you started with their full transcripts,
-          the sessions you follow, and your activity log.
+          Your account, sign-in methods and two-factor sign-in, devices and tokens, Claude connections
+          (without their secrets), notification settings and browsers, projects, the sessions you started with
+          their full transcripts, the sessions you follow, and your activity log.
         </p>
         <a
           href="/api/v1/me/export"
