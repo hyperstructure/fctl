@@ -46,9 +46,12 @@ cargo run -p fctl -- run -p playground "write notes.md"
 fake-claude reacts to words in the prompt: `write <name>` creates and
 commits a file, `rename <title>` names the session with `fctl edit` (the
 host's own fctl comes first on its agents' PATH), `slow` streams slowly,
-`limit` hits a usage limit, `overage` reports paid usage (the session must
-pause), `refresh` asks the host for a new OAuth token, and `crash` exits
-mid-turn. Anything else gets a short answer with a tool call. A message with
+`limit` hits a usage limit that resets 20 seconds later (the session
+pauses and continues half a minute after the reset; a message that also
+says `reset`, like the one fctl-agent continues it with, doesn't count),
+`overage` reports paid usage (the session must pause), `refresh` asks
+the host for a new OAuth token, and `crash` exits mid-turn. Anything
+else gets a short answer with a tool call. A message with
 attached files also gets a sentence about them: how many images it holds,
 and whether each listed file is on disk. Turns other than `limit` and
 `crash` report plan usage as Claude Code does (`unifiedWindows`), with
@@ -144,9 +147,11 @@ from [@hyperstructure/design](https://github.com/hyperstructure/design),
 pinned to a tag in `web/package.json` (it has a playground showing all of
 them). Use the semantic colors (`canvas`, `surface`, `ink`, `accent`,
 `highlight`, `pink`, `blue`, `danger`…) rather than raw values; `danger`
-is the one red, for destructive actions, errors and failures only. The
-scenes render dithered to the brand palette; they pause when hidden and
-render one still frame for people who prefer reduced motion.
+is the one red, for destructive actions, errors and failures only. Hovered
+rows and buttons fill with `hover` (`hover:bg-hover`, fainter on large
+rows), not `raised`, which is white in the light theme, as `surface` is.
+The scenes render dithered to the brand palette; they pause when hidden
+and render one still frame for people who prefer reduced motion.
 
 People install the app on their phones and computers.
 `public/manifest.webmanifest` describes it, the `brand-assets` plugin in

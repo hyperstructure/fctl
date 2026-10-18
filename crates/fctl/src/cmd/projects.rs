@@ -46,8 +46,8 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout"])),
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -63,6 +63,11 @@ pub enum ProjectsCmd {
         /// claude.ai session link.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         credit_claude: Option<bool>,
+        /// Minutes a session that waits for a message keeps its sandbox, and
+        /// its runner's slot, before it stops (default 10). A message
+        /// resumes it.
+        #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u32).range(1..=10_080))]
+        idle_timeout: Option<u32>,
     },
     /// Use this project by default for `fctl run` and `fctl sessions`.
     Use {
@@ -133,6 +138,13 @@ fn print_repos(list: &ProjectRepoList) {
         };
         println!("{:<40} {}", style::bold(&name), style::dim(&access));
     }
+}
+
+/// When a project's idle sessions stop, in words.
+fn idle(s: &ProjectSettings) -> String {
+    let minutes = fctl_domain::settings::idle_timeout_secs(s) / 60;
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    format!("stop after waiting {minutes} {unit} for a message; a message resumes them")
 }
 
 /// What the commits in a project's sessions credit, in words.
@@ -266,6 +278,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 println!("also:    {}", others.join(", "));
             }
             println!("branch:  {}", p.default_branch);
+            println!("idle:    sessions {}", idle(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
             println!("{}", style::dim(&format!("{}/p/{}", api.base(), p.slug)));
         }
@@ -310,6 +323,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             project,
             credit_people,
             credit_claude,
+            idle_timeout,
         } => {
             let project = super::sessions::project_or_default(project)?;
             let p = api.project(&project).await?;
@@ -320,6 +334,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(on) = credit_claude {
                 settings.credit_claude = on;
+            }
+            if idle_timeout.is_some() {
+                settings.idle_timeout_minutes = idle_timeout;
             }
             let p = api
                 .update_project(
@@ -333,12 +350,22 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             if json {
                 return style::print_json(&p);
             }
-            println!(
-                "{} Commits in {}'s sessions {}",
-                style::accent("✓"),
-                style::bold(&p.slug),
-                credit(&p.settings)
-            );
+            if credit_people.is_some() || credit_claude.is_some() {
+                println!(
+                    "{} Commits in {}'s sessions {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    credit(&p.settings)
+                );
+            }
+            if idle_timeout.is_some() {
+                println!(
+                    "{} Sessions in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    idle(&p.settings)
+                );
+            }
             println!(
                 "{}",
                 style::dim("Sessions take the change when they next start or resume.")

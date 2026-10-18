@@ -12,7 +12,7 @@ use crate::internal::{
     NotifySession, Schedule, Stop,
 };
 use crate::spec;
-use fctl_domain::schedule::{Slot, Wait};
+use fctl_domain::schedule::{Home, Slot, Wait};
 use fctl_domain::size::Want;
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::runner::{
@@ -41,6 +41,13 @@ struct Credentials {
 const MAX_ATTEMPTS: i64 = 5;
 /// A runner that stays away this long loses its sessions.
 const RUNNER_GRACE_MS: i64 = 10 * 60 * 1000;
+/// How long a resumed session waits for the runner that has its sandbox,
+/// while that runner is busy, before it starts on another one in a new
+/// sandbox (without its conversation).
+const HOME_WAIT_MS: i64 = 10 * 60 * 1000;
+/// Which runner has a session's sandbox is forgotten after this long without
+/// a run: hosts remove stopped sandboxes long before (`keep_stopped_hours`).
+const HOME_KEEP_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const TICK_MS: i64 = 30_000;
 
 /// `ALTER TABLE … ADD COLUMN` only when the column is missing.
@@ -81,6 +88,8 @@ struct QueueRow {
     attempts: f64,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)]
+    enqueued_at: f64,
 }
 
 #[derive(Deserialize)]
@@ -159,6 +168,9 @@ impl DurableObject for FleetObject {
             "CREATE TABLE IF NOT EXISTS assignments (session_id TEXT PRIMARY KEY, runner_id TEXT NOT NULL, assigned_at INTEGER NOT NULL, accepted INTEGER NOT NULL DEFAULT 0, run_id TEXT)",
             "CREATE TABLE IF NOT EXISTS runners (id TEXT PRIMARY KEY, name TEXT NOT NULL, hello TEXT, connected INTEGER NOT NULL DEFAULT 0, last_seen INTEGER, sessions TEXT)",
             "CREATE TABLE IF NOT EXISTS logins (job_id TEXT PRIMARY KEY, runner_id TEXT, user_id TEXT NOT NULL, created_at INTEGER NOT NULL)",
+            // The runner that last took each session: it keeps the session's
+            // sandbox, so a resume goes back to it.
+            "CREATE TABLE IF NOT EXISTS sandboxes (session_id TEXT PRIMARY KEY, runner_id TEXT NOT NULL, since INTEGER NOT NULL)",
         ] {
             if let Err(e) = sql.exec(stmt, None) {
                 worker::console_error!("fleet schema: {e}");
@@ -467,6 +479,19 @@ impl FleetObject {
             ) > 0.0
     }
 
+    /// Whether the session waits in the queue (a message or a resume queued
+    /// it again while its last run was still assigned).
+    fn queued(&self, session_id: &str) -> bool {
+        self.sql
+            .exec(
+                "SELECT session_id, attempts FROM queue WHERE session_id = ?",
+                Some(vec![sv(session_id)]),
+            )
+            .and_then(|c| c.to_array::<QueueRow>())
+            .map(|r| !r.is_empty())
+            .unwrap_or(false)
+    }
+
     // ───────────────────────────── runner messages ─────────────────────────────
 
     async fn on_runner(&self, ws: &WebSocket, rs: &RunnerSocket, msg: HostToFleet) {
@@ -532,15 +557,7 @@ impl FleetObject {
                     .and_then(|r| r.into_iter().next().map(|r| r.run_id));
                 let stale =
                     matches!((&run_id, &current), (Some(ended), Some(Some(cur))) if ended != cur);
-                let queued_again = self
-                    .sql
-                    .exec(
-                        "SELECT session_id, attempts FROM queue WHERE session_id = ?",
-                        Some(vec![sv(session_id.as_str())]),
-                    )
-                    .and_then(|c| c.to_array::<QueueRow>())
-                    .map(|r| !r.is_empty())
-                    .unwrap_or(false);
+                let queued_again = self.queued(session_id.as_str());
                 if stale {
                     worker::console_log!("ignoring the end of an earlier run of {session_id}");
                 } else {
@@ -631,12 +648,16 @@ impl FleetObject {
             .unwrap_or_default();
         let reported_ids: HashSet<&str> = reported.iter().map(|r| r.session_id.as_str()).collect();
         // Assigned and accepted, but the host no longer has it: it was lost.
+        // One queued again meanwhile keeps its new status.
         for a in &assigned {
             if a.accepted > 0.0 && !reported_ids.contains(a.session_id.as_str()) {
                 let _ = self.sql.exec(
                     "DELETE FROM assignments WHERE session_id = ?",
                     Some(vec![sv(&a.session_id)]),
                 );
+                if self.queued(&a.session_id) {
+                    continue;
+                }
                 self.session_control(
                     &SessionId(a.session_id.clone()),
                     Some(SessionStatus::Stopped),
@@ -667,6 +688,7 @@ impl FleetObject {
                         "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted) VALUES (?, ?, ?, 1)",
                         Some(vec![sv(r.session_id.as_str()), sv(runner_id), iv(now_ms())]),
                     );
+                    self.set_home(r.session_id.as_str(), runner_id, now_ms());
                 } else {
                     self.send_runner(
                         runner_id,
@@ -694,6 +716,7 @@ impl FleetObject {
                 "UPDATE assignments SET accepted = 1 WHERE session_id = ? AND runner_id = ?",
                 Some(vec![sv(session_id.as_str()), sv(runner_id)]),
             );
+            self.set_home(session_id.as_str(), runner_id, now);
             return;
         }
         let _ = self.sql.exec(
@@ -760,6 +783,10 @@ impl FleetObject {
                     "DELETE FROM assignments WHERE session_id = ?",
                     Some(vec![sv(&a.session_id)]),
                 );
+                // Queued again meanwhile: it starts elsewhere.
+                if self.queued(&a.session_id) {
+                    continue;
+                }
                 self.session_control(
                     &SessionId(a.session_id),
                     Some(SessionStatus::Stopped),
@@ -831,7 +858,7 @@ impl FleetObject {
         let now = now_ms();
         let queued: Vec<QueueRow> = self
             .sql
-            .exec("SELECT session_id, attempts, reason FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
+            .exec("SELECT session_id, attempts, reason, enqueued_at FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
             .and_then(|c| c.to_array::<QueueRow>())
             .unwrap_or_default();
         if queued.is_empty() {
@@ -863,8 +890,24 @@ impl FleetObject {
                 self.note_waiting(&item, Wait::NoRunner.reason()).await;
                 continue;
             };
+            // Two runs of a session never overlap: a resume while the last
+            // run still stops starts once it has.
+            if self.still_stopping(&item.session_id) {
+                self.note_waiting(&item, "Starting again once the last run has stopped".into())
+                    .await;
+                continue;
+            }
             let want = wants.get(&item.session_id).copied().unwrap_or_default();
-            let (runner_id, runner_name) = match self.pick_runner(want) {
+            // A resume goes back to the runner that has its sandbox, where
+            // Claude continues the same conversation, and waits a while for
+            // it when it is busy. Not after it declined the session.
+            let home = if item.attempts > 0.0 {
+                None
+            } else {
+                self.home_of(&item.session_id)
+            };
+            let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS;
+            let (runner_id, runner_name) = match self.pick_runner(want, home.as_deref(), wait) {
                 Ok(r) => r,
                 Err(wait) => {
                     self.note_waiting(&item, wait.reason()).await;
@@ -1003,12 +1046,79 @@ impl FleetObject {
             .collect()
     }
 
+    /// The runner that last took the session, which keeps its sandbox.
+    fn home_of(&self, session_id: &str) -> Option<String> {
+        #[derive(Deserialize)]
+        struct H {
+            runner_id: String,
+        }
+        self.sql
+            .exec(
+                "SELECT runner_id FROM sandboxes WHERE session_id = ?",
+                Some(vec![sv(session_id)]),
+            )
+            .and_then(|c| c.to_array::<H>())
+            .ok()?
+            .into_iter()
+            .next()
+            .map(|h| h.runner_id)
+    }
+
+    /// Remembers that `runner_id` took the session, and forgets the runners
+    /// of sessions that have not run for a long time.
+    fn set_home(&self, session_id: &str, runner_id: &str, now: i64) {
+        let _ = self.sql.exec(
+            "INSERT INTO sandboxes (session_id, runner_id, since) VALUES (?, ?, ?) \
+             ON CONFLICT (session_id) DO UPDATE SET runner_id = excluded.runner_id, since = excluded.since",
+            Some(vec![sv(session_id), sv(runner_id), iv(now)]),
+        );
+        let _ = self.sql.exec(
+            "DELETE FROM sandboxes WHERE since < ?",
+            Some(vec![iv(now - HOME_KEEP_MS)]),
+        );
+    }
+
+    /// Whether the session's last run still stops: the session is still
+    /// assigned to a connected runner that reports it.
+    fn still_stopping(&self, session_id: &str) -> bool {
+        #[derive(Deserialize)]
+        struct R {
+            sessions: Option<String>,
+        }
+        self.sql
+            .exec(
+                "SELECT r.sessions AS sessions FROM assignments a JOIN runners r ON r.id = a.runner_id \
+                 WHERE a.session_id = ? AND r.connected = 1",
+                Some(vec![sv(session_id)]),
+            )
+            .and_then(|c| c.to_array::<R>())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| r.sessions.as_deref())
+            .filter_map(|j| serde_json::from_str::<Vec<HostSessionReport>>(j).ok())
+            .any(|reports| reports.iter().any(|r| r.session_id.as_str() == session_id))
+    }
+
     /// The least loaded connected runner with a free slot that gives a
-    /// sandbox what the session wants, or why there is none.
-    fn pick_runner(&self, want: Want) -> std::result::Result<(String, String), Wait> {
+    /// sandbox what the session wants, or why there is none. `home`, the
+    /// runner that has the session's sandbox, comes first, and with `wait`
+    /// the session waits for it while it is busy.
+    fn pick_runner(
+        &self,
+        want: Want,
+        home: Option<&str>,
+        wait: bool,
+    ) -> std::result::Result<(String, String), Wait> {
         let candidates = self.candidates();
         let slots: Vec<Slot<'_>> = candidates.iter().map(Candidate::slot).collect();
-        let chosen = fctl_domain::schedule::pick(&slots, &[], want)?;
+        let home = home
+            .and_then(|id| candidates.iter().find(|c| c.id == id))
+            .map(|c| Home {
+                id: &c.id,
+                name: &c.name,
+                wait,
+            });
+        let chosen = fctl_domain::schedule::pick(&slots, &[], want, home)?;
         let name = candidates
             .iter()
             .find(|c| c.id == chosen.id)

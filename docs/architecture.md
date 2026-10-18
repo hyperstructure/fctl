@@ -139,8 +139,9 @@ repositories it changes; see [Repositories](#repositories)).
 
 ```
 queued → provisioning → preparing → running ⇄ idle → stopped
-                                       │        │
-                                       └─ paused (usage limit) ─┘   failed (any)
+   ▲                                   │        │        │
+   │                                   └─ paused (usage limit) ─┘   failed (any)
+   └──────────── a message or a resume ──────────────────┘
 ```
 
 1. `POST /api/v1/projects/{id}/sessions` creates the row and asks FleetDO to
@@ -155,8 +156,37 @@ queued → provisioning → preparing → running ⇄ idle → stopped
    `claude -p --input-format stream-json --output-format stream-json`.
 5. Claude's messages flow back as events; messages from people flow down as
    deliveries. A finished turn makes the session `idle`; the sandbox stays up
-   until the idle timeout, then stops. Stopped sessions can be resumed
-   (`claude --resume`).
+   until the idle timeout, then stops, and a message resumes the session
+   (`claude --resume`; see [Idle sessions](#idle-sessions)).
+
+### Idle sessions
+
+A session holds a slot on its runner from the moment it starts until its
+sandbox stops. One that waits for a message stops after its project's idle
+timeout (`idle_timeout_minutes`: ten minutes unless the project sets
+another), so that its runner takes other work. fctl-agent ends Claude, and
+the host stops the sandbox and keeps it (see
+[Sandboxes and drivers](#sandboxes-and-drivers)).
+
+A message to a stopped session resumes it: from the web app, `fctl send`,
+`fctl attach` or the API, for anyone who may message the agent. SessionDO
+queues the session again and keeps the message in its outbox for the new
+run, which runs on the Claude subscription the session ran on, as a
+message to an idle session does. A resume (**Resume** for the session's
+owners, `fctl resume`) runs it on the resumer's subscription instead, and
+also starts a failed session, which a message doesn't. A message that comes
+while the session stops queues it too: FleetDO starts the new run once the
+last one has ended, so that two runs of a session never overlap, and
+SessionDO ignores what the last run's uplink still says about stopping.
+
+FleetDO remembers which runner last took each session (`sandboxes`, in its
+storage) and starts a resume there, where the sandbox has Claude's
+conversation and whatever the agent left uncommitted. While that runner
+runs as many sessions as it may, the session waits for it, for up to ten
+minutes. Then, or right away when that runner is offline or no longer
+gives the sandbox the session asks for, the session starts on another
+runner in a new sandbox: the agent clones the session's branch and starts
+a new conversation from the session's task.
 
 ### Repositories
 
@@ -471,12 +501,13 @@ it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
 serves programs in the sandbox: `fctl edit` names and describes the session
 there, with no fctl credentials in the sandbox.
 
-A stopped session keeps its sandbox, so resuming continues Claude's
-conversation. The host records when each one stopped (`stopped.json` in its
-data directory) and removes those stopped for longer than
-`keep_stopped_hours` (`crates/fctl-host/src/expiry.rs`). Resuming one of those
-creates a new sandbox on the session's branch: the agent finds no
-conversation to resume, so Claude starts a new one with the session's
+A stopped session keeps its sandbox, so resuming it on the same host
+continues Claude's conversation ([Idle sessions](#idle-sessions)). The host
+records when each one stopped (`stopped.json` in its data directory) and
+removes those stopped for longer than `keep_stopped_hours`
+(`crates/fctl-host/src/expiry.rs`). Resuming one of those, or resuming on
+another host, creates a new sandbox on the session's branch: the agent finds
+no conversation to resume, so Claude starts a new one with the session's
 original task, and the agent numbers its events after the ones the control
 plane already has (`first_agent_seq`).
 

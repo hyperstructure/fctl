@@ -50,11 +50,13 @@ version, so upgrading the host (`fctl self update`) moves its new sessions
 to the new version's image. The host pulls the image in the background when
 it starts, and a session that starts before it has the image pulls it
 itself. When the image can't be pulled, as in the hour after a release
-before its image is published, the session starts from `latest` instead and
-says so in its log.
+before its image is published, the host pulls `latest` instead, and
+sessions start from it and say so in their log. The first session after the
+version's image is published pulls it.
 
 The host pulls a tag once. To get a newer build of it, with a newer Claude
-Code, run `fctl host image pull`.
+Code, run `fctl host image pull`. While the version's image can't be
+pulled, it pulls `latest` instead, and says so.
 
 - **Another image.** `image` in `host.toml` (or `fctl host install --image
   …`) sets the image for sessions whose project sets none, and a project's

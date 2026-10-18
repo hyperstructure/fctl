@@ -619,7 +619,7 @@ function Rail({
                 href={session.remote_control.session_url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-raised hover:text-ink"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
               >
                 claude.ai <ArrowUpRight className="size-3.5" />
               </a>
