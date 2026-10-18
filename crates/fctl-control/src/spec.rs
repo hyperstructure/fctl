@@ -9,6 +9,7 @@ use crate::model::{
     CredentialRow, CredentialSecret, PROJECT_SELECT, ProjectRow, REPO_SELECT, RepoRow,
     SESSION_SELECT, SessionRow,
 };
+use fctl_domain::image::ImageWant;
 use fctl_domain::size::Want;
 use fctl_proto::runner::{
     ClaudeCredential, ClaudeCredentialKind, GitIdentity, ProjectSpec, SessionCredentials,
@@ -57,17 +58,32 @@ pub async fn grants(db: &D1Database, project_id: &str) -> AppResult<Vec<RepoGran
     Ok(rows.iter().map(RepoRow::grant).collect())
 }
 
-/// The CPUs and memory each of these sessions asks for (its project's
-/// sandbox settings), in one query.
-pub async fn session_wants(db: &D1Database, ids: &[&str]) -> AppResult<HashMap<String, Want>> {
+/// What a queued session asks of a runner.
+#[derive(Clone, Debug, Default)]
+pub struct SessionWants {
+    /// CPUs and memory.
+    pub size: Want,
+    /// The image it starts from.
+    pub image: ImageWant,
+}
+
+/// The CPUs, memory and image each of these sessions asks for (its
+/// project's sandbox settings), in one query.
+pub async fn session_wants(
+    db: &D1Database,
+    ids: &[&str],
+) -> AppResult<HashMap<String, SessionWants>> {
     #[derive(serde::Deserialize)]
     struct Row {
         id: String,
         settings: String,
+        repo_owner: Option<String>,
+        repo_name: Option<String>,
     }
     let rows: Vec<Row> = q(
         db,
-        "SELECT s.id AS id, p.settings AS settings FROM sessions s JOIN projects p ON p.id = s.project_id \
+        "SELECT s.id AS id, p.settings AS settings, p.repo_owner AS repo_owner, p.repo_name AS repo_name \
+         FROM sessions s JOIN projects p ON p.id = s.project_id \
          WHERE s.id IN (SELECT value FROM json_each(?))",
         &[s(&serde_json::to_string(ids)?)],
     )?
@@ -77,7 +93,15 @@ pub async fn session_wants(db: &D1Database, ids: &[&str]) -> AppResult<HashMap<S
         .into_iter()
         .map(|r| {
             let settings: ProjectSettings = serde_json::from_str(&r.settings).unwrap_or_default();
-            (r.id, Want::of(&settings))
+            let repo = match (r.repo_owner, r.repo_name) {
+                (Some(owner), Some(name)) => Some(RepoRef { owner, name }),
+                _ => None,
+            };
+            let wants = SessionWants {
+                size: Want::of(&settings),
+                image: ImageWant::of(&settings, repo.as_ref()),
+            };
+            (r.id, wants)
         })
         .collect())
 }

@@ -8,6 +8,7 @@ pub mod allowlist;
 pub mod events;
 pub mod files;
 pub mod ids;
+pub mod image;
 pub mod journal;
 pub mod naming;
 pub mod notify;

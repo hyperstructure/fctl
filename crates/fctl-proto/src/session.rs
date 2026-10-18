@@ -345,6 +345,30 @@ impl RepoGrant {
     }
 }
 
+/// A sandbox image built from the project's repository, as its default
+/// branch has it. Hosts build it again when the files it comes from change.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ImageBuild {
+    /// A Dockerfile, or a dev container configuration (a file ending in
+    /// `.json`, like `.devcontainer/devcontainer.json`), by its path in the
+    /// repository.
+    pub file: String,
+    /// For a Dockerfile, the directory in the repository it builds in.
+    /// Absent: the repository's root. A dev container configuration names
+    /// its own.
+    pub context: Option<String>,
+}
+
+impl ImageBuild {
+    /// Whether `file` is a dev container configuration rather than a
+    /// Dockerfile.
+    pub fn is_devcontainer(&self) -> bool {
+        self.file.to_ascii_lowercase().ends_with(".json")
+    }
+}
+
 /// Settings agents use for a project. Every field has a sensible default, so
 /// clients send only what they change.
 #[skip_serializing_none]
@@ -354,6 +378,14 @@ impl RepoGrant {
 pub struct ProjectSettings {
     /// OCI image for sandboxes. Defaults to the host's configured agent image.
     pub image: Option<String>,
+    /// Build the sandbox image from a file in the project's repository
+    /// instead, on hosts whose owners allow it (`allowed_builds`). It takes
+    /// the place of `image`. Older hosts and control planes ignore it.
+    /// Always sent, as `null` for none: an update without it keeps the
+    /// stored build (see `fctl_domain::settings::keep_unsent`).
+    #[serialize_always]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub image_build: Option<ImageBuild>,
     /// Shell script run in the repository after cloning (for example `npm ci`).
     pub setup_script: Option<String>,
     /// Claude model alias or name (`opus`, `sonnet`, …). Defaults to Claude's own default.
@@ -400,6 +432,7 @@ impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
             image: None,
+            image_build: None,
             setup_script: None,
             model: None,
             effort: None,

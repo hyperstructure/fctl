@@ -39,6 +39,18 @@ pub struct SandboxSpec {
     pub memory_mb: u32,
 }
 
+/// An image to build from a Dockerfile.
+#[derive(Clone, Debug)]
+pub struct BuildJob<'a> {
+    pub tag: &'a str,
+    pub dockerfile: &'a Path,
+    pub context: &'a Path,
+    pub args: &'a std::collections::BTreeMap<String, String>,
+    pub target: Option<&'a str>,
+    /// How long the build may take.
+    pub limit: Duration,
+}
+
 /// A sandbox, as the host knows it.
 #[derive(Clone, Debug)]
 pub struct Sandbox {
@@ -187,6 +199,42 @@ impl Driver {
         match self {
             Self::Container(d) => d.pull_or_fallback(image, fallback, progress, log).await,
             _ => anyhow::bail!("the {} driver does not use images", self.name()),
+        }
+    }
+
+    /// Builds an image, saying in `log` what the build does.
+    pub async fn build(
+        &self,
+        job: &BuildJob<'_>,
+        log: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<()> {
+        match self {
+            Self::Container(d) => d.build(job, log).await,
+            _ => anyhow::bail!("the {} driver does not use images", self.name()),
+        }
+    }
+
+    /// An image's size in bytes, when the runtime says.
+    pub async fn image_size(&self, image: &str) -> Option<u64> {
+        match self {
+            Self::Container(d) => d.image_size(image).await,
+            _ => None,
+        }
+    }
+
+    /// Removes an image; fails while a sandbox uses it.
+    pub async fn remove_image(&self, image: &str) -> Result<()> {
+        match self {
+            Self::Container(d) => d.remove_image(image).await,
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether the sandbox `name` exists, running or not.
+    pub async fn sandbox_exists(&self, name: &str) -> Result<bool> {
+        match self {
+            Self::Container(d) => d.exists(name).await,
+            _ => Ok(false),
         }
     }
 

@@ -4,6 +4,7 @@
 //! config and a launchd/systemd service. See docs/architecture.md.
 
 pub mod agentbin;
+pub mod build;
 pub mod config;
 pub mod daemon;
 pub mod driver;

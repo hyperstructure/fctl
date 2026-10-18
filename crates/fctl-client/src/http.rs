@@ -95,29 +95,125 @@ impl HttpClient {
         body: Option<Vec<u8>>,
         content_type: Option<&str>,
     ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
-        let mut req = Request::builder().method(method).uri(url);
-        if let Some(h) = req.headers_mut() {
-            if let Ok(v) = HeaderValue::from_str(&crate::user_agent()) {
-                h.insert(http::header::USER_AGENT, v);
+        let req = request(method, url, token, body, content_type, &[])?;
+        self.finish(url, req).await
+    }
+
+    /// A GET with `headers` besides the usual ones, which they replace (an
+    /// `Accept` of their own, say).
+    pub async fn get_with(
+        &self,
+        url: &str,
+        token: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
+        let req = request(Method::GET, url, token, None, None, headers)?;
+        self.finish(url, req).await
+    }
+
+    /// Downloads `url` into the file at `path`, following up to 5
+    /// redirects, within `limit`. The token and `headers` go to `url`'s
+    /// origin only. Fails once more than `max_bytes` came. Returns the size.
+    pub async fn download_to(
+        &self,
+        url: &str,
+        token: Option<&str>,
+        headers: &[(&str, &str)],
+        path: &std::path::Path,
+        max_bytes: u64,
+        limit: Duration,
+    ) -> Result<u64> {
+        tokio::time::timeout(
+            limit,
+            self.download_to_inner(url, token, headers, path, max_bytes),
+        )
+        .await
+        .map_err(|_| Error::Timeout(limit))?
+    }
+
+    async fn download_to_inner(
+        &self,
+        url: &str,
+        token: Option<&str>,
+        headers: &[(&str, &str)],
+        path: &std::path::Path,
+        max_bytes: u64,
+    ) -> Result<u64> {
+        use tokio::io::AsyncWriteExt;
+        let origin = |u: &str| url::Url::parse(u).ok().map(|u| u.origin());
+        let first = origin(url);
+        let mut current = url.to_owned();
+        for _ in 0..6 {
+            let same_origin = first.is_some() && origin(&current) == first;
+            let (token, headers) = if same_origin {
+                (token, headers)
+            } else {
+                (None, &[][..])
+            };
+            let req = request(Method::GET, &current, token, None, None, headers)?;
+            let network = |message: String| Error::Network {
+                url: current.clone(),
+                message,
+            };
+            let res = self
+                .client
+                .request(req)
+                .await
+                .map_err(|e| network(error_chain(&e)))?;
+            let status = res.status();
+            if status.is_redirection() {
+                let Some(loc) = res
+                    .headers()
+                    .get(http::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                else {
+                    return Err(Error::Decode("redirect without a location".into()));
+                };
+                current = url::Url::parse(&current)
+                    .and_then(|base| base.join(loc))
+                    .map(|u| u.to_string())
+                    .map_err(|e| Error::Decode(e.to_string()))?;
+                continue;
             }
-            h.insert(
-                http::header::ACCEPT,
-                HeaderValue::from_static("application/json"),
-            );
-            if let Some(t) = token
-                && let Ok(v) = HeaderValue::from_str(&format!("Bearer {t}"))
-            {
-                h.insert(http::header::AUTHORIZATION, v);
+            let mut body = res.into_body();
+            if !status.is_success() {
+                let bytes = body
+                    .collect()
+                    .await
+                    .map(|b| b.to_bytes())
+                    .unwrap_or_default();
+                return Err(Error::Status {
+                    status: status.as_u16(),
+                    body: String::from_utf8_lossy(&bytes).chars().take(500).collect(),
+                });
             }
-            if let Some(ct) = content_type
-                && let Ok(v) = HeaderValue::from_str(ct)
-            {
-                h.insert(http::header::CONTENT_TYPE, v);
+            let io = |e: std::io::Error| Error::Other(format!("writing {}: {e}", path.display()));
+            let mut file = tokio::fs::File::create(path).await.map_err(io)?;
+            let mut size: u64 = 0;
+            while let Some(frame) = body.frame().await {
+                let frame = frame.map_err(|e| network(e.to_string()))?;
+                if let Ok(data) = frame.into_data() {
+                    size += data.len() as u64;
+                    if size > max_bytes {
+                        return Err(Error::Other(format!(
+                            "{current} is larger than {} MiB",
+                            max_bytes / 1024 / 1024
+                        )));
+                    }
+                    file.write_all(&data).await.map_err(io)?;
+                }
             }
+            file.flush().await.map_err(io)?;
+            return Ok(size);
         }
-        let req = req
-            .body(Full::new(Bytes::from(body.unwrap_or_default())))
-            .map_err(|e| Error::Other(e.to_string()))?;
+        Err(Error::Other("too many redirects".into()))
+    }
+
+    async fn finish(
+        &self,
+        url: &str,
+        req: Request<Full<Bytes>>,
+    ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
         let fut = async {
             let res = self.client.request(req).await.map_err(|e| Error::Network {
                 url: url.to_owned(),
@@ -193,6 +289,48 @@ impl HttpClient {
         }
         Err(Error::Other("too many redirects".into()))
     }
+}
+
+/// A request with fctl's user agent, JSON accepted, the token, and
+/// `headers`, which replace those.
+fn request(
+    method: Method,
+    url: &str,
+    token: Option<&str>,
+    body: Option<Vec<u8>>,
+    content_type: Option<&str>,
+    headers: &[(&str, &str)],
+) -> Result<Request<Full<Bytes>>> {
+    let mut req = Request::builder().method(method).uri(url);
+    if let Some(h) = req.headers_mut() {
+        if let Ok(v) = HeaderValue::from_str(&crate::user_agent()) {
+            h.insert(http::header::USER_AGENT, v);
+        }
+        h.insert(
+            http::header::ACCEPT,
+            HeaderValue::from_static("application/json"),
+        );
+        if let Some(t) = token
+            && let Ok(v) = HeaderValue::from_str(&format!("Bearer {t}"))
+        {
+            h.insert(http::header::AUTHORIZATION, v);
+        }
+        if let Some(ct) = content_type
+            && let Ok(v) = HeaderValue::from_str(ct)
+        {
+            h.insert(http::header::CONTENT_TYPE, v);
+        }
+        for (name, value) in headers {
+            if let (Ok(name), Ok(value)) = (
+                http::header::HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_str(value),
+            ) {
+                h.insert(name, value);
+            }
+        }
+    }
+    req.body(Full::new(Bytes::from(body.unwrap_or_default())))
+        .map_err(|e| Error::Other(e.to_string()))
 }
 
 fn error_chain(e: &dyn std::error::Error) -> String {
