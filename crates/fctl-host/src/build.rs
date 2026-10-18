@@ -575,17 +575,24 @@ pub async fn image(
             build(ctx, &gh, repo, &commit, &recipe, &tag, setting, log).await?;
         }
     }
-    let mut builds = Builds::load(&data_dir);
-    let previous = builds.projects.insert(
-        id.to_owned(),
-        Built {
-            tag: tag.clone(),
-            commit,
-        },
-    );
-    if let Err(e) = builds.save(&data_dir) {
-        tracing::warn!("saving builds.json: {e:#}");
-    }
+    let previous = {
+        let _record = ctx
+            .build_record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut builds = Builds::load(&data_dir);
+        let previous = builds.projects.insert(
+            id.to_owned(),
+            Built {
+                tag: tag.clone(),
+                commit,
+            },
+        );
+        if let Err(e) = builds.save(&data_dir) {
+            tracing::warn!("saving builds.json: {e:#}");
+        }
+        previous
+    };
     // The project's earlier build goes, unless a sandbox still uses it.
     if let Some(old) = previous.filter(|old| old.tag != tag) {
         match ctx.driver.remove_image(&old.tag).await {

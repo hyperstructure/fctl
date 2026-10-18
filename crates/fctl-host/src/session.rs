@@ -40,6 +40,8 @@ pub struct HostCtx {
     pub drivers: Mutex<Vec<DriverInfo>>,
     /// Held while an image builds: one build at a time.
     pub builds: tokio::sync::Mutex<()>,
+    /// Held while `builds.json` changes.
+    pub build_record: Mutex<()>,
 }
 
 impl HostCtx {
@@ -55,6 +57,7 @@ impl HostCtx {
             sandbox: Mutex::new(sandbox),
             drivers: Mutex::new(Vec::new()),
             builds: tokio::sync::Mutex::new(()),
+            build_record: Mutex::new(()),
         }
     }
 

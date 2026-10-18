@@ -201,8 +201,13 @@ When a session starts in a new sandbox, the host:
    session's GitHub token, and works out what the build reads: the
    Dockerfile, and the directory it builds in (the repository's root
    unless the setting or the dev container configuration names another).
-2. Uses its last build when none of that changed since. A change elsewhere
-   in the repository doesn't count, so most sessions start right away.
+2. Uses its last build when none of that changed since. Changes outside
+   the directory don't count, but with the repository's root as the
+   directory, every change does. In a busy repository, give the image a
+   directory of its own (`--build-context docker`, say, or the
+   `.devcontainer` directory a dev container configuration builds in by
+   default); the builder's cache keeps the builds that follow short
+   anyway.
 3. Otherwise downloads the repository at that commit (up to 2 GiB), keeps
    only the directory and the Dockerfile, and builds the image with
    `docker build` or `container build`. The session's log shows each step.
