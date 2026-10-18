@@ -4,6 +4,7 @@ use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
+use fctl_domain::size;
 use fctl_host::driver::Driver;
 use fctl_host::{HostConfig, service};
 
@@ -20,6 +21,18 @@ pub enum HostCmd {
         /// Maximum concurrent sessions.
         #[arg(long, default_value_t = 4)]
         capacity: u32,
+        /// CPUs for a sandbox whose project sets none (new hosts: 4).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        cpus: Option<u32>,
+        /// Memory for a sandbox whose project sets none, like 8g or 8192m (new hosts: 8g).
+        #[arg(long, value_parser = memory_arg)]
+        memory: Option<u32>,
+        /// The most CPUs one sandbox may have (new hosts: all of the machine's or the Docker VM's).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        max_cpus: Option<u32>,
+        /// The most memory one sandbox may have, like 16g (new hosts: all of the machine's or the Docker VM's).
+        #[arg(long, value_parser = memory_arg)]
+        max_memory: Option<u32>,
         /// Sandbox image.
         #[arg(long)]
         image: Option<String>,
@@ -77,28 +90,86 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             name,
             driver,
             capacity,
+            cpus,
+            memory,
+            max_cpus,
+            max_memory,
             image,
             token,
             no_service,
             build_image,
         } => {
+            const SIGN_IN: &str = "Sign in as an admin first (`fctl login`), or pass --token";
             let server = config::server(server)?;
             let mut cfg = HostConfig::load().unwrap_or_default();
             cfg.server = server.clone();
             if let Some(n) = name {
                 cfg.name = n;
             }
-            cfg.driver = driver;
             cfg.capacity = capacity.max(1);
+            cfg.cpus = cpus.unwrap_or(cfg.cpus);
+            cfg.memory_mb = memory.unwrap_or(cfg.memory_mb);
+            cfg.max_cpus = max_cpus.or(cfg.max_cpus);
+            cfg.max_memory_mb = max_memory.or(cfg.max_memory_mb);
             if let Some(i) = image {
                 cfg.image = i;
             }
+            // Registering a runner leaves something behind, so it waits until
+            // everything that can fail on this machine has passed.
+            let api = if token.is_some() {
+                None
+            } else {
+                Some(config::api(Some(&server)).context(SIGN_IN)?)
+            };
+            // `auto` picks like the daemon does, except that it never settles for
+            // the process driver.
+            let driver = if driver == "auto" {
+                let infos = Driver::probe_all(&cfg.data_dir()).await;
+                let runtimes = infos.iter().filter(|i| i.name != "process");
+                match runtimes.clone().find(|i| i.available) {
+                    Some(info) => info.name.clone(),
+                    None => {
+                        let mut why =
+                            String::from("No VM or container runtime is ready on this machine:");
+                        for info in runtimes {
+                            let detail = info.detail.as_deref().unwrap_or_default();
+                            why.push_str(&format!("\n  {}: {detail}", info.name));
+                        }
+                        bail!(
+                            "{why}\nInstall one, or pass --driver process to run agents without isolation."
+                        );
+                    }
+                }
+            } else {
+                driver
+            };
+            let d = Driver::select(&driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
+            if build_image {
+                fctl_host::image::build(&d, &cfg.image).await?;
+            }
+            let info = d.probe().await;
+            if !info.available {
+                bail!(
+                    "The {} driver is not ready: {}. Nothing was registered; run this again once it is.",
+                    info.name,
+                    info.detail.unwrap_or_default()
+                );
+            }
+            println!(
+                "{} Driver: {} ({})",
+                style::accent("✓"),
+                info.name,
+                info.detail.unwrap_or_default()
+            );
+            println!(
+                "{} Sandboxes: {}",
+                style::accent("✓"),
+                size::limits(&cfg.sandbox_limits(d.resources().await))
+            );
             let token = match token {
                 Some(t) => t,
                 None => {
-                    let api = config::api(Some(&server))
-                        .context("Sign in as an admin first (`fctl login`), or pass --token")?;
-                    let reg = api.create_runner(&cfg.name).await?;
+                    let reg = api.context(SIGN_IN)?.create_runner(&cfg.name).await?;
                     println!(
                         "{} Registered runner {} ({})",
                         style::accent("✓"),
@@ -108,6 +179,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     reg.token
                 }
             };
+            // The service starts with the driver checked here instead of picking
+            // again, perhaps before a runtime is up.
+            cfg.driver = d.name().into();
             cfg.save()?;
             HostConfig::save_token(&token)?;
             println!(
@@ -115,17 +189,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 style::accent("✓"),
                 HostConfig::path().display()
             );
-            let d = Driver::select(&cfg.driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
-            let info = d.probe().await;
-            println!(
-                "{} Driver: {} ({})",
-                style::accent("✓"),
-                info.name,
-                info.detail.unwrap_or_default()
-            );
-            if build_image {
-                fctl_host::image::build(&d, &cfg.image).await?;
-            } else if d.needs_linux_agent() {
+            if !build_image && d.needs_linux_agent() {
                 println!(
                     "{}",
                     style::dim(&format!(
@@ -154,17 +218,21 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         HostCmd::Status => {
             let cfg = HostConfig::load()?;
             let (installed, running) = service::status();
+            let sandbox = match Driver::select(&cfg.driver, &cfg.data_dir(), None).await {
+                Ok(d) => Some(cfg.sandbox_limits(d.resources().await)),
+                Err(_) => None,
+            };
             if json {
                 return style::print_json(
-                    &serde_json::json!({ "config": cfg, "service_installed": installed, "service_running": running }),
+                    &serde_json::json!({ "config": cfg, "sandbox": sandbox, "service_installed": installed, "service_running": running }),
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
             println!("driver:   {}", cfg.driver);
-            println!(
-                "capacity: {} sessions · {} CPUs · {} MiB each",
-                cfg.capacity, cfg.cpus, cfg.memory_mb
-            );
+            println!("capacity: {} sessions", cfg.capacity);
+            if let Some(l) = &sandbox {
+                println!("sandbox:  {}", size::limits(l));
+            }
             println!("image:    {}", cfg.image);
             println!(
                 "service:  {}",
@@ -203,6 +271,14 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             println!("Removed the service. Configuration and sandboxes are kept.");
             Ok(())
         }
+    }
+}
+
+/// `--memory 8g`: MiB, at least 512.
+fn memory_arg(s: &str) -> std::result::Result<u32, String> {
+    match size::parse_memory_mb(s)? {
+        mb if mb < 512 => Err("use at least 512 MiB".into()),
+        mb => Ok(mb),
     }
 }
 

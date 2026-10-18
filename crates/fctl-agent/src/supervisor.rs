@@ -383,6 +383,7 @@ impl Supervisor {
             self.save_file(&paths.attachments, &att, &data);
         }
         let spec = config.spec.clone();
+        let sandbox_env = prompt::sandbox_env(config.sandbox);
         self.config = Some(config);
         self.set_status(
             SessionStatus::Preparing,
@@ -417,6 +418,7 @@ impl Supervisor {
                         .iter()
                         .chain(spec.secrets.iter())
                         .map(|(k, v)| (k.clone(), v.clone()))
+                        .chain(sandbox_env)
                         .collect();
                     let (setup_tx, mut setup_rx) = mpsc::unbounded_channel::<(LogLevel, String)>();
                     let setup_work = work.clone();
@@ -493,15 +495,9 @@ impl Supervisor {
             cfg["oauthAccount"] = raw;
         }
         std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
-        // User settings: no API key helper, ever.
-        let settings = json!({
-            "$schema": "https://json.schemastore.org/claude-code-settings.json",
-            "permissions": { "defaultMode": "bypassPermissions" },
-            "env": { "DISABLE_AUTOUPDATER": "1" }
-        });
         std::fs::write(
             claude_dir.join("settings.json"),
-            serde_json::to_string_pretty(&settings)?,
+            serde_json::to_string_pretty(&claude::user_settings())?,
         )?;
         Ok(())
     }
@@ -555,6 +551,7 @@ impl Supervisor {
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
         env.insert("FCTL_SESSION_ID".into(), spec.session_id.0.clone());
         env.insert("FCTL_SESSION_URL".into(), spec.web_url.clone());
+        env.extend(prompt::sandbox_env(config.sandbox));
         // Resuming needs Claude's conversation. A sandbox made for a resumed
         // session (the stopped one expired) has none: start a new one there.
         let wants_resume = spec.resume || self.persisted.claude_started;
@@ -562,7 +559,7 @@ impl Supervisor {
             && (self.persisted.claude_started
                 || claude::conversation_exists(&paths.home, &spec.claude_session_id));
         let fresh_resume = wants_resume && !resume;
-        let system = prompt::system_prompt(spec, &workdir);
+        let system = prompt::system_prompt(spec, &workdir, config.sandbox);
         let bin = config.claude_bin.clone().unwrap_or_else(|| "claude".into());
         let launch = LaunchSpec {
             bin: &bin,

@@ -12,6 +12,7 @@ use crate::session::{self, HostCtx, SessionCmd, SessionEvent, SessionHandle, Sta
 use crate::sysinfo;
 use anyhow::Result;
 use fctl_client::ws;
+use fctl_domain::size::{self, Want};
 use fctl_proto::runner::{FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet};
 use fctl_proto::{LoginJobId, PROTOCOL_VERSION, SessionId};
 use futures::StreamExt;
@@ -48,17 +49,20 @@ impl Daemon {
         let data = cfg.data_dir();
         std::fs::create_dir_all(&data)?;
         let driver = Driver::select(&cfg.driver, &data, cfg.agent_bin.clone()).await?;
+        let sandbox = cfg.sandbox_limits(driver.resources().await);
         tracing::info!(
-            "fctl host {VERSION} on {} using the {} driver, capacity {}",
+            "fctl host {VERSION} on {} using the {} driver, capacity {}, sandboxes {}",
             cfg.name,
             driver.name(),
-            cfg.capacity
+            cfg.capacity,
+            size::limits(&sandbox)
         );
         let ctx = Arc::new(HostCtx {
             cfg,
             driver,
             token,
             runner_id: Mutex::new(None),
+            sandbox: Mutex::new(sandbox),
         });
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (login_tx, login_rx) = mpsc::unbounded_channel();
@@ -164,6 +168,7 @@ impl Daemon {
             labels: self.ctx.cfg.labels.clone(),
             sessions: self.reports(),
             image: Some(self.ctx.cfg.image.clone()),
+            sandbox: Some(self.ctx.refresh_sandbox_limits().await),
         }
     }
 
@@ -320,6 +325,21 @@ impl Daemon {
             FleetToHost::Ping => vec![HostToFleet::Pong],
             FleetToHost::StartSession { spec } => {
                 let id = spec.session_id.clone();
+                // The control plane only sends sessions that fit; an older
+                // one may not know this host's limits.
+                let limits = self.ctx.sandbox_limits();
+                if !Want::of(&spec.project.settings).fits(&limits) {
+                    return vec![HostToFleet::StartResult {
+                        session_id: id,
+                        accepted: false,
+                        error: Some(format!(
+                            "{} gives a sandbox at most {} and {} of memory",
+                            self.ctx.cfg.name,
+                            size::cpus(limits.max.cpus),
+                            size::memory(limits.max.memory_mb.into())
+                        )),
+                    }];
+                }
                 if let Some(existing) = self.sessions.get(&id) {
                     let winding_down = existing
                         .report

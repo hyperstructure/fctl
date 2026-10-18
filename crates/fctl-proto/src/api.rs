@@ -5,7 +5,7 @@
 //! list endpoints return objects (`{"sessions": [...]}`) so they can grow.
 
 use crate::event::SessionEvent;
-use crate::runner::{ClaudeCredentialKind, DriverInfo};
+use crate::runner::{ClaudeCredentialKind, DriverInfo, SandboxLimits};
 use crate::session::{
     InstanceRole, Project, ProjectRole, ProjectSettings, Session, SessionRole, UserRef,
 };
@@ -500,8 +500,14 @@ pub struct Runner {
     pub drivers: Vec<DriverInfo>,
     pub capacity: u32,
     pub active_sessions: u32,
+    /// The machine's CPUs and memory (MiB).
     pub cpus: Option<u32>,
     pub memory_mb: Option<u64>,
+    /// Free memory and disk (MiB) at its last heartbeat, while it is connected.
+    pub memory_available_mb: Option<u64>,
+    pub disk_available_mb: Option<u64>,
+    /// What it gives each sandbox (absent from older hosts).
+    pub sandbox: Option<SandboxLimits>,
     pub labels: Vec<String>,
     pub last_seen_at: Option<Millis>,
     pub created_at: Millis,

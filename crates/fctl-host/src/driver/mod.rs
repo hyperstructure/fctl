@@ -13,7 +13,7 @@ pub mod lima;
 pub mod process;
 
 use anyhow::Result;
-use fctl_proto::runner::DriverInfo;
+use fctl_proto::runner::{DriverInfo, SandboxSize};
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -146,6 +146,27 @@ impl Driver {
         }
     }
 
+    /// The CPUs and memory sandboxes run on: the Docker daemon's (on macOS
+    /// the VM of OrbStack, Docker Desktop or Colima), otherwise this
+    /// machine's. Memory is 0 when unknown.
+    pub async fn resources(&self) -> SandboxSize {
+        if let Self::Container(d) = self
+            && let Some(size) = d.resources().await
+        {
+            return size;
+        }
+        SandboxSize {
+            cpus: crate::sysinfo::cpus(),
+            memory_mb: u32::try_from(crate::sysinfo::memory_mb()).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// Whether the driver holds sandboxes to their size (the process driver
+    /// does not).
+    pub fn enforces_size(&self) -> bool {
+        !matches!(self, Self::Process(_))
+    }
+
     /// Creates the sandbox, or starts an existing one with the same name.
     pub async fn ensure(
         &self,
@@ -270,7 +291,7 @@ pub async fn run_cmd(program: &str, args: &[&str]) -> Result<String> {
         .stdin(std::process::Stdio::null())
         .output()
         .await
-        .map_err(|e| anyhow::anyhow!("running {program}: {e}"))?;
+        .map_err(|e| spawn_error(program, e))?;
     if !out.status.success() {
         anyhow::bail!(
             "{program} {} failed: {}",
@@ -281,9 +302,30 @@ pub async fn run_cmd(program: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Why `program` could not be started, naming a missing program plainly.
+pub fn spawn_error(program: &str, e: std::io::Error) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        anyhow::anyhow!("`{program}` is not installed (not found on the PATH)")
+    } else {
+        anyhow::anyhow!("running {program}: {e}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_missing_program_is_named() {
+        let e = run_cmd("fctl-test-missing-program", &["--version"])
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert_eq!(
+            e.as_deref(),
+            Some("`fctl-test-missing-program` is not installed (not found on the PATH)")
+        );
+    }
 
     #[test]
     fn names_roundtrip() {

@@ -59,7 +59,7 @@ impl LimaDriver {
             available: version.is_some() && has_base,
             isolation: "vm".into(),
             detail: Some(match (version.is_some(), has_base) {
-                (false, _) => "limactl is not installed".into(),
+                (false, _) => "limactl is not installed (install Lima: https://lima-vm.io)".into(),
                 (true, false) => {
                     format!("no {BASE_VM} VM yet (run `fctl host image build --driver lima`)")
                 }

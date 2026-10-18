@@ -67,6 +67,20 @@ pub struct Claude {
     next_id: u64,
 }
 
+/// Claude's user settings in the sandbox: no API key helper, ever, and no
+/// "Generated with Claude Code" footer on pull requests (their descriptions
+/// become commit messages; the session link is in the system prompt).
+/// `attribution.pr` is the long-supported form: a Claude Code that rejects a
+/// key skips the whole file, permissions included.
+pub fn user_settings() -> Value {
+    json!({
+        "$schema": "https://json.schemastore.org/claude-code-settings.json",
+        "permissions": { "defaultMode": "bypassPermissions" },
+        "env": { "DISABLE_AUTOUPDATER": "1" },
+        "attribution": { "pr": "" }
+    })
+}
+
 /// Whether Claude Code has this conversation under `home`: it keeps them as
 /// `~/.claude/projects/<working directory>/<session id>.jsonl`. A sandbox
 /// created for a resumed session (the stopped one expired) has none.
@@ -343,6 +357,14 @@ pub fn project_settings_are_unsafe(repo: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_settings_keep_pull_requests_plain() {
+        let s = user_settings();
+        assert_eq!(s["attribution"]["pr"], "");
+        assert_eq!(s["permissions"]["defaultMode"], "bypassPermissions");
+        assert!(s.get("apiKeyHelper").is_none());
+    }
 
     #[test]
     fn finds_conversations() -> anyhow::Result<()> {

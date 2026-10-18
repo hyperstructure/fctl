@@ -2,8 +2,16 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { ArrowRight, ArrowUp, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowRight, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  AttachButton,
+  DraftTray,
+  DropHint,
+  useAttachments,
+  useFileDrop,
+} from "@/components/session/attachments";
+import { StartButton, useStartSession } from "@/components/session/start";
 import {
   Avatar,
   Banner,
@@ -23,9 +31,10 @@ import {
 } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
+import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
-import { ago, agoShort, stamp } from "@/lib/format";
-import { keys, queryClient, useMe, useProject, useSessions } from "@/lib/queries";
+import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
+import { keys, queryClient, useMe, useProject, useRunners, useSessions } from "@/lib/queries";
 
 type Tab = "sessions" | "settings" | "members" | "secrets";
 
@@ -110,7 +119,6 @@ export function ProjectPage() {
 }
 
 function Sessions({ project }: { project: G.Project }) {
-  const navigate = useNavigate();
   const [filter, setFilter] = useState<"active" | "all" | "mine">("all");
   const list = useSessions({
     project: project.slug,
@@ -120,48 +128,65 @@ function Sessions({ project }: { project: G.Project }) {
   });
   const [prompt, setPrompt] = useState("");
   const canStart = project.role !== "viewer";
-  const start = useMutation({
-    mutationFn: () => api.createSession(project.slug, { prompt }),
-    onSuccess: (s) => navigate({ to: "/s/$id", params: { id: s.id } }),
-    onError: (e) => toast(e.message, "error"),
-  });
+  const { start, starting } = useStartSession();
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const files = useAttachments(canStart ? { project: project.slug } : undefined);
+  const attach = (f: File[], pasted?: boolean) => {
+    files.add(f, { pasted });
+    ref.current?.focus();
+  };
+  const dragging = useFileDrop(attach, canStart && !starting);
   return (
     <div className="flex flex-col gap-10">
       {canStart && (
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (prompt.trim()) start.mutate();
+            start(project.slug, prompt, files);
           }}
-          className="relative rounded-2xl border border-line-strong bg-surface/80 transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-[0_0_0_4px_var(--c-accent-soft)]"
+          className={cn(
+            "relative rounded-2xl border border-line-strong bg-surface/80 transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-[0_0_0_4px_var(--c-accent-soft)]",
+            dragging && "border-accent/50",
+          )}
         >
+          <DraftTray
+            drafts={files.drafts}
+            onRemove={files.remove}
+            onRetry={files.retry}
+            className="px-4 pt-4"
+          />
           <Textarea
+            ref={ref}
             bare
             minRows={2}
             value={prompt}
+            readOnly={starting}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && prompt.trim()) {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
-                start.mutate();
+                start(project.slug, prompt, files);
               }
+            }}
+            onPaste={(e) => {
+              const pasted = filesFromPaste(e.clipboardData);
+              if (!pasted.length || starting) return;
+              e.preventDefault();
+              attach(pasted, true);
             }}
             placeholder={`What should an agent do in ${project.name}?`}
             className="block px-5 pt-4 pb-14 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
           />
+          <div className="absolute bottom-3 left-2.5">
+            <AttachButton onFiles={(f) => attach(f)} />
+          </div>
           <div className="absolute right-3 bottom-3 flex items-center gap-3">
             <span className="text-[11.5px] text-ink-4">⌘↵</span>
-            <button
-              type="submit"
-              disabled={!prompt.trim() || start.isPending}
-              className={cn(
-                "flex h-9 items-center gap-2 rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all",
-                prompt.trim() ? "bg-ink text-canvas" : "bg-raised text-ink-4",
-              )}
-            >
-              Start a session <ArrowUp className="size-4" />
-            </button>
+            <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
+              Start a session
+            </StartButton>
           </div>
+          <DropHint show={dragging} />
         </form>
       )}
       <section>
@@ -222,6 +247,25 @@ function Sessions({ project }: { project: G.Project }) {
         )}
       </section>
     </div>
+  );
+}
+
+/** The most CPUs and memory any enabled runner gives a sandbox, when runners say. */
+function LargestSandbox() {
+  const runners = useRunners();
+  const limits = (runners.data?.runners ?? [])
+    .filter((r) => r.status !== "disabled")
+    .flatMap((r) => (r.sandbox ? [r.sandbox.max] : []));
+  if (limits.length === 0) return null;
+  const most = {
+    cpus: Math.max(...limits.map((l) => l.cpus)),
+    memory_mb: Math.max(...limits.map((l) => l.memory_mb)),
+  };
+  return (
+    <p className="-mt-2 text-[12.5px] text-ink-3">
+      Empty CPUs and Memory take the runner's default. Runners give a sandbox at most {cpus(most.cpus)} and{" "}
+      {memory(most.memory_mb)}; a session that asks for more stays queued.
+    </p>
   );
 }
 
@@ -442,6 +486,7 @@ function Settings({ project }: { project: G.Project }) {
               )}
             </Field>
           </div>
+          <LargestSandbox />
           <Field
             label="Environment"
             hint="KEY=value per line. Not secret; use Secrets for credentials."

@@ -11,7 +11,7 @@ use super::{
     AGENT_PATH, AgentIo, Sandbox, SandboxInfo, SandboxSpec, attach_script, run_cmd, serve_script,
 };
 use anyhow::{Context, Result};
-use fctl_proto::runner::DriverInfo;
+use fctl_proto::runner::{DriverInfo, SandboxSize};
 use serde_json::Value;
 use std::path::Path;
 use std::process::Stdio;
@@ -58,9 +58,8 @@ impl ContainerDriver {
             Flavor::Apple => "vm",
             Flavor::Docker => "container",
         };
-        if cfg!(not(target_os = "macos"))
-            && self.flavor == Flavor::Apple
-            && std::env::var("FCTL_CONTAINER_BIN").is_err()
+        // Elsewhere only a stand-in (`FCTL_CONTAINER_BIN`, tests) can play Apple's CLI.
+        if cfg!(not(target_os = "macos")) && self.flavor == Flavor::Apple && self.bin == "container"
         {
             return DriverInfo {
                 name: "apple".into(),
@@ -68,6 +67,19 @@ impl ContainerDriver {
                 isolation: isolation.into(),
                 version: None,
                 detail: Some("Apple container needs macOS 26 on Apple silicon".into()),
+            };
+        }
+        // Not installed and not running need different fixes.
+        if !installed(&self.bin) {
+            return DriverInfo {
+                name: self.flavor_name().into(),
+                available: false,
+                isolation: isolation.into(),
+                version: None,
+                detail: Some(match self.flavor {
+                    Flavor::Apple => "Apple's `container` is not installed (get it from https://github.com/apple/container/releases, then run `container system start`)".into(),
+                    Flavor::Docker => "the docker CLI is not installed".into(),
+                }),
             };
         }
         let version = match self.flavor {
@@ -98,13 +110,29 @@ impl ContainerDriver {
             name: self.flavor_name().into(),
             available: ready,
             isolation: isolation.into(),
-            detail: Some(match (self.flavor, ready, version.is_some()) {
-                (_, true, _) => "ready".into(),
-                (Flavor::Apple, false, _) => "`container` is not installed or its service is stopped (run `container system start`)".into(),
-                (Flavor::Docker, false, _) => "the docker CLI is missing or its daemon is not running".into(),
+            detail: Some(match (self.flavor, ready) {
+                (_, true) => "ready".into(),
+                (Flavor::Apple, false) => {
+                    "the `container` service is not running (run `container system start`)".into()
+                }
+                (Flavor::Docker, false) => "the docker daemon is not running".into(),
             }),
             version,
         }
+    }
+
+    /// The Docker daemon's CPUs and memory: on macOS, its VM's rather than
+    /// the Mac's. `None` for Apple's `container`, whose sandboxes are VMs of
+    /// their own.
+    pub async fn resources(&self) -> Option<SandboxSize> {
+        if self.flavor != Flavor::Docker {
+            return None;
+        }
+        let out = self
+            .run(&["info", "--format", "{{.NCPU}} {{.MemTotal}}"])
+            .await
+            .ok()?;
+        docker_resources(&out)
     }
 
     /// `running`, `stopped`, … or `None` when it does not exist.
@@ -312,6 +340,91 @@ impl ContainerDriver {
                     })
                     .collect())
             }
+        }
+    }
+}
+
+/// `docker info --format '{{.NCPU}} {{.MemTotal}}'`: CPUs, and memory in bytes.
+fn docker_resources(out: &str) -> Option<SandboxSize> {
+    let mut words = out.split_whitespace();
+    let cpus: u32 = words.next()?.parse().ok()?;
+    let bytes: u64 = words.next()?.parse().ok()?;
+    let memory_mb = u32::try_from(bytes / 1024 / 1024).unwrap_or(u32::MAX);
+    (cpus > 0 && memory_mb > 0).then_some(SandboxSize { cpus, memory_mb })
+}
+
+/// Whether `bin` can be started: a path to a file, or a program on the PATH.
+fn installed(bin: &str) -> bool {
+    if bin.contains('/') {
+        Path::new(bin).is_file()
+    } else {
+        super::process::which(bin).is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_docker_vms_size() {
+        // OrbStack's VM in #14's session: 10 CPUs and 15.6 GiB.
+        assert_eq!(
+            docker_resources("10 16766767104\n"),
+            Some(SandboxSize {
+                cpus: 10,
+                memory_mb: 15_990
+            })
+        );
+        for bad in [
+            "",
+            "10",
+            "ten 1024",
+            "0 16766767104",
+            "<no value> <no value>",
+        ] {
+            assert_eq!(docker_resources(bad), None, "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn says_whether_the_runtime_is_missing_or_stopped() {
+        // `true` and `false` stand in for a CLI whose every command succeeds or fails.
+        for (flavor, bin, available, detail) in [
+            (
+                Flavor::Apple,
+                "fctl-test-missing",
+                false,
+                "Apple's `container` is not installed",
+            ),
+            (
+                Flavor::Apple,
+                "false",
+                false,
+                "the `container` service is not running",
+            ),
+            (Flavor::Apple, "true", true, "ready"),
+            (
+                Flavor::Docker,
+                "fctl-test-missing",
+                false,
+                "the docker CLI is not installed",
+            ),
+            (
+                Flavor::Docker,
+                "false",
+                false,
+                "the docker daemon is not running",
+            ),
+        ] {
+            let driver = ContainerDriver {
+                flavor,
+                bin: bin.into(),
+            };
+            let info = driver.probe().await;
+            assert_eq!(info.available, available, "{bin}");
+            let got = info.detail.unwrap_or_default();
+            assert!(got.starts_with(detail), "{bin}: {got}");
         }
     }
 }

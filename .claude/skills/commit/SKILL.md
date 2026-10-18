@@ -54,8 +54,13 @@ CI checks every pull request title, and again when you edit it.
 
 Plain prose for someone reading `git log` in a year: what was wrong or
 missing, what changed and why this way, and how you verified it (tests,
-`cargo xtask dev`, screenshots of UI in both themes). Link issues with
-`Closes #12`. End with the attribution lines your environment asks for.
+`cargo xtask dev`, screenshots of UI in both themes). Link the issue:
+`Fixes #12` only when the pull request does everything it asks (merging
+closes it), `Refs #12` otherwise (the `issues` skill).
+
+The description becomes the commit message on `main`, so it ends with
+the content: no "Generated with …" footers and no links to chat sessions.
+A link to the fctl session that made the change is welcome.
 
 ## The flow
 
@@ -66,7 +71,8 @@ missing, what changed and why this way, and how you verified it (tests,
 3. Run `cargo xtask check` before you push.
 4. Open the pull request: a conventional title, a description, one
    change. Split unrelated work into separate pull requests.
-5. A person merges it (squash) when CI is green, unless they asked you to
+5. Wait for CI and answer the review: the `pull-requests` skill.
+6. A person merges it (squash) when CI is green, unless they asked you to
    merge it yourself.
 
 Never push to `main` directly: it is what releases are made from. The

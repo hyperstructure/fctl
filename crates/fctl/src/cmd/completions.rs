@@ -71,11 +71,19 @@ impl Places {
     }
 
     /// The startup file that loads the script (fish needs none). Bash on
-    /// macOS starts login shells, which read ~/.bash_profile.
+    /// macOS starts login shells, which read only the first of
+    /// ~/.bash_profile, ~/.bash_login and ~/.profile that exists: the block
+    /// goes in that one, or in a new ~/.profile, which hides nothing.
     pub fn rc_path(&self, shell: Shell) -> Option<PathBuf> {
         match shell {
             Shell::Zsh => Some(self.zdotdir.join(".zshrc")),
-            Shell::Bash if self.macos => Some(self.home.join(".bash_profile")),
+            Shell::Bash if self.macos => Some(
+                [".bash_profile", ".bash_login", ".profile"]
+                    .into_iter()
+                    .map(|f| self.home.join(f))
+                    .find(|p| p.exists())
+                    .unwrap_or_else(|| self.home.join(".profile")),
+            ),
             Shell::Bash => Some(self.home.join(".bashrc")),
             _ => None,
         }
@@ -99,8 +107,9 @@ impl Places {
                     "\n{MARKER}\nfpath=(\"{dir}\" $fpath)\nautoload -Uz compinit && compinit\n"
                 ))
             }
+            // sh, dash and ksh read ~/.profile too, and stop at bash syntax.
             Shell::Bash => Some(format!(
-                "\n{MARKER}\n[ -f \"{script}\" ] && . \"{script}\"\n"
+                "\n{MARKER}\nif [ -n \"${{BASH_VERSION:-}}\" ] && [ -f \"{script}\" ]; then\n  . \"{script}\"\nfi\n"
             )),
             _ => None,
         }
@@ -134,24 +143,42 @@ pub fn install(places: &Places, shell: Shell, script_bytes: &[u8]) -> Result<Ins
     }
     std::fs::write(&script, script_bytes)
         .with_context(|| format!("writing {}", script.display()))?;
-    let mut rc_changed = None;
-    if let (Some(rc), Some(block)) = (places.rc_path(shell), places.rc_block(shell)) {
-        let current = std::fs::read_to_string(&rc).unwrap_or_default();
-        if !current.contains(MARKER) {
-            let mut text = current;
-            if !text.is_empty() && !text.ends_with('\n') {
-                text.push('\n');
-            }
-            text.push_str(&block);
-            std::fs::write(&rc, text).with_context(|| format!("writing {}", rc.display()))?;
-            rc_changed = Some(rc);
-        }
-    }
+    let rc_changed = match (places.rc_path(shell), places.rc_block(shell)) {
+        (Some(rc), Some(block)) => add_block(&rc, &block)?.then_some(rc),
+        _ => None,
+    };
     Ok(Installed {
         shell,
         script,
         rc_changed,
     })
+}
+
+/// Appends `block` to the end of the startup file `rc` unless it is there.
+fn add_block(rc: &Path, block: &str) -> Result<bool> {
+    use std::io::Write;
+    // Bytes: a startup file need not be UTF-8, and one we cannot read is
+    // an error, never an empty file to write over.
+    let current = match std::fs::read(rc) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", rc.display())),
+    };
+    if String::from_utf8_lossy(&current).contains(MARKER) {
+        return Ok(false);
+    }
+    let mut text = Vec::new();
+    if !current.is_empty() && !current.ends_with(b"\n") {
+        text.push(b'\n');
+    }
+    text.extend_from_slice(block.as_bytes());
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(rc)
+        .and_then(|mut f| f.write_all(&text))
+        .with_context(|| format!("writing {}", rc.display()))?;
+    Ok(true)
 }
 
 /// Rewrites the scripts that are installed (no startup files change).
@@ -241,16 +268,60 @@ mod tests {
     }
 
     #[test]
-    fn bash_uses_the_login_profile_on_macos() -> Result<()> {
+    fn bash_on_macos_adds_to_the_file_login_shells_read() -> Result<()> {
+        // A ~/.profile and no ~/.bash_profile: creating ~/.bash_profile
+        // would stop bash from reading ~/.profile.
         let home = tempfile::tempdir()?;
-        let mac = install(&places(home.path(), true), Shell::Bash, b"complete")?;
-        assert_eq!(mac.rc_changed, Some(home.path().join(".bash_profile")));
-        let linux = install(&places(home.path(), false), Shell::Bash, b"complete")?;
-        assert_eq!(linux.rc_changed, Some(home.path().join(".bashrc")));
+        let p = places(home.path(), true);
+        std::fs::write(
+            home.path().join(".profile"),
+            "export PATH=\"$HOME/bin:$PATH\"",
+        )?;
+        let done = install(&p, Shell::Bash, b"complete")?;
+        assert_eq!(done.rc_changed, Some(home.path().join(".profile")));
+        assert!(!home.path().join(".bash_profile").exists());
+        let rc = std::fs::read_to_string(home.path().join(".profile"))?;
+        assert!(rc.starts_with("export PATH=\"$HOME/bin:$PATH\"\n\n# fctl tab completion"));
+        // Bash reads ~/.bash_profile first, then ~/.bash_login.
+        std::fs::write(home.path().join(".bash_login"), "")?;
+        assert_eq!(
+            p.rc_path(Shell::Bash),
+            Some(home.path().join(".bash_login"))
+        );
+        std::fs::write(home.path().join(".bash_profile"), "")?;
+        assert_eq!(
+            p.rc_path(Shell::Bash),
+            Some(home.path().join(".bash_profile"))
+        );
+        // With none of them, a new ~/.profile hides nothing.
+        let empty = tempfile::tempdir()?;
+        let done = install(&places(empty.path(), true), Shell::Bash, b"complete")?;
+        assert_eq!(done.rc_changed, Some(empty.path().join(".profile")));
+        assert!(!empty.path().join(".bash_profile").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn bash_on_linux_uses_bashrc_and_only_bash_loads_the_script() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let done = install(&places(home.path(), false), Shell::Bash, b"complete")?;
+        assert_eq!(done.rc_changed, Some(home.path().join(".bashrc")));
         let rc = std::fs::read_to_string(home.path().join(".bashrc"))?;
-        assert!(rc.contains(
-            "[ -f \"$HOME/.local/share/fctl/completions/fctl.bash\" ] && . \"$HOME/.local/share/fctl/completions/fctl.bash\""
-        ));
+        let script = "$HOME/.local/share/fctl/completions/fctl.bash";
+        assert!(rc.contains(&format!(
+            "if [ -n \"${{BASH_VERSION:-}}\" ] && [ -f \"{script}\" ]; then\n  . \"{script}\"\nfi\n"
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn install_appends_to_files_that_are_not_utf8() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let rc = home.path().join(".bashrc");
+        std::fs::write(&rc, b"# caf\xe9\nexport A=1")?;
+        install(&places(home.path(), false), Shell::Bash, b"complete")?;
+        let text = std::fs::read(&rc)?;
+        assert!(text.starts_with(b"# caf\xe9\nexport A=1\n\n# fctl tab completion"));
         Ok(())
     }
 

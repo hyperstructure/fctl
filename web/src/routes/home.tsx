@@ -1,9 +1,8 @@
 // The floor: every agent at work as a thread of light, and what to do next.
 
 import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstructure/design/gl/foundry";
-import { useMutation } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowRight, ArrowUp, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { ArrowRight, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   AttachButton,
@@ -12,19 +11,9 @@ import {
   useAttachments,
   useFileDrop,
 } from "@/components/session/attachments";
-import {
-  Avatar,
-  Button,
-  firstNames,
-  GLCanvas,
-  Skeleton,
-  Spinner,
-  StatusDot,
-  Textarea,
-  toast,
-} from "@/components/ui";
+import { StartButton, useStartSession } from "@/components/session/start";
+import { Avatar, Button, firstNames, GLCanvas, Skeleton, StatusDot, Textarea } from "@/components/ui";
 import type * as G from "@/gen";
-import { api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
@@ -123,7 +112,6 @@ function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<Foun
 }
 
 function QuickStart({ projects }: { projects: G.Project[] }) {
-  const navigate = useNavigate();
   const editable = projects.filter((p) => p.role !== "viewer");
   const first = editable[0]?.slug;
   const [project, setProject] = useState(first ?? "");
@@ -132,38 +120,19 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
   useEffect(() => {
     if (!project && first) setProject(first);
   }, [first, project]);
+  const { start, starting } = useStartSession();
   const files = useAttachments(editable.length && project ? { project } : undefined);
   const attach = (f: File[], pasted?: boolean) => {
     files.add(f, { pasted });
     ref.current?.focus();
   };
-  const dragging = useFileDrop(attach, editable.length > 0);
-  const start = useMutation({
-    mutationFn: async () => {
-      // Waits for files still uploading.
-      const { files: sent, restore } = await files.take();
-      try {
-        const s = await api.createSession(project, {
-          prompt,
-          attachments: sent.attachments.map((a) => a.id),
-        });
-        for (const url of Object.values(sent.previews)) URL.revokeObjectURL(url);
-        return s;
-      } catch (e) {
-        restore();
-        throw e;
-      }
-    },
-    onSuccess: (s) => navigate({ to: "/s/$id", params: { id: s.id } }),
-    onError: (e) => toast(e.message, "error"),
-  });
-  const ready = !!prompt.trim() || files.drafts.length > 0;
+  const dragging = useFileDrop(attach, editable.length > 0 && !starting);
   if (!editable.length) return null;
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready) start.mutate();
+        start(project, prompt, files);
       }}
       className={cn(
         "group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]",
@@ -177,16 +146,17 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
         minRows={2}
         maxRows={10}
         value={prompt}
+        readOnly={starting}
         onChange={(e) => setPrompt(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            if (ready) start.mutate();
+            start(project, prompt, files);
           }
         }}
         onPaste={(e) => {
           const pasted = filesFromPaste(e.clipboardData);
-          if (!pasted.length) return;
+          if (!pasted.length || starting) return;
           e.preventDefault();
           attach(pasted, true);
         }}
@@ -200,6 +170,7 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
           <span className="text-ink-4">in</span>
           <select
             value={project}
+            disabled={starting}
             onChange={(e) => setProject(e.target.value)}
             className="min-w-0 truncate rounded-md border border-line bg-raised px-2 py-1 text-[12.5px] text-ink outline-none"
           >
@@ -212,16 +183,13 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
         </label>
         <span className="flex-1" />
         <span className="hidden text-[11.5px] text-ink-4 sm:inline">⌘↵ to start</span>
-        <button
-          type="submit"
-          disabled={!ready || start.isPending}
-          className={cn(
-            "flex h-9 items-center gap-2 rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all duration-200 ease-[var(--ease-spring)]",
-            ready ? "bg-ink text-canvas hover:scale-[1.03]" : "bg-raised text-ink-4",
-          )}
+        <StartButton
+          starting={starting}
+          disabled={!prompt.trim() && !files.drafts.length}
+          className="enabled:hover:scale-[1.03]"
         >
-          Start {start.isPending ? <Spinner className="size-4" /> : <ArrowUp className="size-4" />}
-        </button>
+          Start
+        </StartButton>
       </div>
       <DropHint show={dragging} />
     </form>
