@@ -178,6 +178,13 @@ also starts a failed session, which a message doesn't. A message that comes
 while the session stops queues it too: FleetDO starts the new run once the
 last one has ended, so that two runs of a session never overlap, and
 SessionDO ignores what the last run's uplink still says about stopping.
+Messages for a session that stops wait in the outbox for the next run
+instead of going to the agent, and an interrupt for one is dropped, since
+there is nothing left to interrupt. FleetDO marks a session stopping before
+it asks its host to stop it. When an agent stops on its own (its idle
+timeout) just as a message comes, before SessionDO knows it is stopping, the
+agent leaves the message, and the session resumes for it once it has
+stopped.
 
 FleetDO remembers which runner last took each session (`sandboxes`, in its
 storage) and starts a resume there, where the sandbox has Claude's
