@@ -1,4 +1,5 @@
-//! `cargo xtask check`: everything CI checks, in the order that fails fastest.
+//! `cargo xtask check`: what CI checks, in the order that fails fastest. CI
+//! also runs `cargo xtask dev --smoke`, in a job of its own.
 
 use crate::util::{self, run};
 use anyhow::{Result, bail};

@@ -76,8 +76,8 @@ push service, so it needs the internet. A finished turn notifies you unless
 the session's tab is visible; `limit` pauses a session.
 
 `--no-host` skips the host; `--no-vite` serves the built web app from
-wrangler instead. Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/`
-to start over.
+wrangler instead; `--smoke` runs one session and stops ([Checks](#checks)).
+Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/` to start over.
 
 The hourly housekeeping job (`crates/fctl-control/src/housekeeping.rs`:
 purging deleted sessions, deleting expired sign-in records) runs on a cron
@@ -92,12 +92,21 @@ curl "http://127.0.0.1:8787/cdn-cgi/handler/scheduled?cron=17+*+*+*+*"
 ```sh
 cargo xtask check          # what CI runs
 cargo xtask check --quick  # without the production builds
+cargo xtask dev --smoke    # and CI's other job: a session through the local stack
 ```
 
 That is `cargo fmt --check`, a check that `web/src/gen` matches the Rust
 types, Biome and TypeScript for the web app, Clippy (native and wasm) with
 warnings as errors, `cargo test`, the web app's Vitest suite, and a
 production build of the web app.
+
+`cargo xtask dev --smoke` starts the local stack as `cargo xtask dev` does,
+runs `fctl run -p playground "write notes.md"`, waits until the agent has
+committed `notes.md` and finished its turn, stops the session and then
+everything else. It fails when any step does. CI runs it from a fresh
+checkout, so its migrations, Worker, bootstrap, host and agent all run
+before a change can deploy. Locally it uses your `.fctl-dev/` state and
+ports 8787 and 5173: stop `cargo xtask dev` first.
 
 ## Repository map
 
@@ -133,8 +142,8 @@ production build of the web app.
   create tables with `IF NOT EXISTS` and add columns with `add_column`,
   which checks first.
 - D1 migrations are in `crates/fctl-control/migrations`; `cargo xtask dev`
-  applies them locally and `cargo xtask deploy` before deploying. Never edit
-  a migration that has shipped.
+  applies them locally (in CI, to a fresh database) and `cargo xtask deploy`
+  before deploying. Never edit a migration that has shipped.
 
 ## Working on the web app
 
