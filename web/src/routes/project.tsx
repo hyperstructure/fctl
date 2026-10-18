@@ -25,8 +25,8 @@ import {
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, agoShort, stamp } from "@/lib/format";
-import { keys, queryClient, useMe, useProject, useSessions } from "@/lib/queries";
+import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
+import { keys, queryClient, useMe, useProject, useRunners, useSessions } from "@/lib/queries";
 
 type Tab = "sessions" | "settings" | "members" | "secrets";
 
@@ -212,6 +212,25 @@ function Sessions({ project }: { project: G.Project }) {
         )}
       </section>
     </div>
+  );
+}
+
+/** The most CPUs and memory any enabled runner gives a sandbox, when runners say. */
+function LargestSandbox() {
+  const runners = useRunners();
+  const limits = (runners.data?.runners ?? [])
+    .filter((r) => r.status !== "disabled")
+    .flatMap((r) => (r.sandbox ? [r.sandbox.max] : []));
+  if (limits.length === 0) return null;
+  const most = {
+    cpus: Math.max(...limits.map((l) => l.cpus)),
+    memory_mb: Math.max(...limits.map((l) => l.memory_mb)),
+  };
+  return (
+    <p className="-mt-2 text-[12.5px] text-ink-3">
+      Empty CPUs and Memory take the runner's default. Runners give a sandbox at most {cpus(most.cpus)} and{" "}
+      {memory(most.memory_mb)}; a session that asks for more stays queued.
+    </p>
   );
 }
 
@@ -432,6 +451,7 @@ function Settings({ project }: { project: G.Project }) {
               )}
             </Field>
           </div>
+          <LargestSandbox />
           <Field
             label="Environment"
             hint="KEY=value per line. Not secret; use Secrets for credentials."

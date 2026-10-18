@@ -2,6 +2,19 @@
 import type { DriverInfo } from "./DriverInfo";
 import type { RunnerId } from "./RunnerId";
 import type { RunnerStatus } from "./RunnerStatus";
+import type { SandboxLimits } from "./SandboxLimits";
 import type { UserRef } from "./UserRef";
 
-export type Runner = { id: RunnerId, name: string, status: RunnerStatus, version?: string, hostname?: string, os?: string, arch?: string, driver?: string, drivers: Array<DriverInfo>, capacity: number, active_sessions: number, cpus?: number, memory_mb?: number, labels: Array<string>, last_seen_at?: number, created_at: number, created_by?: UserRef, };
+export type Runner = { id: RunnerId, name: string, status: RunnerStatus, version?: string, hostname?: string, os?: string, arch?: string, driver?: string, drivers: Array<DriverInfo>, capacity: number, active_sessions: number, 
+/**
+ * The machine's CPUs and memory (MiB).
+ */
+cpus?: number, memory_mb?: number, 
+/**
+ * Free memory and disk (MiB) at its last heartbeat, while it is connected.
+ */
+memory_available_mb?: number, disk_available_mb?: number, 
+/**
+ * What it gives each sandbox (absent from older hosts).
+ */
+sandbox?: SandboxLimits, labels: Array<string>, last_seen_at?: number, created_at: number, created_by?: UserRef, };

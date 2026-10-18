@@ -30,10 +30,7 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
     .await?;
     let live = live(ctx).await;
     http::ok(&RunnerList {
-        runners: rows
-            .iter()
-            .map(|r| r.to_runner(live.online.contains(&r.id)))
-            .collect(),
+        runners: rows.iter().map(|r| r.to_runner(&live)).collect(),
     })
 }
 
@@ -62,7 +59,9 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     )?
     .first()
     .await?;
-    let runner = row.ok_or_else(|| not_found("Runner"))?.to_runner(false);
+    let runner = row
+        .ok_or_else(|| not_found("Runner"))?
+        .to_runner(&LiveRunners::default());
     http::created(&RunnerRegistration { runner, token })
 }
 
@@ -107,7 +106,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     .await?;
     let live = live(ctx).await;
     let r = rows.first().ok_or_else(|| not_found("Runner"))?;
-    http::ok(&r.to_runner(live.online.contains(&r.id)))
+    http::ok(&r.to_runner(&live))
 }
 
 pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
@@ -160,7 +159,7 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let runner = rows
         .first()
         .ok_or_else(|| not_found("Runner"))?
-        .to_runner(false);
+        .to_runner(&LiveRunners::default());
     http::ok(&RunnerRegistration { runner, token })
 }
 

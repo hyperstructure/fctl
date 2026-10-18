@@ -4,6 +4,7 @@ use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
+use fctl_domain::size;
 use fctl_host::driver::Driver;
 use fctl_host::{HostConfig, service};
 
@@ -20,6 +21,18 @@ pub enum HostCmd {
         /// Maximum concurrent sessions.
         #[arg(long, default_value_t = 4)]
         capacity: u32,
+        /// CPUs for a sandbox whose project sets none (new hosts: 4).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        cpus: Option<u32>,
+        /// Memory for a sandbox whose project sets none, like 8g or 8192m (new hosts: 8g).
+        #[arg(long, value_parser = memory_arg)]
+        memory: Option<u32>,
+        /// The most CPUs one sandbox may have (new hosts: all of the machine's or the Docker VM's).
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        max_cpus: Option<u32>,
+        /// The most memory one sandbox may have, like 16g (new hosts: all of the machine's or the Docker VM's).
+        #[arg(long, value_parser = memory_arg)]
+        max_memory: Option<u32>,
         /// Sandbox image.
         #[arg(long)]
         image: Option<String>,
@@ -77,6 +90,10 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             name,
             driver,
             capacity,
+            cpus,
+            memory,
+            max_cpus,
+            max_memory,
             image,
             token,
             no_service,
@@ -90,6 +107,10 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 cfg.name = n;
             }
             cfg.capacity = capacity.max(1);
+            cfg.cpus = cpus.unwrap_or(cfg.cpus);
+            cfg.memory_mb = memory.unwrap_or(cfg.memory_mb);
+            cfg.max_cpus = max_cpus.or(cfg.max_cpus);
+            cfg.max_memory_mb = max_memory.or(cfg.max_memory_mb);
             if let Some(i) = image {
                 cfg.image = i;
             }
@@ -139,6 +160,11 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 style::accent("✓"),
                 info.name,
                 info.detail.unwrap_or_default()
+            );
+            println!(
+                "{} Sandboxes: {}",
+                style::accent("✓"),
+                size::limits(&cfg.sandbox_limits(d.resources().await))
             );
             let token = match token {
                 Some(t) => t,
@@ -192,17 +218,21 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         HostCmd::Status => {
             let cfg = HostConfig::load()?;
             let (installed, running) = service::status();
+            let sandbox = match Driver::select(&cfg.driver, &cfg.data_dir(), None).await {
+                Ok(d) => Some(cfg.sandbox_limits(d.resources().await)),
+                Err(_) => None,
+            };
             if json {
                 return style::print_json(
-                    &serde_json::json!({ "config": cfg, "service_installed": installed, "service_running": running }),
+                    &serde_json::json!({ "config": cfg, "sandbox": sandbox, "service_installed": installed, "service_running": running }),
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
             println!("driver:   {}", cfg.driver);
-            println!(
-                "capacity: {} sessions · {} CPUs · {} MiB each",
-                cfg.capacity, cfg.cpus, cfg.memory_mb
-            );
+            println!("capacity: {} sessions", cfg.capacity);
+            if let Some(l) = &sandbox {
+                println!("sandbox:  {}", size::limits(l));
+            }
             println!("image:    {}", cfg.image);
             println!(
                 "service:  {}",
@@ -241,6 +271,14 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             println!("Removed the service. Configuration and sandboxes are kept.");
             Ok(())
         }
+    }
+}
+
+/// `--memory 8g`: MiB, at least 512.
+fn memory_arg(s: &str) -> std::result::Result<u32, String> {
+    match size::parse_memory_mb(s)? {
+        mb if mb < 512 => Err("use at least 512 MiB".into()),
+        mb => Ok(mb),
     }
 }
 
