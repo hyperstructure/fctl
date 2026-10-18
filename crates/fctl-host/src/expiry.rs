@@ -39,6 +39,15 @@ pub fn note_stopped(path: &Path, sandbox: &str, now: i64) -> Result<()> {
     save(path, &stopped)
 }
 
+/// Forgets `sandbox`, once it is removed.
+pub fn forget(path: &Path, sandbox: &str) -> Result<()> {
+    let mut stopped = load(path);
+    if stopped.remove(sandbox).is_some() {
+        save(path, &stopped)?;
+    }
+    Ok(())
+}
+
 /// What to remove now, and what to remember: session sandboxes that are
 /// stopped and not in use, stopped since the recorded time (or since now).
 /// `keep_ms` of `None` keeps them all.
