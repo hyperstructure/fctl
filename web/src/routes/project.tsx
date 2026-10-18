@@ -633,6 +633,20 @@ function Settings({ project }: { project: G.Project }) {
               label="claude.ai connectors"
             />
           </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Credit people in commits
+              <span className="block text-[12.5px] text-ink-4">
+                Commits name the person who started the session as a co-author, with the commit email in their
+                profile. Off: they credit Claude alone.
+              </span>
+            </span>
+            <Switch
+              checked={s.commit_credit}
+              onChange={(v) => set("commit_credit", v)}
+              label="Credit people in commits"
+            />
+          </div>
         </div>
       </Section>
       <Section title="Sandbox" description="Where agents run.">

@@ -24,11 +24,14 @@ pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
 /// Keeps the stored value of settings that an update leaves out. An update
 /// replaces all settings, so a client from before a setting existed (a tab
 /// opened before a deploy, an older CLI) would reset it to its default
-/// without having shown it: for `claude_ai_connectors`, on. `sent` is the
-/// update's `settings` object as it arrived.
+/// without having shown it: for `claude_ai_connectors` and `commit_credit`,
+/// on. `sent` is the update's `settings` object as it arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
     if sent.get("claude_ai_connectors").is_none() {
         settings.claude_ai_connectors = stored.claude_ai_connectors;
+    }
+    if sent.get("commit_credit").is_none() {
+        settings.commit_credit = stored.commit_credit;
     }
 }
 
@@ -87,5 +90,21 @@ mod tests {
             &json!({ "claude_ai_connectors": false }),
         );
         assert!(!s.claude_ai_connectors);
+    }
+
+    #[test]
+    fn updates_without_commit_credit_keep_it_off() {
+        let stored = ProjectSettings {
+            commit_credit: false,
+            ..Default::default()
+        };
+        // An older client sends settings without the field: its default, on.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
+        assert!(!s.commit_credit);
+
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "commit_credit": true }));
+        assert!(s.commit_credit);
     }
 }

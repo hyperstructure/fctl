@@ -51,6 +51,7 @@ export function NewProject() {
                 auto_pull_request: true,
                 remote_control: true,
                 claude_ai_connectors: connectors,
+                commit_credit: true,
                 env: {},
               }
             : undefined,

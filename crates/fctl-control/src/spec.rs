@@ -121,9 +121,14 @@ pub async fn build(
             .collect()
     });
     let secrets = crate::api::projects::decrypted_secrets(db, keys, &project.id).await?;
-    let author = creator(db, &row.created_by).await?;
     let git_author = bot_identity(cfg, now).await;
     let mut settings = project.settings();
+    // A project that credits nobody never sends a commit email to a sandbox.
+    let author = if settings.commit_credit {
+        creator(db, &row.created_by).await?
+    } else {
+        None
+    };
     // Agents from before `claude_ai_connectors` ignore it, but every agent
     // passes the project's environment on to Claude. Not stored.
     settings.env = fctl_domain::settings::session_env(&settings);

@@ -366,6 +366,10 @@ pub struct ProjectSettings {
     /// Let agents use the claude.ai connectors of the person who starts a
     /// session. Only full Claude logins have them.
     pub claude_ai_connectors: bool,
+    /// Credit the person who started a session in its commits, with a
+    /// `Co-authored-by` trailer for the commit email they chose. Off, the
+    /// commits credit Claude alone.
+    pub commit_credit: bool,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
 }
@@ -384,6 +388,7 @@ impl Default for ProjectSettings {
             auto_pull_request: true,
             remote_control: true,
             claude_ai_connectors: true,
+            commit_credit: true,
             env: Default::default(),
         }
     }
@@ -508,11 +513,16 @@ mod tests {
 
     #[test]
     fn settings_stored_before_a_field_get_its_default() -> Result<(), serde_json::Error> {
-        // A project saved before `claude_ai_connectors` existed keeps its connectors.
+        // A project saved before `claude_ai_connectors` existed keeps its
+        // connectors, and one from before `commit_credit` credits people.
         let old: ProjectSettings =
             serde_json::from_str(r#"{"auto_pull_request":false,"remote_control":true,"env":{}}"#)?;
         assert!(old.claude_ai_connectors);
+        assert!(old.commit_credit);
         assert!(!old.auto_pull_request);
+        let off: ProjectSettings = serde_json::from_str(r#"{"commit_credit":false}"#)?;
+        assert!(!off.commit_credit);
+        assert!(off.claude_ai_connectors);
         let off: ProjectSettings = serde_json::from_str(r#"{"claude_ai_connectors":false}"#)?;
         assert_eq!(
             off,

@@ -142,7 +142,8 @@ function Profile({ me }: { me: G.Me }) {
           hint={
             <>
               Commits in the sessions you start credit you as a co-author with this address, which anyone who
-              can read the repository sees. Use one your GitHub account has, such as your{" "}
+              can read the repository sees; a project can turn this off. Use one your GitHub account has, such
+              as your{" "}
               <a
                 href="https://github.com/settings/emails"
                 target="_blank"

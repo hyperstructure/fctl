@@ -153,6 +153,8 @@ The agent's commits are authored by the GitHub App, with Claude as
 co-author. To be a co-author of the commits in the sessions you start, set
 a commit email in **Settings → Profile**: an address your GitHub account
 has, such as its noreply address. Anyone who can read the repository sees it.
+A project can turn this off with **Credit people in commits** in its
+settings.
 
 ## 7. Follow along and steer
 

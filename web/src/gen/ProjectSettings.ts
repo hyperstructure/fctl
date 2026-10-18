@@ -51,6 +51,12 @@ remote_control: boolean,
  */
 claude_ai_connectors: boolean, 
 /**
+ * Credit the person who started a session in its commits, with a
+ * `Co-authored-by` trailer for the commit email they chose. Off, the
+ * commits credit Claude alone.
+ */
+commit_credit: boolean, 
+/**
  * Non-secret environment variables for sandboxes.
  */
 env: { [key in string]: string }, };

@@ -80,6 +80,7 @@ fctl projects show my-app
 fctl projects create "My app" --repo my-org/my-app
 fctl projects create "New thing" --new-repo new-thing --public
 fctl projects create "Site" --repo my-org/site --no-connectors   # no claude.ai connectors in its sessions
+fctl projects set -p my-app --commit-credit off   # commits credit Claude alone, not the people who start sessions
 fctl projects use my-app
 fctl projects delete my-app            # with its sessions; asks you to type the slug
 ```
@@ -206,8 +207,9 @@ With a commit email, the commits in the sessions you start end with a
 `Co-authored-by` trailer that has your name and that address, for everyone
 who can read the repository. Use an address your GitHub account has, such
 as its noreply address (GitHub → Settings → Emails), so GitHub links the
-commits to you. Sessions take a change when they next start or resume;
-`fctl whoami` shows the address.
+commits to you. A project's maintainers can turn this off for its sessions
+(`fctl projects set --commit-credit off`). Sessions take a change when they
+next start or resume; `fctl whoami` shows the address.
 
 The export holds your account, sign-in methods, devices and tokens, Claude
 connections (without their secrets), notification settings and browsers,

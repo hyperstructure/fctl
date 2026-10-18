@@ -3,9 +3,11 @@
 use crate::config;
 use crate::style;
 use anyhow::{Result, bail};
-use clap::Subcommand;
+use clap::builder::BoolishValueParser;
+use clap::{ArgGroup, Subcommand};
 use fctl_proto::api::{
     AddProjectRepoRequest, CreateProjectRequest, CreateRepoRequest, ProjectRepoList,
+    UpdateProjectRequest,
 };
 use fctl_proto::session::{ProjectSettings, RepoAccess};
 use std::io::{BufRead, IsTerminal, Write};
@@ -40,6 +42,22 @@ pub enum ProjectsCmd {
         /// person who starts a session without asking.
         #[arg(long)]
         no_connectors: bool,
+    },
+    /// Change a project's settings (maintainers). Sessions take a change
+    /// when they next start or resume.
+    #[command(
+        group(ArgGroup::new("change").required(true).multiple(true).args(["commit_credit"])),
+        after_help = "Examples:\n  fctl projects set --commit-credit off\n  fctl projects set -p my-app --commit-credit on"
+    )]
+    Set {
+        /// The project (slug or id); default from `fctl projects use`.
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Credit the person who started a session in its commits, with a
+        /// Co-authored-by trailer for the commit email they set (`fctl
+        /// account set`). Off, the commits credit Claude alone.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        commit_credit: Option<bool>,
     },
     /// Use this project by default for `fctl run` and `fctl sessions`.
     Use {
@@ -271,6 +289,44 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             );
         }
         ProjectsCmd::Repos(cmd) => repos(&api, cmd, json).await?,
+        ProjectsCmd::Set {
+            project,
+            commit_credit,
+        } => {
+            let project = super::sessions::project_or_default(project)?;
+            let p = api.project(&project).await?;
+            // An update replaces all settings: send the others as they are.
+            let mut settings = p.settings.clone();
+            if let Some(on) = commit_credit {
+                settings.commit_credit = on;
+            }
+            let p = api
+                .update_project(
+                    p.id.as_str(),
+                    &UpdateProjectRequest {
+                        settings: Some(settings),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            if json {
+                return style::print_json(&p);
+            }
+            let credit = if p.settings.commit_credit {
+                "credit whoever started them, if they set a commit email"
+            } else {
+                "credit Claude alone"
+            };
+            println!(
+                "{} Commits in {}'s sessions {credit}",
+                style::accent("✓"),
+                style::bold(&p.slug)
+            );
+            println!(
+                "{}",
+                style::dim("Sessions take the change when they next start or resume.")
+            );
+        }
         ProjectsCmd::Use { project } => {
             let p = api.project(&project).await?;
             let mut cfg = config::CliConfig::load();
