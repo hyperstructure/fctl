@@ -135,7 +135,7 @@ async fn run_inherit(program: &str, args: &[&str]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_quote;
+    use super::{PROVISION, shell_quote};
 
     #[test]
     fn quotes_values_for_sh() {
@@ -144,5 +144,38 @@ mod tests {
             "'FCTL_DOWNLOAD=https://fctl.sh/releases'"
         );
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    /// Sessions working on fctl find its toolchain already installed, rather
+    /// than having rustup download a second one.
+    #[test]
+    fn installs_the_rust_this_repository_builds_with() -> anyhow::Result<()> {
+        #[derive(serde::Deserialize)]
+        struct File {
+            toolchain: Toolchain,
+        }
+        #[derive(serde::Deserialize)]
+        struct Toolchain {
+            channel: String,
+            #[serde(default)]
+            components: Vec<String>,
+            #[serde(default)]
+            targets: Vec<String>,
+        }
+        let File { toolchain } = toml::from_str(include_str!("../../../rust-toolchain.toml"))?;
+        let mut wanted = vec![format!("RUST_VERSION:-{}}}", toolchain.channel)];
+        if !toolchain.components.is_empty() {
+            wanted.push(format!("--component {}", toolchain.components.join(",")));
+        }
+        if !toolchain.targets.is_empty() {
+            wanted.push(format!("--target {}", toolchain.targets.join(",")));
+        }
+        for w in wanted {
+            assert!(
+                PROVISION.contains(&w),
+                "images/agent/provision.sh should have `{w}`, as rust-toolchain.toml says"
+            );
+        }
+        Ok(())
     }
 }

@@ -1,5 +1,6 @@
-# The default fctl sandbox image: Debian with git, gh, Node.js, Python (uv),
-# build tools, Claude Code and fctl. Sessions run as the `agent` user.
+# The default fctl sandbox image: Debian with git, gh, build tools, Python and
+# uv, Rust, Node.js, TypeScript, Bun, Claude Code and fctl (README.md lists
+# the versions). Sessions run as the `agent` user.
 #
 #   fctl host image build          # builds it with your driver (apple or docker)
 #   docker build -t fctl-agent:latest images/agent
@@ -16,5 +17,6 @@ RUN bash /tmp/provision.sh && rm /tmp/provision.sh
 
 USER agent
 WORKDIR /home/agent
-ENV PATH=/home/agent/.local/bin:/opt/fctl/bin:$PATH
+# As /etc/profile.d/fctl.sh (provision.sh) sets it for login shells.
+ENV PATH=/home/agent/.local/bin:/home/agent/.cargo/bin:/home/agent/.bun/bin:/opt/fctl/bin:$PATH
 CMD ["tail", "-f", "/dev/null"]
