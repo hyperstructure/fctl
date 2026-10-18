@@ -7,6 +7,7 @@
 use crate::error::ApiError;
 use crate::event::SessionEvent;
 use crate::session::{Session, SessionRole, UserRef};
+use crate::uplink::AgentUnreachable;
 use crate::{AttachmentId, Millis};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -43,8 +44,18 @@ pub struct Snapshot {
     )]
     pub live: Vec<serde_json::Value>,
     pub viewers: Vec<Presence>,
-    /// Whether a runner is connected for this session right now.
+    /// Whether a runner is connected for this session right now: its uplink
+    /// is open, and SessionDO heard from it within the last minute.
     pub runner_connected: bool,
+    /// When SessionDO last heard from the session's runner, while it isn't
+    /// connected. Absent when no runner has been connected for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub runner_last_seen_at: Option<Millis>,
+    /// The connected runner can't reach the agent in the sandbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub agent_unreachable: Option<AgentUnreachable>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -71,8 +82,17 @@ pub enum ViewerServer {
     Presence {
         viewers: Vec<Presence>,
     },
+    /// The session's runner connected, went away or went quiet, or what it
+    /// says about reaching the agent changed. The fields are as in the
+    /// snapshot.
     RunnerConnected {
         connected: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        last_seen_at: Option<Millis>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        agent_unreachable: Option<AgentUnreachable>,
     },
     /// The outcome of a client command, matched by `client_id`.
     Result {
@@ -115,4 +135,49 @@ pub enum ViewerClient {
         visible: bool,
     },
     Ping,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runner_messages_from_older_control_planes_still_read() -> serde_json::Result<()> {
+        let old: ViewerServer =
+            serde_json::from_str(r#"{"type":"runner_connected","connected":false}"#)?;
+        assert_eq!(
+            old,
+            ViewerServer::RunnerConnected {
+                connected: false,
+                last_seen_at: None,
+                agent_unreachable: None,
+            }
+        );
+        // Nothing to say leaves the new fields out, for older clients.
+        let json = serde_json::to_string(&old)?;
+        assert_eq!(json, r#"{"type":"runner_connected","connected":false}"#);
+        Ok(())
+    }
+
+    #[test]
+    fn runner_messages_say_when_it_was_last_heard_from_and_whether_it_reaches_the_agent()
+    -> serde_json::Result<()> {
+        let msg: ViewerServer = serde_json::from_value(serde_json::json!({
+            "type": "runner_connected",
+            "connected": true,
+            "agent_unreachable": { "since": 5, "reason": "attaching timed out" }
+        }))?;
+        let ViewerServer::RunnerConnected {
+            connected,
+            last_seen_at,
+            agent_unreachable,
+        } = msg
+        else {
+            panic!("expected runner_connected");
+        };
+        assert!(connected);
+        assert_eq!(last_seen_at, None);
+        assert_eq!(agent_unreachable.map(|a| a.since), Some(5));
+        Ok(())
+    }
 }
