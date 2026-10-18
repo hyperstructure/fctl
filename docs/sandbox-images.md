@@ -61,8 +61,8 @@ pulled, it pulls `latest` instead, and says so.
 
 - **Another image.** `image` in `host.toml` (or `fctl host install --image
   …`) sets the image for sessions whose project sets none, and a project
-  can choose one for its own sessions ([A project's own
-  image](#a-projects-own-image)). `fctl-agent:latest`, the name the default
+  can choose one for its own sessions ([Your own
+  image](#your-own-image)). `fctl-agent:latest`, the name the default
   image had when hosts built it themselves, means the default.
 - **Building it.** `fctl host image build` builds the default image on the
   host with its driver, from the `main` branch of hyperstructure/sandbox,
@@ -114,7 +114,7 @@ RUN apt-get update \
 USER agent
 ```
 
-## A project's own image
+## Your own image
 
 When sessions need tools the default image lacks, such as .NET or a
 company's CLIs, give the project an image that has them. A setup script
@@ -130,8 +130,8 @@ USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends libicu72 \
   && rm -rf /var/lib/apt/lists/* \
-  && echo 'export DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$HOME/.dotnet/tools:$PATH"' \
-    > /etc/profile.d/dotnet.sh
+  && printf '%s\n' 'export DOTNET_ROOT="$HOME/.dotnet"' \
+    'PATH="$HOME/.dotnet:$HOME/.dotnet/tools:$PATH"' > /etc/profile.d/dotnet.sh
 USER agent
 
 RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \

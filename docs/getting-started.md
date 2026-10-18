@@ -121,9 +121,10 @@ runs in the clone before the agent starts, e.g. `npm ci`) and instructions for
 agents. When sessions need tools the default image lacks, give the project an
 image of its own, or one built from a Dockerfile or devcontainer.json in its
 repository, under Settings → Sandbox → Image
-([A project's own image](sandbox-images.md#a-projects-own-image)). The **claude.ai connectors** switch starts off: turn it on only if
-agents should use the connectors (mail, files, docs) of whoever starts a
-session, without asking. From the terminal:
+([Your own image](sandbox-images.md#your-own-image)). The **claude.ai
+connectors** switch starts off: turn it on only if agents should use the
+connectors (mail, files, docs) of whoever starts a session, without asking.
+From the terminal:
 
 ```sh
 fctl projects create "My app" --repo my-org/my-app
