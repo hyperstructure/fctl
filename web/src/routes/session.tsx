@@ -5,6 +5,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import {
   ArrowUpRight,
   Bell,
+  BellOff,
   BellRing,
   Ellipsis,
   ExternalLink,
@@ -199,18 +200,21 @@ export function SessionPage() {
                 </a>
               )}
               {session && (
-                <IconButton
-                  label={
-                    following
-                      ? "Following: you get its notifications. Click to stop."
-                      : "Follow: get a notification when it waits for you, pauses or fails"
-                  }
-                  aria-pressed={following}
-                  onClick={() => follow.mutate()}
-                  disabled={follow.isPending}
-                >
-                  {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
-                </IconButton>
+                // On phones it is in the menu, where the title keeps its room.
+                <span className="hidden sm:contents">
+                  <IconButton
+                    label={
+                      following
+                        ? "Following: you get its notifications. Click to stop."
+                        : "Follow: get a notification when it waits for you, pauses or fails"
+                    }
+                    aria-pressed={following}
+                    onClick={() => follow.mutate()}
+                    disabled={follow.isPending}
+                  >
+                    {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
+                  </IconButton>
+                </span>
               )}
               {isOwner && (
                 <IconButton label="Share" onClick={() => setShare(true)}>
@@ -253,6 +257,17 @@ export function SessionPage() {
                         }}
                       >
                         Resume
+                      </MenuItem>
+                    )}
+                    {session && (
+                      <MenuItem
+                        icon={following ? <BellOff /> : <Bell />}
+                        onClick={() => {
+                          close();
+                          follow.mutate();
+                        }}
+                      >
+                        {following ? "Stop following" : "Follow"}
                       </MenuItem>
                     )}
                     <MenuItem
