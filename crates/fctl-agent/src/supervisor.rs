@@ -641,7 +641,7 @@ impl Supervisor {
             self.log(
                 LogSource::Agent,
                 LogLevel::Info,
-                "This sandbox has no fctl that can rename the session, so it keeps the title it started with. Rebuilding the default image (fctl host image build) installs one.",
+                "This sandbox has no fctl that can rename the session, so it keeps the title it started with. The default image, ghcr.io/hyperstructure/sandbox, has one; an image of your own needs fctl on the PATH.",
             );
         }
         let setting_sources = match claude::project_settings_are_unsafe(&paths.workdir) {

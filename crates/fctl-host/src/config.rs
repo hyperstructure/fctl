@@ -19,9 +19,9 @@ use fctl_proto::runner::{SandboxLimits, SandboxSize};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Where the default sandbox image, `images/agent`, is published
-/// (.github/workflows/image.yml): a tag for every release.
-pub const IMAGE_REPOSITORY: &str = "ghcr.io/hyperstructure/fctl-agent";
+/// Where the default sandbox image is published, by the Image workflow of
+/// https://github.com/hyperstructure/sandbox: a tag for every release.
+pub const IMAGE_REPOSITORY: &str = "ghcr.io/hyperstructure/sandbox";
 
 /// The default image before it was published, which hosts installed until
 /// then have in host.toml.
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn hosts_on_the_default_image_follow_their_version() -> Result<()> {
         let published = format!(
-            "ghcr.io/hyperstructure/fctl-agent:{}",
+            "ghcr.io/hyperstructure/sandbox:{}",
             crate::agentbin::VERSION
         );
         // Unset, empty, or the default's name from before it was published.
@@ -280,7 +280,7 @@ mod tests {
             assert_eq!(cfg.image(), published);
             assert_eq!(
                 cfg.fallback_image().as_deref(),
-                Some("ghcr.io/hyperstructure/fctl-agent:latest")
+                Some("ghcr.io/hyperstructure/sandbox:latest")
             );
         }
         let cfg = HostConfig::from_toml("image = \"ghcr.io/acme/agent:1\"")?;

@@ -81,6 +81,10 @@ pub enum ImageCmd {
         /// Image tag (default: the host's image, so that sessions use the build).
         #[arg(long)]
         tag: Option<String>,
+        /// A checkout of hyperstructure/sandbox to build from (default: its
+        /// main branch, downloaded from GitHub).
+        #[arg(long, value_name = "DIR")]
+        source: Option<std::path::PathBuf>,
     },
 }
 
@@ -150,7 +154,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             };
             let d = Driver::select(&driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
             if build_image {
-                fctl_host::image::build(&d, &cfg.image(), &cfg.download_base).await?;
+                fctl_host::image::build(&d, &cfg.image(), &cfg.download_base, None).await?;
             }
             let info = d.probe().await;
             if !info.available {
@@ -287,12 +291,16 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             println!("{} Pulled {image}", style::accent("✓"));
             Ok(())
         }
-        HostCmd::Image(ImageCmd::Build { driver, tag }) => {
+        HostCmd::Image(ImageCmd::Build {
+            driver,
+            tag,
+            source,
+        }) => {
             let cfg = HostConfig::load().unwrap_or_default();
             let name = driver.unwrap_or(cfg.driver.clone());
             let d = Driver::select(&name, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
             let tag = tag.unwrap_or_else(|| cfg.image());
-            fctl_host::image::build(&d, &tag, &cfg.download_base).await
+            fctl_host::image::build(&d, &tag, &cfg.download_base, source.as_deref()).await
         }
         HostCmd::Restart => {
             service::restart()?;

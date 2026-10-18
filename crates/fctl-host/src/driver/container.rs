@@ -549,8 +549,8 @@ esac
 
     use std::sync::{Mutex, PoisonError};
 
-    const VERSION_IMAGE: &str = "ghcr.io/hyperstructure/fctl-agent:0.3.0";
-    const LATEST_IMAGE: &str = "ghcr.io/hyperstructure/fctl-agent:latest";
+    const VERSION_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:0.3.0";
+    const LATEST_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:latest";
 
     fn spec(image: &str, fallback: Option<&str>) -> SandboxSpec {
         SandboxSpec {
