@@ -140,8 +140,10 @@ rather than the first line of your task.
   type messages; `fctl send my-app#12 "Use the existing Button component"`
   sends one from a script.
 - **Claude apps** — sessions started with a full Claude login join Remote
-  Control: open the session from the Claude app on your phone or at
-  claude.ai/code, or run `fctl open my-app#12 --claude`.
+  Control. **Open in Claude** on the session page opens the session in
+  Claude's desktop or mobile app, and **Open on claude.ai** in its menu opens
+  it in a browser. From a terminal, `fctl open my-app#12 --claude` opens the
+  desktop app, or claude.ai when it is not installed.
 
 When the agent finishes a turn, the session waits for you. It sleeps after the
 project's idle timeout; **Resume** (or `fctl resume my-app#12 "…"`) picks it up
