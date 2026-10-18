@@ -65,6 +65,7 @@ export type { GithubRepo } from "./GithubRepo";
 export type { GithubRepoList } from "./GithubRepoList";
 export type { Identity } from "./Identity";
 export type { IdentityId } from "./IdentityId";
+export type { ImageBuild } from "./ImageBuild";
 export type { InstanceInfo } from "./InstanceInfo";
 export type { InstanceRole } from "./InstanceRole";
 export type { InstanceSettings } from "./InstanceSettings";

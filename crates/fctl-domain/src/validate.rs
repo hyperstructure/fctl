@@ -2,6 +2,7 @@
 //! [`ApiError`] naming the field, so handlers can return it as is.
 
 use crate::webpush;
+use fctl_proto::session::ImageBuild;
 use fctl_proto::{ApiError, AttachmentId};
 
 pub type Result<T> = std::result::Result<T, ApiError>;
@@ -395,10 +396,63 @@ pub fn image(input: &str) -> Result<String> {
         || !s
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-._/:@".contains(&b))
+        || crate::image::ImageRef::parse(s).is_none()
     {
         return Err(ApiError::validation("image", "Not a valid image reference"));
     }
     Ok(s.to_owned())
+}
+
+/// A sandbox image built from the project's repository: a file in it, and
+/// for a Dockerfile, the directory it builds in (`None` for the root).
+pub fn image_build(build: &ImageBuild) -> Result<ImageBuild> {
+    const FIELD: &str = "settings.image_build";
+    let file = repo_path(&build.file)
+        .filter(|f| !f.is_empty())
+        .ok_or_else(|| {
+            ApiError::validation(
+                FIELD,
+                "Name a Dockerfile or a devcontainer.json by its path in the repository",
+            )
+        })?;
+    let context = match build.context.as_deref() {
+        None => None,
+        Some(c) => Some(repo_path(c).ok_or_else(|| {
+            ApiError::validation(
+                FIELD,
+                "Name the build's directory by its path in the repository",
+            )
+        })?),
+    }
+    .filter(|c| !c.is_empty());
+    let build = ImageBuild { file, context };
+    if build.is_devcontainer() && build.context.is_some() {
+        return Err(ApiError::validation(
+            FIELD,
+            "A devcontainer.json says where it builds; leave the directory empty",
+        ));
+    }
+    Ok(build)
+}
+
+/// A relative path in a repository, without `./` at its start or a slash at
+/// its end: `""` for the root. `None` when it leaves the repository or isn't
+/// a path.
+fn repo_path(input: &str) -> Option<String> {
+    let mut s = input.trim();
+    while let Some(rest) = s.strip_prefix("./") {
+        s = rest;
+    }
+    let s = s.trim_end_matches('/');
+    if s == "." || s.is_empty() {
+        return Some(String::new());
+    }
+    let ok = s.len() <= 255
+        && !s.starts_with('/')
+        && !s.chars().any(|c| c.is_control() || c == '\\')
+        && s.split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..");
+    ok.then(|| s.to_owned())
 }
 
 /// A push subscription's endpoint: an https URL on a named host, at the
@@ -668,6 +722,65 @@ mod tests {
         assert_eq!(slug("My-App").ok().as_deref(), Some("my-app"));
         for bad in ["a", "-a", "a-", "a--b", "a_b", "api", "über"] {
             assert!(slug(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn image_builds() {
+        let build = |file: &str, context: Option<&str>| {
+            image_build(&ImageBuild {
+                file: file.into(),
+                context: context.map(str::to_owned),
+            })
+        };
+        let ok = build(" ./docker/Dockerfile ", Some("./")).ok();
+        assert_eq!(
+            ok,
+            Some(ImageBuild {
+                file: "docker/Dockerfile".into(),
+                context: None
+            })
+        );
+        assert_eq!(
+            build("Dockerfile", Some("app/"))
+                .ok()
+                .and_then(|b| b.context),
+            Some("app".into())
+        );
+        assert!(build(".devcontainer/devcontainer.json", None).is_ok());
+        assert!(build(".devcontainer/devcontainer.json", Some("..")).is_err());
+        assert!(build(".devcontainer.json", Some("app")).is_err());
+        for bad in [
+            "",
+            ".",
+            "/etc/passwd",
+            "../Dockerfile",
+            "a/../../b",
+            "a//b",
+            "a\\b",
+        ] {
+            assert!(build(bad, None).is_err(), "{bad:?}");
+        }
+        assert!(build("Dockerfile", Some("../other")).is_err());
+    }
+
+    #[test]
+    fn images() {
+        for ok in [
+            "ubuntu",
+            "ghcr.io/acme/agent:1",
+            "localhost:5000/a@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ] {
+            assert!(image(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "a b",
+            "acme/agent:",
+            "acme//agent",
+            "ghcr.io/acme/agent@latest",
+        ] {
+            assert!(image(bad).is_err(), "{bad}");
         }
     }
 

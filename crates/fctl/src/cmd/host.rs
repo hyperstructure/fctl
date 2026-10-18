@@ -5,7 +5,7 @@ use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
-use fctl_domain::size;
+use fctl_domain::{image, size};
 use fctl_host::config::means_default_image;
 use fctl_host::driver::Driver;
 use fctl_host::{HostConfig, service};
@@ -41,6 +41,17 @@ pub enum HostCmd {
         /// published image of this version; "" goes back to it).
         #[arg(long)]
         image: Option<String>,
+        /// An image this host runs for projects that choose their own: a
+        /// reference, or a prefix like ghcr.io/acme/* (repeat it for more;
+        /// it replaces the list, and "*" allows any). Without the list, any
+        /// image runs.
+        #[arg(long = "allow-image", value_name = "REF")]
+        allow_images: Vec<String>,
+        /// A repository, owner/name or owner/*, whose Dockerfile or
+        /// devcontainer.json this host builds images from (repeat it for
+        /// more; it replaces the list, and "" builds none).
+        #[arg(long = "allow-build", value_name = "REPO")]
+        allow_builds: Vec<String>,
         /// Use an existing runner token instead of registering a new runner.
         #[arg(long, env = "FCTL_RUNNER_TOKEN", hide_env_values = true)]
         token: Option<String>,
@@ -126,6 +137,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             max_cpus,
             max_memory,
             image,
+            allow_images,
+            allow_builds,
             token,
             no_service,
             build_image,
@@ -144,6 +157,25 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             cfg.max_memory_mb = max_memory.or(cfg.max_memory_mb);
             if let Some(i) = image {
                 cfg.image = (!means_default_image(&i)).then_some(i);
+            }
+            if !allow_images.is_empty() {
+                let list: Vec<String> = allow_images
+                    .iter()
+                    .map(|i| i.trim().to_owned())
+                    .filter(|i| !i.is_empty())
+                    .collect();
+                cfg.allowed_images = (!list.iter().any(|i| i == "*")).then_some(list);
+            }
+            if !allow_builds.is_empty() {
+                let list: Vec<String> = allow_builds
+                    .iter()
+                    .map(|r| r.trim().to_owned())
+                    .filter(|r| !r.is_empty())
+                    .collect();
+                cfg.allowed_builds = (!list.is_empty()).then_some(list);
+            }
+            if let Some(problem) = cfg.image_problems().first() {
+                bail!("{problem}");
             }
             // Registering a runner leaves something behind, so it waits until
             // everything that can fail on this machine has passed.
@@ -228,6 +260,15 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                         cfg.image()
                     ))
                 );
+                let images = cfg.images(true);
+                println!(
+                    "{}",
+                    style::dim(&format!(
+                        "It {} and {}.",
+                        image::describe_allowed(images.allowed.as_deref()),
+                        image::describe_builds(images.builds.as_deref())
+                    ))
+                );
             } else if !build_image && d.needs_linux_agent() {
                 println!(
                     "{}",
@@ -275,6 +316,14 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 println!("sandbox:  {}", size::limits(l));
             }
             println!("image:    {}", cfg.image());
+            if let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), None).await {
+                let images = cfg.images(d.uses_images());
+                println!(
+                    "images:   {}; {}",
+                    image::describe_allowed(images.allowed.as_deref()),
+                    image::describe_builds(images.builds.as_deref())
+                );
+            }
             println!(
                 "service:  {}",
                 match (installed, running) {
@@ -748,6 +797,29 @@ async fn doctor() -> Result<()> {
                 ))
             );
         }
+    }
+    let problems_with_images = cfg.image_problems();
+    check(
+        problems_with_images.is_empty(),
+        &format!(
+            "images: {}; {}",
+            image::describe_allowed(cfg.allowed_images.as_deref()),
+            image::describe_builds(cfg.allowed_builds.as_deref())
+        ),
+        &problems_with_images.join("; "),
+    );
+    if cfg.allowed_builds.is_some()
+        && let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), None).await
+        && !d.uses_images()
+    {
+        println!(
+            "{} {}",
+            style::dim("·"),
+            style::dim(&format!(
+                "allowed_builds: the {} driver uses no images, so this host builds none",
+                d.name()
+            ))
+        );
     }
     let (installed, running) = service::status();
     check(

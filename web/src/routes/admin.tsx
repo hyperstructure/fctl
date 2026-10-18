@@ -24,6 +24,7 @@ import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, cpus, memory, sandboxLimits } from "@/lib/format";
+import { buildsImages, runsImages } from "@/lib/images";
 import { keys, queryClient, useMe, useRunners } from "@/lib/queries";
 
 type Tab = "access" | "users" | "runners" | "settings" | "audit";
@@ -378,6 +379,7 @@ function Runners() {
                   </div>
                   {r.drain && r.status !== "disabled" && <DrainLine runner={r} />}
                   <RunnerResources runner={r} />
+                  <RunnerImages runner={r} />
                 </div>
                 <div className="-ml-2.5 flex shrink-0 items-center gap-1 sm:ml-0">
                   {r.status !== "disabled" && (
@@ -545,6 +547,17 @@ function RunnerResources({ runner: r }: { runner: G.Runner }) {
     .filter(Boolean)
     .join(" · ");
   return text ? <div className="mt-0.5 text-[12px] text-ink-4">{text}</div> : null;
+}
+
+/** The image a runner gives sessions, and the others it runs and builds. */
+function RunnerImages({ runner: r }: { runner: G.Runner }) {
+  if (!r.image) return null;
+  return (
+    <div className="mt-0.5 text-[12px] text-ink-4">
+      Image <span className="break-all font-mono">{r.image}</span> · {runsImages(r.allowed_images)} ·{" "}
+      {buildsImages(r.allowed_builds)}
+    </div>
+  );
 }
 
 function InstanceSettings() {

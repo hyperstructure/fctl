@@ -2,14 +2,14 @@
 
 use crate::config;
 use crate::style;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::builder::BoolishValueParser;
 use clap::{ArgGroup, Subcommand};
 use fctl_proto::api::{
     AddProjectRepoRequest, CreateProjectRequest, CreateRepoRequest, ProjectRepoList,
     UpdateProjectRequest,
 };
-use fctl_proto::session::{ProjectSettings, RepoAccess};
+use fctl_proto::session::{ImageBuild, ProjectSettings, RepoAccess};
 use std::io::{BufRead, IsTerminal, Write};
 
 #[derive(Subcommand)]
@@ -46,8 +46,8 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "image", "build", "build_context", "setup_script", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -77,6 +77,37 @@ pub enum ProjectsCmd {
         /// Days a published screenshot's link works, 1 to 60 (default 30).
         #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u32).range(1..=60))]
         screenshot_days: Option<u32>,
+        /// The image sessions start from, like ghcr.io/acme/agent:1, on
+        /// runners whose owners allow it ("" for each runner's own). Only
+        /// the Apple container and Docker drivers use images.
+        #[arg(long, value_name = "REF", conflicts_with = "build")]
+        image: Option<String>,
+        /// Build the image from this Dockerfile or devcontainer.json in the
+        /// project's repository, as its default branch has it ("" to stop),
+        /// on runners whose owners allow builds from it.
+        #[arg(long, value_name = "FILE")]
+        build: Option<String>,
+        /// The directory in the repository the Dockerfile builds in
+        /// (default: its root; "" goes back to it).
+        #[arg(long, value_name = "DIR")]
+        build_context: Option<String>,
+        /// The script that runs in the repository after cloning: the script
+        /// itself, @FILE to read it from a file, - from stdin, or "" for none.
+        #[arg(long, value_name = "SCRIPT")]
+        setup_script: Option<String>,
+        /// Set an environment variable in the sandboxes (repeatable). Not
+        /// secret: put credentials in the project's secrets.
+        #[arg(long, value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Remove an environment variable (repeatable).
+        #[arg(long, value_name = "KEY")]
+        unset_env: Vec<String>,
+        /// CPUs per sandbox, 1 to 64 ("default" for each runner's default).
+        #[arg(long, value_name = "N|default", value_parser = cpus_arg)]
+        cpus: Option<OrDefault>,
+        /// Memory per sandbox, like 16g ("default" for each runner's default).
+        #[arg(long, value_name = "SIZE|default", value_parser = memory_arg)]
+        memory: Option<OrDefault>,
     },
     /// Use this project by default for `fctl run` and `fctl sessions`.
     Use {
@@ -180,6 +211,89 @@ fn credit(s: &ProjectSettings) -> &'static str {
             "credit whoever started the session if they set a commit email, not Claude"
         }
         (false, false) => "credit nobody",
+    }
+}
+
+/// A number, or `None` for `default`: each runner's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrDefault(Option<u32>);
+
+/// `--cpus`: a number, or `default`.
+fn cpus_arg(s: &str) -> std::result::Result<OrDefault, String> {
+    if s.trim().eq_ignore_ascii_case("default") {
+        return Ok(OrDefault(None));
+    }
+    match s.trim().parse::<u32>() {
+        Ok(n) if (1..=64).contains(&n) => Ok(OrDefault(Some(n))),
+        _ => Err("use 1 to 64 CPUs, or default".into()),
+    }
+}
+
+/// `--memory`: an amount like 16g, or `default`.
+fn memory_arg(s: &str) -> std::result::Result<OrDefault, String> {
+    if s.trim().eq_ignore_ascii_case("default") {
+        return Ok(OrDefault(None));
+    }
+    fctl_domain::size::parse_memory_mb(s).map(|m| OrDefault(Some(m)))
+}
+
+/// `--setup-script`: the script, `@FILE`, `-` for stdin; `""` for none.
+fn setup_script(arg: &str) -> Result<Option<String>> {
+    let text = if arg == "-" {
+        std::io::read_to_string(std::io::stdin())?
+    } else if let Some(path) = arg.strip_prefix('@') {
+        std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?
+    } else {
+        arg.to_owned()
+    };
+    Ok((!text.trim().is_empty()).then_some(text))
+}
+
+/// Where a project's sessions start from, in words.
+fn image(s: &ProjectSettings, repo: Option<&str>) -> String {
+    match (&s.image_build, s.image.as_deref()) {
+        (Some(b), _) => {
+            let from = repo.unwrap_or("the project's repository");
+            let context = match &b.context {
+                Some(c) if !b.is_devcontainer() => format!(" (in {c}/)"),
+                _ => String::new(),
+            };
+            format!(
+                "an image built from {from}'s {}{context}, on runners that build images from {from}",
+                b.file
+            )
+        }
+        (None, Some(i)) if !fctl_domain::image::means_default(i) => {
+            format!("{i}, on runners that allow it")
+        }
+        _ => "each runner's own image".into(),
+    }
+}
+
+/// A sandbox's size as a project sets it, in words.
+fn sandbox(s: &ProjectSettings) -> String {
+    let cpus = s.cpus.map(fctl_domain::size::cpus);
+    let memory = s
+        .memory_mb
+        .map(|m| format!("{} of memory", fctl_domain::size::memory(m.into())));
+    match (cpus, memory) {
+        (None, None) => "each runner's default size".into(),
+        (Some(c), None) => format!("{c} and the runner's default memory"),
+        (None, Some(m)) => format!("the runner's default CPUs and {m}"),
+        (Some(c), Some(m)) => format!("{c} and {m}"),
+    }
+}
+
+/// The first line of a setup script, and how many more it has.
+fn script_summary(script: &str) -> String {
+    let lines: Vec<&str> = script.lines().filter(|l| !l.trim().is_empty()).collect();
+    match lines.as_slice() {
+        [] => "none".into(),
+        [one] => one.trim().to_owned(),
+        [first, rest @ ..] => {
+            let more = if rest.len() == 1 { "line" } else { "lines" };
+            format!("{} (and {} more {more})", first.trim(), rest.len())
+        }
     }
 }
 
@@ -302,6 +416,17 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 println!("also:    {}", others.join(", "));
             }
             println!("branch:  {}", p.default_branch);
+            let repo = p.repo.as_ref().map(|r| r.full_name());
+            println!("image:   {}", image(&p.settings, repo.as_deref()));
+            println!("size:    {}", sandbox(&p.settings));
+            println!(
+                "setup:   {}",
+                script_summary(p.settings.setup_script.as_deref().unwrap_or_default())
+            );
+            if !p.settings.env.is_empty() {
+                let keys: Vec<&str> = p.settings.env.keys().map(String::as_str).collect();
+                println!("env:     {}", keys.join(", "));
+            }
             println!("idle:    sessions {}", idle(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
             println!("{}", style::dim(&format!("{}/p/{}", api.base(), p.slug)));
@@ -350,11 +475,65 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             idle_timeout,
             publish_screenshots,
             screenshot_days,
+            image: new_image,
+            build,
+            build_context,
+            setup_script: script,
+            env,
+            unset_env,
+            cpus,
+            memory,
         } => {
             let project = super::sessions::project_or_default(project)?;
             let p = api.project(&project).await?;
             // An update replaces all settings: send the others as they are.
             let mut settings = p.settings.clone();
+            if let Some(i) = &new_image {
+                settings.image = (!i.trim().is_empty()).then(|| i.trim().to_owned());
+                settings.image_build = None;
+            }
+            if let Some(file) = &build {
+                settings.image_build = (!file.trim().is_empty()).then(|| {
+                    let file = file.trim().to_owned();
+                    // A devcontainer.json says where it builds.
+                    let context = settings
+                        .image_build
+                        .as_ref()
+                        .and_then(|b| b.context.clone())
+                        .filter(|_| !file.to_ascii_lowercase().ends_with(".json"));
+                    ImageBuild { file, context }
+                });
+                if settings.image_build.is_some() {
+                    settings.image = None;
+                }
+            }
+            if let Some(dir) = &build_context {
+                let Some(b) = settings.image_build.as_mut() else {
+                    bail!(
+                        "{} builds no image: name its Dockerfile with --build",
+                        p.slug
+                    );
+                };
+                b.context = (!dir.trim().is_empty()).then(|| dir.trim().to_owned());
+            }
+            if let Some(arg) = &script {
+                settings.setup_script = setup_script(arg)?;
+            }
+            for pair in &env {
+                let Some((k, v)) = pair.split_once('=') else {
+                    bail!("--env takes KEY=VALUE, not {pair}");
+                };
+                settings.env.insert(k.trim().to_owned(), v.to_owned());
+            }
+            for k in &unset_env {
+                settings.env.remove(k.trim());
+            }
+            if let Some(OrDefault(c)) = cpus {
+                settings.cpus = c;
+            }
+            if let Some(OrDefault(m)) = memory {
+                settings.memory_mb = m;
+            }
             if let Some(on) = credit_people {
                 settings.credit_people = on;
             }
@@ -396,6 +575,44 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::accent("✓"),
                     style::bold(&p.slug),
                     idle(&p.settings)
+                );
+            }
+            if new_image.is_some() || build.is_some() || build_context.is_some() {
+                let repo = p.repo.as_ref().map(|r| r.full_name());
+                println!(
+                    "{} Sessions in {} start from {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    image(&p.settings, repo.as_deref())
+                );
+            }
+            if cpus.is_some() || memory.is_some() {
+                println!(
+                    "{} Sandboxes in {} get {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    sandbox(&p.settings)
+                );
+            }
+            if script.is_some() {
+                println!(
+                    "{} Setup script of {}: {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    script_summary(p.settings.setup_script.as_deref().unwrap_or_default())
+                );
+            }
+            if !env.is_empty() || !unset_env.is_empty() {
+                let keys: Vec<&str> = p.settings.env.keys().map(String::as_str).collect();
+                println!(
+                    "{} Environment of {}: {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    if keys.is_empty() {
+                        "no variables".to_owned()
+                    } else {
+                        keys.join(", ")
+                    }
                 );
             }
             if publish_screenshots.is_some() || screenshot_days.is_some() {

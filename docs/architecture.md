@@ -150,14 +150,19 @@ queued → provisioning → preparing → running ⇄ idle → stopped
 ```
 
 1. `POST /api/v1/projects/{id}/sessions` creates the row and asks FleetDO to
-   schedule it. Without a free runner it stays `queued`.
+   schedule it, on a runner that runs or builds its project's image and
+   gives its sandbox the size it asks for. Without a free one it stays
+   `queued`, and says why.
 2. FleetDO builds the `SessionSpec` just in time (repositories, branch, agent
    settings, secrets, fresh GitHub installation tokens, the starter's Claude
    credential) and sends `start_session` to a runner.
-3. The host creates a sandbox with its driver, injects `fctl-agent`, starts it
-   detached, attaches to it, and opens the session uplink to SessionDO.
+3. The host creates a sandbox with its driver (building the project's image
+   first when it builds one from its repository and the files changed),
+   injects `fctl-agent`, starts it detached, attaches to it, and opens the
+   session uplink to SessionDO.
 4. fctl-agent clones the primary repository, creates the branch, runs the
-   project's setup script, writes Claude's configuration, and starts
+   project's setup script, checks that Claude Code is 2.1.101 or later,
+   writes Claude's configuration over the image's, and starts
    `claude -p --input-format stream-json --output-format stream-json`.
 5. Claude's messages flow back as events; messages from people flow down as
    deliveries. A finished turn makes the session `idle`; the sandbox stays up
@@ -559,6 +564,27 @@ over one it has, and falls back to `latest` when its version's can't be
 pulled ([Sandbox images](sandbox-images.md)). `fctl host image build`
 builds it on the host instead, from that repository's `main`, which it
 downloads; the Lima driver's base VM gets the image's `provision.sh`.
+
+A project names an image (`ProjectSettings.image`) or a file in its
+repository to build one from (`image_build`: a Dockerfile and its context,
+or a dev container configuration). Hosts send the images they run besides
+their own (`HostHello.allowed_images`: references, `/*` prefixes, digest
+pins; absent: any) and the repositories they build images from
+(`allowed_builds`; absent: none, and always absent with Lima or the process
+driver). FleetDO reads each queued session's image with its size
+(`fctl_domain::image::ImageWant`) and only assigns it to a runner whose
+lists take it (`fctl_domain::schedule::pick`); a session that none online
+takes stays queued with the reason. The host checks its lists again before
+it accepts a session. To build (`crates/fctl-host/src/build.rs`), it reads
+the file at the tip of the project's default branch through GitHub's API
+with the session's token, keys the build by the file, the Dockerfile and
+the git tree of the context, and builds only when no image has that key:
+it downloads the repository's archive, unpacks the context and the
+Dockerfile, and runs `docker build` or `container build`, one at a time,
+within `build_timeout_minutes`, removing an image over `max_build_mb`. It
+records each project's last build in `builds.json` in its data directory,
+removes the one before, and starts from the last build while GitHub can't
+be reached.
 
 | Driver | Isolation | Host |
 |---|---|---|

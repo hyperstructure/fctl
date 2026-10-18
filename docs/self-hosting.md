@@ -180,7 +180,11 @@ Hosts download their release from `https://fctl.sh/releases` by default; set
 `download_base` in `host.toml` to mirror them elsewhere (`fctl host image
 build` installs fctl in the default image from there too). They pull the
 sandbox image from `ghcr.io/hyperstructure/sandbox`; set `image` to use a
-copy in your own registry ([Sandbox images](sandbox-images.md)).
+copy in your own registry ([Sandbox images](sandbox-images.md)). A host runs
+any image a project chooses until its owner lists the ones it allows
+(`allowed_images`), and builds images from no repository until they list
+some (`allowed_builds`): set both on machines that run other people's
+projects ([Which images a host runs](sandbox-images.md#which-images-a-host-runs)).
 
 ## Operating it
 

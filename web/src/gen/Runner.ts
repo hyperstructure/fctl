@@ -18,7 +18,22 @@ memory_available_mb?: number, disk_available_mb?: number,
 /**
  * What it gives each sandbox (absent from older hosts).
  */
-sandbox?: SandboxLimits, labels: Array<string>, last_seen_at?: number, created_at: number, created_by?: UserRef, 
+sandbox?: SandboxLimits, 
+/**
+ * The image it gives sessions whose project sets none.
+ */
+image?: string, 
+/**
+ * The other images it runs, as its hello says ([`HostHello`]).
+ * Absent: any image.
+ *
+ * [`HostHello`]: crate::runner::HostHello
+ */
+allowed_images?: Array<string>, 
+/**
+ * The repositories it builds images from. Absent: none.
+ */
+allowed_builds?: Array<string>, labels: Array<string>, last_seen_at?: number, created_at: number, created_by?: UserRef, 
 /**
  * Set while the runner drains: no new session starts on it, and the
  * sessions it has carry on there. Absent otherwise, and from control

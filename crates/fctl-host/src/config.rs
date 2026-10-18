@@ -10,6 +10,12 @@
 //! memory_mb = 8192         # per sandbox, when its project sets none
 //! max_cpus = 8             # per sandbox (default: what the machine has)
 //! max_memory_mb = 16384    # per sandbox (default: what the machine has)
+//! # Images projects may choose (unset: any): references, or prefixes in /*.
+//! allowed_images = ["ghcr.io/hyperstructure/sandbox", "ghcr.io/acme/*"]
+//! # Repositories whose Dockerfile or devcontainer.json it builds (unset: none).
+//! allowed_builds = ["acme/*"]
+//! build_timeout_minutes = 60
+//! max_build_mb = 20480     # the largest image a build may make
 //! ```
 //!
 //! The runner token lives next to it in `host-token` (mode 0600).
@@ -23,10 +29,6 @@ use std::path::{Path, PathBuf};
 /// https://github.com/hyperstructure/sandbox: a tag for every release.
 pub const IMAGE_REPOSITORY: &str = "ghcr.io/hyperstructure/sandbox";
 
-/// The default image before it was published, which hosts installed until
-/// then have in host.toml.
-const OLD_DEFAULT_IMAGE: &str = "fctl-agent:latest";
-
 /// The published sandbox image of this version of fctl.
 pub fn default_image() -> String {
     format!("{IMAGE_REPOSITORY}:{}", crate::agentbin::VERSION)
@@ -35,8 +37,7 @@ pub fn default_image() -> String {
 /// Whether an image setting, the host's or a project's, means the host's
 /// default: empty, or the name the default had before it was published.
 pub fn means_default_image(image: &str) -> bool {
-    let image = image.trim();
-    image.is_empty() || image == OLD_DEFAULT_IMAGE
+    fctl_domain::image::means_default(image)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -70,10 +71,26 @@ pub struct HostConfig {
     pub agent_bin: Option<PathBuf>,
     /// Where releases are downloaded from.
     pub download_base: String,
+    /// The GitHub API, which builds read repositories from (for tests).
+    #[serde(skip_serializing_if = "is_github")]
+    pub github_api: String,
     /// Push new commits after each turn.
     pub push_on_commit: bool,
     /// Keep a stopped session's sandbox (to resume it) for this many hours.
     pub keep_stopped_hours: u32,
+    /// The images this host runs for projects that choose their own,
+    /// besides its own `image`: references (`ghcr.io/acme/agent:1`, pinned
+    /// with `@sha256:…` or not, or without a tag for any), or prefixes that
+    /// end in `/*` (`ghcr.io/acme/*`). Unset: any image.
+    pub allowed_images: Option<Vec<String>>,
+    /// The repositories (`owner/name`, or `owner/*` for an account's) whose
+    /// Dockerfile or devcontainer.json this host builds sandbox images from,
+    /// for projects that build theirs. Unset: none.
+    pub allowed_builds: Option<Vec<String>>,
+    /// Minutes one image build may take.
+    pub build_timeout_minutes: u32,
+    /// The largest image a build may make, in MiB.
+    pub max_build_mb: u32,
 }
 
 impl Default for HostConfig {
@@ -94,10 +111,21 @@ impl Default for HostConfig {
             claude_args: vec![],
             agent_bin: None,
             download_base: "https://fctl.sh/releases".into(),
+            github_api: GITHUB_API.into(),
             push_on_commit: true,
             keep_stopped_hours: 72,
+            allowed_images: None,
+            allowed_builds: None,
+            build_timeout_minutes: 60,
+            max_build_mb: 20 * 1024,
         }
     }
+}
+
+const GITHUB_API: &str = "https://api.github.com";
+
+fn is_github(url: &String) -> bool {
+    url == GITHUB_API
 }
 
 pub fn hostname() -> String {
@@ -224,6 +252,36 @@ impl HostConfig {
             .then(|| format!("{IMAGE_REPOSITORY}:latest"))
     }
 
+    /// The images and builds this host's sessions may start from. Builds
+    /// need a `driver` that makes sandboxes from images.
+    pub fn images(&self, driver_uses_images: bool) -> Images {
+        Images {
+            own: self.image(),
+            allowed: self.allowed_images.clone(),
+            builds: if driver_uses_images {
+                self.allowed_builds.clone()
+            } else {
+                None
+            },
+        }
+    }
+
+    /// What is wrong with `allowed_images` and `allowed_builds`: entries
+    /// that match nothing.
+    pub fn image_problems(&self) -> Vec<String> {
+        let images = self.allowed_images.iter().flatten();
+        let builds = self.allowed_builds.iter().flatten();
+        images
+            .filter_map(|p| fctl_domain::image::check_image_pattern(p))
+            .map(|e| format!("allowed_images: {e}"))
+            .chain(
+                builds
+                    .filter_map(|p| fctl_domain::image::check_build_pattern(p))
+                    .map(|e| format!("allowed_builds: {e}")),
+            )
+            .collect()
+    }
+
     /// What this host gives each sandbox: the configured defaults and
     /// maximums, within `runtime`, what the sandboxes run on has (0: unknown).
     pub fn sandbox_limits(&self, runtime: SandboxSize) -> SandboxLimits {
@@ -243,6 +301,27 @@ impl HostConfig {
                 memory_mb: self.memory_mb.max(512).min(max.memory_mb),
             },
             max,
+        }
+    }
+}
+
+/// The images a host's sessions may start from, as its hello says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Images {
+    /// The image for sessions whose project sets none.
+    pub own: String,
+    /// `allowed_images`: `None` for any image.
+    pub allowed: Option<Vec<String>>,
+    /// `allowed_builds`, when the driver can build: `None` for none.
+    pub builds: Option<Vec<String>>,
+}
+
+impl Images {
+    pub fn policy(&self) -> fctl_domain::image::HostImages<'_> {
+        fctl_domain::image::HostImages {
+            own: Some(&self.own),
+            allowed: self.allowed.as_deref(),
+            builds: self.builds.as_deref(),
         }
     }
 }
@@ -289,6 +368,35 @@ mod tests {
         // host.toml leaves the default out, so the next version brings its own.
         let saved = toml::to_string_pretty(&HostConfig::default())?;
         assert!(!saved.lines().any(|l| l.starts_with("image")), "{saved}");
+        Ok(())
+    }
+
+    #[test]
+    fn hosts_say_which_images_they_run_and_build() -> Result<()> {
+        let cfg = HostConfig::from_toml(
+            "allowed_images = [\"ghcr.io/acme/*\", \"ghcr.io/acme*\"]\nallowed_builds = [\"acme/*\", \"acme\"]",
+        )?;
+        let images = cfg.images(true);
+        assert_eq!(images.own, default_image());
+        assert!(images.policy().runs("ghcr.io/acme/agent:1"));
+        assert!(images.policy().runs(&default_image()));
+        assert!(!images.policy().runs("docker.io/library/ubuntu"));
+        assert_eq!(images.builds.as_deref().map(<[String]>::len), Some(2));
+        // Lima and the process driver build nothing.
+        assert_eq!(cfg.images(false).builds, None);
+        assert_eq!(
+            cfg.image_problems(),
+            vec![
+                "allowed_images: `ghcr.io/acme*`: a prefix ends in /*, like ghcr.io/acme/*",
+                "allowed_builds: `acme` is not owner/name or owner/*",
+            ]
+        );
+        // Unset: any image, and no builds; host.toml leaves them out.
+        let cfg = HostConfig::default();
+        assert!(cfg.images(true).policy().runs("docker.io/library/ubuntu"));
+        assert_eq!(cfg.images(true).builds, None);
+        let saved = toml::to_string_pretty(&cfg)?;
+        assert!(!saved.contains("allowed_"), "{saved}");
         Ok(())
     }
 

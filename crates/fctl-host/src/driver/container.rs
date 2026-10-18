@@ -8,14 +8,16 @@
 //! fctl-agent attach`.
 
 use super::{
-    AGENT_PATH, AgentIo, COMMAND_TIMEOUT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec,
-    TimedOut, attach_script, run_cmd_within, serve_script, timed_out,
+    AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo,
+    SandboxSpec, TimedOut, attach_script, run_cmd_within, serve_script, timed_out,
 };
 use anyhow::{Context, Result};
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flavor {
@@ -267,6 +269,119 @@ impl ContainerDriver {
         self.run(&args).await.map(drop).map_err(failed)
     }
 
+    /// Whether the sandbox `name` exists. An error only when the runtime
+    /// doesn't answer.
+    pub async fn exists(&self, name: &str) -> Result<bool> {
+        Ok(self.state(name).await?.is_some())
+    }
+
+    /// Builds `job` with `docker build` or `container build`, saying in
+    /// `log` which step it is at. One still running after `job.limit` is
+    /// stopped.
+    pub async fn build(
+        &self,
+        job: &BuildJob<'_>,
+        log: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<()> {
+        let mut args: Vec<String> = vec![
+            "build".into(),
+            "--tag".into(),
+            job.tag.into(),
+            "--file".into(),
+            job.dockerfile.display().to_string(),
+        ];
+        for (k, v) in job.args {
+            args.extend(["--build-arg".into(), format!("{k}={v}")]);
+        }
+        if let Some(target) = job.target {
+            args.extend(["--target".into(), target.into()]);
+        }
+        args.push(job.context.display().to_string());
+        let mut cmd = tokio::process::Command::new(&self.bin);
+        cmd.args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        if self.flavor == Flavor::Docker {
+            // Lines rather than a redrawn screen; other builders ignore it.
+            cmd.env("BUILDKIT_PROGRESS", "plain");
+        }
+        let mut child = cmd.spawn().map_err(|e| super::spawn_error(&self.bin, e))?;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        if let Some(out) = child.stdout.take() {
+            forward_lines(out, tx.clone());
+        }
+        if let Some(err) = child.stderr.take() {
+            forward_lines(err, tx.clone());
+        }
+        drop(tx);
+        let mut tail: VecDeque<String> = VecDeque::new();
+        let run = async {
+            while let Some(line) = rx.recv().await {
+                if build_step(&line) {
+                    log(short(&line));
+                }
+                if tail.len() == 20 {
+                    tail.pop_front();
+                }
+                tail.push_back(line);
+            }
+            child.wait().await
+        };
+        let status = match tokio::time::timeout(job.limit, run).await {
+            Ok(status) => status.with_context(|| format!("running {} build", self.bin))?,
+            Err(_) => {
+                let _ = child.kill().await;
+                anyhow::bail!(
+                    "The image build took longer than {} minutes, so the host stopped it (build_timeout_minutes in host.toml)",
+                    job.limit.as_secs() / 60
+                );
+            }
+        };
+        if !status.success() {
+            for line in &tail {
+                log(line.clone());
+            }
+            let why = tail
+                .iter()
+                .rev()
+                .find(|l| l.contains("ERROR") || l.contains("error"))
+                .or(tail.back())
+                .map(|l| format!(": {}", l.trim()))
+                .unwrap_or_default();
+            anyhow::bail!("Building the image failed ({status}){why}");
+        }
+        Ok(())
+    }
+
+    /// An image's size in bytes: Docker's, or with Apple's `container` the
+    /// size of its variant for this machine.
+    pub async fn image_size(&self, image: &str) -> Option<u64> {
+        match self.flavor {
+            Flavor::Docker => self
+                .run(&["image", "inspect", "--format", "{{.Size}}", image])
+                .await
+                .ok()?
+                .trim()
+                .parse()
+                .ok(),
+            Flavor::Apple => {
+                let out = self.run(&["image", "inspect", image]).await.ok()?;
+                apple_image_size(&out, linux_arch(std::env::consts::ARCH))
+            }
+        }
+    }
+
+    /// Removes an image; fails while a sandbox uses it.
+    pub async fn remove_image(&self, image: &str) -> Result<()> {
+        let args: &[&str] = match self.flavor {
+            Flavor::Apple => &["image", "delete", image],
+            Flavor::Docker => &["image", "rm", image],
+        };
+        self.run(args).await.map(drop)
+    }
+
     pub async fn has_image(&self, image: &str) -> bool {
         let inspect: &[&str] = match self.flavor {
             Flavor::Apple => &["image", "inspect", image],
@@ -451,6 +566,56 @@ impl ContainerDriver {
     }
 }
 
+/// Sends each line `r` gives to `tx`.
+fn forward_lines<R: AsyncRead + Unpin + Send + 'static>(
+    r: R,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(r).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// Whether a line of a build's output starts one of its steps, or says it
+/// failed: BuildKit's `#5 [2/4] RUN …`, the older builder's `Step 2/4 :`,
+/// Podman's `STEP 2/4:`.
+fn build_step(line: &str) -> bool {
+    let l = line.trim_start();
+    let buildkit = l.strip_prefix('#').is_some_and(|rest| {
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        digits > 0 && rest[digits..].starts_with(" [")
+    });
+    buildkit || l.starts_with("Step ") || l.starts_with("STEP ") || l.starts_with("ERROR")
+}
+
+/// A line of a build's output, cut short when it is long.
+fn short(line: &str) -> String {
+    let line = line.trim_end();
+    match line.char_indices().nth(240) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_owned(),
+    }
+}
+
+/// The size of an image's variant for `arch` in `container image inspect`'s
+/// JSON, or of its largest one.
+fn apple_image_size(json: &str, arch: &str) -> Option<u64> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    let image = v.get(0).unwrap_or(&v);
+    let variants = image.get("variants")?.as_array()?;
+    let size = |v: &Value| v.get("size").and_then(Value::as_u64);
+    variants
+        .iter()
+        .find(|v| v.pointer("/platform/architecture").and_then(Value::as_str) == Some(arch))
+        .and_then(size)
+        .or_else(|| variants.iter().filter_map(size).max())
+}
+
 /// An architecture as images name it: `arm64` for Rust's `aarch64`.
 fn linux_arch(arch: &str) -> &str {
     match arch {
@@ -479,39 +644,23 @@ fn installed(bin: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod fake {
     use super::*;
-
-    #[test]
-    fn reads_the_docker_vms_size() {
-        // OrbStack's VM in #14's session: 10 CPUs and 15.6 GiB.
-        assert_eq!(
-            docker_resources("10 16766767104\n"),
-            Some(SandboxSize {
-                cpus: 10,
-                memory_mb: 15_990
-            })
-        );
-        for bad in [
-            "",
-            "10",
-            "ten 1024",
-            "0 16766767104",
-            "<no value> <no value>",
-        ] {
-            assert_eq!(docker_resources(bad), None, "{bad}");
-        }
-    }
+    use anyhow::Result;
+    use std::sync::{Mutex, PoisonError};
 
     /// A stand-in for the `docker` or `container` CLI with no sandboxes yet:
     /// `have` are the images on the host, `registry` those it can pull. It
-    /// writes each call to `calls`, and with `fail_run` every `run` fails.
-    struct FakeCli {
-        dir: tempfile::TempDir,
+    /// writes each call to `calls`; with `fail_run` every `run` fails, and with
+    /// `fail_build` every `build`. A build lists its context in `context` and
+    /// copies its Dockerfile to `dockerfile`; `size` holds the size images
+    /// have (1000 bytes without it).
+    pub struct FakeCli {
+        pub dir: tempfile::TempDir,
     }
 
     impl FakeCli {
-        fn new(have: &[&str], registry: &[&str]) -> Result<Self> {
+        pub fn new(have: &[&str], registry: &[&str]) -> Result<Self> {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir()?;
             let root = dir.path();
@@ -522,7 +671,7 @@ mod tests {
                 }
             }
             let script = format!(
-                r#"#!/bin/sh
+                r##"#!/bin/sh
 d='{}'
 echo "$*" >> "$d/calls"
 key() {{ printf '%s' "$1" | tr '/:' '__'; }}
@@ -532,7 +681,18 @@ pull() {{
   touch "$d/have/$(key "$last")"
 }}
 case "$1 $2" in
-  "image inspect") [ -e "$d/have/$(key "$last")" ] ;;
+  "image inspect")
+    [ -e "$d/have/$(key "$last")" ] || exit 1
+    [ "$4" != '{{{{.Size}}}}' ] || cat "$d/size" 2>/dev/null || echo 1000 ;;
+  "image rm" | "image delete") rm "$d/have/$(key "$last")" ;;
+  "build "*)
+    [ ! -e "$d/fail_build" ] || {{ echo "#3 ERROR: process did not complete successfully: exit code: 1" >&2; exit 1; }}
+    echo "#1 [internal] load build definition from Dockerfile"
+    echo "#5 [1/2] FROM debian" >&2
+    echo "#5 0.1 noise"
+    (cd "$last" && find . | sort) > "$d/context"
+    cat "$5" > "$d/dockerfile"
+    touch "$d/have/$(key "$3")" ;;
   "image pull" | "pull "*) pull ;;
   "inspect "*) exit 1 ;;
   "run "*)
@@ -541,7 +701,7 @@ case "$1 $2" in
     [ -e "$d/have/$(key "$2")" ] || {{ echo "Unable to find image '$2' locally" >&2; exit 125; }} ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
-"#,
+"##,
                 root.display()
             );
             let bin = root.join("cli");
@@ -550,14 +710,14 @@ esac
             Ok(Self { dir })
         }
 
-        fn driver(&self, flavor: Flavor) -> ContainerDriver {
+        pub fn driver(&self, flavor: Flavor) -> ContainerDriver {
             ContainerDriver {
                 flavor,
                 bin: self.dir.path().join("cli").display().to_string(),
             }
         }
 
-        fn calls(&self) -> Vec<String> {
+        pub fn calls(&self) -> Vec<String> {
             std::fs::read_to_string(self.dir.path().join("calls"))
                 .unwrap_or_default()
                 .lines()
@@ -566,7 +726,7 @@ esac
         }
 
         /// Creates the sandbox: the image it started from, and the log.
-        async fn ensure(
+        pub async fn ensure(
             &self,
             flavor: Flavor,
             spec: &SandboxSpec,
@@ -593,6 +753,65 @@ esac
                 image,
                 lines.into_inner().unwrap_or_else(PoisonError::into_inner),
             ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::FakeCli;
+    use super::*;
+
+    #[test]
+    fn build_logs_show_the_steps() {
+        for step in [
+            "#5 [2/4] RUN apt-get update",
+            "#12 [build 3/7] COPY . .",
+            "Step 2/4 : RUN make",
+            "STEP 2/4: RUN make",
+            "ERROR: failed to solve: process \"/bin/sh -c make\" did not complete successfully",
+        ] {
+            assert!(build_step(step), "{step}");
+        }
+        for noise in [
+            "#5 0.312 Get:1 http://deb.debian.org",
+            "#5 DONE 3.1s",
+            "",
+            "#x [1/2]",
+        ] {
+            assert!(!build_step(noise), "{noise}");
+        }
+    }
+
+    #[test]
+    fn reads_the_size_of_apples_images() {
+        let json = r#"[{"name":"fctl-build-prj_1:abc","index":{"size":1024},"variants":[
+            {"platform":{"os":"linux","architecture":"amd64"},"size":900},
+            {"platform":{"os":"linux","architecture":"arm64"},"size":800}]}]"#;
+        assert_eq!(apple_image_size(json, "arm64"), Some(800));
+        assert_eq!(apple_image_size(json, "riscv64"), Some(900));
+        assert_eq!(apple_image_size("[{\"name\":\"x\"}]", "arm64"), None);
+        assert_eq!(apple_image_size("not json", "arm64"), None);
+    }
+
+    #[test]
+    fn reads_the_docker_vms_size() {
+        // OrbStack's VM in #14's session: 10 CPUs and 15.6 GiB.
+        assert_eq!(
+            docker_resources("10 16766767104\n"),
+            Some(SandboxSize {
+                cpus: 10,
+                memory_mb: 15_990
+            })
+        );
+        for bad in [
+            "",
+            "10",
+            "ten 1024",
+            "0 16766767104",
+            "<no value> <no value>",
+        ] {
+            assert_eq!(docker_resources(bad), None, "{bad}");
         }
     }
 

@@ -86,6 +86,14 @@ pub struct HostHello {
     /// What the host gives each sandbox. Older hosts send none and get
     /// sessions of any size.
     pub sandbox: Option<SandboxLimits>,
+    /// The images it runs for projects that choose their own, besides
+    /// `image`: references, or prefixes ending in `/*`. Absent, as from
+    /// older hosts: any image.
+    pub allowed_images: Option<Vec<String>>,
+    /// The repositories (`owner/name`, `owner/*`) whose files it builds
+    /// images from, for projects that build theirs. Absent, as from older
+    /// hosts and hosts whose driver uses no images: none.
+    pub allowed_builds: Option<Vec<String>>,
 }
 
 #[skip_serializing_none]

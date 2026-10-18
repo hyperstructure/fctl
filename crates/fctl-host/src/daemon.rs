@@ -17,6 +17,7 @@ use crate::session::{self, HostCtx, SessionCmd, SessionEvent, SessionHandle, Sta
 use crate::sysinfo;
 use anyhow::Result;
 use fctl_client::ws;
+use fctl_domain::image::ImageWant;
 use fctl_domain::size::{self, Want};
 use fctl_proto::runner::{
     FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet, SessionSpec, StopReason,
@@ -80,6 +81,8 @@ impl Daemon {
     pub async fn new(cfg: HostConfig, token: String) -> Result<Self> {
         let data = cfg.data_dir();
         std::fs::create_dir_all(&data)?;
+        // What image builds left behind when the host last stopped.
+        let _ = std::fs::remove_dir_all(data.join("builds"));
         let driver = Driver::select(&cfg.driver, &data, cfg.agent_bin.clone()).await?;
         let ctx = Arc::new(HostCtx::new(cfg, driver, token));
         ctx.refresh_facts().await;
@@ -303,6 +306,7 @@ impl Daemon {
     }
 
     fn hello(&self) -> HostHello {
+        let images = self.ctx.images();
         HostHello {
             protocol: PROTOCOL_VERSION,
             version: VERSION.into(),
@@ -316,8 +320,10 @@ impl Daemon {
             capacity: self.ctx.cfg.capacity,
             labels: self.ctx.cfg.labels.clone(),
             sessions: self.reports(),
-            image: Some(self.ctx.cfg.image()),
+            image: Some(images.own),
             sandbox: Some(self.ctx.sandbox_limits()),
+            allowed_images: images.allowed,
+            allowed_builds: images.builds,
         }
     }
 
@@ -571,6 +577,21 @@ impl Daemon {
                 size::cpus(limits.max.cpus),
                 size::memory(limits.max.memory_mb.into())
             ));
+        }
+        let want = ImageWant::of(&spec.project.settings, spec.project.repo.as_ref());
+        if !self.ctx.images().policy().takes(&want) {
+            return Err(match want {
+                ImageWant::Build(repo) => format!(
+                    "{} builds no images from {} (allowed_builds in its host.toml)",
+                    self.ctx.cfg.name,
+                    repo.full_name()
+                ),
+                ImageWant::Image(image) => format!(
+                    "{} doesn't run {image} (allowed_images in its host.toml)",
+                    self.ctx.cfg.name
+                ),
+                ImageWant::Default => format!("{} can't take the session", self.ctx.cfg.name),
+            });
         }
         if let Some(existing) = self.sessions.get(&id) {
             let winding_down = existing

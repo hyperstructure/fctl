@@ -1,5 +1,6 @@
 //! Choosing a runner for a session.
 
+use crate::image::{HostImages, ImageWant};
 use crate::size::{self, Want};
 use fctl_proto::runner::{SandboxLimits, SandboxSize};
 
@@ -17,6 +18,8 @@ pub struct Slot<'a> {
     /// It drains: no new session starts on it, but the sessions whose
     /// sandboxes it has still resume there.
     pub draining: bool,
+    /// The images it runs and builds.
+    pub images: HostImages<'a>,
 }
 
 /// The runner that keeps a session's sandbox from an earlier run: there,
@@ -52,6 +55,10 @@ pub enum Wait {
     },
     /// Runners give its CPUs and runners give its memory, but none gives both.
     NoneGivesBoth { cpus: u32, memory_mb: u32 },
+    /// No online runner runs the image its project chose.
+    Image { image: String },
+    /// No online runner builds images from its project's repository.
+    Build { repo: String },
 }
 
 impl Wait {
@@ -83,6 +90,22 @@ impl Wait {
                 size::cpus(*cpus),
                 size::memory((*memory_mb).into())
             ),
+            Self::Image { image } => format!("No runner allows this project's image, {image}"),
+            Self::Build { repo } => format!("No runner builds this project's image from {repo}"),
+        }
+    }
+
+    /// Why no runner takes a session that wants `image`.
+    fn image(image: &ImageWant) -> Self {
+        match image {
+            ImageWant::Build(repo) => Self::Build {
+                repo: repo.full_name(),
+            },
+            ImageWant::Image(image) => Self::Image {
+                image: image.clone(),
+            },
+            // Every runner runs its own image.
+            ImageWant::Default => Self::NoRunner,
         }
     }
 }
@@ -98,8 +121,8 @@ fn parts(cpus: Option<u32>, memory_mb: Option<u32>, memory_suffix: &str) -> Stri
 }
 
 /// The least loaded online runner with a free slot that has every required
-/// label and gives a sandbox the size the session wants. Ties go to the
-/// runner listed first.
+/// label, runs or builds the image the session wants, and gives a sandbox
+/// the size it wants. Ties go to the runner listed first.
 ///
 /// A session's `home` comes first when it is online and could take it, also
 /// while it drains: with a free slot it gets the session, and without one
@@ -109,6 +132,7 @@ pub fn pick<'a>(
     slots: &'a [Slot<'a>],
     required_labels: &[String],
     want: Want,
+    image: &ImageWant,
     home: Option<Home<'_>>,
 ) -> Result<&'a Slot<'a>, Wait> {
     let online: Vec<&Slot> = slots
@@ -118,6 +142,13 @@ pub fn pick<'a>(
         .collect();
     if online.is_empty() {
         return Err(Wait::NoRunner);
+    }
+    let online: Vec<&Slot> = online
+        .into_iter()
+        .filter(|s| s.images.takes(image))
+        .collect();
+    if online.is_empty() {
+        return Err(Wait::image(image));
     }
     if let Some(home) = home
         && let Some(slot) = online
@@ -191,6 +222,7 @@ mod tests {
             labels,
             sandbox: None,
             draining: false,
+            images: HostImages::default(),
         }
     }
 
@@ -228,14 +260,20 @@ mod tests {
             slot("d", 1, 1, &none),
         ];
         let any = Want::default();
-        assert_eq!(pick(&slots, &[], any, None).map(|s| s.id), Ok("b"));
-        assert_eq!(pick(&slots, &gpu, any, None).map(|s| s.id), Ok("b"));
         assert_eq!(
-            pick(&slots[2..3], &[], any, None).map(|s| s.id),
+            pick(&slots, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            Ok("b")
+        );
+        assert_eq!(
+            pick(&slots, &gpu, any, &ImageWant::Default, None).map(|s| s.id),
+            Ok("b")
+        );
+        assert_eq!(
+            pick(&slots[2..3], &[], any, &ImageWant::Default, None).map(|s| s.id),
             Err(Wait::NoRunner)
         );
         assert_eq!(
-            pick(&slots[3..], &[], any, None).map(|s| s.id),
+            pick(&slots[3..], &[], any, &ImageWant::Default, None).map(|s| s.id),
             Err(Wait::Busy)
         );
     }
@@ -255,18 +293,21 @@ mod tests {
         ];
         // The idle runner first, while the session fits there.
         assert_eq!(
-            pick(&slots, &[], memory(8192), None).map(|s| s.id),
+            pick(&slots, &[], memory(8192), &ImageWant::Default, None).map(|s| s.id),
             Ok("docker-vm")
         );
         assert_eq!(
-            pick(&slots, &[], memory(16_384), None).map(|s| s.id),
+            pick(&slots, &[], memory(16_384), &ImageWant::Default, None).map(|s| s.id),
             Ok("studio")
         );
         let many = Want {
             cpus: Some(12),
             memory_mb: None,
         };
-        assert_eq!(pick(&slots, &[], many, None).map(|s| s.id), Ok("studio"));
+        assert_eq!(
+            pick(&slots, &[], many, &ImageWant::Default, None).map(|s| s.id),
+            Ok("studio")
+        );
         // The only runner that fits is full: it waits for that one.
         let full = [
             slots[0].clone(),
@@ -276,7 +317,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            pick(&full, &[], memory(16_384), None).map(|s| s.id),
+            pick(&full, &[], memory(16_384), &ImageWant::Default, None).map(|s| s.id),
             Err(Wait::Busy)
         );
     }
@@ -286,7 +327,7 @@ mod tests {
         let none: Vec<String> = vec![];
         let slots = [slot("old", 4, 0, &none)];
         assert_eq!(
-            pick(&slots, &[], memory(262_144), None).map(|s| s.id),
+            pick(&slots, &[], memory(262_144), &ImageWant::Default, None).map(|s| s.id),
             Ok("old")
         );
     }
@@ -304,7 +345,11 @@ mod tests {
                 ..slot("b", 4, 0, &none)
             },
         ];
-        let reason = |want: Want| pick(&slots, &[], want, None).err().map(|w| w.reason());
+        let reason = |want: Want| {
+            pick(&slots, &[], want, &ImageWant::Default, None)
+                .err()
+                .map(|w| w.reason())
+        };
         assert_eq!(
             reason(memory(131_072)).as_deref(),
             Some("No runner can give this session 128 GiB of memory (the most is 64 GiB)")
@@ -349,7 +394,7 @@ mod tests {
         let any = Want::default();
         // Busier, but it has the sandbox.
         assert_eq!(
-            pick(&slots, &[], any, home("studio", true)).map(|s| s.id),
+            pick(&slots, &[], any, &ImageWant::Default, home("studio", true)).map(|s| s.id),
             Ok("studio")
         );
         // Full: the session waits for it, or starts elsewhere once it no
@@ -362,13 +407,13 @@ mod tests {
             },
         ];
         assert_eq!(
-            pick(&full, &[], any, home("studio", true)).map(|s| s.id),
+            pick(&full, &[], any, &ImageWant::Default, home("studio", true)).map(|s| s.id),
             Err(Wait::Home {
                 name: "studio".into()
             })
         );
         assert_eq!(
-            pick(&full, &[], any, home("studio", false)).map(|s| s.id),
+            pick(&full, &[], any, &ImageWant::Default, home("studio", false)).map(|s| s.id),
             Ok("idle")
         );
         assert_eq!(
@@ -397,17 +442,38 @@ mod tests {
         ];
         // Offline: it doesn't wait.
         assert_eq!(
-            pick(&slots, &[], Want::default(), home("asleep", true)).map(|s| s.id),
+            pick(
+                &slots,
+                &[],
+                Want::default(),
+                &ImageWant::Default,
+                home("asleep", true)
+            )
+            .map(|s| s.id),
             Ok("idle")
         );
         // Too small now (the project asks for more): it doesn't wait either.
         assert_eq!(
-            pick(&slots, &[], memory(16_384), home("small", true)).map(|s| s.id),
+            pick(
+                &slots,
+                &[],
+                memory(16_384),
+                &ImageWant::Default,
+                home("small", true)
+            )
+            .map(|s| s.id),
             Ok("idle")
         );
         // Gone.
         assert_eq!(
-            pick(&slots, &[], Want::default(), home("removed", true)).map(|s| s.id),
+            pick(
+                &slots,
+                &[],
+                Want::default(),
+                &ImageWant::Default,
+                home("removed", true)
+            )
+            .map(|s| s.id),
             Ok("idle")
         );
     }
@@ -424,10 +490,13 @@ mod tests {
         ];
         let any = Want::default();
         // Emptier, but draining: new sessions go elsewhere.
-        assert_eq!(pick(&slots, &[], any, None).map(|s| s.id), Ok("laptop"));
+        assert_eq!(
+            pick(&slots, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            Ok("laptop")
+        );
         // A resume goes back to its sandbox there.
         assert_eq!(
-            pick(&slots, &[], any, home("studio", true)).map(|s| s.id),
+            pick(&slots, &[], any, &ImageWant::Default, home("studio", true)).map(|s| s.id),
             Ok("studio")
         );
         // The other one is full: a new session waits, and says why when
@@ -439,15 +508,109 @@ mod tests {
                 ..slots[1].clone()
             },
         ];
-        assert_eq!(pick(&full, &[], any, None).map(|s| s.id), Err(Wait::Busy));
+        assert_eq!(
+            pick(&full, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            Err(Wait::Busy)
+        );
         let draining = [slots[0].clone()];
         assert_eq!(
-            pick(&draining, &[], any, None).map(|s| s.id),
+            pick(&draining, &[], any, &ImageWant::Default, None).map(|s| s.id),
             Err(Wait::Draining)
         );
         assert_eq!(
             Wait::Draining.reason(),
             "Waiting for a runner: the ones online are draining"
+        );
+    }
+
+    #[test]
+    fn sessions_go_to_runners_that_allow_their_image() {
+        use fctl_proto::session::RepoRef;
+        let none: Vec<String> = vec![];
+        let acme = vec!["ghcr.io/acme/*".to_owned()];
+        let only_own: Vec<String> = vec![];
+        let builds = vec!["acme/*".to_owned()];
+        let slots = [
+            Slot {
+                images: HostImages {
+                    own: Some("ghcr.io/hyperstructure/sandbox:0.5.0"),
+                    allowed: Some(&only_own),
+                    builds: None,
+                },
+                ..slot("strict", 4, 0, &none)
+            },
+            Slot {
+                images: HostImages {
+                    own: None,
+                    allowed: Some(&acme),
+                    builds: Some(&builds),
+                },
+                ..slot("acme", 4, 3, &none)
+            },
+        ];
+        let any = Want::default();
+        let image = |i: &str| ImageWant::Image(i.into());
+        // The default image runs everywhere: the emptier runner.
+        assert_eq!(
+            pick(&slots, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            Ok("strict")
+        );
+        // A project's image only where its owner allows it.
+        assert_eq!(
+            pick(&slots, &[], any, &image("ghcr.io/acme/agent:1"), None).map(|s| s.id),
+            Ok("acme")
+        );
+        let wait = pick(&slots, &[], any, &image("docker.io/evil/miner"), None);
+        assert_eq!(
+            wait.clone().map(|s| s.id),
+            Err(Wait::Image {
+                image: "docker.io/evil/miner".into()
+            })
+        );
+        assert_eq!(
+            wait.err().map(|w| w.reason()).as_deref(),
+            Some("No runner allows this project's image, docker.io/evil/miner")
+        );
+        // A build only where its owner builds from the repository.
+        let app = ImageWant::Build(RepoRef {
+            owner: "acme".into(),
+            name: "app".into(),
+        });
+        assert_eq!(pick(&slots, &[], any, &app, None).map(|s| s.id), Ok("acme"));
+        let other = ImageWant::Build(RepoRef {
+            owner: "other".into(),
+            name: "app".into(),
+        });
+        assert_eq!(
+            pick(&slots, &[], any, &other, None)
+                .err()
+                .map(|w| w.reason())
+                .as_deref(),
+            Some("No runner builds this project's image from other/app")
+        );
+        // A resume doesn't go back to a runner that no longer allows it.
+        assert_eq!(
+            pick(
+                &slots,
+                &[],
+                any,
+                &image("ghcr.io/acme/agent:1"),
+                home("strict", true)
+            )
+            .map(|s| s.id),
+            Ok("acme")
+        );
+        // Older hosts send no list and run any image, but build none.
+        let old = [slot("old", 4, 0, &none)];
+        assert_eq!(
+            pick(&old, &[], any, &image("docker.io/evil/miner"), None).map(|s| s.id),
+            Ok("old")
+        );
+        assert_eq!(
+            pick(&old, &[], any, &app, None).map(|s| s.id),
+            Err(Wait::Build {
+                repo: "acme/app".into()
+            })
         );
     }
 }
