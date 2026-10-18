@@ -136,6 +136,15 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
     if let Some(email) = &me.commit_email {
         println!("Commits credit you as {email}");
     }
+    let two_factor = super::two_factor::summary(&me.two_factor);
+    println!(
+        "Two-factor sign-in: {}",
+        if me.two_factor.setup_required {
+            style::amber(&two_factor)
+        } else {
+            two_factor
+        }
+    );
     if me.claude.is_empty() {
         println!(
             "{}",

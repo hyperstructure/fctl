@@ -6,6 +6,7 @@
 
 mod cmd;
 mod config;
+mod prompt;
 mod render;
 mod stall;
 mod style;
@@ -163,8 +164,8 @@ enum Command {
     /// Manage access, users and runners (admins).
     #[command(subcommand)]
     Admin(cmd::admin::AdminCmd),
-    /// Set the address commits credit you with, export your data, or delete
-    /// your account.
+    /// Set the address commits credit you with, set up two-factor sign-in,
+    /// export your data, or delete your account.
     #[command(subcommand)]
     Account(cmd::account::AccountCmd),
     /// Create a personal access token for scripts and CI.

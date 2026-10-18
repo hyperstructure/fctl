@@ -1,6 +1,6 @@
-// Settings: profile, Claude, notifications, sign-in methods, devices and
-// tokens, appearance, your data (export) and the danger zone (deleting the
-// account).
+// Settings: profile, Claude, notifications, sign-in methods, two-factor
+// sign-in, devices and tokens, appearance, your data (export) and the danger
+// zone (deleting the account).
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
@@ -11,15 +11,21 @@ import {
   Download,
   KeyRound,
   Laptop,
+  ListOrdered,
   Monitor,
   Moon,
   Radio,
+  Shield,
+  ShieldCheck,
   Sun,
   Terminal,
   Trash2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PlanUsageList } from "@/components/plan-usage";
+import { ConfirmWithCode } from "@/components/two-factor/confirm-code";
+import { RecoveryCodes } from "@/components/two-factor/recovery-codes";
+import { AuthenticatorSetup } from "@/components/two-factor/setup";
 import {
   Avatar,
   Banner,
@@ -44,6 +50,7 @@ import { ago, browserName } from "@/lib/format";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
+import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
 
 const LINK_ERRORS: Record<string, string> = {
   google_linked_elsewhere: "That Google account is already linked to another user.",
@@ -74,6 +81,7 @@ export function SettingsPage() {
         <Claude me={me} />
         <Notifications me={me} />
         <SignIn me={me} />
+        <TwoFactorSettings me={me} />
         <Tokens />
         <Appearance />
         <YourData />
@@ -605,11 +613,13 @@ function SwitchRow({
   hint,
   checked,
   onChange,
+  disabled,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <li className="flex items-center justify-between gap-4 py-2.5">
@@ -617,7 +627,7 @@ function SwitchRow({
         <div className="text-[13.5px] text-ink">{label}</div>
         {hint && <div className="text-[12px] text-ink-4">{hint}</div>}
       </div>
-      <Switch checked={checked} onChange={onChange} label={label} />
+      <Switch checked={checked} onChange={onChange} label={label} disabled={disabled} />
     </li>
   );
 }
@@ -738,6 +748,208 @@ function SignIn({ me }: { me: G.Me }) {
           </div>
         </form>
       </div>
+    </Section>
+  );
+}
+
+type TwoFactorDialog = "setup" | "replace" | "off" | "codes";
+
+function TwoFactorSettings({ me }: { me: G.Me }) {
+  const { data: instance } = useInstance();
+  const t = me.two_factor;
+  const on = t.authenticator_since !== undefined;
+  const few = on && t.recovery_codes <= FEW_RECOVERY_CODES;
+  const [dialog, setDialog] = useState<TwoFactorDialog | null>(null);
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const close = () => {
+    setDialog(null);
+    setCodes(null);
+  };
+  const google = useMutation({
+    mutationFn: (v: boolean) => api.updateTwoFactor({ google: v }),
+    onSuccess: (m) => queryClient.setQueryData(keys.me, m),
+    onError: (e) => toast(e.message, "error"),
+  });
+  const linkedGoogle = me.identities.some((i) => i.provider === "google");
+  return (
+    <Section
+      title="Two-factor sign-in"
+      description={
+        <>
+          A code from an app on your phone after your password, so that a password alone can't sign anyone in.
+          {t.required && " This instance requires it."}
+        </>
+      }
+    >
+      <div className="flex flex-col gap-6">
+        <ul className="divide-y divide-line border-y border-line">
+          <li className="flex flex-wrap items-center gap-3 py-3">
+            <span
+              className={cn(
+                "flex size-8 shrink-0 items-center justify-center rounded-md border transition-colors",
+                on ? "border-accent/30 bg-accent-soft text-accent" : "border-line bg-raised text-ink-3",
+              )}
+            >
+              {on ? <ShieldCheck className="size-4" /> : <Shield className="size-4" />}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-[13.5px] text-ink">
+                Authenticator app
+                {on && (
+                  <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-ink">
+                    on
+                  </span>
+                )}
+              </div>
+              <div className="text-[12px] text-ink-4">
+                {on
+                  ? `Set up ${ago(t.authenticator_since ?? 0)} · ${
+                      t.authenticator_used_at
+                        ? `last used ${ago(t.authenticator_used_at)}`
+                        : "not used to sign in yet"
+                    }`
+                  : "Off: your password alone signs you in"}
+              </div>
+            </div>
+            {on ? (
+              <div className="flex items-center gap-1">
+                <Button size="sm" variant="ghost" onClick={() => setDialog("replace")}>
+                  Replace
+                </Button>
+                {!t.required && (
+                  <Button size="sm" variant="ghost" onClick={() => setDialog("off")}>
+                    Turn off
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <Button size="sm" variant="primary" onClick={() => setDialog("setup")}>
+                Set up
+              </Button>
+            )}
+          </li>
+          {on && (
+            <li className="flex flex-wrap items-center gap-3 py-3">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-ink-3">
+                <ListOrdered className="size-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[13.5px] text-ink">Recovery codes</div>
+                <div className={cn("text-[12px]", few ? "text-amber" : "text-ink-4")}>
+                  {t.recovery_codes === 0
+                    ? "None left: get new ones, or a lost phone locks you out"
+                    : `${t.recovery_codes} of 10 left${few ? ": get new ones before they run out" : ", each signs you in once"}`}
+                </div>
+              </div>
+              <Button size="sm" variant={few ? "secondary" : "ghost"} onClick={() => setDialog("codes")}>
+                Get new codes
+              </Button>
+            </li>
+          )}
+        </ul>
+        {(instance?.features.google || linkedGoogle) && (
+          <ul className="divide-y divide-line border-y border-line">
+            <SwitchRow
+              label="Ask for a code when I sign in with Google too"
+              hint={
+                t.google_required
+                  ? "This instance asks everyone who has two-factor."
+                  : !on && t.google
+                    ? "From when you set up an authenticator app."
+                    : "Off: Google's own sign-in is enough."
+              }
+              checked={t.google || t.google_required}
+              disabled={t.google_required || google.isPending}
+              onChange={(v) => google.mutate(v)}
+            />
+          </ul>
+        )}
+      </div>
+
+      <Dialog
+        open={dialog === "setup" || dialog === "replace"}
+        onClose={close}
+        wide
+        title={dialog === "replace" ? "Replace your authenticator app" : "Set up an authenticator app"}
+        description={
+          dialog === "replace"
+            ? "Set up the new app or phone. Codes from the old one stop working; your recovery codes stay."
+            : "Then signing in with your password also takes the code the app shows."
+        }
+      >
+        <AuthenticatorSetup
+          me={me}
+          replacing={dialog === "replace"}
+          onConfirmed={(m) => queryClient.setQueryData(keys.me, m)}
+          onCancel={close}
+          onDone={(r) => {
+            close();
+            toast(
+              r.codes
+                ? "Two-factor sign-in is on"
+                : dialog === "replace"
+                  ? "The new authenticator app is in use. Your recovery codes still work."
+                  : "Two-factor sign-in is on. Your recovery codes still work.",
+            );
+          }}
+        />
+      </Dialog>
+
+      <Dialog
+        open={dialog === "off"}
+        onClose={close}
+        title="Turn off two-factor sign-in?"
+        description="Signing in will take your password alone, and your recovery codes stop working. Enter a code to confirm it's you."
+      >
+        {dialog === "off" && (
+          <ConfirmWithCode
+            action="Turn off"
+            danger
+            onCancel={close}
+            submit={(code) => api.removeAuthenticator({ code })}
+            onDone={(m) => {
+              queryClient.setQueryData(keys.me, m);
+              close();
+              toast("Two-factor sign-in is off");
+            }}
+          />
+        )}
+      </Dialog>
+
+      <Dialog
+        open={dialog === "codes"}
+        onClose={close}
+        wide={!!codes}
+        title={codes ? "Your new recovery codes" : "Get new recovery codes?"}
+        description={
+          codes
+            ? "Each signs you in once if you lose your phone. Keep them somewhere safe: they are shown only now."
+            : "Your current recovery codes stop working. Enter a code from your authenticator app, or a recovery code, to confirm."
+        }
+      >
+        {codes ? (
+          <div className="flex flex-col gap-5">
+            <RecoveryCodes codes={codes} email={me.user.email} />
+            <div className="flex justify-end">
+              <Button variant="primary" onClick={close}>
+                Done
+              </Button>
+            </div>
+          </div>
+        ) : (
+          dialog === "codes" && (
+            <ConfirmWithCode
+              action="Get new codes"
+              onCancel={close}
+              submit={(code) => api.newRecoveryCodes({ code })}
+              onDone={(r) => {
+                queryClient.setQueryData(keys.me, r.me);
+                setCodes(r.codes);
+              }}
+            />
+          )
+        )}
+      </Dialog>
     </Section>
   );
 }

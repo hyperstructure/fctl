@@ -43,12 +43,19 @@ pub enum AdminCmd {
         /// The runner's name or id.
         runner: String,
     },
+    /// Turn off someone's two-factor sign-in, when they lost their phone
+    /// and their recovery codes. They can sign in with their password alone
+    /// again, or set it up again when the instance requires it.
+    ResetTwoFactor {
+        /// Their email address or user id.
+        user: String,
+    },
     /// Show the instance's settings.
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots"])),
-        after_help = "Examples:\n  fctl admin set --publish-screenshots on"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on"
     )]
     Set {
         /// Let projects publish their agents' screenshots on this instance,
@@ -57,6 +64,15 @@ pub enum AdminCmd {
         /// on`). Off takes every published screenshot offline.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         publish_screenshots: Option<bool>,
+        /// Require two-factor sign-in of everyone who signs in with a
+        /// password. People who haven't set it up can do nothing else until
+        /// they have, in the browser and with their CLI and access tokens.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        require_two_factor: Option<bool>,
+        /// Make Google sign-ins ask for the second factor too, of everyone
+        /// who has one. With --require-two-factor, everyone needs one.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        two_factor_google: Option<bool>,
     },
 }
 
@@ -77,6 +93,29 @@ fn print_settings(s: &InstanceSettings) {
             "No project's agents can publish screenshots."
         })
     );
+    println!(
+        "Two-factor sign-in     {}",
+        if s.require_two_factor {
+            style::accent("required")
+        } else {
+            style::dim("optional")
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(match (s.require_two_factor, s.two_factor_google) {
+            (true, true) => "Everyone needs a second factor, and Google sign-ins ask for it too.",
+            (true, false) => {
+                "Everyone who signs in with a password needs a second factor. Google sign-ins don't ask for it."
+            }
+            (false, true) => {
+                "People choose whether to use it. Google sign-ins ask everyone who has it."
+            }
+            (false, false) => {
+                "People choose whether to use it. Google sign-ins ask only those who chose that."
+            }
+        })
+    );
 }
 
 pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> {
@@ -89,7 +128,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             }
             for u in list.users {
                 println!(
-                    "{:<28} {:<32} {:<7} {}",
+                    "{:<28} {:<32} {:<7} {:<8} {}",
                     style::bold(&u.name),
                     u.email,
                     u.role.as_str(),
@@ -97,6 +136,11 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                         style::accent("active")
                     } else {
                         style::red("disabled")
+                    },
+                    if u.two_factor {
+                        style::accent("2fa")
+                    } else {
+                        style::dim("no 2fa")
                     }
                 );
             }
@@ -227,16 +271,72 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
         }
         AdminCmd::Set {
             publish_screenshots,
+            require_two_factor,
+            two_factor_google,
         } => {
             let settings = api
                 .update_instance_settings(&UpdateInstanceSettingsRequest {
                     publish_screenshots,
+                    require_two_factor,
+                    two_factor_google,
                 })
                 .await?;
             if json {
                 return style::print_json(&settings);
             }
             print_settings(&settings);
+            if require_two_factor == Some(true) {
+                let users = api.users().await?.users;
+                let missing: Vec<&fctl_proto::api::User> = users
+                    .iter()
+                    .filter(|u| {
+                        u.status == fctl_proto::api::UserStatus::Active
+                            && !u.two_factor
+                            && fctl_domain::two_factor::required(&settings, u.has_password)
+                    })
+                    .collect();
+                if !missing.is_empty() {
+                    println!(
+                        "{}",
+                        style::amber(&format!(
+                            "{} without it yet, who set it up before they can continue: {}",
+                            if missing.len() == 1 {
+                                "1 person is".to_owned()
+                            } else {
+                                format!("{} people are", missing.len())
+                            },
+                            missing
+                                .iter()
+                                .map(|u| u.email.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                    );
+                }
+            }
+        }
+        AdminCmd::ResetTwoFactor { user } => {
+            let users = api.users().await?.users;
+            let target = users
+                .iter()
+                .find(|u| u.id.as_str() == user || u.email.eq_ignore_ascii_case(&user))
+                .with_context(|| format!("No user is {user}. `fctl admin users` lists them."))?;
+            let updated = api.reset_two_factor(target.id.as_str()).await?;
+            if json {
+                return style::print_json(&updated);
+            }
+            println!(
+                "{} Two-factor sign-in is off for {} <{}>.",
+                style::accent("✓"),
+                updated.name,
+                updated.email
+            );
+            println!(
+                "{}",
+                style::dim(
+                    "Their authenticator app's codes and recovery codes no longer work; they set it up again in Settings."
+                )
+            );
         }
         AdminCmd::Drain { runner } => {
             let r = find_runner(&api, &runner).await?;

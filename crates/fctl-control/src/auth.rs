@@ -103,8 +103,9 @@ pub async fn issue_token(
 }
 
 /// Signs in `user` in the browser: a new web session, and `last_login_at`.
+/// The request then counts as theirs (for the audit log).
 pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow) -> AppResult<()> {
-    issue_token(ctx, &user.id, TokenKind::Web, None, None).await?;
+    let (token_id, _) = issue_token(ctx, &user.id, TokenKind::Web, None, None).await?;
     q(
         &ctx.db,
         "UPDATE users SET last_login_at = ? WHERE id = ?",
@@ -112,6 +113,7 @@ pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow) -> AppResult<()> {
     )?
     .run()
     .await?;
+    ctx.auth = Some(Authed::signed_in(user, token_id, ctx.now));
     Ok(())
 }
 
@@ -128,10 +130,15 @@ pub fn clear_session_cookie(ctx: &mut Ctx) {
 struct TokenLookup {
     token_id: String,
     kind: String,
+    #[serde(deserialize_with = "crate::db::int")]
+    token_created_at: i64,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     expires_at: Option<i64>,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     last_used_at: Option<i64>,
+    /// The instance's settings (JSON), for its two-factor policy.
+    #[serde(default)]
+    instance_settings: Option<String>,
     #[serde(flatten)]
     user: UserRow,
 }
@@ -166,9 +173,13 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     ) {
         return Err(AppError(ApiError::unauthorized()));
     }
+    // One query: the token, its user, and the instance's settings, which
+    // say whether the user may do anything before setting up two-factor.
     let sql = format!(
-        "SELECT t.id AS token_id, t.kind AS kind, t.expires_at AS expires_at, t.last_used_at AS last_used_at, {} \
+        "SELECT t.id AS token_id, t.kind AS kind, t.created_at AS token_created_at, t.expires_at AS expires_at, \
+         t.last_used_at AS last_used_at, (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
          FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?",
+        crate::instance::KEY,
         user_columns("u")
     );
     let found: Option<TokenLookup> = q(&ctx.db, &sql, &[s(&hash_secret(&secret))])?
@@ -231,11 +242,19 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
             ));
         }
     }
+    let settings = crate::instance::parse(found.instance_settings.as_deref());
+    let two_factor_setup_required = fctl_domain::two_factor::setup_required(
+        &settings,
+        found.user.has_password(),
+        found.user.has_second_factor(),
+    );
     ctx.auth = Some(Authed {
         user: found.user,
         token_id: found.token_id,
         kind,
         via_cookie,
+        signed_in_at: found.token_created_at,
+        two_factor_setup_required,
     });
     Ok(())
 }
@@ -297,6 +316,7 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
             .map(|c| c.to_info(default_id.as_deref()))
             .collect(),
         commit_email: user.commit_email.clone(),
+        two_factor: crate::api::two_factor::status(ctx, user).await?,
     })
 }
 

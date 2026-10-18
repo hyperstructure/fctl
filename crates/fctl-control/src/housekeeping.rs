@@ -128,6 +128,7 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
             now,
         ),
         ("DELETE FROM password_resets WHERE expires_at < ?", now),
+        ("DELETE FROM sign_in_challenges WHERE expires_at < ?", now),
         ("DELETE FROM device_codes WHERE expires_at < ?", now),
         ("DELETE FROM invites WHERE expires_at < ?", now),
         // Their links stopped working at expiry; their FilesObject deletes

@@ -1,13 +1,18 @@
-// Sign-in, setup, invitations and password resets.
+// Sign-in, setup, invitations and password resets, and the second step of
+// a sign-in with two-factor.
 
 import { foundry } from "@hyperstructure/design/gl/foundry";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
-import { Banner, Button, Field, GLCanvas, Input, Logo, NameFields } from "@/components/ui";
+import { challengeCopy, SecondFactorStep } from "@/components/two-factor/challenge";
+import { Banner, Button, Field, GLCanvas, Input, Logo, NameFields, Spinner } from "@/components/ui";
+import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { keys, queryClient, useInstance } from "@/lib/queries";
+import { RECOVERY_LEFT } from "@/lib/two-factor";
 
 const GOOGLE_ERRORS: Record<string, string> = {
   google_expired: "The Google sign-in took too long. Try again.",
@@ -31,11 +36,14 @@ export function AuthFrame({
   subtitle,
   children,
   footer,
+  wide,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  /** Room for more than a form (setting up two-factor). */
+  wide?: boolean;
 }) {
   const { data: instance } = useInstance();
   return (
@@ -51,7 +59,7 @@ export function AuthFrame({
         <span className="text-[12.5px] text-ink-4">{instance?.name}</span>
       </div>
       <div className="relative z-10 flex flex-1 items-center justify-center px-5 pb-16">
-        <div className="w-full max-w-[400px] animate-rise">
+        <div className={cn("w-full animate-rise", wide ? "max-w-[720px]" : "max-w-[400px]")}>
           <h1 className="font-display text-[34px] leading-[1.1] font-medium tracking-[-0.02em] text-ink">
             {title}
           </h1>
@@ -84,9 +92,22 @@ function useSubmit<T>(fn: () => Promise<T>, done: (r: T) => void) {
   return { busy, error, submit, fieldError: (f: string) => (error?.field === f ? error.message : undefined) };
 }
 
-function signedIn(me: import("@/gen").Me, next?: string) {
+/** Where a sign-in goes: `next` when it is a path of the app, else the floor. */
+function safeNext(next?: string) {
+  return next?.startsWith("/") && !next.startsWith("//") ? next : "/";
+}
+
+function signedIn(me: G.Me, next?: string) {
   queryClient.setQueryData(keys.me, me);
-  window.location.assign(next?.startsWith("/") && !next.startsWith("//") ? next : "/");
+  window.location.assign(safeNext(next));
+}
+
+/** Signs in with what the second step answered, and remembers to say how many recovery codes are left. */
+function finished(r: G.AuthResponse, next?: string) {
+  if (r.recovery_codes_left !== undefined) {
+    sessionStorage.setItem(RECOVERY_LEFT, String(r.recovery_codes_left));
+  }
+  if (r.me) signedIn(r.me, r.next ?? next);
 }
 
 function GoogleButton({ label }: { label: string }) {
@@ -122,9 +143,13 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [forgot, setForgot] = useState(false);
   const [sent, setSent] = useState(false);
+  const [challenge, setChallenge] = useState<G.TwoFactorChallenge | null>(null);
   const { busy, error, submit } = useSubmit(
     () => api.login({ email, password }),
-    (r) => signedIn(r.me, search.next),
+    (r) => {
+      if (r.two_factor) setChallenge(r.two_factor);
+      else if (r.me) signedIn(r.me, search.next);
+    },
   );
   const reset = useSubmit(
     () => api.forgotPassword({ email }),
@@ -136,6 +161,22 @@ export function LoginPage() {
   const external = search.error
     ? (GOOGLE_ERRORS[search.error] ?? "The sign-in did not work. Try again.")
     : null;
+  if (challenge) {
+    const copy = challengeCopy(challenge, instance?.name);
+    return (
+      <AuthFrame title={copy.title} subtitle={copy.subtitle}>
+        <SecondFactorStep
+          key={challenge.expires_at}
+          challenge={challenge}
+          onSignedIn={(r) => finished(r, search.next)}
+          onRestart={() => {
+            setChallenge(null);
+            setPassword("");
+          }}
+        />
+      </AuthFrame>
+    );
+  }
   return (
     <AuthFrame
       title={<>Welcome back.</>}
@@ -240,7 +281,7 @@ export function SetupPage() {
   const [password, setPassword] = useState("");
   const { busy, error, submit, fieldError } = useSubmit(
     () => api.setup({ token, given_name: given, family_name: family, email, password }),
-    (r) => signedIn(r.me),
+    (r) => r.me && signedIn(r.me),
   );
   const { data: instance } = useInstance();
   if (instance && !instance.setup_required) {
@@ -329,7 +370,7 @@ export function InvitePage() {
   const email = preview.data?.email ?? "";
   const { busy, error, submit, fieldError } = useSubmit(
     () => api.signup({ email, given_name: given, family_name: family, password, invite: token }),
-    (r) => signedIn(r.me),
+    (r) => r.me && signedIn(r.me),
   );
   const { data: instance } = useInstance();
   if (!token || preview.isError) {
@@ -411,11 +452,29 @@ export function InvitePage() {
 
 export function ResetPage() {
   const token = hashToken();
+  const { data: instance } = useInstance();
   const [password, setPassword] = useState("");
+  const [challenge, setChallenge] = useState<G.TwoFactorChallenge | null>(null);
   const { busy, error, submit, fieldError } = useSubmit(
     () => api.resetPassword({ token, new_password: password }),
-    (r) => signedIn(r.me),
+    (r) => {
+      if (r.two_factor) setChallenge(r.two_factor);
+      else if (r.me) signedIn(r.me);
+    },
   );
+  if (challenge) {
+    const copy = challengeCopy(challenge, instance?.name);
+    return (
+      <AuthFrame title={copy.title} subtitle={copy.subtitle}>
+        <SecondFactorStep
+          key={challenge.expires_at}
+          challenge={challenge}
+          onSignedIn={(r) => finished(r)}
+          onRestart={() => setChallenge(null)}
+        />
+      </AuthFrame>
+    );
+  }
   return (
     <AuthFrame
       title="Choose a new password."
@@ -451,6 +510,40 @@ export function ResetPage() {
           Save and sign in
         </Button>
       </form>
+    </AuthFrame>
+  );
+}
+
+/** After Google, for accounts whose Google sign-ins ask for a code: the second step. */
+export function TwoFactorPage() {
+  const { data: instance } = useInstance();
+  const challenge = useQuery({
+    queryKey: ["two-factor-challenge"],
+    queryFn: api.twoFactorChallenge,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const restart = () => window.location.assign("/login");
+  if (challenge.isPending)
+    return (
+      <AuthFrame title="One more step." subtitle="Checking your sign-in…">
+        <div className="flex justify-center py-6">
+          <Spinner className="size-5 text-ink-3" />
+        </div>
+      </AuthFrame>
+    );
+  if (!challenge.data)
+    return (
+      <AuthFrame title="This sign-in took too long." subtitle="Sign in again: it takes a new code.">
+        <Button variant="primary" size="lg" className="w-full" onClick={restart}>
+          Go to sign-in
+        </Button>
+      </AuthFrame>
+    );
+  const copy = challengeCopy(challenge.data, instance?.name);
+  return (
+    <AuthFrame title={copy.title} subtitle={copy.subtitle}>
+      <SecondFactorStep challenge={challenge.data} onSignedIn={(r) => finished(r)} onRestart={restart} />
     </AuthFrame>
   );
 }

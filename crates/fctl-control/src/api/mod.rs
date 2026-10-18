@@ -10,3 +10,4 @@ pub mod published;
 pub mod repos;
 pub mod runners;
 pub mod sessions;
+pub mod two_factor;

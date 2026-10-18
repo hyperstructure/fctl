@@ -207,6 +207,69 @@
   }
 }
 
+/* Two-factor sign-in: wrong codes shake their boxes, digits pop in, and a
+   QR code appears from its middle out. */
+@theme {
+  --animate-shake: shake 380ms var(--ease-out);
+  --animate-pop: pop 200ms var(--ease-spring) both;
+}
+@keyframes shake {
+  15% {
+    transform: translateX(-7px);
+  }
+  35% {
+    transform: translateX(6px);
+  }
+  55% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(2px);
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.55) translateY(3px);
+  }
+}
+@keyframes qr-ring-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .qr-ring {
+    transform-box: view-box;
+    transform-origin: 50% 50%;
+    animation: qr-ring-in 520ms var(--ease-out) both;
+    animation-delay: calc(var(--ring, 0) * 22ms + 60ms);
+  }
+}
+
+/* Printing recovery codes prints only them (components/two-factor). */
+@media print {
+  html.printing-codes body * {
+    visibility: hidden;
+  }
+  html.printing-codes .print-codes,
+  html.printing-codes .print-codes * {
+    visibility: visible;
+    color: #171717 !important;
+    background: none !important;
+    box-shadow: none !important;
+  }
+  html.printing-codes .print-codes {
+    position: fixed;
+    inset: 0;
+    padding: 48px;
+  }
+  html.printing-codes .print-codes .print-hide {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

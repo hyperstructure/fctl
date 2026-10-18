@@ -1,5 +1,6 @@
 //! `/api/v1/instance`, `/api/v1/setup`, `/api/v1/auth/*`, `/api/v1/invites/*`.
 
+use crate::api::two_factor::Pending;
 use crate::auth::{self, DAY_MS};
 use crate::ctx::Ctx;
 use crate::db::{Count, batch, n, os, q, s};
@@ -8,6 +9,7 @@ use crate::http;
 use crate::model::user_columns;
 use fctl_domain::allowlist;
 use fctl_domain::tokens::{self, SecretKind, hash_secret, new_secret};
+use fctl_domain::two_factor::{self, Via};
 use fctl_domain::validate;
 use fctl_proto::api::*;
 use fctl_proto::session::InstanceRole;
@@ -22,18 +24,9 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
     )?
     .first()
     .await?;
-    let name: Option<SettingRow> = q(
-        &ctx.db,
-        "SELECT value FROM settings WHERE key = 'instance_name'",
-        &[],
-    )?
-    .first()
-    .await?;
     let settings = crate::instance::settings(&ctx.db).await?;
     http::ok(&InstanceInfo {
-        name: name
-            .map(|r| r.value)
-            .unwrap_or_else(|| ctx.cfg.instance_name.clone()),
+        name: crate::instance::name(&ctx.db, &ctx.cfg).await?,
         version: env!("CARGO_PKG_VERSION").to_owned(),
         setup_required: owners.map_or(0, |c| c.n) == 0,
         features: Features {
@@ -43,11 +36,6 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
             publish_screenshots: settings.publish_screenshots,
         },
     })
-}
-
-#[derive(serde::Deserialize)]
-struct SettingRow {
-    value: String,
 }
 
 /// Creates the owner with the one-time setup token.
@@ -108,16 +96,8 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .await?
         .ok_or_else(|| conflict("Setup is already complete. Sign in instead."))?;
     auth::start_web_session(ctx, &user).await?;
-    ctx.auth = Some(crate::ctx::Authed {
-        user: user.clone(),
-        token_id: String::new(),
-        kind: TokenKind::Web,
-        via_cookie: true,
-    });
     ctx.audit("instance.setup", Some(&user.id), None);
-    http::created(&AuthResponse {
-        me: auth::me(ctx, &user).await?,
-    })
+    http::created(&signed_in(auth::me(ctx, &user).await?))
 }
 
 #[derive(serde::Deserialize)]
@@ -250,9 +230,7 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         Some(&user.id),
         Some(serde_json::json!({ "via": "invite" })),
     );
-    http::created(&AuthResponse {
-        me: auth::me(ctx, &user).await?,
-    })
+    http::created(&signed_in(auth::me(ctx, &user).await?))
 }
 
 pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
@@ -281,17 +259,45 @@ pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "Your account is disabled. Ask an admin for access.",
         )));
     }
+    let settings = crate::instance::settings(&ctx.db).await?;
+    if two_factor::asks(
+        &settings,
+        Via::Password,
+        user.has_second_factor(),
+        user.two_factor_google,
+    ) {
+        let challenge = crate::api::two_factor::challenge(
+            ctx,
+            &user,
+            ChallengeReason::Password,
+            Pending::default(),
+        )
+        .await?;
+        return http::ok(&waits_for(challenge));
+    }
     auth::start_web_session(ctx, &user).await?;
-    ctx.auth = Some(crate::ctx::Authed {
-        user: user.clone(),
-        token_id: String::new(),
-        kind: TokenKind::Web,
-        via_cookie: true,
-    });
     ctx.audit("user.login", Some(&user.id), None);
-    http::ok(&AuthResponse {
-        me: auth::me(ctx, &user).await?,
-    })
+    http::ok(&signed_in(auth::me(ctx, &user).await?))
+}
+
+/// The answer to a sign-in that is done.
+pub fn signed_in(me: Me) -> AuthResponse {
+    AuthResponse {
+        me: Some(me),
+        two_factor: None,
+        next: None,
+        recovery_codes_left: None,
+    }
+}
+
+/// The answer to a sign-in that waits for its second factor.
+fn waits_for(challenge: TwoFactorChallenge) -> AuthResponse {
+    AuthResponse {
+        me: None,
+        two_factor: Some(challenge),
+        next: None,
+        recovery_codes_left: None,
+    }
 }
 
 pub async fn logout(ctx: &mut Ctx) -> AppResult<Response> {
@@ -384,6 +390,14 @@ pub async fn change_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     .await?;
     let keep = ctx.auth.as_ref().map(|a| a.token_id.clone());
     auth::revoke_tokens(ctx, &user.id, keep.as_deref()).await?;
+    // Sign-ins with the old password that wait for a code go too.
+    q(
+        &ctx.db,
+        "DELETE FROM sign_in_challenges WHERE user_id = ?",
+        &[s(&user.id)],
+    )?
+    .run()
+    .await?;
     ctx.audit("user.password_changed", Some(&user.id), None);
     http::ok(&Ok { ok: true })
 }
@@ -462,6 +476,22 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     }
     validate::password(&body.new_password, Some(&user.email))?;
     let phc = auth::hash_password(&body.new_password)?;
+    // With two-factor, the link alone changes nothing: the new password
+    // takes effect once a code checks out (`api::two_factor::verify`).
+    if user.has_second_factor() {
+        let challenge = crate::api::two_factor::challenge(
+            ctx,
+            &user,
+            ChallengeReason::PasswordReset,
+            Pending {
+                reset_hash: Some(hash),
+                password_hash: Some(phc),
+                ..Pending::default()
+            },
+        )
+        .await?;
+        return http::ok(&waits_for(challenge));
+    }
     batch(
         &ctx.db,
         vec![
@@ -485,9 +515,7 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     .await?;
     auth::start_web_session(ctx, &user).await?;
     ctx.audit("user.password_reset", Some(&user.id), None);
-    http::ok(&AuthResponse {
-        me: auth::me(ctx, &user).await?,
-    })
+    http::ok(&signed_in(auth::me(ctx, &user).await?))
 }
 
 // ───────────────────────────── tokens ─────────────────────────────

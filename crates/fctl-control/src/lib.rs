@@ -80,6 +80,15 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
     if !http::is_safe_method(&method) && ctx.auth.as_ref().is_some_and(|a| a.via_cookie) {
         http::check_same_origin(req, ctx.cfg.origin(), ctx.cfg.dev)?;
     }
+    // Accounts the instance requires two-factor of, without it, only set it up.
+    if ctx
+        .auth
+        .as_ref()
+        .is_some_and(|a| a.two_factor_setup_required)
+        && !api::two_factor::open_while_required(&method, segs.as_slice())
+    {
+        return Err(api::two_factor::setup_required_error(ctx));
+    }
     use Method::*;
     match (method, segs.as_slice()) {
         (Get, ["instance"]) => api::auth::instance(ctx).await,
@@ -93,6 +102,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["auth", "password"]) => api::auth::change_password(ctx, req).await,
         (Post, ["auth", "password", "forgot"]) => api::auth::forgot_password(ctx, req).await,
         (Post, ["auth", "password", "reset"]) => api::auth::reset_password(ctx, req).await,
+        (Get, ["auth", "two-factor", "challenge"]) => api::two_factor::current(ctx, req).await,
+        (Post, ["auth", "two-factor", "verify"]) => api::two_factor::verify(ctx, req).await,
+        (Post, ["auth", "two-factor", "cancel"]) => api::two_factor::cancel(ctx, req).await,
         (Get, ["auth", "google", "start"]) => api::google::start(ctx, req).await,
         (Get, ["auth", "google", "callback"]) => api::google::callback(ctx, req).await,
         (Delete, ["auth", "identities", id]) => api::google::unlink(ctx, id).await,
@@ -112,6 +124,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Patch, ["admin", "users", id]) => api::admin::update_user(ctx, req, id).await,
         (Delete, ["admin", "users", id]) => api::admin::delete_user(ctx, id).await,
         (Post, ["admin", "users", id, "reset-link"]) => api::admin::reset_link(ctx, id).await,
+        (Delete, ["admin", "users", id, "two-factor"]) => {
+            api::two_factor::admin_reset(ctx, id).await
+        }
         (Get, ["admin", "allowlist"]) => api::admin::allowlist(ctx).await,
         (Post, ["admin", "allowlist"]) => api::admin::add_allow(ctx, req).await,
         (Delete, ["admin", "allowlist", id]) => api::admin::remove_allow(ctx, id).await,
@@ -217,6 +232,21 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::notifications::remove_device(ctx, id).await
         }
         (Post, ["me", "notifications", "test"]) => api::notifications::test(ctx).await,
+        // Two-factor sign-in
+        (Get, ["me", "two-factor"]) => api::two_factor::get(ctx).await,
+        (Patch, ["me", "two-factor"]) => api::two_factor::update(ctx, req).await,
+        (Post, ["me", "two-factor", "authenticator"]) => {
+            api::two_factor::start_authenticator(ctx).await
+        }
+        (Post, ["me", "two-factor", "authenticator", "confirm"]) => {
+            api::two_factor::confirm_authenticator(ctx, req).await
+        }
+        (Post, ["me", "two-factor", "authenticator", "remove"]) => {
+            api::two_factor::remove_authenticator(ctx, req).await
+        }
+        (Post, ["me", "two-factor", "recovery-codes"]) => {
+            api::two_factor::new_recovery_codes(ctx, req).await
+        }
         (Get, ["me", "export"]) => api::account::export(ctx).await,
         (Get, ["me", "deletion"]) => api::account::deletion(ctx).await,
         (Post, ["me", "delete"]) => api::account::delete(ctx, req).await,

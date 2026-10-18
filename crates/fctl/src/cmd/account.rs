@@ -1,5 +1,5 @@
-//! `fctl account …`: the address commits credit you with, export your
-//! data, delete your account.
+//! `fctl account …`: the address commits credit you with, two-factor
+//! sign-in, export your data, delete your account.
 
 use crate::config::{self, Credentials};
 use crate::style;
@@ -23,6 +23,10 @@ pub enum AccountCmd {
         #[arg(long, value_name = "EMAIL")]
         commit_email: String,
     },
+    /// Two-factor sign-in: codes from an authenticator app after your
+    /// password, and recovery codes.
+    #[command(subcommand, visible_alias = "2fa")]
+    TwoFactor(super::two_factor::TwoFactorCmd),
     /// Download your personal data as JSON: your account, sign-in methods,
     /// devices and tokens, Claude connections (without secrets), notification
     /// settings and browsers, projects, the sessions you started with their
@@ -44,6 +48,7 @@ pub enum AccountCmd {
 pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()> {
     let api = config::api(server)?;
     match cmd {
+        AccountCmd::TwoFactor(cmd) => super::two_factor::run(&api, cmd, json).await,
         AccountCmd::Set { commit_email } => {
             let me = api
                 .update_me(&UpdateMeRequest {

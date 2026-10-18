@@ -11,6 +11,8 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 pub const SESSION_COOKIE: &str = "__Host-fctl";
 pub const OAUTH_COOKIE: &str = "__Host-fctl-oauth";
+/// A sign-in that waits for its second factor (`api::two_factor`).
+pub const CHALLENGE_COOKIE: &str = "__Host-fctl-2fa";
 
 /// Headers on every API response.
 pub fn api_headers() -> Headers {

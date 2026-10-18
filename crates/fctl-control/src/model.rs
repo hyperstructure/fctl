@@ -37,6 +37,12 @@ pub struct UserRow {
     pub created_at: i64,
     #[serde(deserialize_with = "opt_int", default)]
     pub last_login_at: Option<i64>,
+    /// Google sign-ins ask them for the second factor too (their choice).
+    #[serde(deserialize_with = "int_bool", default)]
+    pub two_factor_google: bool,
+    /// When their authenticator app was set up, if it was.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub totp_at: Option<i64>,
 }
 
 impl UserRow {
@@ -50,6 +56,15 @@ impl UserRow {
 
     pub fn is_active(&self) -> bool {
         self.status == "active"
+    }
+
+    pub fn has_password(&self) -> bool {
+        self.password_hash.is_some()
+    }
+
+    /// Whether they have a second factor for sign-ins to ask for.
+    pub fn has_second_factor(&self) -> bool {
+        self.totp_at.is_some()
     }
 
     pub fn user_id(&self) -> UserId {
@@ -66,7 +81,8 @@ impl UserRow {
             avatar_url: self.avatar_url.clone(),
             role: self.role(),
             status: UserStatus::parse(&self.status).unwrap_or(UserStatus::Disabled),
-            has_password: self.password_hash.is_some(),
+            has_password: self.has_password(),
+            two_factor: self.has_second_factor(),
             created_at: self.created_at,
             last_login_at: self.last_login_at,
         }
@@ -83,7 +99,7 @@ impl UserRow {
 
 /// The SELECT list for [`UserRow`], prefixed with a table alias.
 pub fn user_columns(alias: &str) -> String {
-    [
+    let mut columns: Vec<String> = [
         "id",
         "email",
         "name",
@@ -97,11 +113,15 @@ pub fn user_columns(alias: &str) -> String {
         "default_credential_id",
         "created_at",
         "last_login_at",
+        "two_factor_google",
     ]
     .iter()
     .map(|c| format!("{alias}.{c} AS {c}"))
-    .collect::<Vec<_>>()
-    .join(", ")
+    .collect();
+    columns.push(format!(
+        "(SELECT a.created_at FROM authenticator_apps a WHERE a.user_id = {alias}.id) AS totp_at"
+    ));
+    columns.join(", ")
 }
 
 #[derive(Clone, Debug, Deserialize)]

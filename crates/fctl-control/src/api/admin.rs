@@ -444,6 +444,17 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(on) = body.publish_screenshots {
         settings.publish_screenshots = on;
     }
+    if let Some(on) = body.require_two_factor {
+        // Without the master key nobody could set two-factor up, and
+        // everyone it applies to would be stuck.
+        if on {
+            ctx.keys()?;
+        }
+        settings.require_two_factor = on;
+    }
+    if let Some(on) = body.two_factor_google {
+        settings.two_factor_google = on;
+    }
     crate::instance::save(&ctx.db, &settings).await?;
     ctx.audit(
         "instance.settings_updated",

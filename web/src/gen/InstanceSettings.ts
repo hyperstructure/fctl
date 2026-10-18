@@ -11,4 +11,17 @@ export type InstanceSettings = {
  * it off takes the published ones offline too; they are back if it is
  * turned on again before they expire.
  */
-publish_screenshots: boolean, };
+publish_screenshots: boolean, 
+/**
+ * Everyone who signs in with a password needs a second factor too.
+ * People who haven't set one up can do nothing else until they have,
+ * in the browser or with their CLI and access tokens. People who sign
+ * in only with Google don't need one, unless `two_factor_google`.
+ */
+require_two_factor: boolean, 
+/**
+ * Google sign-ins ask for the second factor too, of everyone who has
+ * one (each person can also choose this for themselves). With
+ * `require_two_factor`, everyone needs one.
+ */
+two_factor_google: boolean, };

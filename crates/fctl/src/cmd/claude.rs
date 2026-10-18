@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use clap::Subcommand;
 use fctl_domain::usage::{self as plan, Standing};
 use fctl_proto::api::{ClaudeLoginState, PlanLimit};
-use std::io::{BufRead, Write};
+
 use std::time::Duration;
 
 #[derive(Subcommand)]
@@ -22,23 +22,6 @@ pub enum ClaudeCmd {
     },
     /// Show connected subscriptions and how much of each plan's limits is used.
     Status,
-}
-
-fn read_secret(prompt: &str) -> Result<String> {
-    print!("{prompt}");
-    std::io::stdout().flush()?;
-    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    if tty {
-        let _ = std::process::Command::new("stty").arg("-echo").status();
-    }
-    let mut line = String::new();
-    let r = std::io::stdin().lock().read_line(&mut line);
-    if tty {
-        let _ = std::process::Command::new("stty").arg("echo").status();
-        println!();
-    }
-    r?;
-    Ok(line.trim().to_owned())
 }
 
 /// A credential's plan limits, one line each, as sessions last reported them.
@@ -136,7 +119,7 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                     println!();
                     println!("    {}", style::accent("claude setup-token"));
                     println!();
-                    read_secret("Paste the token (input hidden): ")?
+                    crate::prompt::read_secret("Paste the token (input hidden): ")?
                 }
             };
             let me = api.add_claude_token(&token, None).await?;
@@ -167,7 +150,7 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                         println!("1. Open this link and approve: {}", style::accent(url));
                         let _ = crate::cmd::auth::open_browser(url);
                         println!("2. Copy the code claude.ai shows you.");
-                        let code = read_secret("3. Paste it here (input hidden): ")?;
+                        let code = crate::prompt::read_secret("3. Paste it here (input hidden): ")?;
                         job = api.submit_claude_code(&job.id.0, &code).await?;
                         continue;
                     }

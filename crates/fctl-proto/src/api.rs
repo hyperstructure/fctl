@@ -101,6 +101,9 @@ pub struct User {
     pub status: UserStatus,
     /// Whether the account can sign in with a password.
     pub has_password: bool,
+    /// Whether the account has two-factor sign-in: an authenticator app.
+    #[serde(default)]
+    pub two_factor: bool,
     pub created_at: Millis,
     pub last_login_at: Option<Millis>,
 }
@@ -141,6 +144,10 @@ pub struct Me {
     /// `Co-authored-by` trailer. Only you see it here; absent when you have
     /// none, and then commits don't name you.
     pub commit_email: Option<String>,
+    /// Two-factor sign-in: what you have set up, and what the instance
+    /// requires.
+    #[serde(default)]
+    pub two_factor: TwoFactor,
 }
 
 #[skip_serializing_none]
@@ -164,14 +171,23 @@ pub struct LoginRequest {
     pub password: String,
 }
 
-/// Returned by setup, signup, login and password reset. The web session is
-/// set as a cookie; `token` is only present for non-browser clients
-/// (requested with `"token": true`).
+/// Returned by setup, signup, login, password reset and the second factor
+/// (`POST /auth/two-factor/verify`). The web session is set as a cookie.
+/// When the account has two-factor sign-in, login and password reset
+/// answer with `two_factor` instead of `me`: the sign-in waits for a code,
+/// and its challenge is set as a cookie.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct AuthResponse {
-    pub me: Me,
+    /// Who signed in; absent while the sign-in waits for its second factor.
+    pub me: Option<Me>,
+    /// The sign-in waits for a code: who it is for and what finishes it.
+    pub two_factor: Option<TwoFactorChallenge>,
+    /// Where to go next: the page a Google sign-in started from.
+    pub next: Option<String>,
+    /// Signed in with a recovery code: how many are left.
+    pub recovery_codes_left: Option<u32>,
 }
 
 #[skip_serializing_none]
@@ -239,6 +255,158 @@ pub struct ForgotPasswordRequest {
 pub struct ResetPasswordRequest {
     pub token: String,
     pub new_password: String,
+}
+
+// ───────────────────────────── two-factor sign-in ─────────────────────────────
+
+/// Two-factor sign-in, as `Me.two_factor` reports it: a code from an
+/// authenticator app after the password, and after Google when the person
+/// or the instance asks for that. Recovery codes stand in for the app.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct TwoFactor {
+    /// When the authenticator app was set up; absent without one.
+    pub authenticator_since: Option<Millis>,
+    /// When a code from it last signed you in.
+    pub authenticator_used_at: Option<Millis>,
+    /// Recovery codes not used yet.
+    pub recovery_codes: u32,
+    /// Google sign-ins ask for a code too, because you chose that.
+    pub google: bool,
+    /// Google sign-ins ask everyone with two-factor for a code
+    /// ([`InstanceSettings::two_factor_google`]).
+    pub google_required: bool,
+    /// The instance requires two-factor of this account: it signs in with
+    /// a password, or with Google once Google sign-ins ask for codes.
+    pub required: bool,
+    /// Required, and not set up yet: until it is, the account can only set
+    /// it up (requests fail with `two_factor_setup_required`).
+    pub setup_required: bool,
+}
+
+/// What can finish a sign-in that waits for its second factor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum SecondFactor {
+    /// A code from the authenticator app.
+    Totp,
+    /// One of the account's recovery codes.
+    RecoveryCode,
+}
+
+/// Why a sign-in waits for its second factor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ChallengeReason {
+    /// The password was right.
+    Password,
+    /// Google signed the person in.
+    Google,
+    /// A reset link chose a new password, which takes effect with the code.
+    PasswordReset,
+}
+
+/// A sign-in that waits for its second factor (`AuthResponse.two_factor`,
+/// `GET /api/v1/auth/two-factor/challenge`). The browser holds it in the
+/// `__Host-fctl-2fa` cookie for ten minutes.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct TwoFactorChallenge {
+    /// Who is signing in.
+    pub name: String,
+    pub email: String,
+    pub avatar_url: Option<String>,
+    pub reason: ChallengeReason,
+    /// What can finish it.
+    pub methods: Vec<SecondFactor>,
+    pub expires_at: Millis,
+    /// After too many wrong codes: codes are taken again from then on.
+    pub locked_until: Option<Millis>,
+}
+
+/// `POST /api/v1/auth/two-factor/verify`: finishes the waiting sign-in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VerifyTwoFactorRequest {
+    /// A code from the authenticator app (six digits) or a recovery code.
+    pub code: String,
+}
+
+/// `POST /api/v1/me/two-factor/authenticator`: a new secret for an
+/// authenticator app. Nothing changes until a code from it confirms it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AuthenticatorSetup {
+    /// The secret in base32, for apps that can't scan.
+    pub secret: String,
+    /// The `otpauth://totp/…` link, which the QR code holds and phones open
+    /// in their authenticator app.
+    pub uri: String,
+    /// The link as a QR code: one string per row, `1` for a dark module
+    /// and `0` for a light one, without the quiet zone around it.
+    pub qr: Vec<String>,
+    /// Sent back with the first code; holds the secret, sealed for you.
+    pub setup: String,
+    pub expires_at: Millis,
+    /// Confirming takes your password: you signed in more than 15 minutes
+    /// ago.
+    pub password_required: bool,
+}
+
+/// `POST /api/v1/me/two-factor/authenticator/confirm`: turns the new
+/// authenticator app on, in place of the old one if there was one.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ConfirmAuthenticatorRequest {
+    /// `AuthenticatorSetup.setup`.
+    pub setup: String,
+    /// The code the app shows now.
+    pub code: String,
+    /// When `AuthenticatorSetup.password_required`.
+    pub password: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AuthenticatorAdded {
+    pub me: Me,
+    /// New recovery codes, shown once: when there were none. Replacing the
+    /// app keeps the ones you have.
+    pub recovery_codes: Option<Vec<String>>,
+}
+
+/// Turning two-factor off (`POST /api/v1/me/two-factor/authenticator/remove`)
+/// and new recovery codes (`POST /api/v1/me/two-factor/recovery-codes`)
+/// take a current code.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TwoFactorCodeRequest {
+    /// A code from the authenticator app, or a recovery code.
+    pub code: String,
+}
+
+/// New recovery codes, shown once; the old ones stop working.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RecoveryCodes {
+    pub codes: Vec<String>,
+    pub me: Me,
+}
+
+/// `PATCH /api/v1/me/two-factor`.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateTwoFactorRequest {
+    /// Google sign-ins ask for a code too.
+    pub google: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +665,15 @@ pub struct InstanceSettings {
     /// it off takes the published ones offline too; they are back if it is
     /// turned on again before they expire.
     pub publish_screenshots: bool,
+    /// Everyone who signs in with a password needs a second factor too.
+    /// People who haven't set one up can do nothing else until they have,
+    /// in the browser or with their CLI and access tokens. People who sign
+    /// in only with Google don't need one, unless `two_factor_google`.
+    pub require_two_factor: bool,
+    /// Google sign-ins ask for the second factor too, of everyone who has
+    /// one (each person can also choose this for themselves). With
+    /// `require_two_factor`, everyone needs one.
+    pub two_factor_google: bool,
 }
 
 /// `PATCH /api/v1/admin/settings`: absent fields stay as they are.
@@ -505,6 +682,8 @@ pub struct InstanceSettings {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct UpdateInstanceSettingsRequest {
     pub publish_screenshots: Option<bool>,
+    pub require_two_factor: Option<bool>,
+    pub two_factor_google: Option<bool>,
 }
 
 // ───────────────────────────── runners ─────────────────────────────

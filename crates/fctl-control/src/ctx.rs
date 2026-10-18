@@ -19,6 +19,25 @@ pub struct Authed {
     pub kind: TokenKind,
     /// Authenticated by the session cookie (browser), not a bearer token.
     pub via_cookie: bool,
+    /// When the token was issued: the sign-in, for a browser session.
+    pub signed_in_at: i64,
+    /// The instance requires two-factor of this account and it has none
+    /// yet: only setting it up works (`crate::api::two_factor::gate`).
+    pub two_factor_setup_required: bool,
+}
+
+impl Authed {
+    /// The browser session `user` just signed in with.
+    pub fn signed_in(user: &UserRow, token_id: String, now: i64) -> Self {
+        Self {
+            user: user.clone(),
+            token_id,
+            kind: TokenKind::Web,
+            via_cookie: true,
+            signed_in_at: now,
+            two_factor_setup_required: false,
+        }
+    }
 }
 
 pub struct Ctx {

@@ -154,6 +154,53 @@ impl Api {
         .await
     }
 
+    // ── two-factor sign-in ──
+
+    /// Your two-factor sign-in, and what the instance requires.
+    pub async fn two_factor(&self) -> Result<TwoFactor> {
+        self.get("/me/two-factor").await
+    }
+
+    pub async fn update_two_factor(&self, req: &UpdateTwoFactorRequest) -> Result<Me> {
+        self.patch("/me/two-factor", req).await
+    }
+
+    /// A new authenticator app's secret, link and QR code, to confirm with
+    /// [`Api::confirm_authenticator`].
+    pub async fn start_authenticator(&self) -> Result<AuthenticatorSetup> {
+        self.post("/me/two-factor/authenticator", &serde_json::json!({}))
+            .await
+    }
+
+    pub async fn confirm_authenticator(
+        &self,
+        req: &ConfirmAuthenticatorRequest,
+    ) -> Result<AuthenticatorAdded> {
+        self.post("/me/two-factor/authenticator/confirm", req).await
+    }
+
+    /// Turns two-factor sign-in off; `code` is a current code.
+    pub async fn remove_authenticator(&self, code: &str) -> Result<Me> {
+        self.post(
+            "/me/two-factor/authenticator/remove",
+            &TwoFactorCodeRequest {
+                code: code.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// New recovery codes in place of the old ones; `code` is a current code.
+    pub async fn new_recovery_codes(&self, code: &str) -> Result<RecoveryCodes> {
+        self.post(
+            "/me/two-factor/recovery-codes",
+            &TwoFactorCodeRequest {
+                code: code.to_owned(),
+            },
+        )
+        .await
+    }
+
     // ── notifications ──
 
     /// What notifies you, and the browsers that show your notifications.
@@ -609,6 +656,12 @@ impl Api {
 
     pub async fn disallow(&self, id: &str) -> Result<serde_json::Value> {
         self.delete(&format!("/admin/allowlist/{}", enc(id))).await
+    }
+
+    /// Turns off a user's two-factor sign-in (they lost their phone).
+    pub async fn reset_two_factor(&self, user_id: &str) -> Result<User> {
+        self.delete(&format!("/admin/users/{}/two-factor", enc(user_id)))
+            .await
     }
 
     pub async fn instance_settings(&self) -> Result<InstanceSettings> {
