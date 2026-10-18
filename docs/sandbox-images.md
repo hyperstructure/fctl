@@ -7,14 +7,15 @@ hosts get it, and what images built from it can rely on.
 ## The default image
 
 `ghcr.io/hyperstructure/fctl-agent` is built from
-[`images/agent`](../images/agent): Debian bookworm with git, the GitHub CLI,
-Node.js 22, Python 3 with uv, build tools, ripgrep, Claude Code and fctl. It
-is published for arm64 (Apple silicon) and amd64.
+[`images/agent`](../images/agent), which lists the versions: Debian bookworm
+with git, the GitHub CLI, build tools, Python and uv, Rust, Node.js,
+TypeScript, Bun, Claude Code and fctl. It is published for arm64 (Apple
+silicon) and amd64.
 
 | Tag | Image |
 |---|---|
-| `0.3.0` | fctl 0.3.0's. Hosts of that version use it. |
-| `0.3` | The newest 0.3 release's. |
+| `0.4.0` | fctl 0.4.0's. Hosts of that version use it. |
+| `0.4` | The newest 0.4 release's. |
 | `latest` | The newest release's. |
 
 Each release's image is published a few minutes after the release, by the
@@ -23,7 +24,7 @@ auto-updater, so an image's Claude Code is as old as the image: every day,
 the workflow rebuilds the latest release's image when Claude Code has a newer
 release, and once the image is a week old, for Debian's updates. A rebuild
 moves the tags; to pin one build, add its digest:
-`ghcr.io/hyperstructure/fctl-agent:0.3.0@sha256:…`.
+`ghcr.io/hyperstructure/fctl-agent:0.4.0@sha256:…`.
 
 Its labels say what is inside:
 
@@ -35,7 +36,7 @@ Its labels say what is inside:
 | `org.opencontainers.image.created` | when it was built |
 
 ```sh
-docker image inspect ghcr.io/hyperstructure/fctl-agent:0.3.0 \
+docker image inspect ghcr.io/hyperstructure/fctl-agent:0.4.0 \
   --format '{{ index .Config.Labels "sh.fctl.claude-code.version" }}'
 ```
 
@@ -66,7 +67,7 @@ Code, run `fctl host image pull`.
   image build` prepares with the same provisioning script. The process
   driver uses no image.
 - **Disk.** The images of earlier versions stay on the host until you
-  remove them: `docker image rm ghcr.io/hyperstructure/fctl-agent:0.2.1`
+  remove them: `docker image rm ghcr.io/hyperstructure/fctl-agent:0.4.0`
   (with Apple container, `container image delete`) removes one that no
   sandbox uses.
 
@@ -79,18 +80,26 @@ build for it:
 - **The user** is `agent`, uid 1000, with the home directory `/home/agent`
   and sudo without a password: the sandbox is the boundary. Sessions run as
   `agent`, in `~/workspace`.
-- **The PATH** starts with `~/.local/bin`, where Claude Code is (the native
-  build), and `/opt/fctl/bin`, where fctl copies its supervisor, fctl-agent,
-  at session start. fctl itself is in `/usr/local/bin`.
-- **The tools**: git, gh, Node.js 22 with npm and corepack, Python 3 with
-  pip, venv and uv, build-essential, pkg-config, ripgrep, fd (as `fdfind`),
-  jq, curl, zip and tree.
+- **The PATH** starts with `~/.local/bin`, where Claude Code (the native
+  build) and uv's tools are, `~/.cargo/bin` and `~/.bun/bin`, then
+  `/opt/fctl/bin`, where fctl copies its supervisor, fctl-agent, at session
+  start. The image sets it, and `/etc/profile.d/fctl.sh` sets it for login
+  shells, which setup scripts run in. fctl itself is in `/usr/local/bin`.
+- **The tools**: git, gh, Python 3 (`python3` and `python`) with uv, Rust
+  through rustup with rustfmt and Clippy, Node.js 22 with npm and corepack,
+  TypeScript (`tsc`), Bun, build-essential, cmake, pkg-config, OpenSSL's
+  headers, ripgrep, fd, jq, ShellCheck, sqlite3, curl, wget, rsync, zip and
+  tree.
+- **Rust and Bun** are `agent`'s, in `~/.rustup`, `~/.cargo` and `~/.bun`:
+  run `cargo`, `rustup` and `bun` as `agent`. Python is marked externally
+  managed, so packages go into a virtual environment (`uv venv`,
+  `python3 -m venv`).
 
 An image that installs something as root switches back to `agent` at the
 end:
 
 ```dockerfile
-FROM ghcr.io/hyperstructure/fctl-agent:0.3
+FROM ghcr.io/hyperstructure/fctl-agent:0.4
 USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends postgresql-client \
