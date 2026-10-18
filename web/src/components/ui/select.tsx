@@ -284,7 +284,8 @@ export function Select<T extends string>({
         aria-label={label}
         disabled={disabled}
         className={cn(
-          "group/select relative inline-flex min-w-0 shrink-0 items-center text-left outline-none select-none",
+          // It shrinks (and its value truncates) only when its row runs out of room.
+          "group/select relative inline-flex min-w-0 items-center text-left outline-none select-none",
           "transition-[border-color,box-shadow,background-color,color,scale] duration-150 ease-out",
           "disabled:pointer-events-none disabled:opacity-60",
           sizes[size],

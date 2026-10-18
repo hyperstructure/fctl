@@ -105,7 +105,7 @@ export function StartButton({
       type="submit"
       disabled={disabled || starting}
       className={cn(
-        "flex h-9 items-center overflow-hidden rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all duration-200 ease-[var(--ease-spring)]",
+        "flex h-9 shrink-0 items-center overflow-hidden rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all duration-200 ease-[var(--ease-spring)]",
         disabled ? "bg-raised text-ink-4" : "bg-ink text-canvas",
         starting && "cursor-progress",
         className,
