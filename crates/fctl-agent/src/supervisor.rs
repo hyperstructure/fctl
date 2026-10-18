@@ -110,6 +110,8 @@ pub struct Supervisor {
     pending_files: Vec<(Attachment, String)>,
     /// Said once that the sandbox's fctl cannot rename the session.
     told_no_fctl: bool,
+    /// The sandbox's Claude Code, once checked.
+    claude_version: Option<claude::Version>,
     /// `fctl publish` calls waiting for the host's answer, by request id.
     publishing: HashMap<String, (oneshot::Sender<SessionReply>, Instant)>,
     /// Publishes the caller stopped waiting for: if the host publishes one
@@ -173,6 +175,7 @@ impl Supervisor {
                 last_git: None,
                 pending_files: Vec::new(),
                 told_no_fctl: false,
+                claude_version: None,
                 publishing: HashMap::new(),
                 late_publishes: VecDeque::new(),
             },
@@ -235,7 +238,7 @@ impl Supervisor {
             configured: self.config.is_some(),
             status: self.state.status,
             agent_seq: self.journal.last_seq(),
-            claude_version: None,
+            claude_version: self.claude_version.map(|v| v.to_string()),
             features: vec![FEATURE_ATTACHMENTS.to_owned()],
         })
     }
@@ -768,10 +771,24 @@ impl Supervisor {
             cfg["oauthAccount"] = raw;
         }
         std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
-        std::fs::write(
-            claude_dir.join("settings.json"),
-            serde_json::to_string_pretty(&claude::user_settings(project, co_authors))?,
-        )?;
+        // The image's settings stay, with fctl's over them.
+        let settings_path = claude_dir.join("settings.json");
+        let image = match std::fs::read_to_string(&settings_path) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+                let kept = claude_dir.join("settings.json.invalid");
+                tracing::warn!(
+                    "{} is not JSON ({e}); keeping it as {}",
+                    settings_path.display(),
+                    kept.display()
+                );
+                let _ = std::fs::rename(&settings_path, &kept);
+                Value::Null
+            }),
+            Err(_) => Value::Null,
+        };
+        let settings =
+            claude::merge_user_settings(&image, &claude::user_settings(project, co_authors));
+        std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
         Ok(())
     }
 
@@ -781,6 +798,14 @@ impl Supervisor {
         };
         let spec = &config.spec;
         let workdir = config.workdir.clone();
+        let bin = config.claude_bin.clone().unwrap_or_else(|| "claude".into());
+        if self.claude_version.is_none() {
+            match claude::check_version(&bin).await {
+                Ok(Some(version)) => self.claude_version = Some(version),
+                Ok(None) => tracing::warn!("{bin} --version said no version; starting it anyway"),
+                Err(why) => anyhow::bail!(why),
+            }
+        }
         self.write_claude_config(
             &paths.home,
             &workdir,
@@ -855,7 +880,6 @@ impl Supervisor {
                 || claude::conversation_exists(&paths.home, &spec.claude_session_id));
         let fresh_resume = wants_resume && !resume;
         let system = prompt::system_prompt(spec, &workdir, &paths, config.sandbox);
-        let bin = config.claude_bin.clone().unwrap_or_else(|| "claude".into());
         let launch = LaunchSpec {
             bin: &bin,
             cwd: &paths.workdir,
