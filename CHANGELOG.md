@@ -2,6 +2,33 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.2.0 (2026-10-18)
+
+### Features
+
+- Give hosts sandbox limits and schedule sessions by size ([#31](https://github.com/hyperstructure/fctl/pull/31))
+- Install fctl in sandboxes and let agents name their sessions ([#33](https://github.com/hyperstructure/fctl/pull/33))
+- Turn off claude.ai connectors for a project ([#32](https://github.com/hyperstructure/fctl/pull/32))
+- Attach files and screenshots to tasks and messages ([#35](https://github.com/hyperstructure/fctl/pull/35))
+- Let projects span several repositories or a whole organization ([#36](https://github.com/hyperstructure/fctl/pull/36))
+
+### Fixes
+
+- **agent:** Leave Claude Code's footer out of pull requests ([#23](https://github.com/hyperstructure/fctl/pull/23))
+- **host:** Check the driver before registering a runner ([#24](https://github.com/hyperstructure/fctl/pull/24))
+- **cli:** Install bash completions without hiding ~/.profile ([#27](https://github.com/hyperstructure/fctl/pull/27))
+- **web:** Show that a session is starting and never start it twice ([#30](https://github.com/hyperstructure/fctl/pull/30))
+
+### Documentation
+
+- Add agent rules for issues and pull requests ([#29](https://github.com/hyperstructure/fctl/pull/29))
+
+### Other changes
+
+- Start session branches untracked so a plain `git push` publishes them ([#14](https://github.com/hyperstructure/fctl/pull/14))
+- Release from a workflow, with notes from Conventional Commits ([#21](https://github.com/hyperstructure/fctl/pull/21))
+- Check pull request titles in their own workflow ([#25](https://github.com/hyperstructure/fctl/pull/25))
+
 ## 0.1.2 (2026-10-17)
 
 ### Other changes
