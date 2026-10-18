@@ -54,7 +54,10 @@ pauses and continues half a minute after the reset; a message that also
 says `reset`, like the one fctl-agent continues it with, doesn't count),
 `overage` reports paid usage (the session must pause), `refresh` asks
 the host for a new OAuth token, and `crash` exits mid-turn. Anything
-else gets a short answer with a tool call. A message with
+else gets a short answer with a tool call. A message sent during a turn
+waits for it and gets a turn of its own; each `result` says how many
+messages still wait (`queued_turn_count`), as Claude Code's does, so the
+session stays running until fake-claude has answered the last one. A message with
 attached files also gets a sentence about them: how many images it holds,
 and whether each listed file is on disk. Turns other than `limit` and
 `crash` report plan usage as Claude Code does (`unifiedWindows`), with
