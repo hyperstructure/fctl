@@ -1,13 +1,12 @@
 // The floor: every agent at work as a thread of light, and what to do next.
 
 import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstructure/design/gl/foundry";
-import { useMutation } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowRight, ArrowUp, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { ArrowRight, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { Avatar, Button, firstNames, GLCanvas, Skeleton, StatusDot, Textarea, toast } from "@/components/ui";
+import { StartButton, useStartSession } from "@/components/session/start";
+import { Avatar, Button, firstNames, GLCanvas, Skeleton, StatusDot, Textarea } from "@/components/ui";
 import type * as G from "@/gen";
-import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
 import { agoShort, stamp } from "@/lib/format";
@@ -105,24 +104,19 @@ function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<Foun
 }
 
 function QuickStart({ projects }: { projects: G.Project[] }) {
-  const navigate = useNavigate();
   const [project, setProject] = useState(projects[0]?.slug ?? "");
   const [prompt, setPrompt] = useState("");
   useEffect(() => {
     if (!project && projects[0]) setProject(projects[0].slug);
   }, [projects, project]);
-  const start = useMutation({
-    mutationFn: () => api.createSession(project, { prompt }),
-    onSuccess: (s) => navigate({ to: "/s/$id", params: { id: s.id } }),
-    onError: (e) => toast(e.message, "error"),
-  });
+  const { start, starting } = useStartSession();
   const editable = projects.filter((p) => p.role !== "viewer");
   if (!editable.length) return null;
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (prompt.trim()) start.mutate();
+        start(project, prompt);
       }}
       className="group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]"
     >
@@ -131,11 +125,12 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
         minRows={2}
         maxRows={10}
         value={prompt}
+        readOnly={starting}
         onChange={(e) => setPrompt(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            if (prompt.trim()) start.mutate();
+            start(project, prompt);
           }
         }}
         placeholder="What should an agent build next?"
@@ -147,6 +142,7 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
           <span className="text-ink-4">in</span>
           <select
             value={project}
+            disabled={starting}
             onChange={(e) => setProject(e.target.value)}
             className="min-w-0 truncate rounded-md border border-line bg-raised px-2 py-1 text-[12.5px] text-ink outline-none"
           >
@@ -159,16 +155,9 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
         </label>
         <span className="flex-1" />
         <span className="hidden text-[11.5px] text-ink-4 sm:inline">⌘↵ to start</span>
-        <button
-          type="submit"
-          disabled={!prompt.trim() || start.isPending}
-          className={cn(
-            "flex h-9 items-center gap-2 rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all duration-200 ease-[var(--ease-spring)]",
-            prompt.trim() ? "bg-ink text-canvas hover:scale-[1.03]" : "bg-raised text-ink-4",
-          )}
-        >
-          Start <ArrowUp className="size-4" />
-        </button>
+        <StartButton starting={starting} disabled={!prompt.trim()} className="enabled:hover:scale-[1.03]">
+          Start
+        </StartButton>
       </div>
     </form>
   );
