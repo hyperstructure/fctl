@@ -1,8 +1,9 @@
 //! Claude's background work, as Claude Code reports it in stream-json: a
 //! shell command with `run_in_background`, a subagent, a Monitor. Each task
 //! starts with `system/task_started` and ends, for any reason, with one
-//! `system/task_notification` (Claude Code 2.1.100 and later). A session
-//! whose agent ended its turn to wait for them isn't idle until they end.
+//! `system/task_notification` (from 2.1.101, the oldest Claude Code fctl
+//! runs, to 2.1.302 at least). A session whose agent ended its turn to wait
+//! for them isn't idle until they end.
 //!
 //! When background work ends, Claude Code can start a turn on its own to
 //! hand Claude the result. `system/session_state_changed` says so when

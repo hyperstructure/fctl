@@ -169,7 +169,7 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
          sign in   {DEV_EMAIL} / {DEV_PASSWORD}\n  \
          api       {API}/api/v1\n  \
          cli       export FCTL_SERVER={API} FCTL_TOKEN=$(cat .fctl-dev/token)\n\n\
-         Agents run fake-claude: try a task like \"write notes.md\", \"rename Fix the login test\", \"screenshot\", \"slow\", \"limit\" or \"crash\".\n\
+         Agents run fake-claude: try a task like \"write notes.md\", \"rename Fix the login test\", \"screenshot\", \"slow\", \"background 30\", \"limit\" or \"crash\".\n\
          Ctrl-C stops everything. State lives in .fctl-dev/.\n"
     );
 
