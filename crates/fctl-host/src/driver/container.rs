@@ -8,14 +8,14 @@
 //! fctl-agent attach`.
 
 use super::{
-    AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo,
-    SandboxSpec, TimedOut, attach_script, run_cmd_within, serve_script, timed_out,
+    AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, SLOW_COMMAND_TIMEOUT, Sandbox,
+    SandboxInfo, SandboxSpec, TimedOut, attach_script, run_cmd_within, serve_script, timed_out,
 };
 use anyhow::{Context, Result};
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
@@ -174,6 +174,74 @@ impl ContainerDriver {
             .await
             .ok()?;
         docker_resources(&out)
+    }
+
+    /// Where the runtime keeps its sandboxes' disks. Apple's `container`
+    /// keeps each one's disk image in its app root (or, when that can't be
+    /// found, `data_dir`'s disk is the Mac's), Docker its containers in its
+    /// root directory, which on macOS is inside its VM. `None` when the
+    /// Docker daemon doesn't answer.
+    pub async fn disk_spot(&self, data_dir: &Path) -> Option<DiskSpot> {
+        match self.flavor {
+            Flavor::Apple => {
+                let status = self.run(&["system", "status", "--format", "json"]).await;
+                let root = status
+                    .ok()
+                    .as_deref()
+                    .and_then(apple_app_root)
+                    .or_else(|| std::env::var_os("CONTAINER_APP_ROOT").map(PathBuf::from))
+                    .or_else(|| {
+                        std::env::var_os("HOME").map(|h| {
+                            PathBuf::from(h).join("Library/Application Support/com.apple.container")
+                        })
+                    })
+                    .filter(|root| root.is_dir());
+                Some(DiskSpot::Dir(root.unwrap_or_else(|| data_dir.to_owned())))
+            }
+            Flavor::Docker => {
+                let out = self
+                    .run(&["info", "--format", "{{.DockerRootDir}}"])
+                    .await
+                    .ok()?;
+                let root = PathBuf::from(out.trim());
+                // On macOS the path is the VM's; on Linux the daemon may run
+                // elsewhere too (a VM, DOCKER_HOST), and then it isn't here.
+                Some(
+                    if cfg!(target_os = "linux") && root.is_absolute() && root.is_dir() {
+                        DiskSpot::Dir(root)
+                    } else {
+                        DiskSpot::DockerVm
+                    },
+                )
+            }
+        }
+    }
+
+    /// Free MiB where the Docker daemon keeps containers, from `df` in a
+    /// short-lived container of the first of `images` that is here: its root
+    /// is an overlay on that disk. `None` when none can run.
+    pub async fn vm_disk_free_mb(&self, images: &[String]) -> Option<u64> {
+        for image in images {
+            let args = [
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--network",
+                "none",
+                "--entrypoint",
+                "df",
+                image,
+                "-Pk",
+                "/",
+            ];
+            match run_cmd_within(&self.bin, &args, COMMAND_TIMEOUT).await {
+                Ok(out) => return crate::sysinfo::df_available_mb(&out),
+                Err(e) if e.is::<TimedOut>() => return None,
+                Err(_) => {}
+            }
+        }
+        None
     }
 
     /// `running`, `stopped`, … or `None` when it does not exist. An error
@@ -665,6 +733,17 @@ fn apple_image_size(json: &str, arch: &str) -> Option<u64> {
         .or_else(|| variants.iter().filter_map(size).max())
 }
 
+/// The app root in `container system status --format json`: under `paths`
+/// from Apple's `container` 1.4, at the top before.
+fn apple_app_root(json: &str) -> Option<PathBuf> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    v.pointer("/paths/appRoot")
+        .or_else(|| v.get("appRoot"))
+        .and_then(Value::as_str)
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+}
+
 /// An architecture as images name it: `arm64` for Rust's `aarch64`.
 fn linux_arch(arch: &str) -> &str {
     match arch {
@@ -1066,6 +1145,112 @@ mod tests {
             "{:?}",
             cli.calls()
         );
+        Ok(())
+    }
+
+    /// A stand-in CLI that prints `info` for `docker info` and for
+    /// `container system status`, and `df` for a `run` of an image in
+    /// `have`, logging every call in `calls`.
+    fn disk_cli(dir: &Path, info: &str, have: &str) -> Result<ContainerDriver> {
+        use std::os::unix::fs::PermissionsExt;
+        let df = "Filesystem 1024-blocks Used Available Capacity Mounted on\\noverlay 61202244 40000000 18066668 69%% /\\n";
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  info|system) echo '{info}' ;;\n  run) case \" $* \" in *\" {have} -Pk / \"*) printf '{df}' ;; *) echo 'Unable to find image' >&2; exit 125 ;; esac ;;\n  *) exit 2 ;;\nesac\n",
+            calls = dir.join("calls").display(),
+        );
+        let bin = dir.join("cli");
+        std::fs::write(&bin, script)?;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+        Ok(ContainerDriver::with_bin(
+            Flavor::Docker,
+            bin.display().to_string(),
+        ))
+    }
+
+    #[test]
+    fn apples_app_root_comes_from_its_status() {
+        let now = r#"{"status": "running", "paths": {"appRoot": "/Volumes/Big/container/", "installRoot": "/usr/local/"}}"#;
+        let before = r#"{"status": "running", "appRoot": "/Users/ada/Library/Application Support/com.apple.container/"}"#;
+        assert_eq!(
+            apple_app_root(now),
+            Some(PathBuf::from("/Volumes/Big/container/"))
+        );
+        assert_eq!(
+            apple_app_root(before),
+            Some(PathBuf::from(
+                "/Users/ada/Library/Application Support/com.apple.container/"
+            ))
+        );
+        assert_eq!(apple_app_root(r#"{"status": "unregistered"}"#), None);
+        assert_eq!(apple_app_root(r#"{"appRoot": ""}"#), None);
+        assert_eq!(apple_app_root("apiserver is not running"), None);
+    }
+
+    #[tokio::test]
+    async fn apple_sandboxes_are_measured_in_the_app_root() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("container");
+        std::fs::create_dir(&root)?;
+        let status = format!(
+            r#"{{"status": "running", "paths": {{"appRoot": "{}"}}}}"#,
+            root.display()
+        );
+        let mut driver = disk_cli(dir.path(), &status, "-")?;
+        driver.flavor = Flavor::Apple;
+        let data = dir.path().join("data");
+        assert_eq!(driver.disk_spot(&data).await, Some(DiskSpot::Dir(root)));
+        // A runtime too old to say measures the Mac's disk anyway.
+        let older = ContainerDriver::with_bin(Flavor::Apple, "false".into());
+        assert!(matches!(
+            older.disk_spot(&data).await,
+            Some(DiskSpot::Dir(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docker_is_measured_where_it_keeps_containers() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let data = dir.path().join("data");
+        // Its root directory, when it is on this machine.
+        let here = dir.path().display().to_string();
+        let driver = disk_cli(dir.path(), &here, "-")?;
+        let spot = driver.disk_spot(&data).await;
+        if cfg!(target_os = "linux") {
+            assert_eq!(spot, Some(DiskSpot::Dir(dir.path().to_owned())));
+        } else {
+            assert_eq!(spot, Some(DiskSpot::DockerVm));
+        }
+        // Otherwise inside its VM, as on macOS.
+        let driver = disk_cli(dir.path(), "/var/lib/fctl-test-not-here", "-")?;
+        assert_eq!(driver.disk_spot(&data).await, Some(DiskSpot::DockerVm));
+        // A daemon that doesn't answer leaves it as it was.
+        let down = ContainerDriver::with_bin(Flavor::Docker, "false".into());
+        assert_eq!(down.disk_spot(&data).await, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_docker_vm_is_measured_in_a_short_lived_container() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let latest = "ghcr.io/hyperstructure/sandbox:latest";
+        let driver = disk_cli(dir.path(), "-", latest)?;
+        // The host's image isn't here yet; the one it falls back to is.
+        let images = [
+            "ghcr.io/hyperstructure/sandbox:0.6.0".to_owned(),
+            latest.to_owned(),
+        ];
+        assert_eq!(driver.vm_disk_free_mb(&images).await, Some(17_643));
+        let calls = std::fs::read_to_string(dir.path().join("calls"))?;
+        let calls: Vec<&str> = calls.lines().collect();
+        assert_eq!(
+            calls,
+            [
+                "run --rm --pull never --network none --entrypoint df ghcr.io/hyperstructure/sandbox:0.6.0 -Pk /",
+                "run --rm --pull never --network none --entrypoint df ghcr.io/hyperstructure/sandbox:latest -Pk /",
+            ]
+        );
+        assert_eq!(driver.vm_disk_free_mb(&images[..1]).await, None);
         Ok(())
     }
 

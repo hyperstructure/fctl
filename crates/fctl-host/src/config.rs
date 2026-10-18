@@ -16,6 +16,8 @@
 //! allowed_builds = ["acme/*"]
 //! build_timeout_minutes = 60
 //! max_build_mb = 20480     # the largest image a build may make
+//! keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them)
+//! min_free_disk_gb = 20    # below it, remove stopped sandboxes early (0: never)
 //! ```
 //!
 //! The runner token lives next to it in `host-token` (mode 0600).
@@ -78,6 +80,11 @@ pub struct HostConfig {
     pub push_on_commit: bool,
     /// Keep a stopped session's sandbox (to resume it) for this many hours.
     pub keep_stopped_hours: u32,
+    /// The free disk (GiB) to keep where sandboxes are. Below it, the host
+    /// removes stopped sandboxes before `keep_stopped_hours`, those stopped
+    /// longest first, and takes no new sessions until it is above it
+    /// again. 0 keeps none.
+    pub min_free_disk_gb: u32,
     /// The images this host runs for projects that choose their own,
     /// besides its own `image`: references (`ghcr.io/acme/agent:1`, pinned
     /// with `@sha256:…` or not, or without a tag for any), or prefixes that
@@ -114,6 +121,7 @@ impl Default for HostConfig {
             github_api: GITHUB_API.into(),
             push_on_commit: true,
             keep_stopped_hours: 72,
+            min_free_disk_gb: 20,
             allowed_images: None,
             allowed_builds: None,
             build_timeout_minutes: 60,
@@ -235,6 +243,11 @@ impl HostConfig {
 
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir.clone().unwrap_or_else(default_data_dir)
+    }
+
+    /// `min_free_disk_gb` in MiB, or `None` when the host keeps none.
+    pub fn min_free_disk_mb(&self) -> Option<u64> {
+        (self.min_free_disk_gb > 0).then(|| u64::from(self.min_free_disk_gb) * 1024)
     }
 
     /// The sandbox image for sessions whose project sets none.
@@ -397,6 +410,18 @@ mod tests {
         assert_eq!(cfg.images(true).builds, None);
         let saved = toml::to_string_pretty(&cfg)?;
         assert!(!saved.contains("allowed_"), "{saved}");
+        Ok(())
+    }
+
+    #[test]
+    fn hosts_keep_20_gib_of_disk_free_unless_told_otherwise() -> Result<()> {
+        // A host.toml from before the setting.
+        let cfg = HostConfig::from_toml("server = \"https://app.fctl.sh\"")?;
+        assert_eq!(cfg.min_free_disk_mb(), Some(20 * 1024));
+        let cfg = HostConfig::from_toml("min_free_disk_gb = 50")?;
+        assert_eq!(cfg.min_free_disk_mb(), Some(50 * 1024));
+        let cfg = HostConfig::from_toml("min_free_disk_gb = 0")?;
+        assert_eq!(cfg.min_free_disk_mb(), None);
         Ok(())
     }
 

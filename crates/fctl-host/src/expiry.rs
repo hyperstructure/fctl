@@ -1,9 +1,12 @@
-//! Removing stopped sandboxes after `keep_stopped_hours` (0 keeps them).
+//! Removing stopped sandboxes after `keep_stopped_hours` (0 keeps them), and
+//! sooner when the disk runs low (`min_free_disk_gb`).
 //!
 //! A stopped session keeps its sandbox so it can resume where it left off.
 //! The host notes when each session sandbox stopped (or, for older ones, when
 //! it first saw it stopped) in `<data dir>/stopped.json`, and removes it once
-//! it has been stopped for longer than the limit. Resuming that session later
+//! it has been stopped for longer than the limit. While the disk has less
+//! free space than the host keeps, it removes the others too, those stopped
+//! longest first, until there is room again. Resuming that session later
 //! creates a new sandbox on its branch, and Claude starts a new conversation.
 
 use crate::driver::{SandboxInfo, session_of};
@@ -48,31 +51,62 @@ pub fn forget(path: &Path, sandbox: &str) -> Result<()> {
     Ok(())
 }
 
-/// What to remove now, and what to remember: session sandboxes that are
-/// stopped and not in use, stopped since the recorded time (or since now).
-/// `keep_ms` of `None` keeps them all.
+/// Why the sweep removes a sandbox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// It has been stopped for longer than `keep_stopped_hours`.
+    Expired,
+    /// The disk has less free space than the host keeps.
+    LowDisk,
+}
+
+/// What a sweep removes, and what the host remembers.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Plan {
+    /// Stopped for longer than the limit: they go now.
+    pub expired: Vec<String>,
+    /// The others, those stopped longest first: they go while the disk is
+    /// low.
+    pub oldest_first: Vec<String>,
+    /// Every one of them, with when it stopped: they stay on the list
+    /// until they are gone, for a host that stops halfway.
+    pub stopped: Stopped,
+}
+
+impl Plan {
+    /// The removals in the order the sweep tries them.
+    pub fn removals(self) -> impl Iterator<Item = (String, Why)> {
+        let expired = self.expired.into_iter().map(|n| (n, Why::Expired));
+        expired.chain(self.oldest_first.into_iter().map(|n| (n, Why::LowDisk)))
+    }
+}
+
+/// What to remove and what to remember: session sandboxes that are stopped
+/// and not in use, stopped since the recorded time (or since now).
+/// `keep_ms` of `None` keeps them all, unless the disk runs low.
 pub fn plan(
     stopped: &Stopped,
     sandboxes: &[SandboxInfo],
     in_use: &HashSet<String>,
     now: i64,
     keep_ms: Option<i64>,
-) -> (Vec<String>, Stopped) {
-    let mut remove = Vec::new();
-    let mut keep = Stopped::new();
+) -> Plan {
+    let mut plan = Plan::default();
+    let mut others = Vec::new();
     for sb in sandboxes {
         if session_of(&sb.name).is_none() || sb.running || in_use.contains(&sb.name) {
             continue;
         }
         let since = stopped.get(&sb.name).copied().unwrap_or(now);
+        plan.stopped.insert(sb.name.clone(), since);
         match keep_ms {
-            Some(limit) if now - since >= limit => remove.push(sb.name.clone()),
-            _ => {
-                keep.insert(sb.name.clone(), since);
-            }
+            Some(limit) if now - since >= limit => plan.expired.push(sb.name.clone()),
+            _ => others.push((since, sb.name.clone())),
         }
     }
-    (remove, keep)
+    others.sort();
+    plan.oldest_first = others.into_iter().map(|(_, name)| name).collect();
+    plan
 }
 
 pub fn now_ms() -> i64 {
@@ -119,28 +153,44 @@ mod tests {
         ];
         let in_use = HashSet::from([resuming.to_owned()]);
         let now = 100 * HOUR;
-        let (remove, keep) = plan(&stopped, &list, &in_use, now, Some(72 * HOUR));
-        assert_eq!(remove, vec![old.to_owned()]);
+        let plan = plan(&stopped, &list, &in_use, now, Some(72 * HOUR));
+        assert_eq!(plan.expired, vec![old.to_owned()]);
         // Recorded times carry over; a sandbox seen stopped for the first
         // time starts its clock now; running, in-use and vanished ones go.
         assert_eq!(
-            keep,
-            Stopped::from([(recent.into(), 70 * HOUR), (unseen.into(), now)])
+            plan.stopped,
+            Stopped::from([
+                (old.into(), 0),
+                (recent.into(), 70 * HOUR),
+                (unseen.into(), now)
+            ])
+        );
+        // On a low disk, the others go too, those stopped longest first.
+        assert_eq!(
+            plan.oldest_first,
+            vec![recent.to_owned(), unseen.to_owned()]
+        );
+        assert_eq!(
+            plan.removals().collect::<Vec<_>>(),
+            vec![
+                (old.to_owned(), Why::Expired),
+                (recent.to_owned(), Why::LowDisk),
+                (unseen.to_owned(), Why::LowDisk)
+            ]
         );
     }
 
     #[test]
-    fn zero_hours_keeps_everything() {
-        let stopped = Stopped::from([("fctl-ses-01aaa".into(), 0)]);
-        let (remove, keep) = plan(
-            &stopped,
-            &[sb("fctl-ses-01aaa", false)],
-            &HashSet::new(),
-            1_000 * HOUR,
-            None,
+    fn zero_hours_keeps_everything_while_there_is_room() {
+        let stopped = Stopped::from([("fctl-ses-01aaa".into(), 5), ("fctl-ses-01bbb".into(), 3)]);
+        let list = [sb("fctl-ses-01aaa", false), sb("fctl-ses-01bbb", false)];
+        let plan = plan(&stopped, &list, &HashSet::new(), 1_000 * HOUR, None);
+        assert!(plan.expired.is_empty());
+        assert_eq!(plan.stopped, stopped);
+        assert_eq!(
+            plan.oldest_first,
+            vec!["fctl-ses-01bbb".to_owned(), "fctl-ses-01aaa".to_owned()]
         );
-        assert!(remove.is_empty());
-        assert_eq!(keep, stopped);
     }
 
     #[test]

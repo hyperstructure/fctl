@@ -9,10 +9,17 @@ use super::{
 use anyhow::{Context, Result};
 use fctl_proto::runner::DriverInfo;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 pub const BASE_VM: &str = "fctl-base";
+
+/// Where Lima keeps its VMs and their disks: `$LIMA_HOME`, or `~/.lima`.
+pub fn home() -> Option<PathBuf> {
+    std::env::var_os("LIMA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".lima")))
+}
 
 pub struct LimaDriver {
     bin: String,
