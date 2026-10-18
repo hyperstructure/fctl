@@ -22,7 +22,8 @@ use fctl_proto::event::{
     Attachment, EventBody, GitState, LogLevel, LogLine, LogSource, Notice, NoticeLevel,
 };
 use fctl_proto::runner::{
-    ClaudeCredential, ClaudeCredentialKind, CredentialKind, GithubCredential, StopReason,
+    ClaudeCredential, ClaudeCredentialKind, CredentialKind, GitIdentity, GithubCredential,
+    StopReason,
 };
 use fctl_proto::session::{RemoteControlState, SessionStatus};
 use fctl_proto::uplink::{AgentEvent, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState};
@@ -592,6 +593,7 @@ impl Supervisor {
         home: &std::path::Path,
         workdir: &str,
         claude_ai_connectors: bool,
+        co_authors: &[GitIdentity],
     ) -> Result<()> {
         let claude_dir = home.join(".claude");
         std::fs::create_dir_all(&claude_dir)?;
@@ -616,7 +618,7 @@ impl Supervisor {
         std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
         std::fs::write(
             claude_dir.join("settings.json"),
-            serde_json::to_string_pretty(&claude::user_settings(claude_ai_connectors))?,
+            serde_json::to_string_pretty(&claude::user_settings(claude_ai_connectors, co_authors))?,
         )?;
         Ok(())
     }
@@ -631,6 +633,7 @@ impl Supervisor {
             &paths.home,
             &workdir,
             spec.project.settings.claude_ai_connectors,
+            &spec.co_authored_by,
         )?;
         if self.session_socket.is_some() && fctl_can_edit(&paths).await {
             if let Err(e) = claude::write_instructions(&paths.home, prompt::AGENTS_MD) {

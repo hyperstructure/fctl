@@ -11,7 +11,7 @@
 //! | Word | Behavior |
 //! |---|---|
 //! | (anything) | streams a short answer, runs a fake `Bash` tool, answers again |
-//! | `write <name>` | creates `<name>` in the working directory and commits it |
+//! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message with `attribution.commit` from `~/.claude/settings.json` when that is set |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `slow` | streams for about ten seconds (try interrupting) |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds |
@@ -228,13 +228,25 @@ impl Session {
                     &format!("File created successfully at: {name}"),
                     false,
                 );
+                let mut message = format!("Add {name}");
+                if let Some(trailers) = commit_attribution() {
+                    message = format!("{message}\n\n{trailers}");
+                }
                 let commit = std::process::Command::new("sh")
                     .arg("-c")
-                    .arg(format!("git add -- '{name}' && git commit -q -m 'Add {name}' && git log --oneline -1"))
+                    .arg(format!("git add -- '{name}' && git commit -q -m \"$FAKE_CLAUDE_MESSAGE\" && git log -1 --format='%h %s%n%(trailers)'"))
+                    .env("FAKE_CLAUDE_MESSAGE", &message)
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr))
                     .unwrap_or_default();
-                self.tool("Bash", json!({"command": format!("git add {name} && git commit -m 'Add {name}'"), "description": "Commit the file"}), &commit, false);
+                let command =
+                    format!("git add {name} && git commit -m \"$(cat <<'EOF'\n{message}\nEOF\n)\"");
+                self.tool(
+                    "Bash",
+                    json!({"command": command, "description": "Commit the file"}),
+                    &commit,
+                    false,
+                );
             }
         }
         if let Some(title) = rename_to(text) {
@@ -261,6 +273,19 @@ impl Session {
         self.stream_text(done);
         self.result(started, done, "success");
     }
+}
+
+/// What Claude Code ends commit messages with, from the user settings
+/// fctl-agent writes (`attribution.commit` in `~/.claude/settings.json`).
+/// Unset, Claude Code adds its own trailer; fake-claude adds none.
+fn commit_attribution() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let settings = std::path::Path::new(&home).join(".claude/settings.json");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(settings).ok()?).ok()?;
+    v.pointer("/attribution/commit")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned)
 }
 
 /// What fake-claude says about a message's files: the images in it, and
