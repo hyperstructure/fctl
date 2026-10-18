@@ -113,6 +113,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # SITE_DEPLOY_KEY pushes to fctl-site's main, which deploys fctl.sh, so it
+    # is a secret of the production environment, which only main may use.
+    environment: production
     concurrency:
       group: site-docs
       cancel-in-progress: false

@@ -237,7 +237,10 @@ build <fctl|fctl-agent> --target <triple>` for each binary, into
 ## Deploying
 
 `main` deploys `app.fctl.sh` from CI (fctl.sh deploys from
-hyperstructure/fctl-site). By hand:
+hyperstructure/fctl-site). The jobs that deploy, publish releases or pin
+fctl.sh's docs run in the `production` environment, which holds their
+secrets (the Cloudflare token, the fctl-site deploy key) and which only
+`main` may use, so workflows on other branches cannot read them. By hand:
 
 ```sh
 cargo xtask deploy fctl-sh
