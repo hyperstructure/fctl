@@ -57,6 +57,10 @@ export class LiveSession {
   private outbox: Item[] = [];
   private deltaTimes: number[] = [];
   private ping?: ReturnType<typeof setInterval>;
+  /** Whether the session's page is open. */
+  private shown = true;
+  /** What the server last heard: whether the person can see the session (it assumes so). */
+  private seen = true;
 
   constructor(id: string, initial?: G.Session) {
     this.id = id;
@@ -116,7 +120,10 @@ export class LiveSession {
     ws.onopen = () => {
       this.retry = 0;
       this.ping = setInterval(() => this.raw({ type: "ping" }), 25_000);
+      this.seen = true;
+      this.reportVisibility();
     };
+    document.addEventListener("visibilitychange", this.reportVisibility);
     ws.onmessage = (m) => {
       try {
         this.onMessage(JSON.parse(m.data) as G.ViewerServer);
@@ -143,11 +150,30 @@ export class LiveSession {
 
   close() {
     this.closed = true;
+    document.removeEventListener("visibilitychange", this.reportVisibility);
     clearTimeout(this.timer);
     clearInterval(this.ping);
     this.ws?.close(1000);
     for (const p of this.pending.values()) p.reject(new Error("closed"));
     this.pending.clear();
+  }
+
+  /**
+   * Tells the server whether the person can see the session: its page is
+   * open and the tab visible. People who can see it get no notifications
+   * about it.
+   */
+  private reportVisibility = () => {
+    const visible = this.shown && document.visibilityState === "visible";
+    if (visible === this.seen || this.ws?.readyState !== WebSocket.OPEN) return;
+    this.seen = visible;
+    this.raw({ type: "visibility", visible });
+  };
+
+  /** The session's page opened or closed (the socket outlives it for a while). */
+  setShown(shown: boolean) {
+    this.shown = shown;
+    this.reportVisibility();
   }
 
   private raw(msg: G.ViewerClient) {
@@ -343,9 +369,11 @@ export function useLiveSession(id: string, initial?: G.Session): [LiveState, Liv
     if (!e) return;
     e.refs++;
     clearTimeout(e.closeTimer);
+    e.store.setShown(true);
     return () => {
       e.refs--;
       if (e.refs <= 0) {
+        e.store.setShown(false);
         e.closeTimer = setTimeout(() => {
           e.store.close();
           sessions.delete(id);

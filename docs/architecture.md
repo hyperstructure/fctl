@@ -12,6 +12,7 @@ before changing anything that crosses a component boundary.
                 │        │   ├─ D1: users, projects, sessions, …      │
                 │        │   ├─ FleetDO: runners, scheduling, feed    │
                 │        │   ├─ FilesDO (per project): attachments    │
+                │        │   ├─ NotifyDO (per person): notifications  │
                 │        │   └─ SessionDO (one per session): events,  │
                 │        │      viewers, message delivery             │
                 │        └──────────────▲─────────────▲───────────────┘
@@ -97,8 +98,10 @@ and release downloads).
 
 **D1** (`crates/fctl-control/migrations`) holds relational state: users,
 identities, allowlist, auth tokens, device codes, projects, their members and
-repositories, sessions (summary rows), shares, runners, encrypted credentials
-and project secrets, and the audit log.
+repositories, sessions (summary rows), shares, who follows which session,
+notification settings and browsers (push subscriptions), runners, encrypted
+credentials and project secrets, the instance's sealed Web Push key, and the
+audit log.
 
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
@@ -111,6 +114,10 @@ sessions to runners, and fans out session summaries to dashboard viewers.
 **FilesDO** (one per project, SQLite storage) holds the files people attach
 to messages, in 1 MiB chunks, and which session each was sent in (see
 [Attachments](#attachments)).
+
+**NotifyDO** (one per person, SQLite storage) holds their notifications
+while they wait to go out, and forgets them once sent (see
+[Notifications](#notifications)).
 
 **Deletion.** Deleting a project deletes its rows (sessions, members, secrets
 and shares cascade) and, in the same batch, queues its sessions in
@@ -242,6 +249,42 @@ Viewers of a session read its files with
 `GET /api/v1/sessions/{id}/attachments/{attachment}`. Hosts and agents
 announce the `attachments` feature in their hellos; an older one passes the
 text alone, and the transcript says so.
+
+## Notifications
+
+A session notifies the people who follow it when it waits for a reply (a
+turn ends: `running` → `idle`), pauses on a usage limit, or fails. Starting
+or resuming a session follows it, unless the person turned that off in
+Settings; anyone who can see a session can follow it (the bell on its page,
+`fctl follow`). Notifications are Web Push messages (RFC 8030) to the
+browsers where people turned them on, so they need no account with a push
+provider; on iPhone and iPad they reach fctl on the Home Screen.
+
+1. SessionDO sees the change. It leaves out the people who can see the
+   session right now (a viewer whose tab is visible: the web app sends
+   `visibility`) and whoever interrupted the turn, and asks D1 for the other
+   followers who can still see the session, want this kind of news
+   (`notification_settings`) and have a browser for it. A finished turn
+   carries the start of the agent's last message.
+2. It hands the news to each one's NotifyDO, which waits ten seconds for
+   more, so that a burst goes out as one, and sends at most one notification
+   a minute: what arrives in between goes out together as a digest ("3
+   sessions need you"). Sessions that moved on meanwhile (a reply made one
+   stop waiting) are left out.
+3. The control plane encrypts the message for each browser (RFC 8291,
+   `aes128gcm`) and posts it to the browser's push service, signed with a
+   VAPID token (RFC 8292). The instance's VAPID key is made on first use and
+   kept in D1's `settings`, sealed with the master key; WebCrypto does the
+   elliptic-curve work. Push services see when a message goes and how big it
+   is, not what it says.
+4. The service worker (`web/public/sw.js`) shows it. A click opens the
+   session, in a window of the app that is already open when there is one;
+   a digest replaces the notifications about the sessions it sums up.
+
+A browser's subscription (`push_subscriptions`) belongs to the sign-in that
+made it: signing out, revoking that sign-in or its expiry deletes it, and so
+does a push service that answers it is gone. The web app registers it again
+at start-up, so a new sign-in, new keys or a new VAPID key carry over.
 
 ## Claude credentials
 

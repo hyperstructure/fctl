@@ -193,6 +193,11 @@ build` installs fctl in the default image from there too).
   Session event logs live in Durable Object storage.
 - **Logs.** `npx wrangler tail fctl` streams the Worker's logs; observability
   is enabled in the rendered config. `fctl host logs` shows a host's.
+- **Notifications** need no setup and no push provider account: the control
+  plane makes its Web Push (VAPID) key the first time someone opens
+  Settings → Notifications, and keeps it in D1, sealed with the master key.
+  Browsers allow notifications only from `https://` origins (and
+  `http://localhost`).
 - **Costs.** The control plane is request- and storage-priced on Cloudflare;
   the work happens on your hardware and your Claude subscriptions. fctl never
   makes Anthropic API calls.

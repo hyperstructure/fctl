@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agoShort, cpus, duration, initials, memory, sandboxLimits, until } from "./format";
+import { agoShort, browserName, cpus, duration, initials, memory, sandboxLimits, until } from "./format";
 
 describe("format", () => {
   const now = Date.UTC(2026, 9, 17, 12, 0, 0);
@@ -44,5 +44,17 @@ describe("format", () => {
   it("derives initials", () => {
     expect(initials("Ada Lovelace")).toBe("AL");
     expect(initials("  grace  ")).toBe("G");
+  });
+
+  it("names browsers", () => {
+    const mac =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+    const iphone =
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1";
+    const firefox = "Mozilla/5.0 (X11; Linux x86_64; rv:144.0) Gecko/20100101 Firefox/144.0";
+    expect(browserName(mac)).toBe("Chrome on macOS");
+    expect(browserName(iphone)).toBe("Safari on iOS");
+    expect(browserName(firefox)).toBe("Firefox on Linux");
+    expect(browserName(undefined)).toBe("Browser");
   });
 });

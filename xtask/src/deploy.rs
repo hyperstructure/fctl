@@ -145,6 +145,7 @@ bindings = [
   {{ name = "SESSION", class_name = "SessionObject" }},
   {{ name = "FLEET", class_name = "FleetObject" }},
   {{ name = "FILES", class_name = "FilesObject" }},
+  {{ name = "NOTIFY", class_name = "NotifyObject" }},
 ]
 
 [[migrations]]
@@ -154,6 +155,10 @@ new_sqlite_classes = ["SessionObject", "FleetObject"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["FilesObject"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["NotifyObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"
@@ -400,6 +405,14 @@ app_slug = "acme-fctl"
         assert_eq!(
             doc["migrations"][1]["new_sqlite_classes"][0].as_str(),
             Some("FilesObject")
+        );
+        assert_eq!(
+            doc["durable_objects"]["bindings"][3]["class_name"].as_str(),
+            Some("NotifyObject")
+        );
+        assert_eq!(
+            doc["migrations"][2]["new_sqlite_classes"][0].as_str(),
+            Some("NotifyObject")
         );
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
     }

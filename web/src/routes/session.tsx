@@ -4,6 +4,9 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import {
   ArrowUpRight,
+  Bell,
+  BellOff,
+  BellRing,
   Ellipsis,
   ExternalLink,
   GitBranch,
@@ -42,7 +45,7 @@ import { cn } from "@/lib/cn";
 import { ago, duration, num, until } from "@/lib/format";
 import { hasChanges, type RepoChanges, repoChanges } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
-import { keys, useMe, useProject } from "@/lib/queries";
+import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink } from "@/lib/remote-control";
 
 export function SessionPage() {
@@ -88,6 +91,29 @@ export function SessionPage() {
   const stop = useMutation({
     mutationFn: () => api.stop(id),
     onSuccess: () => toast("Stopping the session"),
+  });
+  // Live updates go to everyone watching and leave out whether *you* follow it.
+  const following = initial.data?.following ?? false;
+  const follow = useMutation({
+    mutationFn: () => (following ? api.unfollow(id) : api.follow(id)),
+    onSuccess: async (updated) => {
+      queryClient.setQueryData<G.Session>(keys.session(id), (old) =>
+        old ? { ...old, ...updated } : updated,
+      );
+      if (!updated.following) {
+        toast("You no longer get notifications about this session");
+        return;
+      }
+      const n = await queryClient
+        .fetchQuery({ queryKey: keys.notifications, queryFn: api.notifications, staleTime: 60_000 })
+        .catch(() => undefined);
+      toast(
+        n && n.devices.length === 0
+          ? "Following. Turn on notifications in Settings to get them in a browser."
+          : "Following: you get a notification when it waits for you, pauses or fails",
+      );
+    },
+    onError: (e) => toast(e.message, "error"),
   });
 
   if (initial.isError && !session) {
@@ -173,6 +199,24 @@ export function SessionPage() {
                   Open in Claude <ArrowUpRight className="size-3.5" />
                 </a>
               )}
+              {session && (
+                // On phones it is in the menu, where the title keeps its room.
+                <span className="hidden sm:contents">
+                  <IconButton
+                    label={
+                      following
+                        ? "Following: you get its notifications. Click to stop."
+                        : "Follow: get a notification when it waits for you, pauses or fails"
+                    }
+                    aria-pressed={following}
+                    onClick={() => follow.mutate()}
+                    disabled={follow.isPending}
+                    className={cn(following && "bg-accent-soft")}
+                  >
+                    {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
+                  </IconButton>
+                </span>
+              )}
               {isOwner && (
                 <IconButton label="Share" onClick={() => setShare(true)}>
                   <Share2 className="size-4" />
@@ -234,6 +278,17 @@ export function SessionPage() {
                         }}
                       >
                         Resume
+                      </MenuItem>
+                    )}
+                    {session && (
+                      <MenuItem
+                        icon={following ? <BellOff /> : <Bell />}
+                        onClick={() => {
+                          close();
+                          follow.mutate();
+                        }}
+                      >
+                        {following ? "Stop following" : "Follow"}
                       </MenuItem>
                     )}
                     <MenuItem

@@ -10,6 +10,7 @@ mod ctx;
 mod db;
 mod do_files;
 mod do_fleet;
+mod do_notify;
 mod do_session;
 mod email;
 mod error;
@@ -18,11 +19,14 @@ mod housekeeping;
 mod http;
 mod internal;
 mod model;
+mod notify;
+mod push;
 mod spec;
 
 use ctx::Ctx;
 pub use do_files::FilesObject;
 pub use do_fleet::FleetObject;
+pub use do_notify::NotifyObject;
 pub use do_session::SessionObject;
 use error::{AppError, AppResult};
 use fctl_proto::ApiError;
@@ -173,6 +177,8 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["sessions", id, "attachments", file]) => {
             api::attachments::download(ctx, id, file).await
         }
+        (Put, ["sessions", id, "follow"]) => api::sessions::follow(ctx, id).await,
+        (Delete, ["sessions", id, "follow"]) => api::sessions::unfollow(ctx, id).await,
         (Get, ["sessions", id, "shares"]) => api::sessions::shares(ctx, id).await,
         (Post, ["sessions", id, "shares"]) => api::sessions::add_share(ctx, req, id).await,
         (Delete, ["sessions", id, "shares", user]) => {
@@ -189,6 +195,16 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         }
         (Post, ["me", "claude", id, "default"]) => api::claude::set_default(ctx, id).await,
         (Delete, ["me", "claude", id]) => api::claude::remove(ctx, id).await,
+        // Notifications
+        (Get, ["me", "notifications"]) => api::notifications::get(ctx).await,
+        (Patch, ["me", "notifications"]) => api::notifications::update(ctx, req).await,
+        (Post, ["me", "notifications", "devices"]) => {
+            api::notifications::add_device(ctx, req).await
+        }
+        (Delete, ["me", "notifications", "devices", id]) => {
+            api::notifications::remove_device(ctx, id).await
+        }
+        (Post, ["me", "notifications", "test"]) => api::notifications::test(ctx).await,
         (Get, ["me", "export"]) => api::account::export(ctx).await,
         (Get, ["me", "deletion"]) => api::account::deletion(ctx).await,
         (Post, ["me", "delete"]) => api::account::delete(ctx, req).await,

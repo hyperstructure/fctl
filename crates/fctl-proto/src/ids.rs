@@ -110,6 +110,11 @@ id_type!(
     AttachmentId,
     "att"
 );
+id_type!(
+    /// A browser that shows someone's notifications (a Web Push subscription).
+    PushDeviceId,
+    "psh"
+);
 
 #[cfg(test)]
 mod tests {

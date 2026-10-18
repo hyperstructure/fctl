@@ -52,6 +52,8 @@ fctl send my-app#12 -a ci.log "This is what CI printed"
 fctl interrupt my-app#12         # stop the current turn
 fctl stop my-app#12              # end the session (its sandbox is kept for resuming)
 fctl resume my-app#12 "Now add tests"
+fctl follow my-app#12            # get its notifications (see Notifications)
+fctl unfollow my-app#12
 fctl open my-app#12              # in the browser
 fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 ```
@@ -96,6 +98,25 @@ fctl projects repos remove my-org/design -p my-app
 ```
 
 Changes apply to sessions that start afterwards.
+
+## Notifications
+
+A session you follow notifies you when it waits for your reply, pauses on a
+usage limit or fails, in every browser where you turned notifications on
+(Settings → Notifications in the web app; on iPhone and iPad, fctl added to
+the Home Screen). You follow the sessions you start and resume.
+
+```sh
+fctl notifications status                   # what notifies you, and the browsers that get it
+fctl notifications set --waiting off        # on or off: --waiting, --paused, --failed
+fctl notifications set --follow-started off # follow only the sessions you choose
+fctl notifications test                     # a test notification to your browsers
+fctl notifications remove psh_01…           # stop notifying a browser
+```
+
+Several that arrive close together come as one, and at most one a minute.
+People who are looking at a session in the web app aren't notified about
+it.
 
 ## Claude
 
@@ -179,8 +200,9 @@ fctl account delete                        # shows what goes, asks for your emai
 ```
 
 The export holds your account, sign-in methods, devices and tokens, Claude
-connections (without their secrets), projects, the sessions you started with
-their transcripts, and your activity log. Deleting your account deletes all
+connections (without their secrets), notification settings and browsers,
+projects, the sessions you started with their transcripts, the sessions you
+follow, and your activity log. Deleting your account deletes all
 of that and the projects only you are a member of; sessions you started in
 shared projects stay there, credited to a deleted user. Settings in the web
 app has both, the deletion in its danger zone.

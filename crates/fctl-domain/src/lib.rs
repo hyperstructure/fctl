@@ -9,6 +9,7 @@ pub mod events;
 pub mod files;
 pub mod ids;
 pub mod naming;
+pub mod notify;
 pub mod perm;
 pub mod remote_control;
 pub mod repos;
@@ -17,6 +18,7 @@ pub mod settings;
 pub mod size;
 pub mod tokens;
 pub mod validate;
+pub mod webpush;
 
 /// Fills `buf` with cryptographically secure random bytes.
 ///

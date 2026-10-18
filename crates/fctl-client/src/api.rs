@@ -60,6 +60,12 @@ impl Api {
             .await
     }
 
+    async fn put<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
+        self.http
+            .json(Method::PUT, &self.url(path), self.token(), Some(body))
+            .await
+    }
+
     async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.http
             .json::<(), T>(Method::DELETE, &self.url(path), self.token(), None)
@@ -141,6 +147,32 @@ impl Api {
             },
         )
         .await
+    }
+
+    // ── notifications ──
+
+    /// What notifies you, and the browsers that show your notifications.
+    pub async fn notifications(&self) -> Result<Notifications> {
+        self.get("/me/notifications").await
+    }
+
+    pub async fn update_notifications(
+        &self,
+        req: &UpdateNotificationsRequest,
+    ) -> Result<Notifications> {
+        self.patch("/me/notifications", req).await
+    }
+
+    /// Turns notifications off for one of your browsers.
+    pub async fn remove_push_device(&self, id: &str) -> Result<Notifications> {
+        self.delete(&format!("/me/notifications/devices/{}", enc(id)))
+            .await
+    }
+
+    /// Sends a test notification to every browser of yours.
+    pub async fn test_notification(&self) -> Result<PushTestResult> {
+        self.post("/me/notifications/test", &serde_json::json!({}))
+            .await
     }
 
     pub async fn tokens(&self) -> Result<TokenList> {
@@ -401,6 +433,20 @@ impl Api {
             },
         )
         .await
+    }
+
+    /// Follows a session: its notifications reach you.
+    pub async fn follow(&self, session: &str) -> Result<Session> {
+        self.put(
+            &format!("/sessions/{}/follow", enc(session)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub async fn unfollow(&self, session: &str) -> Result<Session> {
+        self.delete(&format!("/sessions/{}/follow", enc(session)))
+            .await
     }
 
     pub async fn events(&self, session: &str, after: u64, limit: u32) -> Result<EventPage> {

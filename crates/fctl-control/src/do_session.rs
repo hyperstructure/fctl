@@ -10,6 +10,7 @@
 use crate::ctx::now_ms;
 use crate::internal::{self, ControlState, Deliver, Delivered, InitSession, ViewerIdentity};
 use fctl_domain::events::{self as ev, ClaudeKind};
+use fctl_domain::notify;
 use fctl_proto::api::EventPage;
 use fctl_proto::event::{EventBody, GitState, StatusChange, UserMessage};
 use fctl_proto::session::{Session, SessionRole, SessionStatus, UserRef};
@@ -43,6 +44,9 @@ struct SocketInfo {
     /// An uplink's host features, once it said hello.
     #[serde(default)]
     features: Option<Vec<String>>,
+    /// A viewer whose tab is hidden: its person is not watching.
+    #[serde(default)]
+    hidden: bool,
 }
 
 #[derive(Default)]
@@ -275,6 +279,12 @@ impl SessionObject {
         }
     }
 
+    fn delete_meta(&self, key: &str) {
+        let _ = self
+            .sql
+            .exec("DELETE FROM meta WHERE key = ?", Some(vec![sv(key)]));
+    }
+
     fn summary(&self) -> Option<Session> {
         if let Some(s) = self.mem.borrow().summary.clone() {
             return Some(s);
@@ -435,6 +445,24 @@ impl SessionObject {
         by_user
     }
 
+    /// People who can see the session right now: a viewer of theirs is open
+    /// and its tab is not hidden.
+    fn watching(&self) -> Vec<String> {
+        let mut ids: Vec<String> = Vec::new();
+        for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
+            let Ok(Some(info)) = ws.deserialize_attachment::<SocketInfo>() else {
+                continue;
+            };
+            if let Some(viewer) = info.viewer
+                && !info.hidden
+                && !ids.contains(&viewer.user.id.0)
+            {
+                ids.push(viewer.user.id.0);
+            }
+        }
+        ids
+    }
+
     fn broadcast_presence(&self, exclude: Option<&WebSocket>) {
         let viewers = self.presence(exclude);
         if let Ok(text) =
@@ -475,6 +503,7 @@ impl SessionObject {
         }
         let mut s = b.session;
         s.role = None;
+        s.following = None;
         self.save_summary(&s);
         if !b.prompt.attachments.is_empty() {
             self.set_meta("task_files", "1");
@@ -539,6 +568,9 @@ impl SessionObject {
             "INSERT OR REPLACE INTO outbox (id, n, data) VALUES (?, ?, ?)",
             Some(vec![sv(b.delivery.id.as_str()), iv(next), sv(&data)]),
         );
+        if let DeliveryKind::Interrupt { by: Some(by) } = &b.delivery.kind {
+            self.set_meta("interrupted_by", by.id.as_str());
+        }
         if let Some(json) = self.append(now, &b.event, None) {
             self.broadcast_events(&[json]);
         }
@@ -600,6 +632,7 @@ impl SessionObject {
             return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
         };
         let now = now_ms();
+        let before = s.status;
         let mut described = false;
         if let Some(t) = b.title {
             described |= s.title != t;
@@ -635,6 +668,7 @@ impl SessionObject {
             self.write_through().await;
         }
         self.notify_fleet(&s);
+        self.notify_followers(&s, before, now);
         Ok(serde_json::json!({ "ok": true }))
     }
 
@@ -733,6 +767,7 @@ impl SessionObject {
             since: now,
             typing_at: None,
             features: None,
+            hidden: false,
         };
         self.state
             .accept_websocket_with_tags(&pair.server, &[TAG_VIEWER]);
@@ -809,6 +844,10 @@ impl SessionObject {
                 info.typing_at = Some(now_ms());
                 let _ = ws.serialize_attachment(&info);
                 self.broadcast_presence(None);
+            }
+            ViewerClient::Visibility { visible } => {
+                info.hidden = !visible;
+                let _ = ws.serialize_attachment(&info);
             }
             ViewerClient::Send {
                 client_id,
@@ -931,6 +970,7 @@ impl SessionObject {
             since: now_ms(),
             typing_at: None,
             features: None,
+            hidden: false,
         })?;
         let pending: Vec<Delivery> = self
             .sql
@@ -980,6 +1020,7 @@ impl SessionObject {
                     let mut body = e.body;
                     if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
                         summary_changed |= Self::apply_claude(s, v, &self.mem);
+                        self.remember_reply(v);
                         ev::shape_for_storage(v);
                     }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
@@ -1103,6 +1144,7 @@ impl SessionObject {
 
     async fn apply_state(&self, state: SessionState, now: i64) {
         let Some(mut s) = self.summary() else { return };
+        let before = s.status;
         let mut status_changed = false;
         if state.status != s.status
             || state.reason != s.status_reason
@@ -1145,6 +1187,60 @@ impl SessionObject {
             self.mark_dirty(now).await;
         }
         self.notify_fleet(&s);
+        self.notify_followers(&s, before, now);
+    }
+
+    /// The end of a turn: what the agent said last, for the notification that
+    /// the session waits for a reply.
+    fn remember_reply(&self, v: &serde_json::Value) {
+        if ev::classify(v) != ClaudeKind::Result {
+            return;
+        }
+        match v
+            .get("result")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|text| notify::excerpt(text, notify::EXCERPT_CHARS))
+        {
+            Some(reply) => self.set_meta("last_reply", &reply),
+            None => self.delete_meta("last_reply"),
+        }
+    }
+
+    /// Tells the people who follow the session that it finished a turn,
+    /// paused or failed (`crate::notify`), except those who can see it now.
+    fn notify_followers(&self, s: &Session, before: SessionStatus, now: i64) {
+        // A new turn: whoever interrupted the last one is not part of it.
+        if s.status == SessionStatus::Running && before != SessionStatus::Running {
+            self.delete_meta("interrupted_by");
+        }
+        let Some(kind) = notify::Kind::of(before, s.status) else {
+            return;
+        };
+        let mut except = self.watching();
+        let detail = match kind {
+            notify::Kind::Waiting => {
+                // Whoever interrupted the turn knows that it ended.
+                except.extend(self.meta("interrupted_by"));
+                self.delete_meta("interrupted_by");
+                self.meta("last_reply")
+            }
+            notify::Kind::Paused => None,
+            notify::Kind::Failed => s.status_reason.clone(),
+        };
+        let event = notify::Event {
+            session_id: s.id.clone(),
+            reference: format!("{}#{}", s.project_slug, s.number),
+            title: s.title.clone(),
+            kind,
+            detail,
+            at: now,
+        };
+        let env = self.env.clone();
+        self.state.wait_until(async move {
+            if let Err(e) = crate::notify::session_changed(&env, event, except).await {
+                worker::console_error!("notifying followers failed: {}", e.0.message);
+            }
+        });
     }
 
     /// The agent named or described the session (`fctl edit` in its

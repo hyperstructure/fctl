@@ -496,6 +496,10 @@ pub struct Session {
     /// The caller's role.
     pub role: Option<SessionRole>,
     pub archived: bool,
+    /// Whether the caller follows it: its followers are notified when it
+    /// waits for a reply, pauses on a usage limit or fails. Absent from live
+    /// updates, which go to everyone watching.
+    pub following: Option<bool>,
 }
 
 #[cfg(test)]

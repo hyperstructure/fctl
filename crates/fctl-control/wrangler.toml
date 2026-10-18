@@ -24,6 +24,7 @@ bindings = [
   { name = "SESSION", class_name = "SessionObject" },
   { name = "FLEET", class_name = "FleetObject" },
   { name = "FILES", class_name = "FilesObject" },
+  { name = "NOTIFY", class_name = "NotifyObject" },
 ]
 
 [[migrations]]
@@ -33,6 +34,10 @@ new_sqlite_classes = ["SessionObject", "FleetObject"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["FilesObject"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["NotifyObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"

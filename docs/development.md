@@ -50,6 +50,12 @@ claude.ai connector, `claude.ai Fake Docs`, unless
 `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, so sessions in a project with
 claude.ai connectors turned off show none (`fctl logs --json`).
 
+Notifications work locally too: `http://localhost:5173` is a secure
+context, so turn them on in Settings → Notifications, follow a session and
+give it a task. The dev control plane sends them through your browser's real
+push service, so it needs the internet. A finished turn notifies you unless
+the session's tab is visible; `limit` pauses a session.
+
 `--no-host` skips the host; `--no-vite` serves the built web app from
 wrangler instead. Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/`
 to start over.
@@ -132,13 +138,14 @@ frame for people who prefer reduced motion.
 People install the app on their phones and computers.
 `public/manifest.webmanifest` describes it, the `brand-assets` plugin in
 `vite.config.ts` serves the favicon and icons from the design package, and
-`public/sw.js` shows `public/offline.html` when a page cannot load offline.
-The service worker registers only in production builds: to try installing,
-run `cargo xtask dev --no-vite` and open http://127.0.0.1:8787 (Chrome's
-DevTools → Application shows the manifest and the worker). In the installed
-app on a phone, the page reaches under the notch and the home indicator, so
-anything fixed to an edge of the screen keeps clear of them with
-`env(safe-area-inset-*)`, as the message box does.
+`public/sw.js` shows `public/offline.html` when a page cannot load offline,
+and shows notifications. The service worker registers by itself only in
+production builds (turning notifications on registers it anywhere): to try
+installing, run `cargo xtask dev --no-vite` and open http://127.0.0.1:8787
+(Chrome's DevTools → Application shows the manifest and the worker). In the
+installed app on a phone, the page reaches under the notch and the home
+indicator, so anything fixed to an edge of the screen keeps clear of them
+with `env(safe-area-inset-*)`, as the message box does.
 
 ## Other repositories
 

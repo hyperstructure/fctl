@@ -9,4 +9,4 @@ text: string,
 /**
  * Uploaded files to send with it (see `SendMessageRequest`).
  */
-attachments?: Array<AttachmentId>, } | { "type": "interrupt", client_id: string, } | { "type": "typing" } | { "type": "ping" };
+attachments?: Array<AttachmentId>, } | { "type": "interrupt", client_id: string, } | { "type": "typing" } | { "type": "visibility", visible: boolean, } | { "type": "ping" };

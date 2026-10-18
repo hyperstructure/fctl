@@ -1,6 +1,6 @@
 // The signed-in layout: a quiet sidebar, the page, and the command palette.
 
-import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   Cpu,
   FolderPlus,
@@ -15,12 +15,13 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Avatar, Kbd, Logo, Menu, MenuItem, StatusDot } from "@/components/ui";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useFeed } from "@/lib/feed";
 import { useHotkey } from "@/lib/hotkeys";
+import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
 import { queryClient, useInstance, useMe, useProjects } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
 import { CommandPalette } from "./command-palette";
@@ -31,6 +32,7 @@ export function AppShell() {
   const openPalette = useCallback(() => setPalette(true), []);
   useHotkey("mod+k", openPalette, { inInputs: true });
   useFeed(); // live updates for every page
+  usePush();
   const path = useRouterState({ select: (s) => s.location.pathname });
   return (
     <div className="flex min-h-dvh bg-canvas">
@@ -69,6 +71,17 @@ export function AppShell() {
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
     </div>
   );
+}
+
+/** Notifications in this browser: keep its subscription current, and open what a click is about. */
+function usePush() {
+  const { data: me } = useMe();
+  const router = useRouter();
+  const userId = me?.user.id;
+  useEffect(() => {
+    if (userId) syncPush(userId).catch((e) => console.warn("fctl: notifications", e));
+  }, [userId]);
+  useEffect(() => onPushOpen((url) => router.history.push(url)), [router]);
 }
 
 function NavLink({
@@ -253,6 +266,7 @@ function Sidebar({
                   icon={<LogOut />}
                   onClick={async () => {
                     close();
+                    await forgetPush();
                     await api.logout().catch(() => {});
                     queryClient.clear();
                     window.location.assign("/login");

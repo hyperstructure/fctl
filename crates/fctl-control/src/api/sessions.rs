@@ -144,6 +144,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     )?
     .run()
     .await?;
+    crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await?;
     let created = access::session(ctx, id.as_str()).await?;
     let session = created.row.to_session(Some(created.role));
     let stub = internal::session_stub(&ctx.env, id.as_str())?;
@@ -458,6 +459,7 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     )?
     .run()
     .await?;
+    crate::notify::follow_own(&ctx.db, id, &user.id, ctx.now).await?;
     let stub = internal::session_stub(&ctx.env, id)?;
     let _: serde_json::Value = internal::post(
         &stub,
@@ -532,6 +534,20 @@ pub async fn websocket(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response
     let stub = internal::session_stub(&ctx.env, id)?;
     let ident_json = serde_json::to_string(&ident)?;
     internal::upgrade(&stub, &path, &[(internal::HDR_VIEWER, &ident_json)]).await
+}
+
+/// `PUT /sessions/{id}/follow`: notifications about it for the caller.
+pub async fn follow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
+    let a = access::session(ctx, id).await?;
+    crate::notify::follow(&ctx.db, &a.row.id, &ctx.user()?.id, ctx.now).await?;
+    get(ctx, id).await
+}
+
+/// `DELETE /sessions/{id}/follow`: no more notifications about it.
+pub async fn unfollow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
+    let a = access::session(ctx, id).await?;
+    crate::notify::unfollow(&ctx.db, &a.row.id, &ctx.user()?.id).await?;
+    get(ctx, id).await
 }
 
 // ───────────────────────────── shares ─────────────────────────────

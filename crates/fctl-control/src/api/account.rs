@@ -1,8 +1,9 @@
 //! Your own data: export it, or delete your account (Settings → Danger zone).
 //!
 //! Deleting an account deletes its sign-in methods, tokens, Claude
-//! connections, memberships and shares, and the projects only it is a member
-//! of, with their sessions and transcripts. Sessions and projects it created
+//! connections, memberships, shares, follows and notification settings and
+//! browsers, and the projects only it is a member of, with their sessions and
+//! transcripts. Sessions and projects it created
 //! that others still use stay; the account then remains as a nameless,
 //! disabled placeholder (`fctl_domain::account`). Admins deleting a user go
 //! through the same `erase`.
@@ -165,6 +166,9 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "device_codes",
         "project_members",
         "session_shares",
+        "session_followers",
+        "notification_settings",
+        "push_subscriptions",
     ] {
         statements.push(q(
             db,
@@ -416,6 +420,29 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         rows(
             ctx,
             "SELECT kind, label, account_email, subscription_type, status, created_at, last_used_at, expires_at FROM claude_credentials WHERE user_id = ? ORDER BY created_at",
+            &me(),
+        )
+        .await?,
+    );
+    doc.insert(
+        "notification_settings".into(),
+        json!(crate::notify::settings(&ctx.db, &user.id).await?),
+    );
+    doc.insert(
+        "notification_browsers".into(),
+        rows(
+            ctx,
+            "SELECT name, endpoint, created_at, last_sent_at FROM push_subscriptions WHERE user_id = ? ORDER BY created_at",
+            &me(),
+        )
+        .await?,
+    );
+    doc.insert(
+        "followed_sessions".into(),
+        rows(
+            ctx,
+            "SELECT p.slug AS project, s.number, s.title, f.created_at AS followed_at FROM session_followers f \
+             JOIN sessions s ON s.id = f.session_id JOIN projects p ON p.id = s.project_id WHERE f.user_id = ? ORDER BY f.created_at",
             &me(),
         )
         .await?,

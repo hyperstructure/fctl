@@ -160,11 +160,21 @@ export const api = {
     p.set("limit", String(q.limit ?? 300));
     return request<G.EventPage>("GET", `/sessions/${enc(id)}/events?${p}`);
   },
+  follow: (id: string) => request<G.Session>("PUT", `/sessions/${enc(id)}/follow`, {}),
+  unfollow: (id: string) => request<G.Session>("DELETE", `/sessions/${enc(id)}/follow`),
   shares: (id: string) => request<G.ShareList>("GET", `/sessions/${enc(id)}/shares`),
   share: (id: string, b: G.CreateShareRequest) =>
     request<G.ShareList>("POST", `/sessions/${enc(id)}/shares`, b),
   unshare: (id: string, user: string) =>
     request<G.ShareList>("DELETE", `/sessions/${enc(id)}/shares/${enc(user)}`),
+
+  notifications: () => request<G.Notifications>("GET", "/me/notifications"),
+  updateNotifications: (b: G.UpdateNotificationsRequest) =>
+    request<G.Notifications>("PATCH", "/me/notifications", b),
+  addPushDevice: (b: G.AddPushDeviceRequest) => request<G.PushDevice>("POST", "/me/notifications/devices", b),
+  removePushDevice: (id: string) =>
+    request<G.Notifications>("DELETE", `/me/notifications/devices/${enc(id)}`),
+  testNotification: () => request<G.PushTestResult>("POST", "/me/notifications/test", {}),
 
   claudeToken: (b: G.AddClaudeTokenRequest) => request<G.Me>("POST", "/me/claude/token", b),
   claudeLogin: () => request<G.ClaudeLoginJob>("POST", "/me/claude/login", {}),

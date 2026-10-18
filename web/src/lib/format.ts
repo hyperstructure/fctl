@@ -94,3 +94,29 @@ export function hue(id: string): number {
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return h % 360;
 }
+
+/** "Chrome on macOS", from a user agent. */
+export function browserName(ua?: string): string {
+  if (!ua) return "Browser";
+  const name = /Edg\//.test(ua)
+    ? "Edge"
+    : /Chrome\//.test(ua)
+      ? "Chrome"
+      : /Firefox\//.test(ua)
+        ? "Firefox"
+        : /Safari\//.test(ua)
+          ? "Safari"
+          : "Browser";
+  const os = /iPhone|iPad/.test(ua)
+    ? "iOS"
+    : /Mac OS X/.test(ua)
+      ? "macOS"
+      : /Windows/.test(ua)
+        ? "Windows"
+        : /Android/.test(ua)
+          ? "Android"
+          : /Linux/.test(ua)
+            ? "Linux"
+            : "";
+  return os ? `${name} on ${os}` : name;
+}

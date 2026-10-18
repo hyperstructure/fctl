@@ -1,11 +1,13 @@
 //! Cryptography for the control plane.
 //!
-//! - Secrets at rest (Claude credentials, project secrets) are sealed with
-//!   AES-256-GCM under a key derived from `FCTL_MASTER_KEY`, with associated
-//!   data naming the record, so ciphertext cannot be moved between records.
+//! - Secrets at rest (Claude credentials, project secrets, the Web Push key)
+//!   are sealed with AES-256-GCM under a key derived from `FCTL_MASTER_KEY`,
+//!   with associated data naming the record, so ciphertext cannot be moved
+//!   between records.
 //!   Format: `v1.<base64url(nonce ‖ ciphertext ‖ tag)>`.
 //! - Short-lived state (the OAuth cookie) is HMAC-SHA256 signed.
-//! - RS256 (GitHub App JWTs) uses WebCrypto, which is constant time and fast.
+//! - RS256 (GitHub App JWTs) uses WebCrypto, which is constant time and fast,
+//!   and so do the elliptic-curve parts of Web Push (`push.rs`).
 
 use crate::error::{AppError, AppResult, internal};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -147,7 +149,7 @@ pub fn pkce_pair() -> (String, String) {
     (verifier, challenge)
 }
 
-fn subtle() -> AppResult<web_sys::SubtleCrypto> {
+pub fn subtle() -> AppResult<web_sys::SubtleCrypto> {
     let global = js_sys::global();
     let crypto = js_sys::Reflect::get(&global, &JsValue::from_str("crypto"))?
         .dyn_into::<web_sys::Crypto>()
