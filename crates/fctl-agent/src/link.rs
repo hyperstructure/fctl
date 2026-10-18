@@ -217,8 +217,16 @@ mod tests {
         // Once the first is gone, the next one serves, over its stale socket.
         drop((listener, lock));
         assert!(socket.exists());
-        assert!(matches!(claim(&socket).await?, Claim::Serving(_, Some(_))));
-        Ok(())
+        // Processes that other tests start hold copies of the first's lock and
+        // socket until they exec, so it can look taken a moment longer.
+        for _ in 0..100 {
+            match claim(&socket).await? {
+                Claim::Serving(_, Some(_)) => return Ok(()),
+                Claim::Serving(_, None) => anyhow::bail!("the next supervisor got no lock"),
+                Claim::Taken => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
+        anyhow::bail!("the next supervisor should get the socket once the first is gone")
     }
 
     #[tokio::test]
