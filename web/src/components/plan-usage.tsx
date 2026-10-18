@@ -103,9 +103,10 @@ export function PlanUsageStrip({ usage, className }: { usage: G.PlanLimit[]; cla
       <Link
         to="/settings"
         search={{ linked: undefined, error: undefined }}
-        title={`Your Claude plan, as a session reported it ${ago(reportedAt(usage))}`}
-        className="flex flex-wrap items-center gap-x-5 gap-y-1.5 self-start rounded-md text-ink-4 transition-colors hover:text-ink-3"
+        title={`As a session reported it ${ago(reportedAt(usage))}`}
+        className="flex flex-wrap items-center gap-x-5 gap-y-1.5 self-start rounded-md text-ink-3 transition-colors hover:text-ink-2"
       >
+        <span className="text-ink-4">Claude plan</span>
         {usage.map((l) => {
           const st = standing(l, now);
           return (
