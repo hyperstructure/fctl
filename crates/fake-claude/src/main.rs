@@ -6,7 +6,10 @@
 //! `system`, `stream_event`, `assistant`, `user`, `result` and
 //! `rate_limit_event` messages on stdout. A user turn that arrives during
 //! another waits for it, and each `result` says how many turns still wait
-//! (`queued_turn_count`), as Claude Code's does.
+//! (`queued_turn_count`), as Claude Code's does. With
+//! `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` set, it reports each turn
+//! starting and ending (`system/session_state_changed`), as Claude Code
+//! does.
 //!
 //! What it does depends on the words in a user turn:
 //!
@@ -17,6 +20,7 @@
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `screenshot` | draws a small PNG and publishes it with `fctl publish`, as agents do for pull requests |
 //! | `slow` | streams for about ten seconds (try interrupting) |
+//! | `background <seconds>` | starts a shell command in the background that ends after that many seconds (`system/task_started`), and ends its turn; when the command ends (`system/task_notification`), takes its result in a turn of its own, as Claude Code does |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds, unless the turn also says `reset`, as fctl-agent's message that continues the session does |
 //! | `overage` | reports paid extra usage starting |
 //! | `refresh` | asks its host for a fresh OAuth token |
@@ -74,11 +78,96 @@ struct Session {
     input_tokens: u64,
     output_tokens: u64,
     delay: Duration,
+    /// Shell commands running in the background, in the order they end.
+    background: Vec<Background>,
+    /// Whether to report turns starting and ending
+    /// (`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`), and whether one runs.
+    reports_turns: bool,
+    running: bool,
+}
+
+/// A shell command Claude Code runs with `run_in_background`.
+struct Background {
+    id: String,
+    tool_use_id: String,
+    description: String,
+    ends: Instant,
 }
 
 impl Session {
     fn sleep(&self) {
         std::thread::sleep(self.delay);
+    }
+
+    /// `system/session_state_changed`, when the turns' state changes.
+    fn report_turn(&mut self, running: bool) {
+        if self.reports_turns && self.running != running {
+            let state = if running { "running" } else { "idle" };
+            out(
+                &json!({"type": "system", "subtype": "session_state_changed", "state": state, "session_id": self.id, "uuid": uuid()}),
+            );
+        }
+        self.running = running;
+    }
+
+    /// Starts a shell command in the background that ends after `secs`, as
+    /// Claude Code's Bash tool does with `run_in_background`.
+    fn start_background(&mut self, secs: u64) {
+        let id = format!("b{}", &uuid()[..8]);
+        let tool_use_id = format!("toolu_{}", &uuid()[..12]);
+        let description = format!("Wait {secs} seconds in the background");
+        out(
+            &json!({"type": "assistant", "message": {"id": format!("msg_{}", &uuid()[..8]), "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": format!("sleep {secs}"), "description": description, "run_in_background": true}}], "stop_reason": "tool_use", "usage": {"input_tokens": 20, "output_tokens": 30}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        out(
+            &json!({"type": "system", "subtype": "task_started", "task_id": id, "tool_use_id": tool_use_id, "description": description, "task_type": "local_bash", "is_backgrounded": true, "session_id": self.id, "uuid": uuid()}),
+        );
+        out(
+            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": format!("Command running in background with ID: {id}."), "is_error": false}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        self.background.push(Background {
+            id,
+            tool_use_id,
+            description,
+            ends: Instant::now() + Duration::from_secs(secs),
+        });
+        self.background.sort_by_key(|b| b.ends);
+    }
+
+    /// When the next background command ends.
+    fn next_ending(&self) -> Option<Instant> {
+        self.background.first().map(|b| b.ends)
+    }
+
+    /// The background commands that have ended get their notifications,
+    /// and a turn of fake-claude's own takes their results.
+    fn finish_background(&mut self) {
+        let now = Instant::now();
+        let ended: Vec<Background> = match self.background.iter().position(|b| b.ends > now) {
+            Some(n) => self.background.drain(..n).collect(),
+            None => std::mem::take(&mut self.background),
+        };
+        if ended.is_empty() {
+            return;
+        }
+        for b in &ended {
+            out(
+                &json!({"type": "system", "subtype": "task_notification", "task_id": b.id, "tool_use_id": b.tool_use_id, "status": "completed", "output_file": "", "summary": format!("Background command \"{}\" completed (exit code 0)", b.description), "session_id": self.id, "uuid": uuid()}),
+            );
+        }
+        INTERRUPTED.store(false, Ordering::SeqCst);
+        self.report_turn(true);
+        let started = Instant::now();
+        let names: Vec<&str> = ended.iter().map(|b| b.description.as_str()).collect();
+        let text = format!(
+            "The background command finished: {}. Picking up where I left off.",
+            names.join(", ")
+        );
+        self.stream_text(&text);
+        self.result(started, &text, "success");
+        if QUEUED_TURNS.load(Ordering::SeqCst) == 0 {
+            self.report_turn(false);
+        }
     }
 
     fn stream_text(&self, text: &str) -> String {
@@ -324,10 +413,27 @@ impl Session {
                 failed,
             );
         }
+        if let Some(secs) = background_for(text) {
+            self.start_background(secs);
+            self.stream_text("It runs in the background: I'll pick it up when it finishes.");
+        }
         let done = "Done. Everything looks good: the change is committed and ready for review.";
         self.stream_text(done);
         self.result(started, done, "success");
     }
+}
+
+/// How long a turn's background command runs: the seconds after
+/// `background` (any case), at most an hour.
+fn background_for(text: &str) -> Option<u64> {
+    let lower = text.to_lowercase();
+    lower.match_indices("background ").find_map(|(i, word)| {
+        let digits: String = lower[i + word.len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse::<u64>().ok().map(|s| s.min(3600))
+    })
 }
 
 /// Whether a turn asks for the usage limit: it says `limit` but not
@@ -496,6 +602,14 @@ fn main() {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(25),
         ),
+        background: Vec::new(),
+        reports_turns: std::env::var("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS").is_ok_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        }),
+        running: false,
     };
     // stdin is read on its own thread so interrupts arrive during a turn.
     let (tx, rx) = mpsc::channel::<Value>();
@@ -542,7 +656,20 @@ fn main() {
             &json!({"type": "system", "subtype": "init", "apiKeySource": source, "claude_code_version": "2.1.999", "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": s.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": mcp_servers, "model": s.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
         );
     };
-    for v in rx.iter() {
+    loop {
+        // A background command that ends gets a turn of its own.
+        let next = match session.next_ending() {
+            Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        };
+        let v = match next {
+            Ok(v) => v,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                session.finish_background();
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match v.get("type").and_then(Value::as_str) {
             Some("control_request") => {
                 let id = v.get("request_id").cloned().unwrap_or(Value::Null);
@@ -596,8 +723,12 @@ fn main() {
                             .filter(|b| b.get("type").and_then(Value::as_str) == Some("image"))
                             .count()
                     });
+                session.report_turn(true);
                 // Drain anything that arrived meanwhile into the turn's control channel.
                 session.turn(&text, images, &turn_rx);
+                if QUEUED_TURNS.load(Ordering::SeqCst) == 0 {
+                    session.report_turn(false);
+                }
             }
             _ => {}
         }
@@ -606,7 +737,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{adler32, asks_for_limit, crc32, rename_to, screenshot_png};
+    use super::{adler32, asks_for_limit, background_for, crc32, rename_to, screenshot_png};
 
     #[test]
     fn draws_a_png() {
@@ -627,6 +758,21 @@ mod tests {
             "The usage limit has reset. Continue where you left off."
         ));
         assert!(!asks_for_limit("write notes.md"));
+    }
+
+    #[test]
+    fn background_takes_the_seconds_after_it() {
+        assert_eq!(
+            background_for("Run it in the BACKGROUND 20, please"),
+            Some(20)
+        );
+        assert_eq!(background_for("background 99999"), Some(3600));
+        // fctl-agent's own words about background tasks don't start one.
+        assert_eq!(
+            background_for("these background tasks were still running"),
+            None
+        );
+        assert_eq!(background_for("write notes.md"), None);
     }
 
     #[test]

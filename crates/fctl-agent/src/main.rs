@@ -12,6 +12,7 @@ mod link;
 mod local;
 mod prompt;
 mod supervisor;
+mod tasks;
 mod workspace;
 
 use clap::{Parser, Subcommand};
