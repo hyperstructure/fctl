@@ -14,7 +14,7 @@
 //! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message as Claude Code does: with `attribution.commit` from `~/.claude/settings.json`, or Claude's trailer when that is unset |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `slow` | streams for about ten seconds (try interrupting) |
-//! | `limit` | reports a five-hour usage limit that resets in 20 seconds |
+//! | `limit` | reports a five-hour usage limit that resets in 20 seconds, unless the turn also says `reset`, as fctl-agent's message that continues the session does |
 //! | `overage` | reports paid extra usage starting |
 //! | `refresh` | asks its host for a fresh OAuth token |
 //! | `crash` | exits with status 3 |
@@ -158,7 +158,7 @@ impl Session {
             eprintln!("fake-claude: crashing as asked");
             std::process::exit(3);
         }
-        if lower.contains("limit") {
+        if asks_for_limit(text) {
             let resets = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -296,6 +296,15 @@ impl Session {
         self.stream_text(done);
         self.result(started, done, "success");
     }
+}
+
+/// Whether a turn asks for the usage limit: it says `limit` but not
+/// `reset`. fctl-agent continues a paused session with "The usage limit has
+/// reset. Continue where you left off.", which has to get an answer, or the
+/// session would hit the limit again every time it resumed.
+fn asks_for_limit(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("limit") && !lower.contains("reset")
 }
 
 /// What Claude Code ends commit messages with: `attribution.commit` from
@@ -490,7 +499,17 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::rename_to;
+    use super::{asks_for_limit, rename_to};
+
+    #[test]
+    fn limit_hits_the_limit_until_it_has_reset() {
+        assert!(asks_for_limit("limit"));
+        assert!(asks_for_limit("Hit the usage LIMIT, please"));
+        assert!(!asks_for_limit(
+            "The usage limit has reset. Continue where you left off."
+        ));
+        assert!(!asks_for_limit("write notes.md"));
+    }
 
     #[test]
     fn rename_takes_the_rest_of_the_line() {

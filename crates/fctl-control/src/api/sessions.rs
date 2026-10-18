@@ -308,8 +308,10 @@ pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResu
     a.require_editor()?;
     let files = validate::attachment_ids(&body.attachments)?;
     let text = validate::message_with_files("text", &body.text, files.len())?;
-    if !a.row.status().accepts_messages() {
-        return Err(conflict("The session has ended. Resume it to continue."));
+    // A stopped session resumes for the message (SessionObject::wake).
+    let status = a.row.status();
+    if !status.accepts_messages() && !status.resumes_for_messages() {
+        return Err(conflict("The session failed. Resume it to continue."));
     }
     let author = ctx.user()?.to_ref();
     let attachments = internal::claim_files(

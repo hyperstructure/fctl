@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@hyperstructure/design": "github:hyperstructure/design#98a2ea1e39157e40e6618d48c097ccf1f24640d0",
+    "@hyperstructure/design": "github:hyperstructure/design#0d5242916b9b25cce6bccb8b607f7657265a1690",
     "@tanstack/react-query": "5.104.3",
     "@tanstack/react-router": "1.170.45",
     "clsx": "2.1.1",

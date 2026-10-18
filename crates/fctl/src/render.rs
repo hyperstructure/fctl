@@ -105,6 +105,15 @@ impl Renderer {
         }
     }
 
+    /// A line about the session that isn't an event (left out of `--json`).
+    pub fn note(&mut self, line: &str) {
+        if self.json {
+            return;
+        }
+        self.end_text();
+        out(&format!("{line}\n"));
+    }
+
     pub fn event(&mut self, ev: &SessionEvent) {
         self.last_seq = self.last_seq.max(ev.seq);
         if self.json {

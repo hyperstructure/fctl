@@ -185,11 +185,12 @@ pub fn repos_line(repos: &[SessionRepo], dir: &str) -> String {
 }
 
 /// The first turn when a resumed session lost its conversation: its stopped
-/// sandbox was removed (the host's `keep_stopped_hours`), so Claude starts a
-/// new one on the same branch, from the session's original task.
+/// sandbox was removed (the host's `keep_stopped_hours`), or the session
+/// resumed on another host because its own was busy or away, so Claude
+/// starts a new one on the same branch, from the session's original task.
 pub fn fresh_resume(branch: &str, task: Option<&str>, other_repos: bool) -> String {
     let mut s = format!(
-        "This session is resuming in a new sandbox. The old one was removed after the session had been stopped for a while, so your earlier conversation is gone. The repository is checked out on `{branch}` with everything that was pushed to it."
+        "This session is resuming in a new sandbox, so your earlier conversation is gone: the old sandbox was removed after the session had been stopped for a while, or it is on another machine. The repository is checked out on `{branch}` with everything that was pushed to it."
     );
     if other_repos {
         s.push_str(&format!(

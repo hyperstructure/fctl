@@ -8,6 +8,20 @@ use std::collections::BTreeMap;
 /// `no`, `off`).
 pub const CLAUDE_AI_CONNECTORS_ENV: &str = "ENABLE_CLAUDEAI_MCP_SERVERS";
 
+/// How long a session that finished its turn keeps its sandbox, and its
+/// slot on the host, when its project sets no idle timeout.
+pub const DEFAULT_IDLE_TIMEOUT_MINUTES: u32 = 10;
+
+/// Seconds an idle session waits for a message before it stops, so that its
+/// host can take other work. A message resumes it.
+pub fn idle_timeout_secs(settings: &ProjectSettings) -> u64 {
+    u64::from(
+        settings
+            .idle_timeout_minutes
+            .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES),
+    ) * 60
+}
+
 /// The environment a session gets from its project's settings: the
 /// project's variables, and `ENABLE_CLAUDEAI_MCP_SERVERS=false` when
 /// claude.ai connectors are off, whatever the variables say. Every
@@ -112,5 +126,15 @@ mod tests {
         let mut s = ProjectSettings::default();
         keep_unsent(&mut s, &stored, &json!({ "credit_claude": true }));
         assert!(!s.credit_people && s.credit_claude);
+    }
+
+    #[test]
+    fn idle_sessions_stop_after_ten_minutes_unless_the_project_says_otherwise() {
+        assert_eq!(idle_timeout_secs(&ProjectSettings::default()), 600);
+        let s = ProjectSettings {
+            idle_timeout_minutes: Some(120),
+            ..Default::default()
+        };
+        assert_eq!(idle_timeout_secs(&s), 7200);
     }
 }

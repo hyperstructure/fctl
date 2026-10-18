@@ -47,11 +47,11 @@ fctl logs -f my-app#12           # …and keep following
 
 fctl attach my-app#12            # stream it and type messages (Ctrl-C detaches)
 fctl attach --read-only my-app#12
-fctl send my-app#12 "Use the existing Button component"
+fctl send my-app#12 "Use the existing Button component"   # a stopped session resumes for it
 fctl send my-app#12 -a ci.log "This is what CI printed"
 fctl interrupt my-app#12         # stop the current turn
 fctl stop my-app#12              # end the session (its sandbox is kept for resuming)
-fctl resume my-app#12 "Now add tests"
+fctl resume my-app#12 "Now add tests"   # also a failed one, on your Claude subscription
 fctl follow my-app#12            # get its notifications (see Notifications)
 fctl unfollow my-app#12
 fctl open my-app#12              # in the browser
@@ -59,6 +59,9 @@ fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 ```
 
 `fctl run` uses the project from `fctl projects use` when `-p` is missing.
+
+`fctl attach` also says when the session's runner goes away or can't reach
+the agent in its sandbox, and when it is back.
 
 A session's title starts as the first line of its task. Agents rename it to
 what they work on, and say what the session is about, with the same
@@ -82,6 +85,7 @@ fctl projects create "New thing" --new-repo new-thing --public
 fctl projects create "Site" --repo my-org/site --no-connectors   # no claude.ai connectors in its sessions
 fctl projects set -p my-app --credit-claude off   # no Claude trailer in its commits
 fctl projects set -p my-app --credit-people off   # no trailers for the people who start sessions
+fctl projects set -p my-app --idle-timeout 30     # idle sessions keep their sandbox 30 minutes (default 10)
 fctl projects use my-app
 fctl projects delete my-app            # with its sessions; asks you to type the slug
 ```

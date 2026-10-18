@@ -40,15 +40,18 @@ export function Composer({
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const ended = status === "stopped" || status === "failed";
+  // A message resumes a stopped session; a failed one needs its owner to resume it.
+  const resumes = status === "stopped" || status === "stopping";
+  const failed = status === "failed";
   const canWrite = role === "editor" || role === "owner";
+  const canSend = canWrite && (!failed || role === "owner");
   const running = status === "running" || status === "provisioning" || status === "preparing";
   const typing = viewers.filter((v) => v.user.id !== meId && v.typing_at && Date.now() - v.typing_at < 6000);
-  const files = useAttachments(canWrite ? { session: sessionId } : undefined);
+  const files = useAttachments(canSend ? { session: sessionId } : undefined);
   const dragging = useFileDrop((f) => {
     files.add(f);
     ref.current?.focus();
-  }, canWrite);
+  }, canSend);
   const ready = !!text.trim() || files.drafts.length > 0;
 
   const submit = async () => {
@@ -61,7 +64,7 @@ export function Composer({
       const taken = await files.take();
       restore = taken.restore;
       setText("");
-      if (ended) await onResume(t, taken.files);
+      if (failed) await onResume(t, taken.files);
       else await onSend(t, taken.files);
     } catch (e) {
       setText(t);
@@ -80,10 +83,12 @@ export function Composer({
     }
   };
 
-  if (!canWrite) {
+  if (!canSend) {
     return (
       <div className="rounded-xl border border-line bg-surface/80 px-4 py-3 text-center text-[13px] text-ink-4">
-        You can follow this session. Ask its owner for the editor role to message the agent.
+        {canWrite
+          ? "This session failed. Its owner can resume it."
+          : "You can follow this session. Ask its owner for the editor role to message the agent."}
       </div>
     );
   }
@@ -128,11 +133,13 @@ export function Composer({
             files.add(pasted, { pasted: true });
           }}
           placeholder={
-            ended
+            failed
               ? "Resume the session with a message…"
-              : running
-                ? "Message the agent (it reads it after this step)…"
-                : "Message the agent…"
+              : resumes
+                ? "Message the agent to resume the session…"
+                : running
+                  ? "Message the agent (it reads it after this step)…"
+                  : "Message the agent…"
           }
           className="block px-4 pt-3.5 pb-12 text-[14.5px] leading-[1.55] text-ink"
           aria-label="Message the agent"
@@ -145,7 +152,7 @@ export function Composer({
             }}
           />
           <span className="pointer-events-none text-[11.5px] text-ink-4 opacity-0 transition-opacity group-focus-within:opacity-100">
-            {ended ? "↵ resume" : "↵ send · ⇧↵ new line"}
+            {failed ? "↵ resume" : resumes ? "↵ send and resume · ⇧↵ new line" : "↵ send · ⇧↵ new line"}
           </span>
         </div>
         <div className="absolute right-2.5 bottom-2.5 flex items-center gap-1.5">
@@ -160,7 +167,7 @@ export function Composer({
           )}
           <button
             type="button"
-            aria-label={ended ? "Resume" : "Send"}
+            aria-label={failed ? "Resume" : "Send"}
             disabled={!ready || sending}
             onClick={() => void submit()}
             className={cn(

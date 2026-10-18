@@ -6,6 +6,7 @@
  * ```text
  * queued → provisioning → preparing → running ⇄ idle → stopped
  *                                        └→ paused (usage limit) → running
+ * stopped → queued (a message, or a resume)
  * any → failed
  * ```
  */

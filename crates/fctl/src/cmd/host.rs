@@ -284,11 +284,30 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 );
             }
             let image = cfg.image();
-            d.pull(&image, !json).await?;
+            let note = |line: String| {
+                if !json {
+                    println!("{line}");
+                }
+            };
+            // The default image falls back to `latest` until its version's is published.
+            let pulled = d
+                .pull_or_fallback(&image, cfg.fallback_image().as_deref(), !json, &note)
+                .await?;
+            let instead_of = (pulled != image).then_some(&image);
             if json {
-                return style::print_json(&serde_json::json!({ "image": image }));
+                return style::print_json(
+                    &serde_json::json!({ "image": pulled, "instead_of": instead_of }),
+                );
             }
-            println!("{} Pulled {image}", style::accent("✓"));
+            println!("{} Pulled {pulled}", style::accent("✓"));
+            if instead_of.is_some() {
+                println!(
+                    "  {}",
+                    style::dim(&format!(
+                        "Sessions start from it until {image} can be pulled: a release's image is published within the hour after the release."
+                    ))
+                );
+            }
             Ok(())
         }
         HostCmd::Image(ImageCmd::Build {
@@ -375,11 +394,17 @@ async fn doctor() -> Result<()> {
         if d.has_image(&image).await {
             check(true, &format!("sandbox image {image}"), "");
         } else {
+            let meanwhile = match cfg.fallback_image() {
+                Some(f) if d.has_image(&f).await => {
+                    format!("; sessions start from {f} until it is")
+                }
+                _ => String::new(),
+            };
             println!(
                 "{} {}",
                 style::dim("·"),
                 style::dim(&format!(
-                    "sandbox image {image}: not here yet (the host pulls it when it starts; `fctl host image pull` pulls it now)"
+                    "sandbox image {image}: not here yet{meanwhile} (the host pulls it when it starts; `fctl host image pull` pulls it now)"
                 ))
             );
         }

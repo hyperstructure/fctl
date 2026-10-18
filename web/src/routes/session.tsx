@@ -49,6 +49,7 @@ import { hasChanges, type RepoChanges, repoChanges } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink } from "@/lib/remote-control";
+import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
 
 export function SessionPage() {
   const { id } = useParams({ from: "/app/s/$id" });
@@ -56,6 +57,7 @@ export function SessionPage() {
   const initial = useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) });
   const [s, store] = useLiveSession(id, initial.data);
   const session = s.session ?? initial.data;
+  const stall = useStall(session, s);
   const [rail, setRail] = useState(true);
   const [share, setShare] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
@@ -182,6 +184,7 @@ export function SessionPage() {
                       </a>
                     )}
                     {s.connection === "reconnecting" && <span className="text-amber">Reconnecting…</span>}
+                    {stall && <span className="text-amber">{stallLabel(stall)}</span>}
                   </div>
                 </>
               ) : (
@@ -339,6 +342,7 @@ export function SessionPage() {
               items={s.items}
               live={s.live}
               status={status}
+              stall={stall}
               onLoadOlder={() => void store.loadOlder()}
               hasMoreBefore={s.hasMoreBefore}
               loadingOlder={s.loadingOlder}
@@ -385,6 +389,7 @@ export function SessionPage() {
           viewers={s.viewers}
           model={s.model}
           runnerConnected={s.runnerConnected}
+          stall={stall}
         />
       )}
       {session && <ShareDialog open={share} onClose={() => setShare(false)} session={session} />}
@@ -520,12 +525,14 @@ function Rail({
   viewers,
   model,
   runnerConnected,
+  stall,
 }: {
   session: G.Session;
   git?: G.GitState;
   viewers: G.Presence[];
   model?: string;
   runnerConnected: boolean;
+  stall?: Stall;
 }) {
   const st = session.stats;
   const project = useProject(session.project_slug).data;
@@ -583,8 +590,13 @@ function Rail({
           <Row
             k="Runner"
             v={
-              <span className="inline-flex items-center gap-1.5">
-                <span className={cn("size-1.5 rounded-full", runnerConnected ? "bg-accent" : "bg-ink-4")} />
+              <span className="inline-flex items-center gap-1.5" title={stall && stallText(stall).title}>
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    stall?.kind === "unreachable" ? "bg-amber" : runnerConnected ? "bg-accent" : "bg-ink-4",
+                  )}
+                />
                 {session.runner.name}
               </span>
             }
@@ -607,7 +619,7 @@ function Rail({
                 href={session.remote_control.session_url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-raised hover:text-ink"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
               >
                 claude.ai <ArrowUpRight className="size-3.5" />
               </a>

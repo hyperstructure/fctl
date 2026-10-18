@@ -18,7 +18,7 @@ const variants: Record<Variant, string> = {
     "bg-highlight text-highlight-ink hover:brightness-[1.06] active:brightness-95 shadow-[inset_0_0_0_1px_rgb(23_23_23/0.1),0_1px_2px_rgb(0_0_0/0.3)] disabled:opacity-45 disabled:hover:brightness-100",
   secondary:
     "bg-raised text-ink border border-line-strong hover:border-ink-4 hover:bg-raised/80 disabled:text-ink-4",
-  ghost: "text-ink-2 hover:text-ink hover:bg-raised/70 disabled:text-ink-4",
+  ghost: "text-ink-2 hover:text-ink hover:bg-hover/70 disabled:text-ink-4",
   danger: "bg-danger-soft text-danger border border-danger/25 hover:bg-danger/15 disabled:opacity-50",
   quiet: "text-ink-3 hover:text-ink disabled:text-ink-4",
 };
@@ -64,7 +64,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       className={cn(
-        "inline-flex size-8 items-center justify-center rounded-md text-ink-3 transition-colors duration-150 hover:bg-raised hover:text-ink active:scale-95",
+        "inline-flex size-8 items-center justify-center rounded-md text-ink-3 transition-colors duration-150 hover:bg-hover hover:text-ink active:scale-95",
         className,
       )}
       {...rest}

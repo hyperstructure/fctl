@@ -115,6 +115,8 @@ impl Daemon {
 
     /// Pulls the host's sandbox image in the background when it isn't here
     /// yet, so that the first session after an upgrade doesn't wait for it.
+    /// When it can't be pulled, as before a release's image is published,
+    /// it pulls the image sessions start from instead.
     fn prefetch_image(&self) {
         if !self.ctx.driver.uses_images() {
             return;
@@ -125,9 +127,19 @@ impl Daemon {
             if ctx.driver.has_image(&image).await {
                 return;
             }
+            // Never over a fallback that is here: sessions start from it.
+            let fallback = match ctx.cfg.fallback_image() {
+                Some(f) if !ctx.driver.has_image(&f).await => Some(f),
+                _ => None,
+            };
             tracing::info!("pulling {image}");
-            match ctx.driver.pull(&image, false).await {
-                Ok(()) => tracing::info!("pulled {image}"),
+            let log = |line: String| tracing::info!("{line}");
+            match ctx
+                .driver
+                .pull_or_fallback(&image, fallback.as_deref(), false, &log)
+                .await
+            {
+                Ok(pulled) => tracing::info!("pulled {pulled}"),
                 Err(e) => tracing::warn!("pulling {image}: {e:#} (sessions try again)"),
             }
         });

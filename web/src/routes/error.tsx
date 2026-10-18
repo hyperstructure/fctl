@@ -125,7 +125,7 @@ export function ErrorPage({ error, reset }: ErrorComponentProps) {
               onClick={copy}
               aria-label="Copy the details"
               title="Copy the details"
-              className="absolute top-2 right-2 inline-flex size-7 items-center justify-center rounded-sm text-ink-3 hover:bg-raised hover:text-ink"
+              className="absolute top-2 right-2 inline-flex size-7 items-center justify-center rounded-sm text-ink-3 hover:bg-hover hover:text-ink"
             >
               {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
             </button>

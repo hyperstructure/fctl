@@ -12,6 +12,7 @@ import {
   Radio,
   Sparkles,
   TriangleAlert,
+  Unplug,
 } from "lucide-react";
 import { memo, type ReactNode, useState } from "react";
 import { Markdown } from "@/components/markdown";
@@ -21,6 +22,7 @@ import { cn } from "@/lib/cn";
 import { clock, duration, until } from "@/lib/format";
 import { repoChanges } from "@/lib/git";
 import { claudeAppLink } from "@/lib/remote-control";
+import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
 import { ToolRow } from "./tool";
@@ -107,7 +109,7 @@ function Thinking({ text }: { text: string }) {
   );
 }
 
-function Setup({ item }: { item: Extract<Item, { kind: "setup" }> }) {
+function Setup({ item, stalled }: { item: Extract<Item, { kind: "setup" }>; stalled?: boolean }) {
   const [open, setOpen] = useState(false);
   const last = item.steps[item.steps.length - 1];
   const took = item.endTs - item.ts;
@@ -120,13 +122,15 @@ function Setup({ item }: { item: Extract<Item, { kind: "setup" }> }) {
       >
         {item.done ? (
           <Sparkles className="size-3.5 text-accent/80" />
+        ) : stalled ? (
+          <Hourglass className="size-3.5 text-amber" />
         ) : (
           <Spinner className="size-3.5 text-amber" />
         )}
         {item.done ? (
           <>Sandbox ready in {duration(took)}</>
         ) : (
-          <span className="text-shimmer">{last?.reason ?? "Setting up the sandbox"}</span>
+          <span className={cn(!stalled && "text-shimmer")}>{last?.reason ?? "Setting up the sandbox"}</span>
         )}
         {(item.logs.length > 0 || item.steps.length > 1) && (
           <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} />
@@ -230,10 +234,16 @@ const ItemView = memo(function ItemView({
   item,
   live,
   sessionId,
+  running,
+  stalled,
 }: {
   item: Item;
   live?: LiveTurn;
   sessionId?: string;
+  /** For tool calls: whether the agent works on its turn, as far as the page knows. */
+  running?: boolean;
+  /** For the setup: whether its runner can't be heard. */
+  stalled?: boolean;
 }) {
   switch (item.kind) {
     case "user":
@@ -250,7 +260,7 @@ const ItemView = memo(function ItemView({
       return (
         <ToolRow
           t={item}
-          running={!item.result}
+          running={!item.result && !!running}
           seconds={live?.tool?.id === item.id ? live.tool.seconds : undefined}
         />
       );
@@ -265,7 +275,7 @@ const ItemView = memo(function ItemView({
         </div>
       );
     case "setup":
-      return <Setup item={item} />;
+      return <Setup item={item} stalled={stalled} />;
     case "status":
       return item.status === "failed" ? (
         <Milestone icon={<CircleAlert />} tone="error">
@@ -335,10 +345,30 @@ const ItemView = memo(function ItemView({
   }
 });
 
-function LiveText({ text }: { text: string }) {
+function LiveText({ text, writing }: { text: string; writing: boolean }) {
   return (
-    <div className="relative py-2 after:ml-0.5 after:inline-block after:h-[1.05em] after:w-[2px] after:translate-y-[3px] after:animate-caret after:bg-accent after:content-['']">
+    <div
+      className={cn(
+        "relative py-2",
+        writing &&
+          "after:ml-0.5 after:inline-block after:h-[1.05em] after:w-[2px] after:translate-y-[3px] after:animate-caret after:bg-accent after:content-['']",
+      )}
+    >
       <Markdown text={text} className="[&>*:last-child]:inline" />
+    </div>
+  );
+}
+
+/** The agent's work isn't coming through: says why, in place of work in progress. */
+function StallNotice({ stall }: { stall: Stall }) {
+  const { title, detail } = stallText(stall);
+  return (
+    <div role="status" className="flex animate-fade gap-2.5 py-2 text-[13px] leading-relaxed">
+      <Unplug className="mt-[3px] size-3.5 shrink-0 text-amber" />
+      <div className="min-w-0">
+        <p className="text-amber">{title}</p>
+        <p className="text-ink-3">{detail}</p>
+      </div>
     </div>
   );
 }
@@ -347,25 +377,27 @@ export function LiveTurnView({
   live,
   status,
   since,
+  stall,
 }: {
   live: LiveTurn;
   status?: G.SessionStatus;
   since?: number;
+  stall?: Stall;
 }) {
   const blocks = live.blocks;
-  const working = status === "running";
+  const working = status === "running" && !stall;
   return (
     <>
       {blocks.map((b) =>
         b.type === "text" ? (
-          <LiveText key={`live-${b.index}`} text={b.text} />
+          <LiveText key={`live-${b.index}`} text={b.text} writing={!stall} />
         ) : b.type === "thinking" ? (
           <div
             key={`live-${b.index}`}
             className="flex items-center gap-2 py-1.5 text-[12.5px] text-violet/80"
           >
             <BrainCircuit className="size-3.5" />
-            <span className="text-shimmer">Thinking</span>
+            <span className={cn(!stall && "text-shimmer")}>Thinking</span>
           </div>
         ) : (
           <div
@@ -373,12 +405,17 @@ export function LiveTurnView({
             className="flex items-center gap-2.5 py-1 pl-1 text-[13.5px] text-ink-3"
           >
             <span className="flex size-6 items-center justify-center rounded-md border border-line bg-raised">
-              <Spinner className="size-3.5 text-accent" />
+              {stall ? (
+                <Hourglass className="size-3.5 text-ink-4" />
+              ) : (
+                <Spinner className="size-3.5 text-accent" />
+              )}
             </span>
-            <span className="text-shimmer">Preparing {b.name ?? "a tool"}</span>
+            <span className={cn(!stall && "text-shimmer")}>Preparing {b.name ?? "a tool"}</span>
           </div>
         ),
       )}
+      {stall && <StallNotice stall={stall} />}
       {working && !blocks.some((b) => !b.done) && (
         <div className="flex items-center gap-2 py-2 text-[12.5px] text-ink-3">
           <span className="relative flex size-2">
@@ -397,6 +434,7 @@ export const Transcript = memo(function Transcript({
   items,
   live,
   status,
+  stall,
   onLoadOlder,
   hasMoreBefore,
   loadingOlder,
@@ -405,10 +443,17 @@ export const Transcript = memo(function Transcript({
   items: Item[];
   live: LiveTurn;
   status?: G.SessionStatus;
+  /** Why the agent's work isn't coming through right now. */
+  stall?: Stall;
   onLoadOlder: () => void;
   hasMoreBefore: boolean;
   loadingOlder: boolean;
 }) {
+  // A tool call without a result runs only in the turn the agent works on,
+  // while its work comes through. One from a turn that ended (with a result,
+  // a stop or a failure) never gets one.
+  const running = status === "running" && !stall;
+  const turnStart = items.findLastIndex((it) => it.kind === "turn" || it.kind === "status");
   // Tool rows sit in a quiet column; everything else spans the reading width.
   return (
     <div className="flex flex-col">
@@ -422,7 +467,7 @@ export const Transcript = memo(function Transcript({
           Show earlier activity
         </button>
       )}
-      {items.map((it) => (
+      {items.map((it, i) => (
         <div
           key={it.key}
           className={cn(
@@ -430,10 +475,16 @@ export const Transcript = memo(function Transcript({
             it.kind === "tool" && "[contain-intrinsic-size:auto_34px]",
           )}
         >
-          <ItemView item={it} live={it.kind === "tool" ? live : undefined} sessionId={sessionId} />
+          <ItemView
+            item={it}
+            live={it.kind === "tool" ? live : undefined}
+            sessionId={sessionId}
+            running={it.kind === "tool" ? running && i > turnStart : undefined}
+            stalled={it.kind === "setup" ? !!stall : undefined}
+          />
         </div>
       ))}
-      <LiveTurnView live={live} status={status} />
+      <LiveTurnView live={live} status={status} stall={stall} />
     </div>
   );
 });
