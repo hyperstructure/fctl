@@ -91,7 +91,8 @@ node shoot.mjs http://localhost:5173/p/playground after-dark-390.png dark 390x84
 
 For one element, use `page.locator(…).screenshot()`; for a hover, a menu or
 a dialog, act on the page first. When the change is motion, record it
-(`recordVideo` in `newPage`) and attach the `.webm`.
+(`recordVideo` in `newPage`) and attach the `.webm`, or in an fctl session an
+animated WebP made from it (below).
 
 Look at every screenshot before you use it. If `npm ci` couldn't fetch
 `@hyperstructure/design`, the colors and fonts are a stand-in: say so under
@@ -138,7 +139,7 @@ fctl publish before-light.png after-light.png
 
 It prints Markdown for each, like
 `![before-light.png](https://app.fctl.sh/api/v1/published/…/before-light.png)`.
-Use the links in place of the file names in the section below, keep your own
+Use the links in place of the file names in the section above, keep your own
 alternative text, and edit the description without `--attach`:
 
 ```sh
@@ -150,6 +151,18 @@ project chooses otherwise), so the dev stack's data is all they may show. If
 `fctl publish` says the project doesn't publish screenshots, look at them
 anyway, describe what they show in the description, and say that the session
 can't attach them. Don't commit them instead.
+
+`fctl publish` takes images, not videos: turn a recording into an animated
+WebP and publish that. `-ss` and `-t` keep the seconds that show the change.
+Three seconds at 12 frames a second and 800 px wide come to about 1 MB, well
+under the 5 MB limit:
+
+```sh
+sudo apt-get update && sudo apt-get install -y ffmpeg   # once per sandbox
+ffmpeg -ss 1 -t 3 -i recording.webm -vf "fps=12,scale=800:-1" \
+  -c:v libwebp_anim -q:v 60 -loop 0 after.webp
+fctl publish after.webp
+```
 
 ## Keeping them current
 
