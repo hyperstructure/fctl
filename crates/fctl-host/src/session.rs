@@ -5,15 +5,17 @@ use crate::config::HostConfig;
 use crate::driver::{Driver, Sandbox, SandboxSpec, sandbox_name};
 use crate::uplink::Uplink;
 use anyhow::{Context, Result};
+use fctl_domain::size::Want;
 use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES};
 use fctl_proto::event::{LogLevel, LogLine, LogSource};
 use fctl_proto::runner::{
-    ClaudeCredential, CredentialKind, GithubCredential, SessionSpec, StopReason,
+    ClaudeCredential, CredentialKind, GithubCredential, SandboxLimits, SandboxSize, SessionSpec,
+    StopReason,
 };
 use fctl_proto::session::SessionStatus;
 use fctl_proto::uplink::{Delivery, SessionState, UplinkDown};
 use fctl_proto::{RunnerId, SessionId};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -24,6 +26,8 @@ pub struct HostCtx {
     pub driver: Driver,
     pub token: String,
     pub runner_id: Mutex<Option<RunnerId>>,
+    /// What this host gives each sandbox, as of the last hello.
+    pub sandbox: Mutex<SandboxLimits>,
 }
 
 impl HostCtx {
@@ -33,6 +37,23 @@ impl HostCtx {
             .ok()
             .and_then(|r| r.clone())
             .unwrap_or_else(|| RunnerId("rnr_unknown".into()))
+    }
+
+    pub fn sandbox_limits(&self) -> SandboxLimits {
+        *self.sandbox.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Measures what the sandboxes run on again (the Docker VM may have
+    /// been resized) and returns the limits that follow.
+    pub async fn refresh_sandbox_limits(&self) -> SandboxLimits {
+        let limits = self.cfg.sandbox_limits(self.driver.resources().await);
+        *self.sandbox.lock().unwrap_or_else(PoisonError::into_inner) = limits;
+        limits
+    }
+
+    /// The CPUs and memory a session's sandbox gets on this host.
+    pub fn sandbox_size(&self, spec: &SessionSpec) -> SandboxSize {
+        Want::of(&spec.project.settings).on(&self.sandbox_limits())
     }
 
     pub fn uplink_url(&self, session: &SessionId) -> String {
@@ -207,11 +228,12 @@ async fn prepare(ctx: &HostCtx, spec: &SessionSpec, uplink: &Uplink) -> Result<S
         .image
         .clone()
         .unwrap_or_else(|| ctx.cfg.image.clone());
+    let size = ctx.sandbox_size(spec);
     let sspec = SandboxSpec {
         name: sandbox_name(spec.session_id.as_str()),
         image,
-        cpus: spec.project.settings.cpus.unwrap_or(ctx.cfg.cpus),
-        memory_mb: spec.project.settings.memory_mb.unwrap_or(ctx.cfg.memory_mb),
+        cpus: size.cpus,
+        memory_mb: size.memory_mb,
     };
     let log_uplink = |line: String| host_log(uplink, LogLevel::Info, line);
     let sb = ctx.driver.ensure(&sspec, &log_uplink).await?;
@@ -477,5 +499,6 @@ fn agent_config(
         env: Default::default(),
         push_on_commit: ctx.cfg.push_on_commit,
         first_agent_seq: (first_agent_seq > 0).then_some(first_agent_seq),
+        sandbox: ctx.driver.enforces_size().then(|| ctx.sandbox_size(spec)),
     }
 }

@@ -13,7 +13,7 @@ pub mod lima;
 pub mod process;
 
 use anyhow::Result;
-use fctl_proto::runner::DriverInfo;
+use fctl_proto::runner::{DriverInfo, SandboxSize};
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -144,6 +144,27 @@ impl Driver {
             Self::Container(d) => d.probe().await,
             Self::Lima(d) => d.probe().await,
         }
+    }
+
+    /// The CPUs and memory sandboxes run on: the Docker daemon's (on macOS
+    /// the VM of OrbStack, Docker Desktop or Colima), otherwise this
+    /// machine's. Memory is 0 when unknown.
+    pub async fn resources(&self) -> SandboxSize {
+        if let Self::Container(d) = self
+            && let Some(size) = d.resources().await
+        {
+            return size;
+        }
+        SandboxSize {
+            cpus: crate::sysinfo::cpus(),
+            memory_mb: u32::try_from(crate::sysinfo::memory_mb()).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// Whether the driver holds sandboxes to their size (the process driver
+    /// does not).
+    pub fn enforces_size(&self) -> bool {
+        !matches!(self, Self::Process(_))
     }
 
     /// Creates the sandbox, or starts an existing one with the same name.

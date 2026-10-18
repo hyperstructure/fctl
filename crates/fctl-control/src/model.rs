@@ -1,6 +1,7 @@
 //! Database rows and their conversion to wire types.
 
 use crate::db::{int, int_bool, opt_int};
+use crate::internal::LiveRunners;
 use fctl_proto::api::{
     AllowEntry, ClaudeCredentialInfo, CredentialStatus, Identity, Runner, RunnerStatus, User,
     UserStatus,
@@ -392,8 +393,10 @@ impl RunnerRow {
             .and_then(|s| serde_json::from_str(s).ok())
     }
 
-    pub fn to_runner(&self, online: bool) -> Runner {
+    pub fn to_runner(&self, live: &LiveRunners) -> Runner {
         let hello = self.hello();
+        let online = live.online.contains(&self.id);
+        let free = live.free.get(&self.id).copied().unwrap_or_default();
         Runner {
             id: RunnerId(self.id.clone()),
             name: self.name.clone(),
@@ -417,6 +420,9 @@ impl RunnerRow {
             active_sessions: self.active_sessions.max(0) as u32,
             cpus: hello.as_ref().map(|h| h.cpus),
             memory_mb: hello.as_ref().map(|h| h.memory_mb),
+            memory_available_mb: free.memory_mb,
+            disk_available_mb: free.disk_mb,
+            sandbox: hello.as_ref().and_then(|h| h.sandbox),
             labels: hello.as_ref().map(|h| h.labels.clone()).unwrap_or_default(),
             last_seen_at: self.last_seen_at,
             created_at: self.created_at,

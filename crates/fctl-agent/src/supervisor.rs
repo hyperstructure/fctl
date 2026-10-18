@@ -442,6 +442,7 @@ impl Supervisor {
         self.claude_credential = Some(config.spec.credentials.claude.clone());
         self.paths = Some(paths.clone());
         let spec = config.spec.clone();
+        let sandbox_env = prompt::sandbox_env(config.sandbox);
         self.config = Some(config);
         self.set_status(
             SessionStatus::Preparing,
@@ -476,6 +477,7 @@ impl Supervisor {
                         .iter()
                         .chain(spec.secrets.iter())
                         .map(|(k, v)| (k.clone(), v.clone()))
+                        .chain(sandbox_env)
                         .collect();
                     let (setup_tx, mut setup_rx) = mpsc::unbounded_channel::<(LogLevel, String)>();
                     let setup_work = work.clone();
@@ -623,6 +625,7 @@ impl Supervisor {
         if let Some(socket) = &self.session_socket {
             env.insert(SESSION_SOCKET_ENV.into(), socket.display().to_string());
         }
+        env.extend(prompt::sandbox_env(config.sandbox));
         // Resuming needs Claude's conversation. A sandbox made for a resumed
         // session (the stopped one expired) has none: start a new one there.
         let wants_resume = spec.resume || self.persisted.claude_started;
@@ -630,7 +633,7 @@ impl Supervisor {
             && (self.persisted.claude_started
                 || claude::conversation_exists(&paths.home, &spec.claude_session_id));
         let fresh_resume = wants_resume && !resume;
-        let system = prompt::system_prompt(spec, &workdir);
+        let system = prompt::system_prompt(spec, &workdir, config.sandbox);
         let bin = config.claude_bin.clone().unwrap_or_else(|| "claude".into());
         let launch = LaunchSpec {
             bin: &bin,
@@ -1264,6 +1267,7 @@ mod tests {
             env: Default::default(),
             push_on_commit: true,
             first_agent_seq: None,
+            sandbox: None,
         });
         let reply = sup.on_session_request(edit(
             Some("  Fix the   login test "),

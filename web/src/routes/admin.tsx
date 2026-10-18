@@ -8,7 +8,7 @@ import { Avatar, Banner, Button, CodeBox, Dialog, Empty, Field, Input, toast } f
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago } from "@/lib/format";
+import { ago, cpus, memory, sandboxLimits } from "@/lib/format";
 import { keys, queryClient, useMe, useRunners } from "@/lib/queries";
 
 type Tab = "access" | "users" | "runners" | "audit";
@@ -339,6 +339,7 @@ function Runners() {
                   {r.version ? ` · fctl ${r.version}` : ""}
                   {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
                 </div>
+                <RunnerResources runner={r} />
               </div>
               <Button size="sm" variant="ghost" onClick={() => toggle.mutate(r)}>
                 {r.status === "disabled" ? "Enable" : "Disable"}
@@ -379,6 +380,22 @@ function Runners() {
       </Dialog>
     </div>
   );
+}
+
+/** What a runner gives sandboxes, what the machine has, and what is free. */
+function RunnerResources({ runner: r }: { runner: G.Runner }) {
+  const free = [
+    r.memory_available_mb != null && `${memory(r.memory_available_mb)} of memory`,
+    r.disk_available_mb != null && `${memory(r.disk_available_mb)} of disk`,
+  ].filter(Boolean);
+  const text = [
+    r.sandbox && `Sandboxes: ${sandboxLimits(r.sandbox)}`,
+    r.cpus && r.memory_mb && `machine: ${cpus(r.cpus)} and ${memory(r.memory_mb)}`,
+    free.length > 0 && `${free.join(" and ")} free`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return text ? <div className="mt-0.5 text-[12px] text-ink-4">{text}</div> : null;
 }
 
 function Audit() {
