@@ -13,7 +13,7 @@
 //! reads one [`SessionReply`]. That is how an agent names and describes its
 //! own session without credentials for the control plane.
 
-use crate::event::LogLine;
+use crate::event::{Attachment, LogLine};
 use crate::runner::{
     ClaudeCredential, CredentialKind, GithubCredential, SandboxSize, SessionSpec, StopReason,
 };
@@ -75,6 +75,13 @@ pub enum HostToAgent {
     Deliver {
         delivery: Delivery,
     },
+    /// An attachment's bytes (base64), sent before the `Configure` or
+    /// `Deliver` that refers to it. Only to agents that announce
+    /// [`crate::uplink::FEATURE_ATTACHMENTS`].
+    File {
+        attachment: Attachment,
+        data: String,
+    },
     /// Fresh credentials, pushed or in answer to `CredentialRequest`.
     Credentials {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,6 +120,11 @@ pub struct AgentHello {
     /// The highest `agent_seq` journaled so far.
     pub agent_seq: u64,
     pub claude_version: Option<String>,
+    /// What this agent can do beyond the protocol version (older agents
+    /// send none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub features: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

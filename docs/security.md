@@ -12,6 +12,7 @@ trusts.
 | Sessions and tokens | SHA-256 hashes in D1; the secret only with its holder | the holder |
 | Claude credentials | encrypted (AES-256-GCM) in D1 | sessions their owner starts |
 | Project secrets | encrypted in D1 | that project's sessions, as environment variables |
+| Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
 | GitHub App key | a Worker secret | the control plane, to mint short-lived tokens |
 | Master key | a Worker secret | the control plane |
 
@@ -33,6 +34,12 @@ owner and purpose), so a value copied between rows does not decrypt.
 - The web app ships a strict Content-Security-Policy (`script-src 'self'`, no
   inline scripts), `frame-ancestors 'none'`, HSTS, and renders agent output
   as text (Markdown is parsed into elements, never injected as HTML).
+- File uploads are `application/octet-stream` bodies, which browsers cannot
+  send cross-site without asking first, and pass the same origin check.
+  Attached files are served with `nosniff` and a sandboxing
+  Content-Security-Policy; only PNG, JPEG, GIF and WebP display in place,
+  everything else downloads, so an uploaded HTML or SVG file never runs as
+  part of the app.
 
 ## Sandboxes
 
@@ -79,6 +86,9 @@ outside it except through these channels:
   both values again.
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
+- **Attached files** are saved in the sandbox under `~/attachments/`, where
+  anything the agent runs can read them, and Claude sees images in the
+  message.
 
 The `process` driver has no isolation at all and is for development only.
 
@@ -107,8 +117,9 @@ it runs, and keep nothing secret on disk but their runner token
 ## Retention
 
 - Deleting a project deletes its sessions with their transcripts (the event
-  logs in their Durable Objects) right away; an hourly job retries any that
-  fail.
+  logs in their Durable Objects) and the files attached to their messages
+  right away; an hourly job retries any that fail. Uploaded files that no
+  message sent are deleted after a day.
 - Expired browser sessions and tokens, password resets, device codes and
   invitations are deleted within the hour, and audit log entries after a
   year.
@@ -121,7 +132,8 @@ it runs, and keep nothing secret on disk but their runner token
   placeholder, without its name, email or picture. An instance's last owner
   cannot delete their account.
 - Settings → Your data (or `fctl account export`) downloads everything the
-  instance keeps about you, as JSON.
+  instance keeps about you, as JSON. Files you attached are listed in the
+  transcripts there; each downloads from its session.
 - Hosts keep a stopped session's sandbox so it can resume, and remove it
   once it has been stopped for `keep_stopped_hours` (72 by default; 0 keeps
   them). Resuming after that starts a new sandbox on the session's branch,

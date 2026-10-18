@@ -114,7 +114,7 @@ pub async fn follow_after(
                             continue;
                         }
                         "/detach" | "/quit" | "/exit" => return Ok(()),
-                        _ => ViewerClient::Send { client_id, text: text.to_owned() },
+                        _ => ViewerClient::Send { client_id, text: text.to_owned(), attachments: Vec::new() },
                     };
                     if ws::send_json(&mut sink, &msg).await.is_err() { break true; }
                 }

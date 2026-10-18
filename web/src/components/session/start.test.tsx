@@ -89,6 +89,41 @@ describe("starting a session", () => {
     expect(s().starting).toBe(true);
   });
 
+  it("starts with files alone, once their uploads are done", async () => {
+    createSession.mockReturnValue(new Promise(() => {}));
+    const shot = { id: "att_1", name: "shot.png", media_type: "image/png", size: 10 };
+    let finish: (v: {
+      files: { attachments: (typeof shot)[]; previews: Record<string, string> };
+      restore: () => void;
+    }) => void = () => {};
+    const files = {
+      drafts: [{}],
+      take: vi.fn(() => new Promise<Parameters<typeof finish>[0]>((r) => (finish = r))),
+    };
+    const s = mount();
+    act(() => s().start("web", " ", files));
+    await settle();
+    expect(createSession).not.toHaveBeenCalled();
+    expect(s().starting).toBe(true);
+    finish({ files: { attachments: [shot], previews: {} }, restore: () => {} });
+    await settle();
+    expect(createSession).toHaveBeenCalledWith("web", { prompt: " ", attachments: ["att_1"] });
+  });
+
+  it("puts the files back when the start fails", async () => {
+    createSession.mockRejectedValueOnce(new Error("No runner is online"));
+    const restore = vi.fn();
+    const files = {
+      drafts: [{}],
+      take: () => Promise.resolve({ files: { attachments: [], previews: {} }, restore }),
+    };
+    const s = mount();
+    act(() => s().start("web", "Fix it", files));
+    await settle();
+    expect(restore).toHaveBeenCalled();
+    expect(s().starting).toBe(false);
+  });
+
   it("ignores a blank prompt", async () => {
     const s = mount();
     act(() => s().start("web", "  \n"));

@@ -39,6 +39,48 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 const enc = encodeURIComponent;
 
+/** Where a file uploads: a project (to start a session) or a session (a message in it). */
+export type UploadScope = { project: string } | { session: string };
+
+/**
+ * Uploads a file to send with a message (XHR, for progress). The body is
+ * `application/octet-stream`; the name and type travel in the query.
+ */
+function upload(
+  scope: UploadScope,
+  file: Blob,
+  name: string,
+  onProgress?: (fraction: number) => void,
+): { promise: Promise<G.Attachment>; abort: () => void } {
+  const xhr = new XMLHttpRequest();
+  const q = new URLSearchParams({ name });
+  if (file.type) q.set("type", file.type);
+  const base = "project" in scope ? `/projects/${enc(scope.project)}` : `/sessions/${enc(scope.session)}`;
+  const promise = new Promise<G.Attachment>((resolve, reject) => {
+    xhr.open("POST", `/api/v1${base}/attachments?${q}`);
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) onProgress?.(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      let data: unknown;
+      try {
+        data = xhr.responseText ? JSON.parse(xhr.responseText) : undefined;
+      } catch {
+        data = undefined;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as G.Attachment);
+      else reject(new ApiFailure(xhr.status, (data as Partial<G.ApiError>) ?? {}));
+    };
+    xhr.onerror = () =>
+      reject(new ApiFailure(0, { code: "unavailable", message: "You appear to be offline." }));
+    xhr.onabort = () => reject(new ApiFailure(0, { code: "unavailable", message: "Upload cancelled" }));
+    xhr.send(file);
+  });
+  return { promise, abort: () => xhr.abort() };
+}
+
 export const api = {
   instance: () => request<G.InstanceInfo>("GET", "/instance"),
   setup: (b: G.SetupRequest) => request<G.AuthResponse>("POST", "/setup", b),
@@ -106,10 +148,11 @@ export const api = {
     request<G.Session>("PATCH", `/sessions/${enc(id)}`, b),
   sendMessage: (id: string, b: G.SendMessageRequest) =>
     request<G.SendMessageResponse>("POST", `/sessions/${enc(id)}/messages`, b),
+  uploadAttachment: upload,
   interrupt: (id: string) => request<G.SendMessageResponse>("POST", `/sessions/${enc(id)}/interrupt`, {}),
   stop: (id: string) => request<G.Session>("POST", `/sessions/${enc(id)}/stop`, {}),
-  resume: (id: string, prompt?: string) =>
-    request<G.Session>("POST", `/sessions/${enc(id)}/resume`, { prompt }),
+  resume: (id: string, prompt?: string, attachments?: G.AttachmentId[]) =>
+    request<G.Session>("POST", `/sessions/${enc(id)}/resume`, { prompt, attachments }),
   events: (id: string, q: { before?: number; after?: number; limit?: number }) => {
     const p = new URLSearchParams();
     if (q.before) p.set("before", String(q.before));

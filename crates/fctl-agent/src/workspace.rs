@@ -29,6 +29,8 @@ pub struct Paths {
     pub home: PathBuf,
     /// Where the agent clones the project's other repositories (`~/repos`).
     pub repos: PathBuf,
+    /// Where attachments are saved: `~/attachments`, outside the repository.
+    pub attachments: PathBuf,
     /// The GitHub token that can write: the primary repository and the
     /// other writable ones.
     pub token_file: PathBuf,
@@ -45,6 +47,7 @@ impl Paths {
             workdir: workdir.to_path_buf(),
             home: home.to_path_buf(),
             repos: home.join("repos"),
+            attachments: home.join("attachments"),
             token_file: state.join("github-token"),
             read_token_file: state.join("github-token-read"),
             write_repos_file: state.join("github-write-repos"),

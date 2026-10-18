@@ -149,6 +149,11 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
             "INSERT OR IGNORE INTO session_purges (session_id, queued_at) SELECT id, ? FROM sessions WHERE project_id = ?",
             &[n(ctx.now), s(&p.id)],
         )?);
+        statements.push(q(
+            db,
+            "INSERT OR IGNORE INTO file_purges (project_id, queued_at) VALUES (?, ?)",
+            &[s(&p.id), n(ctx.now)],
+        )?);
         statements.push(q(db, "DELETE FROM projects WHERE id = ?", &[s(&p.id)])?);
     }
     for table in [
@@ -199,14 +204,10 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         &[s(id), s(id), s(id)],
     )?);
     batch(db, statements).await?;
-    if plan.sole.iter().any(|p| p.sessions > 0) {
+    if !plan.sole.is_empty() {
         let env = ctx.env.clone();
         let db = crate::db::handle(&ctx.db);
-        ctx.defer(async move {
-            crate::housekeeping::purge_sessions(&env, &db, crate::housekeeping::PURGES_PER_RUN)
-                .await
-                .map(|_| ())
-        });
+        ctx.defer(async move { crate::housekeeping::purge_deleted(&env, &db).await });
     }
     Ok(())
 }

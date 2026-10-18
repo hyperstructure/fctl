@@ -10,6 +10,8 @@
   line-height: 1.7;
   color: var(--c-ink);
   letter-spacing: -0.006em;
+  /* Paths, URLs and ids wrap instead of widening the page. */
+  overflow-wrap: anywhere;
 }
 .prose-fctl > * + * {
   margin-top: 0.78em;

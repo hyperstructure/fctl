@@ -8,6 +8,8 @@ export type { AllowEntry } from "./AllowEntry";
 export type { AllowId } from "./AllowId";
 export type { AllowList } from "./AllowList";
 export type { ApiError } from "./ApiError";
+export type { Attachment } from "./Attachment";
+export type { AttachmentId } from "./AttachmentId";
 export type { AuditEntry } from "./AuditEntry";
 export type { AuditList } from "./AuditList";
 export type { AuthResponse } from "./AuthResponse";

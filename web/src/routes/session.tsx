@@ -79,7 +79,10 @@ export function SessionPage() {
     };
   }, [session]);
 
-  const resume = useMutation({ mutationFn: (prompt?: string) => api.resume(id, prompt) });
+  const resume = useMutation({
+    mutationFn: (b?: { prompt?: string; attachments?: G.AttachmentId[] }) =>
+      api.resume(id, b?.prompt, b?.attachments),
+  });
   const stop = useMutation({
     mutationFn: () => api.stop(id),
     onSuccess: () => toast("Stopping the session"),
@@ -255,6 +258,7 @@ export function SessionPage() {
             </div>
           ) : (
             <Transcript
+              sessionId={id}
               items={s.items}
               live={s.live}
               status={status}
@@ -273,18 +277,24 @@ export function SessionPage() {
               role={role}
               viewers={s.viewers}
               meId={me?.user.id}
-              onSend={(t) =>
+              sessionId={id}
+              onSend={(t, files) =>
                 store.send(
                   t,
                   me?.user
                     ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
                     : undefined,
+                  files,
                 )
               }
               onInterrupt={() => store.interrupt()}
               onTyping={() => store.typing()}
-              onResume={async (t) => {
-                await resume.mutateAsync(t);
+              onResume={async (t, files) => {
+                await resume.mutateAsync({
+                  prompt: t,
+                  attachments: files.attachments.map((a) => a.id),
+                });
+                for (const url of Object.values(files.previews)) URL.revokeObjectURL(url);
               }}
             />
           </div>

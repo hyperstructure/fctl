@@ -1,7 +1,9 @@
 //! A typed client for the control plane's REST API (`/api/v1`).
 
 use crate::http::{Error, HttpClient, Result};
+use fctl_proto::AttachmentId;
 use fctl_proto::api::*;
+use fctl_proto::event::Attachment;
 use fctl_proto::session::{Project, Session};
 use http::Method;
 use serde::Serialize;
@@ -256,15 +258,117 @@ impl Api {
         session: &str,
         text: &str,
         client_id: Option<String>,
+        attachments: Vec<AttachmentId>,
     ) -> Result<SendMessageResponse> {
         self.post(
             &format!("/sessions/{}/messages", enc(session)),
             &SendMessageRequest {
                 text: text.to_owned(),
                 client_id,
+                attachments,
             },
         )
         .await
+    }
+
+    // ── attachments ──
+
+    /// Uploads a file to start a session with (send it by id). Unsent
+    /// uploads are deleted after a day.
+    pub async fn upload_attachment(
+        &self,
+        project: &str,
+        name: &str,
+        media_type: Option<&str>,
+        bytes: Vec<u8>,
+    ) -> Result<Attachment> {
+        self.upload(
+            &format!("/projects/{}", enc(project)),
+            name,
+            media_type,
+            bytes,
+        )
+        .await
+    }
+
+    /// Uploads a file to send with a message or resume in a session.
+    pub async fn upload_session_attachment(
+        &self,
+        session: &str,
+        name: &str,
+        media_type: Option<&str>,
+        bytes: Vec<u8>,
+    ) -> Result<Attachment> {
+        self.upload(
+            &format!("/sessions/{}", enc(session)),
+            name,
+            media_type,
+            bytes,
+        )
+        .await
+    }
+
+    async fn upload(
+        &self,
+        scope: &str,
+        name: &str,
+        media_type: Option<&str>,
+        bytes: Vec<u8>,
+    ) -> Result<Attachment> {
+        let mut path = format!("{scope}/attachments?name={}", enc(name));
+        if let Some(t) = media_type {
+            path.push_str(&format!("&type={}", enc(t)));
+        }
+        let body = self
+            .raw(
+                Method::POST,
+                &path,
+                Some(bytes),
+                Some("application/octet-stream"),
+            )
+            .await?;
+        serde_json::from_slice(&body).map_err(|e| Error::Decode(e.to_string()))
+    }
+
+    /// A file sent in a session.
+    pub async fn attachment(&self, session: &str, attachment: &str) -> Result<Vec<u8>> {
+        let path = format!("/sessions/{}/attachments/{}", enc(session), enc(attachment));
+        Ok(self.raw(Method::GET, &path, None, None).await?.to_vec())
+    }
+
+    /// A file sent in a session this runner runs (with the runner token).
+    pub async fn runner_attachment(&self, session: &str, attachment: &str) -> Result<Vec<u8>> {
+        let path = format!(
+            "/runner/sessions/{}/attachments/{}",
+            enc(session),
+            enc(attachment)
+        );
+        Ok(self.raw(Method::GET, &path, None, None).await?.to_vec())
+    }
+
+    /// A request with a raw body and answer; files can be large, so it may
+    /// take minutes.
+    async fn raw(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+        content_type: Option<&str>,
+    ) -> Result<bytes::Bytes> {
+        let http = HttpClient::new(std::time::Duration::from_secs(600));
+        let (status, _, bytes) = http
+            .send(method, &self.url(path), self.token(), body, content_type)
+            .await?;
+        if !status.is_success() {
+            if let Ok(e) = serde_json::from_slice::<fctl_proto::ApiError>(&bytes) {
+                return Err(Error::Api(e));
+            }
+            return Err(Error::Status {
+                status: status.as_u16(),
+                body: String::from_utf8_lossy(&bytes).chars().take(500).collect(),
+            });
+        }
+        Ok(bytes)
     }
 
     pub async fn interrupt(&self, session: &str) -> Result<SendMessageResponse> {
@@ -283,10 +387,18 @@ impl Api {
         .await
     }
 
-    pub async fn resume(&self, session: &str, prompt: Option<String>) -> Result<Session> {
+    pub async fn resume(
+        &self,
+        session: &str,
+        prompt: Option<String>,
+        attachments: Vec<AttachmentId>,
+    ) -> Result<Session> {
         self.post(
             &format!("/sessions/{}/resume", enc(session)),
-            &ResumeSessionRequest { prompt },
+            &ResumeSessionRequest {
+                prompt,
+                attachments,
+            },
         )
         .await
     }

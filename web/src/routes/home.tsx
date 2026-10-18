@@ -4,9 +4,17 @@ import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstru
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AttachButton,
+  DraftTray,
+  DropHint,
+  useAttachments,
+  useFileDrop,
+} from "@/components/session/attachments";
 import { StartButton, useStartSession } from "@/components/session/start";
 import { Avatar, Button, firstNames, GLCanvas, Skeleton, StatusDot, Textarea } from "@/components/ui";
 import type * as G from "@/gen";
+import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
 import { agoShort, stamp } from "@/lib/format";
@@ -104,23 +112,36 @@ function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<Foun
 }
 
 function QuickStart({ projects }: { projects: G.Project[] }) {
-  const [project, setProject] = useState(projects[0]?.slug ?? "");
-  const [prompt, setPrompt] = useState("");
-  useEffect(() => {
-    if (!project && projects[0]) setProject(projects[0].slug);
-  }, [projects, project]);
-  const { start, starting } = useStartSession();
   const editable = projects.filter((p) => p.role !== "viewer");
+  const first = editable[0]?.slug;
+  const [project, setProject] = useState(first ?? "");
+  const [prompt, setPrompt] = useState("");
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!project && first) setProject(first);
+  }, [first, project]);
+  const { start, starting } = useStartSession();
+  const files = useAttachments(editable.length && project ? { project } : undefined);
+  const attach = (f: File[], pasted?: boolean) => {
+    files.add(f, { pasted });
+    ref.current?.focus();
+  };
+  const dragging = useFileDrop(attach, editable.length > 0 && !starting);
   if (!editable.length) return null;
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        start(project, prompt);
+        start(project, prompt, files);
       }}
-      className="group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]"
+      className={cn(
+        "group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]",
+        dragging && "border-accent/50",
+      )}
     >
+      <DraftTray drafts={files.drafts} onRemove={files.remove} onRetry={files.retry} className="px-4 pt-4" />
       <Textarea
+        ref={ref}
         bare
         minRows={2}
         maxRows={10}
@@ -130,14 +151,21 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            start(project, prompt);
+            start(project, prompt, files);
           }
+        }}
+        onPaste={(e) => {
+          const pasted = filesFromPaste(e.clipboardData);
+          if (!pasted.length || starting) return;
+          e.preventDefault();
+          attach(pasted, true);
         }}
         placeholder="What should an agent build next?"
         className="block px-5 pt-4 pb-14 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
         aria-label="Task for a new session"
       />
-      <div className="absolute right-3 bottom-3 left-4 flex items-center gap-3">
+      <div className="absolute right-3 bottom-3 left-2.5 flex items-center gap-2">
+        <AttachButton onFiles={(f) => attach(f)} />
         <label className="flex min-w-0 items-center gap-2 text-[12.5px] text-ink-3">
           <span className="text-ink-4">in</span>
           <select
@@ -155,10 +183,15 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
         </label>
         <span className="flex-1" />
         <span className="hidden text-[11.5px] text-ink-4 sm:inline">⌘↵ to start</span>
-        <StartButton starting={starting} disabled={!prompt.trim()} className="enabled:hover:scale-[1.03]">
+        <StartButton
+          starting={starting}
+          disabled={!prompt.trim() && !files.drafts.length}
+          className="enabled:hover:scale-[1.03]"
+        >
           Start
         </StartButton>
       </div>
+      <DropHint show={dragging} />
     </form>
   );
 }

@@ -191,7 +191,8 @@ pub fn activity(v: &Value) -> Option<(&'static str, u32)> {
 /// if it is still too large, the structured `tool_use_result` copy goes.
 /// Returns whether anything was removed.
 pub fn shape_for_storage(v: &mut Value) -> bool {
-    let mut changed = truncate_strings(v, MAX_STORED_STRING_BYTES);
+    let mut changed = omit_base64(v);
+    changed |= truncate_strings(v, MAX_STORED_STRING_BYTES);
     if serialized_len(v) > MAX_STORED_EVENT_BYTES
         && let Some(obj) = v.as_object_mut()
         && obj.remove("tool_use_result").is_some()
@@ -204,6 +205,28 @@ pub fn shape_for_storage(v: &mut Value) -> bool {
         limit /= 2;
     }
     changed
+}
+
+/// Empties the data of base64 sources (images and documents Claude read):
+/// nothing shows them, and truncated they are useless. `omitted_bytes` says
+/// how much there was.
+fn omit_base64(v: &mut Value) -> bool {
+    match v {
+        Value::Object(map) => {
+            let source = map.get("type").and_then(Value::as_str) == Some("base64");
+            match map.get_mut("data") {
+                Some(Value::String(data)) if source && data.len() > 1024 => {
+                    let n = data.len();
+                    data.clear();
+                    map.insert("omitted_bytes".into(), Value::from(n));
+                    true
+                }
+                _ => map.values_mut().fold(false, |acc, x| omit_base64(x) | acc),
+            }
+        }
+        Value::Array(items) => items.iter_mut().fold(false, |acc, x| omit_base64(x) | acc),
+        _ => false,
+    }
 }
 
 fn serialized_len(v: &Value) -> usize {
@@ -315,6 +338,27 @@ mod tests {
         assert!(serialized_len(&v) <= MAX_STORED_EVENT_BYTES);
         let small = &mut json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}});
         assert!(!shape_for_storage(small));
+    }
+
+    #[test]
+    fn storage_omits_base64_images() {
+        let data = "iVBORw0KGgo".repeat(1000);
+        let mut v = json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
+            {"type": "text", "text": "x".repeat(2000)}
+        ]}]}});
+        assert!(shape_for_storage(&mut v));
+        let source = &v["message"]["content"][0]["content"][0]["source"];
+        assert_eq!(source["data"], "");
+        assert_eq!(source["omitted_bytes"], 11_000);
+        assert_eq!(source["media_type"], "image/png");
+        // Other long strings stay (within the usual limits).
+        assert_eq!(
+            v["message"]["content"][0]["content"][1]["text"]
+                .as_str()
+                .map(str::len),
+            Some(2000)
+        );
     }
 
     #[test]

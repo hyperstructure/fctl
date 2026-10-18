@@ -125,6 +125,14 @@ impl Renderer {
                 for line in m.text.lines() {
                     out(&format!("{} {line}\n", style::blue("▍")));
                 }
+                for a in &m.attachments {
+                    out(&format!(
+                        "{} {} {}\n",
+                        style::blue("▍"),
+                        a.name,
+                        style::dim(&fctl_domain::files::human_size(a.size))
+                    ));
+                }
                 out("\n");
             }
             EventBody::Status(s) => {

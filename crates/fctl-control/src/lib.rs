@@ -8,6 +8,7 @@ mod config;
 mod crypto;
 mod ctx;
 mod db;
+mod do_files;
 mod do_fleet;
 mod do_session;
 mod email;
@@ -20,6 +21,7 @@ mod model;
 mod spec;
 
 use ctx::Ctx;
+pub use do_files::FilesObject;
 pub use do_fleet::FleetObject;
 pub use do_session::SessionObject;
 use error::{AppError, AppResult};
@@ -119,6 +121,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["runners", id, "token"]) => api::runners::rotate_token(ctx, id).await,
         (Get, ["runner", "connect"]) => api::runners::connect(ctx, req).await,
         (Get, ["runner", "sessions", id, "uplink"]) => api::runners::uplink(ctx, req, id).await,
+        (Get, ["runner", "sessions", id, "attachments", file]) => {
+            api::attachments::runner_download(ctx, req, id, file).await
+        }
         (Get, ["feed", "ws"]) => api::runners::feed(ctx, req).await,
 
         // Projects
@@ -148,6 +153,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::repos::remove(ctx, id, owner, name).await
         }
         (Post, ["projects", id, "sessions"]) => api::sessions::create(ctx, req, id).await,
+        (Post, ["projects", id, "attachments"]) => api::attachments::upload(ctx, req, id).await,
         (Get, ["github"]) => api::projects::github_info(ctx).await,
         (Get, ["github", "repos"]) => api::projects::github_repos(ctx).await,
 
@@ -161,6 +167,12 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["sessions", id, "resume"]) => api::sessions::resume(ctx, req, id).await,
         (Get, ["sessions", id, "events"]) => api::sessions::events(ctx, req, id).await,
         (Get, ["sessions", id, "ws"]) => api::sessions::websocket(ctx, req, id).await,
+        (Post, ["sessions", id, "attachments"]) => {
+            api::attachments::upload_to_session(ctx, req, id).await
+        }
+        (Get, ["sessions", id, "attachments", file]) => {
+            api::attachments::download(ctx, id, file).await
+        }
         (Get, ["sessions", id, "shares"]) => api::sessions::shares(ctx, id).await,
         (Post, ["sessions", id, "shares"]) => api::sessions::add_share(ctx, req, id).await,
         (Delete, ["sessions", id, "shares", user]) => {

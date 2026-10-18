@@ -7,19 +7,45 @@ import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { Spinner, toast } from "@/components/ui";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import type { SentFiles } from "./attachments";
+
+/** The files a start form holds (see `useAttachments`). */
+export interface StartFiles {
+  drafts: readonly unknown[];
+  take: () => Promise<{ files: SentFiles; restore: () => void }>;
+}
 
 /**
  * Starts a session and opens it. While a start is in flight, `start` does nothing, so a double
  * click or a second ⌘↵ cannot create a duplicate. `starting` stays true until the session page
- * replaces the form, and turns false again if the start fails.
+ * replaces the form, and turns false again if the start fails (attached files go back in the
+ * form). A start needs a prompt or files; it waits for files still uploading.
  */
 export function useStartSession() {
   const navigate = useNavigate();
   // isPending reaches the component a tick after mutate(); this closes that gap.
   const inFlight = useRef(false);
   const create = useMutation({
-    mutationFn: ({ project, prompt }: { project: string; prompt: string }) =>
-      api.createSession(project, { prompt }),
+    mutationFn: async ({
+      project,
+      prompt,
+      files,
+    }: {
+      project: string;
+      prompt: string;
+      files?: StartFiles;
+    }) => {
+      const taken = files?.drafts.length ? await files.take() : undefined;
+      const attachments = taken?.files.attachments.map((a) => a.id) ?? [];
+      try {
+        const s = await api.createSession(project, attachments.length ? { prompt, attachments } : { prompt });
+        for (const url of Object.values(taken?.files.previews ?? {})) URL.revokeObjectURL(url);
+        return s;
+      } catch (e) {
+        taken?.restore();
+        throw e;
+      }
+    },
     onSuccess: (s) => navigate({ to: "/s/$id", params: { id: s.id } }),
     onError: (e) => {
       inFlight.current = false;
@@ -28,10 +54,10 @@ export function useStartSession() {
   });
   return {
     starting: create.isPending || create.isSuccess,
-    start: (project: string, prompt: string) => {
-      if (inFlight.current || !prompt.trim()) return;
+    start: (project: string, prompt: string, files?: StartFiles) => {
+      if (inFlight.current || (!prompt.trim() && !files?.drafts.length)) return;
       inFlight.current = true;
-      create.mutate({ project, prompt });
+      create.mutate({ project, prompt, files });
     },
   };
 }

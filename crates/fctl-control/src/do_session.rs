@@ -13,9 +13,11 @@ use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_proto::api::EventPage;
 use fctl_proto::event::{EventBody, GitState, StatusChange, UserMessage};
 use fctl_proto::session::{Session, SessionRole, SessionStatus, UserRef};
-use fctl_proto::uplink::{Delivery, DeliveryKind, SessionState, UplinkDown, UplinkUp};
+use fctl_proto::uplink::{
+    Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown, UplinkUp,
+};
 use fctl_proto::viewer::{Presence, ViewerClient};
-use fctl_proto::{ApiError, ErrorCode};
+use fctl_proto::{ApiError, AttachmentId, ErrorCode};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use worker::{
@@ -38,6 +40,9 @@ struct SocketInfo {
     since: i64,
     #[serde(default)]
     typing_at: Option<i64>,
+    /// An uplink's host features, once it said hello.
+    #[serde(default)]
+    features: Option<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -96,6 +101,10 @@ fn event_json(seq: i64, ts: i64, kind: &str, data: &str) -> String {
 
 fn api_err(code: ErrorCode, message: &str) -> ApiError {
     ApiError::new(code, message)
+}
+
+fn has_files(d: &Delivery) -> bool {
+    matches!(&d.kind, DeliveryKind::Message { attachments, .. } if !attachments.is_empty())
 }
 
 fn create_schema(sql: &SqlStorage) {
@@ -467,6 +476,9 @@ impl SessionObject {
         let mut s = b.session;
         s.role = None;
         self.save_summary(&s);
+        if !b.prompt.attachments.is_empty() {
+            self.set_meta("task_files", "1");
+        }
         let now = now_ms();
         self.append(now, &EventBody::UserMessage(b.prompt), None);
         self.append(
@@ -534,9 +546,53 @@ impl SessionObject {
         self.send_uplink(&UplinkDown::Deliver {
             delivery: b.delivery.clone(),
         });
+        if has_files(&b.delivery) && self.uplink_lacks_files() {
+            self.old_host_notice(now);
+        }
         Ok(Delivered {
             delivery_id: b.delivery.id,
         })
+    }
+
+    /// Whether the connected host said hello without the attachments feature.
+    fn uplink_lacks_files(&self) -> bool {
+        self.uplink()
+            .and_then(|ws| ws.deserialize_attachment::<SocketInfo>().ok().flatten())
+            .and_then(|info| info.features)
+            .is_some_and(|f| !f.iter().any(|x| x == FEATURE_ATTACHMENTS))
+    }
+
+    /// Whether files wait for the host: in unconfirmed messages, or with the
+    /// task of a session that has not started.
+    fn files_waiting(&self) -> bool {
+        let task = self.meta("task_files").is_some()
+            && self.summary().is_some_and(|s| s.started_at.is_none());
+        task || self
+            .sql
+            .exec("SELECT data FROM outbox", None)
+            .and_then(|c| c.to_array::<OutboxRow>())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| serde_json::from_str::<Delivery>(&r.data).ok())
+            .any(|d| has_files(&d))
+    }
+
+    fn old_host_notice(&self, now: i64) {
+        let runner = self.summary().and_then(|s| s.runner).map_or_else(
+            || "This session's runner".to_owned(),
+            |r| format!("The runner {}", r.name),
+        );
+        let notice = fctl_proto::event::Notice {
+            level: fctl_proto::event::NoticeLevel::Warn,
+            code: "attachments_unsupported".into(),
+            message: format!(
+                "{runner} runs a version of fctl that cannot pass files to agents, so the agent gets messages without their attachments. Run `fctl self update` on it, then send the files again."
+            ),
+            until: None,
+        };
+        if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+            self.broadcast_events(&[json]);
+        }
     }
 
     async fn control(&self, b: ControlState) -> std::result::Result<serde_json::Value, ApiError> {
@@ -676,6 +732,7 @@ impl SessionObject {
             runner_id: None,
             since: now,
             typing_at: None,
+            features: None,
         };
         self.state
             .accept_websocket_with_tags(&pair.server, &[TAG_VIEWER]);
@@ -753,8 +810,14 @@ impl SessionObject {
                 let _ = ws.serialize_attachment(&info);
                 self.broadcast_presence(None);
             }
-            ViewerClient::Send { client_id, text } => {
-                let r = self.viewer_send(&viewer, &client_id, text).await;
+            ViewerClient::Send {
+                client_id,
+                text,
+                attachments,
+            } => {
+                let r = self
+                    .viewer_send(&viewer, &client_id, text, attachments)
+                    .await;
                 if r.is_ok() {
                     info.typing_at = None;
                     let _ = ws.serialize_attachment(&info);
@@ -773,6 +836,7 @@ impl SessionObject {
         viewer: &ViewerIdentity,
         client_id: &str,
         text: String,
+        attachments: Vec<AttachmentId>,
     ) -> std::result::Result<(), ApiError> {
         if !viewer.role.can_message() {
             return Err(api_err(
@@ -780,23 +844,36 @@ impl SessionObject {
                 "You can view this session but not message the agent",
             ));
         }
-        let text = fctl_domain::validate::message("text", &text)?;
-        let status = self.summary().map(|s| s.status);
-        if !status.is_some_and(|s| s.accepts_messages()) {
+        let files = fctl_domain::validate::attachment_ids(&attachments)?;
+        let text = fctl_domain::validate::message_with_files("text", &text, files.len())?;
+        let Some(summary) = self.summary() else {
+            return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        if !summary.status.accepts_messages() {
             return Err(api_err(
                 ErrorCode::Conflict,
                 "The session has ended. Resume it to continue.",
             ));
         }
+        let author = viewer.user.clone();
+        let attachments = internal::claim_files(
+            &self.env,
+            summary.project_id.as_str(),
+            &summary.id,
+            author.id.as_str(),
+            &files,
+        )
+        .await
+        .map_err(|e| e.0)?;
         let now = now_ms();
         let id = fctl_domain::ids::delivery_id(now);
-        let author = viewer.user.clone();
         self.deliver(Deliver {
             delivery: Delivery {
                 id: id.clone(),
                 kind: DeliveryKind::Message {
                     text: text.clone(),
                     author: Some(author.clone()),
+                    attachments: attachments.clone(),
                 },
             },
             client_key: Some(format!("{}:{client_id}", author.id)),
@@ -805,6 +882,7 @@ impl SessionObject {
                 author: Some(author),
                 text,
                 source: fctl_proto::event::MessageSource::Web,
+                attachments,
             }),
         })
         .await
@@ -852,6 +930,7 @@ impl SessionObject {
             runner_id: Some(runner_id),
             since: now_ms(),
             typing_at: None,
+            features: None,
         })?;
         let pending: Vec<Delivery> = self
             .sql
@@ -875,7 +954,16 @@ impl SessionObject {
     async fn on_uplink(&self, ws: &WebSocket, msg: UplinkUp) {
         let now = now_ms();
         match msg {
-            UplinkUp::Hello { .. } => {}
+            UplinkUp::Hello { features, .. } => {
+                let supported = features.iter().any(|f| f == FEATURE_ATTACHMENTS);
+                if let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() {
+                    info.features = Some(features);
+                    let _ = ws.serialize_attachment(&info);
+                }
+                if !supported && self.files_waiting() {
+                    self.old_host_notice(now);
+                }
+            }
             UplinkUp::Ping => {
                 let _ = ws.send_with_str(r#"{"type":"pong"}"#);
             }

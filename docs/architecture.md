@@ -11,6 +11,7 @@ before changing anything that crosses a component boundary.
   Claude apps ◄─┐        │   ├─ static web app (Workers assets)       │
                 │        │   ├─ D1: users, projects, sessions, …      │
                 │        │   ├─ FleetDO: runners, scheduling, feed    │
+                │        │   ├─ FilesDO (per project): attachments    │
                 │        │   └─ SessionDO (one per session): events,  │
                 │        │      viewers, message delivery             │
                 │        └──────────────▲─────────────▲───────────────┘
@@ -88,8 +89,9 @@ and release downloads).
   issued through the device flow), `fctl_pat_` (personal access token),
   `fctl_rt_` (runner).
 - Cookie requests that change state must come from the app's origin
-  (`Origin`/`Sec-Fetch-Site` checks) and carry JSON. WebSocket upgrades check
-  the origin too.
+  (`Origin`/`Sec-Fetch-Site` checks) and carry JSON; file uploads carry
+  `application/octet-stream`, which browsers cannot send cross-site without
+  asking first either. WebSocket upgrades check the origin too.
 
 ## Data
 
@@ -106,10 +108,14 @@ through to D1.
 **FleetDO** (one per instance) holds runner control connections, assigns
 sessions to runners, and fans out session summaries to dashboard viewers.
 
+**FilesDO** (one per project, SQLite storage) holds the files people attach
+to messages, in 1 MiB chunks, and which session each was sent in (see
+[Attachments](#attachments)).
+
 **Deletion.** Deleting a project deletes its rows (sessions, members, secrets
 and shares cascade) and, in the same batch, queues its sessions in
-`session_purges`; their SessionDO storage, the event logs, is deleted right
-after. An hourly cron trigger (`src/housekeeping.rs`) retries what failed and
+`session_purges` and the project in `file_purges`; their Durable Object
+storage, the event logs and the attached files, is deleted right after. An hourly cron trigger (`src/housekeeping.rs`) retries what failed and
 deletes expired tokens, password resets, device codes and invites, abandoned
 Claude logins, and audit log entries older than a year. Deleting an account
 (`src/api/account.rs`) does the same for the projects only that account is a
@@ -171,7 +177,7 @@ session.
 
 Older hosts and agents ignore the list and the second token, and work on the
 primary repository alone
-([ADR 0008](adr/0008-projects-span-an-accounts-repositories.md)).
+([ADR 0009](adr/0009-projects-span-an-accounts-repositories.md)).
 
 ### Titles
 
@@ -206,6 +212,36 @@ imports so it loads in every repository
 Browsers and the CLI open `GET /api/v1/sessions/{id}/ws`. The first frame is a
 snapshot (summary, recent events, presence, in-progress text); after that
 frames are incremental. Older history is paged over HTTP.
+
+### Attachments
+
+A task, message or resume can carry files: up to 10, of at most 20 MB each.
+
+1. Each file uploads on its own, the bytes as an `application/octet-stream`
+   body, into the project's FilesDO: `POST /api/v1/projects/{id}/attachments`
+   to start a session, `POST /api/v1/sessions/{id}/attachments` for a
+   message in one (for anyone who may message it). The answer is an
+   `Attachment` (id, name, media type, size, and pixel size for images).
+2. The message sends the ids. The control plane claims the uploads for the
+   session (they must be the sender's and not sent in another session) and
+   records them on the user message and the delivery; a task's files are
+   kept on the session row and travel in the `SessionSpec`. Uploads no
+   message claims are deleted after a day.
+3. Before forwarding a message, or configuring the agent with the task, the
+   host fetches the files with its runner token
+   (`GET /api/v1/runner/sessions/{id}/attachments/{attachment}`), in the
+   order the messages came, and hands them to fctl-agent as `file` frames.
+4. The agent saves each file as `~/attachments/<id>/<name>` in the sandbox,
+   outside the repository, and lists the paths after the message's text.
+   Images Claude accepts as they are (PNG, JPEG, GIF and WebP within the
+   API's size limit and 2000 px a side, 5 MB of them per message) go into
+   the message too; Claude reads anything else with its tools, which resize
+   large images.
+
+Viewers of a session read its files with
+`GET /api/v1/sessions/{id}/attachments/{attachment}`. Hosts and agents
+announce the `attachments` feature in their hellos; an older one passes the
+text alone, and the transcript says so.
 
 ## Claude credentials
 
@@ -287,8 +323,8 @@ All protocols are JSON with a `type` tag and live in `fctl-proto`:
 - `viewer` — SessionDO ⇄ browser/CLI.
 - `runner` — FleetDO ⇄ host (control connection).
 - `uplink` — SessionDO ⇄ host (one per session).
-- `agent` — host ⇄ fctl-agent, and `fctl` ⇄ fctl-agent in the sandbox
-  (the session socket).
+- `agent` — host ⇄ fctl-agent (attachments' bytes travel here as `file`
+  frames), and `fctl` ⇄ fctl-agent in the sandbox (the session socket).
 - `event` — the session event model shared by all of them.
 
 Changing a type means: update `fctl-proto`, run `cargo xtask gen` (regenerates
