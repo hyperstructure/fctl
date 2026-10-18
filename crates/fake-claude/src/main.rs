@@ -4,7 +4,9 @@
 //! --output-format stream-json --include-partial-messages`: control requests
 //! (`initialize`, `interrupt`, `remote_control`), user turns on stdin, and
 //! `system`, `stream_event`, `assistant`, `user`, `result` and
-//! `rate_limit_event` messages on stdout.
+//! `rate_limit_event` messages on stdout. A user turn that arrives during
+//! another waits for it, and each `result` says how many turns still wait
+//! (`queued_turn_count`), as Claude Code's does.
 //!
 //! What it does depends on the words in a user turn:
 //!
@@ -33,11 +35,15 @@
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+/// User turns read from stdin that haven't started yet: each `result`
+/// reports them as `queued_turn_count`, and fctl-agent keeps the session
+/// running while there are any.
+static QUEUED_TURNS: AtomicUsize = AtomicUsize::new(0);
 
 fn out(v: &Value) {
     let mut stdout = std::io::stdout().lock();
@@ -129,7 +135,7 @@ impl Session {
             "num_turns": 3, "result": text, "stop_reason": "end_turn", "total_cost_usd": 0.0, "session_id": self.id, "uuid": uuid(),
             "usage": {"input_tokens": 120, "output_tokens": 80, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0},
             "modelUsage": {self.model.clone(): {"inputTokens": self.input_tokens, "outputTokens": self.output_tokens, "cacheReadInputTokens": self.turns * 1000, "cacheCreationInputTokens": 0, "webSearchRequests": 0, "costUSD": 0.0, "contextWindow": 200000, "maxOutputTokens": 32000}},
-            "permission_denials": []
+            "permission_denials": [], "queued_turn_count": QUEUED_TURNS.load(Ordering::SeqCst)
         }));
     }
 
@@ -505,6 +511,11 @@ fn main() {
             if is_interrupt {
                 INTERRUPTED.store(true, Ordering::SeqCst);
             }
+            // Counted before it is sent, so the main loop can't start its turn
+            // (and take it off the count) first.
+            if v.get("type").and_then(Value::as_str) == Some("user") {
+                QUEUED_TURNS.fetch_add(1, Ordering::SeqCst);
+            }
             // Answers to our own control requests go to the running turn.
             if v.get("type").and_then(Value::as_str) == Some("control_response") {
                 let _ = turn_tx.send(v);
@@ -559,6 +570,7 @@ fn main() {
                 out(&json!({"type": "control_response", "response": response}));
             }
             Some("user") => {
+                QUEUED_TURNS.fetch_sub(1, Ordering::SeqCst);
                 if !announced {
                     announce(&session);
                     announced = true;
