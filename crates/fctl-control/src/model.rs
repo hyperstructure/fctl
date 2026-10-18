@@ -3,8 +3,8 @@
 use crate::db::{int, int_bool, opt_int};
 use crate::internal::LiveRunners;
 use fctl_proto::api::{
-    AllowEntry, ClaudeCredentialInfo, CredentialStatus, Identity, LimitStatus, PlanLimit,
-    ProjectRepo, Runner, RunnerStatus, User, UserStatus,
+    AllowEntry, ClaudeCredentialInfo, CredentialStatus, Identity, PlanLimit, ProjectRepo, Runner,
+    RunnerStatus, User, UserStatus,
 };
 use fctl_proto::runner::{ClaudeAccount, ClaudeCredentialKind, HostHello};
 use fctl_proto::session::{
@@ -535,29 +535,7 @@ pub const USAGE_JSON: &str = "(SELECT json_group_array(json_object('window', u.w
 
 /// Plan usage selected with [`USAGE_JSON`], in display order.
 pub fn plan_usage(json: Option<&str>) -> Vec<PlanLimit> {
-    #[derive(Deserialize)]
-    struct Row {
-        window: String,
-        utilization: Option<f64>,
-        resets_at: Option<f64>,
-        status: Option<String>,
-        observed_at: f64,
-    }
-    let rows: Vec<Row> = json
-        .and_then(|j| serde_json::from_str(j).ok())
-        .unwrap_or_default();
-    let mut usage: Vec<PlanLimit> = rows
-        .into_iter()
-        .map(|r| PlanLimit {
-            window: r.window,
-            utilization: r.utilization,
-            resets_at: r.resets_at.map(|t| t as i64),
-            status: r.status.as_deref().and_then(LimitStatus::parse),
-            observed_at: r.observed_at as i64,
-        })
-        .collect();
-    fctl_domain::usage::sort(&mut usage);
-    usage
+    json.map(fctl_domain::usage::from_json).unwrap_or_default()
 }
 
 impl CredentialRow {

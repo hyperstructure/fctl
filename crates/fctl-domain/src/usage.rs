@@ -17,6 +17,9 @@ use serde_json::Value;
 const OVERAGE: &str = "overage";
 /// Usage runs a little past a limit at most; beyond this it is not a share.
 const MAX_UTILIZATION: f64 = 10.0;
+/// Claude reports a handful of limits. The event comes from the sandbox, so
+/// one can't add more than this.
+pub const MAX_LIMITS: usize = 8;
 
 /// The plan limits a Claude message reports, one per window, in display
 /// order and stamped `observed_at`. Empty for anything but a
@@ -30,7 +33,11 @@ pub fn readings(v: &Value, observed_at: Millis) -> Vec<PlanLimit> {
     };
     let mut out: Vec<PlanLimit> = Vec::new();
     if let Some(windows) = info.get("unifiedWindows").and_then(Value::as_object) {
-        for (name, w) in windows.iter().filter(|(name, _)| is_window(name)) {
+        let windows = windows
+            .iter()
+            .filter(|(name, _)| is_window(name))
+            .take(MAX_LIMITS);
+        for (name, w) in windows {
             let reading = PlanLimit {
                 window: name.clone(),
                 utilization: utilization(w.get("utilization")),
@@ -77,6 +84,33 @@ pub fn readings(v: &Value, observed_at: Millis) -> Vec<PlanLimit> {
     }
     sort(&mut out);
     out
+}
+
+/// Plan usage as the control plane stores it: a JSON array of readings
+/// (`window`, `utilization`, `resets_at`, `status`, `observed_at`), in
+/// display order. Anything unreadable is left out.
+pub fn from_json(json: &str) -> Vec<PlanLimit> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        window: String,
+        utilization: Option<f64>,
+        resets_at: Option<f64>,
+        status: Option<String>,
+        observed_at: f64,
+    }
+    let rows: Vec<Row> = serde_json::from_str(json).unwrap_or_default();
+    let mut limits: Vec<PlanLimit> = rows
+        .into_iter()
+        .map(|r| PlanLimit {
+            window: r.window,
+            utilization: r.utilization,
+            resets_at: r.resets_at.map(|t| t as Millis),
+            status: r.status.as_deref().and_then(LimitStatus::parse),
+            observed_at: r.observed_at as Millis,
+        })
+        .collect();
+    sort(&mut limits);
+    limits
 }
 
 /// Adds newer readings to `limits`: each replaces the reading of its window.
@@ -312,6 +346,45 @@ mod tests {
                 limit("seven_day_sonnet", None, Some(1_760_400_000_000), None),
             ]
         );
+    }
+
+    #[test]
+    fn one_event_adds_a_handful_of_limits_at_most() {
+        let windows: serde_json::Map<String, Value> = (0..20)
+            .map(|i| {
+                (
+                    format!("seven_day_m{i:02}"),
+                    json!({"utilization": 0.1, "resetsAt": 1_760_400_000}),
+                )
+            })
+            .collect();
+        let v = json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "unifiedWindows": windows}});
+        assert_eq!(readings(&v, AT).len(), MAX_LIMITS);
+    }
+
+    #[test]
+    fn stored_usage() {
+        // As D1 returns it: json_group_array of json_object, NULLs included.
+        let json = r#"[
+            {"window":"seven_day","utilization":0.18,"resets_at":1760400000000,"status":null,"observed_at":1760000123456},
+            {"window":"five_hour","utilization":null,"resets_at":1760010000000,"status":"rejected","observed_at":1760000123456},
+            {"window":"seven_day_opus","utilization":0.5,"resets_at":null,"status":"bogus","observed_at":1760000123456}
+        ]"#;
+        assert_eq!(
+            from_json(json),
+            vec![
+                limit(
+                    "five_hour",
+                    None,
+                    Some(1_760_010_000_000),
+                    Some(LimitStatus::Rejected)
+                ),
+                limit("seven_day", Some(0.18), Some(1_760_400_000_000), None),
+                limit("seven_day_opus", Some(0.5), None, None),
+            ]
+        );
+        assert_eq!(from_json("[]"), vec![]);
+        assert_eq!(from_json("not json"), vec![]);
     }
 
     #[test]
