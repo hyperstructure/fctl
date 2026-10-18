@@ -5,13 +5,16 @@
 #
 # FCTL_VERSION picks the fctl release and FCTL_DOWNLOAD where releases come
 # from (`fctl host image build` passes its own version and download_base);
-# empty means the latest, from https://fctl.sh/releases.
+# empty means the latest, from https://fctl.sh/releases. CLAUDE_VERSION
+# picks Claude Code's (empty: the latest); the image workflow passes the one
+# it labels the image with, so that every architecture gets the same.
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 FCTL_VERSION="${FCTL_VERSION:-}"
 FCTL_DOWNLOAD="${FCTL_DOWNLOAD:-}"
+CLAUDE_VERSION="${CLAUDE_VERSION:-}"
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
@@ -62,7 +65,8 @@ rm -f /usr/local/bin/fctl-agent-*-linux
 
 # Claude Code, installed for the agent user (native build, ~/.local/bin/claude).
 AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
-sudo -u "$AGENT_USER" -H bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+sudo -u "$AGENT_USER" -H env CLAUDE_VERSION="$CLAUDE_VERSION" \
+  bash -c 'curl -fsSL https://claude.ai/install.sh | bash -s -- ${CLAUDE_VERSION:+"$CLAUDE_VERSION"}'
 sudo -u "$AGENT_USER" -H mkdir -p "$AGENT_HOME/workspace"
 grep -q '.local/bin' "$AGENT_HOME/.profile" 2>/dev/null || echo 'export PATH="$HOME/.local/bin:/opt/fctl/bin:$PATH"' >> "$AGENT_HOME/.profile"
 "$AGENT_HOME/.local/bin/claude" --version
