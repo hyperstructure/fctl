@@ -1,6 +1,7 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { StreamScreen } from "@/components/stream-screen";
 import { Button } from "@/components/ui";
+import { redact } from "@/lib/redact";
 import { suggest } from "@/lib/suggest";
 
 export function NotFound() {
@@ -9,6 +10,8 @@ export function NotFound() {
   try {
     shown = decodeURI(pathname);
   } catch {}
+  // A token pasted into the address by mistake doesn't end up in a screenshot.
+  shown = redact(shown);
   const meant = suggest(pathname);
   return (
     <StreamScreen code="404">

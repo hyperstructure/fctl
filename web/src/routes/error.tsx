@@ -27,7 +27,12 @@ export function explain(error: unknown): { code: string; title: string; detail: 
         bug: false,
       };
     }
-    return { code: String(error.status), title: "That didn’t work.", detail: error.message, bug: false };
+    return {
+      code: String(error.status),
+      title: "That didn’t work.",
+      detail: redact(error.message),
+      bug: false,
+    };
   }
   return {
     code: "bug",

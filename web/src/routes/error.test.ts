@@ -23,6 +23,11 @@ describe("explain", () => {
     expect(e.detail).toBe("Too many attempts. Try again in a minute.");
   });
 
+  it("hides secrets the server's message might quote", () => {
+    const e = explain(new ApiFailure(400, { message: "sk-ant-api03-abcdef is an API key, not a token" }));
+    expect(e.detail).toBe("[hidden] is an API key, not a token");
+  });
+
   it("calls anything else a bug", () => {
     const e = explain(new TypeError("x is undefined"));
     expect(e.code).toBe("bug");
