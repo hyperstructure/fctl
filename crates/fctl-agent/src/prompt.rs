@@ -140,7 +140,8 @@ pub fn system_prompt(
     }
     if let Some(size) = sandbox {
         // With Docker, nproc and free show the whole VM while cgroups hold
-        // the sandbox to its size, so build tools would start too many jobs.
+        // the sandbox to its size, and Apple's container gives each VM a CPU
+        // more than its sandbox, so build tools would start too many jobs.
         s.push_str(&format!(
             "- This sandbox has {} and {} of memory ($FCTL_SANDBOX_CPUS, $FCTL_SANDBOX_MEMORY_MB), even where `nproc` and `free` show more. Size parallel builds and test runs to these limits (for example `make -j{}`): when the sandbox runs out of memory, the kernel kills a process, which then exits with code 137.\n",
             size::cpus(size.cpus),
