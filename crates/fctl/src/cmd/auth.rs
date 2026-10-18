@@ -133,6 +133,9 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
             me.user.id
         ))
     );
+    if let Some(email) = &me.commit_email {
+        println!("Commits credit you as {email}");
+    }
     if me.claude.is_empty() {
         println!(
             "{}",

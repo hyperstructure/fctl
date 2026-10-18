@@ -141,7 +141,8 @@ enum Command {
     /// Manage access, users and runners (admins).
     #[command(subcommand)]
     Admin(cmd::admin::AdminCmd),
-    /// Export your data or delete your account.
+    /// Set the address commits credit you with, export your data, or delete
+    /// your account.
     #[command(subcommand)]
     Account(cmd::account::AccountCmd),
     /// Create a personal access token for scripts and CI.
