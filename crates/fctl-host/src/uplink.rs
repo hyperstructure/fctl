@@ -2,7 +2,8 @@
 //!
 //! Events are not buffered here while disconnected: fctl-agent's journal
 //! holds them and the session replays from the acknowledged sequence number
-//! after every `Welcome`. State and host log lines are kept and re-sent.
+//! after every `Welcome`. State, whether the host reaches the agent, and host
+//! log lines are kept and re-sent.
 
 use fctl_client::ws;
 use fctl_proto::event::LogLine;
@@ -62,6 +63,8 @@ async fn run(
 ) {
     let mut backoff = Duration::from_millis(500);
     let mut last_state: Option<SessionState> = None;
+    // SessionDO forgets it with each connection.
+    let mut last_link: Option<UplinkUp> = None;
     let mut pending_logs: Vec<UplinkUp> = Vec::new();
     loop {
         let socket = match ws::connect(&url, Some(&token)).await {
@@ -77,6 +80,7 @@ async fn run(
                         msg = rx.recv() => match msg {
                             None => return,
                             Some(Up::Raw(UplinkUp::State { state })) => last_state = Some(state),
+                            Some(Up::Raw(m @ UplinkUp::AgentLink { .. })) => last_link = Some(m),
                             Some(Up::Raw(m @ UplinkUp::Log { .. })) | Some(Up::Raw(m @ UplinkUp::Delivered { .. })) => {
                                 if pending_logs.len() < 500 { pending_logs.push(m); }
                             }
@@ -106,6 +110,9 @@ async fn run(
         if let Some(s) = last_state.clone() {
             let _ = ws::send_json(&mut sink, &UplinkUp::State { state: s }).await;
         }
+        if let Some(m) = &last_link {
+            let _ = ws::send_json(&mut sink, m).await;
+        }
         for m in pending_logs.drain(..) {
             let _ = ws::send_json(&mut sink, &m).await;
         }
@@ -130,6 +137,7 @@ async fn run(
                     }
                     Some(Up::Raw(m)) => {
                         if let UplinkUp::State { state } = &m { last_state = Some(state.clone()); }
+                        if matches!(m, UplinkUp::AgentLink { .. }) { last_link = Some(m.clone()); }
                         // Keep ordering: events before anything that follows them.
                         if !batch.is_empty() && ws::send_json(&mut sink, &UplinkUp::Events { events: std::mem::take(&mut batch) }).await.is_err() { break true; }
                         if ws::send_json(&mut sink, &m).await.is_err() { break true; }

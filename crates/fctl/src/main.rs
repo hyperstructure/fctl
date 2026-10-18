@@ -7,6 +7,7 @@
 mod cmd;
 mod config;
 mod render;
+mod stall;
 mod style;
 
 use clap::{Parser, Subcommand};

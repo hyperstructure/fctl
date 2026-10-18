@@ -51,10 +51,11 @@ pub fn status(s: fctl_proto::session::SessionStatus) -> String {
 
 /// "3m ago", "2h ago", "5d ago".
 pub fn ago(ms: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    ago_from(ms, now_ms())
+}
+
+/// [`ago`], as of `now`.
+pub fn ago_from(ms: i64, now: i64) -> String {
     let s = ((now - ms) / 1000).max(0);
     match s {
         0..=59 => "just now".into(),
@@ -66,16 +67,20 @@ pub fn ago(ms: i64) -> String {
 
 /// "in 45m", "in 2h 10m", "in 3d 4h".
 pub fn until(ms: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let m = ((ms - now) / 60_000).max(1);
+    let m = ((ms - now_ms()) / 60_000).max(1);
     match m {
         0..=59 => format!("in {m}m"),
         60..=1439 => format!("in {}h {}m", m / 60, m % 60),
         _ => format!("in {}d {}h", m / 1440, m % 1440 / 60),
     }
+}
+
+/// Milliseconds since the Unix epoch.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 pub fn print_json<T: serde::Serialize>(v: &T) -> anyhow::Result<()> {

@@ -5,13 +5,14 @@
 
 use crate::config;
 use crate::render::Renderer;
+use crate::stall::Watch;
 use crate::style;
 use anyhow::Result;
 use fctl_client::{Api, ws};
 use fctl_proto::viewer::{ViewerClient, ViewerServer};
 use futures::StreamExt;
 use std::io::IsTerminal;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 pub async fn attach(server: Option<&str>, reference: &str, read_only: bool) -> Result<()> {
@@ -50,6 +51,7 @@ pub async fn follow_after(
         });
     }
     let mut counter = 0u64;
+    let mut watch = Watch::default();
     loop {
         let url = api.session_ws_url(session_id, after);
         let socket = match ws::connect(&url, api.token()).await {
@@ -63,6 +65,7 @@ pub async fn follow_after(
         let (mut sink, mut stream) = socket.split();
         let mut ping = tokio::time::interval(Duration::from_secs(25));
         let closed = loop {
+            let due = watch.due().map(tokio::time::Instant::from_std);
             tokio::select! {
                 msg = ws::next_text(&mut stream) => {
                     let Some(Ok(text)) = msg else { break true };
@@ -88,6 +91,11 @@ pub async fn follow_after(
                             if snap.session.status.is_terminal() && read_only {
                                 return Ok(());
                             }
+                            watch.session(&snap.session);
+                            let agent = snap.agent_unreachable.as_ref();
+                            if let Some(l) = watch.runner(snap.runner_connected, snap.runner_last_seen_at, agent, Instant::now(), style::now_ms()) {
+                                r.note(&l);
+                            }
                         }
                         ViewerServer::Events { events } => {
                             for ev in &events {
@@ -96,6 +104,12 @@ pub async fn follow_after(
                             after = Some(r.last_seq);
                         }
                         ViewerServer::Stream { event } => r.stream(&event),
+                        ViewerServer::Session { session } => watch.session(&session),
+                        ViewerServer::RunnerConnected { connected, last_seen_at, agent_unreachable } => {
+                            if let Some(l) = watch.runner(connected, last_seen_at, agent_unreachable.as_ref(), Instant::now(), style::now_ms()) {
+                                r.note(&l);
+                            }
+                        }
                         ViewerServer::Result { ok: false, error: Some(e), .. } => eprintln!("{}", style::red(&e.message)),
                         ViewerServer::Error { error } => eprintln!("{}", style::red(&error.message)),
                         _ => {}
@@ -120,6 +134,11 @@ pub async fn follow_after(
                 }
                 _ = ping.tick() => {
                     if ws::send_json(&mut sink, &ViewerClient::Ping).await.is_err() { break true; }
+                }
+                _ = async { if let Some(at) = due { tokio::time::sleep_until(at).await } }, if due.is_some() => {
+                    if let Some(l) = watch.tick(Instant::now(), style::now_ms()) {
+                        r.note(&l);
+                    }
                 }
                 _ = tokio::signal::ctrl_c() => {
                     eprintln!("\n{}", style::dim("Detached. The session keeps running."));
