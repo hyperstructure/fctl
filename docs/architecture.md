@@ -150,9 +150,9 @@ queued → provisioning → preparing → running ⇄ idle → stopped
 ```
 
 1. `POST /api/v1/projects/{id}/sessions` creates the row and asks FleetDO to
-   schedule it, on a runner that runs or builds its project's image and
-   gives its sandbox the size it asks for. Without a free one it stays
-   `queued`, and says why.
+   schedule it, on a runner that runs or builds its project's image, gives
+   its sandbox the size it asks for and has the free disk its host keeps.
+   Without a free one it stays `queued`, and says why.
 2. FleetDO builds the `SessionSpec` just in time (repositories, branch, agent
    settings, secrets, fresh GitHub installation tokens, the starter's Claude
    credential) and sends `start_session` to a runner.
@@ -177,6 +177,29 @@ timeout (`idle_timeout_minutes`: ten minutes unless the project sets
 another), so that its runner takes other work. fctl-agent ends Claude, and
 the host stops the sandbox and keeps it (see
 [Sandboxes and drivers](#sandboxes-and-drivers)).
+
+Background work keeps a session up: a shell command Claude runs with
+`run_in_background`, a subagent, a Monitor
+([ADR 0018](adr/0018-background-work-keeps-a-session-up-for-an-hour.md)).
+Claude Code reports each task starting (`system/task_started`) and ending
+(`system/task_notification`), and fctl-agent follows them
+(`crates/fctl-agent/src/tasks.rs`). While any runs after a turn, the
+session waits for it ("Waiting for 2 background tasks"), and the idle
+timeout counts from when the last one ends. When background work ends,
+Claude Code hands Claude the result in a turn of its own. fctl-agent
+counts it as any other: the session runs, and a stop or an interrupt
+reaches the turn. It learns of these turns from
+`system/session_state_changed` (it sets
+`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`), or from a turn's first message
+when Claude Code doesn't report them. Background work keeps a session up
+for at most an hour after its last turn, or for the idle timeout when that
+is longer, so that a forgotten dev server doesn't hold the runner's slot
+for ever. When a session stops with background tasks still running (that
+limit, a person's stop, a drain, an uninstall), the transcript names them,
+and the next message tells Claude they didn't finish. The system prompt
+says how long background work may run after a turn ends. Such a session
+holds its slot as any other does, and a draining runner stops it after a
+minute, as it stops sessions that wait for a message.
 
 A message to a stopped session resumes it: from the web app, `fctl send`,
 `fctl attach` or the API, for anyone who may message the agent. SessionDO
@@ -207,11 +230,12 @@ a new conversation from the session's task.
 
 ### Draining a runner
 
-A runner that drains takes no new sessions, and the sessions it has carry
-on there, so that it can be taken out of rotation (for maintenance, or a
-disk that fills up) without dropping anything. Admins drain one from the
-runners list or with `fctl admin drain`; its host drains itself with
-`fctl host drain`, using the runner token
+A runner that drains takes no new sessions, and the sessions it has carry on
+there, so that it can be taken out of rotation (for maintenance) without
+dropping anything. A host whose disk runs low takes no new sessions by
+itself, without a drain ([Sandboxes and drivers](#sandboxes-and-drivers)).
+Admins drain one from the runners list or with `fctl admin drain`; its host
+drains itself with `fctl host drain`, using the runner token
 (`POST /api/v1/runner/drain`). Both set the same state, kept in FleetDO's
 storage with who started the drain and when, and either can end it.
 
@@ -259,9 +283,9 @@ on there. FleetDO assigns it to the runner again and gives it back its
 runner, so that the host's uplink gets in and replays the agent's journal,
 and the transcript says the runner is back. That includes a session
 resumed meanwhile that no runner took: the agent that still runs gets the
-messages. A session that runs on another runner by then, or that someone
-stopped, archived or deleted, stops instead, with a reason that says which
-(`fctl_domain::reconcile`).
+messages. A session that runs on another runner by then, that someone
+stopped or archived, or whose project was deleted, stops instead, with a
+reason that says which (`fctl_domain::reconcile`).
 
 ### Repositories
 
@@ -679,9 +703,32 @@ A stopped session keeps its sandbox, so resuming it on the same host
 continues Claude's conversation ([Idle sessions](#idle-sessions)). The host
 records when each one stopped (`stopped.json` in its data directory) and
 removes those stopped for longer than `keep_stopped_hours`
-(`crates/fctl-host/src/expiry.rs`). Resuming one of those, or resuming on
-another host, creates a new sandbox on the session's branch: the agent finds
-no conversation to resume, so Claude starts a new one with the session's
+(`crates/fctl-host/src/expiry.rs`), when it starts and every hour.
+
+It also keeps `min_free_disk_gb` free on the disk where the sandboxes'
+files are: Apple's `container` app root (from `container system status`),
+Lima's home, Docker's root directory, or with Docker on macOS the disk in
+its VM, where `df` runs in a short-lived container of the host's image, and
+the data directory with the process driver. It measures every 30 seconds
+(in Docker's VM every five minutes). Below the floor:
+
+- The sweep removes the other stopped sandboxes too, those stopped longest
+  first, one at a time, and measures after each, so that it stops once
+  there is room. A session that starts in one meanwhile keeps it.
+- The host takes no new sessions, only resumes of the sessions whose
+  sandboxes it has. Its hello carries the floor (`HostHello.min_free_disk_mb`),
+  and FleetDO compares it with each heartbeat's `disk_available_mb`: a
+  runner below it gets resumes into its sandboxes, as while it drains, and
+  no other session (`fctl_domain::disk`, `schedule::pick`). The host refuses
+  the others itself, for a control plane that hasn't had its heartbeat yet.
+  Unlike a drain, it stops no idle sessions early, and it ends when there is
+  room again ([ADR 0019](adr/0019-hosts-make-room-when-their-disk-runs-low.md)).
+
+Older hosts send no floor and remove sandboxes by age only.
+
+Resuming a session whose sandbox is gone, or resuming on another host,
+creates a new sandbox on the session's branch: the agent finds no
+conversation to resume, so Claude starts a new one with the session's
 original task, and the agent numbers its events after the ones the control
 plane already has (`first_agent_seq`).
 

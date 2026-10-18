@@ -49,6 +49,9 @@ host's own fctl comes first on its agents' PATH), `screenshot` draws a
 small PNG and publishes it with `fctl publish` (allow that first: `cargo
 run -p fctl -- admin set --publish-screenshots on`, then `cargo run -p fctl
 -- projects set --publish-screenshots on`), `slow` streams slowly,
+`background <seconds>` starts a shell command in the background that
+ends after that many seconds and takes its result in a turn of its own
+(the session waits for it, then runs again, as with Claude Code),
 `limit` hits a usage limit that resets 20 seconds later (the session
 pauses and continues half a minute after the reset; a message that also
 says `reset`, like the one fctl-agent continues it with, doesn't count),
@@ -57,7 +60,10 @@ the host for a new OAuth token, and `crash` exits mid-turn. Anything
 else gets a short answer with a tool call. A message sent during a turn
 waits for it and gets a turn of its own; each `result` says how many
 messages still wait (`queued_turn_count`), as Claude Code's does, so the
-session stays running until fake-claude has answered the last one. A message with
+session stays running until fake-claude has answered the last one. Like
+Claude Code, it reports each turn starting and ending
+(`session_state_changed`) when `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` is
+set, as fctl-agent sets it. A message with
 attached files also gets a sentence about them: how many images it holds,
 and whether each listed file is on disk. Turns other than `limit` and
 `crash` report plan usage as Claude Code does (`unifiedWindows`), with

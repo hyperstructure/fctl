@@ -16,6 +16,12 @@ cpus?: number, memory_mb?: number,
  */
 memory_available_mb?: number, disk_available_mb?: number, 
 /**
+ * The free disk (MiB) its host keeps: while `disk_available_mb` is
+ * below it, no new session starts on it. Absent when it keeps none,
+ * and from older hosts.
+ */
+min_free_disk_mb?: number, 
+/**
  * What it gives each sandbox (absent from older hosts).
  */
 sandbox?: SandboxLimits, 

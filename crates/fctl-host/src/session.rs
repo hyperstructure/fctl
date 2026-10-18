@@ -2,7 +2,7 @@
 //! agent and the session's uplink.
 
 use crate::config::{HostConfig, Images};
-use crate::driver::{AgentIo, Driver, Sandbox, SandboxSpec, sandbox_name};
+use crate::driver::{AgentIo, DiskSpot, Driver, Sandbox, SandboxSpec, sandbox_name};
 use crate::files;
 use crate::liveness::{Check, Health, Reach, Reached, Retry};
 use crate::uplink::Uplink;
@@ -39,6 +39,8 @@ pub struct HostCtx {
     pub sandbox: Mutex<SandboxLimits>,
     /// The drivers this host could use, as last probed.
     pub drivers: Mutex<Vec<DriverInfo>>,
+    /// Where the disk that sandboxes take is measured, as last probed.
+    pub disk_spot: Mutex<DiskSpot>,
     /// Held while an image builds: one build at a time.
     pub builds: tokio::sync::Mutex<()>,
     /// One per image being built: sessions that need the same one wait for
@@ -50,9 +52,11 @@ pub struct HostCtx {
 
 impl HostCtx {
     /// Before [`refresh_facts`](Self::refresh_facts): sandboxes sized by
-    /// this machine, and no drivers probed.
+    /// this machine, no drivers probed, and the disk measured in the data
+    /// directory.
     pub fn new(cfg: HostConfig, driver: Driver, token: String) -> Self {
         let sandbox = cfg.sandbox_limits(crate::driver::machine());
+        let disk_spot = DiskSpot::Dir(cfg.data_dir());
         Self {
             cfg,
             driver,
@@ -60,6 +64,7 @@ impl HostCtx {
             runner_id: Mutex::new(None),
             sandbox: Mutex::new(sandbox),
             drivers: Mutex::new(Vec::new()),
+            disk_spot: Mutex::new(disk_spot),
             builds: tokio::sync::Mutex::new(()),
             build_locks: Mutex::new(HashMap::new()),
             build_record: Mutex::new(()),
@@ -101,17 +106,43 @@ impl HostCtx {
     }
 
     /// Probes the drivers and measures what sandboxes run on again (Docker's
-    /// VM may have been resized). The runner's hello reports what this
-    /// found last, so the control connection never waits on a runtime; a
-    /// Docker daemon that doesn't answer leaves the limits as they were.
+    /// VM may have been resized), and finds where their disk is. The
+    /// runner's hello reports what this found last, so the control
+    /// connection never waits on a runtime; a Docker daemon that doesn't
+    /// answer leaves the limits and the disk's place as they were.
     pub async fn refresh_facts(&self) {
         let data_dir = self.cfg.data_dir();
-        let (drivers, size) = tokio::join!(Driver::probe_all(&data_dir), self.driver.measure());
+        let (drivers, size, spot) = tokio::join!(
+            Driver::probe_all(&data_dir),
+            self.driver.measure(),
+            self.driver.disk_spot(&data_dir)
+        );
         *self.drivers.lock().unwrap_or_else(PoisonError::into_inner) = drivers;
         if let Some(size) = size {
             *self.sandbox.lock().unwrap_or_else(PoisonError::into_inner) =
                 self.cfg.sandbox_limits(size);
         }
+        if let Some(spot) = spot {
+            *self
+                .disk_spot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = spot;
+        }
+    }
+
+    pub fn disk_spot(&self) -> DiskSpot {
+        self.disk_spot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Free MiB where sandboxes keep their files, or `None` when it can't be
+    /// measured. Inside the Docker VM this starts a container of the host's
+    /// image.
+    pub async fn disk_free_mb(&self) -> Option<u64> {
+        let images = self.cfg.own_images();
+        self.driver.disk_free_mb(&self.disk_spot(), &images).await
     }
 
     /// The CPUs and memory a session's sandbox gets on this host.

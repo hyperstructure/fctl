@@ -49,7 +49,7 @@ this file is the overview. Order within a section is priority.
       clock and disk (#1)
 - [ ] The same with a long-lived token, an OAuth refresh and a usage-limit
       pause (#79)
-- [ ] Hosts make room when their disk runs low, starting with stopped
+- [x] Hosts make room when their disk runs low, starting with stopped
       sandboxes (#76)
 - [x] CI on GitHub Actions: checks on pull requests, deploys from `main`,
       releases from tags

@@ -6,18 +6,19 @@
 //!
 //! The control connection never waits on a driver. The hello reports what
 //! the drivers said when last probed, and sweeping or cleaning up sandboxes
-//! runs in tasks of their own (`Chore`), so heartbeats and pongs keep
-//! flowing while a runtime hangs.
+//! and measuring the disk run in tasks of their own (`Chore`), so
+//! heartbeats and pongs keep flowing while a runtime hangs.
 
 use crate::config::HostConfig;
-use crate::driver::{Driver, SandboxInfo, sandbox_name, session_of, timed_out};
-use crate::expiry;
+use crate::driver::{DiskSpot, Driver, SandboxInfo, sandbox_name, session_of, timed_out};
+use crate::expiry::{self, Why};
 use crate::login::{self, LoginCmd};
 use crate::refresh;
 use crate::session::{self, HostCtx, SessionCmd, SessionEvent, SessionHandle, Start};
 use crate::sysinfo;
 use anyhow::Result;
 use fctl_client::ws;
+use fctl_domain::disk;
 use fctl_domain::image::ImageWant;
 use fctl_domain::size::{self, Want};
 use fctl_proto::runner::{
@@ -55,6 +56,16 @@ pub struct Daemon {
     sweep: tokio::time::Interval,
     /// Whether a sweep is under way.
     sweeping: bool,
+    /// What the sweep removes next, one at a time, and why.
+    removals: VecDeque<(String, Why)>,
+    /// Whether the sweep under way removed a sandbox.
+    removed_some: bool,
+    /// Whether a stopped sandbox may be left to remove: false from when a
+    /// sweep plans until one stops here, or the sweep leaves some for lack
+    /// of need.
+    removable: bool,
+    /// Free disk (MiB) where sandboxes are, as last measured.
+    disk_free_mb: Option<u64>,
     /// Sandboxes that chores stop or remove, with how many hold each.
     /// Sessions that start in one wait for it.
     busy: HashMap<String, u32>,
@@ -64,18 +75,27 @@ pub struct Daemon {
 enum Chore {
     /// The sweep listed this host's sandboxes.
     Listed(Result<Vec<SandboxInfo>>),
-    /// The sweep removed a sandbox, or failed to.
-    Removed { name: String, result: Result<()> },
-    /// The sweep is over.
-    Swept,
+    /// The sweep removed a sandbox, or failed to, and measured the disk
+    /// again.
+    Removed {
+        name: String,
+        why: Why,
+        result: Result<()>,
+        free_mb: Option<u64>,
+    },
     /// A sandbox the control plane asked to stop is stopped (and removed,
     /// when it asked for that).
     Stopped { name: String, ended: HostToFleet },
+    /// The free disk (MiB) where sandboxes are, as measured now.
+    Disk(Option<u64>),
 }
 
 const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
-/// How often the host probes its drivers and measures what sandboxes run on.
+/// How often the host probes its drivers and measures what sandboxes run on,
+/// and the disk inside the Docker VM, where measuring starts a container.
 const FACTS_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How often the host measures its free disk elsewhere.
+const DISK_EVERY: Duration = Duration::from_secs(30);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
 
 impl Daemon {
@@ -94,6 +114,13 @@ impl Daemon {
             ctx.cfg.capacity,
             size::limits(&ctx.sandbox_limits())
         );
+        if let Some(floor) = ctx.cfg.min_free_disk_mb() {
+            tracing::info!(
+                "keeping {} of disk free at {} (min_free_disk_gb)",
+                size::memory(floor),
+                ctx.disk_spot()
+            );
+        }
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (login_tx, login_rx) = mpsc::unbounded_channel();
         let (chores_tx, chores_rx) = mpsc::unbounded_channel();
@@ -113,6 +140,10 @@ impl Daemon {
             next_request: 0,
             sweep: tokio::time::interval_at(tokio::time::Instant::now() + SWEEP_EVERY, SWEEP_EVERY),
             sweeping: false,
+            removals: VecDeque::new(),
+            removed_some: false,
+            removable: true,
+            disk_free_mb: None,
             busy: HashMap::new(),
         })
     }
@@ -166,7 +197,8 @@ impl Daemon {
     }
 
     /// Starts removing session sandboxes that have been stopped for longer
-    /// than `keep_stopped_hours` (0 keeps them), unless a sweep is under way.
+    /// than `keep_stopped_hours` (0 keeps them), and while the disk is low
+    /// the others, unless a sweep is under way.
     fn start_sweep(&mut self) {
         if self.sweeping {
             return;
@@ -178,8 +210,7 @@ impl Daemon {
         });
     }
 
-    /// Picks the sandboxes the sweep removes, and removes them one after
-    /// another in the background.
+    /// Plans what the sweep removes (see `expiry`), and starts removing it.
     fn sweep_listed(&mut self, list: Vec<SandboxInfo>) {
         let hours = self.ctx.cfg.keep_stopped_hours;
         let in_use: HashSet<String> = self
@@ -189,37 +220,61 @@ impl Daemon {
             .map(|id| sandbox_name(id.as_str()))
             .collect();
         let path = expiry::path(&self.ctx.cfg.data_dir());
-        let stopped = expiry::load(&path);
         let now = expiry::now_ms();
         let keep_ms = (hours > 0).then(|| i64::from(hours) * 3_600_000);
-        let (expired, mut keep) = expiry::plan(&stopped, &list, &in_use, now, keep_ms);
-        // They stay on the list until they are gone, for a host that stops
-        // halfway; one that a chore holds waits for the next sweep.
-        let mut remove = Vec::new();
-        for name in expired {
-            keep.insert(name.clone(), stopped.get(&name).copied().unwrap_or(now));
-            if !self.busy.contains_key(&name) {
-                remove.push(name);
-            }
-        }
-        if let Err(e) = expiry::save(&path, &keep) {
+        let plan = expiry::plan(&expiry::load(&path), &list, &in_use, now, keep_ms);
+        if let Err(e) = expiry::save(&path, &plan.stopped) {
             tracing::warn!("saving {}: {e:#}", path.display());
         }
-        if remove.is_empty() {
-            self.sweeping = false;
+        self.removals = plan.removals().collect();
+        // A session that stops from now on sets it again.
+        self.removable = false;
+        self.remove_next();
+    }
+
+    /// Removes the next sandbox the sweep planned, in the background, or
+    /// ends the sweep. One at a time: a session that starts in one meanwhile
+    /// keeps it, and each removal measures the disk again, so that removing
+    /// for a low disk stops once there is room.
+    fn remove_next(&mut self) {
+        while let Some((name, why)) = self.removals.pop_front() {
+            if why == Why::LowDisk && !self.low_on_disk() {
+                // The rest stay, for when the disk runs low again.
+                self.removals.clear();
+                self.removable = true;
+                break;
+            }
+            // A session started in it meanwhile, or a chore holds it: it
+            // waits for the next sweep.
+            if self.in_use(&name) || self.busy.contains_key(&name) {
+                continue;
+            }
+            self.hold(&name);
+            let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
+            tokio::spawn(async move {
+                let result = ctx.driver.remove(&ctx.driver.handle(&name)).await;
+                let free_mb = ctx.disk_free_mb().await;
+                let _ = chores.send(Chore::Removed {
+                    name,
+                    why,
+                    result,
+                    free_mb,
+                });
+            });
             return;
         }
-        for name in &remove {
-            self.hold(name);
+        self.sweeping = false;
+        if self.low_on_disk() && !self.removable {
+            tracing::warn!(
+                "no stopped sandbox is left to remove: taking no new sessions until there is room ({})",
+                self.below()
+            );
         }
-        let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
-        tokio::spawn(async move {
-            for name in remove {
-                let result = ctx.driver.remove(&ctx.driver.handle(&name)).await;
-                let _ = chores.send(Chore::Removed { name, result });
-            }
-            let _ = chores.send(Chore::Swept);
-        });
+        if std::mem::take(&mut self.removed_some) {
+            // Images that only the removed sandboxes used can go too.
+            let ctx = self.ctx.clone();
+            tokio::spawn(async move { clean_up_images(&ctx).await });
+        }
     }
 
     fn on_chore(&mut self, chore: Chore) {
@@ -229,11 +284,27 @@ impl Daemon {
                 tracing::warn!("listing sandboxes: {e:#}");
                 self.sweeping = false;
             }
-            Chore::Removed { name, result } => {
+            Chore::Removed {
+                name,
+                why,
+                result,
+                free_mb,
+            } => {
                 match result {
                     Ok(()) => {
-                        let hours = self.ctx.cfg.keep_stopped_hours;
-                        tracing::info!("removed {name}: stopped for more than {hours} hours");
+                        self.removed_some = true;
+                        match why {
+                            Why::Expired => {
+                                let hours = self.ctx.cfg.keep_stopped_hours;
+                                tracing::info!(
+                                    "removed {name}: stopped for more than {hours} hours"
+                                );
+                            }
+                            Why::LowDisk => tracing::info!(
+                                "removed {name} to make room on the disk ({})",
+                                self.below()
+                            ),
+                        }
                         let path = expiry::path(&self.ctx.cfg.data_dir());
                         if let Err(e) = expiry::forget(&path, &name) {
                             tracing::warn!("saving {}: {e:#}", path.display());
@@ -241,19 +312,78 @@ impl Daemon {
                     }
                     Err(e) => tracing::warn!("removing {name}: {e:#}"),
                 }
+                self.note_disk(free_mb);
                 self.release(&name);
-            }
-            Chore::Swept => {
-                self.sweeping = false;
-                // Images that only the removed sandboxes used can go too.
-                let ctx = self.ctx.clone();
-                tokio::spawn(async move { clean_up_images(&ctx).await });
+                self.remove_next();
             }
             Chore::Stopped { name, ended } => {
                 self.outbox.push_back(ended);
+                self.removable = true;
                 self.release(&name);
             }
+            Chore::Disk(free_mb) => {
+                self.note_disk(free_mb);
+                // Below the floor, stopped sandboxes go before their time.
+                if self.low_on_disk() && self.removable {
+                    self.start_sweep();
+                }
+            }
         }
+    }
+
+    /// Whether the disk has less free space than the host keeps
+    /// (`min_free_disk_gb`): stopped sandboxes go early, and no new session
+    /// starts here.
+    fn low_on_disk(&self) -> bool {
+        disk::low(self.disk_free_mb, self.ctx.cfg.min_free_disk_mb())
+    }
+
+    /// How free the disk is, against the floor the host keeps.
+    fn below(&self) -> String {
+        match (self.disk_free_mb, self.ctx.cfg.min_free_disk_mb()) {
+            (Some(free), Some(floor)) => disk::below(free, floor),
+            (Some(free), None) => format!("{} of disk free", size::memory(free)),
+            (None, _) => "free disk unknown".into(),
+        }
+    }
+
+    /// Remembers what a measurement found, and says in the log when the
+    /// disk goes below the floor or comes back above it.
+    fn note_disk(&mut self, free_mb: Option<u64>) {
+        let was_low = self.low_on_disk();
+        self.disk_free_mb = free_mb;
+        match (was_low, self.low_on_disk(), free_mb) {
+            (false, true, _) => tracing::warn!(
+                "{} at {}: removing stopped sandboxes, those stopped longest first, and taking no new sessions until there is room",
+                self.below(),
+                self.ctx.disk_spot()
+            ),
+            (true, false, Some(free)) => tracing::info!(
+                "{} of disk free again: taking new sessions",
+                size::memory(free)
+            ),
+            (true, false, None) => tracing::warn!(
+                "can't measure the free disk at {}: taking new sessions again",
+                self.ctx.disk_spot()
+            ),
+            _ => {}
+        }
+    }
+
+    /// Whether `sandbox` is the sandbox of a session that runs here or
+    /// waits to start.
+    fn in_use(&self, sandbox: &str) -> bool {
+        self.sessions
+            .keys()
+            .chain(self.pending_starts.keys())
+            .any(|id| sandbox_name(id.as_str()) == sandbox)
+    }
+
+    /// Whether the session's sandbox is here, stopped, as the host last
+    /// noted it.
+    fn has_stopped_sandbox(&self, id: &SessionId) -> bool {
+        let stopped = expiry::load(&expiry::path(&self.ctx.cfg.data_dir()));
+        stopped.contains_key(&sandbox_name(id.as_str()))
     }
 
     /// Holds a sandbox for a chore: sessions that start in it wait.
@@ -319,6 +449,7 @@ impl Daemon {
             sandbox: Some(self.ctx.sandbox_limits()),
             allowed_images: images.allowed,
             allowed_builds: images.builds,
+            min_free_disk_mb: self.ctx.cfg.min_free_disk_mb(),
         }
     }
 
@@ -327,7 +458,7 @@ impl Daemon {
             sessions: self.reports(),
             load1: sysinfo::load1(),
             memory_available_mb: sysinfo::memory_available_mb(),
-            disk_available_mb: sysinfo::disk_available_mb(&self.ctx.cfg.data_dir()),
+            disk_available_mb: self.disk_free_mb,
         }
     }
 
@@ -358,6 +489,7 @@ impl Daemon {
         self.refresh_image();
         self.start_sweep();
         refresh_facts_every(self.ctx.clone(), FACTS_EVERY);
+        watch_disk(self.ctx.clone(), self.chores_tx.clone());
         let url = format!(
             "{}/api/v1/runner/connect",
             self.ctx.cfg.server.trim_end_matches('/')
@@ -468,6 +600,8 @@ impl Daemon {
                 run_id,
             } => {
                 self.sessions.remove(&session_id);
+                // Its sandbox is one a low disk can make room in.
+                self.removable = true;
                 tracing::info!(
                     "session {session_id} ended: {status:?} {}",
                     reason.clone().unwrap_or_default()
@@ -605,6 +739,16 @@ impl Daemon {
             *waiting = spec;
             return Ok(());
         }
+        // Low on disk, it takes only the sessions whose sandboxes it has:
+        // they need no new one. The control plane sends no others, but it
+        // learns the free disk from heartbeats, which come every 15 s.
+        if self.low_on_disk() && !self.has_stopped_sandbox(&id) {
+            return Err(format!(
+                "{} has {} (min_free_disk_gb in its host.toml)",
+                self.ctx.cfg.name,
+                self.below()
+            ));
+        }
         let waiting = self
             .pending_starts
             .keys()
@@ -660,6 +804,25 @@ async fn clean_up_images(ctx: &HostCtx) {
         let what = refresh::describe(&name);
         tracing::info!("removed {what}: sessions no longer start from it");
     }
+}
+
+/// Measures the free disk where sandboxes are, now and then, in the
+/// background, and tells the daemon: every [`DISK_EVERY`], or inside the
+/// Docker VM, where measuring starts a container, every [`FACTS_EVERY`].
+fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
+    tokio::spawn(async move {
+        loop {
+            let free_mb = ctx.disk_free_mb().await;
+            if chores.send(Chore::Disk(free_mb)).is_err() {
+                return;
+            }
+            let every = match ctx.disk_spot() {
+                DiskSpot::DockerVm => FACTS_EVERY,
+                DiskSpot::Dir(_) => DISK_EVERY,
+            };
+            tokio::time::sleep(every).await;
+        }
+    });
 }
 
 /// Probes the drivers and measures what sandboxes run on every `period`, in
@@ -719,5 +882,192 @@ fn keep_awake() {
             Ok(_) => tracing::info!("holding a no-idle-sleep assertion (caffeinate)"),
             Err(e) => tracing::warn!("caffeinate unavailable: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Context;
+
+    const GIB: u64 = 1024;
+    const MINUTE: i64 = 60_000;
+
+    /// A process-driver daemon whose data directory has stopped session
+    /// sandboxes, each stopped `minutes` ago.
+    async fn daemon_with(stopped: &[(&str, i64)]) -> Result<(tempfile::TempDir, Daemon)> {
+        let dir = tempfile::tempdir()?;
+        let path = expiry::path(dir.path());
+        for (name, minutes) in stopped {
+            std::fs::create_dir_all(dir.path().join("sandboxes").join(name))?;
+            expiry::note_stopped(&path, name, expiry::now_ms() - minutes * MINUTE)?;
+        }
+        let cfg = HostConfig {
+            driver: "process".into(),
+            data_dir: Some(dir.path().to_owned()),
+            ..HostConfig::default()
+        };
+        Ok((dir, Daemon::new(cfg, "fctl_rt_test".into()).await?))
+    }
+
+    /// Runs the sweep under way to its end, as if the disk had
+    /// `free_after(n)` MiB free after its `n`th removal: what it removed,
+    /// in order.
+    async fn finish_sweep(
+        d: &mut Daemon,
+        free_after: impl Fn(usize) -> u64,
+    ) -> Result<Vec<String>> {
+        let mut removed = Vec::new();
+        while d.sweeping {
+            let next = tokio::time::timeout(Duration::from_secs(10), d.chores_rx.recv());
+            let mut chore = next.await?.context("no more chores")?;
+            if let Chore::Removed { name, free_mb, .. } = &mut chore {
+                removed.push(name.clone());
+                *free_mb = Some(free_after(removed.len()));
+            }
+            d.on_chore(chore);
+        }
+        Ok(removed)
+    }
+
+    fn spec(session_id: &str) -> Result<Box<SessionSpec>> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "session_id": session_id,
+            "number": 1,
+            "title": "T",
+            "project": {
+                "id": "prj_1", "slug": "app", "name": "App",
+                "repo": { "owner": "acme", "name": "app" },
+                "default_branch": "main", "settings": {}
+            },
+            "branch": "fctl/1", "base_branch": "main",
+            "author": { "id": "usr_1", "name": "Ada" },
+            "claude_session_id": "00000000-0000-0000-0000-000000000000",
+            "resume": false, "secrets": {},
+            "credentials": {
+                "claude": { "id": "crd_1", "kind": "oauth", "access_token": "a", "scopes": [] },
+                "github": { "token": "ghs_w", "expires_at": 1 }
+            },
+            "git_author": { "name": "bot", "email": "bot@example.com" },
+            "co_authors": [], "web_url": "https://fctl.test/s/ses_1", "idle_timeout_secs": 60
+        }))?)
+    }
+
+    #[tokio::test]
+    async fn a_low_disk_removes_stopped_sandboxes_oldest_first_until_there_is_room() -> Result<()> {
+        let (newest, oldest, middle, held) = (
+            "fctl-ses-01ccc",
+            "fctl-ses-01aaa",
+            "fctl-ses-01bbb",
+            "fctl-ses-01ddd",
+        );
+        let (dir, mut d) =
+            daemon_with(&[(newest, 1), (oldest, 30), (middle, 10), (held, 20)]).await?;
+        // A chore stops that one: it waits for the next sweep.
+        d.hold(held);
+        // 17 GiB free, below the 20 GiB it keeps: a sweep starts.
+        d.on_chore(Chore::Disk(Some(17 * GIB)));
+        assert!(d.sweeping && d.low_on_disk());
+        let removed = finish_sweep(&mut d, |n| [19, 21][n - 1] * GIB).await?;
+        // Two make room; the newest stays, for a resume.
+        assert_eq!(removed, [oldest, middle]);
+        assert!(!d.low_on_disk() && d.removable);
+        let sandboxes = dir.path().join("sandboxes");
+        assert!(sandboxes.join(newest).is_dir() && sandboxes.join(held).is_dir());
+        assert!(!sandboxes.join(oldest).exists() && !sandboxes.join(middle).exists());
+        let stopped = expiry::load(&expiry::path(dir.path()));
+        assert_eq!(
+            stopped.keys().map(String::as_str).collect::<Vec<_>>(),
+            [newest, held]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn with_nothing_left_to_remove_only_sessions_with_a_sandbox_here_start() -> Result<()> {
+        let (_dir, mut d) = daemon_with(&[("fctl-ses-01aaa", 30)]).await?;
+        d.on_chore(Chore::Disk(Some(10 * GIB)));
+        let removed = finish_sweep(&mut d, |_| 11 * GIB).await?;
+        assert_eq!(removed, ["fctl-ses-01aaa"]);
+        assert!(d.low_on_disk() && !d.removable);
+        // A new session needs a new sandbox.
+        let refused = d
+            .start_session(spec("ses_01NEW")?)
+            .err()
+            .unwrap_or_default();
+        assert!(
+            refused.ends_with(
+                "has 11 GiB of disk free, below the 20 GiB it keeps free (min_free_disk_gb in its host.toml)"
+            ),
+            "{refused}"
+        );
+        // One whose sandbox is here resumes in it (once a chore on it ends).
+        let path = expiry::path(&d.ctx.cfg.data_dir());
+        expiry::note_stopped(&path, "fctl-ses-01own", expiry::now_ms())?;
+        d.hold("fctl-ses-01own");
+        assert_eq!(d.start_session(spec("ses_01OWN")?), Ok(()));
+        assert!(
+            d.pending_starts
+                .contains_key(&SessionId("ses_01OWN".into()))
+        );
+        // Measuring again lists nothing while nothing has stopped here…
+        d.on_chore(Chore::Disk(Some(11 * GIB)));
+        assert!(!d.sweeping);
+        // …and a session that stops is one to make room with.
+        d.on_session_event(SessionEvent::Ended {
+            session_id: SessionId("ses_01EEE".into()),
+            status: SessionStatus::Stopped,
+            reason: None,
+            run_id: None,
+        });
+        d.on_chore(Chore::Disk(Some(11 * GIB)));
+        assert!(d.sweeping);
+        finish_sweep(&mut d, |_| 11 * GIB).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_session_that_stops_during_a_sweep_leaves_one_to_remove() -> Result<()> {
+        let (dir, mut d) = daemon_with(&[("fctl-ses-01aaa", 30)]).await?;
+        d.on_chore(Chore::Disk(Some(10 * GIB)));
+        // The sweep has listed the sandboxes, and removes the one it found…
+        let listed = tokio::time::timeout(Duration::from_secs(10), d.chores_rx.recv())
+            .await?
+            .context("no more chores")?;
+        d.on_chore(listed);
+        // …when another session stops.
+        std::fs::create_dir_all(dir.path().join("sandboxes/fctl-ses-01eee"))?;
+        d.on_session_event(SessionEvent::Ended {
+            session_id: SessionId("ses_01EEE".into()),
+            status: SessionStatus::Stopped,
+            reason: None,
+            run_id: None,
+        });
+        assert_eq!(
+            finish_sweep(&mut d, |_| 11 * GIB).await?,
+            ["fctl-ses-01aaa"]
+        );
+        // Still low: the next measurement starts a sweep that removes it.
+        assert!(d.low_on_disk() && d.removable);
+        d.on_chore(Chore::Disk(Some(11 * GIB)));
+        assert_eq!(
+            finish_sweep(&mut d, |_| 13 * GIB).await?,
+            ["fctl-ses-01eee"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expired_sandboxes_go_whatever_the_disk_has() -> Result<()> {
+        let (_dir, mut d) =
+            daemon_with(&[("fctl-ses-01old", 100 * 60), ("fctl-ses-01new", 1)]).await?;
+        d.on_chore(Chore::Disk(Some(500 * GIB)));
+        assert!(!d.sweeping);
+        // The hourly sweep.
+        d.start_sweep();
+        let removed = finish_sweep(&mut d, |_| 500 * GIB).await?;
+        assert_eq!(removed, ["fctl-ses-01old"]);
+        assert!(d.removable);
+        Ok(())
     }
 }

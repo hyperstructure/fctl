@@ -1,4 +1,4 @@
-# 0018: Sessions carry on when their runner comes back
+# 0020: Sessions carry on when their runner comes back
 
 2026-10-18 · accepted
 
@@ -41,14 +41,16 @@ of #46 to be done. This follows the answers suggested in the issue:
   that is still running gets the messages, rather than being stopped for a
   new run in the same sandbox.
 - **Otherwise the old run stops, with a reason that says why**: `Shutdown`
-  when the session runs on another runner, `Deleted` when it was deleted,
-  and `User` when someone stopped or archived it, or it failed.
+  when the session runs on another runner, `Deleted` when its project was
+  deleted, and `User` when someone stopped or archived it, or it failed.
 - **The grace period stays at ten minutes.** The session page says at once
   that a runner is away (#69), and a session stopped for it comes back with
   its runner, so waiting longer would only delay a resume elsewhere.
-- **Disk goes to [#76](https://github.com/hyperstructure/fctl/issues/76)**:
-  a floor of free disk below which hosts remove stopped sandboxes early and
-  take no new sessions.
+- **Disk is [0019](0019-hosts-make-room-when-their-disk-runs-low.md)'s**:
+  hosts keep a floor of free disk, measured where their sandboxes are (in
+  Docker's VM on macOS), remove stopped sandboxes early to stay above it,
+  and take no new sessions below it. Quotas per sandbox, the other option
+  #46 named, are left out: they depend on the driver.
 
 ## Consequences
 

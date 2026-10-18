@@ -487,6 +487,7 @@ impl RunnerRow {
             memory_mb: hello.as_ref().map(|h| h.memory_mb),
             memory_available_mb: free.memory_mb,
             disk_available_mb: free.disk_mb,
+            min_free_disk_mb: hello.as_ref().and_then(|h| h.min_free_disk_mb),
             sandbox: hello.as_ref().and_then(|h| h.sandbox),
             image: hello.as_ref().and_then(|h| h.image.clone()),
             allowed_images: hello.as_ref().and_then(|h| h.allowed_images.clone()),

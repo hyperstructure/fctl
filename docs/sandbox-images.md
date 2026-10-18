@@ -86,10 +86,11 @@ pull` pulls it now. While the version's image can't be pulled, it pulls
   images built on the host and tags it doesn't pull, like `0.4`, alone. It
   removes them without force: with Docker, an image that a sandbox uses,
   stopped ones too, stays until the sweep removes the sandbox
-  (`keep_stopped_hours`), and a build that a newer one replaced keeps the
-  name `<tag>-replaced-<the start of its ID>` until then. Apple's
-  `container` gives each sandbox its own copy of the image's filesystem,
-  so the host removes them right away, and stopped sandboxes still start.
+  (`keep_stopped_hours`, or sooner on a low disk), and a build that a
+  newer one replaced keeps the name `<tag>-replaced-<the start of its ID>`
+  until then. Apple's `container` gives each sandbox its own copy of the
+  image's filesystem, so the host removes them right away, and stopped
+  sandboxes still start.
 
 ## Its layout
 

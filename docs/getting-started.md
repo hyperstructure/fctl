@@ -191,7 +191,10 @@ before the session runs anywhere else, the session carries on there.
 
 When the agent finishes a turn, the session waits for you. After the
 project's idle timeout (ten minutes unless its settings say otherwise) it
-stops, so that its machine takes other work. A message picks it up where it
+stops, so that its machine takes other work. Work the agent left running
+in the background, like a review by a subagent or a long build, keeps the
+session up for up to an hour after the turn; the agent picks up its
+result in a turn of its own. A message picks it up where it
 left off, on the same machine, with the same conversation and branch: type
 it on the session page or send it with `fctl send`. A session that failed
 needs its owner to **Resume** it (or `fctl resume my-app#12 "…"`).

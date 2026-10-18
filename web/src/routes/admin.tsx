@@ -23,7 +23,7 @@ import {
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, cpus, memory, sandboxLimits } from "@/lib/format";
+import { ago, cpus, diskBelow, lowOnDisk, memory, sandboxLimits } from "@/lib/format";
 import { buildsImages, runsImages } from "@/lib/images";
 import { keys, queryClient, useMe, useRunners } from "@/lib/queries";
 
@@ -356,7 +356,7 @@ function Runners() {
                   "mt-1.5 size-2 shrink-0 rounded-full sm:mt-0",
                   r.status === "disabled"
                     ? "bg-danger"
-                    : r.drain
+                    : r.drain || lowOnDisk(r)
                       ? "bg-amber"
                       : r.status === "online"
                         ? "bg-accent shadow-[0_0_10px_var(--c-accent)]"
@@ -378,6 +378,7 @@ function Runners() {
                     {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
                   </div>
                   {r.drain && r.status !== "disabled" && <DrainLine runner={r} />}
+                  {r.status !== "disabled" && <LowDiskLine runner={r} />}
                   <RunnerResources runner={r} />
                   <RunnerImages runner={r} />
                 </div>
@@ -455,10 +456,11 @@ function Runners() {
   );
 }
 
-/** "online", or how far a drain has come: "draining" while sessions run, then "drained". */
+/** "online", or why it takes no new sessions: a drain ("draining" while sessions run, then "drained"), or its disk. */
 function runnerState(r: G.Runner): string {
-  if (r.status === "disabled" || !r.drain) return r.status;
-  return r.active_sessions > 0 ? "draining" : "drained";
+  if (r.status === "disabled") return r.status;
+  if (r.drain) return r.active_sessions > 0 ? "draining" : "drained";
+  return lowOnDisk(r) ? "low on disk" : r.status;
 }
 
 /** Who drained a runner, when, and what still runs on it. */
@@ -474,6 +476,17 @@ function DrainLine({ runner: r }: { runner: G.Runner }) {
         : n === 1
           ? ", and 1 session still runs."
           : `, and ${n} sessions still run.`}
+    </div>
+  );
+}
+
+/** How far a runner's free disk is below what its host keeps, and what happens meanwhile. */
+function LowDiskLine({ runner: r }: { runner: G.Runner }) {
+  if (!lowOnDisk(r) || r.disk_available_mb == null || r.min_free_disk_mb == null) return null;
+  return (
+    <div className="mt-0.5 text-[12px] text-amber">
+      {diskBelow(r.disk_available_mb, r.min_free_disk_mb)}: its host removes stopped sandboxes, and no new
+      sessions start on it until there is room.
     </div>
   );
 }

@@ -128,6 +128,8 @@ struct Candidate {
     labels: Vec<String>,
     sandbox: Option<SandboxLimits>,
     draining: bool,
+    /// Its free disk is below what its host keeps.
+    low_disk: bool,
     image: Option<String>,
     allowed_images: Option<Vec<String>>,
     allowed_builds: Option<Vec<String>>,
@@ -144,6 +146,7 @@ impl Candidate {
             labels: &self.labels,
             sandbox: self.sandbox,
             draining: self.draining,
+            low_disk: self.low_disk,
             images: HostImages {
                 own: self.image.as_deref(),
                 allowed: self.allowed_images.as_deref(),
@@ -543,6 +546,7 @@ impl FleetObject {
         match msg {
             HostToFleet::Hello(hello) => self.on_hello(ws, rs, *hello, now).await,
             HostToFleet::Heartbeat(hb) => {
+                let (was_low, min_free) = self.low_on_disk(&rs.id);
                 let sessions = serde_json::to_string(&hb.sessions).unwrap_or_else(|_| "[]".into());
                 let mib =
                     |v: Option<u64>| SqlStorageValue::from(v.and_then(|v| i64::try_from(v).ok()));
@@ -566,6 +570,11 @@ impl FleetObject {
                     let _ = q.run().await;
                 }
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
+                // The runners list says when a runner takes no new sessions
+                // for its disk, and when it takes them again.
+                if fctl_domain::disk::low(hb.disk_available_mb, min_free) != was_low {
+                    self.feed_runner(&rs.id).await;
+                }
                 self.dispatch().await;
             }
             HostToFleet::StartResult {
@@ -1061,6 +1070,41 @@ impl FleetObject {
         }
     }
 
+    /// Whether a runner's free disk was below what its host keeps at its
+    /// last heartbeat, and what its host keeps (MiB).
+    fn low_on_disk(&self, runner_id: &str) -> (bool, Option<u64>) {
+        #[derive(Deserialize)]
+        struct R {
+            hello: Option<String>,
+            #[serde(default)]
+            disk_available_mb: Option<f64>,
+        }
+        #[derive(Deserialize)]
+        struct Floor {
+            #[serde(default)]
+            min_free_disk_mb: Option<u64>,
+        }
+        let Some(r) = self
+            .sql
+            .exec(
+                "SELECT hello, disk_available_mb FROM runners WHERE id = ?",
+                Some(vec![sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<R>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+        else {
+            return (false, None);
+        };
+        let min_free = r
+            .hello
+            .as_deref()
+            .and_then(|h| serde_json::from_str::<Floor>(h).ok())
+            .and_then(|f| f.min_free_disk_mb);
+        let free = r.disk_available_mb.map(|d| d as u64);
+        (fctl_domain::disk::low(free, min_free), min_free)
+    }
+
     /// The sessions a runner reported last.
     fn reported_sessions(&self, runner_id: &str) -> Vec<HostSessionReport> {
         #[derive(Deserialize)]
@@ -1386,6 +1430,10 @@ impl FleetObject {
                     labels: hello.labels,
                     sandbox: hello.sandbox,
                     draining: r.draining_since.is_some(),
+                    low_disk: fctl_domain::disk::low(
+                        r.disk_available_mb.map(|d| d as u64),
+                        hello.min_free_disk_mb,
+                    ),
                     image: hello.image,
                     allowed_images: hello.allowed_images,
                     allowed_builds: hello.allowed_builds,

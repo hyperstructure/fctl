@@ -94,6 +94,12 @@ pub struct HostHello {
     /// images from, for projects that build theirs. Absent, as from older
     /// hosts and hosts whose driver uses no images: none.
     pub allowed_builds: Option<Vec<String>>,
+    /// The free disk (MiB) it keeps where its sandboxes are. While its
+    /// heartbeats' `disk_available_mb` is below it, it removes stopped
+    /// sandboxes, those stopped longest first, and takes no new sessions,
+    /// only resumes of the ones whose sandboxes it has. Absent when it
+    /// keeps none, and from older hosts.
+    pub min_free_disk_mb: Option<u64>,
 }
 
 #[skip_serializing_none]
@@ -103,6 +109,9 @@ pub struct HostHeartbeat {
     pub sessions: Vec<HostSessionReport>,
     pub load1: Option<f32>,
     pub memory_available_mb: Option<u64>,
+    /// Free disk (MiB) where its sandboxes are (see
+    /// [`HostHello::min_free_disk_mb`]). Older hosts measure their data
+    /// directory.
     pub disk_available_mb: Option<u64>,
 }
 
