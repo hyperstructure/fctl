@@ -61,44 +61,43 @@ async fn build_from(driver: &Driver, tag: &str, download_base: &str, dir: &Path)
     // published (a development build).
     let version = format!("FCTL_VERSION={}", crate::agentbin::VERSION);
     let download = format!("FCTL_DOWNLOAD={download_base}");
-    match driver.name() {
-        "apple" => {
-            run_inherit(
-                "container",
-                &[
-                    "build",
-                    "--tag",
-                    tag,
-                    "--build-arg",
-                    &version,
-                    "--build-arg",
-                    &download,
-                    "--file",
-                    &format!("{ctx}/Dockerfile"),
-                    &ctx,
-                ],
-            )
-            .await
-        }
-        "docker" => {
-            run_inherit(
-                "docker",
-                &[
-                    "build",
-                    "--tag",
-                    tag,
-                    "--build-arg",
-                    &version,
-                    "--build-arg",
-                    &download,
-                    &ctx,
-                ],
-            )
-            .await
-        }
-        "lima" => build_lima_base(dir, &[&version, &download]).await,
+    let file = format!("{ctx}/Dockerfile");
+    let (program, args): (&str, Vec<&str>) = match driver.name() {
+        "apple" => (
+            "container",
+            vec![
+                "build",
+                "--tag",
+                tag,
+                "--build-arg",
+                &version,
+                "--build-arg",
+                &download,
+                "--file",
+                &file,
+                &ctx,
+            ],
+        ),
+        "docker" => (
+            "docker",
+            vec![
+                "build",
+                "--tag",
+                tag,
+                "--build-arg",
+                &version,
+                "--build-arg",
+                &download,
+                &ctx,
+            ],
+        ),
+        "lima" => return build_lima_base(dir, &[&version, &download]).await,
         other => bail!("the {other} driver has no image to build"),
-    }
+    };
+    // A published image that the build replaces goes once no sandbox uses it.
+    crate::refresh::replacing(driver, tag, run_inherit(program, &args))
+        .await
+        .map(drop)
 }
 
 /// Downloads [`SOURCE`] into `dir`; returns the directory with its files.

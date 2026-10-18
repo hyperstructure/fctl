@@ -9,8 +9,12 @@
 //! | `process` | none | development and trusted hosts |
 
 pub mod container;
+#[cfg(test)]
+pub(crate) mod fake;
 pub mod lima;
 pub mod process;
+
+pub use container::ImageInfo;
 
 use anyhow::Result;
 use fctl_proto::runner::{DriverInfo, SandboxSize};
@@ -187,6 +191,39 @@ impl Driver {
         match self {
             Self::Container(d) => d.pull_or_fallback(image, fallback, progress, log).await,
             _ => anyhow::bail!("the {} driver does not use images", self.name()),
+        }
+    }
+
+    /// What the runtime says about `image`; `None` when it isn't here.
+    pub async fn image(&self, image: &str) -> Result<Option<ImageInfo>> {
+        match self {
+            Self::Container(d) => d.image(image).await,
+            _ => Ok(None),
+        }
+    }
+
+    /// Gives `image` another name, `name`.
+    pub async fn tag_image(&self, image: &str, name: &str) -> Result<()> {
+        match self {
+            Self::Container(d) => d.tag_image(image, name).await,
+            _ => anyhow::bail!("the {} driver does not use images", self.name()),
+        }
+    }
+
+    /// Removes the name `image`, and the image once no other name refers to
+    /// it, without force.
+    pub async fn remove_image(&self, image: &str) -> Result<()> {
+        match self {
+            Self::Container(d) => d.remove_image(image).await,
+            _ => anyhow::bail!("the {} driver does not use images", self.name()),
+        }
+    }
+
+    /// The names (`repository:tag`) of `repository`'s images on this host.
+    pub async fn images(&self, repository: &str) -> Result<Vec<String>> {
+        match self {
+            Self::Container(d) => d.images(repository).await,
+            _ => Ok(Vec::new()),
         }
     }
 

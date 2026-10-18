@@ -13,6 +13,7 @@ use crate::config::HostConfig;
 use crate::driver::{Driver, SandboxInfo, sandbox_name, session_of, timed_out};
 use crate::expiry;
 use crate::login::{self, LoginCmd};
+use crate::refresh;
 use crate::session::{self, HostCtx, SessionCmd, SessionEvent, SessionHandle, Start};
 use crate::sysinfo;
 use anyhow::Result;
@@ -113,34 +114,23 @@ impl Daemon {
         })
     }
 
-    /// Pulls the host's sandbox image in the background when it isn't here
-    /// yet, so that the first session after an upgrade doesn't wait for it.
-    /// When it can't be pulled, as before a release's image is published,
-    /// it pulls the image sessions start from instead.
-    fn prefetch_image(&self) {
+    /// Pulls the host's sandbox image in the background, now and every
+    /// [`refresh::REFRESH_EVERY`]: when it isn't here yet, so that the first
+    /// session after an upgrade doesn't wait for it, and on the default
+    /// image again, so that new sessions start from its newest build. Then
+    /// it removes the images sessions no longer start from.
+    fn refresh_image(&self) {
         if !self.ctx.driver.uses_images() {
             return;
         }
         let ctx = self.ctx.clone();
         tokio::spawn(async move {
-            let image = ctx.cfg.image();
-            if ctx.driver.has_image(&image).await {
-                return;
-            }
-            // Never over a fallback that is here: sessions start from it.
-            let fallback = match ctx.cfg.fallback_image() {
-                Some(f) if !ctx.driver.has_image(&f).await => Some(f),
-                _ => None,
-            };
-            tracing::info!("pulling {image}");
-            let log = |line: String| tracing::info!("{line}");
-            match ctx
-                .driver
-                .pull_or_fallback(&image, fallback.as_deref(), false, &log)
-                .await
-            {
-                Ok(pulled) => tracing::info!("pulled {pulled}"),
-                Err(e) => tracing::warn!("pulling {image}: {e:#} (sessions try again)"),
+            let mut every = tokio::time::interval(refresh::REFRESH_EVERY);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                every.tick().await;
+                refresh::refresh(&ctx.driver, &ctx.cfg).await;
+                clean_up_images(&ctx).await;
             }
         });
     }
@@ -250,7 +240,12 @@ impl Daemon {
                 }
                 self.release(&name);
             }
-            Chore::Swept => self.sweeping = false,
+            Chore::Swept => {
+                self.sweeping = false;
+                // Images that only the removed sandboxes used can go too.
+                let ctx = self.ctx.clone();
+                tokio::spawn(async move { clean_up_images(&ctx).await });
+            }
             Chore::Stopped { name, ended } => {
                 self.outbox.push_back(ended);
                 self.release(&name);
@@ -354,7 +349,7 @@ impl Daemon {
             wait = (wait * 2).min(Duration::from_secs(60));
         }
         // Once the runtime answers.
-        self.prefetch_image();
+        self.refresh_image();
         self.start_sweep();
         refresh_facts_every(self.ctx.clone(), FACTS_EVERY);
         let url = format!(
@@ -634,6 +629,15 @@ impl Daemon {
             };
             let _ = chores.send(Chore::Stopped { name, ended });
         });
+    }
+}
+
+/// Removes the sandbox images that sessions no longer start from, saying
+/// which in the log.
+async fn clean_up_images(ctx: &HostCtx) {
+    for name in refresh::clean_up(&ctx.driver, &ctx.cfg).await {
+        let what = refresh::describe(&name);
+        tracing::info!("removed {what}: sessions no longer start from it");
     }
 }
 

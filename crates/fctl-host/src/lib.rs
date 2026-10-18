@@ -12,6 +12,7 @@ pub mod files;
 pub mod image;
 pub mod liveness;
 pub mod login;
+pub mod refresh;
 pub mod service;
 pub mod session;
 pub mod sysinfo;
