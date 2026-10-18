@@ -4,6 +4,7 @@ pub mod attachments;
 pub mod auth;
 pub mod claude;
 pub mod google;
+pub mod notifications;
 pub mod projects;
 pub mod repos;
 pub mod runners;

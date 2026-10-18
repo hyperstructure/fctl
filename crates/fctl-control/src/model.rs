@@ -343,6 +343,9 @@ pub struct SessionRow {
     /// The caller's project membership role and share role (LEFT JOINs).
     pub member_role: Option<String>,
     pub share_role: Option<String>,
+    /// Whether the caller follows it (a LEFT JOIN).
+    #[serde(deserialize_with = "int_bool", default)]
+    pub following: bool,
 }
 
 impl SessionRow {
@@ -405,24 +408,26 @@ impl SessionRow {
             stats: serde_json::from_str::<SessionStats>(&self.stats).unwrap_or_default(),
             role,
             archived: self.archived,
+            following: Some(self.following),
         }
     }
 }
 
-/// SELECT for sessions with the caller's project and share roles.
-/// Bind: `?1` = caller user id.
+/// SELECT for sessions with the caller's project and share roles, and
+/// whether they follow it. Bind: `?1` = caller user id.
 pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
     s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.remote_control, s.stats, s.archived, \
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
-    m.role AS member_role, sh.role AS share_role \
+    m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following \
     FROM sessions s \
     JOIN projects p ON p.id = s.project_id \
     LEFT JOIN users cu ON cu.id = s.created_by \
     LEFT JOIN runners r ON r.id = s.runner_id \
     LEFT JOIN project_members m ON m.project_id = s.project_id AND m.user_id = ?1 \
-    LEFT JOIN session_shares sh ON sh.session_id = s.id AND sh.user_id = ?1";
+    LEFT JOIN session_shares sh ON sh.session_id = s.id AND sh.user_id = ?1 \
+    LEFT JOIN session_followers f ON f.session_id = s.id AND f.user_id = ?1";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RunnerRow {

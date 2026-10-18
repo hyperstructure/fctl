@@ -128,6 +128,16 @@ pub struct LoginCode {
     pub code: String,
 }
 
+// ───────────────────────────── NotifyObject ─────────────────────────────
+
+/// What happened to a session, for one of the people who follow it
+/// (`/event`).
+#[derive(Serialize, Deserialize)]
+pub struct Notify {
+    pub user_id: String,
+    pub event: fctl_domain::notify::Event,
+}
+
 // ───────────────────────────── FilesObject ─────────────────────────────
 
 /// A new upload, sent to `/store` in the `meta` query parameter; the bytes
@@ -199,6 +209,14 @@ pub async fn claim_files(
     )
     .await?;
     Ok(out.attachments)
+}
+
+/// The NotifyObject of a person.
+pub fn notify_stub(env: &Env, user_id: &str) -> AppResult<Stub> {
+    Ok(env
+        .durable_object("NOTIFY")?
+        .id_from_name(user_id)?
+        .get_stub()?)
 }
 
 pub fn fleet_stub(env: &Env) -> AppResult<Stub> {

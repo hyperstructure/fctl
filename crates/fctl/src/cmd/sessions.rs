@@ -1,4 +1,5 @@
-//! `fctl run`, `sessions`, `show`, `edit`, `logs`, `send`, `interrupt`, `stop`, `resume`, `open`.
+//! `fctl run`, `sessions`, `show`, `edit`, `logs`, `send`, `interrupt`, `stop`, `resume`,
+//! `follow`, `unfollow`, `open`.
 
 use crate::config;
 use crate::render::Renderer;
@@ -279,6 +280,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     if let Some(m) = &s.model {
         println!("model:    {m}");
     }
+    if let Some(following) = s.following {
+        println!("follow:   {}", if following { "yes" } else { "no" });
+    }
     let st = &s.stats;
     println!(
         "work:     {} turns · {} tool calls · {} files (+{} −{})",
@@ -503,6 +507,44 @@ pub async fn resume(
         s.project_slug,
         s.number
     );
+    Ok(())
+}
+
+/// `fctl follow` (`follow`) and `fctl unfollow`.
+pub async fn follow(server: Option<&str>, reference: &str, follow: bool, json: bool) -> Result<()> {
+    let api = config::api(server)?;
+    let s = resolve(&api, reference).await?;
+    let s = if follow {
+        api.follow(&s.id.0).await?
+    } else {
+        api.unfollow(&s.id.0).await?
+    };
+    if json {
+        return style::print_json(&s);
+    }
+    let name = format!("{}#{}", s.project_slug, s.number);
+    if follow {
+        println!(
+            "{} Following {name}: you get a notification when it waits for your reply, pauses on a usage limit or fails",
+            style::accent("✓")
+        );
+        let devices = api
+            .notifications()
+            .await
+            .map(|n| n.devices.len())
+            .unwrap_or(1);
+        if devices == 0 {
+            println!(
+                "{}",
+                style::dim(&format!(
+                    "No browser gets your notifications yet. Turn them on in Settings: {}/settings",
+                    api.base()
+                ))
+            );
+        }
+    } else {
+        println!("{} Not following {name} any more", style::accent("✓"));
+    }
     Ok(())
 }
 

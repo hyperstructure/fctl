@@ -110,6 +110,17 @@ enum Command {
         #[arg(short, long = "attach", value_name = "FILE")]
         attach: Vec<std::path::PathBuf>,
     },
+    /// Follow a session: notifications reach you when it waits for your
+    /// reply, pauses on a usage limit or fails.
+    Follow {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
+    },
+    /// Stop following a session (no more notifications about it).
+    Unfollow {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
+    },
     /// Open a session or project in the browser (or the Claude app with --claude).
     Open {
         /// A session or project (default: the instance).
@@ -121,6 +132,9 @@ enum Command {
     /// Connect your Claude subscription.
     #[command(subcommand)]
     Claude(cmd::claude::ClaudeCmd),
+    /// Choose what notifies you, and see the browsers that show it.
+    #[command(subcommand)]
+    Notifications(cmd::notifications::NotificationsCmd),
     /// Run this machine as a host for agent sandboxes.
     #[command(subcommand)]
     Host(cmd::host::HostCmd),
@@ -226,10 +240,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             message,
             attach,
         } => cmd::sessions::resume(server, &session, &message.join(" "), &attach, json).await,
+        Command::Follow { session } => cmd::sessions::follow(server, &session, true, json).await,
+        Command::Unfollow { session } => cmd::sessions::follow(server, &session, false, json).await,
         Command::Open { target, claude } => {
             cmd::sessions::open(server, target.as_deref(), claude).await
         }
         Command::Claude(c) => cmd::claude::run(server, c, json).await,
+        Command::Notifications(c) => cmd::notifications::run(server, c, json).await,
         Command::Host(c) => cmd::host::run(server, c, json).await,
         Command::Admin(c) => cmd::admin::run(server, c, json).await,
         Command::Account(c) => cmd::account::run(server, c, json).await,
