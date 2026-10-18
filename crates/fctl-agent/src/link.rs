@@ -5,7 +5,8 @@
 
 use anyhow::{Context, Result};
 use fctl_proto::agent::{AgentToHost, HostToAgent, MAX_FRAME_BYTES};
-use std::path::Path;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
@@ -17,12 +18,78 @@ pub enum LinkEvent {
     Disconnected(u64),
 }
 
-/// Binds the socket, removing a stale one. Fails if another supervisor is
-/// listening there.
+/// What `fctl-agent serve` gets for the host socket.
+pub enum Claim {
+    /// The socket is this supervisor's, with the lock that tells the next
+    /// `serve` so for as long as it is held.
+    Serving(UnixListener, Option<File>),
+    /// Another supervisor serves it.
+    Taken,
+}
+
+/// Claims the host socket. The host starts `fctl-agent serve` whenever the
+/// agent may be gone, so usually another one serves it. The lock on
+/// `agent.lock` says so without connecting to the socket: the supervisor
+/// would take that connection for a host link, in place of the host's.
+/// Supervisors from before the lock are found by connecting, as before.
+pub async fn claim(path: &Path) -> Result<Claim> {
+    let lock = match lock(&path.with_extension("lock")) {
+        Ok(Some(lock)) => Some(lock),
+        Ok(None) => return Ok(Claim::Taken),
+        Err(e) => {
+            tracing::warn!("{e:#}; looking for another fctl-agent on the socket instead");
+            None
+        }
+    };
+    match bind(path).await {
+        Ok(listener) => Ok(Claim::Serving(listener, lock)),
+        Err(e) if e.is::<AlreadyServing>() => Ok(Claim::Taken),
+        Err(e) => Err(e),
+    }
+}
+
+/// An exclusive lock on `path`, or `None` while another process holds it.
+fn lock(path: &Path) -> Result<Option<File>> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(e)) => {
+            Err(e).with_context(|| format!("locking {}", path.display()))
+        }
+    }
+}
+
+/// Another supervisor listens on the socket.
+#[derive(Debug)]
+pub struct AlreadyServing(PathBuf);
+
+impl std::fmt::Display for AlreadyServing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "another fctl-agent is already serving {}",
+            self.0.display()
+        )
+    }
+}
+
+impl std::error::Error for AlreadyServing {}
+
+/// Binds the socket, removing a stale one. Fails with [`AlreadyServing`] if
+/// another supervisor is listening there.
 pub async fn bind(path: &Path) -> Result<UnixListener> {
     if path.exists() {
         if UnixStream::connect(path).await.is_ok() {
-            anyhow::bail!("another fctl-agent is already serving {}", path.display());
+            return Err(AlreadyServing(path.to_owned()).into());
         }
         std::fs::remove_file(path).ok();
     }
@@ -127,4 +194,39 @@ pub async fn attach(path: &Path) -> Result<()> {
     let _ = stdout.flush().await;
     up.abort();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_second_supervisor_leaves_the_socket_alone() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("agent.sock");
+        let Claim::Serving(listener, Some(lock)) = claim(&socket).await? else {
+            anyhow::bail!("the first supervisor should get the socket and the lock");
+        };
+        // The host starts another in case the first is gone.
+        assert!(matches!(claim(&socket).await?, Claim::Taken));
+        // Without connecting: the first would take that for a host link.
+        let connected = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+        assert!(connected.is_err(), "the second supervisor connected");
+
+        // Once the first is gone, the next one serves, over its stale socket.
+        drop((listener, lock));
+        assert!(socket.exists());
+        assert!(matches!(claim(&socket).await?, Claim::Serving(_, Some(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn finds_supervisors_from_before_the_lock_on_the_socket() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("agent.sock");
+        let _older = bind(&socket).await?;
+        assert!(matches!(claim(&socket).await?, Claim::Taken));
+        Ok(())
+    }
 }

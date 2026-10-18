@@ -602,6 +602,13 @@ for 10 seconds that no link works, the session's viewers hear that the
 agent can't be reached, and since when ([Viewers](#viewers)); a host that
 wakes from sleep to silent links attaches again within them.
 
+A host that restarts starts fctl-agent again too, before it attaches, in
+case the sandbox restarted with it. A supervisor holds a lock on
+`~/.fctl/agent.lock` while it runs, so a second one sees the first and
+exits without connecting to its socket: the supervisor takes every
+connection for a host link, and the newest replaces the host's. Agents from
+before the lock are found on the socket instead.
+
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
 connection never waits on one: the hello reports what the drivers said
