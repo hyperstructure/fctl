@@ -590,9 +590,12 @@ dependencies = [
 name = "fctl-domain"
 version = "0.2.0"
 dependencies = [
+ "aes-gcm",
+ "base64",
  "fctl-proto",
  "getrandom 0.4.3",
  "hex",
+ "hmac",
  "serde",
  "serde_json",
  "sha2",

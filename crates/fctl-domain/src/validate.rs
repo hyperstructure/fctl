@@ -1,6 +1,7 @@
 //! Input validation. Every function returns the cleaned value or an
 //! [`ApiError`] naming the field, so handlers can return it as is.
 
+use crate::webpush;
 use fctl_proto::{ApiError, AttachmentId};
 
 pub type Result<T> = std::result::Result<T, ApiError>;
@@ -376,9 +377,102 @@ pub fn image(input: &str) -> Result<String> {
     Ok(s.to_owned())
 }
 
+/// A push subscription's endpoint: an https URL on a named host, at the
+/// browser's push service. With `local` (development), plain http and local
+/// hosts too.
+pub fn push_endpoint(input: &str, local: bool) -> Result<String> {
+    let bad = || ApiError::validation("endpoint", "Not a push subscription endpoint");
+    let s = input.trim();
+    if s.len() > 2048 || s.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(bad());
+    }
+    let origin = webpush::audience(s).ok_or_else(bad)?;
+    let (scheme, host) = origin.split_once("://").ok_or_else(bad)?;
+    if !host
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b))
+    {
+        return Err(bad());
+    }
+    let name = webpush::service(s);
+    let named = name.contains('.')
+        && name.parse::<std::net::IpAddr>().is_err()
+        && !name.starts_with('[')
+        && !name.ends_with(".localhost");
+    if !local && (scheme != "https" || !named) {
+        return Err(ApiError::validation(
+            "endpoint",
+            "Push endpoints are https:// addresses of a push service",
+        ));
+    }
+    Ok(s.to_owned())
+}
+
+/// A push subscription's keys, as base64url without padding: the browser's
+/// P-256 public key (uncompressed) and its 16-byte authentication secret.
+pub fn push_keys(p256dh: &str, auth: &str) -> Result<(String, String)> {
+    let key = webpush::decode(p256dh)
+        .filter(|k| k.len() == webpush::PUBLIC_KEY_LEN && k.first() == Some(&4))
+        .ok_or_else(|| ApiError::validation("keys.p256dh", "Not a P-256 public key"))?;
+    let secret = webpush::decode(auth)
+        .filter(|a| a.len() == webpush::AUTH_LEN)
+        .ok_or_else(|| ApiError::validation("keys.auth", "Not a push authentication secret"))?;
+    Ok((webpush::encode(&key), webpush::encode(&secret)))
+}
+
+/// What to call a browser in Settings: one line of at most 80 characters.
+/// Empty is no name.
+pub fn device_name(input: &str) -> Result<Option<String>> {
+    let s = collapse_spaces(input);
+    if s.chars().count() > 80 {
+        return Err(ApiError::validation("name", "Use at most 80 characters"));
+    }
+    if s.chars().any(char::is_control) {
+        return Err(ApiError::validation("name", "Remove control characters"));
+    }
+    Ok((!s.is_empty()).then_some(s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_subscriptions() {
+        let fcm = "https://fcm.googleapis.com/fcm/send/dQw4w9WgXcQ:APA91bH";
+        assert_eq!(push_endpoint(fcm, false).ok().as_deref(), Some(fcm));
+        assert!(push_endpoint("https://web.push.apple.com/QGx", false).is_ok());
+        assert!(push_endpoint("http://fcm.googleapis.com/fcm/send/x", false).is_err());
+        assert!(push_endpoint("https://localhost/push", false).is_err());
+        assert!(push_endpoint("https://10.0.0.8/push", false).is_err());
+        assert!(push_endpoint("https://[::1]/push", false).is_err());
+        assert!(push_endpoint("https://push.localhost/x", false).is_err());
+        assert!(push_endpoint("https://user@evil.example/x", false).is_err());
+        assert!(push_endpoint("https://fcm.googleapis.com/a b", false).is_err());
+        assert!(push_endpoint("javascript:alert(1)", true).is_err());
+        // Development: a push service on this machine.
+        assert!(push_endpoint("http://127.0.0.1:9000/push/1", true).is_ok());
+
+        let key = webpush::encode(&[4; 65]);
+        let auth = webpush::encode(&[7; 16]);
+        assert_eq!(
+            push_keys(&format!("{key}="), &auth).ok(),
+            Some((key.clone(), auth.clone()))
+        );
+        assert!(push_keys(&webpush::encode(&[2; 65]), &auth).is_err());
+        assert!(push_keys(&key, &webpush::encode(&[7; 15])).is_err());
+        assert!(push_keys("not base64!", &auth).is_err());
+
+        assert_eq!(
+            device_name("  Chrome   on macOS ")
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("Chrome on macOS")
+        );
+        assert_eq!(device_name(" ").ok(), Some(None));
+        assert!(device_name(&"x".repeat(81)).is_err());
+    }
 
     #[test]
     fn messages_with_files() {

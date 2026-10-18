@@ -108,5 +108,11 @@ pub enum ViewerClient {
     },
     /// The person is typing (sent at most every few seconds).
     Typing,
+    /// Whether the person can see the session now (its browser tab is
+    /// visible). Viewers are visible until they say otherwise; people who
+    /// can see a session get no notifications about it.
+    Visibility {
+        visible: bool,
+    },
     Ping,
 }

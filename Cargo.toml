@@ -38,6 +38,7 @@ fctl-domain = { path = "crates/fctl-domain" }
 fctl-host = { path = "crates/fctl-host" }
 fctl-client = { path = "crates/fctl-client" }
 
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "alloc"] }
 anyhow = "1.0.104"
 base64 = "0.23.1"
 bytes = "1.12.1"
@@ -45,6 +46,7 @@ clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
 futures = "0.3.34"
 getrandom = "0.4.3"
 hex = "0.4.3"
+hmac = "0.13.0"
 http = "1.3"
 http-body-util = "0.1.5"
 hyper = { version = "1.12.0", features = ["client", "http1", "http2"] }

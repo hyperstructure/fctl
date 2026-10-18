@@ -31,4 +31,10 @@ resume_at?: number, created_by: UserRef, created_at: number, updated_at: number,
 /**
  * The caller's role.
  */
-role?: SessionRole, archived: boolean, };
+role?: SessionRole, archived: boolean, 
+/**
+ * Whether the caller follows it: its followers are notified when it
+ * waits for a reply, pauses on a usage limit or fails. Absent from live
+ * updates, which go to everyone watching.
+ */
+following?: boolean, };

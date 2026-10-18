@@ -11,7 +11,7 @@ use crate::session::{
 };
 use crate::{
     AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId, LoginJobId, Millis,
-    ProjectId, RunnerId, SessionId, TokenId, UserId,
+    ProjectId, PushDeviceId, RunnerId, SessionId, TokenId, UserId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -890,6 +890,128 @@ pub struct ClaudeLoginCodeRequest {
     pub code: String,
 }
 
+// ───────────────────────────── notifications ─────────────────────────────
+
+/// What notifies a person, in every browser where they turned notifications
+/// on. A field that is missing has its default.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct NotificationSettings {
+    /// A session they follow finished its turn and waits for a reply.
+    pub waiting: bool,
+    /// A session they follow paused on a Claude usage limit.
+    pub paused: bool,
+    /// A session they follow failed.
+    pub failed: bool,
+    /// Starting or resuming a session follows it.
+    pub follow_started: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            waiting: true,
+            paused: true,
+            failed: true,
+            follow_started: true,
+        }
+    }
+}
+
+/// A browser that shows your notifications: its Web Push subscription.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PushDevice {
+    pub id: PushDeviceId,
+    /// What the browser was called when it subscribed ("Chrome on macOS").
+    pub name: Option<String>,
+    /// The push service that delivers to it, e.g. `fcm.googleapis.com`.
+    pub service: String,
+    pub created_at: Millis,
+    /// When a notification last went to it.
+    pub last_sent_at: Option<Millis>,
+    /// It subscribed with the sign-in this request uses: this browser.
+    pub current: bool,
+}
+
+/// `GET /api/v1/me/notifications`.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct Notifications {
+    pub settings: NotificationSettings,
+    pub devices: Vec<PushDevice>,
+    /// The instance's VAPID public key (base64url), for
+    /// `PushManager.subscribe`. Absent when it cannot send notifications.
+    pub public_key: Option<String>,
+}
+
+/// `PATCH /api/v1/me/notifications`: the settings to change.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateNotificationsRequest {
+    pub waiting: Option<bool>,
+    pub paused: Option<bool>,
+    pub failed: Option<bool>,
+    pub follow_started: Option<bool>,
+}
+
+/// A browser's keys for encrypting notifications to it, from
+/// `PushSubscription.toJSON()`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PushKeys {
+    /// Its P-256 public key, base64url.
+    pub p256dh: String,
+    /// Its authentication secret, base64url.
+    pub auth: String,
+}
+
+/// `POST /api/v1/me/notifications/devices`: notifications for a browser.
+/// Sending the same endpoint again updates it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AddPushDeviceRequest {
+    /// `PushSubscription.endpoint`.
+    pub endpoint: String,
+    pub keys: PushKeys,
+    /// What to call it, e.g. "Chrome on macOS".
+    pub name: Option<String>,
+}
+
+/// `POST /api/v1/me/notifications/test`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PushTestResult {
+    /// Browsers whose push service took the notification.
+    pub sent: u32,
+    /// Browsers it could not reach. Expired ones are removed.
+    pub failed: u32,
+}
+
+/// A notification as the control plane sends it to a browser (encrypted,
+/// RFC 8291), for its service worker (`web/public/sw.js`) to show.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PushMessage {
+    pub title: String,
+    pub body: String,
+    /// Replaces a notification with the same tag that is still shown.
+    pub tag: String,
+    /// The page a click opens, a path in the app.
+    pub url: String,
+    /// Tags of the notifications this one sums up: showing it closes them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub replaces: Vec<String>,
+    /// When it happened.
+    pub at: Millis,
+}
+
 // ───────────────────────────── feed (dashboard live updates) ─────────────────────────────
 
 /// `GET /api/v1/feed/ws`: live updates for the dashboard.
@@ -944,4 +1066,39 @@ pub struct Empty {}
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Ok {
     pub ok: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_settings_default_to_everything() -> Result<(), serde_json::Error> {
+        let stored: NotificationSettings = serde_json::from_str(r#"{"waiting":false}"#)?;
+        assert_eq!(
+            stored,
+            NotificationSettings {
+                waiting: false,
+                ..Default::default()
+            }
+        );
+        assert!(stored.paused && stored.failed && stored.follow_started);
+        Ok(())
+    }
+
+    #[test]
+    fn push_messages_leave_out_what_they_do_not_replace() -> Result<(), serde_json::Error> {
+        let m = PushMessage {
+            title: "Fix the login test".into(),
+            body: "my-app#12 waits for your reply".into(),
+            tag: "ses_1".into(),
+            url: "/s/ses_1".into(),
+            replaces: vec![],
+            at: 1,
+        };
+        let json = serde_json::to_string(&m)?;
+        assert!(!json.contains("replaces"));
+        assert_eq!(serde_json::from_str::<PushMessage>(&json)?, m);
+        Ok(())
+    }
 }
