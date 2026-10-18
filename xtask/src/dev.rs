@@ -8,9 +8,13 @@
 //!
 //! It bootstraps an owner, a Claude credential, a runner and a project the
 //! first time, and keeps its state in .fctl-dev/ (delete it to start over).
+//! With `--smoke` (CI), it runs one session to the end and stops.
 
 use crate::util::{self, run};
 use anyhow::{Context, Result, bail};
+use fctl_proto::api::EventPage;
+use fctl_proto::event::{CommitInfo, EventBody, SessionEvent, StatusChange};
+use fctl_proto::session::{Session, SessionStatus};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Child, Command};
@@ -27,12 +31,46 @@ pub struct DevOpts {
     pub no_host: bool,
     /// Serve the built web app from wrangler instead of running Vite.
     pub no_vite: bool,
+    /// Run one fake-claude session to the end, then stop everything (CI).
+    pub smoke: bool,
 }
 
 struct Children(Vec<(&'static str, Child)>);
 
+impl Children {
+    /// Fails when one of them has exited.
+    fn check(&mut self) -> Result<()> {
+        for (name, c) in &mut self.0 {
+            if let Some(status) = c.try_wait()? {
+                bail!("{name} exited ({status})");
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Drop for Children {
+    /// Stops them as Ctrl-C does, then kills what still runs after 10 s.
+    /// Killed straight away, wrangler's launcher would leave wrangler and
+    /// workerd serving on 8787.
     fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            for (_, c) in &mut self.0 {
+                if let Ok(None) = c.try_wait() {
+                    let _ = Command::new("kill")
+                        .args(["-INT", &c.id().to_string()])
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            for (_, c) in &mut self.0 {
+                while Instant::now() < deadline && matches!(c.try_wait(), Ok(None)) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
         for (_, c) in &mut self.0 {
             let _ = c.kill();
             let _ = c.wait();
@@ -41,6 +79,9 @@ impl Drop for Children {
 }
 
 pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
+    if opts.smoke && opts.no_host {
+        bail!("--smoke runs a session, which needs the host: leave out --no-host");
+    }
     let state = root.join(".fctl-dev");
     std::fs::create_dir_all(&state)?;
     if !root.join("node_modules").exists() {
@@ -86,21 +127,19 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
         .spawn()
         .context("starting wrangler dev")?;
     children.0.push(("wrangler", wrangler));
-    wait_for(&format!("{API}/api/v1/health"), Duration::from_secs(300))?;
+    wait_for(
+        &format!("{API}/api/v1/health"),
+        Duration::from_secs(300),
+        &mut children,
+    )?;
 
     let token = bootstrap(&state)?;
     if !opts.no_vite {
-        let vite = Command::new("npm")
-            .args([
-                "run",
-                "dev",
-                "--workspace",
-                "web",
-                "--",
-                "--host",
-                "localhost",
-            ])
-            .current_dir(root)
+        // Vite itself, not `npm run dev`: npm doesn't pass SIGINT on, and
+        // stopping npm leaves Vite serving.
+        let vite = Command::new(root.join("node_modules/.bin/vite"))
+            .args(["--host", "localhost"])
+            .current_dir(root.join("web"))
             .spawn()
             .context("starting vite")?;
         children.0.push(("vite", vite));
@@ -108,6 +147,19 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     if !opts.no_host {
         let host = host(root, &state, &token)?;
         children.0.push(("host", host));
+    }
+
+    if opts.smoke {
+        if !opts.no_vite {
+            // The app, and the API through Vite's proxy.
+            wait_for(
+                &format!("{WEB}/api/v1/health"),
+                Duration::from_secs(60),
+                &mut children,
+            )?;
+        }
+        eprintln!("\n\x1b[1mfctl dev is running\x1b[0m: starting one fake-claude session\n");
+        return smoke(root, &token, &mut children);
     }
 
     let open = if opts.no_vite { API } else { WEB };
@@ -123,12 +175,143 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
 
     // Run until something exits (or Ctrl-C, which reaches every child too).
     loop {
-        for (name, c) in &mut children.0 {
-            if let Some(status) = c.try_wait()? {
-                bail!("{name} exited ({status})");
+        children.check()?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// `--smoke`: starts a session with the CLI as a person would, and fails
+/// unless the agent commits a file and finishes its turn, and the session
+/// stops when asked.
+fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
+    let fctl = || {
+        let mut cmd = Command::new(util::target_dir(root).join("debug/fctl"));
+        cmd.env("FCTL_SERVER", API).env("FCTL_TOKEN", token);
+        cmd
+    };
+    let out = util::output(fctl().args([
+        "--json",
+        "run",
+        "--project",
+        "playground",
+        "--detach",
+        "write notes.md",
+    ]))?;
+    let session: Session =
+        serde_json::from_str(&out).context("reading the session `fctl run` started")?;
+    let id = session.id.0;
+    let res = finish(&id, token, children);
+    if res.is_err() {
+        // The transcript shows how far it got.
+        let _ = run(fctl().args(["logs", &id]));
+    }
+    res
+}
+
+fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
+    let auth = Auth::Bearer(token.to_owned());
+    let mut seen = Seen::default();
+    seen.until(
+        id,
+        &auth,
+        children,
+        Duration::from_secs(60),
+        "finish its turn with a commit",
+        |s| match s.status() {
+            Some(SessionStatus::Stopped) => bail!("the session stopped before its turn ended"),
+            Some(SessionStatus::Idle) => Ok(s.turn_ok && s.commit.is_some()),
+            _ => Ok(false),
+        },
+    )?;
+    ok(
+        "stopping the session",
+        &call("POST", &format!("/sessions/{id}/stop"), Some(&auth), None)?,
+    )?;
+    seen.until(id, &auth, children, Duration::from_secs(60), "stop", |s| {
+        Ok(s.status() == Some(SessionStatus::Stopped))
+    })?;
+    let subject = seen.commit.map(|c| c.subject).unwrap_or_default();
+    eprintln!(
+        "\n\x1b[1msmoke test passed\x1b[0m: the agent committed \"{subject}\", \
+         finished its turn, and the session stopped\n"
+    );
+    Ok(())
+}
+
+/// What a session's events have shown so far.
+#[derive(Default)]
+struct Seen {
+    after: u64,
+    status: Option<StatusChange>,
+    turn_ok: bool,
+    commit: Option<CommitInfo>,
+}
+
+impl Seen {
+    fn status(&self) -> Option<SessionStatus> {
+        self.status.as_ref().map(|s| s.status)
+    }
+
+    /// Reads new events until `done` says so. Fails when `done` does, when
+    /// the session fails, when a child exits, or after `timeout`.
+    fn until(
+        &mut self,
+        id: &str,
+        auth: &Auth,
+        children: &mut Children,
+        timeout: Duration,
+        what: &str,
+        done: impl Fn(&Seen) -> Result<bool>,
+    ) -> Result<()> {
+        let start = Instant::now();
+        loop {
+            children.check()?;
+            let path = format!("/sessions/{id}/events?after={}&limit=200", self.after);
+            let res = call("GET", &path, Some(auth), None)?;
+            ok("reading the session's events", &res)?;
+            let page: EventPage =
+                serde_json::from_value(res.1).context("reading the session's events")?;
+            for e in &page.events {
+                self.add(e)?;
+            }
+            if done(self)? {
+                return Ok(());
+            }
+            if let Some(StatusChange {
+                status: SessionStatus::Failed,
+                reason,
+                ..
+            }) = &self.status
+            {
+                bail!("the session failed: {}", reason.as_deref().unwrap_or("?"));
+            }
+            if start.elapsed() > timeout {
+                let status = self.status().map_or("none", |s| s.as_str());
+                bail!(
+                    "the session didn't {what} within {}s (status: {status})",
+                    timeout.as_secs()
+                );
+            }
+            if !page.has_more {
+                std::thread::sleep(Duration::from_millis(250));
             }
         }
-        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    fn add(&mut self, e: &SessionEvent) -> Result<()> {
+        self.after = e.seq;
+        match &e.body {
+            EventBody::Status(s) => self.status = Some(s.clone()),
+            EventBody::Claude(v) if e.body.claude_type() == Some("result") => {
+                if v["is_error"].as_bool() == Some(true) {
+                    bail!("the agent's turn failed: {v}");
+                }
+                self.turn_ok = true;
+            }
+            EventBody::Git(g) if g.ahead > 0 => self.commit = g.last_commit.clone(),
+            _ => {}
+        }
+        Ok(())
     }
 }
 
@@ -148,12 +331,13 @@ fn dev_vars(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn wait_for(url: &str, timeout: Duration) -> Result<()> {
+fn wait_for(url: &str, timeout: Duration, children: &mut Children) -> Result<()> {
     let start = Instant::now();
     while start.elapsed() < timeout {
         if ureq::get(url).call().is_ok() {
             return Ok(());
         }
+        children.check()?;
         std::thread::sleep(Duration::from_millis(500));
     }
     bail!("{url} did not come up within {}s", timeout.as_secs())
