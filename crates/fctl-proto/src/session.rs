@@ -403,7 +403,12 @@ pub struct Session {
     pub project_slug: String,
     /// Sequential per project (`#12`).
     pub number: u32,
+    /// Starts as the first line of the task; the agent renames it to what it
+    /// works on (`fctl edit`), and so can its owner.
     pub title: String,
+    /// What the session is about, in a sentence or two (absent until the
+    /// agent or its owner writes one).
+    pub description: Option<String>,
     pub status: SessionStatus,
     pub status_reason: Option<String>,
     /// When a paused session resumes on its own.

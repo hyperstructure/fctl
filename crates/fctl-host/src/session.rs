@@ -187,6 +187,8 @@ fn state(status: SessionStatus, reason: &str) -> SessionState {
         claude_session_id: None,
         remote_control: None,
         stats: None,
+        title: None,
+        description: None,
     }
 }
 

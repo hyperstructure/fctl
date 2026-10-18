@@ -7,16 +7,21 @@
 use crate::claude::{self, Claude, ClaudeOut, LaunchSpec};
 use crate::journal::Journal;
 use crate::link::{self, LinkEvent};
+use crate::local;
 use crate::prompt;
 use crate::workspace::{self, Paths};
 use anyhow::Result;
 use fctl_domain::events::{self as ev, BillingGuard, ClaudeKind};
-use fctl_proto::agent::{AgentConfig, AgentHello, AgentToHost, HostToAgent};
+use fctl_domain::validate;
+use fctl_proto::agent::{
+    AgentConfig, AgentHello, AgentToHost, HostToAgent, SESSION_SOCKET_ENV, SessionReply,
+    SessionRequest,
+};
 use fctl_proto::event::{EventBody, GitState, LogLevel, LogLine, LogSource, Notice, NoticeLevel};
 use fctl_proto::runner::{ClaudeCredential, ClaudeCredentialKind, CredentialKind, StopReason};
 use fctl_proto::session::{RemoteControlState, SessionStatus};
 use fctl_proto::uplink::{AgentEvent, Delivery, DeliveryKind, SessionState};
-use fctl_proto::{DeliveryId, PROTOCOL_VERSION};
+use fctl_proto::{ApiError, DeliveryId, PROTOCOL_VERSION, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -39,6 +44,11 @@ struct Persisted {
     claude_started: bool,
     delivered: VecDeque<String>,
     remote_control_url: Option<String>,
+    /// The title and description the agent gave the session (`fctl edit`).
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
 }
 
 pub(crate) enum Work {
@@ -56,6 +66,8 @@ enum CredFor {
 
 pub struct Supervisor {
     state_dir: PathBuf,
+    /// Where programs in the sandbox reach us (`fctl edit`), told to Claude.
+    session_socket: Option<PathBuf>,
     journal: Journal,
     persisted: Persisted,
     host: Option<(u64, mpsc::UnboundedSender<String>)>,
@@ -79,18 +91,21 @@ pub struct Supervisor {
     stderr_budget: (Instant, u32),
     claude_credential: Option<ClaudeCredential>,
     exit_after: Option<Instant>,
+    /// Said once that the sandbox's fctl cannot rename the session.
+    told_no_fctl: bool,
 }
 
 impl Supervisor {
     pub fn new(
         state_dir: PathBuf,
+        session_socket: Option<PathBuf>,
     ) -> Result<(
         Self,
         mpsc::UnboundedReceiver<ClaudeOut>,
         mpsc::UnboundedReceiver<Work>,
     )> {
         let journal = Journal::open(&state_dir)?;
-        let persisted = std::fs::read_to_string(state_dir.join("state.json"))
+        let persisted: Persisted = std::fs::read_to_string(state_dir.join("state.json"))
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
@@ -99,8 +114,8 @@ impl Supervisor {
         Ok((
             Self {
                 state_dir,
+                session_socket,
                 journal,
-                persisted,
                 host: None,
                 config: None,
                 paths: None,
@@ -113,7 +128,10 @@ impl Supervisor {
                     claude_session_id: None,
                     remote_control: None,
                     stats: None,
+                    title: persisted.title.clone(),
+                    description: persisted.description.clone(),
                 },
+                persisted,
                 claude: None,
                 claude_tx,
                 work_tx,
@@ -130,6 +148,7 @@ impl Supervisor {
                 stderr_budget: (Instant::now(), 0),
                 claude_credential: None,
                 exit_after: None,
+                told_no_fctl: false,
             },
             claude_rx,
             work_rx,
@@ -141,6 +160,7 @@ impl Supervisor {
         mut link_rx: mpsc::UnboundedReceiver<LinkEvent>,
         mut claude_rx: mpsc::UnboundedReceiver<ClaudeOut>,
         mut work_rx: mpsc::UnboundedReceiver<Work>,
+        mut local_rx: mpsc::UnboundedReceiver<local::Call>,
     ) -> Result<()> {
         let mut flush = tokio::time::interval(Duration::from_millis(40));
         let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -149,6 +169,10 @@ impl Supervisor {
                 Some(e) = link_rx.recv() => self.on_link(e).await,
                 Some(out) = claude_rx.recv() => self.on_claude(out).await,
                 Some(w) = work_rx.recv() => self.on_work(w).await,
+                Some(call) = local_rx.recv() => {
+                    let reply = self.on_session_request(call.request);
+                    let _ = call.reply.send(reply);
+                }
                 _ = flush.tick() => self.flush(),
                 _ = tick.tick() => {
                     self.on_tick().await;
@@ -308,6 +332,72 @@ impl Supervisor {
         if let Ok(text) = serde_json::to_string(&self.persisted) {
             let _ = std::fs::write(self.state_dir.join("state.json"), text);
         }
+    }
+
+    // ───────────────────────────── the session socket ─────────────────────────────
+
+    fn on_session_request(&mut self, request: SessionRequest) -> SessionReply {
+        match request {
+            SessionRequest::Edit {
+                session_id,
+                title,
+                description,
+            } => self
+                .edit_session(session_id, title, description)
+                .unwrap_or_else(|error| SessionReply::Error { error }),
+        }
+    }
+
+    /// The agent names or describes its session: the title and description
+    /// travel with the session state, which the host passes on to the
+    /// control plane (and sends again after every reconnect).
+    fn edit_session(
+        &mut self,
+        session_id: Option<SessionId>,
+        title: Option<String>,
+        description: Option<String>,
+    ) -> std::result::Result<SessionReply, ApiError> {
+        let Some(spec) = self.config.as_ref().map(|c| c.spec.clone()) else {
+            return Err(ApiError::new(
+                fctl_proto::ErrorCode::Conflict,
+                "The session is still starting; try again in a moment",
+            ));
+        };
+        if let Some(id) = session_id.filter(|id| *id != spec.session_id) {
+            return Err(ApiError::bad_request(format!(
+                "This sandbox runs {}, not {id}",
+                spec.session_id
+            )));
+        }
+        if title.is_none() && description.is_none() {
+            return Err(ApiError::bad_request("Give a title, a description or both"));
+        }
+        let title = title.as_deref().map(validate::session_title).transpose()?;
+        let description = description
+            .as_deref()
+            .map(validate::session_description)
+            .transpose()?;
+        if let Some(t) = title {
+            self.state.title = Some(t);
+        }
+        // An empty description clears the one the session has.
+        if let Some(d) = description {
+            self.state.description = Some(d.unwrap_or_default());
+        }
+        self.persisted.title = self.state.title.clone();
+        self.persisted.description = self.state.description.clone();
+        self.persist();
+        self.flush();
+        self.send(&AgentToHost::State {
+            state: self.state.clone(),
+        });
+        Ok(SessionReply::Edited {
+            id: spec.session_id.clone(),
+            project_slug: spec.project.slug.clone(),
+            number: spec.number,
+            title: self.state.title.clone().unwrap_or(spec.title),
+            description: self.state.description.clone().filter(|d| !d.is_empty()),
+        })
     }
 
     fn mark_delivered(&mut self, id: &DeliveryId) {
@@ -476,6 +566,18 @@ impl Supervisor {
         let spec = &config.spec;
         let workdir = config.workdir.clone();
         self.write_claude_config(&paths.home, &workdir)?;
+        if self.session_socket.is_some() && fctl_can_edit(&paths).await {
+            if let Err(e) = claude::write_instructions(&paths.home, prompt::AGENTS_MD) {
+                tracing::warn!("writing ~/AGENTS.md failed: {e:#}");
+            }
+        } else if !self.told_no_fctl {
+            self.told_no_fctl = true;
+            self.log(
+                LogSource::Agent,
+                LogLevel::Info,
+                "This sandbox has no fctl that can rename the session, so it keeps the title it started with. Rebuilding the default image (fctl host image build) installs one.",
+            );
+        }
         let setting_sources = match claude::project_settings_are_unsafe(&paths.workdir) {
             Some(why) => {
                 let msg = format!(
@@ -518,6 +620,9 @@ impl Supervisor {
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
         env.insert("FCTL_SESSION_ID".into(), spec.session_id.0.clone());
         env.insert("FCTL_SESSION_URL".into(), spec.web_url.clone());
+        if let Some(socket) = &self.session_socket {
+            env.insert(SESSION_SOCKET_ENV.into(), socket.display().to_string());
+        }
         // Resuming needs Claude's conversation. A sandbox made for a resumed
         // session (the stopped one expired) has none: start a new one there.
         let wants_resume = spec.resume || self.persisted.claude_started;
@@ -1082,6 +1187,16 @@ impl Supervisor {
     }
 }
 
+/// Whether the sandbox's `fctl` can name the session: custom images may have
+/// none, and images built before `fctl edit` an older one.
+async fn fctl_can_edit(paths: &Paths) -> bool {
+    let help = workspace::run(&paths.home, &paths.home, "fctl", &["edit", "--help"]);
+    matches!(
+        tokio::time::timeout(Duration::from_secs(10), help).await,
+        Ok(Ok(out)) if out.ok
+    )
+}
+
 fn stop_text(r: StopReason) -> &'static str {
     match r {
         StopReason::User => "Stopped",
@@ -1091,14 +1206,110 @@ fn stop_text(r: StopReason) -> &'static str {
     }
 }
 
-/// Used by `main` to run the supervisor and its socket.
+/// Used by `main` to run the supervisor and its sockets.
 pub async fn serve(socket: PathBuf, state_dir: PathBuf) -> Result<()> {
     let listener = link::bind(&socket).await?;
     let (link_tx, link_rx) = mpsc::unbounded_channel();
     tokio::spawn(link::accept_loop(listener, link_tx));
-    let (sup, claude_rx, work_rx) = Supervisor::new(state_dir)?;
+    // Without the session socket the agent cannot rename the session, but
+    // the session still runs.
+    let session_socket = local::socket_path(&socket);
+    let (local_tx, local_rx) = mpsc::unbounded_channel();
+    let session_socket = match link::bind(&session_socket).await {
+        Ok(listener) => {
+            tokio::spawn(local::accept_loop(listener, local_tx));
+            Some(session_socket)
+        }
+        Err(e) => {
+            tracing::warn!("no session socket: {e:#}");
+            None
+        }
+    };
+    let (sup, claude_rx, work_rx) = Supervisor::new(state_dir, session_socket.clone())?;
     tracing::info!("fctl-agent {VERSION} serving {}", socket.display());
-    let r = sup.run(link_rx, claude_rx, work_rx).await;
+    let r = sup.run(link_rx, claude_rx, work_rx, local_rx).await;
     let _ = std::fs::remove_file(&socket);
+    if let Some(s) = session_socket {
+        let _ = std::fs::remove_file(s);
+    }
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn edit(title: Option<&str>, description: Option<&str>) -> SessionRequest {
+        SessionRequest::Edit {
+            session_id: None,
+            title: title.map(str::to_owned),
+            description: description.map(str::to_owned),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_agent_names_and_describes_its_session() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let state_dir = dir.path().join("state");
+        let (mut sup, _claude, _work) = Supervisor::new(state_dir.clone(), None)?;
+        let early = sup.on_session_request(edit(Some("Too early"), None));
+        assert!(matches!(early, SessionReply::Error { .. }));
+
+        sup.config = Some(AgentConfig {
+            spec: crate::workspace::tests::spec()?,
+            workdir: dir.path().join("workspace").display().to_string(),
+            home: None,
+            claude_bin: None,
+            claude_args: vec![],
+            env: Default::default(),
+            push_on_commit: true,
+            first_agent_seq: None,
+        });
+        let reply = sup.on_session_request(edit(
+            Some("  Fix the   login test "),
+            Some("Retries the redirect.\nAdds a test."),
+        ));
+        let SessionReply::Edited {
+            id,
+            number,
+            title,
+            description,
+            ..
+        } = reply
+        else {
+            panic!("expected Edited, got {reply:?}");
+        };
+        assert_eq!((id.as_str(), number), ("ses_test", 1));
+        assert_eq!(title, "Fix the login test");
+        assert_eq!(
+            description.as_deref(),
+            Some("Retries the redirect. Adds a test.")
+        );
+        assert_eq!(sup.state.title.as_deref(), Some("Fix the login test"));
+
+        // An empty description clears it; the title stays.
+        let cleared = sup.on_session_request(edit(None, Some("")));
+        assert!(matches!(
+            cleared,
+            SessionReply::Edited { ref title, description: None, .. } if title == "Fix the login test"
+        ));
+        assert_eq!(sup.state.description.as_deref(), Some(""));
+
+        // A restarted supervisor keeps reporting them.
+        let (again, _claude, _work) = Supervisor::new(state_dir, None)?;
+        assert_eq!(again.state.title.as_deref(), Some("Fix the login test"));
+
+        let invalid = sup.on_session_request(edit(Some(" "), None));
+        assert!(
+            matches!(invalid, SessionReply::Error { ref error } if error.field.as_deref() == Some("title"))
+        );
+        let elsewhere = sup.on_session_request(SessionRequest::Edit {
+            session_id: Some(SessionId("ses_other".into())),
+            title: Some("Not mine".into()),
+            description: None,
+        });
+        assert!(matches!(elsewhere, SessionReply::Error { .. }));
+        assert_eq!(sup.state.title.as_deref(), Some("Fix the login test"));
+        Ok(())
+    }
 }
