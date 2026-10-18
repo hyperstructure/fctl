@@ -761,9 +761,12 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
   const few = on && t.recovery_codes <= FEW_RECOVERY_CODES;
   const [dialog, setDialog] = useState<TwoFactorDialog | null>(null);
   const [codes, setCodes] = useState<string[] | null>(null);
+  // Replacing the app starts with a code from it.
+  const [replacement, setReplacement] = useState<G.AuthenticatorSetup | null>(null);
   const close = () => {
     setDialog(null);
     setCodes(null);
+    setReplacement(null);
   };
   const google = useMutation({
     mutationFn: (v: boolean) => api.updateTwoFactor({ google: v }),
@@ -873,26 +876,38 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
         title={dialog === "replace" ? "Replace your authenticator app" : "Set up an authenticator app"}
         description={
           dialog === "replace"
-            ? "Set up the new app or phone. Codes from the old one stop working; your recovery codes stay."
+            ? replacement
+              ? "Set up the new app or phone. Codes from the old one stop working; your recovery codes stay."
+              : "First, confirm it's you with a code from your current app, or a recovery code if the phone is gone."
             : "Then signing in with your password also takes the code the app shows."
         }
       >
-        <AuthenticatorSetup
-          me={me}
-          replacing={dialog === "replace"}
-          onConfirmed={(m) => queryClient.setQueryData(keys.me, m)}
-          onCancel={close}
-          onDone={(r) => {
-            close();
-            toast(
-              r.codes
-                ? "Two-factor sign-in is on"
-                : dialog === "replace"
-                  ? "The new authenticator app is in use. Your recovery codes still work."
-                  : "Two-factor sign-in is on. Your recovery codes still work.",
-            );
-          }}
-        />
+        {dialog === "replace" && !replacement ? (
+          <ConfirmWithCode
+            action="Continue"
+            onCancel={close}
+            submit={(code) => api.startAuthenticator({ code })}
+            onDone={setReplacement}
+          />
+        ) : (
+          <AuthenticatorSetup
+            me={me}
+            started={replacement ?? undefined}
+            onRestart={dialog === "replace" ? () => setReplacement(null) : undefined}
+            onConfirmed={(m) => queryClient.setQueryData(keys.me, m)}
+            onCancel={close}
+            onDone={(r) => {
+              close();
+              toast(
+                r.codes
+                  ? "Two-factor sign-in is on"
+                  : dialog === "replace"
+                    ? "The new authenticator app is in use. Your recovery codes still work."
+                    : "Two-factor sign-in is on. Your recovery codes still work.",
+              );
+            }}
+          />
+        )}
       </Dialog>
 
       <Dialog

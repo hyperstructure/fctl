@@ -166,10 +166,16 @@ impl Api {
     }
 
     /// A new authenticator app's secret, link and QR code, to confirm with
-    /// [`Api::confirm_authenticator`].
-    pub async fn start_authenticator(&self) -> Result<AuthenticatorSetup> {
-        self.post("/me/two-factor/authenticator", &serde_json::json!({}))
-            .await
+    /// [`Api::confirm_authenticator`]. Replacing the app you have takes
+    /// `code`, from it or a recovery code.
+    pub async fn start_authenticator(&self, code: Option<&str>) -> Result<AuthenticatorSetup> {
+        self.post(
+            "/me/two-factor/authenticator",
+            &StartAuthenticatorRequest {
+                code: code.map(str::to_owned),
+            },
+        )
+        .await
     }
 
     pub async fn confirm_authenticator(

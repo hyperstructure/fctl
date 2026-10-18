@@ -285,8 +285,25 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 return style::print_json(&settings);
             }
             print_settings(&settings);
-            if require_two_factor == Some(true) {
-                let users = api.users().await?.users;
+            if require_two_factor == Some(true) || two_factor_google == Some(true) {
+                let users = match api.users().await {
+                    Ok(list) => list.users,
+                    // Requiring it stopped this admin too.
+                    Err(e)
+                        if e.api().is_some_and(|a| {
+                            a.code == fctl_proto::ErrorCode::TwoFactorSetupRequired
+                        }) =>
+                    {
+                        println!(
+                            "{}",
+                            style::amber(
+                                "You haven't set it up yourself yet: run `fctl account two-factor enable`."
+                            )
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e.into()),
+                };
                 let missing: Vec<&fctl_proto::api::User> = users
                     .iter()
                     .filter(|u| {

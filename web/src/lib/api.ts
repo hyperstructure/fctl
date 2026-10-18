@@ -112,7 +112,9 @@ export const api = {
     request<G.AuthResponse>("POST", "/auth/two-factor/verify", b),
   cancelTwoFactor: () => request<G.Ok>("POST", "/auth/two-factor/cancel", {}),
   updateTwoFactor: (b: G.UpdateTwoFactorRequest) => request<G.Me>("PATCH", "/me/two-factor", b),
-  startAuthenticator: () => request<G.AuthenticatorSetup>("POST", "/me/two-factor/authenticator", {}),
+  /** Replacing the app you have takes `code`, from it or a recovery code. */
+  startAuthenticator: (b: G.StartAuthenticatorRequest = {}) =>
+    request<G.AuthenticatorSetup>("POST", "/me/two-factor/authenticator", b),
   confirmAuthenticator: (b: G.ConfirmAuthenticatorRequest) =>
     request<G.AuthenticatorAdded>("POST", "/me/two-factor/authenticator/confirm", b),
   removeAuthenticator: (b: G.TwoFactorCodeRequest) =>

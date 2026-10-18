@@ -35,11 +35,14 @@ owner and purpose), so a value copied between rows does not decrypt.
   `fctl account two-factor enable`), a sign-in with the password, and with
   Google when you or the admins choose that, takes a code from the app
   (TOTP) or one of ten recovery codes. Each code works once, and five wrong
-  ones in a row make sign-ins wait a minute, doubling with each further one
-  up to an hour. A reset link's new password takes effect only once a code
-  checks out, so the link alone signs nobody in. Turning it off and getting
-  new recovery codes take a current code; setting up an app takes the
-  password unless you signed in within 15 minutes. Admins can require it:
+  ones in a row make codes from the app wait a minute, doubling with each
+  further one up to an hour; recovery codes still work meanwhile, and you
+  get an email, since whoever it was knew your password. A reset link's new
+  password takes effect only once a code checks out, so the link alone
+  signs nobody in. Replacing the app, turning it off and getting new
+  recovery codes take a current code; setting up an app takes the password
+  unless the browser signed in within 15 minutes (with a CLI or access
+  token, always). Admins can require it:
   accounts that sign in with a password, and with Google sign-ins asking
   too every account, then can do nothing until they set it up, in the
   browser or with their CLI and access tokens. An attacker who has the

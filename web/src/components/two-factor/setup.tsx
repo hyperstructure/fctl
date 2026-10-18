@@ -21,28 +21,35 @@ export type SetupResult = { me: G.Me; codes: boolean };
 
 export function AuthenticatorSetup({
   me,
-  replacing,
+  started,
+  onRestart,
   onConfirmed,
   onDone,
   onCancel,
 }: {
   me: G.Me;
-  /** An app is set up already: this one takes its place, and the recovery codes stay. */
-  replacing?: boolean;
+  /** A setup already started: replacing an app, which took a code from it. */
+  started?: G.AuthenticatorSetup;
+  /** Starts over when the setup took too long (by default, a new one here). */
+  onRestart?: () => void;
   /** The app's code checked out: two-factor is on (the recovery codes may still show). */
   onConfirmed?: (me: G.Me) => void;
   onDone: (r: SetupResult) => void;
   onCancel?: () => void;
 }) {
   const [attempt, setAttempt] = useState(0);
-  const setup = useQuery({
+  const fetched = useQuery({
     queryKey: ["authenticator-setup", attempt],
-    queryFn: api.startAuthenticator,
+    queryFn: () => api.startAuthenticator(),
+    enabled: !started,
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: 0,
     retry: false,
     refetchOnWindowFocus: false,
   });
+  const setup = started ? { data: started, error: null } : fetched;
+  const replacing = !!started;
+  const restart = onRestart ?? (() => setAttempt((n) => n + 1));
   const [codes, setCodes] = useState<{ codes: string[]; me: G.Me } | null>(null);
   if (codes)
     return (
@@ -53,7 +60,7 @@ export function AuthenticatorSetup({
       <div className="flex flex-col gap-4">
         <Banner tone="error">{setup.error.message}</Banner>
         <div className="flex gap-2">
-          <Button onClick={() => setAttempt((n) => n + 1)}>Try again</Button>
+          <Button onClick={restart}>Try again</Button>
           {onCancel && (
             <Button variant="ghost" onClick={onCancel}>
               Cancel
@@ -69,7 +76,7 @@ export function AuthenticatorSetup({
       setup={setup.data}
       me={me}
       replacing={replacing}
-      onRestart={() => setAttempt((n) => n + 1)}
+      onRestart={restart}
       onCancel={onCancel}
       onConfirmed={(r) => {
         onConfirmed?.(r.me);

@@ -46,9 +46,19 @@ it should be a choice, not the default.
 - **The CLI signs in through the browser** (the device flow), so it asks for
   no codes itself; it manages two-factor (`fctl account two-factor`) and
   prints the QR code in the terminal.
-- **Wrong codes cost time.** Five in a row make sign-ins wait a minute, then
-  twice as long after each further one, up to an hour: at most a few dozen
-  guesses a day at a million codes, whatever the rate limits let through.
+- **Wrong codes cost time.** Five in a row make codes from the app wait a
+  minute, then twice as long after each further one, up to an hour: at most
+  a few dozen guesses a day at a million codes, whatever the rate limits
+  let through. Recovery codes, about 43 bits each, can't be guessed within
+  the rate limits, so they still work during the wait: someone who has only
+  the password can't keep the person out. The first wait emails the person,
+  since whoever it was knew their password.
+- **Changes take proof.** Replacing the app, turning two-factor off and new
+  recovery codes take a current code (from the app, or a recovery code), so
+  a stolen session alone can't take two-factor over. Setting up an app also
+  takes the password, unless the browser signed in within 15 minutes; a CLI
+  or access token always counts as old, since one can be made from a
+  browser session that signed in long ago.
 
 ## Consequences
 

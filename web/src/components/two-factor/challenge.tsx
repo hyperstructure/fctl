@@ -92,8 +92,9 @@ export function SecondFactorStep({
   }, [locked, mode]);
   const error = verify.error as ApiFailure | null;
   const cancel = useMutation({ mutationFn: api.cancelTwoFactor, onSettled: onRestart });
+  // The wait holds back codes from the app; recovery codes still work.
   const send = (c: string) => {
-    if (!verify.isPending && !verify.isSuccess && !locked) verify.mutate(c);
+    if (!verify.isPending && !verify.isSuccess && !(locked && mode === "app")) verify.mutate(c);
   };
 
   if (expired)
@@ -162,6 +163,10 @@ export function SecondFactorStep({
             locked={locked}
             lockedUntil={lockedUntil}
             now={now}
+            onRecovery={() => {
+              setMode("recovery");
+              verify.reset();
+            }}
           />
           <button type="submit" className="sr-only">
             Sign in
@@ -187,7 +192,7 @@ export function SecondFactorStep({
             autoComplete="off"
             autoCapitalize="characters"
             spellCheck={false}
-            disabled={locked || verify.isSuccess}
+            disabled={verify.isSuccess}
             aria-invalid={error?.field === "code" || undefined}
             aria-describedby={hintId}
             className="h-11 text-center font-mono text-[17px] tracking-[0.12em] uppercase"
@@ -206,7 +211,7 @@ export function SecondFactorStep({
             variant="primary"
             size="lg"
             loading={verify.isPending}
-            disabled={!isRecoveryCode(recovery) || locked || verify.isSuccess}
+            disabled={!isRecoveryCode(recovery) || verify.isSuccess}
             trailing={<ArrowRight className="size-4" />}
           >
             Sign in
@@ -257,6 +262,7 @@ function Hint({
   lockedUntil,
   now,
   recovery,
+  onRecovery,
 }: {
   id: string;
   error: ApiFailure | null;
@@ -265,13 +271,20 @@ function Hint({
   lockedUntil?: number;
   now: number;
   recovery?: boolean;
+  onRecovery?: () => void;
 }) {
-  if (locked && lockedUntil)
+  if (locked && lockedUntil && !recovery)
     return (
       <p id={id} className="flex items-center gap-1.5 text-[12.5px] text-amber" role="status">
-        <Clock className="size-3.5" />
-        Too many wrong codes. Try again in{" "}
-        <span className="font-mono tabular-nums">{clock(lockedUntil - now)}</span>
+        <Clock className="size-3.5 shrink-0" />
+        <span>
+          Too many wrong codes. Try again in{" "}
+          <span className="font-mono tabular-nums">{clock(lockedUntil - now)}</span>, or{" "}
+          <button type="button" className="underline underline-offset-2 hover:text-ink" onClick={onRecovery}>
+            use a recovery code
+          </button>
+          .
+        </span>
       </p>
     );
   if (error?.field === "code")

@@ -149,6 +149,7 @@ export type { SetupRequest } from "./SetupRequest";
 export type { ShareList } from "./ShareList";
 export type { SignupRequest } from "./SignupRequest";
 export type { Snapshot } from "./Snapshot";
+export type { StartAuthenticatorRequest } from "./StartAuthenticatorRequest";
 export type { StatusChange } from "./StatusChange";
 export type { TokenId } from "./TokenId";
 export type { TokenInfo } from "./TokenInfo";

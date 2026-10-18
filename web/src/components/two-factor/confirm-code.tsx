@@ -43,7 +43,8 @@ export function ConfirmWithCode<T>({
       }
     },
   });
-  const locked = !!lockedUntil && lockedUntil > now;
+  // The wait holds back codes from the app; recovery codes still work.
+  const locked = !!lockedUntil && lockedUntil > now && mode === "app";
   useEffect(() => {
     if (!locked) return;
     const t = setInterval(() => setNow(Date.now()), 250);
@@ -91,15 +92,18 @@ export function ConfirmWithCode<T>({
             autoComplete="off"
             spellCheck={false}
             autoFocus
-            disabled={locked}
             className="font-mono tracking-[0.1em] uppercase"
           />
         </div>
       )}
       {locked && lockedUntil ? (
         <p className="flex items-center gap-1.5 text-[12.5px] text-amber" role="status">
-          <Clock className="size-3.5" /> Too many wrong codes. Try again in{" "}
-          <span className="font-mono tabular-nums">{clock(lockedUntil - now)}</span>
+          <Clock className="size-3.5 shrink-0" />
+          <span>
+            Too many wrong codes. Try again in{" "}
+            <span className="font-mono tabular-nums">{clock(lockedUntil - now)}</span>, or use a recovery
+            code.
+          </span>
         </p>
       ) : error?.field === "code" ? (
         <p className="text-[12.5px] text-danger" role="alert">

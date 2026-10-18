@@ -152,22 +152,6 @@ pub struct Pending {
     pub password_hash: Option<String>,
 }
 
-fn reason_str(r: ChallengeReason) -> &'static str {
-    match r {
-        ChallengeReason::Password => "password",
-        ChallengeReason::Google => "google",
-        ChallengeReason::PasswordReset => "password_reset",
-    }
-}
-
-fn parse_reason(r: &str) -> ChallengeReason {
-    match r {
-        "google" => ChallengeReason::Google,
-        "password_reset" => ChallengeReason::PasswordReset,
-        _ => ChallengeReason::Password,
-    }
-}
-
 /// Leaves `user`'s sign-in waiting for its second factor: stores the
 /// challenge, sets its cookie, and returns what the page shows.
 pub async fn challenge(
@@ -185,7 +169,7 @@ pub async fn challenge(
         &[
             s(&hash_secret(&secret)),
             s(&user.id),
-            s(reason_str(reason)),
+            s(reason.as_str()),
             os(pending.return_to.as_deref()),
             os(pending.reset_hash.as_deref()),
             os(pending.password_hash.as_deref()),
@@ -285,7 +269,8 @@ fn clear_cookie(ctx: &mut Ctx) {
 pub async fn current(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let (_, row) = waiting(ctx, req).await?;
     let user = active_user(ctx, &row.user_id).await?;
-    http::ok(&describe(ctx, &user, parse_reason(&row.reason), row.expires_at).await?)
+    let reason = ChallengeReason::parse(&row.reason).ok_or_else(expired)?;
+    http::ok(&describe(ctx, &user, reason, row.expires_at).await?)
 }
 
 /// `POST /api/v1/auth/two-factor/cancel`: forget the waiting sign-in ("Not
@@ -315,8 +300,10 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let (hash, row) = waiting(ctx, req).await?;
     ctx.rate_limit(&format!("2fa-user:{}", row.user_id)).await?;
     let user = active_user(ctx, &row.user_id).await?;
-    let used = check_code(ctx, &user, &body.code).await?;
-    // One sign-in per challenge, however many requests race for it.
+    let reason = ChallengeReason::parse(&row.reason).ok_or_else(expired)?;
+    let valid = check_code(ctx, &user, &body.code).await?;
+    // One sign-in per challenge, however many requests race for it; the
+    // code is used up only by the request that got the challenge.
     let spent = q(
         &ctx.db,
         "DELETE FROM sign_in_challenges WHERE hash = ?",
@@ -328,7 +315,7 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         return Err(expired());
     }
     clear_cookie(ctx);
-    let reason = parse_reason(&row.reason);
+    let used = use_code(ctx, &user, valid).await?;
     if reason == ChallengeReason::PasswordReset {
         apply_reset(ctx, &user, &row).await?;
     }
@@ -344,7 +331,7 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "user.login"
         },
         Some(&user.id),
-        Some(serde_json::json!({ "via": reason_str(reason), "two_factor": factor })),
+        Some(serde_json::json!({ "via": reason.as_str(), "two_factor": factor })),
     );
     let recovery_codes_left = match used {
         CodeUse::Recovery { left } => {
@@ -427,8 +414,6 @@ struct AppRow {
     secret_enc: String,
     #[serde(deserialize_with = "crate::db::int")]
     last_step: i64,
-    #[serde(deserialize_with = "crate::db::int")]
-    failures: i64,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     locked_until: Option<i64>,
 }
@@ -436,7 +421,7 @@ struct AppRow {
 async fn app(ctx: &Ctx, user_id: &str) -> AppResult<Option<AppRow>> {
     q(
         &ctx.db,
-        "SELECT secret_enc, last_step, failures, locked_until FROM authenticator_apps WHERE user_id = ?",
+        "SELECT secret_enc, last_step, locked_until FROM authenticator_apps WHERE user_id = ?",
         &[s(user_id)],
     )?
     .first()
@@ -447,7 +432,13 @@ fn totp_aad(user_id: &str) -> String {
     format!("totp:{user_id}")
 }
 
-/// Which second factor a code was.
+/// A code that checked out, not used up yet ([`use_code`]).
+enum Valid {
+    Totp { step: i64 },
+    Recovery { hash: String },
+}
+
+/// Which second factor a code was, once used.
 enum CodeUse {
     Totp,
     Recovery { left: u32 },
@@ -463,68 +454,90 @@ fn locked(until: i64, now: i64) -> AppError {
     AppError(
         ApiError::new(
             ErrorCode::RateLimited,
-            format!("Too many wrong codes. Try again in {wait}."),
+            format!("Too many wrong codes. Try again in {wait}, or use a recovery code."),
         )
         .with_retry_after(secs as u32),
     )
 }
 
-/// Checks a code against `user`'s authenticator app or recovery codes, and
-/// uses it up. Wrong codes count towards the wait.
-async fn check_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<CodeUse> {
+/// Checks a code against `user`'s authenticator app or recovery codes,
+/// without using it up. Wrong codes count towards the wait, which holds back
+/// codes from the app: six digits can be guessed, recovery codes can't, so
+/// whoever has them can always sign in.
+async fn check_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<Valid> {
     let Some(app) = app(ctx, &user.id).await? else {
         return Err(AppError(ApiError::new(
             ErrorCode::Conflict,
             "Two-factor sign-in is off for this account. Start again.",
         )));
     };
-    if let Some(until) = app.locked_until.filter(|t| *t > ctx.now) {
-        return Err(locked(until, ctx.now));
-    }
     if let Some(code) = totp::normalize(typed) {
+        if let Some(until) = app.locked_until.filter(|t| *t > ctx.now) {
+            return Err(locked(until, ctx.now));
+        }
         let secret = ctx.keys()?.open(&totp_aad(&user.id), &app.secret_enc)?;
         return match totp::check(&secret, &code, ctx.now, app.last_step) {
-            totp::Check::Valid(step) => {
-                // Conditional, so that two requests can't both use one code.
-                let changed = q(
-                    &ctx.db,
-                    "UPDATE authenticator_apps SET last_step = ?, failures = 0, locked_until = NULL, last_used_at = ? \
-                     WHERE user_id = ? AND last_step < ?",
-                    &[n(step), n(ctx.now), s(&user.id), n(step)],
-                )?
-                .run()
-                .await?;
-                if changed == 0 {
-                    return Err(code_used());
-                }
-                Ok(CodeUse::Totp)
-            }
+            totp::Check::Valid(step) => Ok(Valid::Totp { step }),
             totp::Check::Used => Err(code_used()),
-            totp::Check::Wrong => Err(wrong(ctx, user, app.failures).await),
+            totp::Check::Wrong => Err(wrong(ctx, user).await),
         };
     }
     if let Some(hash) = policy::hash_recovery_code(typed) {
-        let changed = q(
+        let unused: Option<Count> = q(
             &ctx.db,
-            "UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL",
-            &[n(ctx.now), s(&user.id), s(&hash)],
+            "SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = ? AND code_hash = ? AND used_at IS NULL",
+            &[s(&user.id), s(&hash)],
         )?
-        .run()
+        .first()
         .await?;
-        if changed == 1 {
-            q(
+        if unused.is_some_and(|c| c.n > 0) {
+            return Ok(Valid::Recovery { hash });
+        }
+    }
+    Err(wrong(ctx, user).await)
+}
+
+/// Uses up a code that checked out; fails when another request used it
+/// first.
+async fn use_code(ctx: &Ctx, user: &UserRow, valid: Valid) -> AppResult<CodeUse> {
+    match valid {
+        Valid::Totp { step } => {
+            // Conditional, so that two requests can't both use one code.
+            let changed = q(
                 &ctx.db,
-                "UPDATE authenticator_apps SET failures = 0, locked_until = NULL WHERE user_id = ?",
-                &[s(&user.id)],
+                "UPDATE authenticator_apps SET last_step = ?, failures = 0, locked_until = NULL, last_used_at = ? \
+                 WHERE user_id = ? AND last_step < ?",
+                &[n(step), n(ctx.now), s(&user.id), n(step)],
             )?
             .run()
             .await?;
-            return Ok(CodeUse::Recovery {
+            if changed == 0 {
+                return Err(code_used());
+            }
+            Ok(CodeUse::Totp)
+        }
+        Valid::Recovery { hash } => {
+            let changed = q(
+                &ctx.db,
+                "UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL",
+                &[n(ctx.now), s(&user.id), s(&hash)],
+            )?
+            .run()
+            .await?;
+            if changed == 0 {
+                return Err(validation("code", "That recovery code was just used."));
+            }
+            Ok(CodeUse::Recovery {
                 left: unused_codes(ctx, &user.id).await?,
-            });
+            })
         }
     }
-    Err(wrong(ctx, user, app.failures).await)
+}
+
+/// Checks a code and uses it up, to confirm a change to two-factor sign-in.
+async fn confirm_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<CodeUse> {
+    let valid = check_code(ctx, user, typed).await?;
+    use_code(ctx, user, valid).await
 }
 
 fn code_used() -> AppError {
@@ -534,38 +547,69 @@ fn code_used() -> AppError {
     )
 }
 
-/// Counts a wrong code, and makes sign-ins wait when it was one too many:
-/// the error to answer with.
-async fn wrong(ctx: &Ctx, user: &UserRow, failures: i64) -> AppError {
-    match count_wrong(ctx, user, failures).await {
+/// Counts a wrong code, and makes codes from the app wait when it was one
+/// too many: the error to answer with.
+async fn wrong(ctx: &Ctx, user: &UserRow) -> AppError {
+    match count_wrong(ctx, user).await {
         Result::Ok(e) | Err(e) => e,
     }
 }
 
-async fn count_wrong(ctx: &Ctx, user: &UserRow, failures: i64) -> AppResult<AppError> {
-    let failures = (failures.max(0) + 1).min(i64::from(u32::MAX)) as u32;
-    let until = policy::lockout_ms(failures).map(|ms| ctx.now + ms);
+#[derive(Deserialize)]
+struct Failures {
+    #[serde(deserialize_with = "crate::db::int")]
+    failures: i64,
+}
+
+async fn count_wrong(ctx: &Ctx, user: &UserRow) -> AppResult<AppError> {
+    // In one statement, so that wrong codes sent at once all count.
+    let row: Option<Failures> = q(
+        &ctx.db,
+        "UPDATE authenticator_apps SET failures = failures + 1 WHERE user_id = ? RETURNING failures",
+        &[s(&user.id)],
+    )?
+    .first()
+    .await?;
+    let failures = row.map_or(1, |r| r.failures.clamp(1, i64::from(u32::MAX))) as u32;
+    let Some(until) = policy::lockout_ms(failures).map(|ms| ctx.now + ms) else {
+        return Ok(validation(
+            "code",
+            "That code isn't right. Check the code your authenticator app shows for this account.",
+        ));
+    };
+    // The longest wait wins when wrong codes race.
     q(
         &ctx.db,
-        "UPDATE authenticator_apps SET failures = ?, locked_until = ? WHERE user_id = ?",
-        &[n(i64::from(failures)), crate::db::on(until), s(&user.id)],
+        "UPDATE authenticator_apps SET locked_until = MAX(COALESCE(locked_until, 0), ?) WHERE user_id = ?",
+        &[n(until), s(&user.id)],
     )?
     .run()
     .await?;
-    Ok(match until {
-        Some(t) => {
-            ctx.audit(
-                "two_factor.locked",
-                Some(&user.id),
-                Some(serde_json::json!({ "failures": failures, "until": t })),
-            );
-            locked(t, ctx.now)
-        }
-        None => validation(
-            "code",
-            "That code isn't right. Check the code your authenticator app shows for this account.",
-        ),
-    })
+    ctx.audit(
+        "two_factor.locked",
+        Some(&user.id),
+        Some(serde_json::json!({ "failures": failures, "until": until })),
+    );
+    if failures == policy::FREE_FAILURES {
+        // Whoever it was had the password: the person should know.
+        let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+        let place = ctx
+            .location
+            .as_deref()
+            .map(|l| format!(" from near {l}"))
+            .unwrap_or_default();
+        notice(
+            ctx,
+            user,
+            "Wrong two-factor codes for your account",
+            format!(
+                "Someone signed in to {name} as {}{place} with your password, then entered {failures} wrong codes from an authenticator app. Sign-ins now wait before they take codes from the app again; recovery codes still work.\n\nIf it wasn't you, change your password now: whoever it was knows it. {}",
+                user.email,
+                ctx.cfg.url("/settings")
+            ),
+        );
+    }
+    Ok(locked(until, ctx.now))
 }
 
 async fn unused_codes(ctx: &Ctx, user_id: &str) -> AppResult<u32> {
@@ -606,28 +650,49 @@ fn recovery_statements(ctx: &Ctx, user_id: &str, codes: &[String]) -> AppResult<
 struct SealedSetup {
     secret: String,
     exp: i64,
+    /// A current code checked out: it may take the place of an app.
+    #[serde(default)]
+    replace: bool,
 }
 
 fn setup_aad(user_id: &str) -> String {
     format!("totp-setup:{user_id}")
 }
 
-/// Changing two-factor takes the password, unless the caller signed in
-/// within the last 15 minutes (or has no password to give).
+/// Setting up an app takes the password, unless this browser signed in
+/// within the last 15 minutes. A CLI or access token always takes it: either
+/// can be made from a browser session that signed in long ago.
 fn password_required(ctx: &Ctx, user: &UserRow) -> bool {
-    user.has_password()
-        && ctx
-            .auth
-            .as_ref()
-            .is_none_or(|a| a.signed_in_at < ctx.now - FRESH_SIGN_IN_MS)
+    let fresh = ctx
+        .auth
+        .as_ref()
+        .is_some_and(|a| a.kind == TokenKind::Web && a.signed_in_at >= ctx.now - FRESH_SIGN_IN_MS);
+    user.has_password() && !fresh
 }
 
 /// `POST /api/v1/me/two-factor/authenticator`: a new secret, its link and
 /// QR code. Nothing changes until a code from the app confirms it.
-pub async fn start_authenticator(ctx: &mut Ctx) -> AppResult<Response> {
+/// Replacing an app takes a code from it, or a recovery code, as turning it
+/// off does.
+pub async fn start_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
+    let body: StartAuthenticatorRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     ctx.rate_limit(&format!("2fa-setup:{}", user.id)).await?;
     let keys = ctx.keys()?;
+    let replace = app(ctx, &user.id).await?.is_some();
+    if replace {
+        let code = body
+            .code
+            .as_deref()
+            .filter(|c| !c.trim().is_empty())
+            .ok_or_else(|| {
+                validation(
+                    "code",
+                    "Enter a code from your current authenticator app, or a recovery code",
+                )
+            })?;
+        confirm_code(ctx, &user, code).await?;
+    }
     let secret = totp::base32(&totp::new_secret());
     let issuer = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     let uri = totp::uri(&issuer, &user.email, &secret);
@@ -638,6 +703,7 @@ pub async fn start_authenticator(ctx: &mut Ctx) -> AppResult<Response> {
         &SealedSetup {
             secret: secret.clone(),
             exp: expires_at,
+            replace,
         },
     )?;
     http::created(&AuthenticatorSetup {
@@ -688,6 +754,12 @@ pub async fn confirm_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResul
         ));
     };
     let replacing = app(ctx, &user.id).await?.is_some();
+    if replacing && !setup.replace {
+        return Err(validation(
+            "setup",
+            "Your two-factor sign-in changed meanwhile. Start again.",
+        ));
+    }
     let codes = (unused_codes(ctx, &user.id).await? == 0).then(policy::new_recovery_codes);
     let mut statements = vec![q(
         &ctx.db,
@@ -757,7 +829,7 @@ pub async fn remove_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult
             "This instance requires two-factor sign-in, so it stays on. To move it to a new phone, replace the authenticator app instead.",
         ));
     }
-    check_code(ctx, &user, &body.code).await?;
+    confirm_code(ctx, &user, &body.code).await?;
     batch(&ctx.db, forget_statements(ctx, &user.id)?).await?;
     ctx.audit("two_factor.disabled", Some(&user.id), None);
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
@@ -780,7 +852,7 @@ pub async fn new_recovery_codes(ctx: &mut Ctx, req: &mut Request) -> AppResult<R
     let body: TwoFactorCodeRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     ctx.rate_limit(&format!("2fa-user:{}", user.id)).await?;
-    check_code(ctx, &user, &body.code).await?;
+    confirm_code(ctx, &user, &body.code).await?;
     let codes = policy::new_recovery_codes();
     batch(&ctx.db, recovery_statements(ctx, &user.id, &codes)?).await?;
     ctx.audit("two_factor.recovery_codes", Some(&user.id), None);

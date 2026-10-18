@@ -115,9 +115,10 @@ with an authenticator app: TOTP (RFC 6238) with HMAC-SHA1, six digits and
    Nothing is stored until a code from the app confirms it. Then D1 keeps
    the secret sealed again (`authenticator_apps`, bound to `totp:<user>`),
    and the first app comes with ten recovery codes, of which D1 keeps the
-   SHA-256. Setting up an app takes the password when the caller signed in
-   more than 15 minutes ago; turning two-factor off and getting new
-   recovery codes take a current code.
+   SHA-256. Setting up an app takes the password unless this browser
+   signed in within the last 15 minutes (with a CLI or access token, it
+   always does). Replacing the app, turning two-factor off and getting new
+   recovery codes take a current code, from the app or a recovery code.
 2. **Signing in.** A sign-in with a password then starts no web session. It
    leaves a challenge (`sign_in_challenges`, for ten minutes) that the
    browser holds in the `__Host-fctl-2fa` cookie, and the page asks for a
@@ -129,10 +130,13 @@ with an authenticator app: TOTP (RFC 6238) with HMAC-SHA1, six digits and
    `/two-factor`; otherwise Google's own sign-in is enough. A password reset
    asks for a code too, and its new password takes effect only once the
    code checks out.
-3. **Wrong codes.** Five in a row make sign-ins wait a minute, and each
-   further one twice as long, up to an hour
+3. **Wrong codes.** Five in a row make codes from the app wait a minute,
+   and each further one twice as long, up to an hour
    (`fctl_domain::two_factor::lockout_ms`), besides the rate limits per
-   address and account.
+   address and account. Recovery codes, which can't be guessed, still work
+   meanwhile, so whoever has the password can't lock the person out, and
+   the person gets an email (when email is set up): whoever it was knew the
+   password.
 
 Admins require it of everyone (Admin → Settings → Sign-in, or `fctl admin
 set --require-two-factor on`): of every account that signs in with a

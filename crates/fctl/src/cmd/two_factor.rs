@@ -26,7 +26,12 @@ pub enum TwoFactorCmd {
     #[command(
         after_help = "Any authenticator app works: 1Password, Google Authenticator, Microsoft Authenticator, Authy,\nor the passwords app on your phone.\n\nWithout a terminal:\n  fctl account two-factor enable --json > setup.json\n  fctl account two-factor confirm --setup \"$(jq -r .setup setup.json)\" --code 123456"
     )]
-    Enable,
+    Enable {
+        /// When you replace the app you have: a code from it, or a recovery
+        /// code (asked for when left out).
+        #[arg(long)]
+        code: Option<String>,
+    },
     /// Confirm an authenticator app that `enable --json` set up, with the
     /// code it shows.
     Confirm {
@@ -72,8 +77,18 @@ pub async fn run(api: &Api, cmd: TwoFactorCmd, json: bool) -> Result<()> {
             }
             print_status(&status);
         }
-        TwoFactorCmd::Enable => {
-            let setup = api.start_authenticator().await?;
+        TwoFactorCmd::Enable { code } => {
+            // Replacing an app takes a code from it, as turning it off does.
+            let replacing = api.two_factor().await?.authenticator_since.is_some();
+            let code = match code {
+                Some(c) => Some(c),
+                None if replacing => Some(prompt::read_line(
+                    "You have an authenticator app. A code from it, or a recovery code, to replace it: ",
+                    "--code",
+                )?),
+                None => None,
+            };
+            let setup = api.start_authenticator(code.as_deref()).await?;
             if json {
                 return style::print_json(&setup);
             }
@@ -150,9 +165,15 @@ pub async fn run(api: &Api, cmd: TwoFactorCmd, json: bool) -> Result<()> {
             if json {
                 return style::print_json(&added);
             }
-            println!("{} Two-factor sign-in is on.", style::accent("✓"));
-            if let Some(codes) = &added.recovery_codes {
-                print_recovery_codes(codes);
+            match &added.recovery_codes {
+                Some(codes) => {
+                    println!("{} Two-factor sign-in is on.", style::accent("✓"));
+                    print_recovery_codes(codes);
+                }
+                None => println!(
+                    "{} The new authenticator app is in use. Your recovery codes still work.",
+                    style::accent("✓")
+                ),
             }
         }
         TwoFactorCmd::Disable { code } => {
@@ -305,7 +326,7 @@ fn print_qr(rows: &[String]) {
 }
 
 /// Modules around the code that stay light, for scanners to find it.
-const QUIET: usize = 2;
+const QUIET: usize = 4;
 
 /// QR rows as half blocks, two rows of modules to a line, with the quiet
 /// zone around them: `▀` is a dark module over a light one.

@@ -310,6 +310,22 @@ pub enum ChallengeReason {
     PasswordReset,
 }
 
+impl ChallengeReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Google => "google",
+            Self::PasswordReset => "password_reset",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::Password, Self::Google, Self::PasswordReset]
+            .into_iter()
+            .find(|r| r.as_str() == s)
+    }
+}
+
 /// A sign-in that waits for its second factor (`AuthResponse.two_factor`,
 /// `GET /api/v1/auth/two-factor/challenge`). The browser holds it in the
 /// `__Host-fctl-2fa` cookie for ten minutes.
@@ -337,8 +353,19 @@ pub struct VerifyTwoFactorRequest {
     pub code: String,
 }
 
-/// `POST /api/v1/me/two-factor/authenticator`: a new secret for an
-/// authenticator app. Nothing changes until a code from it confirms it.
+/// `POST /api/v1/me/two-factor/authenticator`: starts setting up an
+/// authenticator app.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct StartAuthenticatorRequest {
+    /// Replacing the app you have takes a code from it, or a recovery code.
+    pub code: Option<String>,
+}
+
+/// A new secret for an authenticator app. Nothing changes until a code from
+/// the app confirms it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AuthenticatorSetup {
@@ -353,8 +380,8 @@ pub struct AuthenticatorSetup {
     /// Sent back with the first code; holds the secret, sealed for you.
     pub setup: String,
     pub expires_at: Millis,
-    /// Confirming takes your password: you signed in more than 15 minutes
-    /// ago.
+    /// Confirming takes your password: this browser signed in more than 15
+    /// minutes ago, or the request came with a CLI or access token.
     pub password_required: bool,
 }
 
@@ -1458,5 +1485,24 @@ mod tests {
         assert!(!json.contains("replaces"));
         assert_eq!(serde_json::from_str::<PushMessage>(&json)?, m);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod two_factor_tests {
+    use super::ChallengeReason;
+
+    #[test]
+    fn challenge_reasons_round_trip_as_serde_names_them() {
+        for r in [
+            ChallengeReason::Password,
+            ChallengeReason::Google,
+            ChallengeReason::PasswordReset,
+        ] {
+            let json = serde_json::to_string(&r).unwrap_or_default();
+            assert_eq!(json, format!("\"{}\"", r.as_str()));
+            assert_eq!(ChallengeReason::parse(r.as_str()), Some(r));
+        }
+        assert_eq!(ChallengeReason::parse("phone"), None);
     }
 }

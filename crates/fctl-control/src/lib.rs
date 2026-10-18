@@ -236,7 +236,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["me", "two-factor"]) => api::two_factor::get(ctx).await,
         (Patch, ["me", "two-factor"]) => api::two_factor::update(ctx, req).await,
         (Post, ["me", "two-factor", "authenticator"]) => {
-            api::two_factor::start_authenticator(ctx).await
+            api::two_factor::start_authenticator(ctx, req).await
         }
         (Post, ["me", "two-factor", "authenticator", "confirm"]) => {
             api::two_factor::confirm_authenticator(ctx, req).await
