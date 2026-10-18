@@ -57,6 +57,13 @@ enum Command {
         /// A session: its id (ses_…), its URL, or project#number.
         session: String,
     },
+    /// Rename a session or say what it is about (agents: the session they run in).
+    #[command(
+        after_help = "Examples:\n  fctl edit my-app#12 --title \"Fix the flaky login test\"\n  \
+                            fctl edit my-app#12 --description \"\"       # clear the description\n  \
+                            fctl edit --title \"Retry failed uploads\"   # an agent, in its sandbox"
+    )]
+    Edit(cmd::sessions::EditArgs),
     /// Follow a session live and message the agent (Ctrl-C detaches).
     Attach {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -194,6 +201,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Run(args) => cmd::sessions::start(server, args, json).await,
         Command::Sessions(args) => cmd::sessions::list(server, args, json).await,
         Command::Show { session } => cmd::sessions::show(server, &session, json).await,
+        Command::Edit(args) => cmd::sessions::edit(server, args, json).await,
         Command::Attach { session, read_only } => {
             cmd::attach::attach(server, &session, read_only).await
         }

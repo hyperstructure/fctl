@@ -1,7 +1,36 @@
-//! The text fctl appends to Claude's system prompt.
+//! The text fctl gives Claude: what it appends to the system prompt, and the
+//! AGENTS.md at the root of the sandbox's home, beside the checkout.
 
 use fctl_domain::size;
 use fctl_proto::runner::{SandboxSize, SessionSpec};
+
+/// `~/AGENTS.md`: how the agent keeps its session's title and description
+/// about the work (Claude reads it through `~/.claude/CLAUDE.md`).
+pub const AGENTS_MD: &str = r#"# fctl
+
+This sandbox runs an fctl session. People find sessions in fctl's lists by
+their titles, and a new session's title is only the first line of its task.
+Keep the title and description about the work with `fctl edit`, which talks
+to this session directly (no sign-in needed):
+
+```sh
+fctl edit --title "Retry failed uploads in the sync worker" \
+  --description "Uploads that time out are retried with backoff, and the worker has tests for it."
+```
+
+- Name the session as soon as you understand the task, before the work
+  itself.
+- The title says what the work is, not what was asked: at most 60
+  characters, sentence case, no full stop. "Fix the flaky login test", not
+  "Can you look at the login test?".
+- The description is one or two plain sentences: what the session is doing
+  and why.
+- Follow-ups that continue the same work keep the title. When a message
+  turns the session to different work, rename it for the new scope, or name
+  both when it now covers both ("Fix the login redirect; export audit
+  logs"), and update the description.
+- If `fctl edit` fails, carry on with the task.
+"#;
 
 /// `sandbox`: what the sandbox is limited to, when its driver limits it.
 pub fn system_prompt(spec: &SessionSpec, workdir: &str, sandbox: Option<SandboxSize>) -> String {
@@ -173,6 +202,13 @@ mod tests {
         assert!(!bare.contains("original task"));
         let text = fresh_resume("fctl/7", Some(" Add a dark mode toggle "));
         assert!(text.contains("original task was:\n\nAdd a dark mode toggle\n"));
+    }
+
+    #[test]
+    fn agents_md_shows_how_to_name_the_session() {
+        assert!(AGENTS_MD.contains("fctl edit --title"));
+        assert!(AGENTS_MD.contains("--description"));
+        assert!(AGENTS_MD.contains("rename it for the new scope"));
     }
 
     #[test]

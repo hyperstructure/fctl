@@ -12,6 +12,7 @@
 //! |---|---|
 //! | (anything) | streams a short answer, runs a fake `Bash` tool, answers again |
 //! | `write <name>` | creates `<name>` in the working directory and commits it |
+//! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `slow` | streams for about ten seconds (try interrupting) |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds |
 //! | `overage` | reports paid extra usage starting |
@@ -230,10 +231,45 @@ impl Session {
                 self.tool("Bash", json!({"command": format!("git add {name} && git commit -m 'Add {name}'"), "description": "Commit the file"}), &commit, false);
             }
         }
+        if let Some(title) = rename_to(text) {
+            let description = "Renamed by fake-claude with fctl edit.";
+            let out = std::process::Command::new("fctl")
+                .args(["edit", "--title", &title, "--description", description])
+                .output();
+            let (output, failed) = match out {
+                Ok(o) => (
+                    String::from_utf8_lossy(&o.stdout).into_owned()
+                        + &String::from_utf8_lossy(&o.stderr),
+                    !o.status.success(),
+                ),
+                Err(e) => (format!("fctl: {e}"), true),
+            };
+            self.tool(
+                "Bash",
+                json!({"command": format!("fctl edit --title {title:?} --description {description:?}"), "description": "Name the session"}),
+                &output,
+                failed,
+            );
+        }
         let done = "Done. Everything looks good: the change is committed and ready for review.";
         self.stream_text(done);
         self.result(started, done, "success");
     }
+}
+
+/// The title after `rename` (any case), to the end of its line.
+fn rename_to(text: &str) -> Option<String> {
+    let at = text.char_indices().find_map(|(i, _)| {
+        text.get(i..i + 7)
+            .filter(|w| w.eq_ignore_ascii_case("rename "))
+            .map(|_| i + 7)
+    })?;
+    let title = text[at..].lines().next().unwrap_or_default().trim();
+    Some(if title.is_empty() {
+        "Renamed by fake-claude".to_owned()
+    } else {
+        title.to_owned()
+    })
 }
 
 fn main() {
@@ -341,5 +377,23 @@ fn main() {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rename_to;
+
+    #[test]
+    fn rename_takes_the_rest_of_the_line() {
+        assert_eq!(
+            rename_to("Please rename Fix the login test\nthanks").as_deref(),
+            Some("Fix the login test")
+        );
+        assert_eq!(
+            rename_to("RENAME  ").as_deref(),
+            Some("Renamed by fake-claude")
+        );
+        assert_eq!(rename_to("write notes.md"), None);
     }
 }

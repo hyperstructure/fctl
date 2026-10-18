@@ -110,6 +110,10 @@ impl ProcessDriver {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        // Agents find this fctl first: `fctl edit` names their session.
+        if let Some(path) = path_with_own_dir() {
+            cmd.env("PATH", path);
+        }
         // Its own process group: restarting the host (launchd, systemd) must not kill agents.
         #[cfg(unix)]
         {
@@ -223,6 +227,14 @@ impl ProcessDriver {
         }
         Ok(out)
     }
+}
+
+/// PATH with the running executable's directory in front.
+fn path_with_own_dir() -> Option<std::ffi::OsString> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.to_path_buf();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))).ok()
 }
 
 /// Finds a program on PATH.
