@@ -596,6 +596,17 @@ impl SessionObject {
                 Some(vec![iv(now - 24 * 3600 * 1000)]),
             );
         }
+        // A run that stops takes nothing more: the next one gets messages
+        // from the outbox. Nothing is left to interrupt, and an interrupt
+        // kept for the next run would drop the messages that start it.
+        let stopping = self
+            .summary()
+            .is_some_and(|s| s.status.resumes_for_messages());
+        if stopping && !message {
+            return Ok(Delivered {
+                delivery_id: b.delivery.id,
+            });
+        }
         let data = serde_json::to_string(&b.delivery)
             .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
         #[derive(Deserialize)]
@@ -620,11 +631,13 @@ impl SessionObject {
             self.broadcast_events(&[json]);
         }
         self.touch_activity(now);
-        self.send_uplink(&UplinkDown::Deliver {
-            delivery: b.delivery.clone(),
-        });
-        if has_files(&b.delivery) && self.uplink_lacks_files() {
-            self.old_host_notice(now);
+        if !stopping {
+            self.send_uplink(&UplinkDown::Deliver {
+                delivery: b.delivery.clone(),
+            });
+            if has_files(&b.delivery) && self.uplink_lacks_files() {
+                self.old_host_notice(now);
+            }
         }
         if message {
             self.wake(now).await?;
@@ -684,6 +697,17 @@ impl SessionObject {
         self.broadcast_summary(s);
         self.write_through().await;
         self.notify_fleet(s);
+    }
+
+    /// Whether messages wait in the outbox for the agent to take them.
+    fn messages_waiting(&self) -> bool {
+        self.sql
+            .exec("SELECT data FROM outbox", None)
+            .and_then(|c| c.to_array::<OutboxRow>())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| serde_json::from_str::<Delivery>(&r.data).ok())
+            .any(|d| matches!(d.kind, DeliveryKind::Message { .. }))
     }
 
     /// Whether the connected host said hello without the attachments feature.
@@ -1436,6 +1460,15 @@ impl SessionObject {
         }
         self.notify_fleet(&s);
         self.notify_followers(&s, before, now);
+        // The agent stopped on its own (its idle timeout) as a message came,
+        // so it didn't take the message: the session resumes for it.
+        if !before.resumes_for_messages()
+            && s.status.resumes_for_messages()
+            && self.messages_waiting()
+            && let Err(e) = self.wake(now).await
+        {
+            worker::console_error!("resuming for a waiting message failed: {}", e.message);
+        }
     }
 
     /// Keeps the plan usage the agent reported with the session's Claude
