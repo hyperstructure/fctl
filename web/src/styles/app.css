@@ -144,6 +144,69 @@
   animation: var(--animate-shimmer);
 }
 
+/* Select (components/ui/select.tsx): the list grows out of its trigger, its
+   options settle in one after another, the picked one flashes, its check draws
+   itself and the new value rolls into the trigger. */
+@theme {
+  --animate-listbox-in: listbox-in 200ms var(--ease-out) both;
+  --animate-listbox-out: listbox-out 140ms var(--ease-in-out) both;
+  --animate-listbox-flash: listbox-flash 160ms linear;
+  --animate-roll-in: roll-in 300ms var(--ease-out) both;
+  --animate-roll-out: roll-out 220ms var(--ease-out) both;
+  --animate-draw: draw 320ms var(--ease-out) both;
+}
+@keyframes listbox-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--listbox-y, -4px)) scale(0.96);
+  }
+}
+@keyframes listbox-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+@keyframes listbox-option-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--listbox-y, -4px) * 0.75));
+  }
+}
+@keyframes listbox-flash {
+  50% {
+    opacity: 0.2;
+  }
+}
+@keyframes roll-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--roll, 1) * 0.75em));
+    filter: blur(2px);
+  }
+}
+@keyframes roll-out {
+  to {
+    opacity: 0;
+    transform: translateY(calc(var(--roll, 1) * -0.75em));
+    filter: blur(2px);
+  }
+}
+@keyframes draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [role="listbox"][data-state="open"] > [role="option"] {
+    animation: listbox-option-in 240ms var(--ease-out) both;
+    animation-delay: calc(min(var(--i, 0), 7) * 18ms + 20ms);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

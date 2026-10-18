@@ -23,6 +23,8 @@ import {
   GithubIcon,
   Input,
   Section,
+  Select,
+  type SelectOption,
   Skeleton,
   StatusDot,
   Switch,
@@ -277,6 +279,10 @@ function Sessions({ project }: { project: G.Project }) {
   );
 }
 
+const ACCESS: SelectOption<G.RepoAccess>[] = [
+  { value: "read", label: "Read only", description: "Clone, fetch, and read issues and pull requests" },
+  { value: "write", label: "Read and write", description: "Also push branches and open pull requests" },
+];
 const accessLabel = (a: G.RepoAccess) => (a === "write" ? "Read and write" : "Read only");
 /** GitHub names ignore case. */
 const same = (a: string, b?: string) => a.toLowerCase() === b?.toLowerCase();
@@ -359,16 +365,13 @@ function Repositories({ project }: { project: G.Project }) {
               </>
             )}
           </Field>
-          <select
+          <Select
             aria-label="Access"
             value={wide ? "read" : access}
             disabled={wide}
-            onChange={(e) => setAccess(e.target.value as G.RepoAccess)}
-            className="h-9.5 rounded-md border border-line-strong bg-sunken/60 px-2 text-[13px] disabled:opacity-60"
-          >
-            <option value="read">Read only</option>
-            <option value="write">Read and write</option>
-          </select>
+            onChange={setAccess}
+            options={ACCESS}
+          />
           <Button
             type="submit"
             variant="primary"
@@ -426,15 +429,13 @@ function Repositories({ project }: { project: G.Project }) {
                   </div>
                 </div>
                 {manage && !r.primary && r.name ? (
-                  <select
+                  <Select
+                    size="sm"
                     aria-label={`Access to ${label}`}
                     value={r.access}
-                    onChange={(e) => change.mutate({ repo: label, access: e.target.value as G.RepoAccess })}
-                    className="rounded-md border border-line bg-transparent px-2 py-1 text-[12.5px] text-ink-2"
-                  >
-                    <option value="read">Read only</option>
-                    <option value="write">Read and write</option>
-                  </select>
+                    onChange={(access) => change.mutate({ repo: label, access })}
+                    options={ACCESS}
+                  />
                 ) : (
                   <span className="text-[12.5px] text-ink-3">{accessLabel(r.access)}</span>
                 )}
@@ -478,6 +479,12 @@ function LargestSandbox() {
     </p>
   );
 }
+
+/** Claude's effort levels; the empty value leaves it to Claude. */
+const EFFORTS: SelectOption[] = [
+  { value: "", label: "Claude's default" },
+  ...["low", "medium", "high", "xhigh", "max"].map((x) => ({ value: x, label: x })),
+];
 
 function Settings({ project }: { project: G.Project }) {
   const [s, setS] = useState<G.ProjectSettings>(project.settings);
@@ -577,19 +584,13 @@ function Settings({ project }: { project: G.Project }) {
             </Field>
             <Field label="Effort" error={err("effort")}>
               {(id) => (
-                <select
+                <Select
                   id={id}
                   value={s.effort ?? ""}
-                  onChange={(e) => set("effort", e.target.value || undefined)}
-                  className="h-9.5 rounded-md border border-line-strong bg-sunken/60 px-3 text-[14px]"
-                >
-                  <option value="">Claude's default</option>
-                  {["low", "medium", "high", "xhigh", "max"].map((x) => (
-                    <option key={x} value={x}>
-                      {x}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => set("effort", v || undefined)}
+                  options={EFFORTS}
+                  className="w-full"
+                />
               )}
             </Field>
           </div>
@@ -901,6 +902,19 @@ function DeleteProject({
   );
 }
 
+/** Project roles; only owners make owners. */
+const projectRoles = (actor?: G.ProjectRole): SelectOption<G.ProjectRole>[] => [
+  { value: "viewer", label: "Viewer", description: "Follows sessions" },
+  { value: "editor", label: "Editor", description: "Also starts sessions and messages agents" },
+  { value: "maintainer", label: "Maintainer", description: "Also manages settings, secrets and members" },
+  {
+    value: "owner",
+    label: "Owner",
+    description: "Also deletes the project and changes owners",
+    disabled: actor !== "owner",
+  },
+];
+
 function Members({ project }: { project: G.Project }) {
   const { data: me } = useMe();
   const members = useQuery({ queryKey: keys.members(project.id), queryFn: () => api.members(project.id) });
@@ -946,16 +960,7 @@ function Members({ project }: { project: G.Project }) {
               />
             )}
           </Field>
-          <select
-            value={role}
-            onChange={(e) => setRole(e.target.value as G.ProjectRole)}
-            className="h-9.5 rounded-md border border-line-strong bg-sunken/60 px-2 text-[13px]"
-          >
-            <option value="viewer">Viewer</option>
-            <option value="editor">Editor</option>
-            <option value="maintainer">Maintainer</option>
-            {project.role === "owner" && <option value="owner">Owner</option>}
-          </select>
+          <Select aria-label="Role" value={role} onChange={setRole} options={projectRoles(project.role)} />
           <Button
             type="submit"
             variant="primary"
@@ -979,17 +984,13 @@ function Members({ project }: { project: G.Project }) {
               <div className="text-[12px] text-ink-4">{m.email}</div>
             </div>
             {manage ? (
-              <select
+              <Select
+                size="sm"
+                aria-label={`Role of ${m.user.name}`}
                 value={m.role}
-                onChange={(e) => change.mutate({ user: m.user.id, role: e.target.value as G.ProjectRole })}
-                className="rounded-md border border-line bg-transparent px-2 py-1 text-[12.5px] text-ink-2"
-              >
-                {(["viewer", "editor", "maintainer", "owner"] as G.ProjectRole[]).map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
+                onChange={(role) => change.mutate({ user: m.user.id, role })}
+                options={projectRoles(project.role)}
+              />
             ) : (
               <span className="text-[12.5px] text-ink-3 capitalize">{m.role}</span>
             )}

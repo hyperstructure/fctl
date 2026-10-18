@@ -52,7 +52,9 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
 - The web app: React 19, TanStack Router (routes in `web/src/router.tsx`) and
   Query (keys and hooks in `web/src/lib/queries.ts`), Tailwind 4 with the
   tokens from `@hyperstructure/design`, Biome formatting. Live session state
-  goes through `web/src/lib/live.ts`; do not open extra WebSockets.
+  goes through `web/src/lib/live.ts`; do not open extra WebSockets. Choices
+  from a list use `Select` (`web/src/components/ui/select.tsx`), not a native
+  `<select>`.
 - Design: the brand palette is yellow `#ffff5d` (lime `#eaff81` on light
   backgrounds), hot pink `#ff00d8`, blue `#007eff`, blackish `#171717`,
   whiteish `#fafafa`. Red is for danger only (`danger`: destructive actions,
