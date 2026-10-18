@@ -55,8 +55,9 @@ Run `cargo xtask dev`, and make what you want to show with the CLI and
 fake-claude (`docs/development.md`): with `FCTL_SERVER` and `FCTL_TOKEN`
 set, `cargo run -p fctl -- run -d -p playground "write notes.md"` starts a
 session. Save this as `~/screenshots/shoot.mjs`. It signs in as the dev
-owner and asks for reduced motion, so the WebGL scenes hold still and before
-and after match:
+owner, asks for reduced motion and seeds `Math.random`, so the WebGL scenes
+hold still and draw the same frame on every load: before and after differ
+only where your change does.
 
 ```js
 // node shoot.mjs URL OUT.png [light|dark] [WIDTHxHEIGHT]
@@ -66,6 +67,10 @@ const [url, out, colorScheme = "light", size = "1440x900"] = process.argv.slice(
 const [width, height] = size.split("x").map(Number);
 const browser = await chromium.launch();
 const page = await browser.newPage({ colorScheme, reducedMotion: "reduce", viewport: { width, height } });
+await page.addInitScript(() => {
+  let seed = 42;
+  Math.random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+});
 await page.goto(new URL("/login", url).href);
 await page.fill("input[type=email]", "dev@fctl.test");
 await page.fill("input[type=password]", "fctl-dev-password");
