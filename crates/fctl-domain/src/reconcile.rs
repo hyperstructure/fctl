@@ -50,9 +50,52 @@ pub fn unassigned(runner_id: &str, known: Option<Known<'_>>, stopped_away: bool)
     }
 }
 
+/// The run the fleet has a session on: its runner, and the run's id when
+/// the fleet started it.
+#[derive(Clone, Copy, Debug)]
+pub struct Current<'a> {
+    pub runner_id: &'a str,
+    pub run_id: Option<&'a str>,
+}
+
+/// Whether a runner's report that a run of the session ended is about an
+/// earlier run than `current`: one on another runner, such as the run a
+/// runner that was away comes back with after the session moved, or an
+/// earlier one on the same runner. Such a report leaves the session alone.
+pub fn ended_earlier(runner_id: &str, run_id: Option<&str>, current: Option<Current<'_>>) -> bool {
+    current.is_some_and(|c| {
+        c.runner_id != runner_id
+            || matches!((run_id, c.run_id), (Some(ended), Some(cur)) if ended != cur)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_end_of_the_current_run_counts() {
+        let current = Some(Current {
+            runner_id: "r1",
+            run_id: Some("run_2"),
+        });
+        assert!(!ended_earlier("r1", Some("run_2"), current));
+        // Hosts that recovered a session after a restart may not know its run.
+        assert!(!ended_earlier("r1", None, current));
+        // Nothing runs it any more: the end is news.
+        assert!(!ended_earlier("r1", Some("run_1"), None));
+    }
+
+    #[test]
+    fn the_end_of_an_earlier_run_does_not() {
+        let current = Some(Current {
+            runner_id: "r2",
+            run_id: Some("run_2"),
+        });
+        assert!(ended_earlier("r1", Some("run_1"), current));
+        assert!(ended_earlier("r1", None, current));
+        assert!(ended_earlier("r2", Some("run_1"), current));
+    }
 
     fn known(runner_id: Option<&str>, status: SessionStatus) -> Option<Known<'_>> {
         Some(Known {

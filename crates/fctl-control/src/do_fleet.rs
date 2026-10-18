@@ -585,19 +585,26 @@ impl FleetObject {
                 // A report from an earlier run must not end a newer one.
                 #[derive(Deserialize)]
                 struct R {
+                    runner_id: String,
                     run_id: Option<String>,
                 }
-                let current: Option<Option<String>> = self
+                let current: Option<R> = self
                     .sql
                     .exec(
-                        "SELECT run_id FROM assignments WHERE session_id = ? AND runner_id = ?",
-                        Some(vec![sv(session_id.as_str()), sv(&rs.id)]),
+                        "SELECT runner_id, run_id FROM assignments WHERE session_id = ?",
+                        Some(vec![sv(session_id.as_str())]),
                     )
                     .and_then(|c| c.to_array::<R>())
                     .ok()
-                    .and_then(|r| r.into_iter().next().map(|r| r.run_id));
-                let stale =
-                    matches!((&run_id, &current), (Some(ended), Some(Some(cur))) if ended != cur);
+                    .and_then(|r| r.into_iter().next());
+                let stale = reconcile::ended_earlier(
+                    &rs.id,
+                    run_id.as_deref(),
+                    current.as_ref().map(|c| reconcile::Current {
+                        runner_id: &c.runner_id,
+                        run_id: c.run_id.as_deref(),
+                    }),
+                );
                 let queued_again = self.queued(session_id.as_str());
                 if stale {
                     worker::console_log!("ignoring the end of an earlier run of {session_id}");
@@ -839,7 +846,7 @@ impl FleetObject {
                 worker::console_error!("carrying {id} on: {}", e.0.message);
             }
         }
-        worker::console_log!("{id} carries on on {}, which is back", rs.name);
+        worker::console_log!("{id} carries on: {} is back", rs.name);
     }
 
     async fn on_start_result(
