@@ -9,7 +9,9 @@
 
 use crate::DeliveryId;
 use crate::event::LogLine;
-use crate::runner::{ClaudeCredential, CredentialKind, GithubCredential, SessionSpec, StopReason};
+use crate::runner::{
+    ClaudeCredential, CredentialKind, GithubCredential, SandboxSize, SessionSpec, StopReason,
+};
 use crate::session::SessionStatus;
 use crate::uplink::{AgentEvent, Delivery, SessionState};
 use serde::{Deserialize, Serialize};
@@ -41,6 +43,10 @@ pub struct AgentConfig {
     /// session's earlier events, from a sandbox that no longer exists.
     #[serde(default)]
     pub first_agent_seq: Option<u64>,
+    /// What the sandbox is limited to, when its driver limits it (not the
+    /// process driver).
+    #[serde(default)]
+    pub sandbox: Option<SandboxSize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

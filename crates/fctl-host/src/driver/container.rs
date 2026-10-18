@@ -11,7 +11,7 @@ use super::{
     AGENT_PATH, AgentIo, Sandbox, SandboxInfo, SandboxSpec, attach_script, run_cmd, serve_script,
 };
 use anyhow::{Context, Result};
-use fctl_proto::runner::DriverInfo;
+use fctl_proto::runner::{DriverInfo, SandboxSize};
 use serde_json::Value;
 use std::path::Path;
 use std::process::Stdio;
@@ -119,6 +119,20 @@ impl ContainerDriver {
             }),
             version,
         }
+    }
+
+    /// The Docker daemon's CPUs and memory: on macOS, its VM's rather than
+    /// the Mac's. `None` for Apple's `container`, whose sandboxes are VMs of
+    /// their own.
+    pub async fn resources(&self) -> Option<SandboxSize> {
+        if self.flavor != Flavor::Docker {
+            return None;
+        }
+        let out = self
+            .run(&["info", "--format", "{{.NCPU}} {{.MemTotal}}"])
+            .await
+            .ok()?;
+        docker_resources(&out)
     }
 
     /// `running`, `stopped`, … or `None` when it does not exist.
@@ -330,6 +344,15 @@ impl ContainerDriver {
     }
 }
 
+/// `docker info --format '{{.NCPU}} {{.MemTotal}}'`: CPUs, and memory in bytes.
+fn docker_resources(out: &str) -> Option<SandboxSize> {
+    let mut words = out.split_whitespace();
+    let cpus: u32 = words.next()?.parse().ok()?;
+    let bytes: u64 = words.next()?.parse().ok()?;
+    let memory_mb = u32::try_from(bytes / 1024 / 1024).unwrap_or(u32::MAX);
+    (cpus > 0 && memory_mb > 0).then_some(SandboxSize { cpus, memory_mb })
+}
+
 /// Whether `bin` can be started: a path to a file, or a program on the PATH.
 fn installed(bin: &str) -> bool {
     if bin.contains('/') {
@@ -342,6 +365,27 @@ fn installed(bin: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_docker_vms_size() {
+        // OrbStack's VM in #14's session: 10 CPUs and 15.6 GiB.
+        assert_eq!(
+            docker_resources("10 16766767104\n"),
+            Some(SandboxSize {
+                cpus: 10,
+                memory_mb: 15_990
+            })
+        );
+        for bad in [
+            "",
+            "10",
+            "ten 1024",
+            "0 16766767104",
+            "<no value> <no value>",
+        ] {
+            assert_eq!(docker_resources(bad), None, "{bad}");
+        }
+    }
 
     #[tokio::test]
     async fn says_whether_the_runtime_is_missing_or_stopped() {

@@ -6,13 +6,16 @@
 //! driver = "auto"          # apple | docker | lima | process | auto
 //! capacity = 4
 //! image = "fctl-agent:latest"
-//! cpus = 4                 # per session
-//! memory_mb = 8192         # per session
+//! cpus = 4                 # per sandbox, when its project sets none
+//! memory_mb = 8192         # per sandbox, when its project sets none
+//! max_cpus = 8             # per sandbox (default: what the machine has)
+//! max_memory_mb = 16384    # per sandbox (default: what the machine has)
 //! ```
 //!
 //! The runner token lives next to it in `host-token` (mode 0600).
 
 use anyhow::{Context, Result};
+use fctl_proto::runner::{SandboxLimits, SandboxSize};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -28,8 +31,13 @@ pub struct HostConfig {
     pub capacity: u32,
     /// Sandbox image for sessions whose project sets none.
     pub image: String,
+    /// CPUs and memory (MiB) for sandboxes whose project sets none.
     pub cpus: u32,
     pub memory_mb: u32,
+    /// The most CPUs and memory (MiB) one sandbox may have. Unset: all that
+    /// the machine has, or the Docker VM with Docker on macOS.
+    pub max_cpus: Option<u32>,
+    pub max_memory_mb: Option<u32>,
     pub labels: Vec<String>,
     /// Where sandboxes and caches live (default: the platform data dir).
     pub data_dir: Option<PathBuf>,
@@ -57,6 +65,8 @@ impl Default for HostConfig {
             image: "fctl-agent:latest".into(),
             cpus: 4,
             memory_mb: 8192,
+            max_cpus: None,
+            max_memory_mb: None,
             labels: vec![],
             data_dir: None,
             claude_bin: None,
@@ -171,6 +181,28 @@ impl HostConfig {
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir.clone().unwrap_or_else(default_data_dir)
     }
+
+    /// What this host gives each sandbox: the configured defaults and
+    /// maximums, within `runtime`, what the sandboxes run on has (0: unknown).
+    pub fn sandbox_limits(&self, runtime: SandboxSize) -> SandboxLimits {
+        let within = |configured: Option<u32>, has: u32| match (configured, has) {
+            (Some(c), 0) => c,
+            (Some(c), has) => c.min(has),
+            (None, 0) => u32::MAX,
+            (None, has) => has,
+        };
+        let max = SandboxSize {
+            cpus: within(self.max_cpus, runtime.cpus),
+            memory_mb: within(self.max_memory_mb, runtime.memory_mb),
+        };
+        SandboxLimits {
+            default: SandboxSize {
+                cpus: self.cpus.max(1).min(max.cpus),
+                memory_mb: self.memory_mb.max(512).min(max.memory_mb),
+            },
+            max,
+        }
+    }
 }
 
 pub fn write_private(path: &Path, contents: &str) -> Result<()> {
@@ -183,4 +215,44 @@ pub fn write_private(path: &Path, contents: &str) -> Result<()> {
     }
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn size(cpus: u32, memory_mb: u32) -> SandboxSize {
+        SandboxSize { cpus, memory_mb }
+    }
+
+    #[test]
+    fn sandboxes_get_at_most_what_the_runtime_has() {
+        let docker_vm = size(10, 15_990);
+        let cfg = HostConfig::default();
+        let limits = cfg.sandbox_limits(docker_vm);
+        assert_eq!(limits.default, size(4, 8192));
+        assert_eq!(limits.max, docker_vm);
+
+        let cfg = HostConfig {
+            max_cpus: Some(8),
+            max_memory_mb: Some(65_536),
+            ..HostConfig::default()
+        };
+        assert_eq!(cfg.sandbox_limits(docker_vm).max, size(8, 15_990));
+
+        // A default bigger than the maximum is lowered to it.
+        let small_vm = size(2, 2048);
+        let limits = HostConfig::default().sandbox_limits(small_vm);
+        assert_eq!(limits.default, small_vm);
+        assert_eq!(limits.max, small_vm);
+
+        // An unknown runtime leaves only what is configured.
+        let cfg = HostConfig {
+            max_memory_mb: Some(16_384),
+            ..HostConfig::default()
+        };
+        let limits = cfg.sandbox_limits(size(0, 0));
+        assert_eq!(limits.max, size(u32::MAX, 16_384));
+        assert_eq!(limits.default, size(4, 8192));
+    }
 }

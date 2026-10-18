@@ -101,6 +101,16 @@ pub struct FeedIdentity {
 pub struct LiveRunners {
     pub online: Vec<String>,
     pub last_seen: std::collections::BTreeMap<String, Millis>,
+    /// What online runners had free at their last heartbeat.
+    #[serde(default)]
+    pub free: std::collections::BTreeMap<String, Free>,
+}
+
+/// Free memory and disk, in MiB.
+#[derive(Serialize, Deserialize, Clone, Copy, Default)]
+pub struct Free {
+    pub memory_mb: Option<u64>,
+    pub disk_mb: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]

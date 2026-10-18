@@ -95,6 +95,8 @@ export type { RunnerList } from "./RunnerList";
 export type { RunnerRef } from "./RunnerRef";
 export type { RunnerRegistration } from "./RunnerRegistration";
 export type { RunnerStatus } from "./RunnerStatus";
+export type { SandboxLimits } from "./SandboxLimits";
+export type { SandboxSize } from "./SandboxSize";
 export type { SecretInfo } from "./SecretInfo";
 export type { SecretList } from "./SecretList";
 export type { SendMessageRequest } from "./SendMessageRequest";
