@@ -136,7 +136,7 @@ export function NewProject() {
                       }}
                       className={cn(
                         "flex w-full items-center gap-3 px-3 py-2 text-left text-[13px] transition-colors disabled:opacity-40",
-                        repo === r.full_name ? "bg-accent-soft text-ink" : "text-ink-2 hover:bg-raised",
+                        repo === r.full_name ? "bg-accent-soft text-ink" : "text-ink-2 hover:bg-hover",
                       )}
                     >
                       {r.private ? (

@@ -179,10 +179,7 @@ pub async fn build(
         co_authors: Vec::new(),
         co_authored_by: author.into_iter().collect(),
         web_url: cfg.url(&format!("/s/{}", row.id)),
-        idle_timeout_secs: project
-            .settings()
-            .idle_timeout_minutes
-            .map_or(2 * 60 * 60, |m| m as u64 * 60),
+        idle_timeout_secs: fctl_domain::settings::idle_timeout_secs(&project.settings()),
         run_id: None,
     })
 }

@@ -105,7 +105,7 @@ function NavLink({
         "group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
         active
           ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
-          : "text-ink-3 hover:bg-raised/60 hover:text-ink",
+          : "text-ink-3 hover:bg-hover/60 hover:text-ink",
       )}
     >
       <span
@@ -190,7 +190,7 @@ function Sidebar({
               "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
               path === `/p/${p.slug}`
                 ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
-                : "text-ink-3 hover:bg-raised/60 hover:text-ink",
+                : "text-ink-3 hover:bg-hover/60 hover:text-ink",
             )}
           >
             <span className="flex size-4 items-center justify-center">
@@ -232,7 +232,7 @@ function Sidebar({
               <button
                 type="button"
                 onClick={toggle}
-                className="mt-1 flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-raised/60"
+                className="mt-1 flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover/60"
               >
                 <Avatar user={me.user} size={24} />
                 <span className="min-w-0 flex-1">

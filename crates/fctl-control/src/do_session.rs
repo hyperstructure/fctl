@@ -526,6 +526,7 @@ impl SessionObject {
 
     async fn deliver(&self, b: Deliver) -> std::result::Result<Delivered, ApiError> {
         let now = now_ms();
+        let message = matches!(b.delivery.kind, DeliveryKind::Message { .. });
         if let Some(key) = b.client_key.as_deref() {
             #[derive(Deserialize)]
             struct K {
@@ -540,6 +541,10 @@ impl SessionObject {
                 .and_then(|c| c.to_array::<K>())
                 .unwrap_or_default();
             if let Some(k) = existing.first() {
+                // Sent again after an error: it may not have resumed the session.
+                if message {
+                    self.wake(now).await?;
+                }
                 return Ok(Delivered {
                     delivery_id: fctl_proto::DeliveryId(k.delivery_id.clone()),
                 });
@@ -583,9 +588,64 @@ impl SessionObject {
         if has_files(&b.delivery) && self.uplink_lacks_files() {
             self.old_host_notice(now);
         }
+        if message {
+            self.wake(now).await?;
+        }
         Ok(Delivered {
             delivery_id: b.delivery.id,
         })
+    }
+
+    /// A message resumes a stopped session, on the Claude subscription it
+    /// ran on (a resume runs it on the resumer's), and the message waits in
+    /// the outbox for the new run. One that is still stopping is queued now:
+    /// FleetDO starts it once the last run has stopped.
+    async fn wake(&self, now: i64) -> std::result::Result<(), ApiError> {
+        let Some(stopped) = self.summary().filter(|s| s.status.resumes_for_messages()) else {
+            return Ok(());
+        };
+        let mut s = stopped.clone();
+        self.set_status(
+            &mut s,
+            SessionStatus::Queued,
+            Some("Resuming".into()),
+            None,
+            now,
+        );
+        s.runner = None;
+        self.publish(&mut s, now).await;
+        let scheduled: std::result::Result<serde_json::Value, ApiError> =
+            match internal::fleet_stub(&self.env) {
+                Ok(fleet) => internal::post(
+                    &fleet,
+                    "/schedule",
+                    &internal::Schedule {
+                        session_id: s.id.clone(),
+                    },
+                )
+                .await
+                .map_err(|e| e.0),
+                Err(e) => Err(e.0),
+            };
+        if let Err(e) = scheduled {
+            // Stopped as before: sending the message again resumes it.
+            worker::console_error!("resuming for a message failed: {}", e.message);
+            let mut s = stopped;
+            let (status, reason) = (s.status, s.status_reason.clone());
+            self.set_status(&mut s, status, reason, None, now);
+            self.publish(&mut s, now).await;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Stores a changed summary and tells viewers, D1 and the dashboards.
+    async fn publish(&self, s: &mut Session, now: i64) {
+        s.updated_at = now;
+        self.save_summary(s);
+        self.broadcast_summary(s);
+        self.write_through().await;
+        self.notify_fleet(s);
     }
 
     /// Whether the connected host said hello without the attachments feature.
@@ -890,10 +950,10 @@ impl SessionObject {
         let Some(summary) = self.summary() else {
             return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
         };
-        if !summary.status.accepts_messages() {
+        if !summary.status.accepts_messages() && !summary.status.resumes_for_messages() {
             return Err(api_err(
                 ErrorCode::Conflict,
-                "The session has ended. Resume it to continue.",
+                "The session failed. Resume it to continue.",
             ));
         }
         let author = viewer.user.clone();
@@ -1181,6 +1241,13 @@ impl SessionObject {
 
     async fn apply_state(&self, state: SessionState, now: i64) {
         let Some(mut s) = self.summary() else { return };
+        // Queued again (a message or a resume) while its last run stops: that
+        // run's uplink still says so. FleetDO starts the next run after it.
+        if s.status == SessionStatus::Queued
+            && (state.status.is_terminal() || state.status == SessionStatus::Stopping)
+        {
+            return;
+        }
         let before = s.status;
         let mut status_changed = false;
         if state.status != s.status

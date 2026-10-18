@@ -303,7 +303,7 @@ export const ToolRow = memo(function ToolRow({
         onClick={() => setOpen(!open)}
         className={cn(
           "flex w-full items-center gap-2.5 rounded-md py-1 pr-2 pl-1 text-left text-[13.5px] transition-colors",
-          "hover:bg-raised/60",
+          "hover:bg-hover/60",
           error ? "text-danger" : "text-ink-2",
         )}
       >
