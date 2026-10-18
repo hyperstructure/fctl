@@ -1,7 +1,7 @@
 //! One task per session: sandbox, fctl-agent, and the bridge between the
 //! agent and the session's uplink.
 
-use crate::config::{HostConfig, means_default_image};
+use crate::config::{HostConfig, Images};
 use crate::driver::{AgentIo, Driver, Sandbox, SandboxSpec, sandbox_name};
 use crate::files;
 use crate::liveness::{Check, Health, Reach, Reached, Retry};
@@ -9,6 +9,7 @@ use crate::uplink::Uplink;
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use fctl_domain::image::ImageWant;
 use fctl_domain::size::Want;
 use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES};
 use fctl_proto::event::{LogLevel, LogLine, LogSource, PublishedFile};
@@ -22,6 +23,7 @@ use fctl_proto::uplink::{
     UplinkUp,
 };
 use fctl_proto::{ApiError, ErrorCode, Millis, RunnerId, SessionId};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -37,6 +39,13 @@ pub struct HostCtx {
     pub sandbox: Mutex<SandboxLimits>,
     /// The drivers this host could use, as last probed.
     pub drivers: Mutex<Vec<DriverInfo>>,
+    /// Held while an image builds: one build at a time.
+    pub builds: tokio::sync::Mutex<()>,
+    /// One per image being built: sessions that need the same one wait for
+    /// the session that builds it.
+    pub build_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Held while `builds.json` changes.
+    pub build_record: Mutex<()>,
 }
 
 impl HostCtx {
@@ -51,7 +60,25 @@ impl HostCtx {
             runner_id: Mutex::new(None),
             sandbox: Mutex::new(sandbox),
             drivers: Mutex::new(Vec::new()),
+            builds: tokio::sync::Mutex::new(()),
+            build_locks: Mutex::new(HashMap::new()),
+            build_record: Mutex::new(()),
         }
+    }
+
+    /// The lock of the build of `tag`, shared by the sessions that need it.
+    pub fn build_lock(&self, tag: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .build_locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        locks.entry(tag.to_owned()).or_default().clone()
+    }
+
+    /// The images and builds this host's sessions may start from.
+    pub fn images(&self) -> Images {
+        self.cfg.images(self.driver.uses_images())
     }
 
     pub fn runner_id(&self) -> RunnerId {
@@ -436,19 +463,31 @@ fn wall_ms(t: Instant) -> Millis {
 }
 
 async fn prepare(ctx: &HostCtx, spec: &SessionSpec, uplink: &Uplink) -> Result<Sandbox> {
-    let (image, fallback_image) = match spec.project.settings.image.as_deref() {
-        Some(image) if !means_default_image(image) => (image.to_owned(), None),
+    let name = sandbox_name(spec.session_id.as_str());
+    let log_uplink = |line: String| host_log(uplink, LogLevel::Info, line);
+    let want = ImageWant::of(&spec.project.settings, spec.project.repo.as_ref());
+    let (image, fallback_image) = match want {
+        // A sandbox that is here already keeps the image it was made from.
+        ImageWant::Build(_)
+            if ctx.driver.uses_images() && !ctx.driver.sandbox_exists(&name).await? =>
+        {
+            uplink.state(state(
+                SessionStatus::Provisioning,
+                &format!("Getting the sandbox image ready on {}", ctx.cfg.name),
+            ));
+            (crate::build::image(ctx, spec, &log_uplink).await?, None)
+        }
+        ImageWant::Image(image) => (image, None),
         _ => (ctx.cfg.image(), ctx.cfg.fallback_image()),
     };
     let size = ctx.sandbox_size(spec);
     let sspec = SandboxSpec {
-        name: sandbox_name(spec.session_id.as_str()),
+        name,
         image,
         fallback_image,
         cpus: size.cpus,
         memory_mb: size.memory_mb,
     };
-    let log_uplink = |line: String| host_log(uplink, LogLevel::Info, line);
     let sb = ctx.driver.ensure(&sspec, &log_uplink).await?;
     if ctx.driver.needs_linux_agent() {
         let bin = crate::agentbin::linux_agent(&ctx.cfg)

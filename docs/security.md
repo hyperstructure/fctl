@@ -111,6 +111,15 @@ outside it except through these channels:
   a screenshot, as it can ask it to send what it sees elsewhere.
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
+- **The image and the setup script.** Whoever sets a project's image or
+  setup script decides what runs in its sandboxes, beside the credentials
+  of the people who start its sessions: their Claude access token and the
+  session's GitHub tokens. A full Claude login's access token lasts hours;
+  a token from `claude setup-token` is valid for a year. Maintainers and
+  owners set both, and for an image built from the repository, so does
+  whoever can push to its default branch. Hosts' owners decide which images
+  their machines run and which repositories they build images from
+  ([below](#hosts)).
 - **Attached files** are saved in the sandbox under `~/attachments/`, where
   anything the agent runs can read them, and Claude sees images in the
   message.
@@ -160,8 +169,20 @@ by default `ghcr.io/hyperstructure/sandbox`, which the Image workflow of
 the public [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox)
 repository builds, so anyone can read what goes into it. A host can use its
 own build of it instead (`fctl host image build`) or a copy in another
-registry (`image` in `host.toml`); a project's own image still applies to
-its sessions ([Sandbox images](sandbox-images.md)).
+registry (`image` in `host.toml`).
+
+A project's own image runs only on hosts that allow it, and its build only
+on hosts that build images from its repository: `allowed_images` and
+`allowed_builds` in `host.toml`. Without `allowed_images`, a host runs any
+image a project chooses, as hosts did before it, so set it on machines
+where that matters. Without `allowed_builds`, it builds none. The control
+plane schedules sessions by these lists, and the host checks them again
+before it takes a session. To build, the host downloads the repository at
+the tip of its default branch with the session's GitHub token, which the
+build never sees, and runs the build in its container runtime's builder,
+outside any sandbox ([Sandbox images](sandbox-images.md#which-images-a-host-runs)).
+Hosts pull images with their own registry logins; fctl stores no registry
+credentials.
 
 ## Retention
 

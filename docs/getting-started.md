@@ -97,7 +97,10 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
    hour. The host then pulls the [sandbox image](sandbox-images.md) (Debian
    with git, gh, Python, uv, Rust, Node, TypeScript, Bun and Claude Code) in
    the background. With Lima, add `--build-image`: it prepares the VM that
-   sessions are cloned from, which takes a few minutes.
+   sessions are cloned from, which takes a few minutes. A host runs any
+   image a project chooses; `--allow-image 'ghcr.io/acme/*'` limits that,
+   and `--allow-build 'acme/*'` lets it build images from those
+   repositories ([Which images a host runs](sandbox-images.md#which-images-a-host-runs)).
 
 3. Check it:
 
@@ -115,9 +118,13 @@ starts again after a reboot or a power cut.
 In the app, choose **New project**. Link an existing GitHub repository, create
 a new one, or start without a repository. Optionally add a setup script (it
 runs in the clone before the agent starts, e.g. `npm ci`) and instructions for
-agents. The **claude.ai connectors** switch starts off: turn it on only if
-agents should use the connectors (mail, files, docs) of whoever starts a
-session, without asking. From the terminal:
+agents. When sessions need tools the default image lacks, give the project an
+image of its own, or one built from a Dockerfile or devcontainer.json in its
+repository, under Settings → Sandbox → Image
+([Your own image](sandbox-images.md#your-own-image)). The **claude.ai
+connectors** switch starts off: turn it on only if agents should use the
+connectors (mail, files, docs) of whoever starts a session, without asking.
+From the terminal:
 
 ```sh
 fctl projects create "My app" --repo my-org/my-app

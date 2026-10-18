@@ -15,9 +15,12 @@ const HELP: &str = "\
 cargo xtask <command>
 
 Develop
-  dev [--no-host] [--no-vite]   Run everything locally: control plane, web app (hot reload)
-                                and a host whose agents run fake-claude
-  check [--quick]               Everything CI checks (fmt, types, lint, tests, builds)
+  dev [--no-host] [--no-vite] [--smoke]
+                                Run everything locally: control plane, web app (hot reload)
+                                and a host whose agents run fake-claude; --smoke runs one
+                                session to the end and stops (CI)
+  check [--quick]               What CI checks (fmt, types, lint, tests, builds); CI also
+                                runs dev --smoke
   gen                           Regenerate web/src/gen from crates/fctl-proto
 
 Deploy (deploy/instances/<name>.toml)
@@ -68,6 +71,7 @@ fn main() -> Result<()> {
             let opts = dev::DevOpts {
                 no_host: a.flag("--no-host"),
                 no_vite: a.flag("--no-vite"),
+                smoke: a.flag("--smoke"),
             };
             a.done()?;
             dev::dev(&root, opts)

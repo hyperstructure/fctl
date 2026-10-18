@@ -47,6 +47,16 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
             Some(validate::image(img)?)
         };
     }
+    if let Some(b) = &s.image_build {
+        s.image_build = Some(validate::image_build(b)?);
+    }
+    if s.image.is_some() && s.image_build.is_some() {
+        // On the image's field, which forms from before builds show too.
+        return Err(validation(
+            "image",
+            "Choose an image or a build from the repository, not both",
+        ));
+    }
     if let Some(m) = s.model.as_deref() {
         s.model = if m.trim().is_empty() {
             None
@@ -111,6 +121,14 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
     }
     s.env = env;
     Ok(s)
+}
+
+/// A build comes from the project's repository.
+fn needs_repo() -> AppError {
+    validation(
+        "settings.image_build",
+        "Link a repository first: the image is built from its files",
+    )
 }
 
 async fn slug_taken(ctx: &Ctx, slug: &str) -> AppResult<bool> {
@@ -207,6 +225,9 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             repo = Some(parsed);
         }
     }
+    if settings.image_build.is_some() && repo.is_none() {
+        return Err(needs_repo());
+    }
     let id = fctl_domain::ids::project_id(ctx.now);
     batch(
         &ctx.db,
@@ -299,6 +320,9 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         }
         None => row.settings(),
     };
+    if settings.image_build.is_some() && (owner.is_none() || repo_name.is_none()) {
+        return Err(needs_repo());
+    }
     let archived_at = match body.archived {
         Some(true) => row.archived_at.or(Some(ctx.now)),
         Some(false) => None,

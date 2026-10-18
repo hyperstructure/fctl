@@ -12,6 +12,7 @@ use crate::internal::{
     LiveRunners, LoginCode, LoginStart, NotifySession, Schedule, Stop,
 };
 use crate::spec;
+use fctl_domain::image::{HostImages, ImageWant};
 use fctl_domain::schedule::{Home, Slot, Wait};
 use fctl_domain::size::Want;
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
@@ -125,6 +126,9 @@ struct Candidate {
     labels: Vec<String>,
     sandbox: Option<SandboxLimits>,
     draining: bool,
+    image: Option<String>,
+    allowed_images: Option<Vec<String>>,
+    allowed_builds: Option<Vec<String>>,
 }
 
 impl Candidate {
@@ -138,6 +142,11 @@ impl Candidate {
             labels: &self.labels,
             sandbox: self.sandbox,
             draining: self.draining,
+            images: HostImages {
+                own: self.image.as_deref(),
+                allowed: self.allowed_images.as_deref(),
+                builds: self.allowed_builds.as_deref(),
+            },
         }
     }
 }
@@ -1100,7 +1109,7 @@ impl FleetObject {
                     .await;
                 continue;
             }
-            let want = wants.get(&item.session_id).copied().unwrap_or_default();
+            let want = wants.get(&item.session_id).cloned().unwrap_or_default();
             // A resume goes back to the runner that has its sandbox, where
             // Claude continues the same conversation, and waits a while for
             // it when it is busy. Not after it declined the session.
@@ -1110,7 +1119,8 @@ impl FleetObject {
                 self.home_of(&item.session_id)
             };
             let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS;
-            let (runner_id, runner_name) = match self.pick_runner(want, home.as_deref(), wait) {
+            let picked = self.pick_runner(want.size, &want.image, home.as_deref(), wait);
+            let (runner_id, runner_name) = match picked {
                 Ok(r) => r,
                 Err(wait) => {
                     self.note_waiting(&item, wait.reason()).await;
@@ -1245,6 +1255,9 @@ impl FleetObject {
                     labels: hello.labels,
                     sandbox: hello.sandbox,
                     draining: r.draining_since.is_some(),
+                    image: hello.image,
+                    allowed_images: hello.allowed_images,
+                    allowed_builds: hello.allowed_builds,
                 })
             })
             .collect()
@@ -1303,13 +1316,14 @@ impl FleetObject {
             .any(|reports| reports.iter().any(|r| r.session_id.as_str() == session_id))
     }
 
-    /// The least loaded connected runner with a free slot that gives a
-    /// sandbox what the session wants, or why there is none. `home`, the
-    /// runner that has the session's sandbox, comes first, and with `wait`
-    /// the session waits for it while it is busy.
+    /// The least loaded connected runner with a free slot that runs the
+    /// session's image and gives its sandbox what it wants, or why there is
+    /// none. `home`, the runner that has the session's sandbox, comes first,
+    /// and with `wait` the session waits for it while it is busy.
     fn pick_runner(
         &self,
         want: Want,
+        image: &ImageWant,
         home: Option<&str>,
         wait: bool,
     ) -> std::result::Result<(String, String), Wait> {
@@ -1322,7 +1336,7 @@ impl FleetObject {
                 name: &c.name,
                 wait,
             });
-        let chosen = fctl_domain::schedule::pick(&slots, &[], want, home)?;
+        let chosen = fctl_domain::schedule::pick(&slots, &[], want, image, home)?;
         let name = candidates
             .iter()
             .find(|c| c.id == chosen.id)

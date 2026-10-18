@@ -22,7 +22,8 @@ for stays unnoticed.
 
 The checks: **Commits** checks the title, and **CI** runs
 `cargo xtask check` (formatting, generated types, Biome and TypeScript,
-Clippy, tests and builds).
+Clippy, tests and builds) and `cargo xtask dev --smoke` (one fake-claude
+session through the local stack, from a fresh checkout).
 
 ## When a check fails
 

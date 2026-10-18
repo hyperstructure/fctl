@@ -110,6 +110,12 @@ fctl projects set -p my-app --credit-claude off   # no Claude trailer in its com
 fctl projects set -p my-app --credit-people off   # no trailers for the people who start sessions
 fctl projects set -p my-app --idle-timeout 30     # idle sessions keep their sandbox 30 minutes (default 10)
 fctl projects set -p my-app --publish-screenshots on --screenshot-days 7   # links work for a week
+fctl projects set -p my-app --image ghcr.io/acme/agent:1   # sessions start from this image ("" for the runner's)
+fctl projects set -p my-app --build .devcontainer/devcontainer.json   # or one built from the repository
+fctl projects set -p my-app --build Dockerfile --build-context app    # a Dockerfile, built in app/
+fctl projects set -p my-app --setup-script 'npm ci'   # or @setup.sh, or - to read it from stdin
+fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
+fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects use my-app
 fctl projects delete my-app            # with its sessions; asks you to type the slug
 ```
@@ -128,6 +134,12 @@ fctl projects repos remove my-org/design -p my-app
 ```
 
 Changes apply to sessions that start afterwards.
+
+A project's image and its build run only on runners whose owners allow
+them ([Sandbox images](sandbox-images.md#which-images-a-host-runs)); a
+session that no runner allows stays queued and says why. `fctl projects
+show` says where the project's sessions start from, their size, setup
+script and variables.
 
 ## Notifications
 
@@ -163,6 +175,7 @@ fctl claude status               # your connections and how much of each plan is
 fctl host install                # register this machine and start the service
 fctl host install --driver lima --capacity 2 --build-image
 fctl host install --cpus 4 --memory 8g --max-memory 12g   # sandbox sizes
+fctl host install --allow-image 'ghcr.io/acme/*' --allow-build 'acme/*'   # what projects may run and build
 fctl host install --token fctl_rt_…   # with a runner token from an admin
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host run                    # run in the foreground (what the service runs)
@@ -214,12 +227,21 @@ memory_mb = 8192         # per sandbox, when the project sets none
 max_cpus = 8             # the most one sandbox may have (unset: all there is)
 max_memory_mb = 12288
 keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them)
+# allowed_images = ["ghcr.io/acme/*"]   # images projects may choose (unset: any)
+# allowed_builds = ["acme/*"]           # repositories it builds images from (unset: none)
+build_timeout_minutes = 60
+max_build_mb = 20480     # the largest image a build may make
 ```
 
 Sessions start from their project's image or, without one, the host's:
 unless `image` sets another, the published image of the host's own version,
 `ghcr.io/hyperstructure/sandbox:<version>`, which the host pulls when it
-starts. [Sandbox images](sandbox-images.md) has the details.
+starts. A project's own image runs only if `allowed_images` allows it, or
+is unset, and an image built from its repository only if `allowed_builds`
+lists the repository. `--allow-image` and `--allow-build` replace the lists
+(`--allow-image '*'` for any image, `--allow-build ""` for no builds), and
+`fctl host status` shows them. [Sandbox images](sandbox-images.md) has the
+details.
 
 A project's Settings → Sandbox can ask for more CPUs or memory than the
 host's default. Sessions only start on a host whose maximum covers that;
@@ -255,7 +277,7 @@ fctl admin allow ada@example.com           # also creates an invite link
 fctl admin allow '*@example.com'           # a whole domain
 fctl admin allow grace@example.com --admin
 fctl admin disallow '*@example.com'        # its users lose access
-fctl admin runners                         # draining ones say who drained them and what still runs
+fctl admin runners                         # with their images; draining ones say who drained them
 fctl admin drain studio-mac                # no new sessions start on it (name or id)
 fctl admin undrain studio-mac
 fctl admin settings                        # what the instance allows

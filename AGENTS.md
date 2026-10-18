@@ -10,8 +10,9 @@ that crosses a component boundary.
 
 ```sh
 cargo xtask dev            # the whole system locally; agents run fake-claude
-cargo xtask check          # everything CI checks; run it before you push
+cargo xtask check          # what CI checks; run it before you push
 cargo xtask check --quick  # the same without production builds
+cargo xtask dev --smoke    # CI's other check: one session through the local stack
 cargo xtask gen            # regenerate web/src/gen after changing crates/fctl-proto
 cargo test -p fctl-domain  # one crate's tests
 cd web && npm run check    # Biome + TypeScript for the web app

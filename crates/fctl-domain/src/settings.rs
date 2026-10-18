@@ -40,9 +40,14 @@ pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
 /// opened before a deploy, an older CLI) would reset it to its default
 /// without having shown it: for `claude_ai_connectors`, `credit_people` and
 /// `credit_claude`, on; for `publish_screenshots`, off; for
-/// `screenshot_days`, 30 days (send `null` to choose the default). `sent`
-/// is the update's `settings` object as it arrived.
+/// `screenshot_days`, 30 days (send `null` to choose the default). An
+/// `image_build` it leaves out stays unless it chooses an image instead
+/// (send `null` for none). `sent` is the update's `settings` object as it
+/// arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
+    if sent.get("image_build").is_none() && settings.image.is_none() {
+        settings.image_build = stored.image_build.clone();
+    }
     if sent.get("claude_ai_connectors").is_none() {
         settings.claude_ai_connectors = stored.claude_ai_connectors;
     }
@@ -157,6 +162,35 @@ mod tests {
         );
         assert!(!s.publish_screenshots);
         assert_eq!(s.screenshot_days, None);
+    }
+
+    #[test]
+    fn updates_without_the_build_keep_it_unless_they_choose_an_image() {
+        let stored = ProjectSettings {
+            image_build: Some(fctl_proto::session::ImageBuild {
+                file: "Dockerfile".into(),
+                context: None,
+            }),
+            ..Default::default()
+        };
+        // An older client, which doesn't know builds.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "credit_claude": true }));
+        assert_eq!(s.image_build, stored.image_build);
+        // One that chooses an image replaces the build with it.
+        let mut s = ProjectSettings {
+            image: Some("ghcr.io/acme/agent:1".into()),
+            ..Default::default()
+        };
+        keep_unsent(&mut s, &stored, &json!({ "image": "ghcr.io/acme/agent:1" }));
+        assert_eq!(s.image_build, None);
+        // `null` stops building.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "image_build": null }));
+        assert_eq!(s.image_build, None);
+        // Settings as this version sends them always say.
+        let sent = serde_json::to_value(ProjectSettings::default()).unwrap_or_default();
+        assert_eq!(sent.get("image_build"), Some(&Value::Null));
     }
 
     #[test]

@@ -541,6 +541,15 @@ pub struct Runner {
     pub disk_available_mb: Option<u64>,
     /// What it gives each sandbox (absent from older hosts).
     pub sandbox: Option<SandboxLimits>,
+    /// The image it gives sessions whose project sets none.
+    pub image: Option<String>,
+    /// The other images it runs, as its hello says ([`HostHello`]).
+    /// Absent: any image.
+    ///
+    /// [`HostHello`]: crate::runner::HostHello
+    pub allowed_images: Option<Vec<String>>,
+    /// The repositories it builds images from. Absent: none.
+    pub allowed_builds: Option<Vec<String>>,
     pub labels: Vec<String>,
     pub last_seen_at: Option<Millis>,
     pub created_at: Millis,

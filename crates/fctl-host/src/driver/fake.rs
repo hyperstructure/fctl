@@ -12,8 +12,11 @@ use std::sync::{Mutex, PoisonError};
 /// label and Claude Code version (`-` for a build without labels) and the
 /// name. `containers` holds the ID of the build each container was made
 /// from. Like Docker, `image rm` refuses to remove an image's last name
-/// while a container uses it; Apple's `image delete` doesn't check.
-const SCRIPT: &str = r#"#!/bin/sh
+/// while a container uses it; Apple's `image delete` doesn't check. A
+/// `build` lists its context in `context`, copies its Dockerfile to
+/// `dockerfile` and makes a build without labels, and with `fail_build` it
+/// fails; `size` holds the size images have (1000 bytes without it).
+const SCRIPT: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
 key() { printf '%s' "$1" | tr '/:' '__'; }
@@ -26,9 +29,11 @@ labels() {
     printf '{"org.opencontainers.image.revision": "%s", "sh.fctl.claude-code.version": "%s"}' "$1" "$2"
   fi
 }
+size() { cat "$d/size" 2>/dev/null || echo 1000; }
 inspect() {
   set -- $(cat "$(file "$1")")
-  printf '[{"Id": "%s", "RepoTags": ["%s"], "Config": {"Labels": %s}}]\n' "$1" "$4" "$(labels "$2" "$3")"
+  printf '[{"Id": "%s", "RepoTags": ["%s"], "Config": {"Labels": %s},' "$1" "$4" "$(labels "$2" "$3")"
+  printf ' "variants": [{"platform": {"os": "linux", "architecture": "amd64"}, "size": %s}]}]\n' "$(size)"
 }
 pull() {
   [ -e "$d/registry/$(key "$last")" ] || { echo "$last: manifest unknown" >&2; exit 1; }
@@ -47,7 +52,11 @@ used() {
 case "$1 $2" in
   "image inspect")
     here "$last"
-    if [ "$3" = --format ]; then id_of "$last"; else inspect "$last"; fi ;;
+    case "$3 $4" in
+      "--format {{.Size}}") size ;;
+      --format*) id_of "$last" ;;
+      *) inspect "$last" ;;
+    esac ;;
   "image pull" | "pull "*) pull ;;
   "image tag")
     here "$3"
@@ -64,6 +73,15 @@ case "$1 $2" in
     echo "Untagged: $3" ;;
   "image ls") names | while read -r n; do case "$n" in "$last":*) echo "$n" ;; esac; done ;;
   "image list") names ;;
+  "build "*)
+    [ ! -e "$d/fail_build" ] || { echo "#3 ERROR: process did not complete successfully: exit code: 1" >&2; exit 1; }
+    echo "#1 [internal] load build definition from Dockerfile"
+    echo "#5 [1/2] FROM debian" >&2
+    echo "#5 0.1 noise"
+    (cd "$last" && find . | sort) > "$d/context"
+    cat "$5" > "$d/dockerfile"
+    echo "x" >> "$d/builds"
+    echo "sha256:build$(wc -l < "$d/builds" | tr -d ' ') - - $3" > "$(file "$3")" ;;
   "inspect "*) exit 1 ;;
   "run "*)
     [ ! -e "$d/fail_run" ] || { echo "no room for it" >&2; exit 1; }
@@ -75,14 +93,14 @@ case "$1 $2" in
     id_of "$2" > "$d/containers/$name" ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
-"#;
+"##;
 
 /// The revision label of the stand-in's published builds.
 const REVISION: &str = "688d0dd";
 
 /// A stand-in for the `docker` or `container` CLI, with no sandboxes yet.
 pub struct FakeCli {
-    dir: tempfile::TempDir,
+    pub dir: tempfile::TempDir,
 }
 
 impl FakeCli {

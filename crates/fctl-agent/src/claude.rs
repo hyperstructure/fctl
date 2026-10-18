@@ -33,6 +33,76 @@ pub const FORBIDDEN_ENV: &[&str] = &[
     "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
 ];
 
+/// The oldest Claude Code fctl works with. 2.1.101 is the first that asks
+/// its host for a fresh OAuth access token (the `oauth_token_refresh`
+/// control request), which sessions on a full Claude login need once
+/// theirs expires; Remote Control's `remote_control` request came in
+/// 2.1.63.
+pub const MIN_VERSION: Version = Version(2, 1, 101);
+
+/// A Claude Code version: major, minor, patch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version(pub u32, pub u32, pub u32);
+
+impl Version {
+    /// The first `X.Y.Z` in `claude --version`'s output, `2.1.302 (Claude
+    /// Code)`; a pre-release suffix doesn't count.
+    pub fn parse(text: &str) -> Option<Self> {
+        text.split_whitespace().find_map(|word| {
+            let word = word.trim_start_matches('v');
+            let mut parts = word.splitn(3, '.');
+            let major = parts.next()?.parse().ok()?;
+            let minor = parts.next()?.parse().ok()?;
+            let patch = parts.next()?;
+            let digits = patch.chars().take_while(char::is_ascii_digit).count();
+            let patch = patch[..digits].parse().ok()?;
+            Some(Self(major, minor, patch))
+        })
+    }
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.0, self.1, self.2)
+    }
+}
+
+/// Asks `bin --version` which Claude Code the sandbox has. `Err` says why
+/// sessions can't run with it: it is missing, or older than
+/// [`MIN_VERSION`]. `Ok(None)` when it doesn't say.
+pub async fn check_version(bin: &str) -> std::result::Result<Option<Version>, String> {
+    let run = Command::new(bin)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let out = match tokio::time::timeout(Duration::from_secs(30), run).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "This sandbox has no Claude Code (`{bin}` is not on the PATH): install it in the image, or build the image from ghcr.io/hyperstructure/sandbox, which has it"
+            ));
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("running {bin} --version: {e}");
+            return Ok(None);
+        }
+        Err(_) => {
+            tracing::warn!("{bin} --version did not answer within 30 seconds");
+            return Ok(None);
+        }
+    };
+    let Some(version) = Version::parse(&String::from_utf8_lossy(&out.stdout)) else {
+        return Ok(None);
+    };
+    if version < MIN_VERSION {
+        return Err(format!(
+            "This sandbox has Claude Code {version}, and fctl needs {MIN_VERSION} or later: update it in the image (ghcr.io/hyperstructure/sandbox has the newest)"
+        ));
+    }
+    Ok(Some(version))
+}
+
 pub enum ClaudeOut {
     /// A stream-json message.
     Message(Value),
@@ -105,6 +175,52 @@ pub fn user_settings(project: &ProjectSettings, co_authors: &[GitIdentity]) -> V
         settings["disableClaudeAiConnectors"] = json!(true);
     }
     settings
+}
+
+/// Claude's user settings: the image's own `~/.claude/settings.json`, with
+/// fctl's ([`user_settings`]) over it. fctl decides the permission mode,
+/// `attribution`, `disableClaudeAiConnectors` and the auto-updater, and
+/// drops what could move Claude off the subscription or out of bypass mode:
+/// `apiKeyHelper`, `ANTHROPIC_*` and provider variables in `env` (as
+/// [`project_settings_are_unsafe`] finds them in a repository), and
+/// `permissions.disableBypassPermissionsMode`. Everything else the image
+/// ships stays: plugins and marketplaces, hooks, permission rules, other
+/// variables. A sandbox that resumes merges into what it has.
+pub fn merge_user_settings(image: &Value, ours: &Value) -> Value {
+    let mut merged = match image {
+        Value::Object(o) => o.clone(),
+        _ => serde_json::Map::new(),
+    };
+    for key in ["apiKeyHelper", "attribution", "disableClaudeAiConnectors"] {
+        merged.remove(key);
+    }
+    let mut env = take_object(&mut merged, "env");
+    env.retain(|k, _| !k.starts_with("ANTHROPIC_") && !FORBIDDEN_ENV.contains(&k.as_str()));
+    let mut permissions = take_object(&mut merged, "permissions");
+    permissions.remove("disableBypassPermissionsMode");
+    for (key, value) in ours.as_object().into_iter().flatten() {
+        match (key.as_str(), value) {
+            ("env", Value::Object(o)) => env.extend(o.clone()),
+            ("permissions", Value::Object(o)) => permissions.extend(o.clone()),
+            _ => {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    merged.insert("env".into(), Value::Object(env));
+    merged.insert("permissions".into(), Value::Object(permissions));
+    Value::Object(merged)
+}
+
+/// Removes `key` from `map`: its object, or an empty one.
+fn take_object(
+    map: &mut serde_json::Map<String, Value>,
+    key: &str,
+) -> serde_json::Map<String, Value> {
+    match map.remove(key) {
+        Some(Value::Object(o)) => o,
+        _ => serde_json::Map::new(),
+    }
 }
 
 /// Claude's trailer in commits that credit people too. Claude Code's own
@@ -471,6 +587,65 @@ mod tests {
     }
 
     #[test]
+    fn the_images_settings_stay_under_fctls() {
+        let image = json!({
+            "enabledPlugins": { "rust@acme": true },
+            "extraKnownMarketplaces": { "acme": { "source": { "source": "github", "repo": "acme/plugins" } } },
+            "hooks": { "PostToolUse": [] },
+            "permissions": {
+                "allow": ["Bash(cargo:*)"],
+                "defaultMode": "plan",
+                "disableBypassPermissionsMode": "disable"
+            },
+            "env": {
+                "RUST_LOG": "info",
+                "ANTHROPIC_API_KEY": "sk-ant-x",
+                "ANTHROPIC_BASE_URL": "https://proxy",
+                "CLAUDE_CODE_USE_BEDROCK": "1",
+                "DISABLE_AUTOUPDATER": "0"
+            },
+            "apiKeyHelper": "echo sk-ant-x",
+            "attribution": { "commit": "Made by acme" },
+            "disableClaudeAiConnectors": true,
+            "model": "sonnet"
+        });
+        let s = merge_user_settings(&image, &user_settings(&project(true), &[]));
+        assert_eq!(s["enabledPlugins"], image["enabledPlugins"]);
+        assert_eq!(s["extraKnownMarketplaces"], image["extraKnownMarketplaces"]);
+        assert_eq!(s["hooks"], image["hooks"]);
+        assert_eq!(s["model"], "sonnet");
+        assert_eq!(s["permissions"]["allow"], json!(["Bash(cargo:*)"]));
+        assert_eq!(s["permissions"]["defaultMode"], "bypassPermissions");
+        assert!(
+            s["permissions"]
+                .get("disableBypassPermissionsMode")
+                .is_none()
+        );
+        assert_eq!(
+            s["env"],
+            json!({ "RUST_LOG": "info", "DISABLE_AUTOUPDATER": "1" })
+        );
+        assert!(s.get("apiKeyHelper").is_none());
+        // The project's settings decide credits and connectors.
+        assert_eq!(s["attribution"], json!({ "pr": "" }));
+        assert!(s.get("disableClaudeAiConnectors").is_none());
+        // A resume merges into what the last run wrote: the same again.
+        let again = merge_user_settings(&s, &user_settings(&project(true), &[]));
+        assert_eq!(again, s);
+        // A turned-off setting comes back on once the project says so.
+        let off = merge_user_settings(&s, &user_settings(&project(false), &[]));
+        assert_eq!(off["attribution"]["sessionUrl"], false);
+        let on = merge_user_settings(&off, &user_settings(&project(true), &[]));
+        assert!(on["attribution"].get("sessionUrl").is_none());
+        // No settings, or ones that aren't an object: fctl's alone.
+        for nothing in [Value::Null, json!([1])] {
+            let ours = user_settings(&project(true), &[]);
+            let s = merge_user_settings(&nothing, &ours);
+            assert_eq!(s, ours);
+        }
+    }
+
+    #[test]
     fn user_settings_turn_connectors_off() {
         assert!(
             user_settings(&project(true), &[])
@@ -602,6 +777,54 @@ mod tests {
             r#"{"apiKeyHelper": "echo key"}"#,
         )?;
         assert!(project_settings_are_unsafe(dir.path()).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn reads_claude_codes_version() {
+        assert_eq!(
+            Version::parse("2.1.302 (Claude Code)\n"),
+            Some(Version(2, 1, 302))
+        );
+        assert_eq!(
+            Version::parse("2.1.999 (fake-claude)"),
+            Some(Version(2, 1, 999))
+        );
+        assert_eq!(
+            Version::parse("claude v2.1.101-rc.1"),
+            Some(Version(2, 1, 101))
+        );
+        assert_eq!(Version::parse("Claude Code"), None);
+        assert!(Version(2, 1, 100) < MIN_VERSION && MIN_VERSION < Version(2, 2, 0));
+        assert_eq!(MIN_VERSION.to_string(), "2.1.101");
+    }
+
+    #[tokio::test]
+    async fn sessions_need_a_recent_claude_code() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let claude = |version: &str| -> anyhow::Result<String> {
+            let bin = dir.path().join(format!("claude-{version}"));
+            std::fs::write(&bin, format!("#!/bin/sh\necho '{version} (Claude Code)'\n"))?;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+            Ok(bin.display().to_string())
+        };
+        assert_eq!(
+            check_version(&claude("2.1.302")?).await,
+            Ok(Some(Version(2, 1, 302)))
+        );
+        assert_eq!(
+            check_version(&claude("2.1.90")?).await,
+            Err("This sandbox has Claude Code 2.1.90, and fctl needs 2.1.101 or later: update it in the image (ghcr.io/hyperstructure/sandbox has the newest)".into())
+        );
+        let missing = check_version("fctl-test-no-claude").await;
+        assert!(
+            missing
+                .as_ref()
+                .is_err_and(|e| e.starts_with("This sandbox has no Claude Code")),
+            "{missing:?}"
+        );
+        assert_eq!(check_version(&claude("unknown")?).await, Ok(None));
         Ok(())
     }
 
