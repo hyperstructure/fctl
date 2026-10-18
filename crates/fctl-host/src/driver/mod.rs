@@ -69,6 +69,25 @@ pub struct SandboxInfo {
     pub running: bool,
 }
 
+/// Where the host measures the disk its sandboxes take.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiskSpot {
+    /// A directory on this machine.
+    Dir(PathBuf),
+    /// Inside the Docker daemon's VM, as on macOS: `df` runs in a
+    /// short-lived container there.
+    DockerVm,
+}
+
+impl std::fmt::Display for DiskSpot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dir(dir) => write!(f, "{}", dir.display()),
+            Self::DockerVm => f.write_str("the Docker VM"),
+        }
+    }
+}
+
 /// A byte channel to fctl-agent.
 pub struct AgentIo {
     pub reader: Box<dyn AsyncRead + Unpin + Send>,
@@ -288,6 +307,33 @@ impl Driver {
         match self {
             Self::Container(d) if d.flavor_name() == "docker" => d.resources().await,
             _ => Some(machine()),
+        }
+    }
+
+    /// Where sandboxes keep their files: Apple's `container` its app root,
+    /// Lima its home, Docker its root directory (on macOS inside its VM),
+    /// and the process driver `data_dir`. `None` when the Docker daemon
+    /// doesn't answer.
+    pub async fn disk_spot(&self, data_dir: &Path) -> Option<DiskSpot> {
+        match self {
+            Self::Process(_) => Some(DiskSpot::Dir(data_dir.to_owned())),
+            Self::Container(d) => d.disk_spot(data_dir).await,
+            Self::Lima(_) => Some(DiskSpot::Dir(
+                lima::home()
+                    .filter(|h| h.is_dir())
+                    .unwrap_or_else(|| data_dir.to_owned()),
+            )),
+        }
+    }
+
+    /// Free MiB at `spot`. Inside the Docker VM it runs `df` in a
+    /// short-lived container of the first of `images` that is here. `None`
+    /// when it can't be measured.
+    pub async fn disk_free_mb(&self, spot: &DiskSpot, images: &[String]) -> Option<u64> {
+        match (spot, self) {
+            (DiskSpot::Dir(dir), _) => crate::sysinfo::disk_available_mb(dir).await,
+            (DiskSpot::DockerVm, Self::Container(d)) => d.vm_disk_free_mb(images).await,
+            (DiskSpot::DockerVm, _) => None,
         }
     }
 

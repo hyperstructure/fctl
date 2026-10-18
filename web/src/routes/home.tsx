@@ -18,7 +18,7 @@ import type * as G from "@/gen";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
-import { agoShort, stamp } from "@/lib/format";
+import { agoShort, lowOnDisk, stamp } from "@/lib/format";
 import { useMe, useProjects, useRunners, useSessions } from "@/lib/queries";
 import { statusReason, waitsForYou } from "@/lib/status";
 
@@ -355,6 +355,7 @@ export function Home() {
   );
   const online = onlineRunners.length;
   const draining = onlineRunners.filter((r) => r.drain).length;
+  const lowDisk = onlineRunners.filter((r) => !r.drain && lowOnDisk(r)).length;
   const floor = useRef<FoundryHandle | null>(null);
   // The plan that sessions you start run on.
   const usage = me?.claude.find((c) => c.is_default)?.usage;
@@ -394,6 +395,7 @@ export function Home() {
               {" "}
               · {online} {online === 1 ? "runner" : "runners"} online
               {draining > 0 && `, ${draining} draining`}
+              {lowDisk > 0 && `, ${lowDisk} low on disk`}
             </span>
           </p>
         </div>

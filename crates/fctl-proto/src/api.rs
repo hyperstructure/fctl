@@ -539,6 +539,10 @@ pub struct Runner {
     /// Free memory and disk (MiB) at its last heartbeat, while it is connected.
     pub memory_available_mb: Option<u64>,
     pub disk_available_mb: Option<u64>,
+    /// The free disk (MiB) its host keeps: while `disk_available_mb` is
+    /// below it, no new session starts on it. Absent when it keeps none,
+    /// and from older hosts.
+    pub min_free_disk_mb: Option<u64>,
     /// What it gives each sandbox (absent from older hosts).
     pub sandbox: Option<SandboxLimits>,
     /// The image it gives sessions whose project sets none.

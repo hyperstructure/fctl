@@ -5,9 +5,9 @@ use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
-use fctl_domain::{image, size};
+use fctl_domain::{disk, image, size};
 use fctl_host::config::means_default_image;
-use fctl_host::driver::Driver;
+use fctl_host::driver::{DiskSpot, Driver};
 use fctl_host::{HostConfig, refresh, service};
 use fctl_proto::api::{RunnerDetail, RunnerStatus};
 use std::io::IsTerminal;
@@ -295,18 +295,31 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         HostCmd::Status => {
             let cfg = HostConfig::load()?;
             let (installed, running) = service::status();
-            let sandbox = match Driver::select(&cfg.driver, &cfg.data_dir(), None).await {
-                Ok(d) => Some(cfg.sandbox_limits(d.resources().await)),
-                Err(_) => None,
+            let driver = Driver::select(&cfg.driver, &cfg.data_dir(), None)
+                .await
+                .ok();
+            let (sandbox, (spot, free)) = match &driver {
+                Some(d) => (
+                    Some(cfg.sandbox_limits(d.resources().await)),
+                    disk_here(&cfg, d).await,
+                ),
+                None => (None, (None, None)),
             };
+            let min_free = cfg.min_free_disk_mb();
             // What the control plane says about this runner and its sessions.
             let runner = match runner_api() {
                 Ok(api) => api.this_runner().await.map_err(anyhow::Error::from),
                 Err(e) => Err(e),
             };
             if json {
+                let disk = serde_json::json!({
+                    "at": spot.as_ref().map(DiskSpot::to_string),
+                    "free_mb": free,
+                    "min_free_mb": min_free,
+                    "low": disk::low(free, min_free),
+                });
                 return style::print_json(
-                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
+                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "disk": disk, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
@@ -315,8 +328,11 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             if let Some(l) = &sandbox {
                 println!("sandbox:  {}", size::limits(l));
             }
+            if let Some(spot) = &spot {
+                println!("disk:     {}", disk_line(spot, free, min_free));
+            }
             println!("image:    {}", cfg.image());
-            if let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), None).await {
+            if let Some(d) = &driver {
                 let images = cfg.images(d.uses_images());
                 println!(
                     "images:   {}; {}",
@@ -744,6 +760,35 @@ async fn wait_until_drained(
 }
 
 /// `--memory 8g`: MiB, at least 512.
+/// Where this host's sandboxes keep their files, as the daemon finds it,
+/// and how much is free there.
+async fn disk_here(cfg: &HostConfig, d: &Driver) -> (Option<DiskSpot>, Option<u64>) {
+    let Some(spot) = d.disk_spot(&cfg.data_dir()).await else {
+        return (None, None);
+    };
+    let free = d.disk_free_mb(&spot, &cfg.own_images()).await;
+    (Some(spot), free)
+}
+
+/// `212 GiB free at …, keeps 20 GiB free`, or how far below that it is.
+fn disk_line(spot: &DiskSpot, free: Option<u64>, min_free: Option<u64>) -> String {
+    let Some(free) = free else {
+        return style::dim(&format!("can't measure the free space at {spot}"));
+    };
+    let here = format!("{} free at {spot}", size::memory(free));
+    match min_free {
+        Some(min) if free < min => format!(
+            "{here}, {}",
+            style::amber(&format!(
+                "below the {} it keeps free: it removes stopped sandboxes and takes no new sessions until there is room",
+                size::memory(min)
+            ))
+        ),
+        Some(min) => format!("{here}, keeps {} free", size::memory(min)),
+        None => here,
+    }
+}
+
 fn memory_arg(s: &str) -> std::result::Result<u32, String> {
     match size::parse_memory_mb(s)? {
         mb if mb < 512 => Err("use at least 512 MiB".into()),
@@ -847,6 +892,38 @@ async fn doctor() -> Result<()> {
                 d.name()
             ))
         );
+    }
+    if let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), None).await
+        && let (Some(spot), free) = disk_here(&cfg, &d).await
+    {
+        match (free, cfg.min_free_disk_mb()) {
+            (Some(free), Some(min)) => {
+                let low = free < min;
+                let (free, min) = (size::memory(free), size::memory(min));
+                check(
+                    !low,
+                    &if low {
+                        format!("disk: {free} free at {spot}, below the {min} it keeps free")
+                    } else {
+                        format!("disk: {free} free at {spot}, keeps {min} free")
+                    },
+                    "free some space there, or lower min_free_disk_gb in host.toml; until then the host takes no new sessions",
+                );
+            }
+            (Some(_), None) => println!(
+                "{} {}",
+                style::dim("·"),
+                style::dim(&format!(
+                    "disk: {} (min_free_disk_gb = 0)",
+                    disk_line(&spot, free, None)
+                ))
+            ),
+            (None, _) => println!(
+                "{} {}",
+                style::dim("·"),
+                style::dim(&format!("disk: can't measure the free space at {spot}"))
+            ),
+        }
     }
     let (installed, running) = service::status();
     check(

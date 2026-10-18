@@ -185,6 +185,9 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 if let Some(d) = drain_line(&r) {
                     println!("  {}", style::dim(&d));
                 }
+                if let Some(d) = low_disk_line(&r) {
+                    println!("  {}", style::amber(&d));
+                }
                 if let Some(l) = &r.sandbox {
                     println!(
                         "  {}",
@@ -318,6 +321,19 @@ pub(crate) fn drain_line(r: &Runner) -> Option<String> {
         "{who} started draining it {}: {left}",
         style::ago(d.since)
     ))
+}
+
+/// Why no new session starts on a runner whose disk is low:
+/// `12.3 GiB of disk free, below the 20 GiB it keeps free: no new sessions
+/// start on it`.
+pub(crate) fn low_disk_line(r: &Runner) -> Option<String> {
+    let (free, min) = (r.disk_available_mb?, r.min_free_disk_mb?);
+    (free < min).then(|| {
+        format!(
+            "{}: no new sessions start on it",
+            fctl_domain::disk::below(free, min)
+        )
+    })
 }
 
 /// What a drain leaves running, and what happens to it.

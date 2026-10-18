@@ -18,6 +18,10 @@ pub struct Slot<'a> {
     /// It drains: no new session starts on it, but the sessions whose
     /// sandboxes it has still resume there.
     pub draining: bool,
+    /// Its disk is below the free space it keeps ([`crate::disk`]): as
+    /// while it drains, only the sessions whose sandboxes it has start on
+    /// it, since they need no new one.
+    pub low_disk: bool,
     /// The images it runs and builds.
     pub images: HostImages<'a>,
 }
@@ -45,6 +49,9 @@ pub enum Wait {
     Home { name: String },
     /// Every online runner that could take it drains.
     Draining,
+    /// Every online runner that could take it is low on disk, or drains
+    /// (`draining`: some do).
+    LowDisk { draining: bool },
     /// No online runner gives a sandbox this many CPUs or this much memory.
     TooBig {
         /// The part of its size no runner gives (`None`: some runner gives it).
@@ -68,6 +75,12 @@ impl Wait {
             Self::NoRunner | Self::Busy => "Waiting for a runner".into(),
             Self::Home { name } => format!("Waiting for {name}, which has this session's sandbox"),
             Self::Draining => "Waiting for a runner: the ones online are draining".into(),
+            Self::LowDisk { draining: false } => {
+                "Waiting for a runner: the ones online are low on disk".into()
+            }
+            Self::LowDisk { draining: true } => {
+                "Waiting for a runner: the ones online are draining or low on disk".into()
+            }
             Self::TooBig {
                 cpus,
                 memory_mb,
@@ -125,9 +138,9 @@ fn parts(cpus: Option<u32>, memory_mb: Option<u32>, memory_suffix: &str) -> Stri
 /// the size it wants. Ties go to the runner listed first.
 ///
 /// A session's `home` comes first when it is online and could take it, also
-/// while it drains: with a free slot it gets the session, and without one
-/// the session waits for it if `home.wait` says so. Other runners that drain
-/// take no sessions.
+/// while it drains or is low on disk: with a free slot it gets the session,
+/// and without one the session waits for it if `home.wait` says so. Other
+/// runners that drain or are low on disk take no sessions.
 pub fn pick<'a>(
     slots: &'a [Slot<'a>],
     required_labels: &[String],
@@ -165,9 +178,18 @@ pub fn pick<'a>(
             });
         }
     }
-    let open: Vec<&Slot> = online.iter().copied().filter(|s| !s.draining).collect();
+    let open: Vec<&Slot> = online
+        .iter()
+        .copied()
+        .filter(|s| !s.draining && !s.low_disk)
+        .collect();
     if open.is_empty() {
-        return Err(Wait::Draining);
+        let draining = online.iter().any(|s| s.draining);
+        return Err(if online.iter().all(|s| s.draining) {
+            Wait::Draining
+        } else {
+            Wait::LowDisk { draining }
+        });
     }
     let fitting: Vec<&Slot> = open
         .iter()
@@ -222,6 +244,7 @@ mod tests {
             labels,
             sandbox: None,
             draining: false,
+            low_disk: false,
             images: HostImages::default(),
         }
     }
@@ -520,6 +543,57 @@ mod tests {
         assert_eq!(
             Wait::Draining.reason(),
             "Waiting for a runner: the ones online are draining"
+        );
+    }
+
+    #[test]
+    fn a_runner_low_on_disk_takes_only_resumes_of_its_own_sessions() {
+        let none: Vec<String> = vec![];
+        let slots = [
+            Slot {
+                low_disk: true,
+                ..slot("studio", 4, 0, &none)
+            },
+            slot("laptop", 1, 0, &none),
+        ];
+        let any = Want::default();
+        let new = |slots: &[Slot]| {
+            pick(slots, &[], any, &ImageWant::Default, None)
+                .map(|s| s.id.to_owned())
+                .map_err(|w| w.reason())
+        };
+        // Emptier, but low on disk: new sessions go elsewhere.
+        assert_eq!(new(&slots), Ok("laptop".into()));
+        // A resume goes back to its sandbox there, which needs no new one.
+        assert_eq!(
+            pick(&slots, &[], any, &ImageWant::Default, home("studio", true)).map(|s| s.id),
+            Ok("studio")
+        );
+        // With no other runner, a new session waits and says why.
+        assert_eq!(
+            new(&slots[..1]),
+            Err("Waiting for a runner: the ones online are low on disk".into())
+        );
+        // One low on disk and one draining.
+        let closed = [
+            slots[0].clone(),
+            Slot {
+                draining: true,
+                ..slots[1].clone()
+            },
+        ];
+        assert_eq!(
+            new(&closed),
+            Err("Waiting for a runner: the ones online are draining or low on disk".into())
+        );
+        // One that drains and is low on disk too counts as draining.
+        let both = [Slot {
+            draining: true,
+            ..slots[0].clone()
+        }];
+        assert_eq!(
+            new(&both),
+            Err("Waiting for a runner: the ones online are draining".into())
         );
     }
 

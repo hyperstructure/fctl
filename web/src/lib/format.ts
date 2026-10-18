@@ -69,6 +69,18 @@ export function sandboxLimits(l: G.SandboxLimits): string {
   return `${cpus(l.default.cpus)} and ${mem(l.default.memory_mb)} by default, at most ${cpus(l.max.cpus)} and ${mem(l.max.memory_mb)}`;
 }
 
+/** Whether a runner's free disk is below what its host keeps: no new session starts on it then. */
+export function lowOnDisk(r: Pick<G.Runner, "disk_available_mb" | "min_free_disk_mb">): boolean {
+  return (
+    r.disk_available_mb != null && r.min_free_disk_mb != null && r.disk_available_mb < r.min_free_disk_mb
+  );
+}
+
+/** "12.3 GiB of disk free, below the 20 GiB it keeps free", as the CLI says it. */
+export function diskBelow(freeMb: number, minFreeMb: number): string {
+  return `${memory(freeMb)} of disk free, below the ${memory(minFreeMb)} it keeps free`;
+}
+
 /** A day as the locale writes it, without the year: "17 Nov", "Nov 17". */
 export function day(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });

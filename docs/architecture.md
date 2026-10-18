@@ -150,9 +150,9 @@ queued → provisioning → preparing → running ⇄ idle → stopped
 ```
 
 1. `POST /api/v1/projects/{id}/sessions` creates the row and asks FleetDO to
-   schedule it, on a runner that runs or builds its project's image and
-   gives its sandbox the size it asks for. Without a free one it stays
-   `queued`, and says why.
+   schedule it, on a runner that runs or builds its project's image, gives
+   its sandbox the size it asks for and has the free disk its host keeps.
+   Without a free one it stays `queued`, and says why.
 2. FleetDO builds the `SessionSpec` just in time (repositories, branch, agent
    settings, secrets, fresh GitHub installation tokens, the starter's Claude
    credential) and sends `start_session` to a runner.
@@ -230,11 +230,12 @@ a new conversation from the session's task.
 
 ### Draining a runner
 
-A runner that drains takes no new sessions, and the sessions it has carry
-on there, so that it can be taken out of rotation (for maintenance, or a
-disk that fills up) without dropping anything. Admins drain one from the
-runners list or with `fctl admin drain`; its host drains itself with
-`fctl host drain`, using the runner token
+A runner that drains takes no new sessions, and the sessions it has carry on
+there, so that it can be taken out of rotation (for maintenance) without
+dropping anything. A host whose disk runs low takes no new sessions by
+itself, without a drain ([Sandboxes and drivers](#sandboxes-and-drivers)).
+Admins drain one from the runners list or with `fctl admin drain`; its host
+drains itself with `fctl host drain`, using the runner token
 (`POST /api/v1/runner/drain`). Both set the same state, kept in FleetDO's
 storage with who started the drain and when, and either can end it.
 
@@ -682,9 +683,32 @@ A stopped session keeps its sandbox, so resuming it on the same host
 continues Claude's conversation ([Idle sessions](#idle-sessions)). The host
 records when each one stopped (`stopped.json` in its data directory) and
 removes those stopped for longer than `keep_stopped_hours`
-(`crates/fctl-host/src/expiry.rs`). Resuming one of those, or resuming on
-another host, creates a new sandbox on the session's branch: the agent finds
-no conversation to resume, so Claude starts a new one with the session's
+(`crates/fctl-host/src/expiry.rs`), when it starts and every hour.
+
+It also keeps `min_free_disk_gb` free on the disk where the sandboxes'
+files are: Apple's `container` app root (from `container system status`),
+Lima's home, Docker's root directory, or with Docker on macOS the disk in
+its VM, where `df` runs in a short-lived container of the host's image, and
+the data directory with the process driver. It measures every 30 seconds
+(in Docker's VM every five minutes). Below the floor:
+
+- The sweep removes the other stopped sandboxes too, those stopped longest
+  first, one at a time, and measures after each, so that it stops once
+  there is room. A session that starts in one meanwhile keeps it.
+- The host takes no new sessions, only resumes of the sessions whose
+  sandboxes it has. Its hello carries the floor (`HostHello.min_free_disk_mb`),
+  and FleetDO compares it with each heartbeat's `disk_available_mb`: a
+  runner below it gets resumes into its sandboxes, as while it drains, and
+  no other session (`fctl_domain::disk`, `schedule::pick`). The host refuses
+  the others itself, for a control plane that hasn't had its heartbeat yet.
+  Unlike a drain, it stops no idle sessions early, and it ends when there is
+  room again ([ADR 0019](adr/0019-hosts-make-room-when-their-disk-runs-low.md)).
+
+Older hosts send no floor and remove sandboxes by age only.
+
+Resuming a session whose sandbox is gone, or resuming on another host,
+creates a new sandbox on the session's branch: the agent finds no
+conversation to resume, so Claude starts a new one with the session's
 original task, and the agent numbers its events after the ones the control
 plane already has (`first_agent_seq`).
 
