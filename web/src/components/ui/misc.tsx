@@ -9,17 +9,8 @@ export function Logo({ className, withWord = true }: { className?: string; withW
   return (
     <span className={cn("inline-flex items-center gap-2", className)}>
       <svg viewBox={mark.viewBox} className="size-[22px]" aria-hidden="true">
-        <rect width="32" height="32" rx={mark.radius} fill={mark.background} />
-        <rect
-          x="0.5"
-          y="0.5"
-          width="31"
-          height="31"
-          rx={mark.radius - 0.5}
-          fill="none"
-          stroke="rgb(250 250 250 / 0.12)"
-        />
-        <path d={mark.path} fill={mark.foreground} />
+        <rect width="256" height="256" rx={mark.radius} fill={mark.background} />
+        <path d={mark.path} fill={mark.foreground} fillRule="evenodd" />
       </svg>
       {withWord && <span className="font-semibold tracking-[-0.02em] text-ink text-[15px]">fctl</span>}
     </span>

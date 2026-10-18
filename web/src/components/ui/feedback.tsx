@@ -110,7 +110,7 @@ export function Toaster() {
   useEffect(() => () => listeners.clear(), []);
   return (
     <div
-      className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col items-end gap-2"
+      className="pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col items-end gap-2"
       aria-live="polite"
     >
       {list.map((t) => (

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <title>fctl</title>
+    <!-- Shown by sw.js when a page cannot load offline: self-contained, no scripts. -->
+    <style>
+      :root {
+        --canvas: #171717;
+        --ink: #fafafa;
+        --ink-3: #8d8d8d;
+        --highlight: #ffff5d;
+        --highlight-ink: #171717;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --canvas: #fafafa;
+          --ink: #171717;
+          --ink-3: #6b6b6b;
+          --highlight: #eaff81;
+        }
+      }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        box-sizing: border-box;
+        background: var(--canvas);
+        color: var(--ink);
+        font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 22px;
+        letter-spacing: -0.02em;
+      }
+      p {
+        margin: 0 auto 20px;
+        max-width: 36ch;
+        color: var(--ink-3);
+      }
+      a {
+        display: inline-block;
+        padding: 7px 14px;
+        border-radius: 9px;
+        background: var(--highlight);
+        color: var(--highlight-ink);
+        font-weight: 600;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>You're offline</h1>
+      <p>fctl needs a connection to show your sessions. Agents keep working on their hosts in the meantime.</p>
+      <a href="">Try again</a>
+    </main>
+  </body>
+</html>

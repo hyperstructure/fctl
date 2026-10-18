@@ -270,7 +270,7 @@ export function SessionPage() {
         </div>
 
         {/* Composer */}
-        <div className="sticky bottom-0 z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-5">
+        <div className="sticky bottom-0 z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto w-full max-w-[760px] px-6">
             <Composer
               status={status}
