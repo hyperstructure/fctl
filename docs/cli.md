@@ -82,6 +82,7 @@ fctl projects create "New thing" --new-repo new-thing --public
 fctl projects create "Site" --repo my-org/site --no-connectors   # no claude.ai connectors in its sessions
 fctl projects set -p my-app --credit-claude off   # no Claude trailer in its commits
 fctl projects set -p my-app --credit-people off   # no trailers for the people who start sessions
+fctl projects set -p my-app --idle-timeout 30     # idle sessions keep their sandbox 30 minutes (default 10)
 fctl projects use my-app
 fctl projects delete my-app            # with its sessions; asks you to type the slug
 ```
