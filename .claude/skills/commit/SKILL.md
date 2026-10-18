@@ -73,12 +73,18 @@ A link to the fctl session that made the change is welcome.
 4. Open the pull request: a conventional title, a description, one
    change. Split unrelated work into separate pull requests.
 5. Wait for CI and answer the review: the `pull-requests` skill.
-6. A person merges it (squash) when CI is green, unless they asked you to
-   merge it yourself.
+6. A person merges it (squash) when CI is green. `main` takes a pull
+   request only once a code owner who didn't push its last commit
+   approves it, so you can merge only one a person approved, when they
+   ask you to.
 
 Never push to `main` directly: it is what releases are made from. The
 only pushes to `main` are the Release workflow's release commits and
-fctl.sh's docs pins (in hyperstructure/fctl-site).
+fctl.sh's docs pins (in hyperstructure/fctl-site), made with deploy keys.
+Rulesets refuse any other push, and any pull request without passing
+checks (`cargo xtask check`, `cargo xtask dev --smoke`, `Conventional
+Commits`): `.github/rulesets/`, and
+[ADR 0021](../../../docs/adr/0021-rulesets-protect-main-and-release-tags.md).
 
 Never commit secrets: keys, tokens, `.dev.vars`, `*.pem`, Cloudflare
 credentials. Check `git status` before committing.

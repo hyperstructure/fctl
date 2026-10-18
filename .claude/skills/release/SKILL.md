@@ -7,8 +7,8 @@ description: Release a new version of fctl through the Release workflow, which p
 
 Releases are made from `main` by the **Release** workflow
 (`.github/workflows/release.yml`). Never edit the version, write
-CHANGELOG.md or push tags by hand: the workflow does all three, and tags
-pushed by hand publish nothing.
+CHANGELOG.md or push tags by hand: the workflow does all three, and a
+ruleset lets only its deploy key create `v*` tags.
 
 Starting the workflow needs write access to Actions. Agents in fctl
 sessions have read access only, so if you are one, ask a person to start
@@ -25,7 +25,9 @@ it (or to give you access) and stop there.
   cargo xtask release --dry-run
   ```
 
-  or run the workflow with `dry_run`; its summary shows the same. The
+  or run the workflow with `dry_run` from `main` (every run starts from
+  `main`: its jobs use the production environment); its summary shows the
+  same. The
   version follows the commits since the last tag: a breaking change bumps
   the minor version (the major one from 1.0), a `feat` the minor version,
   anything else the patch. Override it only for a reason, with
@@ -48,16 +50,18 @@ It runs in three steps:
 
 1. **Version and notes**: `cargo xtask release` sets the version in
    `Cargo.toml` and `Cargo.lock`, adds the notes to `CHANGELOG.md`, commits
-   `chore(release): vX.Y.Z`, tags it, and pushes both to `main` at once (a
-   `main` that moved meanwhile rejects the push; start it again).
+   `chore(release): vX.Y.Z`, tags it, and pushes both to `main` at once
+   with `RELEASE_DEPLOY_KEY`, the deploy key that the rulesets on `main`
+   and `v*` tags let through (a `main` that moved meanwhile rejects the
+   push; start it again). Like any push to `main`, that starts CI, which
+   redeploys app.fctl.sh.
 2. **Build**: a job for each binary, all at once (`cargo xtask dist
    build`): fctl for macOS and Linux (arm64 and x86_64) and the Linux
    agents.
 3. **Publish**: makes the archives from those binaries (`cargo xtask dist
    package`), creates the GitHub release with the notes, publishes the
-   files to https://fctl.sh/releases (moving `latest`), installs it with
-   the installer as a check, and starts CI on `main`, which redeploys
-   app.fctl.sh.
+   files to https://fctl.sh/releases (moving `latest`), and installs it
+   with the installer as a check.
 
 Within the hour, the Image workflow of
 [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox) finds

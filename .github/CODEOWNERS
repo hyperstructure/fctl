@@ -1,0 +1,5 @@
+# Every change to main needs an approval from a code owner who did not push
+# its last commit (the ruleset in .github/rulesets/main.json; docs/adr/0021).
+# Agents in fctl sessions push and review as fctl-sh[bot], which cannot be a
+# code owner, so they cannot approve their own changes or anyone else's.
+* @kalaspuff
