@@ -2,6 +2,18 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.7.0 (2026-10-18)
+
+### Fixes
+
+- **control:** Let sessions carry on when their runner comes back ([#94](https://github.com/hyperstructure/fctl/pull/94))
+
+### Other changes
+
+- Keep production secrets in the production environment ([#95](https://github.com/hyperstructure/fctl/pull/95))
+- Drop the design deploy key now that the repositories are public ([#96](https://github.com/hyperstructure/fctl/pull/96))
+- Protect main with rulesets and push releases with a deploy key ([#97](https://github.com/hyperstructure/fctl/pull/97))
+
 ## 0.6.0 (2026-10-18)
 
 ### Features
