@@ -165,7 +165,7 @@ jobs:
           docker buildx create --name fctl --driver docker-container --use >/dev/null
           if [ "$PUSH" = yes ]; then
             echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null
-            output="type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true"
+            output="type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true"
           else
             output="type=docker,name=fctl-agent:check"
           fi

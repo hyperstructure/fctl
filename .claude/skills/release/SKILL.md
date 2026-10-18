@@ -53,9 +53,8 @@ It runs two jobs:
 2. **Build and publish**: builds fctl for macOS and Linux (arm64 and
    x86_64) and the Linux agents, creates the GitHub release with the
    notes, publishes the files to https://fctl.sh/releases (moving
-   `latest`), installs it with the installer as a check, starts the
-   **Image** workflow, and starts CI on `main`, which redeploys
-   app.fctl.sh.
+   `latest`), installs it with the installer as a check, starts CI on
+   `main`, which redeploys app.fctl.sh, and starts the **Image** workflow.
 
 The Image workflow (`.github/workflows/image.yml`) builds the release's
 sandbox image from its tag, for arm64 and amd64, and publishes it as
