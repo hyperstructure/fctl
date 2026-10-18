@@ -118,16 +118,18 @@ from GitHub at the tag `web/package.json` pins, without signing in.
   it. Types, scopes, breaking changes and the flow:
   [.claude/skills/commit/SKILL.md](.claude/skills/commit/SKILL.md).
 - One focused change per pull request; update docs in the same change when
-  behavior changes. A person merges agents' pull requests unless they ask
-  the agent to.
+  behavior changes. A person merges agents' pull requests: `main` takes a
+  pull request only once a code owner who didn't push its last commit
+  approves it, so agents cannot merge their own.
 - A pull request that changes how fctl looks shows it with screenshots in
   its description: before and after when it changes something that exists,
   after alone when it adds something. When a later commit changes what a
   screenshot shows, replace it. Attach them with `gh pr edit --attach`;
   never commit them. How:
   [.claude/skills/screenshots/SKILL.md](.claude/skills/screenshots/SKILL.md).
-- Never push to `main` directly. Only the Release workflow does (its
-  release commits).
+- Never push to `main` directly: its ruleset refuses it. Only the Release
+  workflow does (its release commits), with a deploy key the ruleset lets
+  through ([ADR 0021](docs/adr/0021-rulesets-protect-main-and-release-tags.md)).
 - Releases are made by the Release workflow from those commits: version,
   CHANGELOG.md, notes, archives on fctl.sh, the redeploy. It needs write
   access to Actions:

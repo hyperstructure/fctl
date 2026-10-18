@@ -1,16 +1,20 @@
-# Releases fctl. Start it from Actions → Release → Run workflow, or
-# `gh workflow run release.yml -f bump=auto` (see .claude/skills/release).
+# Releases fctl. Start it from main: Actions → Release → Run workflow, or
+# `gh workflow run release.yml --ref main -f bump=auto` (see .claude/skills/release).
 #
 # "Version and notes" picks the next version from the Conventional Commits
 # since the last tag (`cargo xtask release`), writes CHANGELOG.md and the
-# version, and pushes the release commit and tag to main. The "Build" jobs
-# then cross-compile the release binaries, all at once (`cargo xtask dist
-# build`), and "Publish" makes the archives from them, makes the GitHub
-# release with the notes, publishes to https://fctl.sh/releases and starts CI
-# on main, which redeploys app.fctl.sh. Within the hour, hyperstructure/sandbox
-# publishes the release's sandbox image, ghcr.io/hyperstructure/sandbox:<version>.
+# version, and pushes the release commit and tag to main with
+# RELEASE_DEPLOY_KEY, the deploy key that the rulesets on main and on v* tags
+# let through (docs/adr/0021). Like any push to main, that starts CI, which
+# redeploys app.fctl.sh. The "Build" jobs then cross-compile the release
+# binaries, all at once (`cargo xtask dist build`), and "Publish" makes the
+# archives from them, makes the GitHub release with the notes and publishes to
+# https://fctl.sh/releases. Within the hour, hyperstructure/sandbox publishes
+# the release's sandbox image, ghcr.io/hyperstructure/sandbox:<version>.
 # `tag` rebuilds an existing release tag from main; `dry_run` only shows what
-# would ship. Tags pushed by hand do not publish anything: starting this
+# would ship. Every run starts from main, a dry run too: its jobs use the
+# production environment, which only main may use. Tags pushed by hand
+# publish nothing: only the deploy key may create v* tags, and starting this
 # workflow takes write access to Actions, which agents running in fctl
 # sessions do not have.
 name: Release
@@ -33,8 +37,6 @@ on:
 
 permissions:
   contents: write
-  # Starting CI on main after the release commit (it redeploys app.fctl.sh).
-  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -49,6 +51,9 @@ jobs:
     name: Version and notes
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # RELEASE_DEPLOY_KEY is a secret of the production environment, which only
+    # main may use.
+    environment: production
     outputs:
       tag: ${{ steps.release.outputs.tag }}
     steps:
@@ -56,6 +61,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          # Over SSH with the deploy key: main's ruleset lets its push below
+          # through, and refuses GITHUB_TOKEN's.
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -78,7 +86,7 @@ jobs:
             exit 0
           fi
           if [ "$GITHUB_REF" != refs/heads/main ]; then
-            echo "::error::Releases are made from main (this run is on $GITHUB_REF_NAME); a dry run works anywhere."
+            echo "::error::Releases are made from main (this run is on $GITHUB_REF_NAME)."
             exit 1
           fi
           git config user.name "fctl-sh[bot]"
@@ -207,9 +215,3 @@ jobs:
           test "$(curl -fsS https://fctl.sh/releases/latest)" = "${TAG#v}"
           curl -fsSL https://fctl.sh/install | FCTL_INSTALL_DIR="$RUNNER_TEMP/bin" sh
           "$RUNNER_TEMP/bin/fctl" --version
-      - name: Redeploy app.fctl.sh on the release commit
-        if: inputs.tag == ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        # Pushes made with this workflow's token start no workflows; a dispatch does.
-        run: gh workflow run ci.yml --ref main

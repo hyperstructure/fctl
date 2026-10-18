@@ -209,11 +209,12 @@ Releases come from `main` through the **Release** workflow: Actions →
 Release → Run workflow, or `gh workflow run release.yml --ref main -f
 bump=auto`. It picks the version from the Conventional Commits since the
 last tag, adds the notes to `CHANGELOG.md`, pushes the release commit and
-tag, builds the binaries in parallel jobs (`cargo xtask dist build`: fctl
-for macOS and Linux on arm64 and x86_64, and the Linux agents), makes the
-archives from them (`cargo xtask dist package`), creates the GitHub release
-with the notes, publishes to `https://fctl.sh/releases` (`cargo xtask
-publish --latest`) and redeploys app.fctl.sh. Within the hour,
+tag with a deploy key (which starts CI on `main`, so app.fctl.sh
+redeploys), builds the binaries in parallel jobs (`cargo xtask dist build`:
+fctl for macOS and Linux on arm64 and x86_64, and the Linux agents), makes
+the archives from them (`cargo xtask dist package`), creates the GitHub
+release with the notes and publishes to `https://fctl.sh/releases`
+(`cargo xtask publish --latest`). Within the hour,
 [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox), where
 the default sandbox image lives, publishes the release's image to
 `ghcr.io/hyperstructure/sandbox`: its Image workflow looks for new releases
@@ -237,10 +238,13 @@ build <fctl|fctl-agent> --target <triple>` for each binary, into
 ## Deploying
 
 `main` deploys `app.fctl.sh` from CI (fctl.sh deploys from
-hyperstructure/fctl-site). The jobs that deploy, publish releases or pin
-fctl.sh's docs run in the `production` environment, which holds their
-secrets (the Cloudflare token, the fctl-site deploy key) and which only
-`main` may use, so workflows on other branches cannot read them. By hand:
+hyperstructure/fctl-site). The jobs that deploy, make and publish releases
+or pin fctl.sh's docs run in the `production` environment, which holds
+their secrets (the Cloudflare token, and the deploy keys that push release
+commits here and docs pins to fctl-site) and which only `main` may use, so
+workflows on other branches cannot read them. Rulesets keep everything else
+off `main` and off the `v*` tags
+([ADR 0021](adr/0021-rulesets-protect-main-and-release-tags.md)). By hand:
 
 ```sh
 cargo xtask deploy fctl-sh
