@@ -23,8 +23,8 @@ this. This record covers the choices made in building it.
 ## Decision
 
 - **Host owners list what runs.** `allowed_images` in `host.toml` holds
-  references (no tag: any tag; a tag; or a digest, which the project's
-  reference must name too) and prefixes ending in `/*`. `allowed_builds`
+  references (no tag: any tag; a tag, unpinned; or a digest, which the
+  project's reference must name too) and prefixes ending in `/*`. `allowed_builds`
   holds GitHub repositories, `owner/name` or `owner/*`. The host's own
   image always runs. Unset, `allowed_images` allows any image, as hosts did
   before it, and `allowed_builds` allows no builds.
@@ -47,8 +47,9 @@ this. This record covers the choices made in building it.
   git tree of the context, and builds only when no image has their hash.
   It builds one image at a time, within `build_timeout_minutes`, removes
   an image over `max_build_mb`, keeps each project's newest build, and
-  starts from the last build while GitHub can't be reached. Builds run in
-  the container runtime's builder with no secrets. The session's GitHub
+  starts from the last build of the same setting while GitHub can't be
+  reached. Builds run in the container runtime's builder with no secrets,
+  from the Dockerfile's text as GitHub sends it. The session's GitHub
   token reads the repository on the host and never enters the build.
 - **Registries use the host's own login.** fctl stores and sends no
   registry credentials. Passing them from project secrets is left for a

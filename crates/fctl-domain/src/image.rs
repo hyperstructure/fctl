@@ -18,7 +18,7 @@ pub fn means_default(image: &str) -> bool {
 /// `docker.io/library/ubuntu`, at the tag `latest`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageRef {
-    /// The registry and the repository in it, lowercase:
+    /// The registry, lowercase, and the repository in it:
     /// `ghcr.io/acme/agent`.
     pub name: String,
     /// Absent when the reference names none: `latest`, unless it names a
@@ -29,6 +29,8 @@ pub struct ImageRef {
 }
 
 impl ImageRef {
+    /// Parses a reference by Docker's grammar, refusing what Docker refuses
+    /// (a repository with uppercase letters, a digest of the wrong length).
     pub fn parse(reference: &str) -> Option<Self> {
         let s = reference.trim();
         if s.is_empty() || s.len() > 255 || s.chars().any(|c| c.is_whitespace() || c.is_control()) {
@@ -59,7 +61,7 @@ impl ImageRef {
         Some(Self {
             name,
             tag: tag.map(str::to_owned),
-            digest: digest.map(str::to_ascii_lowercase),
+            digest: digest.map(str::to_owned),
         })
     }
 
@@ -80,17 +82,27 @@ impl ImageRef {
     }
 }
 
-/// `sha256:` and 64 hex digits (or another algorithm and its digits).
+/// An algorithm and its hex digits, in lowercase: 64 for `sha256`, 96 for
+/// `sha384`, 128 for `sha512`, at least 32 for others.
 fn valid_digest(d: &str) -> bool {
     let Some((algorithm, hex)) = d.split_once(':') else {
         return false;
     };
-    !algorithm.is_empty()
-        && algorithm
+    let algorithm_ok = algorithm.split(['+', '.', '_', '-']).all(|part| {
+        part.starts_with(|c: char| c.is_ascii_alphabetic())
+            && part.bytes().all(|b| b.is_ascii_alphanumeric())
+    });
+    let length_ok = match algorithm {
+        "sha256" => hex.len() == 64,
+        "sha384" => hex.len() == 96,
+        "sha512" => hex.len() == 128,
+        _ => hex.len() >= 32,
+    };
+    algorithm_ok
+        && length_ok
+        && hex
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"+._-".contains(&b))
-        && hex.len() >= 32
-        && hex.bytes().all(|b| b.is_ascii_hexdigit())
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn valid_tag(t: &str) -> bool {
@@ -101,37 +113,97 @@ fn valid_tag(t: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
 }
 
+/// Whether Docker reads the first part of a name as a registry: it has a dot
+/// or a colon, is `localhost`, or has an uppercase letter.
+fn is_registry(first: &str) -> bool {
+    first.contains(['.', ':'])
+        || first == "localhost"
+        || first.chars().any(|c| c.is_ascii_uppercase())
+}
+
+/// A registry's host and port, lowercase; `index.docker.io` is Docker Hub's
+/// `docker.io`. `None` when it isn't a host name or an IP address.
+fn registry(part: &str) -> Option<String> {
+    let (host, port) = match part.rsplit_once(':') {
+        Some((host, port)) if !host.ends_with(':') => (host, Some(port)),
+        _ => (part, None),
+    };
+    if port.is_some_and(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    let host_ok = match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        Some(v6) => !v6.is_empty() && v6.bytes().all(|b| b.is_ascii_hexdigit() || b == b':'),
+        None => host.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        }),
+    };
+    if !host_ok {
+        return None;
+    }
+    let full = match port {
+        Some(p) => format!("{}:{p}", host.to_ascii_lowercase()),
+        None => host.to_ascii_lowercase(),
+    };
+    Some(if full == "index.docker.io" {
+        "docker.io".to_owned()
+    } else {
+        full
+    })
+}
+
+/// A part of a repository's path as Docker allows it: lowercase letters and
+/// digits, separated by one `.`, one or two `_`, or `-`s.
+fn valid_component(c: &str) -> bool {
+    let b = c.as_bytes();
+    let alnum = |x: u8| x.is_ascii_lowercase() || x.is_ascii_digit();
+    let (Some(&first), Some(&last)) = (b.first(), b.last()) else {
+        return false;
+    };
+    if !alnum(first) || !alnum(last) {
+        return false;
+    }
+    let mut i = 0;
+    while i < b.len() {
+        if alnum(b[i]) {
+            i += 1;
+            continue;
+        }
+        match b[i] {
+            b'.' => i += 1,
+            b'_' => i += if b.get(i + 1) == Some(&b'_') { 2 } else { 1 },
+            b'-' => {
+                while b.get(i) == Some(&b'-') {
+                    i += 1;
+                }
+            }
+            _ => return false,
+        }
+        if !b.get(i).is_some_and(|&x| alnum(x)) {
+            return false;
+        }
+    }
+    true
+}
+
 /// `registry/path` for a repository as written: Docker Hub's when the first
-/// part names no registry (no dot, colon or `localhost`), and its official
-/// images under `library/`.
+/// part names no registry, and its official images under `library/`.
 fn full_name(path: &str) -> Option<String> {
     let (registry, repo) = match path.split_once('/') {
-        Some((first, rest))
-            if first.contains('.') || first.contains(':') || first == "localhost" =>
-        {
-            (first.to_ascii_lowercase(), rest)
-        }
+        Some((first, rest)) if is_registry(first) => (registry(first)?, rest),
         _ => ("docker.io".to_owned(), path),
     };
-    let registry = match registry.as_str() {
-        "index.docker.io" | "registry-1.docker.io" => "docker.io".to_owned(),
-        _ => registry,
-    };
-    let repo = repo.to_ascii_lowercase();
-    let component_ok = |c: &str| {
-        !c.is_empty()
-            && c.bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
-            && c.starts_with(|ch: char| ch.is_ascii_alphanumeric())
-            && c.ends_with(|ch: char| ch.is_ascii_alphanumeric())
-    };
-    if !repo.split('/').all(component_ok) {
+    if !repo.split('/').all(valid_component) {
         return None;
     }
     let repo = if registry == "docker.io" && !repo.contains('/') {
         format!("library/{repo}")
     } else {
-        repo
+        repo.to_owned()
     };
     Some(format!("{registry}/{repo}"))
 }
@@ -157,24 +229,30 @@ pub fn check_image_pattern(pattern: &str) -> Option<String> {
         .then(|| format!("`{p}` is not an image reference"))
 }
 
-/// `ghcr.io/acme` from `ghcr.io/acme`; `docker.io/acme` from `acme`.
+/// What a prefix entry covers: `ghcr.io/acme` from `ghcr.io/acme`, Docker
+/// Hub's `docker.io/acme` from `acme`, `docker.io/library` from
+/// `docker.io/library`, and a registry alone (`ghcr.io`).
 fn full_prefix(prefix: &str) -> Option<String> {
     let prefix = prefix.trim().trim_end_matches('/');
     if prefix.is_empty() {
         return None;
     }
-    // A bare registry: `ghcr.io/*`, `localhost:5000/*`.
-    if !prefix.contains('/')
-        && (prefix.contains('.') || prefix.contains(':') || prefix == "localhost")
-    {
-        return Some(prefix.to_ascii_lowercase());
+    let (first, rest) = match prefix.split_once('/') {
+        Some((first, rest)) => (first, Some(rest)),
+        None => (prefix, None),
+    };
+    let (registry, path) = if is_registry(first) {
+        (registry(first)?, rest)
+    } else {
+        ("docker.io".to_owned(), Some(prefix))
+    };
+    match path {
+        None => Some(registry),
+        Some(path) => path
+            .split('/')
+            .all(valid_component)
+            .then(|| format!("{registry}/{path}")),
     }
-    let name = full_name(prefix)?;
-    // `acme/*` is Docker Hub's acme, not `library/acme`.
-    Some(match name.strip_prefix("docker.io/library/") {
-        Some(rest) if !prefix.contains('/') => format!("docker.io/{rest}"),
-        _ => name,
-    })
 }
 
 /// Whether `pattern`, an entry of a host's `allowed_images`, allows `image`.
@@ -182,7 +260,8 @@ fn full_prefix(prefix: &str) -> Option<String> {
 /// - `*`: any image.
 /// - `ghcr.io/acme/*`: any image in that registry path.
 /// - `ghcr.io/acme/agent`: any tag or digest of that repository.
-/// - `ghcr.io/acme/agent:1`: that tag, pinned to a digest or not.
+/// - `ghcr.io/acme/agent:1`: that tag, not pinned to a digest: a pull by
+///   digest ignores the tag, so the host can't tell that it is that tag's.
 /// - `ghcr.io/acme/agent@sha256:…`: only that digest, which the project's
 ///   reference must name too: a tag can move.
 pub fn pattern_allows(pattern: &str, image: &ImageRef) -> bool {
@@ -206,7 +285,7 @@ pub fn pattern_allows(pattern: &str, image: &ImageRef) -> bool {
     }
     match (&p.digest, &p.tag) {
         (Some(digest), _) => image.digest.as_ref() == Some(digest),
-        (None, Some(tag)) => image.effective_tag() == Some(tag.as_str()),
+        (None, Some(tag)) => image.digest.is_none() && image.effective_tag() == Some(tag.as_str()),
         (None, None) => true,
     }
 }
@@ -375,7 +454,7 @@ mod tests {
             r("index.docker.io/library/ubuntu").name,
             "docker.io/library/ubuntu"
         );
-        let pinned = r(&format!("GHCR.io/Acme/Agent:1@{DIGEST}"));
+        let pinned = r(&format!("GHCR.io/acme/agent:1@{DIGEST}"));
         assert_eq!(pinned.name, "ghcr.io/acme/agent");
         assert_eq!(pinned.tag.as_deref(), Some("1"));
         assert_eq!(pinned.digest.as_deref(), Some(DIGEST));
@@ -384,6 +463,14 @@ mod tests {
         assert_eq!(local.name, "localhost:5000/agent");
         assert_eq!(local.tag, None);
         assert_eq!(r("registry.acme.dev:5000/x/y:3").tag.as_deref(), Some("3"));
+        assert_eq!(r("[::1]:5000/agent").name, "[::1]:5000/agent");
+        // Uppercase makes the first part a registry, as Docker reads it.
+        assert_eq!(r("Acme/agent").name, "acme/agent");
+        // Separators as Docker allows them.
+        assert_eq!(
+            r("acme/my__tool---x.y").name,
+            "docker.io/acme/my__tool---x.y"
+        );
         for bad in [
             "",
             "two words",
@@ -392,6 +479,14 @@ mod tests {
             "acme//agent",
             "ghcr.io/acme/-agent",
             "acme/agent:-1",
+            "ghcr.io/Acme/agent",
+            "acme/a..b",
+            "acme/a._b",
+            "acme/a___b",
+            "-x.com/agent",
+            "ghcr.io:port/agent",
+            "acme/agent@sha256:0123456789abcdef0123456789abcdef",
+            "acme/agent@sha256:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
         ] {
             assert_eq!(ImageRef::parse(bad), None, "{bad:?}");
         }
@@ -411,7 +506,11 @@ mod tests {
         assert!(!pattern_allows("ghcr.io/acme/agent:2", &agent));
         // A tag allows itself pinned to any digest, a digest only itself.
         let pinned = r(&format!("ghcr.io/acme/agent:1@{DIGEST}"));
-        assert!(pattern_allows("ghcr.io/acme/agent:1", &pinned));
+        assert!(!pattern_allows("ghcr.io/acme/agent:1", &pinned));
+        assert!(pattern_allows(
+            &format!("ghcr.io/acme/agent:1@{DIGEST}"),
+            &pinned
+        ));
         assert!(pattern_allows(
             &format!("ghcr.io/acme/agent@{DIGEST}"),
             &pinned
@@ -435,6 +534,12 @@ mod tests {
         ));
         assert!(pattern_allows("acme/*", &r("acme/tools")));
         assert!(pattern_allows("docker.io/*", &r("ubuntu")));
+        assert!(pattern_allows("index.docker.io/*", &r("ubuntu")));
+        assert!(pattern_allows("docker.io/library/*", &r("ubuntu:24.04")));
+        assert!(pattern_allows("docker.io/acme/*", &r("acme/tools")));
+        assert!(!pattern_allows("docker.io/acme/*", &r("ubuntu")));
+        // `Acme/agent` is the registry Acme's, not Docker Hub's acme.
+        assert!(!pattern_allows("acme/*", &r("Acme/agent")));
         assert!(!pattern_allows("acme/*", &r("ghcr.io/acme/tools")));
         // Not patterns.
         assert!(!pattern_allows("ghcr.io/acme*", &agent));
@@ -448,6 +553,7 @@ mod tests {
             "ghcr.io/*",
             "ghcr.io/acme/*",
             "acme/*",
+            "docker.io/library/*",
             "ubuntu",
             "ghcr.io/a/b:1",
         ] {
@@ -455,6 +561,7 @@ mod tests {
         }
         assert!(check_image_pattern("ghcr.io/acme*").is_some_and(|e| e.contains("/*")));
         assert!(check_image_pattern("two words").is_some());
+        assert!(check_image_pattern("ghcr.io/Acme/*").is_some());
         for good in ["*", "acme/*", "acme/app", "https://github.com/acme/app"] {
             assert_eq!(check_build_pattern(good), None, "{good}");
         }

@@ -209,19 +209,22 @@ When a session starts in a new sandbox, the host:
    default); the builder's cache keeps the builds that follow short
    anyway.
 3. Otherwise downloads the repository at that commit (up to 2 GiB), keeps
-   only the directory and the Dockerfile, and builds the image with
-   `docker build` or `container build`. The session's log shows each step.
-   Builds pass no secrets: a Dockerfile that needs a token should leave
-   that step to the setup script.
+   only the directory, and builds the image with `docker build` or
+   `container build`, from the Dockerfile's text as GitHub sent it. The
+   session's log shows each step. Sessions that need the same build wait
+   for the one that builds it. Builds pass no secrets: a Dockerfile that
+   needs a token should leave that step to the setup script.
 4. Tags the image `fctl-build-<project id>:<hash>`, and removes the
    project's earlier build, unless the runtime keeps it for a sandbox made
    from it (Docker does).
 
-When GitHub can't be reached, sessions start from the last build and say
-so. A dev container configuration's `image`, with no build, is used as it
-is, from its registry.
+When GitHub can't be reached, sessions start from the last build of the
+same setting and say so; any other problem, like a file that isn't there,
+fails the session with the reason. A dev container configuration's
+`image`, with no build, is used as it is, from its registry.
 
-**Limits.** A host builds one image at a time. A build that takes longer
+**Limits.** A host builds one image at a time, and reads no Dockerfile or
+configuration larger than 1 MiB. A build that takes longer
 than `build_timeout_minutes` (60) is stopped, and an image larger than
 `max_build_mb` (20 GiB) is removed, where the runtime reports image sizes
 (Docker does); the session fails and says why. A build runs in the
@@ -275,9 +278,11 @@ fctl host install --allow-image 'ghcr.io/acme/*' --allow-image ghcr.io/hyperstru
 ```
 
 - **An entry of `allowed_images`** is a reference without a tag, which
-  allows any tag of that repository; with a tag, which allows that tag; or
-  pinned to a digest (`@sha256:…`), which allows only that build, and only
-  when the project's reference names the digest too, since a tag can move.
+  allows any tag or digest of that repository; with a tag, which allows
+  that tag but not a reference that pins a digest to it, since a pull by
+  digest ignores the tag; or pinned to a digest (`@sha256:…`), which allows
+  only that build, and only when the project's reference names the digest
+  too, since a tag can move.
   An entry that ends in `/*` allows everything under that registry path,
   and `*` alone allows any image. Docker Hub's names count as Docker does:
   `ubuntu` is `docker.io/library/ubuntu`.

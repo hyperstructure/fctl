@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { buildsImages, imageSource, isDevcontainer, runsImages, withSource } from "./images";
+import { buildsImages, imageSource, isDevcontainer, remember, runsImages, withSource } from "./images";
 
 const settings = (s: Partial<G.ProjectSettings>): G.ProjectSettings => ({
   auto_pull_request: true,
@@ -33,6 +33,22 @@ describe("sandbox images", () => {
     const none = withSource(settings({ image: "ghcr.io/acme/agent:1" }), "default");
     expect(none.image).toBeUndefined();
     expect(none.image_build).toBeNull();
+  });
+
+  it("brings back what was typed when switching back", () => {
+    const start = settings({ image: "ghcr.io/acme/agent:1" });
+    let typed = remember(start, {});
+    const away = withSource(start, "build", typed);
+    typed = remember(away, typed);
+    const back = withSource(away, "image", typed);
+    expect(back.image).toBe("ghcr.io/acme/agent:1");
+    expect(back.image_build).toBeNull();
+    const built = withSource(
+      back,
+      "build",
+      remember(back, { build: { file: "Dockerfile", context: "app" } }),
+    );
+    expect(built.image_build).toEqual({ file: "Dockerfile", context: "app" });
   });
 
   it("tells dev container configurations from Dockerfiles", () => {

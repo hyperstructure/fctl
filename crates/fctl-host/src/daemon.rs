@@ -81,6 +81,8 @@ impl Daemon {
     pub async fn new(cfg: HostConfig, token: String) -> Result<Self> {
         let data = cfg.data_dir();
         std::fs::create_dir_all(&data)?;
+        // What image builds left behind when the host last stopped.
+        let _ = std::fs::remove_dir_all(data.join("builds"));
         let driver = Driver::select(&cfg.driver, &data, cfg.agent_bin.clone()).await?;
         let ctx = Arc::new(HostCtx::new(cfg, driver, token));
         ctx.refresh_facts().await;

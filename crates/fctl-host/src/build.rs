@@ -26,6 +26,9 @@ const MAX_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// How long downloading the archive may take.
 const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
+/// The largest Dockerfile or dev container configuration a host reads.
+const MAX_FILE_BYTES: usize = 1024 * 1024;
+
 /// What to build, as the setting and the file it names say. Paths are in
 /// the repository, `""` for its root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,8 +116,11 @@ fn devcontainer(path: &str, config: &Value) -> Result<(Recipe, Vec<String>)> {
     }
     let Some(dockerfile) = dockerfile else {
         return match config.get("image").and_then(Value::as_str) {
-            Some(image) if !image.trim().is_empty() => {
+            Some(image) if fctl_domain::image::ImageRef::parse(image).is_some() => {
                 Ok((Recipe::Image(image.trim().to_owned()), notes))
+            }
+            Some(image) if !image.trim().is_empty() => {
+                bail!("{path} names an image that isn't a valid reference: {image}")
             }
             _ => bail!("{path} names neither an image nor a Dockerfile"),
         };
@@ -178,10 +184,13 @@ fn join(dir: &str, rel: &str) -> Result<String> {
 
 /// JSON with comments, as dev container configurations are, made plain:
 /// without `//` and `/* */` comments, or commas before a closing bracket.
+/// One pass: a comma waits for the next character that isn't space or a
+/// comment, which says whether it stays.
 pub fn strip_jsonc(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     let mut in_string = false;
+    let mut comma: Option<usize> = None;
     while let Some(c) = chars.next() {
         if in_string {
             out.push(c);
@@ -197,10 +206,6 @@ pub fn strip_jsonc(text: &str) -> String {
             continue;
         }
         match (c, chars.peek()) {
-            ('"', _) => {
-                in_string = true;
-                out.push(c);
-            }
             ('/', Some('/')) => {
                 for c in chars.by_ref() {
                     if c == '\n' {
@@ -220,32 +225,23 @@ pub fn strip_jsonc(text: &str) -> String {
                 }
                 out.push(' ');
             }
-            (',', _) => {
-                // A comma whose next significant character closes a bracket.
-                let rest: String = chars.clone().collect();
-                let next = strip_leading_comments(&rest);
-                if !next.starts_with(['}', ']']) {
-                    out.push(c);
+            (c, _) if c.is_whitespace() => out.push(c),
+            (c, _) => {
+                if let Some(at) = comma.take()
+                    && (c == '}' || c == ']')
+                {
+                    out.remove(at);
                 }
+                match c {
+                    '"' => in_string = true,
+                    ',' => comma = Some(out.len()),
+                    _ => {}
+                }
+                out.push(c);
             }
-            _ => out.push(c),
         }
     }
     out
-}
-
-/// `text` without the whitespace and comments it starts with.
-fn strip_leading_comments(mut text: &str) -> &str {
-    loop {
-        let trimmed = text.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("//") {
-            text = rest.split_once('\n').map_or("", |(_, r)| r);
-        } else if let Some(rest) = trimmed.strip_prefix("/*") {
-            text = rest.split_once("*/").map_or("", |(_, r)| r);
-        } else {
-            return trimmed;
-        }
-    }
 }
 
 /// What a build's tag comes from: the recipe, the text of the file the
@@ -295,6 +291,19 @@ pub fn repository(project_id: &str) -> String {
     format!("fctl-build-{}", id.trim_matches(['-', '_']))
 }
 
+/// GitHub didn't answer, or said to come back later (5xx, 429, or out of
+/// requests): then sessions may start from the last build.
+#[derive(Debug)]
+pub struct Unreachable(String);
+
+impl std::fmt::Display for Unreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unreachable {}
+
 /// The GitHub API, with a session's token.
 pub struct Github {
     http: fctl_client::HttpClient,
@@ -320,16 +329,24 @@ impl Github {
         )
     }
 
-    /// GET `url`; `None` for 404.
+    /// GET `url`; `None` for 404, [`Unreachable`] when GitHub can't answer
+    /// now.
     async fn get(&self, url: &str, accept: &str) -> Result<Option<Vec<u8>>> {
         let headers = [("accept", accept), ("x-github-api-version", "2022-11-28")];
-        let (status, _, body) = self
+        let (status, headers, body) = self
             .http
             .get_with(url, Some(&self.token), &headers)
             .await
-            .with_context(|| format!("Asking GitHub ({url})"))?;
+            .map_err(|e| Unreachable(format!("Asking GitHub ({url}): {e}")))?;
         if status.as_u16() == 404 {
             return Ok(None);
+        }
+        let out_of_requests = status.as_u16() == 403
+            && headers
+                .get("x-ratelimit-remaining")
+                .is_some_and(|v| v.as_bytes() == b"0");
+        if status.is_server_error() || status.as_u16() == 429 || out_of_requests {
+            return Err(Unreachable(format!("GitHub answered {status} for {url}")).into());
         }
         if !status.is_success() {
             let text: String = String::from_utf8_lossy(&body).chars().take(300).collect();
@@ -410,15 +427,17 @@ fn encode_path(path: &str) -> String {
 }
 
 /// Unpacks the parts of a GitHub archive (`.tar.gz`, one directory at the
-/// top) that a build reads, the files under `context` and `dockerfile`,
-/// into `dest`, as they are in the repository. Only files, directories and
-/// symbolic links; nothing outside `dest`.
+/// top) that a build reads, the files under `context`, `dockerfile` and its
+/// `.dockerignore`, into `dest`, as they are in the repository. Only files,
+/// directories and symbolic links; nothing outside `dest`, and nothing
+/// through a link.
 pub fn unpack(archive: &Path, dest: &Path, context: &str, dockerfile: &str) -> Result<()> {
     let file =
         std::fs::File::open(archive).with_context(|| format!("Opening {}", archive.display()))?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
     tar.set_preserve_permissions(true);
     let context = Path::new(context);
+    let ignore = PathBuf::from(format!("{dockerfile}.dockerignore"));
     let dockerfile = Path::new(dockerfile);
     std::fs::create_dir_all(dest)?;
     let root = dest.canonicalize()?;
@@ -440,14 +459,14 @@ pub fn unpack(archive: &Path, dest: &Path, context: &str, dockerfile: &str) -> R
         }
         let wanted = rel.starts_with(context)
             || rel == dockerfile
+            || rel == ignore
             || (kind.is_dir() && (context.starts_with(&rel) || dockerfile.starts_with(&rel)));
-        if !wanted {
+        if !wanted || through_link(dest, &rel) {
             continue;
         }
         let out = dest.join(&rel);
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)?;
-            // Never through a link out of `dest`.
             if !parent.canonicalize()?.starts_with(&root) {
                 continue;
             }
@@ -457,6 +476,35 @@ pub fn unpack(archive: &Path, dest: &Path, context: &str, dockerfile: &str) -> R
             .with_context(|| format!("Unpacking {}", rel.display()))?;
     }
     Ok(())
+}
+
+/// Whether a directory on the way to `rel` under `dest` is a symbolic link.
+fn through_link(dest: &Path, rel: &Path) -> bool {
+    let mut at = dest.to_path_buf();
+    for part in rel.parent().into_iter().flat_map(Path::components) {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            // The rest isn't there yet: unpacking makes real directories.
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// A directory that goes when dropped, also when a stop calls off the build
+/// that uses it.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let dir = std::mem::take(&mut self.0);
+        // Removing a large archive takes a moment; not on the runtime.
+        std::thread::spawn(move || {
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
 }
 
 /// The last build of each project on this host, in `builds.json` in its
@@ -472,6 +520,9 @@ pub struct Built {
     pub tag: String,
     /// The commit it was built from.
     pub commit: String,
+    /// The setting it was built for: a changed setting doesn't start from it.
+    #[serde(default)]
+    pub setting: Option<ImageBuild>,
 }
 
 impl Builds {
@@ -500,17 +551,19 @@ impl Builds {
 enum Resolved {
     /// The image to start from, built or not.
     Ready(String),
-    /// Build `tag` from `commit`.
+    /// Build `tag` from `commit`, with the Dockerfile GitHub sent.
     Build {
         tag: String,
         commit: String,
         recipe: Recipe,
+        dockerfile: Vec<u8>,
     },
 }
 
 /// The image a session of a project that builds its own starts from: this
 /// host's build of the files on the project's default branch, built now
-/// when they changed since. When GitHub can't be asked, the last build.
+/// when they changed since. While GitHub can't be reached, the last build
+/// for the same setting.
 pub async fn image(
     ctx: &HostCtx,
     spec: &SessionSpec,
@@ -544,11 +597,14 @@ pub async fn image(
     let name = repository(id);
     let resolved = match resolve(&gh, repo, &project.default_branch, setting, &name, log).await {
         Ok(r) => r,
-        Err(e) => {
-            // GitHub may be down: the last build will do meanwhile.
+        Err(e) if e.downcast_ref::<Unreachable>().is_some() => {
+            // GitHub is down: the last build of the same setting will do.
             let last = Builds::load(&data_dir).projects.get(id).cloned();
             match last {
-                Some(last) if ctx.driver.has_image(&last.tag).await => {
+                Some(last)
+                    if last.setting.as_ref() == Some(setting)
+                        && ctx.driver.has_image(&last.tag).await =>
+                {
                     log(format!(
                         "Could not check {} for changes to its image ({e:#}); starting from the last build, {}",
                         repo.full_name(),
@@ -559,20 +615,32 @@ pub async fn image(
                 _ => return Err(e),
             }
         }
+        Err(e) => return Err(e),
     };
-    let (tag, commit, recipe) = match resolved {
+    let (tag, commit, recipe, dockerfile) = match resolved {
         Resolved::Ready(image) => return Ok(image),
         Resolved::Build {
             tag,
             commit,
             recipe,
-        } => (tag, commit, recipe),
+            dockerfile,
+        } => (tag, commit, recipe, dockerfile),
     };
     if !ctx.driver.has_image(&tag).await {
-        // One build at a time; one that waited may find its image built.
-        let _turn = ctx.builds.lock().await;
+        // Sessions that need the same build wait for the first, and find
+        // its image.
+        let same = ctx.build_lock(&tag);
+        let _same = same.lock().await;
         if !ctx.driver.has_image(&tag).await {
-            build(ctx, &gh, repo, &commit, &recipe, &tag, setting, log).await?;
+            let job = Job {
+                repo,
+                commit: &commit,
+                recipe: &recipe,
+                tag: &tag,
+                dockerfile: &dockerfile,
+                setting,
+            };
+            build(ctx, &gh, &job, log).await?;
         }
     }
     let previous = {
@@ -586,6 +654,7 @@ pub async fn image(
             Built {
                 tag: tag.clone(),
                 commit,
+                setting: Some(setting.clone()),
             },
         );
         if let Err(e) = builds.save(&data_dir) {
@@ -624,6 +693,7 @@ async fn resolve(
         .file(repo, &commit, &setting.file)
         .await?
         .with_context(|| missing(&setting.file))?;
+    too_large(&setting.file, &file)?;
     let (recipe, notes) = recipe(setting, &file)?;
     for note in notes {
         log(note);
@@ -643,6 +713,7 @@ async fn resolve(
             .await?
             .with_context(|| missing(dockerfile))?
     };
+    too_large(dockerfile, &dockerfile_text)?;
     let tree = gh.tree(repo, &commit, context).await?.with_context(|| {
         format!(
             "{} has no directory {} on {branch} to build in",
@@ -655,19 +726,40 @@ async fn resolve(
         tag,
         commit,
         recipe,
+        dockerfile: dockerfile_text,
     })
 }
 
-/// Downloads the repository at `commit` and builds `tag` from it.
-#[allow(clippy::too_many_arguments)]
+/// Refuses a Dockerfile or configuration larger than [`MAX_FILE_BYTES`].
+fn too_large(path: &str, text: &[u8]) -> Result<()> {
+    if text.len() > MAX_FILE_BYTES {
+        bail!(
+            "{path} is larger than {} MiB: name a Dockerfile or a devcontainer.json",
+            MAX_FILE_BYTES / 1024 / 1024
+        );
+    }
+    Ok(())
+}
+
+/// One build: what it comes from and the image it makes.
+struct Job<'a> {
+    repo: &'a RepoRef,
+    commit: &'a str,
+    recipe: &'a Recipe,
+    tag: &'a str,
+    /// The Dockerfile's text, as GitHub sent it.
+    dockerfile: &'a [u8],
+    setting: &'a ImageBuild,
+}
+
+/// Downloads the repository at the job's commit and builds its image,
+/// once no other build runs on this host. The Dockerfile is the text GitHub
+/// sent, written beside the repository: never a file the repository links
+/// to on the host.
 async fn build(
     ctx: &HostCtx,
     gh: &Github,
-    repo: &RepoRef,
-    commit: &str,
-    recipe: &Recipe,
-    tag: &str,
-    setting: &ImageBuild,
+    job: &Job<'_>,
     log: &(dyn Fn(String) + Send + Sync),
 ) -> Result<()> {
     let Recipe::Build {
@@ -675,64 +767,75 @@ async fn build(
         context,
         args,
         target,
-    } = recipe
+    } = job.recipe
     else {
         return Ok(());
     };
-    let short = &commit[..commit.len().min(7)];
+    let short = &job.commit[..job.commit.len().min(7)];
     log(format!(
         "Building the sandbox image from {} in {} at {short}",
-        setting.file,
-        repo.full_name()
+        job.setting.file,
+        job.repo.full_name()
     ));
     let dir = ctx.cfg.data_dir().join("builds").join(format!(
         "{}-{}",
-        tag.replace([':', '/'], "-"),
+        job.tag.replace([':', '/'], "-"),
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
-    let result = async {
-        let archive = dir.join("repo.tar.gz");
-        gh.archive(repo, commit, &archive).await?;
-        let src = dir.join("src");
-        let (archive2, src2, context2, dockerfile2) = (
-            archive.clone(),
-            src.clone(),
-            context.clone(),
-            dockerfile.clone(),
-        );
-        tokio::task::spawn_blocking(move || unpack(&archive2, &src2, &context2, &dockerfile2))
-            .await
-            .context("Unpacking the repository")??;
-        let _ = std::fs::remove_file(&archive);
-        let limit = Duration::from_secs(u64::from(ctx.cfg.build_timeout_minutes.max(1)) * 60);
-        let job = crate::driver::BuildJob {
-            tag,
-            dockerfile: &src.join(dockerfile),
-            context: &src.join(context),
-            args,
-            target: target.as_deref(),
-            limit,
-        };
-        ctx.driver.build(&job, log).await?;
-        let max = u64::from(ctx.cfg.max_build_mb) * 1024 * 1024;
-        if let Some(size) = ctx.driver.image_size(tag).await
-            && size > max
-        {
-            let _ = ctx.driver.remove_image(tag).await;
-            bail!(
-                "The image is {}, more than the {} this host keeps (max_build_mb in host.toml)",
-                fctl_domain::size::memory(size / 1024 / 1024),
-                fctl_domain::size::memory(u64::from(ctx.cfg.max_build_mb))
-            );
-        }
-        log(format!("Built {tag}"));
-        anyhow::Ok(())
+    let _scratch = Scratch(dir.clone());
+    // Download first: a token that waits behind other builds could expire.
+    let archive = dir.join("repo.tar.gz");
+    gh.archive(job.repo, job.commit, &archive).await?;
+    let src = dir.join("src");
+    let (archive2, src2, context2, dockerfile2) = (
+        archive.clone(),
+        src.clone(),
+        context.clone(),
+        dockerfile.clone(),
+    );
+    tokio::task::spawn_blocking(move || unpack(&archive2, &src2, &context2, &dockerfile2))
+        .await
+        .context("Unpacking the repository")??;
+    let _ = std::fs::remove_file(&archive);
+    let file = dir.join("Dockerfile");
+    std::fs::write(&file, job.dockerfile)?;
+    let ignore = src.join(format!("{dockerfile}.dockerignore"));
+    if std::fs::symlink_metadata(&ignore).is_ok_and(|m| m.is_file()) {
+        std::fs::copy(&ignore, dir.join("Dockerfile.dockerignore"))?;
     }
-    .await;
-    let _ = std::fs::remove_dir_all(&dir);
-    result
+    let turn = match ctx.builds.try_lock() {
+        Ok(turn) => turn,
+        Err(_) => {
+            log("Waiting for another image build on this host".into());
+            ctx.builds.lock().await
+        }
+    };
+    let limit = Duration::from_secs(u64::from(ctx.cfg.build_timeout_minutes.max(1)) * 60);
+    let spec = crate::driver::BuildJob {
+        tag: job.tag,
+        dockerfile: &file,
+        context: &src.join(context),
+        args,
+        target: target.as_deref(),
+        limit,
+    };
+    ctx.driver.build(&spec, log).await?;
+    drop(turn);
+    let max = u64::from(ctx.cfg.max_build_mb) * 1024 * 1024;
+    if let Some(size) = ctx.driver.image_size(job.tag).await
+        && size > max
+    {
+        let _ = ctx.driver.remove_image(job.tag).await;
+        bail!(
+            "The image is {}, more than the {} this host keeps (max_build_mb in host.toml)",
+            fctl_domain::size::memory(size / 1024 / 1024),
+            fctl_domain::size::memory(u64::from(ctx.cfg.max_build_mb))
+        );
+    }
+    log(format!("Built {}", job.tag));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -786,6 +889,20 @@ mod tests {
     }
 
     #[test]
+    fn reads_large_json_in_one_pass() -> Result<()> {
+        // 200 000 commas: quadratic work would take minutes.
+        let items = vec!["1"; 200_000].join(", ");
+        let text = format!("{{ \"a\": [{items}, ], // done\n }}");
+        let started = std::time::Instant::now();
+        let v: Value = serde_json::from_str(&strip_jsonc(&text))?;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(v["a"].as_array().map(Vec::len), Some(200_000));
+        assert!(too_large("x.json", &vec![b' '; MAX_FILE_BYTES + 1]).is_err());
+        assert!(too_large("x.json", text.as_bytes()).is_ok());
+        Ok(())
+    }
+
+    #[test]
     fn dev_containers_build_relative_to_their_configuration() -> Result<()> {
         let config = json!({
             "build": { "dockerfile": "Dockerfile", "context": "..", "args": { "V": "3" }, "target": "dev" },
@@ -830,6 +947,7 @@ mod tests {
             json!({ "dockerComposeFile": "compose.yml", "service": "app" }),
             json!({ "name": "nothing" }),
             json!({ "build": { "dockerfile": "../../Dockerfile" } }),
+            json!({ "image": "-x ubuntu" }),
         ] {
             assert!(
                 devcontainer(".devcontainer/devcontainer.json", &config).is_err(),
@@ -928,6 +1046,33 @@ mod tests {
     }
 
     #[test]
+    fn unpacks_nothing_through_a_link() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside)?;
+        let path = tmp.path().join("repo.tar.gz");
+        let gz = flate2::write::GzEncoder::new(
+            std::fs::File::create(&path)?,
+            flate2::Compression::fast(),
+        );
+        let mut tar = tar::Builder::new(gz);
+        let mut sym = tar::Header::new_gnu();
+        sym.set_entry_type(tar::EntryType::Symlink);
+        sym.set_size(0);
+        tar.append_link(&mut sym, "acme-app-1234567/app/out", &outside)?;
+        let mut file = tar::Header::new_gnu();
+        file.set_mode(0o644);
+        file.set_size(2);
+        tar.append_data(&mut file, "acme-app-1234567/app/out/sub/x", &b"x\n"[..])?;
+        tar.into_inner()?.finish()?;
+        let dest = tmp.path().join("src");
+        unpack(&path, &dest, "app", "Dockerfile")?;
+        assert!(std::fs::symlink_metadata(dest.join("app/out"))?.is_symlink());
+        assert!(!outside.join("sub").exists());
+        Ok(())
+    }
+
+    #[test]
     fn remembers_the_last_build_of_each_project() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         assert_eq!(Builds::load(tmp.path()), Builds::default());
@@ -937,6 +1082,7 @@ mod tests {
             Built {
                 tag: "fctl-build-prj_1:abc".into(),
                 commit: "f".repeat(40),
+                setting: Some(setting("Dockerfile", None)),
             },
         );
         b.save(tmp.path())?;
@@ -962,6 +1108,9 @@ mod tests {
     #[derive(Default)]
     struct FakeRepo {
         files: BTreeMap<String, String>,
+        /// Paths the archive holds as symbolic links instead, to these
+        /// targets, while the API still sends the file's text.
+        links: BTreeMap<String, String>,
         commits: u32,
         down: bool,
         /// Each request: the path, and whether it carried the token.
@@ -995,11 +1144,18 @@ mod tests {
         fn archive(&self) -> Result<Vec<u8>> {
             let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
             let mut tar = tar::Builder::new(gz);
+            let top = format!("acme-app-{}", &self.commit()[..7]);
             for (path, text) in &self.files {
+                if let Some(target) = self.links.get(path) {
+                    let mut h = tar::Header::new_gnu();
+                    h.set_entry_type(tar::EntryType::Symlink);
+                    h.set_size(0);
+                    tar.append_link(&mut h, format!("{top}/{path}"), target)?;
+                    continue;
+                }
                 let mut h = tar::Header::new_gnu();
                 h.set_mode(0o644);
                 h.set_size(text.len() as u64);
-                let top = format!("acme-app-{}", &self.commit()[..7]);
                 tar.append_data(&mut h, format!("{top}/{path}"), text.as_bytes())?;
             }
             Ok(tar.into_inner()?.finish()?)
@@ -1240,8 +1396,14 @@ mod tests {
             builds[0].starts_with(&format!("build --tag {tag} --file ")),
             "{builds:?}"
         );
-        assert!(builds[0].contains("/src/docker/Dockerfile "), "{builds:?}");
+        // The Dockerfile GitHub sent, beside the repository's files.
+        assert!(builds[0].contains("/Dockerfile "), "{builds:?}");
+        assert!(!builds[0].contains("/src/docker/Dockerfile"), "{builds:?}");
         assert!(builds[0].ends_with("/src/app"), "{builds:?}");
+        assert_eq!(
+            std::fs::read_to_string(host.cli.dir.path().join("dockerfile"))?,
+            "FROM debian\nCOPY . /app\n"
+        );
         // It built in the context, from what the archive had there.
         let context = std::fs::read_to_string(host.cli.dir.path().join("context"))?;
         assert_eq!(context, ".\n./main.rs\n");
@@ -1292,6 +1454,52 @@ mod tests {
             host.log()
                 .iter()
                 .any(|l| l.starts_with("Could not check acme/app for changes"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn only_an_unreachable_github_starts_sessions_from_the_last_build() -> Result<()> {
+        let github = FakeGithub::start(&[("Dockerfile", "FROM debian\n")]).await?;
+        let host = Host::new(&github)?;
+        let tag = host.image(&spec("Dockerfile", None)?).await?;
+        // A setting that names a file the repository doesn't have fails,
+        // whatever was built before.
+        let e = host
+            .image(&spec("Containerfile", None)?)
+            .await
+            .err()
+            .map(|e| format!("{e:#}"));
+        assert_eq!(
+            e.as_deref(),
+            Some("Containerfile isn't in acme/app on main (Settings → Sandbox → Image)")
+        );
+        // While GitHub is down, the last build of the same setting, and of
+        // no other.
+        github.change(|r| r.down = true);
+        assert_eq!(host.image(&spec("Dockerfile", None)?).await?, tag);
+        let other = host.image(&spec("Dockerfile", Some("app"))?).await;
+        assert!(
+            other
+                .as_ref()
+                .is_err_and(|e| format!("{e:#}").contains("GitHub answered 503")),
+            "{other:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn builds_use_the_dockerfile_github_sends_not_a_link() -> Result<()> {
+        let github =
+            FakeGithub::start(&[("Dockerfile", "FROM debian\n"), ("app.txt", "x")]).await?;
+        github.change(|r| {
+            r.links.insert("Dockerfile".into(), "/etc/hostname".into());
+        });
+        let host = Host::new(&github)?;
+        host.image(&spec("Dockerfile", None)?).await?;
+        assert_eq!(
+            std::fs::read_to_string(host.cli.dir.path().join("dockerfile"))?,
+            "FROM debian\n"
         );
         Ok(())
     }

@@ -769,7 +769,7 @@ mod tests {
         for ok in [
             "ubuntu",
             "ghcr.io/acme/agent:1",
-            "localhost:5000/a@sha256:0123456789abcdef0123456789abcdef",
+            "localhost:5000/a@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         ] {
             assert!(image(ok).is_ok(), "{ok}");
         }

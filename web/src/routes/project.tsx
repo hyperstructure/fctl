@@ -36,7 +36,14 @@ import { api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
-import { type ImageSource, imageSource, isDevcontainer, withSource } from "@/lib/images";
+import {
+  type ImageSource,
+  imageSource,
+  isDevcontainer,
+  remember,
+  type Typed,
+  withSource,
+} from "@/lib/images";
 import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
 import {
   keys,
@@ -583,6 +590,7 @@ function Settings({ project }: { project: G.Project }) {
       .join("\n"),
   );
   const [source, setSource] = useState<ImageSource>(imageSource(project.settings));
+  const typed = useRef<Typed>({});
   useEffect(() => {
     setS(project.settings);
     setSource(imageSource(project.settings));
@@ -828,8 +836,9 @@ function Settings({ project }: { project: G.Project }) {
                 id={id}
                 value={source}
                 onChange={(v) => {
+                  typed.current = remember(s, typed.current);
                   setSource(v);
-                  setS((x) => withSource(x, v));
+                  setS((x) => withSource(x, v, typed.current));
                 }}
                 options={imageSources(project)}
                 className="w-full"

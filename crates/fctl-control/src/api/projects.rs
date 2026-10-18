@@ -51,8 +51,9 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
         s.image_build = Some(validate::image_build(b)?);
     }
     if s.image.is_some() && s.image_build.is_some() {
+        // On the image's field, which forms from before builds show too.
         return Err(validation(
-            "settings.image_build",
+            "image",
             "Choose an image or a build from the repository, not both",
         ));
     }

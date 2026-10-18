@@ -493,12 +493,15 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 settings.image_build = None;
             }
             if let Some(file) = &build {
-                settings.image_build = (!file.trim().is_empty()).then(|| ImageBuild {
-                    file: file.trim().to_owned(),
-                    context: settings
+                settings.image_build = (!file.trim().is_empty()).then(|| {
+                    let file = file.trim().to_owned();
+                    // A devcontainer.json says where it builds.
+                    let context = settings
                         .image_build
                         .as_ref()
-                        .and_then(|b| b.context.clone()),
+                        .and_then(|b| b.context.clone())
+                        .filter(|_| !file.to_ascii_lowercase().ends_with(".json"));
+                    ImageBuild { file, context }
                 });
                 if settings.image_build.is_some() {
                     settings.image = None;

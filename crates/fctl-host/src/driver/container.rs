@@ -652,8 +652,9 @@ pub(crate) mod fake {
     /// A stand-in for the `docker` or `container` CLI with no sandboxes yet:
     /// `have` are the images on the host, `registry` those it can pull. It
     /// writes each call to `calls`; with `fail_run` every `run` fails, and with
-    /// `fail_build` every `build`. A build lists its context in `context`, and
-    /// `size` holds the size images have (1000 bytes without it).
+    /// `fail_build` every `build`. A build lists its context in `context` and
+    /// copies its Dockerfile to `dockerfile`; `size` holds the size images
+    /// have (1000 bytes without it).
     pub struct FakeCli {
         pub dir: tempfile::TempDir,
     }
@@ -690,6 +691,7 @@ case "$1 $2" in
     echo "#5 [1/2] FROM debian" >&2
     echo "#5 0.1 noise"
     (cd "$last" && find . | sort) > "$d/context"
+    cat "$5" > "$d/dockerfile"
     touch "$d/have/$(key "$3")" ;;
   "image pull" | "pull "*) pull ;;
   "inspect "*) exit 1 ;;

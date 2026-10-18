@@ -151,8 +151,10 @@ impl HttpClient {
                 (None, &[][..])
             };
             let req = request(Method::GET, &current, token, None, None, headers)?;
+            // Signed download links carry a token in their query.
+            let shown = without_query(&current);
             let network = |message: String| Error::Network {
-                url: current.clone(),
+                url: shown.clone(),
                 message,
             };
             let res = self
@@ -196,7 +198,7 @@ impl HttpClient {
                     size += data.len() as u64;
                     if size > max_bytes {
                         return Err(Error::Other(format!(
-                            "{current} is larger than {} MiB",
+                            "{shown} is larger than {} MiB",
                             max_bytes / 1024 / 1024
                         )));
                     }
@@ -289,6 +291,11 @@ impl HttpClient {
         }
         Err(Error::Other("too many redirects".into()))
     }
+}
+
+/// `url` without its query or fragment, for messages.
+fn without_query(url: &str) -> String {
+    url.split(['?', '#']).next().unwrap_or_default().to_owned()
 }
 
 /// A request with fctl's user agent, JSON accepted, the token, and

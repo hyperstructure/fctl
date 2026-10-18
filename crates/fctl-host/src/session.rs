@@ -23,6 +23,7 @@ use fctl_proto::uplink::{
     UplinkUp,
 };
 use fctl_proto::{ApiError, ErrorCode, Millis, RunnerId, SessionId};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -40,6 +41,9 @@ pub struct HostCtx {
     pub drivers: Mutex<Vec<DriverInfo>>,
     /// Held while an image builds: one build at a time.
     pub builds: tokio::sync::Mutex<()>,
+    /// One per image being built: sessions that need the same one wait for
+    /// the session that builds it.
+    pub build_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Held while `builds.json` changes.
     pub build_record: Mutex<()>,
 }
@@ -57,8 +61,19 @@ impl HostCtx {
             sandbox: Mutex::new(sandbox),
             drivers: Mutex::new(Vec::new()),
             builds: tokio::sync::Mutex::new(()),
+            build_locks: Mutex::new(HashMap::new()),
             build_record: Mutex::new(()),
         }
+    }
+
+    /// The lock of the build of `tag`, shared by the sessions that need it.
+    pub fn build_lock(&self, tag: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .build_locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        locks.entry(tag.to_owned()).or_default().clone()
     }
 
     /// The images and builds this host's sessions may start from.

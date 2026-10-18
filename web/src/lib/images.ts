@@ -11,15 +11,27 @@ export function imageSource(s: G.ProjectSettings): ImageSource {
   return s.image?.trim() && s.image.trim() !== "fctl-agent:latest" ? "image" : "default";
 }
 
-/** Settings that start sessions from `source`, keeping what was typed for it. */
-export function withSource(s: G.ProjectSettings, source: ImageSource): G.ProjectSettings {
+/** What was typed for each source, so that switching back brings it back. */
+export interface Typed {
+  image?: string;
+  build?: G.ImageBuild | null;
+}
+
+/** What `s` has typed for each source, over what `typed` remembers. */
+export const remember = (s: G.ProjectSettings, typed: Typed): Typed => ({
+  image: s.image ?? typed.image,
+  build: s.image_build ?? typed.build,
+});
+
+/** Settings that start sessions from `source`, with what was typed for it. */
+export function withSource(s: G.ProjectSettings, source: ImageSource, typed: Typed = {}): G.ProjectSettings {
   switch (source) {
     case "default":
       return { ...s, image: undefined, image_build: null };
     case "image":
-      return { ...s, image_build: null };
+      return { ...s, image: s.image ?? typed.image, image_build: null };
     case "build":
-      return { ...s, image: undefined, image_build: s.image_build ?? { file: "" } };
+      return { ...s, image: undefined, image_build: s.image_build ?? typed.build ?? { file: "" } };
   }
 }
 
