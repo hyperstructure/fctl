@@ -195,7 +195,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     println!(
                         "  {}",
                         style::dim(&format!(
-                            "image: {own}; runs {}; builds images from {}",
+                            "image: {own}; {}; {}",
                             fctl_domain::image::describe_allowed(r.allowed_images.as_deref()),
                             fctl_domain::image::describe_builds(r.allowed_builds.as_deref())
                         ))

@@ -56,7 +56,7 @@ pub fn recipe(setting: &ImageBuild, file: &[u8]) -> Result<(Recipe, Vec<String>)
     }
     let text = String::from_utf8_lossy(file);
     let config: Value = serde_json::from_str(&strip_jsonc(&text))
-        .with_context(|| format!("reading {} (JSON with comments)", setting.file))?;
+        .with_context(|| format!("Reading {} (JSON with comments)", setting.file))?;
     devcontainer(&setting.file, &config)
 }
 
@@ -136,8 +136,8 @@ fn devcontainer(path: &str, config: &Value) -> Result<(Recipe, Vec<String>)> {
         .map(str::to_owned);
     let recipe = Recipe::Build {
         dockerfile: join(dir, dockerfile)
-            .with_context(|| format!("the Dockerfile {path} names"))?,
-        context: join(dir, context).with_context(|| format!("the context {path} names"))?,
+            .with_context(|| format!("The Dockerfile {path} names"))?,
+        context: join(dir, context).with_context(|| format!("The directory {path} names"))?,
         args,
         target,
     };
@@ -327,7 +327,7 @@ impl Github {
             .http
             .get_with(url, Some(&self.token), &headers)
             .await
-            .with_context(|| format!("asking GitHub ({url})"))?;
+            .with_context(|| format!("Asking GitHub ({url})"))?;
         if status.as_u16() == 404 {
             return Ok(None);
         }
@@ -368,7 +368,7 @@ impl Github {
         let Some(body) = self.get(&url, "application/vnd.github+json").await? else {
             return Ok(None);
         };
-        let v: Value = serde_json::from_slice(&body).context("reading GitHub's tree")?;
+        let v: Value = serde_json::from_slice(&body).context("Reading GitHub's tree")?;
         Ok(v.get("sha").and_then(Value::as_str).map(str::to_owned))
     }
 
@@ -386,7 +386,7 @@ impl Github {
                 ARCHIVE_TIMEOUT,
             )
             .await
-            .with_context(|| format!("downloading {} at {commit}", repo.full_name()))?;
+            .with_context(|| format!("Downloading {} at {commit}", repo.full_name()))?;
         Ok(())
     }
 }
@@ -415,15 +415,15 @@ fn encode_path(path: &str) -> String {
 /// symbolic links; nothing outside `dest`.
 pub fn unpack(archive: &Path, dest: &Path, context: &str, dockerfile: &str) -> Result<()> {
     let file =
-        std::fs::File::open(archive).with_context(|| format!("opening {}", archive.display()))?;
+        std::fs::File::open(archive).with_context(|| format!("Opening {}", archive.display()))?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
     tar.set_preserve_permissions(true);
     let context = Path::new(context);
     let dockerfile = Path::new(dockerfile);
     std::fs::create_dir_all(dest)?;
     let root = dest.canonicalize()?;
-    for entry in tar.entries().context("reading the repository's archive")? {
-        let mut entry = entry.context("reading the repository's archive")?;
+    for entry in tar.entries().context("Reading the repository's archive")? {
+        let mut entry = entry.context("Reading the repository's archive")?;
         let kind = entry.header().entry_type();
         if !(kind.is_file() || kind.is_dir() || kind.is_symlink()) {
             continue;
@@ -454,7 +454,7 @@ pub fn unpack(archive: &Path, dest: &Path, context: &str, dockerfile: &str) -> R
         }
         entry
             .unpack(&out)
-            .with_context(|| format!("unpacking {}", rel.display()))?;
+            .with_context(|| format!("Unpacking {}", rel.display()))?;
     }
     Ok(())
 }
@@ -521,18 +521,23 @@ pub async fn image(
         .settings
         .image_build
         .as_ref()
-        .context("the project builds no image")?;
+        .context("The project builds no image")?;
     let repo = project
         .repo
         .as_ref()
-        .context("the project has no repository to build its image from")?;
+        .context("The project has no repository to build its image from")?;
     let token = spec
         .credentials
         .github
         .as_ref()
         .or(spec.credentials.github_read.as_ref())
         .map(|c| c.token.as_str())
-        .with_context(|| format!("the session has no GitHub token for {}", repo.full_name()))?;
+        .with_context(|| {
+            format!(
+                "The session has no GitHub token to read {}'s files with",
+                repo.full_name()
+            )
+        })?;
     let gh = Github::new(&ctx.cfg.github_api, token);
     let data_dir = ctx.cfg.data_dir();
     let id = project.id.as_str();
@@ -692,7 +697,7 @@ async fn build(
         );
         tokio::task::spawn_blocking(move || unpack(&archive2, &src2, &context2, &dockerfile2))
             .await
-            .context("unpacking the repository")??;
+            .context("Unpacking the repository")??;
         let _ = std::fs::remove_file(&archive);
         let limit = Duration::from_secs(u64::from(ctx.cfg.build_timeout_minutes.max(1)) * 60);
         let job = crate::driver::BuildJob {

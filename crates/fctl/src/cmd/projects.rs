@@ -255,11 +255,11 @@ fn image(s: &ProjectSettings, repo: Option<&str>) -> String {
         (Some(b), _) => {
             let from = repo.unwrap_or("the project's repository");
             let context = match &b.context {
-                Some(c) if !b.is_devcontainer() => format!(", in {c}/"),
+                Some(c) if !b.is_devcontainer() => format!(" (in {c}/)"),
                 _ => String::new(),
             };
             format!(
-                "an image built from {}{context} in {from}, on runners that build images from it",
+                "an image built from {from}'s {}{context}, on runners that build images from {from}",
                 b.file
             )
         }

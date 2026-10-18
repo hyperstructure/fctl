@@ -318,23 +318,29 @@ impl HostImages<'_> {
 }
 
 /// Which images a host runs for projects that choose their own, in words:
-/// `any image`, `only its own image`, `its own image and ghcr.io/acme/*`.
+/// `runs any image a project chooses`, `runs only its own image`, `runs its
+/// own image and ghcr.io/acme/*`.
 pub fn describe_allowed(allowed: Option<&[String]>) -> String {
     match allowed {
-        None => "any image".into(),
-        Some(list) if list.iter().any(|p| p.trim() == "*") => "any image".into(),
-        Some([]) => "only its own image".into(),
-        Some(list) => format!("its own image and {}", list.join(", ")),
+        None => "runs any image a project chooses".into(),
+        Some(list) if list.iter().any(|p| p.trim() == "*") => {
+            "runs any image a project chooses".into()
+        }
+        Some([]) => "runs only its own image".into(),
+        Some(list) => format!("runs its own image and {}", list.join(", ")),
     }
 }
 
-/// Which repositories a host builds images from, in words: `none`,
-/// `acme/*, hyperstructure/fctl`, `any repository`.
+/// Which repositories a host builds images from, in words: `builds no
+/// images`, `builds images from acme/*`, `builds images from any
+/// repository`.
 pub fn describe_builds(builds: Option<&[String]>) -> String {
     match builds {
-        None | Some([]) => "none".into(),
-        Some(list) if list.iter().any(|p| p.trim() == "*") => "any repository".into(),
-        Some(list) => list.join(", "),
+        None | Some([]) => "builds no images".into(),
+        Some(list) if list.iter().any(|p| p.trim() == "*") => {
+            "builds images from any repository".into()
+        }
+        Some(list) => format!("builds images from {}", list.join(", ")),
     }
 }
 
@@ -504,16 +510,25 @@ mod tests {
     #[test]
     fn says_what_hosts_allow() {
         let list = |l: &[&str]| l.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert_eq!(describe_allowed(None), "any image");
-        assert_eq!(describe_allowed(Some(&[])), "only its own image");
+        assert_eq!(describe_allowed(None), "runs any image a project chooses");
+        assert_eq!(describe_allowed(Some(&[])), "runs only its own image");
         assert_eq!(
             describe_allowed(Some(&list(&["ghcr.io/acme/*", "ubuntu"]))),
-            "its own image and ghcr.io/acme/*, ubuntu"
+            "runs its own image and ghcr.io/acme/*, ubuntu"
         );
-        assert_eq!(describe_allowed(Some(&list(&["*"]))), "any image");
-        assert_eq!(describe_builds(None), "none");
-        assert_eq!(describe_builds(Some(&list(&["acme/*"]))), "acme/*");
-        assert_eq!(describe_builds(Some(&list(&["*"]))), "any repository");
+        assert_eq!(
+            describe_allowed(Some(&list(&["*"]))),
+            "runs any image a project chooses"
+        );
+        assert_eq!(describe_builds(None), "builds no images");
+        assert_eq!(
+            describe_builds(Some(&list(&["acme/*"]))),
+            "builds images from acme/*"
+        );
+        assert_eq!(
+            describe_builds(Some(&list(&["*"]))),
+            "builds images from any repository"
+        );
     }
 
     #[test]

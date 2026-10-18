@@ -36,6 +36,7 @@ import { api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
+import { type ImageSource, imageSource, isDevcontainer, withSource } from "@/lib/images";
 import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
 import {
   keys,
@@ -481,6 +482,82 @@ function LargestSandbox() {
   );
 }
 
+/** Where a project's sessions can start from: a build only with a repository. */
+function imageSources(project: G.Project): SelectOption<ImageSource>[] {
+  return [
+    {
+      value: "default",
+      label: "Each runner's own",
+      description: "ghcr.io/hyperstructure/sandbox, unless the runner's owner chose another",
+    },
+    { value: "image", label: "An image from a registry", description: "On runners that allow it" },
+    {
+      value: "build",
+      label: "Built from the repository",
+      description: project.repo
+        ? "A Dockerfile or devcontainer.json on its default branch"
+        : "Link a repository first",
+      disabled: !project.repo,
+    },
+  ];
+}
+
+/** The file a project's image builds from, and the directory a Dockerfile builds in. */
+function BuildFields({
+  project,
+  build,
+  onChange,
+  error,
+}: {
+  project: G.Project;
+  build: G.ImageBuild;
+  onChange: (b: G.ImageBuild) => void;
+  error?: string;
+}) {
+  const repo = project.repo ? `${project.repo.owner}/${project.repo.name}` : "the repository";
+  const devcontainer = isDevcontainer(build.file);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="File" error={error}>
+          {(id) => (
+            <Input
+              id={id}
+              value={build.file}
+              onChange={(e) =>
+                onChange({
+                  file: e.target.value,
+                  context: isDevcontainer(e.target.value) ? undefined : build.context,
+                })
+              }
+              className="font-mono"
+              placeholder="Dockerfile"
+            />
+          )}
+        </Field>
+        {!devcontainer && (
+          <Field label="Directory" hint="Where it builds. Empty: the repository's root.">
+            {(id) => (
+              <Input
+                id={id}
+                value={build.context ?? ""}
+                onChange={(e) => onChange({ ...build, context: e.target.value || undefined })}
+                className="font-mono"
+                placeholder="."
+              />
+            )}
+          </Field>
+        )}
+      </div>
+      <p className="text-[12.5px] text-ink-3">
+        Runners whose owners allow builds from {repo} (allowed_builds in host.toml) build it from{" "}
+        {project.default_branch}, keep it, and build it again when the files it comes from change.
+        {devcontainer ? " The devcontainer.json names its own Dockerfile and directory." : ""}
+      </p>
+    </div>
+  );
+}
+
 /** Claude's effort levels; the empty value leaves it to Claude. */
 const EFFORTS: SelectOption[] = [
   { value: "", label: "Claude's default" },
@@ -505,7 +582,11 @@ function Settings({ project }: { project: G.Project }) {
       .map(([k, v]) => `${k}=${v}`)
       .join("\n"),
   );
-  useEffect(() => setS(project.settings), [project.settings]);
+  const [source, setSource] = useState<ImageSource>(imageSource(project.settings));
+  useEffect(() => {
+    setS(project.settings);
+    setSource(imageSource(project.settings));
+  }, [project.settings]);
   const save = useMutation({
     mutationFn: () => {
       const env: Record<string, string> = {};
@@ -740,19 +821,46 @@ function Settings({ project }: { project: G.Project }) {
           </Field>
           <Field
             label="Image"
-            hint="An OCI image with git and Claude Code. Empty: the host's default."
-            error={err("image")}
+            hint="Apple container and Docker runners make sandboxes from it. Lima runners clone the VM their host prepared, and the process driver uses none."
           >
             {(id) => (
-              <Input
+              <Select
                 id={id}
-                value={s.image ?? ""}
-                onChange={(e) => set("image", e.target.value || undefined)}
-                className="font-mono"
-                placeholder="ghcr.io/hyperstructure/sandbox"
+                value={source}
+                onChange={(v) => {
+                  setSource(v);
+                  setS((x) => withSource(x, v));
+                }}
+                options={imageSources(project)}
+                className="w-full"
               />
             )}
           </Field>
+          {source === "image" && (
+            <Field
+              label="Image reference"
+              hint="It needs git and Claude Code 2.1.101 or later. Runners run it when their owners allow it (allowed_images in host.toml); a session no runner allows stays queued and says so."
+              error={err("image")}
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  value={s.image ?? ""}
+                  onChange={(e) => set("image", e.target.value || undefined)}
+                  className="font-mono"
+                  placeholder="ghcr.io/acme/agent:1"
+                />
+              )}
+            </Field>
+          )}
+          {source === "build" && s.image_build && (
+            <BuildFields
+              project={project}
+              build={s.image_build}
+              onChange={(b) => set("image_build", b)}
+              error={err("settings.image_build")}
+            />
+          )}
           <div className="grid grid-cols-3 gap-4">
             <Field label="CPUs" error={err("settings.cpus")}>
               {(id) => (

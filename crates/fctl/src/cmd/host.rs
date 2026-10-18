@@ -264,7 +264,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 println!(
                     "{}",
                     style::dim(&format!(
-                        "For projects that choose their own, it runs {}, and builds images from {}.",
+                        "It {} and {}.",
                         image::describe_allowed(images.allowed.as_deref()),
                         image::describe_builds(images.builds.as_deref())
                     ))
@@ -319,11 +319,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             if let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), None).await {
                 let images = cfg.images(d.uses_images());
                 println!(
-                    "runs:     {}",
-                    image::describe_allowed(images.allowed.as_deref())
-                );
-                println!(
-                    "builds:   {}",
+                    "images:   {}; {}",
+                    image::describe_allowed(images.allowed.as_deref()),
                     image::describe_builds(images.builds.as_deref())
                 );
             }
@@ -805,7 +802,7 @@ async fn doctor() -> Result<()> {
     check(
         problems_with_images.is_empty(),
         &format!(
-            "runs {} for projects that choose their own; builds images from {}",
+            "images: {}; {}",
             image::describe_allowed(cfg.allowed_images.as_deref()),
             image::describe_builds(cfg.allowed_builds.as_deref())
         ),
