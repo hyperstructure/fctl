@@ -509,7 +509,11 @@ async fn run(
     let mut said_hello = false;
     // Whether the agent can be reached, for the session's viewers.
     let mut reach = Reach::default();
-    reach.down(Instant::now(), "no answer from fctl-agent yet");
+    reach.down(
+        Instant::now(),
+        Instant::now(),
+        "no answer from fctl-agent yet",
+    );
     let gave_up = || {
         let msg = "fctl-agent stopped responding in the sandbox".to_owned();
         uplink.state(state(SessionStatus::Failed, &msg));
@@ -539,7 +543,7 @@ async fn run(
                     Ok(io) => link = Some(AgentLink::open(io, &sb.name)),
                     Err(e) => {
                         tracing::warn!("attaching to {}: {e:#}", sb.name);
-                        reach.down(Instant::now(), format!("{e:#}"));
+                        reach.down(Instant::now(), Instant::now(), format!("{e:#}"));
                         let Some(wait) = retry.failed(Instant::now()) else { break gave_up() };
                         attach_at = Some(Instant::now() + wait);
                         restart_agent = true;
@@ -559,11 +563,11 @@ async fn run(
                     if answered {
                         tracing::info!("the link to fctl-agent in {} closed; attaching again", sb.name);
                         let heard = closed.as_ref().map_or_else(Instant::now, |l| l.health.last_heard());
-                        reach.down(heard, "the link to fctl-agent closed");
+                        reach.down(heard, Instant::now(), "the link to fctl-agent closed");
                         attach_at = Some(Instant::now() + Duration::from_millis(500));
                     } else {
                         tracing::warn!("attaching to {}: the link closed before fctl-agent said hello", sb.name);
-                        reach.down(Instant::now(), "the link closed before fctl-agent said hello");
+                        reach.down(Instant::now(), Instant::now(), "the link closed before fctl-agent said hello");
                         let Some(wait) = retry.failed(Instant::now()) else { break gave_up() };
                         attach_at = Some(Instant::now() + wait);
                         restart_agent = true;
@@ -725,7 +729,7 @@ async fn run(
                         Check::Fine => {}
                         Check::Ping => l.send(HostToAgent::Ping),
                         Check::Dead(why) => {
-                            reach.down(l.health.last_heard(), why);
+                            reach.down(l.health.last_heard(), Instant::now(), why);
                             let wait = retry.stalled();
                             tracing::warn!(
                                 "{}: {why}; attaching again in {} s",

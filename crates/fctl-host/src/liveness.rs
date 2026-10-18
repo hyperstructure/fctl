@@ -132,15 +132,24 @@ impl Retry {
 }
 
 /// Whether the host reaches the agent, as the session's viewers hear it:
-/// that it can't, once no link has worked for [`REPORT_AFTER`] (again when
-/// what goes wrong changes), and that it can once a link says hello again.
+/// that it can't, once the host has known of no working link for
+/// [`REPORT_AFTER`] (again when what goes wrong changes), and that it can
+/// once a link says hello again.
 #[derive(Default)]
 pub struct Reach {
-    /// Since when no link has worked, and what went wrong last.
-    down: Option<(Instant, String)>,
+    down: Option<Down>,
     /// What went wrong, as last reported, while the viewers think the agent
     /// can't be reached.
     reported: Option<String>,
+}
+
+struct Down {
+    /// Since when no link has worked: when the agent was last heard from.
+    since: Instant,
+    /// When the host found out.
+    noticed: Instant,
+    /// What went wrong last.
+    reason: String,
 }
 
 /// What to tell the session's viewers.
@@ -159,26 +168,34 @@ impl Reach {
         self.reported.take().map(|_| Reached::Again)
     }
 
-    /// No link works, since `since`, because of `reason`. While links keep
-    /// failing, the first failure's time stands and the reason is the latest.
-    pub fn down(&mut self, since: Instant, reason: impl Into<String>) {
+    /// No link works, since `since`, because of `reason`; the host found out
+    /// `now`. While links keep failing, the first failure's times stand and
+    /// the reason is the latest.
+    pub fn down(&mut self, since: Instant, now: Instant, reason: impl Into<String>) {
         let reason = reason.into();
         match &mut self.down {
-            Some((_, why)) => *why = reason,
-            None => self.down = Some((since, reason)),
+            Some(d) => d.reason = reason,
+            None => {
+                self.down = Some(Down {
+                    since,
+                    noticed: now,
+                    reason,
+                });
+            }
         }
     }
 
     /// What to report now, if anything.
     pub fn check(&mut self, now: Instant) -> Option<Reached> {
-        let (since, reason) = self.down.as_ref()?;
-        if now.duration_since(*since) < REPORT_AFTER || self.reported.as_ref() == Some(reason) {
+        let d = self.down.as_ref()?;
+        if now.duration_since(d.noticed) < REPORT_AFTER || self.reported.as_ref() == Some(&d.reason)
+        {
             return None;
         }
-        self.reported = Some(reason.clone());
+        self.reported = Some(d.reason.clone());
         Some(Reached::Not {
-            since: *since,
-            reason: reason.clone(),
+            since: d.since,
+            reason: d.reason.clone(),
         })
     }
 }
@@ -260,42 +277,60 @@ mod tests {
         let t0 = Instant::now();
         let mut reach = Reach::default();
         // The first attach, and a link that closes and comes back.
-        reach.down(t0, "no answer from fctl-agent yet");
+        reach.down(t0, t0, "no answer from fctl-agent yet");
         assert_eq!(reach.check(t0 + secs(2)), None);
         assert_eq!(reach.up(), None);
-        reach.down(t0 + secs(30), "the link to fctl-agent closed");
+        reach.down(
+            t0 + secs(25),
+            t0 + secs(30),
+            "the link to fctl-agent closed",
+        );
         assert_eq!(reach.check(t0 + secs(39)), None);
         assert_eq!(reach.up(), None);
         assert_eq!(reach.check(t0 + secs(60)), None);
+        // A host that slept wakes up to a link silent for long, and attaches again.
+        let woke = t0 + secs(600);
+        reach.down(
+            t0 + secs(60),
+            woke,
+            "nothing came from fctl-agent for a minute",
+        );
+        assert_eq!(reach.check(woke + secs(1)), None);
+        assert_eq!(reach.up(), None);
     }
 
     #[test]
     fn a_dead_link_is_reported_from_when_the_agent_was_last_heard() {
         let t0 = Instant::now();
         let mut reach = Reach::default();
-        // Silent for a minute: down since it was last heard, so at once.
-        reach.down(t0, "nothing came from fctl-agent for a minute");
+        // Silent for a minute, and no new link within seconds of finding out:
+        // down since the agent was last heard.
+        let found = t0 + secs(60);
+        reach.down(t0, found, "nothing came from fctl-agent for a minute");
         let not = |since, reason: &str| {
             Some(Reached::Not {
                 since,
                 reason: reason.to_owned(),
             })
         };
+        assert_eq!(reach.check(found + secs(9)), None);
         assert_eq!(
-            reach.check(t0 + secs(60)),
+            reach.check(found + REPORT_AFTER),
             not(t0, "nothing came from fctl-agent for a minute")
         );
-        assert_eq!(reach.check(t0 + secs(61)), None);
+        assert_eq!(reach.check(found + secs(11)), None);
         // Attaching again fails: same time, the new reason.
+        let failed = found + secs(12);
         reach.down(
-            t0 + secs(62),
+            failed,
+            failed,
             "`docker exec` did not finish within 60 seconds",
         );
         assert_eq!(
-            reach.check(t0 + secs(62)),
+            reach.check(failed),
             not(t0, "`docker exec` did not finish within 60 seconds")
         );
-        assert_eq!(reach.check(t0 + secs(90)), None);
+        assert_eq!(reach.check(found + secs(30)), None);
         // A link says hello.
         assert_eq!(reach.up(), Some(Reached::Again));
         assert_eq!(reach.up(), None);
@@ -306,7 +341,7 @@ mod tests {
     fn a_link_that_never_comes_up_is_reported_after_a_few_seconds() {
         let t0 = Instant::now();
         let mut reach = Reach::default();
-        reach.down(t0, "no answer from fctl-agent yet");
+        reach.down(t0, t0, "no answer from fctl-agent yet");
         assert_eq!(reach.check(t0 + secs(9)), None);
         assert_eq!(
             reach.check(t0 + REPORT_AFTER),

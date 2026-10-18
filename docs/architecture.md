@@ -272,8 +272,8 @@ come through:
   viewers' pings, every 25 seconds, notice an uplink that went quiet.
   Otherwise the frames say when the runner was last heard from.
 - **The runner can't reach the agent** when its host says so
-  (`UplinkUp::AgentLink`): once it has had no working link to fctl-agent
-  for 10 seconds, with when it last heard from it and what went wrong. Hosts
+  (`UplinkUp::AgentLink`): once it has known for 10 seconds that no link to
+  fctl-agent works, with when it last heard from it and what went wrong. Hosts
   say it again after every reconnect, and SessionDO forgets it when the
   uplink closes. Older hosts never say it.
 
@@ -452,9 +452,10 @@ Restarting or upgrading the host does not stop agents. The host pings the
 agent every 15 seconds and replaces a link that carries nothing for a
 minute, or gets no hello within 30 seconds of attaching: it kills the exec,
 starts fctl-agent again if it is gone, and attaches again, waiting longer
-after each failure (`crates/fctl-host/src/liveness.rs`). Once it has had no
-working link for 10 seconds, the session's viewers hear that the agent
-can't be reached, and since when ([Viewers](#viewers)).
+after each failure (`crates/fctl-host/src/liveness.rs`). Once it has known
+for 10 seconds that no link works, the session's viewers hear that the
+agent can't be reached, and since when ([Viewers](#viewers)); a host that
+wakes from sleep to silent links attaches again within them.
 
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
