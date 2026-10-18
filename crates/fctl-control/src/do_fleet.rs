@@ -847,8 +847,12 @@ impl FleetObject {
                     SqlStorageValue::from(by),
                 ]),
             );
-            let reported = self.reported_sessions(&b.runner_id);
-            self.stop_idle_if_draining(&b.runner_id, &reported).await;
+            if b.stop_sessions {
+                self.stop_all(&b.runner_id, &b.runner_name).await;
+            } else {
+                let reported = self.reported_sessions(&b.runner_id);
+                self.stop_idle_if_draining(&b.runner_id, &reported).await;
+            }
         } else {
             let _ = self.sql.exec(
                 "UPDATE runners SET draining_since = NULL, drained_by = NULL WHERE id = ?",
@@ -858,6 +862,63 @@ impl FleetObject {
         self.feed_runner(&b.runner_id).await;
         self.dispatch().await;
         Ok(serde_json::json!({ "ok": true }))
+    }
+
+    /// Its host is being uninstalled: every session on the runner stops
+    /// (their agents push their work), and from now on the sessions whose
+    /// sandboxes it has resume on other runners. One whose runner is
+    /// offline stops here and now: nothing can reach its host.
+    async fn stop_all(&self, runner_id: &str, runner_name: &str) {
+        let _ = self.sql.exec(
+            "DELETE FROM sandboxes WHERE runner_id = ?",
+            Some(vec![sv(runner_id)]),
+        );
+        let assigned: Vec<AssignRow> = self
+            .sql
+            .exec(
+                "SELECT session_id, runner_id, accepted FROM assignments WHERE runner_id = ?",
+                Some(vec![sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<AssignRow>())
+            .unwrap_or_default();
+        let online = self.runner_socket(runner_id).is_some();
+        for a in assigned {
+            let session_id = SessionId(a.session_id);
+            if online {
+                // Stopping first, so that messages wait for the next run.
+                self.session_control(
+                    &session_id,
+                    Some(SessionStatus::Stopping),
+                    Some(format!("Stopping: {runner_name} is being uninstalled")),
+                    false,
+                )
+                .await;
+                self.send_runner(
+                    runner_id,
+                    &FleetToHost::StopSession {
+                        session_id,
+                        reason: StopReason::Shutdown,
+                        destroy: false,
+                    },
+                );
+            } else {
+                let _ = self.sql.exec(
+                    "DELETE FROM assignments WHERE session_id = ?",
+                    Some(vec![sv(session_id.as_str())]),
+                );
+                if !self.queued(session_id.as_str()) {
+                    self.session_control(
+                        &session_id,
+                        Some(SessionStatus::Stopped),
+                        Some(format!(
+                            "Stopped: {runner_name} was uninstalled. A message resumes the session on another runner."
+                        )),
+                        true,
+                    )
+                    .await;
+                }
+            }
+        }
     }
 
     /// The sessions a runner reported last.

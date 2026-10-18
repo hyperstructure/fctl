@@ -4,4 +4,10 @@
  * `POST /api/v1/runner/drain`, with the runner token: a host drains itself,
  * or stops draining.
  */
-export type DrainRequest = { draining: boolean, };
+export type DrainRequest = { draining: boolean, 
+/**
+ * Also stop the sessions it runs now (`fctl host uninstall`): their
+ * agents stop and push their work, and from then on the sessions
+ * whose sandboxes it has resume on other runners.
+ */
+stop_sessions?: boolean, };

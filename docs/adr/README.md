@@ -21,3 +21,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0013](0013-idle-sessions-stop-and-a-message-resumes-them.md) | Idle sessions stop, and a message resumes them |
 | [0014](0014-agents-publish-screenshots-at-unguessable-links.md) | Agents publish screenshots at unguessable links |
 | [0015](0015-runners-drain-and-their-sessions-carry-on.md) | Runners drain, and their sessions carry on |
+| [0016](0016-uninstalling-a-host-stops-its-sessions-first.md) | Uninstalling a host stops its sessions first |

@@ -594,10 +594,16 @@ pub struct UpdateRunnerRequest {
 
 /// `POST /api/v1/runner/drain`, with the runner token: a host drains itself,
 /// or stops draining.
+#[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct DrainRequest {
     pub draining: bool,
+    /// Also stop the sessions it runs now (`fctl host uninstall`): their
+    /// agents stop and push their work, and from then on the sessions
+    /// whose sandboxes it has resume on other runners.
+    #[serde(default)]
+    pub stop_sessions: Option<bool>,
 }
 
 /// `GET /api/v1/runner`, with the runner token: the runner as the control

@@ -10,6 +10,7 @@ use fctl_host::config::means_default_image;
 use fctl_host::driver::Driver;
 use fctl_host::{HostConfig, service};
 use fctl_proto::api::{RunnerDetail, RunnerStatus};
+use std::io::IsTerminal;
 
 #[derive(Subcommand)]
 pub enum HostCmd {
@@ -76,8 +77,18 @@ pub enum HostCmd {
     },
     /// Take new sessions again.
     Undrain,
-    /// Stop and remove the service (sandboxes are kept).
-    Uninstall,
+    /// Stop and remove the service (sandboxes are kept). When sessions run
+    /// here, it says what happens to them and asks first.
+    Uninstall {
+        /// Drain this host first, and uninstall once no session runs here.
+        #[arg(long, conflicts_with = "force")]
+        wait: bool,
+        /// Stop the sessions that run here now, then uninstall. Their agents
+        /// stop and push their work, and a message resumes each session on
+        /// another runner.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -365,7 +376,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         }
         HostCmd::Drain { wait } => {
             let api = runner_api()?;
-            let mut d = api.drain_this_runner(true).await?;
+            let mut d = api.drain_this_runner(true, false).await?;
             if !json {
                 println!(
                     "{} Draining {}: no new sessions start here.",
@@ -394,7 +405,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             Ok(())
         }
         HostCmd::Undrain => {
-            let d = runner_api()?.drain_this_runner(false).await?;
+            let d = runner_api()?.drain_this_runner(false, false).await?;
             if json {
                 return style::print_json(&d);
             }
@@ -405,10 +416,208 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             );
             Ok(())
         }
-        HostCmd::Uninstall => {
-            service::uninstall()?;
-            println!("Removed the service. Configuration and sandboxes are kept.");
-            Ok(())
+        HostCmd::Uninstall { wait, force } => uninstall(wait, force, json).await,
+    }
+}
+
+/// `fctl host uninstall`: sessions that run here finish first (`--wait`) or
+/// stop properly (`--force`, or yes when asked), so that no agent keeps
+/// working where nobody sees it.
+async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
+    let asked = match runner_api() {
+        Ok(api) => match api.this_runner().await {
+            Ok(d) => Ok((api, d)),
+            Err(e) => Err(anyhow::Error::from(e)),
+        },
+        Err(e) => Err(e),
+    };
+    let mut drained = false;
+    match asked {
+        Ok((_, d)) if d.sessions.is_empty() => {}
+        Ok((api, d)) => {
+            let n = d.sessions.len();
+            let online = d.runner.status == RunnerStatus::Online;
+            if !json {
+                println!(
+                    "{} on this host:",
+                    match n {
+                        1 => "1 session runs".to_owned(),
+                        n => format!("{n} sessions run"),
+                    }
+                );
+                admin::print_sessions(&d.sessions);
+                println!(
+                    "{}",
+                    style::dim(if wait {
+                        "Draining the host: no new sessions start here, and it uninstalls once none runs."
+                    } else if n == 1 {
+                        "Uninstalling now stops it: its agent stops and pushes what it committed, and a message resumes the session on another runner, in a new sandbox without its conversation."
+                    } else {
+                        "Uninstalling now stops them: their agents stop and push what they committed, and a message resumes each on another runner, in a new sandbox without its conversation."
+                    })
+                );
+            }
+            if wait {
+                if !json && !online {
+                    println!(
+                        "{}",
+                        style::dim(
+                            "The host isn't connected, so its sessions can't finish here: the control plane stops them within ten minutes."
+                        )
+                    );
+                }
+                let d = api.drain_this_runner(true, false).await?;
+                wait_until_drained(&api, d, json).await?;
+            } else {
+                let interactive = !json && std::io::stdin().is_terminal();
+                let stop =
+                    force || (interactive && confirm("Stop them and uninstall now? [y/N] ")?);
+                if !stop {
+                    let (them, sessions) = if n == 1 {
+                        ("it", "1 session runs".to_owned())
+                    } else {
+                        ("them", format!("{n} sessions run"))
+                    };
+                    if interactive {
+                        println!(
+                            "Nothing changed. `fctl host uninstall --wait` lets {them} finish first."
+                        );
+                        return Ok(());
+                    }
+                    bail!(
+                        "{sessions} on this host. `fctl host uninstall --wait` lets {them} finish first; `--force` stops {them} now."
+                    );
+                }
+                let d = api.drain_this_runner(true, true).await?;
+                if online {
+                    wait_until_stopped(&api, d, json).await?;
+                } else {
+                    // Nothing reaches its host: stop the sandboxes here.
+                    if !json {
+                        println!(
+                            "{}",
+                            style::dim(
+                                "The host isn't connected, so this stops the sandboxes here directly: their agents don't get to push what they haven't yet."
+                            )
+                        );
+                    }
+                    stop_sandboxes_here(json).await;
+                }
+            }
+            drained = true;
+        }
+        Err(e) => {
+            // The control plane can't say what runs here: look at the sandboxes.
+            let running = running_sandboxes().await;
+            if running > 0 && !force {
+                let sandboxes = if running == 1 {
+                    "a session's sandbox still runs".to_owned()
+                } else {
+                    format!("{running} sessions' sandboxes still run")
+                };
+                bail!(
+                    "Could not ask the control plane which sessions run here ({e:#}), and {sandboxes} on this machine: their agents would keep working without reaching fctl. `fctl host uninstall --force` stops them and uninstalls."
+                );
+            }
+            if running > 0 {
+                stop_sandboxes_here(json).await;
+            }
+        }
+    }
+    service::uninstall()?;
+    if json {
+        return style::print_json(&serde_json::json!({ "uninstalled": true, "drained": drained }));
+    }
+    println!("Removed the service. Configuration and sandboxes are kept.");
+    if drained {
+        println!(
+            "{}",
+            style::dim(
+                "The runner keeps draining: once the host runs again, `fctl host undrain` lets it take new sessions."
+            )
+        );
+    }
+    Ok(())
+}
+
+/// Asks a yes-or-no question on the terminal.
+fn confirm(question: &str) -> Result<bool> {
+    use std::io::{BufRead, Write};
+    print!("{question}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+}
+
+/// Waits, for two minutes at most, until the sessions this runner was asked
+/// to stop have stopped.
+async fn wait_until_stopped(api: &fctl_client::Api, mut d: RunnerDetail, json: bool) -> Result<()> {
+    if !json {
+        println!("{}", style::dim("Stopping…"));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !d.sessions.is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        d = api.this_runner().await?;
+    }
+    if !json {
+        match d.sessions.len() {
+            0 => println!("{} No sessions run here.", style::accent("✓")),
+            1 => println!(
+                "{}",
+                style::amber(
+                    "A session hadn't stopped after two minutes; uninstalling anyway. Its agent stops on its own once it is idle."
+                )
+            ),
+            n => println!(
+                "{}",
+                style::amber(&format!(
+                    "{n} sessions hadn't stopped after two minutes; uninstalling anyway. Their agents stop on their own once they are idle."
+                ))
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// The sandboxes of sessions that run on this machine, by the host's driver.
+async fn running_sandboxes() -> usize {
+    let Ok(cfg) = HostConfig::load() else {
+        return 0;
+    };
+    let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), cfg.agent_bin.clone()).await else {
+        return 0;
+    };
+    d.list()
+        .await
+        .map(|l| {
+            l.iter()
+                .filter(|s| s.running && fctl_host::driver::session_of(&s.name).is_some())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Stops the sandboxes of sessions on this machine with the driver, when
+/// the host can't stop them itself. Their agents don't get to push.
+async fn stop_sandboxes_here(json: bool) {
+    let Ok(cfg) = HostConfig::load() else {
+        return;
+    };
+    let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), cfg.agent_bin.clone()).await else {
+        return;
+    };
+    let Ok(list) = d.list().await else { return };
+    for sb in list
+        .iter()
+        .filter(|s| s.running && fctl_host::driver::session_of(&s.name).is_some())
+    {
+        if !json {
+            println!("{}", style::dim(&format!("Stopping {}…", sb.name)));
+        }
+        if let Err(e) = d.stop(&d.handle(&sb.name)).await {
+            eprintln!("{}", style::red(&format!("stopping {}: {e:#}", sb.name)));
         }
     }
 }

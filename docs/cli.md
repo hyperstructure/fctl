@@ -176,7 +176,9 @@ fctl host restart                # sessions keep running
 fctl host drain                  # take no new sessions; the ones here carry on
 fctl host drain --wait           # …and wait until none runs here
 fctl host undrain                # take new sessions again
-fctl host uninstall              # sandboxes are kept
+fctl host uninstall              # sandboxes are kept; asks first when sessions run
+fctl host uninstall --wait       # drain, and uninstall once none runs
+fctl host uninstall --force      # stop the sessions here now, then uninstall
 ```
 
 Drain a host before maintenance, or when its disk fills up: no new session
@@ -186,6 +188,13 @@ them on this host, where its sandbox has Claude's conversation. So the host
 is empty whenever no turn runs, and `--wait` returns then. Admins can drain
 a runner too, from the runners list or with `fctl admin drain`; whoever
 drained it, either can stop the drain.
+
+`fctl host uninstall` stops the service, so it never leaves sessions to
+agents nobody sees: when sessions run on the host, it lists them and asks
+before it stops them, or, without a terminal, needs `--wait` or `--force`.
+Stopped this way, their agents stop and push their work, and a message
+resumes each on another runner, in a new sandbox without its conversation.
+The runner keeps draining until `fctl host undrain`.
 
 `fctl host install` checks the driver before it registers anything: if the
 driver can't run sessions (Apple's `container` or Lima isn't installed, a

@@ -533,8 +533,20 @@ impl Api {
     }
 
     /// Drains the runner whose token this client has, or stops draining it.
-    pub async fn drain_this_runner(&self, draining: bool) -> Result<RunnerDetail> {
-        self.post("/runner/drain", &DrainRequest { draining }).await
+    /// `stop_sessions` also stops the sessions it runs (uninstalling).
+    pub async fn drain_this_runner(
+        &self,
+        draining: bool,
+        stop_sessions: bool,
+    ) -> Result<RunnerDetail> {
+        self.post(
+            "/runner/drain",
+            &DrainRequest {
+                draining,
+                stop_sessions: stop_sessions.then_some(true),
+            },
+        )
+        .await
     }
 
     // ── Claude ──
