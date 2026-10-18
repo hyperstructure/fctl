@@ -1483,7 +1483,17 @@ fn stop_text(r: StopReason) -> &'static str {
 
 /// Used by `main` to run the supervisor and its sockets.
 pub async fn serve(socket: PathBuf, state_dir: PathBuf) -> Result<()> {
-    let listener = link::bind(&socket).await?;
+    // The lock is held until the supervisor exits.
+    let (listener, _lock) = match link::claim(&socket).await? {
+        link::Claim::Serving(listener, lock) => (listener, lock),
+        link::Claim::Taken => {
+            tracing::info!(
+                "fctl-agent is already serving {}; this one exits",
+                socket.display()
+            );
+            return Ok(());
+        }
+    };
     let (link_tx, link_rx) = mpsc::unbounded_channel();
     tokio::spawn(link::accept_loop(listener, link_tx));
     // Without the session socket the agent cannot rename the session, but
