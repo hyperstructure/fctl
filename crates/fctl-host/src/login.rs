@@ -63,7 +63,8 @@ async fn login(
     }
     let spec = SandboxSpec {
         name: name.to_owned(),
-        image: ctx.cfg.image.clone(),
+        image: ctx.cfg.image(),
+        fallback_image: ctx.cfg.fallback_image(),
         cpus: 1,
         memory_mb: 1024,
     };

@@ -369,11 +369,10 @@ function Runners() {
             <CodeBox value={`curl -fsSL ${site}/install | sh`} />
             <div className="text-[12.5px] text-ink-3">2. Register it as a runner and start the service</div>
             <CodeBox value={`FCTL_SERVER=${location.origin} fctl host install --token ${reg.token}`} />
-            <div className="text-[12.5px] text-ink-3">3. Build the sandbox image (once, a few minutes)</div>
-            <CodeBox value="fctl host image build" />
             <p className="text-[12.5px] leading-relaxed text-ink-4">
-              It shows up here as online within seconds. `fctl host doctor` checks everything, including
-              whether the Mac is set to never sleep.
+              It shows up here as online within seconds, and pulls the sandbox image while it waits for its
+              first session. With Lima, prepare the base VM once with `fctl host image build`. `fctl host
+              doctor` checks everything, including whether the Mac is set to never sleep.
             </p>
           </div>
         )}

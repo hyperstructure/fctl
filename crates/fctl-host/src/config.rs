@@ -5,7 +5,7 @@
 //! name = "studio-mac"
 //! driver = "auto"          # apple | docker | lima | process | auto
 //! capacity = 4
-//! image = "fctl-agent:latest"
+//! image = "ghcr.io/acme/agent:1"  # unset: the published image of this version
 //! cpus = 4                 # per sandbox, when its project sets none
 //! memory_mb = 8192         # per sandbox, when its project sets none
 //! max_cpus = 8             # per sandbox (default: what the machine has)
@@ -19,6 +19,26 @@ use fctl_proto::runner::{SandboxLimits, SandboxSize};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Where the default sandbox image, `images/agent`, is published
+/// (.github/workflows/image.yml): a tag for every release.
+pub const IMAGE_REPOSITORY: &str = "ghcr.io/hyperstructure/fctl-agent";
+
+/// The default image before it was published, which hosts installed until
+/// then have in host.toml.
+const OLD_DEFAULT_IMAGE: &str = "fctl-agent:latest";
+
+/// The published sandbox image of this version of fctl.
+pub fn default_image() -> String {
+    format!("{IMAGE_REPOSITORY}:{}", crate::agentbin::VERSION)
+}
+
+/// Whether an image setting, the host's or a project's, means the host's
+/// default: empty, or the name the default had before it was published.
+pub fn means_default_image(image: &str) -> bool {
+    let image = image.trim();
+    image.is_empty() || image == OLD_DEFAULT_IMAGE
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HostConfig {
@@ -29,8 +49,9 @@ pub struct HostConfig {
     pub driver: String,
     /// Maximum concurrent sessions.
     pub capacity: u32,
-    /// Sandbox image for sessions whose project sets none.
-    pub image: String,
+    /// Sandbox image for sessions whose project sets none. Unset: the
+    /// published image of this host's version ([`default_image`]).
+    pub image: Option<String>,
     /// CPUs and memory (MiB) for sandboxes whose project sets none.
     pub cpus: u32,
     pub memory_mb: u32,
@@ -62,7 +83,7 @@ impl Default for HostConfig {
             name: hostname(),
             driver: "auto".into(),
             capacity: 4,
-            image: "fctl-agent:latest".into(),
+            image: None,
             cpus: 4,
             memory_mb: 8192,
             max_cpus: None,
@@ -142,7 +163,13 @@ impl HostConfig {
                 path.display()
             )
         })?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        Self::from_toml(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    fn from_toml(text: &str) -> Result<Self> {
+        let mut cfg: Self = toml::from_str(text)?;
+        cfg.image = cfg.image.filter(|i| !means_default_image(i));
+        Ok(cfg)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -180,6 +207,21 @@ impl HostConfig {
 
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir.clone().unwrap_or_else(default_data_dir)
+    }
+
+    /// The sandbox image for sessions whose project sets none.
+    pub fn image(&self) -> String {
+        self.image.clone().unwrap_or_else(default_image)
+    }
+
+    /// What sandboxes use when [`image`](Self::image) can't be pulled: on
+    /// the default image, the latest published one. A release's own image is
+    /// published a few minutes after the release, and development builds may
+    /// have a version with none.
+    pub fn fallback_image(&self) -> Option<String> {
+        self.image
+            .is_none()
+            .then(|| format!("{IMAGE_REPOSITORY}:latest"))
     }
 
     /// What this host gives each sandbox: the configured defaults and
@@ -223,6 +265,31 @@ mod tests {
 
     fn size(cpus: u32, memory_mb: u32) -> SandboxSize {
         SandboxSize { cpus, memory_mb }
+    }
+
+    #[test]
+    fn hosts_on_the_default_image_follow_their_version() -> Result<()> {
+        let published = format!(
+            "ghcr.io/hyperstructure/fctl-agent:{}",
+            crate::agentbin::VERSION
+        );
+        // Unset, empty, or the default's name from before it was published.
+        for text in ["", "image = \"\"", "image = \"fctl-agent:latest\""] {
+            let cfg = HostConfig::from_toml(text)?;
+            assert_eq!(cfg.image, None, "{text}");
+            assert_eq!(cfg.image(), published);
+            assert_eq!(
+                cfg.fallback_image().as_deref(),
+                Some("ghcr.io/hyperstructure/fctl-agent:latest")
+            );
+        }
+        let cfg = HostConfig::from_toml("image = \"ghcr.io/acme/agent:1\"")?;
+        assert_eq!(cfg.image(), "ghcr.io/acme/agent:1");
+        assert_eq!(cfg.fallback_image(), None);
+        // host.toml leaves the default out, so the next version brings its own.
+        let saved = toml::to_string_pretty(&HostConfig::default())?;
+        assert!(!saved.lines().any(|l| l.starts_with("image")), "{saved}");
+        Ok(())
     }
 
     #[test]
