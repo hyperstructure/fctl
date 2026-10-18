@@ -42,7 +42,10 @@ fake-claude reacts to words in the prompt: `write <name>` creates and
 commits a file, `slow` streams slowly, `limit` hits a usage limit, `overage`
 reports paid usage (the session must pause), `refresh` asks the host for a
 new OAuth token, and `crash` exits mid-turn. Anything else gets a short
-answer with a tool call.
+answer with a tool call. Its `system/init` message lists a claude.ai
+connector, `claude.ai Fake Docs`, unless `ENABLE_CLAUDEAI_MCP_SERVERS` is
+`false`, so sessions in a project with claude.ai connectors turned off show
+none (`fctl logs --json`).
 
 `--no-host` skips the host; `--no-vite` serves the built web app from
 wrangler instead. Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/`

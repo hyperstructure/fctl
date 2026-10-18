@@ -51,6 +51,16 @@ outside it except through these channels:
 - **Claude.** A short-lived access token for the session's owner. Refresh
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host.
+- **claude.ai connectors.** A session on a full Claude login gets the
+  connectors its owner has connected on claude.ai (mail, files, docs, chat),
+  and the agent can use them with that person's access without asking, also
+  when a repository or a web page tells it to. Long-lived tokens from
+  `claude setup-token` don't reach connectors. The **claude.ai connectors**
+  project setting turns them off for a project's sessions, and a
+  repository's Claude settings can't turn them back on. Projects created in
+  the app start with it off (from the CLI: `fctl projects create
+  --no-connectors`); projects from before the setting keep their connectors
+  until a maintainer turns them off.
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 

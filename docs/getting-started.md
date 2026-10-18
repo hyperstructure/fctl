@@ -94,7 +94,9 @@ starts again after a reboot or a power cut.
 In the app, choose **New project**. Link an existing GitHub repository, create
 a new one, or start without a repository. Optionally add a setup script (it
 runs in the clone before the agent starts, e.g. `npm ci`) and instructions for
-agents. From the terminal:
+agents. The **claude.ai connectors** switch starts off: turn it on only if
+agents should use the connectors (mail, files, docs) of whoever starts a
+session, without asking. From the terminal:
 
 ```sh
 fctl projects create "My app" --repo my-org/my-app

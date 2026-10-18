@@ -75,8 +75,8 @@ pub struct Claude {
 ///
 /// Without `claude_ai_connectors`, `disableClaudeAiConnectors` too: a
 /// repository's settings can set `ENABLE_CLAUDEAI_MCP_SERVERS` back on, but
-/// no settings source can undo this one. Claude Code versions that predate
-/// the key ignore it.
+/// no settings source can undo this one. Claude Code skips keys it doesn't
+/// know (2.1.302 does), so one from before the key only has the variable.
 pub fn user_settings(claude_ai_connectors: bool) -> Value {
     let mut settings = json!({
         "$schema": "https://json.schemastore.org/claude-code-settings.json",
