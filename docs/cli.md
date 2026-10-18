@@ -72,6 +72,29 @@ understand the task, and again when the work turns to something else.
 `~/attachments/` in its sandbox, and sees images that Claude accepts as
 they are (PNG, JPEG, GIF, WebP up to 2000 px a side) in the message itself.
 
+### Screenshots in pull requests
+
+GitHub takes uploads only from people, so in a sandbox `gh pr edit
+--attach` fails with "unsupported authentication type": sessions have the
+GitHub App's token. In projects that publish screenshots, agents publish
+them on fctl instead and put the Markdown it prints in the pull request:
+
+```sh
+fctl publish before.png after.png     # in a sandbox: a link and Markdown for each
+fctl publish --json after.png         # the links, sizes, expiry and Markdown
+fctl unpublish https://app.fctl.sh/api/v1/published/…/after.png   # delete one sooner
+```
+
+Anyone who has a link can open it, until it expires: after 30 days, or
+what the project chooses between 24 hours and 60 days. A link holds 256
+random bits. Publishing is off until the instance's admins allow it (`fctl
+admin set --publish-screenshots on`) and a project's maintainers turn it
+on (`fctl projects set --publish-screenshots on`); turning either off
+takes the screenshots offline. It takes PNG, JPEG, GIF and WebP images of
+at most 5 MB, up to 100 per session. The transcript shows each one, and
+people who manage the session can delete it there or with `fctl
+unpublish`.
+
 ## Projects
 
 ```sh
@@ -82,6 +105,7 @@ fctl projects create "New thing" --new-repo new-thing --public
 fctl projects create "Site" --repo my-org/site --no-connectors   # no claude.ai connectors in its sessions
 fctl projects set -p my-app --credit-claude off   # no Claude trailer in its commits
 fctl projects set -p my-app --credit-people off   # no trailers for the people who start sessions
+fctl projects set -p my-app --publish-screenshots on --screenshot-days 7   # links work for a week
 fctl projects use my-app
 fctl projects delete my-app            # with its sessions; asks you to type the slug
 ```
@@ -199,6 +223,8 @@ fctl admin allow '*@example.com'           # a whole domain
 fctl admin allow grace@example.com --admin
 fctl admin disallow '*@example.com'        # its users lose access
 fctl admin runners
+fctl admin settings                        # what the instance allows
+fctl admin set --publish-screenshots on    # projects may publish screenshots
 ```
 
 ## Your account

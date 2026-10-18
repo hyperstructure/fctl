@@ -11,7 +11,8 @@ before changing anything that crosses a component boundary.
   Claude apps ◄─┐        │   ├─ static web app (Workers assets)       │
                 │        │   ├─ D1: users, projects, sessions, …      │
                 │        │   ├─ FleetDO: runners, scheduling, feed    │
-                │        │   ├─ FilesDO (per project): attachments    │
+                │        │   ├─ FilesDO (per project): attachments,   │
+                │        │   │  published screenshots                 │
                 │        │   ├─ NotifyDO (per person): notifications  │
                 │        │   └─ SessionDO (one per session): events,  │
                 │        │      viewers, message delivery             │
@@ -103,7 +104,8 @@ identities, allowlist, auth tokens, device codes, projects, their members and
 repositories, sessions (summary rows), shares, who follows which session,
 notification settings and browsers (push subscriptions), runners, encrypted
 credentials and project secrets, the latest plan usage of each Claude
-credential, the instance's sealed Web Push key, and the audit log.
+credential, the links of published screenshots, the instance's settings
+and sealed Web Push key, and the audit log.
 
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
@@ -115,7 +117,8 @@ sessions to runners, and fans out session summaries to dashboard viewers.
 
 **FilesDO** (one per project, SQLite storage) holds the files people attach
 to messages, in 1 MiB chunks, and which session each was sent in (see
-[Attachments](#attachments)).
+[Attachments](#attachments)), and the screenshots its agents publish until
+they expire (see [Published screenshots](#published-screenshots)).
 
 **NotifyDO** (one per person, SQLite storage) holds their notifications
 while they wait to go out, and forgets them once sent (see
@@ -124,9 +127,11 @@ while they wait to go out, and forgets them once sent (see
 **Deletion.** Deleting a project deletes its rows (sessions, members, secrets
 and shares cascade) and, in the same batch, queues its sessions in
 `session_purges` and the project in `file_purges`; their Durable Object
-storage, the event logs and the attached files, is deleted right after. An hourly cron trigger (`src/housekeeping.rs`) retries what failed and
-deletes expired tokens, password resets, device codes and invites, abandoned
-Claude logins, and audit log entries older than a year. Deleting an account
+storage, the event logs and the attached files and published screenshots,
+is deleted right after. An hourly cron trigger (`src/housekeeping.rs`) retries what failed and
+deletes expired tokens, password resets, device codes and invites, the
+links of expired published screenshots, abandoned Claude logins, and audit
+log entries older than a year. Deleting an account
 (`src/api/account.rs`) does the same for the projects only that account is a
 member of, deletes its personal rows in the same batch, and keeps a nameless
 placeholder row only while sessions or projects it created remain.
@@ -292,6 +297,54 @@ Viewers of a session read its files with
 announce the `attachments` feature in their hellos; an older one passes the
 text alone, and the transcript says so.
 
+### Published screenshots
+
+Files go the other way too: agents show people what a pull request changes
+with screenshots in its description. GitHub takes those uploads (`gh pr
+edit --attach`) only with a person's token, and sessions have the GitHub
+App's, so in projects that publish screenshots the agent publishes them on
+the control plane instead and puts the links in the pull request
+([ADR 0013](adr/0013-agents-publish-screenshots-at-unguessable-links.md)).
+
+1. `fctl publish shot.png` in the sandbox sends the image to fctl-agent over
+   the session socket, which checks that it is a PNG, JPEG, GIF or WebP of
+   at most 5 MB (the most GitHub's image proxy fetches) and hands it to the
+   host as a `publish` frame.
+2. The host uploads it with its runner token
+   (`POST /api/v1/runner/sessions/{id}/published`). The control plane
+   checks that the session is assigned to that runner and that publishing
+   is allowed, stores the bytes in the project's FilesDO, and indexes them
+   in D1's `published_files` by the SHA-256 of a new token of 256 random
+   bits. Its answer, a `PublishedFile`, has the link,
+   `https://<instance>/api/v1/published/<token>/<name>`, and when it
+   expires.
+3. fctl-agent answers fctl, which prints the link and Markdown that shows
+   it, and adds a `screenshot_published` notice with the file to the
+   transcript.
+4. Anyone with the link gets the image (`GET /api/v1/published/{token}/…`):
+   GitHub's image proxy for the pull request, the transcript in the web
+   app. Responses are `public, no-cache` with an `ETag`, so caches ask
+   every time, `nosniff`, sandboxed by their Content-Security-Policy,
+   `Cross-Origin-Resource-Policy: cross-origin` and `noindex`.
+
+Publishing is off twice over by default: the instance's admins allow it
+(Admin → Settings, `InstanceSettings.publish_screenshots`) and each
+project's maintainers turn it on (`publish_screenshots` in its settings),
+which also picks how long links work: 30 days unless `screenshot_days`
+says 1 to 60. The control plane checks both when a screenshot is
+published and whenever a link is opened, so turning either off takes the
+screenshots offline at once, until they expire. A session publishes at most
+100. The FilesDO's alarm deletes a screenshot's bytes when it expires and
+the hourly cron trigger its row; people who manage the session delete one
+sooner (the transcript, `fctl unpublish`, `DELETE
+/api/v1/published/{token}`).
+
+The setting reaches the agent in its `SessionSpec`, only when the instance
+allows it too, and through hosts that know it: an older host leaves it out
+of the agent's configuration, so its agents never offer `fctl publish`.
+When it is on, and the sandbox's fctl has the command, `~/AGENTS.md` tells
+Claude to try `--attach` and publish when GitHub refuses.
+
 ## Notifications
 
 A session notifies the people who follow it when it waits for a reply (a
@@ -447,7 +500,8 @@ gone that may still run.
 A second socket beside
 it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
 serves programs in the sandbox: `fctl edit` names and describes the session
-there, with no fctl credentials in the sandbox.
+there, and `fctl publish` publishes screenshots, with no fctl credentials
+in the sandbox.
 
 A stopped session keeps its sandbox, so resuming continues Claude's
 conversation. The host records when each one stopped (`stopped.json` in its
@@ -467,7 +521,8 @@ All protocols are JSON with a `type` tag and live in `fctl-proto`:
 - `runner` — FleetDO ⇄ host (control connection).
 - `uplink` — SessionDO ⇄ host (one per session).
 - `agent` — host ⇄ fctl-agent (attachments' bytes travel here as `file`
-  frames), and `fctl` ⇄ fctl-agent in the sandbox (the session socket).
+  frames, published screenshots' as `publish` frames), and `fctl` ⇄
+  fctl-agent in the sandbox (the session socket).
 - `event` — the session event model shared by all of them.
 
 Changing a type means: update `fctl-proto`, run `cargo xtask gen` (regenerates

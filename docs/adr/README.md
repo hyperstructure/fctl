@@ -18,3 +18,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0010](0010-notifications-are-web-push-from-a-durable-object-per-person.md) | Notifications are Web Push, sent from a Durable Object per person |
 | [0011](0011-commits-credit-people-with-an-address-they-choose.md) | Commits credit people with an address they choose |
 | [0012](0012-the-sandbox-image-lives-in-its-own-public-repository.md) | The sandbox image lives in its own public repository |
+| [0013](0013-agents-publish-screenshots-at-unguessable-links.md) | Agents publish screenshots at unguessable links |

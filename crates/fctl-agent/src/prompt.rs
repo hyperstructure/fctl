@@ -71,7 +71,8 @@ screenshot shows.
 
 - Anyone who has a link can open it, for {lasts}; then it stops working.
   Publish only what the pull request shows, never secrets, tokens or
-  people's details.
+  people's details. If you publish one by mistake, say so in your reply:
+  people who manage the session can delete it.
 - PNG, JPEG, GIF and WebP images of at most 5 MB.
 - If `fctl publish` fails, describe the screenshots in words instead.
 "#;
@@ -586,6 +587,7 @@ mod tests {
         assert!(md.contains("unsupported authentication type"));
         assert!(md.contains("fctl publish before.png after.png"));
         assert!(md.contains("for 30 days; then it stops working"));
+        assert!(md.contains("If you publish one by mistake, say so"));
         assert!(agents_md(Some(1)).contains("for 24 hours; then"));
     }
 
