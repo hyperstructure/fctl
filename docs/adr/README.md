@@ -20,3 +20,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0012](0012-the-sandbox-image-lives-in-its-own-public-repository.md) | The sandbox image lives in its own public repository |
 | [0013](0013-idle-sessions-stop-and-a-message-resumes-them.md) | Idle sessions stop, and a message resumes them |
 | [0014](0014-agents-publish-screenshots-at-unguessable-links.md) | Agents publish screenshots at unguessable links |
+| [0015](0015-runners-drain-and-their-sessions-carry-on.md) | Runners drain, and their sessions carry on |

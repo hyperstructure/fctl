@@ -200,6 +200,33 @@ gives the sandbox the session asks for, the session starts on another
 runner in a new sandbox: the agent clones the session's branch and starts
 a new conversation from the session's task.
 
+### Draining a runner
+
+A runner that drains takes no new sessions, and the sessions it has carry
+on there, so that it can be taken out of rotation (for maintenance, or a
+disk that fills up) without dropping anything. Admins drain one from the
+runners list or with `fctl admin drain`; its host drains itself with
+`fctl host drain`, using the runner token
+(`POST /api/v1/runner/drain`). Both set the same state, kept in FleetDO's
+storage with who started the drain and when, and either can end it.
+
+- FleetDO places new sessions on runners that don't drain; a session that
+  waits because every runner online drains says so.
+- A resume still goes back to the draining runner that has the session's
+  sandbox ([Idle sessions](#idle-sessions)): it keeps Claude's conversation
+  and needs no new sandbox.
+- Sessions that wait for a message stop once they have waited a minute,
+  instead of after the idle timeout. FleetDO asks each idle session it sees
+  in the runner's heartbeats, and SessionDO agrees only when no message is
+  on its way to the agent, and marks the session stopping in the same step,
+  so that a message that comes later waits for the next run. A message
+  resumes the session on the same runner. So a draining runner is empty
+  whenever no turn runs.
+
+The runners list, `fctl admin runners` and `fctl host status`
+(`GET /api/v1/runner`, with the runner token) show who started the drain,
+when, and the sessions that still run.
+
 ### Repositories
 
 A project has a primary repository and may list more of the same GitHub

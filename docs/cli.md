@@ -166,15 +166,26 @@ fctl host install --cpus 4 --memory 8g --max-memory 12g   # sandbox sizes
 fctl host install --token fctl_rt_…   # with a runner token from an admin
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host run                    # run in the foreground (what the service runs)
-fctl host status
+fctl host status                 # with the runner's sessions, and whether it drains
 fctl host doctor                 # check the driver, image, agent binary, connection
 fctl host logs -n 200
 fctl host image pull             # pull the sandbox image again, for a newer build
 fctl host image build            # build it here instead (with Lima: the base VM)
 fctl host image build --source ~/src/sandbox   # from a checkout of hyperstructure/sandbox
 fctl host restart                # sessions keep running
+fctl host drain                  # take no new sessions; the ones here carry on
+fctl host drain --wait           # …and wait until none runs here
+fctl host undrain                # take new sessions again
 fctl host uninstall              # sandboxes are kept
 ```
+
+Drain a host before maintenance, or when its disk fills up: no new session
+starts on it, and the sessions it has carry on there. Those that wait for a
+message stop once they have waited a minute, and a message resumes each of
+them on this host, where its sandbox has Claude's conversation. So the host
+is empty whenever no turn runs, and `--wait` returns then. Admins can drain
+a runner too, from the runners list or with `fctl admin drain`; whoever
+drained it, either can stop the drain.
 
 `fctl host install` checks the driver before it registers anything: if the
 driver can't run sessions (Apple's `container` or Lima isn't installed, a
@@ -226,7 +237,9 @@ fctl admin allow ada@example.com           # also creates an invite link
 fctl admin allow '*@example.com'           # a whole domain
 fctl admin allow grace@example.com --admin
 fctl admin disallow '*@example.com'        # its users lose access
-fctl admin runners
+fctl admin runners                         # draining ones say who drained them and what still runs
+fctl admin drain studio-mac                # no new sessions start on it (name or id)
+fctl admin undrain studio-mac
 fctl admin settings                        # what the instance allows
 fctl admin set --publish-screenshots on    # projects may publish screenshots
 ```
