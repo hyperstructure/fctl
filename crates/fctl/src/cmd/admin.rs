@@ -296,10 +296,9 @@ async fn find_runner(api: &fctl_client::Api, which: &str) -> Result<Runner> {
 /// `Ada Lovelace started draining it 3m ago: 2 sessions left`.
 pub(crate) fn drain_line(r: &Runner) -> Option<String> {
     let d = r.drain.as_ref()?;
-    let who = d
-        .by
-        .as_ref()
-        .map_or_else(|| "its host".to_owned(), |u| u.name.clone());
+    let who =
+        d.by.as_ref()
+            .map_or_else(|| "its host".to_owned(), |u| u.name.clone());
     let left = match r.active_sessions {
         0 => "no sessions left".to_owned(),
         1 => "1 session left".to_owned(),
