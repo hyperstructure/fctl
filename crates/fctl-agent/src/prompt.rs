@@ -8,6 +8,7 @@ pub fn system_prompt(spec: &SessionSpec, workdir: &str, paths: &Paths) -> String
     let mut s = String::new();
     s.push_str("You are running as an autonomous agent in fctl, a software factory. ");
     s.push_str("Your work happens in a sandbox; people follow along live and may message you.\n\n");
+    let repos = spec.project.repos.as_deref().unwrap_or_default();
     match &spec.project.repo {
         Some(repo) => s.push_str(&format!(
             "- The repository {} is cloned at {workdir}. You are on the branch `{}`, created from `{}`.\n",
@@ -15,9 +16,9 @@ pub fn system_prompt(spec: &SessionSpec, workdir: &str, paths: &Paths) -> String
             spec.branch,
             spec.base_branch
         )),
-        None => s.push_str(&format!("- Your working directory is {workdir}. No GitHub repository is linked.\n")),
+        None if repos.is_empty() => s.push_str(&format!("- Your working directory is {workdir}. No GitHub repository is linked.\n")),
+        None => s.push_str(&format!("- Your working directory is {workdir}, an empty git repository.\n")),
     }
-    let repos = spec.project.repos.as_deref().unwrap_or_default();
     let usable = |access: RepoAccess| {
         repos
             .iter()
@@ -33,8 +34,13 @@ pub fn system_prompt(spec: &SessionSpec, workdir: &str, paths: &Paths) -> String
                 || format!("{}/<name>", repos[0].owner),
                 |r| format!("{}/{}", r.owner, r.name.as_deref().unwrap_or_default()),
             );
+        let also = if spec.project.repo.is_some() {
+            "also "
+        } else {
+            ""
+        };
         s.push_str(&format!(
-            "- You may also use the repositories below. Clone one when you need it, into {dir}/<owner>/<name> (for example `git clone https://github.com/{example} {dir}/{example}`); git is signed in for them:\n"
+            "- You may {also}use the repositories below. Clone one when you need it, into {dir}/<owner>/<name> (for example `git clone https://github.com/{example} {dir}/{example}`); git is signed in for them:\n"
         ));
         for r in repos {
             s.push_str(&format!("  - {}\n", describe(r, repos)));
@@ -258,6 +264,21 @@ mod tests {
         assert!(!text.contains("work on a branch named"));
         assert!(text.contains(
             "open a pull request against `main` with `gh pr create` (gh is signed in). Describe"
+        ));
+    }
+
+    #[test]
+    fn without_a_primary_repository_the_others_are_the_work() {
+        let mut spec =
+            spec(serde_json::json!([{ "owner": "acme", "name": "lib", "access": "write" }]));
+        spec.project.repo = None;
+        let text = system_prompt(&spec, "/home/agent/workspace", &paths());
+        assert!(text.contains(
+            "- Your working directory is /home/agent/workspace, an empty git repository.\n"
+        ));
+        assert!(text.contains("- You may use the repositories below."));
+        assert!(text.contains(
+            "open a pull request in each repository you changed, against its default branch"
         ));
     }
 
