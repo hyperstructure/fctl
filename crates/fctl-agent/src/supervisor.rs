@@ -112,6 +112,9 @@ pub struct Supervisor {
     told_no_fctl: bool,
     /// `fctl publish` calls waiting for the host's answer, by request id.
     publishing: HashMap<String, (oneshot::Sender<SessionReply>, Instant)>,
+    /// Publishes the caller stopped waiting for: if the host publishes one
+    /// after all, the transcript still says so.
+    late_publishes: VecDeque<String>,
 }
 
 impl Supervisor {
@@ -171,6 +174,7 @@ impl Supervisor {
                 pending_files: Vec::new(),
                 told_no_fctl: false,
                 publishing: HashMap::new(),
+                late_publishes: VecDeque::new(),
             },
             claude_rx,
             work_rx,
@@ -490,6 +494,14 @@ impl Supervisor {
         error: Option<ApiError>,
     ) {
         let Some((tx, _)) = self.publishing.remove(request_id) else {
+            // Too late for the caller, not for the transcript.
+            if let Some(i) = self.late_publishes.iter().position(|id| id == request_id) {
+                self.late_publishes.remove(i);
+                if let Some(file) = file {
+                    self.emit(EventBody::Notice(published_notice(&file, now_ms())));
+                    self.flush();
+                }
+            }
             return;
         };
         let reply = match (file, error) {
@@ -526,6 +538,10 @@ impl Supervisor {
                         "The host didn't publish the screenshot in time; try again",
                     ),
                 });
+                self.late_publishes.push_back(id);
+                if self.late_publishes.len() > 100 {
+                    self.late_publishes.pop_front();
+                }
             }
         }
     }
@@ -1710,7 +1726,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let (mut sup, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         sup.config = Some(config(dir.path(), true)?);
-        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
         sup.host = Some((1, host_tx));
         let (tx, mut rx) = oneshot::channel();
         sup.on_session_call(local::Call {
@@ -1727,6 +1743,29 @@ mod tests {
             matches!(rx.try_recv(), Ok(SessionReply::Error { ref error }) if error.message.contains("in time"))
         );
         assert!(sup.publishing.is_empty());
+        // The host publishes it after all: the transcript says so, once.
+        let file = PublishedFile {
+            url: "https://fctl.test/api/v1/published/abc/after.png".into(),
+            name: "after.png".into(),
+            media_type: "image/png".into(),
+            size: 33,
+            width: None,
+            height: None,
+            expires_at: now_ms() + 86_400_000,
+        };
+        let AgentToHost::Publish { request_id, .. } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a publish frame");
+        };
+        sup.on_published(&request_id, Some(file.clone()), None);
+        let AgentToHost::Events { events } = serde_json::from_str(&host_rx.try_recv()?)? else {
+            panic!("expected events");
+        };
+        assert!(
+            matches!(&events[0].body, EventBody::Notice(n) if n.message.starts_with("Published after.png for a day"))
+        );
+        sup.on_published(&request_id, Some(file), None);
+        assert!(host_rx.try_recv().is_err());
         Ok(())
     }
 }
