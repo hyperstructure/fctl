@@ -7,5 +7,6 @@ pub mod completions;
 pub mod host;
 pub mod notifications;
 pub mod projects;
+pub mod publish;
 pub mod selfcmd;
 pub mod sessions;

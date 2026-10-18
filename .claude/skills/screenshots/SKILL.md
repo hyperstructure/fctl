@@ -1,6 +1,6 @@
 ---
 name: screenshots
-description: Show how a pull request in hyperstructure/fctl changes the way fctl looks, with screenshots in its description. Covers which changes need them, before and after or only after, taking them with Playwright against `cargo xtask dev`, attaching them with `gh pr edit --attach` (never committing them), and replacing them when a later commit changes what they show. Use when a change affects what people see in the web app (a new `@hyperstructure/design` tag included), when opening its pull request, and whenever you push a commit that changes something its screenshots show.
+description: Show how a pull request in hyperstructure/fctl changes the way fctl looks, with screenshots in its description. Covers which changes need them, before and after or only after, taking them with Playwright against `cargo xtask dev`, attaching them with `gh pr edit --attach` or, in an fctl session, publishing them with `fctl publish` (never committing them), and replacing them when a later commit changes what they show. Use when a change affects what people see in the web app (a new `@hyperstructure/design` tag included), when opening its pull request, and whenever you push a commit that changes something its screenshots show.
 ---
 
 # Screenshots in pull requests
@@ -128,7 +128,26 @@ At abc1234: the project page in the light theme, 1440 px wide.
 
 In an fctl session, `--attach` fails with "unsupported authentication type":
 sessions have the GitHub App's token, and GitHub accepts uploads only with a
-person's (#40). Until that changes, take the screenshots and look at them
+person's (#40). Publish them on fctl instead, if the project publishes
+screenshots (`~/AGENTS.md` says so):
+
+```sh
+cd ~/screenshots
+fctl publish before-light.png after-light.png
+```
+
+It prints Markdown for each, like
+`![before-light.png](https://app.fctl.sh/api/v1/published/…/before-light.png)`.
+Use the links in place of the file names in the section below, keep your own
+alternative text, and edit the description without `--attach`:
+
+```sh
+gh pr edit N -R hyperstructure/fctl --body-file pr.md
+```
+
+Anyone who has a link can open it until it expires (after 30 days unless the
+project chooses otherwise), so the dev stack's data is all they may show. If
+`fctl publish` says the project doesn't publish screenshots, look at them
 anyway, describe what they show in the description, and say that the session
 can't attach them. Don't commit them instead.
 
@@ -147,6 +166,7 @@ gh pr view N -R hyperstructure/fctl --json body --jq .body > pr.md
 gh pr edit N -R hyperstructure/fctl --body-file pr.md --attach after-light.png
 ```
 
-Replace the old image rather than adding the new one under it; GitHub keeps
-earlier versions of the description in its edit history. Before you end a
-turn that pushed commits, check that the screenshots still match.
+In a session, publish the new screenshot and point the image at its link
+instead. Replace the old image rather than adding the new one under it;
+GitHub keeps earlier versions of the description in its edit history. Before
+you end a turn that pushed commits, check that the screenshots still match.

@@ -13,6 +13,7 @@ trusts.
 | Claude credentials | encrypted (AES-256-GCM) in D1 | sessions their owner starts |
 | Project secrets | encrypted in D1 | that project's sessions, as environment variables |
 | Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
+| Published screenshots | the project's Durable Object, found by the SHA-256 of their links' tokens in D1 | anyone with a link, until it expires |
 | GitHub App key | a Worker secret | the control plane, to mint short-lived tokens |
 | Web Push (VAPID) key | encrypted in D1 | the control plane, to sign notifications |
 | Master key | a Worker secret | the control plane |
@@ -49,6 +50,17 @@ owner and purpose), so a value copied between rows does not decrypt.
   Content-Security-Policy; only PNG, JPEG, GIF and WebP display in place,
   everything else downloads, so an uploaded HTML or SVG file never runs as
   part of the app.
+- Screenshots agents publish for pull requests are public to anyone who
+  has a link, which is how GitHub's image proxy fetches them. A link holds
+  256 random bits, of which D1 keeps only the SHA-256. The control plane
+  publishes only PNG, JPEG, GIF and WebP images, as their bytes say, up to
+  5 MB, and serves them with `nosniff`, a sandboxing
+  Content-Security-Policy and `noindex`. Links stop working when they
+  expire (30 days unless the project chooses 24 hours to 60 days), when
+  people who manage the session delete them, and while the instance's
+  admins or the project's maintainers turn publishing off; it is off for
+  both until they turn it on. Anyone a link is shared with, or who can read
+  the pull request, can pass it on.
 
 ## Sandboxes
 
@@ -91,8 +103,12 @@ outside it except through these channels:
   until a maintainer turns them off.
 - **fctl.** No fctl credentials enter a sandbox. Through fctl-agent's
   session socket, anything the agent runs can rename its own session and
-  describe it (`fctl edit`), and nothing else; the control plane checks
-  both values again.
+  describe it (`fctl edit`) and, in projects that publish screenshots,
+  publish images at public links (`fctl publish`), and nothing else; the
+  control plane checks the values and the settings again. Turn publishing
+  on only where anything the agents see may be shown to anyone with a
+  link: text in a repository or on a web page can ask an agent to publish
+  a screenshot, as it can ask it to send what it sees elsewhere.
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 - **Attached files** are saved in the sandbox under `~/attachments/`, where

@@ -303,11 +303,36 @@ pub enum NoticeLevel {
 pub struct Notice {
     pub level: NoticeLevel,
     /// Stable identifier, for example `usage_limit`, `overage_blocked`,
-    /// `api_key_refused`, `credential_expired`, `runner_lost`.
+    /// `api_key_refused`, `credential_expired`, `runner_lost`,
+    /// `screenshot_published`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).
     pub until: Option<Millis>,
+    /// The screenshot a `screenshot_published` notice is about. Clients
+    /// from before it show the message, which holds the link.
+    pub published: Option<PublishedFile>,
+}
+
+/// A screenshot an agent published on the control plane (`fctl publish`):
+/// anyone who has the link can open it, until it expires.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PublishedFile {
+    /// `https://<instance>/api/v1/published/<token>/<name>`: the token, 256
+    /// random bits, is all it takes to open it.
+    pub url: String,
+    /// The file's name, without directories.
+    pub name: String,
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
+    pub media_type: String,
+    /// Bytes.
+    pub size: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// When the link stops working and the file is deleted.
+    pub expires_at: Millis,
 }
 
 #[skip_serializing_none]
@@ -386,6 +411,39 @@ mod tests {
         let json = serde_json::to_value(&st)?;
         assert_eq!(json["repos"][0]["access"], "write");
         assert_eq!(serde_json::from_value::<GitState>(json)?, st);
+        Ok(())
+    }
+
+    #[test]
+    fn notices_carry_a_published_screenshot_as_an_option() -> Result<(), serde_json::Error> {
+        let old: Notice = serde_json::from_value(serde_json::json!({
+            "level": "warn", "code": "usage_limit", "message": "Paused", "until": 5
+        }))?;
+        assert_eq!(old.published, None);
+        assert!(serde_json::to_value(&old)?.get("published").is_none());
+        let shot = Notice {
+            level: NoticeLevel::Info,
+            code: "screenshot_published".into(),
+            message: "Published after.png".into(),
+            until: None,
+            published: Some(PublishedFile {
+                url: "https://fctl.test/api/v1/published/abc/after.png".into(),
+                name: "after.png".into(),
+                media_type: "image/png".into(),
+                size: 1234,
+                width: Some(1440),
+                height: Some(900),
+                expires_at: 1_800_000_000_000,
+            }),
+        };
+        let json = serde_json::to_value(EventBody::Notice(shot.clone()))?;
+        assert_eq!(json["kind"], "notice");
+        assert_eq!(json["data"]["published"]["width"], 1440);
+        assert!(json["data"].get("until").is_none());
+        assert_eq!(
+            serde_json::from_value::<EventBody>(json)?,
+            EventBody::Notice(shot)
+        );
         Ok(())
     }
 

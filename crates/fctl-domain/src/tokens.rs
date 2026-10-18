@@ -54,7 +54,7 @@ impl SecretKind {
 }
 
 /// Encodes bytes in base62 (big-endian, fixed width for the input length).
-fn base62(bytes: &[u8]) -> String {
+pub(crate) fn base62(bytes: &[u8]) -> String {
     // Repeated division of a big-endian number; fine for 32 bytes.
     let mut digits: Vec<u8> = Vec::with_capacity(bytes.len() * 2);
     let mut num: Vec<u8> = bytes.to_vec();

@@ -1,4 +1,5 @@
-//! `/api/v1/admin/*`: users, the allowlist, invitations, the audit log.
+//! `/api/v1/admin/*`: users, the allowlist, invitations, the audit log, and
+//! the instance's settings.
 
 use crate::auth;
 use crate::ctx::Ctx;
@@ -427,4 +428,27 @@ pub async fn revoke_invite(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     }
     let _ = InviteId(id.to_owned());
     http::ok(&Ok { ok: true })
+}
+
+/// `GET /api/v1/admin/settings`.
+pub async fn settings(ctx: &Ctx) -> AppResult<Response> {
+    ctx.admin()?;
+    http::ok(&crate::instance::settings(&ctx.db).await?)
+}
+
+/// `PATCH /api/v1/admin/settings`.
+pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
+    let body: UpdateInstanceSettingsRequest = http::body(req).await?;
+    ctx.admin()?;
+    let mut settings = crate::instance::settings(&ctx.db).await?;
+    if let Some(on) = body.publish_screenshots {
+        settings.publish_screenshots = on;
+    }
+    crate::instance::save(&ctx.db, &settings).await?;
+    ctx.audit(
+        "instance.settings_updated",
+        None,
+        Some(serde_json::to_value(&body)?),
+    );
+    http::ok(&settings)
 }

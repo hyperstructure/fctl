@@ -7,9 +7,11 @@ use crate::files;
 use crate::liveness::{Check, Health, Reach, Reached, Retry};
 use crate::uplink::Uplink;
 use anyhow::{Context, Result};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use fctl_domain::size::Want;
 use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES};
-use fctl_proto::event::{LogLevel, LogLine, LogSource};
+use fctl_proto::event::{LogLevel, LogLine, LogSource, PublishedFile};
 use fctl_proto::runner::{
     ClaudeCredential, CredentialKind, DriverInfo, GithubCredential, SandboxLimits, SandboxSize,
     SessionSpec, StopReason,
@@ -19,7 +21,7 @@ use fctl_proto::uplink::{
     AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown,
     UplinkUp,
 };
-use fctl_proto::{Millis, RunnerId, SessionId};
+use fctl_proto::{ApiError, ErrorCode, Millis, RunnerId, SessionId};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -347,6 +349,66 @@ fn to_agent(l: &AgentLink, frame: HostToAgent, agent_files: bool, uplink: &Uplin
     l.send(frame);
 }
 
+/// What publishing a screenshot came to, for the agent that asked.
+type Published = (String, std::result::Result<PublishedFile, ApiError>);
+
+/// Uploads a screenshot the agent publishes (`fctl publish`), retrying what
+/// may pass, and hands the answer back for the agent.
+fn publish(
+    api: fctl_client::Api,
+    session: SessionId,
+    request_id: String,
+    name: String,
+    data: String,
+    done: mpsc::UnboundedSender<Published>,
+) {
+    tokio::spawn(async move {
+        let result = match STANDARD.decode(data.as_bytes()) {
+            Ok(bytes) => upload(&api, &session, &name, bytes).await,
+            Err(e) => Err(ApiError::bad_request(format!(
+                "The screenshot's bytes are not base64: {e}"
+            ))),
+        };
+        match &result {
+            Ok(file) => tracing::info!("published {} for {session}", file.name),
+            Err(e) => tracing::warn!("publishing {name} for {session}: {}", e.message),
+        }
+        let _ = done.send((request_id, result));
+    });
+}
+
+async fn upload(
+    api: &fctl_client::Api,
+    session: &SessionId,
+    name: &str,
+    bytes: Vec<u8>,
+) -> std::result::Result<PublishedFile, ApiError> {
+    let mut delay = Duration::from_secs(1);
+    let mut attempt = 1;
+    loop {
+        match api
+            .runner_publish(session.as_str(), name, bytes.clone())
+            .await
+        {
+            Ok(file) => return Ok(file),
+            Err(e) if e.is_transient() && attempt < 3 => {
+                tracing::warn!("publishing {name} for {session} (attempt {attempt}): {e}");
+                tokio::time::sleep(delay).await;
+                delay *= 3;
+                attempt += 1;
+            }
+            Err(e) => {
+                return Err(e.api().cloned().unwrap_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::Unavailable,
+                        format!("The host could not reach the control plane: {e}"),
+                    )
+                }));
+            }
+        }
+    }
+}
+
 fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     uplink.log(LogLine {
         source: LogSource::Host,
@@ -414,10 +476,9 @@ async fn run(
         ctx.token.clone(),
         ctx.runner_id(),
     );
-    let (jobs, mut ready) = files::start(
-        fctl_client::Api::new(&ctx.cfg.server, Some(ctx.token.clone())),
-        session_id.clone(),
-    );
+    let api = fctl_client::Api::new(&ctx.cfg.server, Some(ctx.token.clone()));
+    let (jobs, mut ready) = files::start(api.clone(), session_id.clone());
+    let (published_tx, mut published_rx) = mpsc::unbounded_channel::<Published>();
     let set_report = |status: SessionStatus, seq: Option<u64>| {
         if let Ok(mut r) = report.lock() {
             r.status = status;
@@ -632,6 +693,9 @@ async fn run(
                     AgentToHost::CredentialRequest { request_id, kind } => {
                         let _ = events.send(SessionEvent::CredentialRequest { session_id: session_id.clone(), request_id, kind });
                     }
+                    AgentToHost::Publish { request_id, name, data } => {
+                        publish(api.clone(), session_id.clone(), request_id, name, data, published_tx.clone());
+                    }
                     AgentToHost::Exited { status, reason } => {
                         set_report(status, None);
                         exited = Some((status, reason));
@@ -693,6 +757,17 @@ async fn run(
                     None => queued.push(HostToAgent::Deliver { delivery }),
                 },
             },
+            Some((request_id, result)) = published_rx.recv() => {
+                let (file, error) = match result {
+                    Ok(file) => (Some(file), None),
+                    Err(e) => (None, Some(e)),
+                };
+                let frame = HostToAgent::Published { request_id, file, error };
+                match &link {
+                    Some(l) => l.send(frame),
+                    None => queued.push(frame),
+                }
+            }
             c = cmds.recv() => match c {
                 Some(SessionCmd::Stop { reason, destroy }) => {
                     if stop.is_none() {

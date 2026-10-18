@@ -9,8 +9,23 @@ use fctl_proto::session::RepoAccess;
 use std::path::PathBuf;
 
 /// `~/AGENTS.md`: how the agent keeps its session's title and description
-/// about the work (Claude reads it through `~/.claude/CLAUDE.md`).
-pub const AGENTS_MD: &str = r#"# fctl
+/// about the work (Claude reads it through `~/.claude/CLAUDE.md`), and, in
+/// projects that publish screenshots (`screenshot_days`, how long their
+/// links work), how it shows screenshots in pull requests.
+pub fn agents_md(screenshot_days: Option<u32>) -> String {
+    let mut s = AGENTS_MD.to_owned();
+    if let Some(days) = screenshot_days {
+        let lasts = if days == 1 {
+            "24 hours".to_owned()
+        } else {
+            format!("{days} days")
+        };
+        s.push_str(&SCREENSHOTS_MD.replace("{lasts}", &lasts));
+    }
+    s
+}
+
+const AGENTS_MD: &str = r#"# fctl
 
 This sandbox runs an fctl session. People find sessions in fctl's lists by
 their titles, and a new session's title is only the first line of its task.
@@ -34,6 +49,32 @@ fctl edit --title "Retry failed uploads in the sync worker" \
   both when it now covers both ("Fix the login redirect; export audit
   logs"), and update the description.
 - If `fctl edit` fails, carry on with the task.
+"#;
+
+const SCREENSHOTS_MD: &str = r#"
+## Screenshots in pull requests
+
+Show how a pull request changes what people see with screenshots in its
+description. Attach them with `gh pr create --attach FILE` or
+`gh pr edit N --attach FILE` where that works. Here gh has the GitHub App's
+token, and GitHub takes uploads only from people, so `--attach` fails with
+"unsupported authentication type". Then publish them on fctl, which talks
+to this session directly:
+
+```sh
+fctl publish before.png after.png
+```
+
+It prints a link for each and Markdown that shows it,
+`![after.png](https://…)`. Put that in the description and say what each
+screenshot shows.
+
+- Anyone who has a link can open it, for {lasts}; then it stops working.
+  Publish only what the pull request shows, never secrets, tokens or
+  people's details. If you publish one by mistake, say so in your reply:
+  people who manage the session can delete it.
+- PNG, JPEG, GIF and WebP images of at most 5 MB.
+- If `fctl publish` fails, describe the screenshots in words instead.
 "#;
 
 /// `paths` say where the other repositories go; `sandbox` what the sandbox
@@ -532,9 +573,23 @@ mod tests {
 
     #[test]
     fn agents_md_shows_how_to_name_the_session() {
-        assert!(AGENTS_MD.contains("fctl edit --title"));
-        assert!(AGENTS_MD.contains("--description"));
-        assert!(AGENTS_MD.contains("rename it for the new scope"));
+        let md = agents_md(None);
+        assert!(md.contains("fctl edit --title"));
+        assert!(md.contains("--description"));
+        assert!(md.contains("rename it for the new scope"));
+        assert!(!md.contains("fctl publish"));
+    }
+
+    #[test]
+    fn agents_md_shows_how_to_publish_screenshots_where_projects_do() {
+        let md = agents_md(Some(30));
+        assert!(md.starts_with(&agents_md(None)));
+        assert!(md.contains("gh pr edit N --attach FILE"));
+        assert!(md.contains("unsupported authentication type"));
+        assert!(md.contains("fctl publish before.png after.png"));
+        assert!(md.contains("for 30 days; then it stops working"));
+        assert!(md.contains("If you publish one by mistake, say so"));
+        assert!(agents_md(Some(1)).contains("for 24 hours; then"));
     }
 
     #[test]

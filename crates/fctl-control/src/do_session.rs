@@ -721,6 +721,7 @@ impl SessionObject {
                 "{runner} runs a version of fctl that cannot pass files to agents, so the agent gets messages without their attachments. Run `fctl self update` on it, then send the files again."
             ),
             until: None,
+            published: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -1230,6 +1231,7 @@ impl SessionObject {
                         message: error
                             .unwrap_or_else(|| "The agent could not take a message".into()),
                         until: None,
+                        published: None,
                     };
                     if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                         self.broadcast_events(&[json]);

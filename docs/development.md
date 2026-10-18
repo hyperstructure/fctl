@@ -45,7 +45,10 @@ cargo run -p fctl -- run -p playground "write notes.md"
 
 fake-claude reacts to words in the prompt: `write <name>` creates and
 commits a file, `rename <title>` names the session with `fctl edit` (the
-host's own fctl comes first on its agents' PATH), `slow` streams slowly,
+host's own fctl comes first on its agents' PATH), `screenshot` draws a
+small PNG and publishes it with `fctl publish` (allow that first: `cargo
+run -p fctl -- admin set --publish-screenshots on`, then `cargo run -p fctl
+-- projects set --publish-screenshots on`), `slow` streams slowly,
 `limit` hits a usage limit that resets 20 seconds later (the session
 pauses and continues half a minute after the reset; a message that also
 says `reset`, like the one fctl-agent continues it with, doesn't count),

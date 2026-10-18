@@ -343,6 +343,7 @@ export function SessionPage() {
               live={s.live}
               status={status}
               stall={stall}
+              canManage={isOwner}
               onLoadOlder={() => void store.loadOlder()}
               hasMoreBefore={s.hasMoreBefore}
               loadingOlder={s.loadingOlder}

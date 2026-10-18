@@ -13,6 +13,7 @@
 //! | (anything) | reports plan usage, streams a short answer, runs a fake `Bash` tool, answers again |
 //! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message as Claude Code does: with `attribution.commit` from `~/.claude/settings.json`, or Claude's trailer when that is unset |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
+//! | `screenshot` | draws a small PNG and publishes it with `fctl publish`, as agents do for pull requests |
 //! | `slow` | streams for about ten seconds (try interrupting) |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds, unless the turn also says `reset`, as fctl-agent's message that continues the session does |
 //! | `overage` | reports paid extra usage starting |
@@ -292,6 +293,31 @@ impl Session {
                 failed,
             );
         }
+        if lower.contains("screenshot") {
+            let dir = std::env::temp_dir().join(format!("fake-claude-{}", std::process::id()));
+            let path = dir.join("screenshot.png");
+            let written =
+                std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, screenshot_png()));
+            let (output, failed) = match written.and_then(|_| {
+                std::process::Command::new("fctl")
+                    .arg("publish")
+                    .arg(&path)
+                    .output()
+            }) {
+                Ok(o) => (
+                    String::from_utf8_lossy(&o.stdout).into_owned()
+                        + &String::from_utf8_lossy(&o.stderr),
+                    !o.status.success(),
+                ),
+                Err(e) => (format!("fctl: {e}"), true),
+            };
+            self.tool(
+                "Bash",
+                json!({"command": format!("fctl publish {}", path.display()), "description": "Publish a screenshot"}),
+                &output,
+                failed,
+            );
+        }
         let done = "Done. Everything looks good: the change is committed and ready for review.";
         self.stream_text(done);
         self.result(started, done, "success");
@@ -352,6 +378,75 @@ fn describe_files(text: &str, images: usize) -> Option<String> {
         }
     }
     Some(s)
+}
+
+/// A 160×90 PNG in fctl's colors (stripes of yellow over pink and blue),
+/// stored without compression, so fake-claude needs no image library.
+fn screenshot_png() -> Vec<u8> {
+    let (w, h) = (160u32, 90u32);
+    let mut raw = Vec::with_capacity(((w * 3 + 1) * h) as usize);
+    for y in 0..h {
+        raw.push(0); // no filter
+        for x in 0..w {
+            let rgb: [u8; 3] = if (x + y) % 40 < 20 {
+                [0xff, 0xff, 0x5d]
+            } else if y < h / 2 {
+                [0xff, 0x00, 0xd8]
+            } else {
+                [0x00, 0x7e, 0xff]
+            };
+            raw.extend_from_slice(&rgb);
+        }
+    }
+    // zlib: its header, one stored deflate block (the rows fit), Adler-32.
+    let len = raw.len() as u16;
+    let mut z = vec![0x78, 0x01, 0x01];
+    z.extend_from_slice(&len.to_le_bytes());
+    z.extend_from_slice(&(!len).to_le_bytes());
+    z.extend_from_slice(&raw);
+    z.extend_from_slice(&adler32(&raw).to_be_bytes());
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit RGB
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png_chunk(&mut png, b"IHDR", &ihdr);
+    png_chunk(&mut png, b"IDAT", &z);
+    png_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+fn png_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    let start = png.len();
+    png.extend_from_slice(kind);
+    png.extend_from_slice(data);
+    let crc = crc32(&png[start..]);
+    png.extend_from_slice(&crc.to_be_bytes());
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffff_u32;
+    for &b in data {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in data {
+        a = (a + u32::from(x)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    (b << 16) | a
 }
 
 /// The title after `rename` (any case), to the end of its line.
@@ -499,7 +594,18 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{asks_for_limit, rename_to};
+    use super::{adler32, asks_for_limit, crc32, rename_to, screenshot_png};
+
+    #[test]
+    fn draws_a_png() {
+        // The checksums PNG and zlib define, against known values.
+        assert_eq!(crc32(b"IEND"), 0xae42_6082);
+        assert_eq!(adler32(b"Wikipedia"), 0x11e6_0398);
+        let png = screenshot_png();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR"));
+        assert_eq!(&png[16..24], &[0, 0, 0, 160, 0, 0, 0, 90]);
+        assert!(png.ends_with(&[0xae, 0x42, 0x60, 0x82]));
+    }
 
     #[test]
     fn limit_hits_the_limit_until_it_has_reset() {

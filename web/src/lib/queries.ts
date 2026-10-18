@@ -32,6 +32,7 @@ export const keys = {
   repos: ["repos"] as const,
   shares: (id: string) => ["shares", id] as const,
   audit: ["audit"] as const,
+  instanceSettings: ["admin", "settings"] as const,
   accountDeletion: ["me", "deletion"] as const,
   notifications: ["me", "notifications"] as const,
 };

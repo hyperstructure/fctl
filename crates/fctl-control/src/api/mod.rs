@@ -6,6 +6,7 @@ pub mod claude;
 pub mod google;
 pub mod notifications;
 pub mod projects;
+pub mod published;
 pub mod repos;
 pub mod runners;
 pub mod sessions;

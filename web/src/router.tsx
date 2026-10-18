@@ -96,7 +96,7 @@ const admin = createRoute({
   path: "/admin",
   component: Admin,
   validateSearch: (s: Record<string, unknown>) => ({
-    tab: str(s.tab) as "access" | "users" | "runners" | "audit" | undefined,
+    tab: str(s.tab) as "access" | "users" | "runners" | "settings" | "audit" | undefined,
   }),
 });
 

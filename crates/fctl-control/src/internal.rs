@@ -179,6 +179,33 @@ pub struct ClaimedFiles {
     pub attachments: Vec<Attachment>,
 }
 
+/// A screenshot to publish, sent to `/publish` in the `meta` query
+/// parameter; the bytes are the request body.
+#[derive(Serialize, Deserialize)]
+pub struct PublishFile {
+    pub id: String,
+    pub session_id: SessionId,
+    /// Already sanitized.
+    pub name: String,
+    /// When the object deletes it.
+    pub expires_at: Millis,
+}
+
+/// What `/publish` stored: an image, as its bytes say.
+#[derive(Serialize, Deserialize)]
+pub struct PublishedBytes {
+    pub media_type: String,
+    pub size: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Deletes a published screenshot before it expires (`/unpublish`).
+#[derive(Serialize, Deserialize)]
+pub struct Unpublish {
+    pub id: String,
+}
+
 // ───────────────────────────── calling ─────────────────────────────
 
 pub fn session_stub(env: &Env, session_id: &str) -> AppResult<Stub> {
