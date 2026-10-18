@@ -8,19 +8,34 @@ import { defineConfig } from "vitest/config";
 
 const require = createRequire(import.meta.url);
 
-/** Serves and emits /favicon.svg from @hyperstructure/design (one source for the mark). */
+/** The favicon and app icons at the root, and where they are in @hyperstructure/design. */
+export const BRAND_ASSETS: Record<string, string> = {
+  "favicon.svg": "assets/favicon.svg",
+  "apple-touch-icon.png": "assets/icons/apple-touch-icon.png",
+  "icon-192.png": "assets/icons/icon-192.png",
+  "icon-512.png": "assets/icons/icon-512.png",
+  "icon-maskable-512.png": "assets/icons/icon-maskable-512.png",
+  "icon-maskable-1024.png": "assets/icons/icon-maskable-1024.png",
+};
+
+/** Serves and emits the favicon and app icons from @hyperstructure/design (one source for the mark). */
 function brandAssets(): Plugin {
-  const favicon = () => readFileSync(require.resolve("@hyperstructure/design/assets/favicon.svg"));
+  const read = (file: string) =>
+    readFileSync(require.resolve(`@hyperstructure/design/${BRAND_ASSETS[file]}`));
   return {
     name: "brand-assets",
     configureServer(server) {
-      server.middlewares.use("/favicon.svg", (_req, res) => {
-        res.setHeader("content-type", "image/svg+xml");
-        res.end(favicon());
+      server.middlewares.use((req, res, next) => {
+        const file = req.url?.split("?")[0]?.slice(1) ?? "";
+        if (!Object.hasOwn(BRAND_ASSETS, file)) return next();
+        res.setHeader("content-type", file.endsWith(".svg") ? "image/svg+xml" : "image/png");
+        res.end(read(file));
       });
     },
     generateBundle() {
-      this.emitFile({ type: "asset", fileName: "favicon.svg", source: favicon() });
+      for (const file of Object.keys(BRAND_ASSETS)) {
+        this.emitFile({ type: "asset", fileName: file, source: read(file) });
+      }
     },
   };
 }

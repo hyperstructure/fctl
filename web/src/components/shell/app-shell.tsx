@@ -36,7 +36,7 @@ export function AppShell() {
     <div className="flex min-h-dvh bg-canvas">
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-30 flex w-[244px] flex-col border-r border-line bg-surface/80 backdrop-blur-xl transition-transform duration-300 ease-out md:translate-x-0",
+          "fixed inset-y-0 left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface/80 pl-[env(safe-area-inset-left)] backdrop-blur-xl transition-transform duration-300 ease-out md:translate-x-0",
           drawer ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -50,7 +50,7 @@ export function AppShell() {
           onClick={() => setDrawer(false)}
         />
       )}
-      <div className="flex min-w-0 flex-1 flex-col md:pl-[244px]">
+      <div className="flex min-w-0 flex-1 flex-col pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(244px+env(safe-area-inset-left))]">
         <div className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b border-line bg-canvas/80 px-3 backdrop-blur-xl md:hidden">
           <button
             type="button"
@@ -203,7 +203,7 @@ function Sidebar({
           </Link>
         )}
       </nav>
-      <div className="flex flex-col gap-0.5 border-t border-line px-3 py-3">
+      <div className="flex flex-col gap-0.5 border-t border-line px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         {isAdmin && (
           <NavLink to="/admin" icon={<Shield />} active={path === "/admin"} onClick={onNavigate}>
             Admin
