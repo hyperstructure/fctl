@@ -79,6 +79,7 @@ fctl claude status
 ```sh
 fctl host install                # register this machine and start the service
 fctl host install --driver lima --capacity 2 --build-image
+fctl host install --cpus 4 --memory 8g --max-memory 12g   # sandbox sizes
 fctl host install --token fctl_rt_…   # with a runner token from an admin
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host run                    # run in the foreground (what the service runs)
@@ -103,10 +104,27 @@ name = "studio-mac"
 driver = "apple"         # apple | lima | docker | process | auto (picks at every start)
 capacity = 4             # concurrent sessions
 image = "fctl-agent:latest"
-cpus = 4                 # per session
-memory_mb = 8192         # per session
+cpus = 4                 # per sandbox, when the project sets none
+memory_mb = 8192         # per sandbox, when the project sets none
+max_cpus = 8             # the most one sandbox may have (unset: all there is)
+max_memory_mb = 12288
 keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them)
 ```
+
+A project's Settings → Sandbox can ask for more CPUs or memory than the
+host's default. Sessions only start on a host whose maximum covers that;
+when none does, they stay queued and say so ("No runner can give this
+session 32 GiB of memory (the most is 15.6 GiB)"). Without `max_cpus` and
+`max_memory_mb`, the maximum is what the machine has, or with Docker the
+Docker daemon's: on macOS that is the VM of OrbStack, Docker Desktop or
+Colima, which is usually smaller than the Mac. A default above the maximum
+is lowered to it. `fctl host status` shows the sizes the host gives. The
+host measures them when it starts and when it reconnects, so run `fctl host
+restart` after changing `host.toml` or resizing the Docker VM.
+
+Agents are told their sandbox's size in their instructions and in
+`FCTL_SANDBOX_CPUS` and `FCTL_SANDBOX_MEMORY_MB`: with Docker, `nproc` and
+`free` show the whole VM rather than the sandbox's share.
 
 ## Admin
 

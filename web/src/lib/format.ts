@@ -1,4 +1,6 @@
-// Formatting helpers: relative times, durations, numbers.
+// Formatting helpers: relative times, durations, numbers, sizes.
+
+import type * as G from "@/gen";
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
@@ -40,6 +42,23 @@ export function duration(ms: number): string {
 
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 export const num = (n: number) => compact.format(n);
+
+/** An amount of memory in MiB: "512 MiB", "8 GiB", "15.6 GiB" (GiB to a tenth from 1 GiB up). */
+export function memory(mb: number): string {
+  if (mb < 1024) return `${Math.round(mb)} MiB`;
+  const tenths = Math.round((mb * 10) / 1024);
+  return `${tenths % 10 === 0 ? tenths / 10 : (tenths / 10).toFixed(1)} GiB`;
+}
+
+/** "1 CPU", "4 CPUs". */
+export const cpus = (n: number) => (n === 1 ? "1 CPU" : `${n} CPUs`);
+
+/** What a runner gives sandboxes: "4 CPUs and 8 GiB by default, at most 10 CPUs and 15.6 GiB". */
+export function sandboxLimits(l: G.SandboxLimits): string {
+  // Hosts that cannot measure their memory and set no maximum send u32::MAX.
+  const mem = (mb: number) => (mb >= 4_294_967_295 ? "unlimited memory" : memory(mb));
+  return `${cpus(l.default.cpus)} and ${mem(l.default.memory_mb)} by default, at most ${cpus(l.max.cpus)} and ${mem(l.max.memory_mb)}`;
+}
 
 export function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
