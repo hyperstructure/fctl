@@ -5,11 +5,14 @@
 //! requests), and identity travels in `X-Fctl-*` headers it sets itself.
 
 use crate::error::{AppError, AppResult, internal};
+use fctl_proto::api::PlanLimit;
 use fctl_proto::event::{Attachment, UserMessage};
 use fctl_proto::runner::StopReason;
 use fctl_proto::session::{RunnerRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::Delivery;
-use fctl_proto::{ApiError, AttachmentId, DeliveryId, LoginJobId, Millis, ProjectId, SessionId};
+use fctl_proto::{
+    ApiError, AttachmentId, CredentialId, DeliveryId, LoginJobId, Millis, ProjectId, SessionId,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use worker::{Env, Headers, Method, Request, RequestInit, Response, Stub};
 
@@ -126,6 +129,14 @@ pub struct LoginStart {
 pub struct LoginCode {
     pub job_id: LoginJobId,
     pub code: String,
+}
+
+/// A credential's plan usage changed: for its owner's feeds (`/usage`).
+#[derive(Serialize, Deserialize)]
+pub struct ClaudeUsage {
+    pub user_id: String,
+    pub credential_id: CredentialId,
+    pub usage: Vec<PlanLimit>,
 }
 
 // ───────────────────────────── NotifyObject ─────────────────────────────

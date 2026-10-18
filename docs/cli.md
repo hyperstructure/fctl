@@ -124,7 +124,7 @@ or with `fctl attach`) aren't notified about it.
 fctl claude connect --login      # full sign-in through a host (Remote Control)
 fctl claude connect              # paste a token from `claude setup-token`
 fctl claude connect --token sk-ant-oat01-…
-fctl claude status
+fctl claude status               # your connections and how much of each plan is used
 ```
 
 ## Hosts

@@ -1,4 +1,5 @@
-// The dashboard feed: live session summaries, runners and activity pulses.
+// The dashboard feed: live session summaries, runners, activity pulses and
+// the person's Claude plan usage.
 
 import { useEffect, useSyncExternalStore } from "react";
 import type * as G from "@/gen";
@@ -114,6 +115,16 @@ class Feed {
         case "claude_login":
           queryClient.setQueryData(["claude-login", msg.job.id], msg.job);
           if (msg.job.state === "succeeded") void queryClient.invalidateQueries({ queryKey: keys.me });
+          break;
+        case "claude_usage":
+          queryClient.setQueryData<G.Me | null>(keys.me, (me) =>
+            me
+              ? {
+                  ...me,
+                  claude: me.claude.map((c) => (c.id === msg.credential_id ? { ...c, usage: msg.usage } : c)),
+                }
+              : me,
+          );
           break;
         default:
           break;

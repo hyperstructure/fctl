@@ -4,6 +4,7 @@ import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstru
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { PlanUsageStrip } from "@/components/plan-usage";
 import {
   AttachButton,
   DraftTray,
@@ -347,6 +348,8 @@ export function Home() {
     (r) => r.status === "online",
   ).length;
   const floor = useRef<FoundryHandle | null>(null);
+  // The plan that sessions you start run on.
+  const usage = me?.claude.find((c) => c.is_default)?.usage;
 
   return (
     <div>
@@ -389,6 +392,7 @@ export function Home() {
       <div className="mx-auto max-w-[920px] px-6">
         <div className="-mt-6 relative z-[2]">
           {projects.data && <QuickStart projects={projects.data.projects} />}
+          {usage?.length ? <PlanUsageStrip usage={usage} className="mt-3" /> : null}
         </div>
         <div className="mt-12 flex flex-col gap-12 pb-24">
           {me && projects.data && runners.data && (

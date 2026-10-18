@@ -100,8 +100,8 @@ and release downloads).
 identities, allowlist, auth tokens, device codes, projects, their members and
 repositories, sessions (summary rows), shares, who follows which session,
 notification settings and browsers (push subscriptions), runners, encrypted
-credentials and project secrets, the instance's sealed Web Push key, and the
-audit log.
+credentials and project secrets, the latest plan usage of each Claude
+credential, the instance's sealed Web Push key, and the audit log.
 
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
@@ -320,6 +320,34 @@ Guards against API billing: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 reach Claude; the `system/init` message must report no API key source; a
 `rate_limit_event` showing overage use interrupts the session and pauses it
 until the limit resets.
+
+### Plan usage
+
+Settings shows how much of each connection's plan is used, and the floor
+shows it for the connection new sessions run on, so people see what is left
+before they start work. Sessions report it; fctl asks Anthropic for nothing.
+Claude Code writes a `rate_limit_event` when a limit's status changes and,
+in recent versions, whenever the five-hour or weekly window moves by a
+percent (`unifiedWindows`). fctl-agent passes it on like every other Claude
+message.
+
+1. SessionDO turns each one into readings, one per limit
+   (`fctl_domain::usage`): the five-hour window, the week, and a model's own
+   weekly limit when Claude names it, each with the share used, when it
+   resets, and Claude's status for the limit closest to stopping requests.
+   Paid extra usage is not a plan limit and is left out.
+2. It keeps them with the Claude credential the session runs on now (a
+   resumed session runs on the resumer's), in D1's `claude_usage`: one row
+   per credential and limit, which a later reading replaces.
+3. `/auth/me` returns them on each credential (`ClaudeCredentialInfo.usage`,
+   `fctl claude status`), and FleetDO sends the credential's owner a
+   `claude_usage` feed message, so Settings and the floor change while
+   sessions run.
+
+Readings change only while sessions run, so the apps say when a session last
+reported them, and a window whose reset time has passed counts as started
+over. Removing the connection deletes them. Hosts and agents need no update:
+they already pass every Claude message on.
 
 ## Sandboxes and drivers
 

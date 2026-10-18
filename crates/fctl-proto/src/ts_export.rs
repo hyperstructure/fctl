@@ -101,6 +101,8 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::GithubRepo,
         api::GithubRepoList,
         api::ClaudeCredentialInfo,
+        api::LimitStatus,
+        api::PlanLimit,
         api::AddClaudeTokenRequest,
         api::ClaudeLoginJob,
         api::ClaudeLoginState,
