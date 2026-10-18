@@ -52,13 +52,15 @@ pub async fn accept_loop(listener: UnixListener, events: mpsc::UnboundedSender<L
         };
         next_id += 1;
         let id = next_id;
+        // Announced here, in the order they connect, so the newest
+        // connection is the one that stays current.
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        if events.send(LinkEvent::Connected(id, tx)).is_err() {
+            return;
+        }
         let events = events.clone();
         tokio::spawn(async move {
             let (read, mut write) = stream.into_split();
-            let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-            if events.send(LinkEvent::Connected(id, tx)).is_err() {
-                return;
-            }
             let writer = tokio::spawn(async move {
                 while let Some(mut line) = rx.recv().await {
                     line.push('\n');
