@@ -1,7 +1,8 @@
 //! Printing a session transcript in the terminal, live.
 
 use crate::style;
-use fctl_proto::event::{EventBody, NoticeLevel, SessionEvent};
+use fctl_proto::event::{EventBody, FileChange, NoticeLevel, SessionEvent};
+use fctl_proto::session::PullRequestRef;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::Write;
@@ -55,6 +56,33 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
         .take(100)
         .collect();
     format!("{name}({arg})")
+}
+
+/// `± 3 files (+10 −2) · 1 commits · pushed · PR #12 <url>`, with the
+/// repository's name for the ones besides the primary.
+fn git_line(
+    repo: Option<&str>,
+    files: &[FileChange],
+    ahead: u32,
+    pushed: bool,
+    pr: Option<&PullRequestRef>,
+) -> String {
+    let adds: u32 = files.iter().filter_map(|f| f.additions).sum();
+    let dels: u32 = files.iter().filter_map(|f| f.deletions).sum();
+    let mut line = match repo {
+        Some(name) => format!("± {name}: {} files (+{adds} −{dels})", files.len()),
+        None => format!("± {} files (+{adds} −{dels})", files.len()),
+    };
+    if ahead > 0 {
+        line.push_str(&format!(" · {ahead} commits"));
+    }
+    if pushed {
+        line.push_str(" · pushed");
+    }
+    if let Some(pr) = pr {
+        line.push_str(&format!(" · PR #{} {}", pr.number, pr.url));
+    }
+    line
 }
 
 fn result_text(content: &Value) -> String {
@@ -132,19 +160,22 @@ impl Renderer {
             }
             EventBody::Git(g) => {
                 self.end_text();
-                let adds: u32 = g.files.iter().filter_map(|f| f.additions).sum();
-                let dels: u32 = g.files.iter().filter_map(|f| f.deletions).sum();
-                let mut line = format!("± {} files (+{adds} −{dels})", g.files.len());
-                if g.ahead > 0 {
-                    line.push_str(&format!(" · {} commits", g.ahead));
-                }
-                if g.pushed {
-                    line.push_str(" · pushed");
-                }
-                if let Some(pr) = &g.pull_request {
-                    line.push_str(&format!(" · PR #{} {}", pr.number, pr.url));
-                }
+                let line = git_line(None, &g.files, g.ahead, g.pushed, g.pull_request.as_ref());
                 out(&format!("{}\n", style::dim(&line)));
+                for r in g.repos.iter().flatten() {
+                    if r.files.is_empty() && r.ahead == 0 && r.pull_request.is_none() {
+                        continue;
+                    }
+                    let name = r.full_name();
+                    let line = git_line(
+                        Some(&name),
+                        &r.files,
+                        r.ahead,
+                        r.pushed,
+                        r.pull_request.as_ref(),
+                    );
+                    out(&format!("{}\n", style::dim(&line)));
+                }
             }
             EventBody::RemoteControl(rc) => {
                 self.end_text();
