@@ -34,7 +34,8 @@ cpus?: number,
  */
 memory_mb?: number, 
 /**
- * Minutes an idle session keeps its sandbox before it stops.
+ * Minutes an idle session keeps its sandbox, and its slot on the host,
+ * before it stops (10 by default). A message resumes it.
  */
 idle_timeout_minutes?: number, 
 /**

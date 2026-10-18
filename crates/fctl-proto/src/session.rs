@@ -146,6 +146,7 @@ impl SessionRole {
 /// ```text
 /// queued → provisioning → preparing → running ⇄ idle → stopped
 ///                                        └→ paused (usage limit) → running
+/// stopped → queued (a message, or a resume)
 /// any → failed
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -166,7 +167,8 @@ pub enum SessionStatus {
     Paused,
     /// Shutting down.
     Stopping,
-    /// The sandbox is stopped. The session can be resumed.
+    /// The sandbox is stopped, and its host takes other work. A message
+    /// resumes the session.
     Stopped,
     /// Something went wrong; `status_reason` says what.
     Failed,
@@ -202,6 +204,13 @@ impl SessionStatus {
                 | Self::Idle
                 | Self::Paused
         )
+    }
+
+    /// Whether a message resumes the session: it stopped (after being idle,
+    /// or because someone stopped it), or it is stopping and resumes once it
+    /// has stopped. A failed session needs its owner to resume it.
+    pub fn resumes_for_messages(self) -> bool {
+        matches!(self, Self::Stopping | Self::Stopped)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -357,7 +366,8 @@ pub struct ProjectSettings {
     pub cpus: Option<u32>,
     /// Memory per sandbox, in MiB.
     pub memory_mb: Option<u32>,
-    /// Minutes an idle session keeps its sandbox before it stops.
+    /// Minutes an idle session keeps its sandbox, and its slot on the host,
+    /// before it stops (10 by default). A message resumes it.
     pub idle_timeout_minutes: Option<u32>,
     /// Ask agents to open a pull request when they finish.
     pub auto_pull_request: bool,
