@@ -68,7 +68,7 @@ pull` pulls it now. While the version's image can't be pulled, it pulls
   image](#your-own-image)). `fctl-agent:latest`, the name the default
   image had when hosts built it themselves, means the default. On another
   image, the host pulls it when it isn't there, only `fctl host image pull`
-  pulls it again, and the host removes none of the default image's.
+  pulls it again, and the host leaves the default image's tags alone.
 - **Building it.** `fctl host image build` builds the default image on the
   host with its driver, from the `main` branch of hyperstructure/sandbox,
   under the same name, so sessions use the build: for a host that can't
