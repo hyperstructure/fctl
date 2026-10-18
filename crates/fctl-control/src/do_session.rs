@@ -829,6 +829,11 @@ impl SessionObject {
             status_changed = true;
             self.set_status(&mut s, st, b.reason.clone(), None, now);
         }
+        if let Some(notice) = b.notice
+            && let Some(json) = self.append(now, &EventBody::Notice(notice), None)
+        {
+            self.broadcast_events(&[json]);
+        }
         s.updated_at = now;
         self.save_summary(&s);
         self.broadcast_summary(&s);
