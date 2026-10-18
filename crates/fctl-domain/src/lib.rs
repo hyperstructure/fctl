@@ -11,6 +11,7 @@ pub mod naming;
 pub mod perm;
 pub mod schedule;
 pub mod settings;
+pub mod size;
 pub mod tokens;
 pub mod validate;
 

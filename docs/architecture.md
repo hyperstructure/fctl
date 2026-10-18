@@ -206,6 +206,18 @@ running Linux sandbox and can exec processes in it with piped stdio.
 | `docker` | containers in Docker/OrbStack/Colima (a VM on macOS) | macOS, Linux |
 | `process` | none: a directory and a process | development, trusted hosts |
 
+A sandbox gets the CPUs and memory its project's settings ask for, or the
+host's default. Hosts send the default and a per-sandbox maximum in their
+hello (`HostHello.sandbox`): the configured `max_cpus` and `max_memory_mb`,
+within what the sandboxes run on (the Docker daemon's VM with Docker,
+otherwise the machine). FleetDO only assigns a session to a host whose
+maximum covers its size; one that fits nowhere stays queued with the reason,
+and the sessions queued behind it may start meanwhile. Hosts that send no
+limits (older versions) take any size. The host passes the size it applied
+to fctl-agent (`AgentConfig.sandbox`), which tells Claude: with Docker,
+`nproc` and `free` show the VM, not the sandbox's cgroup limits. The
+process driver limits nothing.
+
 fctl-agent runs detached inside the sandbox and listens on a unix socket; the
 host talks to it through `fctl-agent attach` over the driver's exec channel.
 Restarting or upgrading the host does not stop agents.

@@ -1,8 +1,10 @@
 //! The text fctl appends to Claude's system prompt.
 
-use fctl_proto::runner::SessionSpec;
+use fctl_domain::size;
+use fctl_proto::runner::{SandboxSize, SessionSpec};
 
-pub fn system_prompt(spec: &SessionSpec, workdir: &str) -> String {
+/// `sandbox`: what the sandbox is limited to, when its driver limits it.
+pub fn system_prompt(spec: &SessionSpec, workdir: &str, sandbox: Option<SandboxSize>) -> String {
     let mut s = String::new();
     s.push_str("You are running as an autonomous agent in fctl, a software factory. ");
     s.push_str("Your work happens in a sandbox; people follow along live and may message you.\n\n");
@@ -14,6 +16,16 @@ pub fn system_prompt(spec: &SessionSpec, workdir: &str) -> String {
             spec.base_branch
         )),
         None => s.push_str(&format!("- Your working directory is {workdir}. No GitHub repository is linked.\n")),
+    }
+    if let Some(size) = sandbox {
+        // With Docker, nproc and free show the whole VM while cgroups hold
+        // the sandbox to its size, so build tools would start too many jobs.
+        s.push_str(&format!(
+            "- This sandbox has {} and {} of memory ($FCTL_SANDBOX_CPUS, $FCTL_SANDBOX_MEMORY_MB), even where `nproc` and `free` show more. Size parallel builds and test runs to these limits (for example `make -j{}`): when the sandbox runs out of memory, the kernel kills a process, which then exits with code 137.\n",
+            size::cpus(size.cpus),
+            size::memory(size.memory_mb.into()),
+            size.cpus
+        ));
     }
     s.push_str("- Work in small, verified steps: read before you change, and run the project's tests and linters.\n");
     s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn; never force-push and never rewrite published history.\n");
@@ -63,9 +75,96 @@ pub fn user_turn(text: &str, author: Option<&str>, starter: &str) -> String {
     }
 }
 
+/// The sandbox's size for Claude, its tools and the setup script.
+pub fn sandbox_env(sandbox: Option<SandboxSize>) -> Vec<(String, String)> {
+    sandbox
+        .map(|s| {
+            vec![
+                ("FCTL_SANDBOX_CPUS".to_owned(), s.cpus.to_string()),
+                ("FCTL_SANDBOX_MEMORY_MB".to_owned(), s.memory_mb.to_string()),
+            ]
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fctl_proto::runner::{
+        ClaudeCredential, ClaudeCredentialKind, GitIdentity, ProjectSpec, SessionCredentials,
+    };
+    use fctl_proto::session::{ProjectSettings, UserRef};
+    use fctl_proto::{CredentialId, ProjectId, SessionId, UserId};
+
+    fn spec() -> SessionSpec {
+        SessionSpec {
+            session_id: SessionId("ses_1".into()),
+            number: 1,
+            title: "Build it".into(),
+            project: ProjectSpec {
+                id: ProjectId("prj_1".into()),
+                slug: "app".into(),
+                name: "App".into(),
+                repo: None,
+                default_branch: "main".into(),
+                settings: ProjectSettings::default(),
+            },
+            branch: "fctl/1".into(),
+            base_branch: "main".into(),
+            prompt: Some("Build it".into()),
+            task: Some("Build it".into()),
+            author: UserRef {
+                id: UserId("usr_1".into()),
+                name: "Ada".into(),
+                avatar_url: None,
+            },
+            claude_session_id: "uuid".into(),
+            resume: false,
+            model: None,
+            effort: None,
+            secrets: Default::default(),
+            credentials: SessionCredentials {
+                claude: ClaudeCredential {
+                    id: CredentialId("crd_1".into()),
+                    kind: ClaudeCredentialKind::SetupToken,
+                    access_token: "token".into(),
+                    scopes: vec![],
+                    expires_at: None,
+                    subscription_type: None,
+                    account: None,
+                },
+                github: None,
+            },
+            git_author: GitIdentity {
+                name: "fctl".into(),
+                email: "agent@fctl.invalid".into(),
+            },
+            co_authors: vec![],
+            web_url: "https://app.fctl.sh/s/ses_1".into(),
+            idle_timeout_secs: 7200,
+            run_id: None,
+        }
+    }
+
+    #[test]
+    fn tells_claude_the_sandboxs_size() {
+        let size = SandboxSize {
+            cpus: 4,
+            memory_mb: 8192,
+        };
+        let text = system_prompt(&spec(), "/work", Some(size));
+        assert!(text.contains("This sandbox has 4 CPUs and 8 GiB of memory"));
+        assert!(text.contains("`make -j4`"));
+        assert!(!system_prompt(&spec(), "/work", None).contains("This sandbox has"));
+        assert_eq!(
+            sandbox_env(Some(size)),
+            [
+                ("FCTL_SANDBOX_CPUS".to_owned(), "4".to_owned()),
+                ("FCTL_SANDBOX_MEMORY_MB".to_owned(), "8192".to_owned())
+            ]
+        );
+        assert!(sandbox_env(None).is_empty());
+    }
 
     #[test]
     fn fresh_resume_names_the_branch_and_task() {

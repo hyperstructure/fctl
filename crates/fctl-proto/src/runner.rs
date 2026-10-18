@@ -27,6 +27,26 @@ pub struct DriverInfo {
     pub detail: Option<String>,
 }
 
+/// A sandbox's CPUs and memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SandboxSize {
+    pub cpus: u32,
+    /// MiB.
+    pub memory_mb: u32,
+}
+
+/// The sizes a host gives sandboxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SandboxLimits {
+    /// For sessions whose project sets no size.
+    pub default: SandboxSize,
+    /// The most one sandbox may have: what the host was given, within what
+    /// the machine (or, with Docker on macOS, the Docker VM) has.
+    pub max: SandboxSize,
+}
+
 /// A session the host has a sandbox for.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -60,6 +80,9 @@ pub struct HostHello {
     pub sessions: Vec<HostSessionReport>,
     /// The default sandbox image the host uses.
     pub image: Option<String>,
+    /// What the host gives each sandbox. Older hosts send none and get
+    /// sessions of any size.
+    pub sandbox: Option<SandboxLimits>,
 }
 
 #[skip_serializing_none]
