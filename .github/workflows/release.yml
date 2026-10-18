@@ -135,7 +135,11 @@ jobs:
         run: |
           # cargo-zigbuild finds zig through `python3 -m ziglang`.
           python3 -m pip install --user --break-system-packages ziglang==0.17.0
-          command -v cargo-zigbuild || cargo install cargo-zigbuild --version 0.23.4 --locked
+          # 0.23.4 and the fix that drops rustc's -Wl,-O1, which zig ignores
+          # with a warning (rust-cross/cargo-zigbuild#506), until a release has
+          # it. Does nothing when the cache has this one.
+          cargo install cargo-zigbuild --locked --git https://github.com/rust-cross/cargo-zigbuild \
+            --rev 371bac84444fe6f998955889f2106802b817094b
       - name: Build ${{ matrix.package }}
         run: cargo xtask dist build "$PACKAGE" --target "$TARGET"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

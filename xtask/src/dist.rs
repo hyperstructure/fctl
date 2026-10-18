@@ -78,6 +78,19 @@ fn built(root: &Path, version: &str, package: &str, target: &str) -> PathBuf {
         .join(format!("{package}-{target}"))
 }
 
+/// rustc looks for a macOS SDK when it links for darwin (SDKROOT, else
+/// `xcrun`) and warns when there is none, but zig links against the libSystem
+/// stubs it bundles. An empty SDK quiets rustc and leaves the binary as it
+/// was; it has the directories cargo-zigbuild adds to zig's search paths
+/// when SDKROOT is set, which zig warns about when they are missing.
+fn empty_macos_sdk(root: &Path) -> Result<PathBuf> {
+    let sdk = std::path::absolute(util::target_dir(root).join("xtask-dist/empty-macos-sdk"))?;
+    for dir in ["usr/include", "usr/lib", "System/Library/Frameworks"] {
+        std::fs::create_dir_all(sdk.join(dir))?;
+    }
+    Ok(sdk)
+}
+
 fn zigbuild(root: &Path, package: &str, target: &str) -> Result<PathBuf> {
     let mut cmd = Command::new("cargo");
     cmd.args([
@@ -93,6 +106,9 @@ fn zigbuild(root: &Path, package: &str, target: &str) -> Result<PathBuf> {
     .current_dir(root);
     if target.ends_with("apple-darwin") {
         cmd.env("MACOSX_DEPLOYMENT_TARGET", MACOS_DEPLOYMENT_TARGET);
+        if std::env::var_os("SDKROOT").is_none() && !util::has("xcrun") {
+            cmd.env("SDKROOT", empty_macos_sdk(root)?);
+        }
     }
     run(&mut cmd)?;
     let bin = util::target_dir(root)
