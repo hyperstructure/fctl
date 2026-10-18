@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult, conflict, forbidden, not_found, validati
 use crate::github;
 use crate::http;
 use crate::model::{PROJECT_SELECT, ProjectRow};
-use fctl_domain::{naming, perm, settings, validate};
+use fctl_domain::{naming, perm, published, settings, validate};
 use fctl_proto::api::*;
 use fctl_proto::session::{ProjectRole, ProjectSettings, RepoRef, UserRef};
 use fctl_proto::{ApiError, UserId};
@@ -85,6 +85,14 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
         return Err(validation(
             "settings.idle_timeout_minutes",
             "Use 1 minute – 7 days",
+        ));
+    }
+    if let Some(d) = s.screenshot_days
+        && !published::valid_days(d)
+    {
+        return Err(validation(
+            "settings.screenshot_days",
+            &format!("Use {} – {} days", published::MIN_DAYS, published::MAX_DAYS),
         ));
     }
     let mut env = std::collections::BTreeMap::new();

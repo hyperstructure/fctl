@@ -17,6 +17,7 @@ mod error;
 mod github;
 mod housekeeping;
 mod http;
+mod instance;
 mod internal;
 mod model;
 mod notify;
@@ -117,6 +118,8 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["admin", "invites"]) => api::admin::create_invite(ctx, req).await,
         (Delete, ["admin", "invites", id]) => api::admin::revoke_invite(ctx, id).await,
         (Get, ["admin", "audit"]) => api::admin::audit(ctx, req).await,
+        (Get, ["admin", "settings"]) => api::admin::settings(ctx).await,
+        (Patch, ["admin", "settings"]) => api::admin::update_settings(ctx, req).await,
 
         // Runners (admin) and hosts
         (Get, ["runners"]) => api::runners::list(ctx).await,
@@ -128,6 +131,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["runner", "sessions", id, "uplink"]) => api::runners::uplink(ctx, req, id).await,
         (Get, ["runner", "sessions", id, "attachments", file]) => {
             api::attachments::runner_download(ctx, req, id, file).await
+        }
+        (Post, ["runner", "sessions", id, "published"]) => {
+            api::published::runner_publish(ctx, req, id).await
         }
         (Get, ["feed", "ws"]) => api::runners::feed(ctx, req).await,
 
@@ -178,6 +184,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["sessions", id, "attachments", file]) => {
             api::attachments::download(ctx, id, file).await
         }
+        // Published screenshots: anyone with a link reads it.
+        (Get | Head, ["published", token, ..]) => api::published::serve(ctx, req, token).await,
+        (Delete, ["published", token, ..]) => api::published::delete(ctx, token).await,
         (Put, ["sessions", id, "follow"]) => api::sessions::follow(ctx, id).await,
         (Delete, ["sessions", id, "follow"]) => api::sessions::unfollow(ctx, id).await,
         (Get, ["sessions", id, "shares"]) => api::sessions::shares(ctx, id).await,

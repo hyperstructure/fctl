@@ -9,11 +9,12 @@
 //! `agent_seq` the control plane acknowledged.
 //!
 //! A second socket, the session socket ([`SESSION_SOCKET_ENV`]), serves
-//! programs inside the sandbox: `fctl edit` sends one [`SessionRequest`] and
-//! reads one [`SessionReply`]. That is how an agent names and describes its
-//! own session without credentials for the control plane.
+//! programs inside the sandbox: `fctl edit` and `fctl publish` send one
+//! [`SessionRequest`] and read one [`SessionReply`]. That is how an agent
+//! names and describes its own session, and publishes screenshots, without
+//! credentials for the control plane.
 
-use crate::event::{Attachment, LogLine};
+use crate::event::{Attachment, LogLine, PublishedFile};
 use crate::runner::{
     ClaudeCredential, CredentialKind, GithubCredential, SandboxSize, SessionSpec, StopReason,
 };
@@ -106,6 +107,17 @@ pub enum HostToAgent {
         reason: StopReason,
         grace_ms: u64,
     },
+    /// The answer to [`AgentToHost::Publish`]: the published file, or why
+    /// it wasn't published.
+    Published {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        file: Option<PublishedFile>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        error: Option<ApiError>,
+    },
     Ping,
 }
 
@@ -158,6 +170,19 @@ pub enum AgentToHost {
         request_id: String,
         kind: CredentialKind,
     },
+    /// Publish a screenshot (`fctl publish`): the host uploads it to the
+    /// control plane with its runner token
+    /// (`POST /api/v1/runner/sessions/{id}/published`) and answers with
+    /// [`HostToAgent::Published`]. Agents send it only when the session's
+    /// project settings allow publishing, which reach them only through
+    /// hosts that know the setting, and so this frame.
+    Publish {
+        request_id: String,
+        /// The file's name, without directories.
+        name: String,
+        /// The bytes, base64.
+        data: String,
+    },
     /// The supervisor is exiting.
     Exited {
         status: SessionStatus,
@@ -172,8 +197,9 @@ pub enum AgentToHost {
 /// Claude and everything it runs.
 pub const SESSION_SOCKET_ENV: &str = "FCTL_SESSION_SOCKET";
 
-/// Longest request the session socket accepts.
-pub const MAX_SESSION_REQUEST_BYTES: usize = 64 * 1024;
+/// Longest request the session socket accepts: a screenshot to publish, in
+/// base64.
+pub const MAX_SESSION_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
 /// From `fctl` in the sandbox to fctl-agent: one per connection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -191,6 +217,18 @@ pub enum SessionRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
+    /// Publish a screenshot at a link anyone who has it can open, until it
+    /// expires, for pull requests. Only in projects that publish
+    /// screenshots.
+    Publish {
+        /// The session the caller means, as for `Edit`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<SessionId>,
+        /// The file's name, without directories.
+        name: String,
+        /// The bytes, base64.
+        data: String,
+    },
 }
 
 /// fctl-agent's answer on the session socket.
@@ -206,6 +244,10 @@ pub enum SessionReply {
         title: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
+    },
+    /// The screenshot is published.
+    Published {
+        file: PublishedFile,
     },
     Error {
         error: ApiError,
@@ -239,6 +281,30 @@ mod tests {
         assert_eq!(reply["type"], "edited");
         assert_eq!(reply["id"], "ses_1");
         assert!(reply.get("description").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn publishing_wire_format() -> Result<(), serde_json::Error> {
+        let req: SessionRequest = serde_json::from_str(
+            r#"{"type":"publish","session_id":"ses_1","name":"after.png","data":"iVBORw0KGgo="}"#,
+        )?;
+        assert!(matches!(req, SessionRequest::Publish { ref name, .. } if name == "after.png"));
+        let up = serde_json::to_value(AgentToHost::Publish {
+            request_id: "pub-1".into(),
+            name: "after.png".into(),
+            data: "iVBORw0KGgo=".into(),
+        })?;
+        assert_eq!(up["type"], "publish");
+        let refused: HostToAgent = serde_json::from_value(serde_json::json!({
+            "type": "published", "request_id": "pub-1",
+            "error": { "code": "forbidden", "message": "Publishing screenshots is off" }
+        }))?;
+        let HostToAgent::Published { file, error, .. } = refused else {
+            panic!("expected published");
+        };
+        assert_eq!(file, None);
+        assert_eq!(error.map(|e| e.code), Some(crate::ErrorCode::Forbidden));
         Ok(())
     }
 

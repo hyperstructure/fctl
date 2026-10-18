@@ -3,7 +3,7 @@
 use crate::http::{Error, HttpClient, Result};
 use fctl_proto::AttachmentId;
 use fctl_proto::api::*;
-use fctl_proto::event::Attachment;
+use fctl_proto::event::{Attachment, PublishedFile};
 use fctl_proto::session::{Project, Session};
 use http::Method;
 use serde::Serialize;
@@ -383,6 +383,39 @@ impl Api {
         Ok(self.raw(Method::GET, &path, None, None).await?.to_vec())
     }
 
+    // ── published screenshots ──
+
+    /// Publishes a screenshot for a session this runner runs (with the
+    /// runner token): an image anyone with the link can open until it
+    /// expires.
+    pub async fn runner_publish(
+        &self,
+        session: &str,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<PublishedFile> {
+        let path = format!(
+            "/runner/sessions/{}/published?name={}",
+            enc(session),
+            enc(name)
+        );
+        let body = self
+            .raw(
+                Method::POST,
+                &path,
+                Some(bytes),
+                Some("application/octet-stream"),
+            )
+            .await?;
+        serde_json::from_slice(&body).map_err(|e| Error::Decode(e.to_string()))
+    }
+
+    /// Deletes a published screenshot before it expires, by its token (for
+    /// people who manage its session).
+    pub async fn unpublish(&self, token: &str) -> Result<Ok> {
+        self.delete(&format!("/published/{}", enc(token))).await
+    }
+
     /// A request with a raw body and answer; files can be large, so it may
     /// take minutes.
     async fn raw(
@@ -550,5 +583,16 @@ impl Api {
 
     pub async fn disallow(&self, id: &str) -> Result<serde_json::Value> {
         self.delete(&format!("/admin/allowlist/{}", enc(id))).await
+    }
+
+    pub async fn instance_settings(&self) -> Result<InstanceSettings> {
+        self.get("/admin/settings").await
+    }
+
+    pub async fn update_instance_settings(
+        &self,
+        req: &UpdateInstanceSettingsRequest,
+    ) -> Result<InstanceSettings> {
+        self.patch("/admin/settings", req).await
     }
 }

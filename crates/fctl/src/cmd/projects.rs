@@ -46,8 +46,8 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days"])),
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -68,6 +68,15 @@ pub enum ProjectsCmd {
         /// resumes it.
         #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u32).range(1..=10_080))]
         idle_timeout: Option<u32>,
+        /// Let agents publish screenshots for their pull requests (`fctl
+        /// publish`), at links anyone who has one can open until they
+        /// expire. Needs the instance's admins to allow it too. Off takes
+        /// the project's published screenshots offline.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        publish_screenshots: Option<bool>,
+        /// Days a published screenshot's link works, 1 to 60 (default 30).
+        #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u32).range(1..=60))]
+        screenshot_days: Option<u32>,
     },
     /// Use this project by default for `fctl run` and `fctl sessions`.
     Use {
@@ -145,6 +154,21 @@ fn idle(s: &ProjectSettings) -> String {
     let minutes = fctl_domain::settings::idle_timeout_secs(s) / 60;
     let unit = if minutes == 1 { "minute" } else { "minutes" };
     format!("stop after waiting {minutes} {unit} for a message; a message resumes them")
+}
+
+/// Whether a project's agents publish screenshots, in words.
+fn screenshots(s: &ProjectSettings) -> String {
+    if s.publish_screenshots {
+        let days = fctl_domain::published::days(s);
+        let lasts = if days == 1 {
+            "24 hours".to_owned()
+        } else {
+            format!("{days} days")
+        };
+        format!("publish screenshots, at links that work for {lasts}")
+    } else {
+        "don't publish screenshots".to_owned()
+    }
 }
 
 /// What the commits in a project's sessions credit, in words.
@@ -324,6 +348,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             credit_people,
             credit_claude,
             idle_timeout,
+            publish_screenshots,
+            screenshot_days,
         } => {
             let project = super::sessions::project_or_default(project)?;
             let p = api.project(&project).await?;
@@ -337,6 +363,12 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if idle_timeout.is_some() {
                 settings.idle_timeout_minutes = idle_timeout;
+            }
+            if let Some(on) = publish_screenshots {
+                settings.publish_screenshots = on;
+            }
+            if let Some(days) = screenshot_days {
+                settings.screenshot_days = Some(days);
             }
             let p = api
                 .update_project(
@@ -365,6 +397,24 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::bold(&p.slug),
                     idle(&p.settings)
                 );
+            }
+            if publish_screenshots.is_some() || screenshot_days.is_some() {
+                println!(
+                    "{} Agents in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    screenshots(&p.settings)
+                );
+                if p.settings.publish_screenshots
+                    && !api.instance().await?.features.publish_screenshots
+                {
+                    println!(
+                        "{}",
+                        style::amber(
+                            "This instance's admins don't allow it yet: `fctl admin set --publish-screenshots on`."
+                        )
+                    );
+                }
             }
             println!(
                 "{}",

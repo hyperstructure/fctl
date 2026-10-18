@@ -65,6 +65,25 @@ enum Command {
                             fctl edit --title \"Retry failed uploads\"   # an agent, in its sandbox"
     )]
     Edit(cmd::sessions::EditArgs),
+    /// Publish screenshots for a pull request at links anyone who has one
+    /// can open, until they expire (agents, in the sandbox of a session whose
+    /// project publishes screenshots). Prints Markdown that shows each.
+    #[command(
+        after_help = "GitHub takes no uploads from a session's token, so `gh pr edit --attach` fails
+                      there. Put the Markdown this prints in the pull request instead.
+
+                      Examples:
+  fctl publish before.png after.png
+                        fctl publish --json after.png | jq -r '.published[].markdown'"
+    )]
+    Publish(cmd::publish::PublishArgs),
+    /// Delete published screenshots before they expire (people who manage
+    /// their session).
+    Unpublish {
+        /// Links to published screenshots.
+        #[arg(required = true, value_name = "LINK")]
+        links: Vec<String>,
+    },
     /// Follow a session live and message the agent (Ctrl-C detaches).
     Attach {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -226,6 +245,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Sessions(args) => cmd::sessions::list(server, args, json).await,
         Command::Show { session } => cmd::sessions::show(server, &session, json).await,
         Command::Edit(args) => cmd::sessions::edit(server, args, json).await,
+        Command::Publish(args) => cmd::publish::publish(args, json).await,
+        Command::Unpublish { links } => cmd::publish::unpublish(server, &links, json).await,
         Command::Attach { session, read_only } => {
             cmd::attach::attach(server, &session, read_only).await
         }

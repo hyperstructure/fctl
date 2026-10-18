@@ -1,10 +1,12 @@
-//! `fctl admin …`: access and runners.
+//! `fctl admin …`: access, runners and the instance's settings.
 
 use crate::config;
 use crate::style;
 use anyhow::{Context, Result};
-use clap::Subcommand;
+use clap::builder::BoolishValueParser;
+use clap::{ArgGroup, Subcommand};
 use fctl_domain::size;
+use fctl_proto::api::{InstanceSettings, UpdateInstanceSettingsRequest};
 use fctl_proto::session::InstanceRole;
 
 #[derive(Subcommand)]
@@ -28,6 +30,40 @@ pub enum AdminCmd {
     },
     /// List runners.
     Runners,
+    /// Show the instance's settings.
+    Settings,
+    /// Change the instance's settings.
+    #[command(
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on"
+    )]
+    Set {
+        /// Let projects publish their agents' screenshots on this instance,
+        /// at links anyone who has one can open until they expire. Each
+        /// project turns it on too (`fctl projects set --publish-screenshots
+        /// on`). Off takes every published screenshot offline.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        publish_screenshots: Option<bool>,
+    },
+}
+
+fn print_settings(s: &InstanceSettings) {
+    println!(
+        "Published screenshots  {}",
+        if s.publish_screenshots {
+            style::accent("allowed")
+        } else {
+            style::dim("off")
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(if s.publish_screenshots {
+            "Projects that turn them on let agents publish screenshots for pull requests."
+        } else {
+            "No project's agents can publish screenshots."
+        })
+    );
 }
 
 pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> {
@@ -150,6 +186,26 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     println!("  {}", style::dim(&format!("free: {}", free.join(", "))));
                 }
             }
+        }
+        AdminCmd::Settings => {
+            let settings = api.instance_settings().await?;
+            if json {
+                return style::print_json(&settings);
+            }
+            print_settings(&settings);
+        }
+        AdminCmd::Set {
+            publish_screenshots,
+        } => {
+            let settings = api
+                .update_instance_settings(&UpdateInstanceSettingsRequest {
+                    publish_screenshots,
+                })
+                .await?;
+            if json {
+                return style::print_json(&settings);
+            }
+            print_settings(&settings);
         }
     }
     Ok(())

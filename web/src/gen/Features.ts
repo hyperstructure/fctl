@@ -12,4 +12,8 @@ email: boolean,
 /**
  * A GitHub App is configured.
  */
-github: boolean, };
+github: boolean, 
+/**
+ * Admins let projects publish screenshots ([`InstanceSettings`]).
+ */
+publish_screenshots: boolean, };

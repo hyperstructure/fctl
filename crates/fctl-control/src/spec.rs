@@ -132,6 +132,12 @@ pub async fn build(
     // Agents from before `claude_ai_connectors` ignore it, but every agent
     // passes the project's environment on to Claude. Not stored.
     settings.env = fctl_domain::settings::session_env(&settings);
+    // Agents offer `fctl publish` only where it works: the instance must
+    // allow it too. Hosts from before the setting leave it out of the
+    // agent's configuration, and so never get a screenshot to upload.
+    let instance = crate::instance::settings(db).await?;
+    settings.publish_screenshots =
+        fctl_domain::published::allowed(instance.publish_screenshots, &settings);
     Ok(SessionSpec {
         session_id: row.session_id(),
         number: row.number.max(0) as u32,

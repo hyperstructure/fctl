@@ -1,15 +1,21 @@
 //! FilesObject: one Durable Object per project, holding the files people
-//! attach to messages.
+//! attach to messages and the screenshots its agents publish.
 //!
 //! An upload is stored in chunks (SQLite rows hold at most 2 MB) and waits
 //! for a message in one of the project's sessions to claim it; uploads no
 //! message claimed are deleted after a day. Claimed files are read through
 //! the Worker by the session's viewers and by the runner that runs it, and
 //! deleted with the project.
+//!
+//! A published screenshot is stored the same way, with the time it
+//! expires; the Worker serves it to anyone with its link until then (see
+//! `api/published.rs`), and the object's alarm deletes it after.
 
 use crate::ctx::now_ms;
-use crate::internal::{self, ClaimFiles, ClaimedFiles, StoreFile};
-use fctl_domain::files;
+use crate::internal::{
+    self, ClaimFiles, ClaimedFiles, PublishFile, PublishedBytes, StoreFile, Unpublish,
+};
+use fctl_domain::{files, published};
 use fctl_proto::event::Attachment;
 use fctl_proto::{ApiError, AttachmentId, ErrorCode};
 use serde::Deserialize;
@@ -50,8 +56,14 @@ impl FileRow {
 }
 
 #[derive(Deserialize)]
-struct Oldest {
-    created_at: Option<f64>,
+struct Due {
+    at: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct PublishedRow {
+    media_type: String,
+    size: f64,
 }
 
 fn sv(s: &str) -> SqlStorageValue {
@@ -72,6 +84,10 @@ fn create_schema(sql: &SqlStorage) {
          width INTEGER, height INTEGER, uploaded_by TEXT NOT NULL, created_at INTEGER NOT NULL, session_id TEXT, claimed_at INTEGER)",
         "CREATE INDEX IF NOT EXISTS files_unclaimed ON files (created_at) WHERE session_id IS NULL",
         "CREATE TABLE IF NOT EXISTS chunks (file_id TEXT NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (file_id, n))",
+        // Their bytes are in `chunks` too, under their id.
+        "CREATE TABLE IF NOT EXISTS published (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, name TEXT NOT NULL, media_type TEXT NOT NULL, \
+         size INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS published_expiry ON published (expires_at)",
     ] {
         if let Err(e) = sql.exec(stmt, None) {
             worker::console_error!("files schema: {e}");
@@ -95,6 +111,12 @@ impl DurableObject for FilesObject {
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
             },
             (worker::Method::Get, "/file") => return self.file(&req),
+            (worker::Method::Post, "/publish") => self.publish(&mut req).await,
+            (worker::Method::Get, "/published") => return self.published(&req),
+            (worker::Method::Post, "/unpublish") => match req.json::<Unpublish>().await {
+                Ok(b) => Ok(self.unpublish(&b.id)),
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
             (worker::Method::Post, "/purge") => self.purge().await,
             _ => Err(api_err(ErrorCode::NotFound, "Unknown files endpoint")),
         };
@@ -105,7 +127,7 @@ impl DurableObject for FilesObject {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        self.expire_unclaimed(now_ms()).await;
+        self.expire(now_ms()).await;
         Response::ok("ok")
     }
 }
@@ -174,26 +196,44 @@ impl FilesObject {
                 ]),
             )
             .map_err(failed)?;
-        for (n, chunk) in bytes.chunks(files::CHUNK_BYTES).enumerate() {
-            self.sql
-                .exec(
-                    "INSERT INTO chunks (file_id, n, data) VALUES (?, ?, ?)",
-                    Some(vec![
-                        sv(att.id.as_str()),
-                        iv(n as i64),
-                        SqlStorageValue::Blob(chunk.to_vec()),
-                    ]),
-                )
-                .map_err(failed)?;
-        }
-        if let Ok(None) = self.state.storage().get_alarm().await {
-            let _ = self
-                .state
-                .storage()
-                .set_alarm(files::UNSENT_TTL_MS + 60_000)
-                .await;
+        self.write_chunks(att.id.as_str(), &bytes).map_err(failed)?;
+        if let Err(e) = self.schedule(now + files::UNSENT_TTL_MS, now).await {
+            worker::console_error!("scheduling the files alarm: {e}");
         }
         serde_json::to_value(&att).map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))
+    }
+
+    fn write_chunks(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        for (n, chunk) in bytes.chunks(files::CHUNK_BYTES).enumerate() {
+            self.sql.exec(
+                "INSERT INTO chunks (file_id, n, data) VALUES (?, ?, ?)",
+                Some(vec![
+                    sv(id),
+                    iv(n as i64),
+                    SqlStorageValue::Blob(chunk.to_vec()),
+                ]),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// A file's bytes, if they are all there.
+    fn read_chunks(&self, id: &str, size: u64) -> Result<Option<Vec<u8>>> {
+        let mut bytes = Vec::with_capacity(size as usize);
+        let cursor = self.sql.exec(
+            "SELECT data FROM chunks WHERE file_id = ? ORDER BY n",
+            Some(vec![sv(id)]),
+        )?;
+        for r in cursor.raw() {
+            if let Some(SqlStorageValue::Blob(chunk)) = r?.into_iter().next() {
+                bytes.extend_from_slice(&chunk);
+            }
+        }
+        if bytes.len() as u64 != size {
+            worker::console_error!("file {id} has {} of {size} bytes", bytes.len());
+            return Ok(None);
+        }
+        Ok(Some(bytes))
     }
 
     /// Hands uploads to a message: each must be the sender's and not sent in
@@ -245,20 +285,9 @@ impl FilesObject {
         else {
             return internal::do_error(&ApiError::not_found("File"));
         };
-        let mut bytes = Vec::with_capacity(row.size as usize);
-        let cursor = self.sql.exec(
-            "SELECT data FROM chunks WHERE file_id = ? ORDER BY n",
-            Some(vec![sv(&id)]),
-        )?;
-        for r in cursor.raw() {
-            if let Some(SqlStorageValue::Blob(chunk)) = r?.into_iter().next() {
-                bytes.extend_from_slice(&chunk);
-            }
-        }
-        if bytes.len() as u64 != row.size as u64 {
-            worker::console_error!("file {id} has {} of {} bytes", bytes.len(), row.size);
+        let Some(bytes) = self.read_chunks(&id, row.size as u64)? else {
             return internal::do_error(&api_err(ErrorCode::Internal, "The file is incomplete"));
-        }
+        };
         let att = row.attachment();
         let inline = files::shows_inline(&att.media_type);
         let h = Headers::new();
@@ -280,31 +309,154 @@ impl FilesObject {
         Ok(Response::from_bytes(bytes)?.with_headers(h))
     }
 
-    /// Deletes uploads no message claimed in time, then waits for the next.
-    async fn expire_unclaimed(&self, now: i64) {
+    /// Deletes uploads no message claimed in time and published screenshots
+    /// that expired, then waits for the next of either.
+    async fn expire(&self, now: i64) {
         let cutoff = now - files::UNSENT_TTL_MS;
-        for stmt in [
-            "DELETE FROM chunks WHERE file_id IN (SELECT id FROM files WHERE session_id IS NULL AND created_at < ?)",
-            "DELETE FROM files WHERE session_id IS NULL AND created_at < ?",
+        for (stmt, at) in [
+            (
+                "DELETE FROM chunks WHERE file_id IN (SELECT id FROM files WHERE session_id IS NULL AND created_at < ?)",
+                cutoff,
+            ),
+            (
+                "DELETE FROM files WHERE session_id IS NULL AND created_at < ?",
+                cutoff,
+            ),
+            (
+                "DELETE FROM chunks WHERE file_id IN (SELECT id FROM published WHERE expires_at <= ?)",
+                now,
+            ),
+            ("DELETE FROM published WHERE expires_at <= ?", now),
         ] {
-            if let Err(e) = self.sql.exec(stmt, Some(vec![iv(cutoff)])) {
+            if let Err(e) = self.sql.exec(stmt, Some(vec![iv(at)])) {
                 worker::console_error!("expiring files: {e}");
             }
         }
-        let oldest = self
-            .sql
-            .exec(
-                "SELECT MIN(created_at) AS created_at FROM files WHERE session_id IS NULL",
-                None,
-            )
-            .and_then(|c| c.to_array::<Oldest>())
-            .ok()
-            .and_then(|r| r.into_iter().next())
-            .and_then(|o| o.created_at);
-        if let Some(t) = oldest {
-            let due = (t as i64 + files::UNSENT_TTL_MS + 60_000 - now).max(60_000);
+        let next = [
+            self.due(&format!(
+                "SELECT MIN(created_at) + {} AS at FROM files WHERE session_id IS NULL",
+                files::UNSENT_TTL_MS
+            )),
+            self.due("SELECT MIN(expires_at) AS at FROM published"),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        // The alarm that runs this is spent: set the next one outright.
+        if let Some(at) = next {
+            let due = (at + 60_000 - now).max(60_000);
             let _ = self.state.storage().set_alarm(due).await;
         }
+    }
+
+    /// The time a query's `at` column names, if any.
+    fn due(&self, query: &str) -> Option<i64> {
+        self.sql
+            .exec(query, None)
+            .and_then(|c| c.to_array::<Due>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .and_then(|d| d.at)
+            .map(|t| t as i64)
+    }
+
+    /// Wakes the object a minute after `at` (but no sooner than a minute
+    /// from now), unless it already wakes before then. Not for the alarm
+    /// handler, whose own alarm is spent.
+    async fn schedule(&self, at: i64, now: i64) -> Result<()> {
+        let storage = self.state.storage();
+        let due = (at + 60_000 - now).max(60_000);
+        match storage.get_alarm().await? {
+            Some(set) if set <= now + due => Ok(()),
+            _ => storage.set_alarm(due).await,
+        }
+    }
+
+    /// Stores a screenshot to publish (the request body) until it expires,
+    /// if it is an image GitHub shows.
+    async fn publish(&self, req: &mut Request) -> std::result::Result<serde_json::Value, ApiError> {
+        let meta: PublishFile = crate::http::query(req, "meta")
+            .and_then(|m| serde_json::from_str(&m).ok())
+            .ok_or_else(|| api_err(ErrorCode::BadRequest, "No upload metadata"))?;
+        let bytes = req
+            .bytes()
+            .await
+            .map_err(|e| api_err(ErrorCode::BadRequest, &format!("Reading the upload: {e}")))?;
+        let image = published::check(&bytes)?;
+        let now = now_ms();
+        let failed = |e: worker::Error| {
+            worker::console_error!("publishing a file: {e}");
+            api_err(
+                ErrorCode::Unavailable,
+                "The screenshot could not be stored. Try again.",
+            )
+        };
+        // No await in between: the rows are written together or not at all.
+        self.sql
+            .exec(
+                "INSERT INTO published (id, session_id, name, media_type, size, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                Some(vec![
+                    sv(&meta.id),
+                    sv(meta.session_id.as_str()),
+                    sv(&meta.name),
+                    sv(image.media_type),
+                    iv(bytes.len() as i64),
+                    iv(now),
+                    iv(meta.expires_at),
+                ]),
+            )
+            .map_err(failed)?;
+        self.write_chunks(&meta.id, &bytes).map_err(failed)?;
+        if let Err(e) = self.schedule(meta.expires_at, now).await {
+            worker::console_error!("scheduling the files alarm: {e}");
+        }
+        serde_json::to_value(PublishedBytes {
+            media_type: image.media_type.to_owned(),
+            size: bytes.len() as u64,
+            width: image.width,
+            height: image.height,
+        })
+        .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))
+    }
+
+    /// A published screenshot's bytes and type (`?id=`), until it expires.
+    /// The Worker gives the response the headers of a public image.
+    fn published(&self, req: &Request) -> Result<Response> {
+        let id = crate::http::query(req, "id").unwrap_or_default();
+        let row = self
+            .sql
+            .exec(
+                "SELECT media_type, size FROM published WHERE id = ? AND expires_at > ?",
+                Some(vec![sv(&id), iv(now_ms())]),
+            )
+            .and_then(|c| c.to_array::<PublishedRow>())
+            .ok()
+            .and_then(|r| r.into_iter().next());
+        let Some(row) = row else {
+            return internal::do_error(&ApiError::not_found("Screenshot"));
+        };
+        let Some(bytes) = self.read_chunks(&id, row.size as u64)? else {
+            return internal::do_error(&api_err(
+                ErrorCode::Internal,
+                "The screenshot is incomplete",
+            ));
+        };
+        let h = Headers::new();
+        h.set("Content-Type", &row.media_type)?;
+        Ok(Response::from_bytes(bytes)?.with_headers(h))
+    }
+
+    /// Deletes a published screenshot now.
+    fn unpublish(&self, id: &str) -> serde_json::Value {
+        for stmt in [
+            "DELETE FROM chunks WHERE file_id IN (SELECT id FROM published WHERE id = ?)",
+            "DELETE FROM published WHERE id = ?",
+        ] {
+            if let Err(e) = self.sql.exec(stmt, Some(vec![sv(id)])) {
+                worker::console_error!("unpublishing {id}: {e}");
+            }
+        }
+        serde_json::json!({ "ok": true })
     }
 
     /// Deletes every file: the project was deleted (`housekeeping::purge_files`).

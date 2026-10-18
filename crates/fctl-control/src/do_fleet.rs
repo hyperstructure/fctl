@@ -1147,6 +1147,15 @@ impl FleetObject {
             .unwrap_or_default();
         match assigned.first() {
             Some(a) if self.runner_socket(&a.runner_id).is_some() => {
+                // Stopping first: from then on the session keeps messages for
+                // its next run instead of handing them to an agent that stops.
+                self.session_control(
+                    &b.session_id,
+                    Some(SessionStatus::Stopping),
+                    Some("Stopping".into()),
+                    false,
+                )
+                .await;
                 self.send_runner(
                     &a.runner_id,
                     &FleetToHost::StopSession {
@@ -1155,13 +1164,6 @@ impl FleetObject {
                         destroy: b.destroy,
                     },
                 );
-                self.session_control(
-                    &b.session_id,
-                    Some(SessionStatus::Stopping),
-                    Some("Stopping".into()),
-                    false,
-                )
-                .await;
             }
             Some(_) => {
                 // The runner is offline; it stops the sandbox when it reconnects.

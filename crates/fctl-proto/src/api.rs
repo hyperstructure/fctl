@@ -38,6 +38,9 @@ pub struct Features {
     pub email: bool,
     /// A GitHub App is configured.
     pub github: bool,
+    /// Admins let projects publish screenshots ([`InstanceSettings`]).
+    #[serde(default)]
+    pub publish_screenshots: bool,
 }
 
 /// `POST /api/v1/setup`: create the owner account with the setup token.
@@ -480,6 +483,27 @@ pub struct AuditEntry {
 pub struct AuditList {
     pub entries: Vec<AuditEntry>,
     pub next_before: Option<Millis>,
+}
+
+/// `GET /api/v1/admin/settings`: what admins decide for the whole instance.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct InstanceSettings {
+    /// Projects may let their agents publish screenshots at links anyone
+    /// who has one can open (each project turns it on in its settings:
+    /// [`ProjectSettings::publish_screenshots`]). Off by default. Turning
+    /// it off takes the published ones offline too; they are back if it is
+    /// turned on again before they expire.
+    pub publish_screenshots: bool,
+}
+
+/// `PATCH /api/v1/admin/settings`: absent fields stay as they are.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateInstanceSettingsRequest {
+    pub publish_screenshots: Option<bool>,
 }
 
 // ───────────────────────────── runners ─────────────────────────────
