@@ -141,9 +141,7 @@ impl HostCtx {
     /// measured. Inside the Docker VM this starts a container of the host's
     /// image.
     pub async fn disk_free_mb(&self) -> Option<u64> {
-        let images: Vec<String> = std::iter::once(self.cfg.image())
-            .chain(self.cfg.fallback_image())
-            .collect();
+        let images = self.cfg.own_images();
         self.driver.disk_free_mb(&self.disk_spot(), &images).await
     }
 

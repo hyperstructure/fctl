@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { agoShort, browserName, cpus, duration, initials, memory, sandboxLimits, until } from "./format";
+import {
+  agoShort,
+  browserName,
+  cpus,
+  diskBelow,
+  duration,
+  initials,
+  lowOnDisk,
+  memory,
+  sandboxLimits,
+  until,
+} from "./format";
 
 describe("format", () => {
   const now = Date.UTC(2026, 9, 17, 12, 0, 0);
@@ -39,6 +50,15 @@ describe("format", () => {
     expect(
       sandboxLimits({ default: { cpus: 4, memory_mb: 8192 }, max: { cpus: 10, memory_mb: 15_990 } }),
     ).toBe("4 CPUs and 8 GiB by default, at most 10 CPUs and 15.6 GiB");
+  });
+
+  it("says when a runner is low on disk", () => {
+    expect(lowOnDisk({ disk_available_mb: 12_595, min_free_disk_mb: 20_480 })).toBe(true);
+    expect(lowOnDisk({ disk_available_mb: 20_480, min_free_disk_mb: 20_480 })).toBe(false);
+    // Offline runners report no free disk, and older hosts keep no floor.
+    expect(lowOnDisk({ min_free_disk_mb: 20_480 })).toBe(false);
+    expect(lowOnDisk({ disk_available_mb: 0 })).toBe(false);
+    expect(diskBelow(12_595, 20_480)).toBe("12.3 GiB of disk free, below the 20 GiB it keeps free");
   });
 
   it("derives initials", () => {

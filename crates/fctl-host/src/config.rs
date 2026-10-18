@@ -265,6 +265,14 @@ impl HostConfig {
             .then(|| format!("{IMAGE_REPOSITORY}:latest"))
     }
 
+    /// [`image`](Self::image), then [`fallback_image`](Self::fallback_image):
+    /// the images on this host that it can count on.
+    pub fn own_images(&self) -> Vec<String> {
+        std::iter::once(self.image())
+            .chain(self.fallback_image())
+            .collect()
+    }
+
     /// The images and builds this host's sessions may start from. Builds
     /// need a `driver` that makes sandboxes from images.
     pub fn images(&self, driver_uses_images: bool) -> Images {

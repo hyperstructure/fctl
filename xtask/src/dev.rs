@@ -507,7 +507,10 @@ fn host(root: &Path, state: &Path, token: &str) -> Result<Child> {
          claude_bin = {claude}\n\
          agent_bin = {agent}\n\
          data_dir = {data}\n\
-         push_on_commit = false\n",
+         push_on_commit = false\n\
+         # Development machines and CI runners may have less free than the 20 GiB\n\
+         # a host keeps by default, and would take no sessions.\n\
+         min_free_disk_gb = 1\n",
         claude = toml_str(&bin.join("fake-claude")),
         agent = toml_str(&bin.join("fctl-agent")),
         data = toml_str(&state.join("data")),
