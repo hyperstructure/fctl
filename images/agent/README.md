@@ -5,8 +5,8 @@ agents build and test with, Claude Code (installed for the `agent` user, who
 has passwordless sudo: the sandbox is the boundary) and fctl (in
 `/usr/local/bin`).
 
-- Python 3.15.0 as `python3` and `python` (uv's build of CPython), and uv
-  0.13.1.
+- Python 3.15.0 as `python3` and `python` for every user (uv's build of
+  CPython, in `/opt/uv/python`), and uv 0.13.1.
 - Rust 1.99.0 through rustup, with rustfmt, Clippy and the
   `wasm32-unknown-unknown` target: the toolchain in this repository's
   `rust-toolchain.toml`, so sessions working on fctl have nothing to
@@ -20,13 +20,15 @@ The versions are set at the top of `provision.sh`. A test in
 `crates/fctl-host/src/image.rs` fails when Rust's differs from
 `rust-toolchain.toml`.
 
-- Python, Rust and Bun are installed for the agent user (in
-  `~/.local/share/uv`, `~/.rustup` and `~/.cargo`, and `~/.bun`), so agents
-  add Python versions, toolchains, targets and global tools (`uv tool
-  install`, `cargo install`, `bun add -g`) without sudo. uv's Python is
-  marked externally managed: packages go into a virtual environment (`uv
-  venv`, `python3 -m venv`) or come with `uv run --with`. Debian's Python
-  3.11 stays in `/usr/bin` for system tools.
+- Rust and Bun are installed for the agent user (in `~/.rustup` and
+  `~/.cargo`, and `~/.bun`), so agents add toolchains, targets and global
+  tools without sudo: `cargo install`, `bun add -g`, and for Python `uv
+  tool install` and `uv python install`. Images built from this one run
+  cargo as `agent`.
+- Python is marked externally managed: packages go into a virtual
+  environment (`uv venv`, `python3 -m venv`) or come with `uv run --with`.
+  Debian's Python 3.11, which Node.js depends on, stays in `/usr/bin`,
+  after `/usr/local/bin` on the PATH.
 - `~/.local/bin`, `~/.cargo/bin`, `~/.bun/bin` and `/opt/fctl/bin` lead the
   PATH. The Dockerfile sets it, and `/etc/profile.d/fctl.sh` sets it for
   login shells (setup scripts, the Lima VM). fctl-agent passes Claude the

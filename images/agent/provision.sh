@@ -27,7 +27,7 @@ apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates curl wget git gnupg less openssh-client procps psmisc lsof sudo \
   rsync unzip xz-utils zip zstd \
-  build-essential cmake pkg-config libssl-dev python3 \
+  build-essential cmake pkg-config libssl-dev \
   jq ripgrep fd-find tree file shellcheck sqlite3
 # Debian calls fd `fdfind`.
 ln -sf /usr/bin/fdfind /usr/local/bin/fd
@@ -46,8 +46,11 @@ npm config set --location=global fund=false audit=false update-notifier=false
 npm install -g "typescript@$TYPESCRIPT_VERSION"
 npm cache clean --force
 
-# uv, which also installs the agent's Python below
+# uv, and Python for everyone: uv's build of CPython in /opt/uv/python, as
+# python3 and python in /usr/local/bin.
 curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+env UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_PYTHON_BIN_DIR=/usr/local/bin UV_NO_CACHE=1 \
+  uv python install --default --preview-features python-install-default "$PYTHON_VERSION"
 
 rm -rf /var/lib/apt/lists/*
 
@@ -81,8 +84,8 @@ AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
 sudo -u "$AGENT_USER" -H bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
 sudo -u "$AGENT_USER" -H mkdir -p "$AGENT_HOME/workspace"
 
-# The agent's PATH: Claude Code and Python in ~/.local/bin, then Rust's and
-# Bun's tools and fctl's supervisor. The Dockerfile sets the same; login
+# The agent's PATH: Claude Code and uv's tools in ~/.local/bin, Rust's and
+# Bun's tools, then fctl's supervisor. The Dockerfile sets the same; login
 # shells (setup scripts, the Lima driver's) get it from here.
 cat > /etc/profile.d/fctl.sh <<'EOF'
 PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:/opt/fctl/bin:$PATH"
@@ -96,11 +99,10 @@ as_agent() {
   sudo -u "$AGENT_USER" -H bash -lc "set -euo pipefail; $script" bash "$@"
 }
 
-# Toolchains installed for the agent user, who can then add Python versions,
-# Rust toolchains and global packages without sudo: CPython as python3 and
-# python (uv's build), Rust with the components and targets that
-# rust-toolchain.toml lists, and Bun.
-as_agent 'uv python install --default --preview-features python-install-default "$1"' "$PYTHON_VERSION"
+# Rust, with the components and targets that rust-toolchain.toml lists, and
+# Bun, in the agent's home: they find their files through HOME alone
+# (fctl-agent passes Claude no RUSTUP_HOME or the like), and agents add
+# toolchains, targets and global tools without sudo.
 as_agent 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs |
   sh -s -- -y --no-modify-path --profile minimal --default-toolchain "$1" \
     --component rustfmt,clippy --target wasm32-unknown-unknown' "$RUST_VERSION"
