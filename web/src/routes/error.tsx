@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import { StreamScreen } from "@/components/stream-screen";
 import { Button } from "@/components/ui";
 import { ApiFailure } from "@/lib/api";
+import { redact, safeAddress } from "@/lib/redact";
 
 /** What the error page says: the glyphs, the headline and a sentence. */
 export function explain(error: unknown): { code: string; title: string; detail: string; bug: boolean } {
@@ -82,11 +83,17 @@ export function ErrorPage({ error, reset }: ErrorComponentProps) {
     setBusy(false);
   };
 
-  const details =
-    error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}`.trim() : String(error);
+  // What broke, for a bug report: shown and copied without anything that
+  // looks like a secret, and without the address's query and fragment, where
+  // invitation and reset links carry their tokens.
+  const details = redact(
+    error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}`.trim() : String(error),
+  ).slice(0, 4000);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(`${location.href}\n${navigator.userAgent}\n\n${details}`);
+      await navigator.clipboard.writeText(
+        `${safeAddress(location.href)}\n${navigator.userAgent}\n\n${details}`,
+      );
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {}
