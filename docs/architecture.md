@@ -193,6 +193,15 @@ the control plane, which refreshes once per user and answers. With a full
 login, fctl-agent enables Remote Control with the `remote_control` control
 request, so the session also appears in claude.ai/code and the Claude apps.
 
+A full login also brings the person's claude.ai connectors (Claude Code
+fetches them with the `user:mcp_servers` scope). A project can turn them off
+(`claude_ai_connectors` in its settings): the control plane then adds
+`ENABLE_CLAUDEAI_MCP_SERVERS=false` to the environment in the session's
+spec, which every fctl-agent passes to Claude, and fctl-agent writes
+`disableClaudeAiConnectors` into Claude's user settings, which no
+repository settings can undo. An update that leaves the field out keeps
+the stored value, so a client from before it can't turn connectors back on.
+
 Guards against API billing: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 `ANTHROPIC_BASE_URL`, Bedrock/Vertex/Foundry switches and `apiKeyHelper` never
 reach Claude; the `system/init` message must report no API key source; a

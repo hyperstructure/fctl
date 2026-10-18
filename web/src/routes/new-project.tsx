@@ -24,6 +24,7 @@ export function NewProject() {
   const [newRepo, setNewRepo] = useState("");
   const [priv, setPriv] = useState(true);
   const [setup, setSetup] = useState("");
+  const [connectors, setConnectors] = useState(false);
   const repos = useQuery({
     queryKey: keys.repos,
     queryFn: api.githubRepos,
@@ -43,9 +44,16 @@ export function NewProject() {
         description: description || undefined,
         repo: mode === "link" ? repo : undefined,
         create_repo: mode === "create" ? { name: newRepo || name, private: priv } : undefined,
-        settings: setup.trim()
-          ? { setup_script: setup, auto_pull_request: true, remote_control: true, env: {} }
-          : undefined,
+        settings:
+          setup.trim() || !connectors
+            ? {
+                setup_script: setup,
+                auto_pull_request: true,
+                remote_control: true,
+                claude_ai_connectors: connectors,
+                env: {},
+              }
+            : undefined,
       }),
     onSuccess: (p) => {
       void queryClient.invalidateQueries({ queryKey: keys.projects });
@@ -201,6 +209,16 @@ export function NewProject() {
             />
           )}
         </Field>
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            claude.ai connectors
+            <span className="block text-[12.5px] text-ink-4">
+              Agents can use the connectors of the person who starts a session (mail, files, docs) without
+              asking. Only with a full Claude login.
+            </span>
+          </span>
+          <Switch checked={connectors} onChange={setConnectors} label="claude.ai connectors" />
+        </div>
         {create.error && !(create.error as { field?: string }).field && (
           <Banner tone="error">{create.error.message}</Banner>
         )}

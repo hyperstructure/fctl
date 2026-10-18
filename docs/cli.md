@@ -70,6 +70,7 @@ fctl projects list
 fctl projects show my-app
 fctl projects create "My app" --repo my-org/my-app
 fctl projects create "New thing" --new-repo new-thing --public
+fctl projects create "Site" --repo my-org/site --no-connectors   # no claude.ai connectors in its sessions
 fctl projects use my-app
 fctl projects delete my-app            # with its sessions; asks you to type the slug
 ```

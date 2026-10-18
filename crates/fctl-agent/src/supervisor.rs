@@ -532,7 +532,12 @@ impl Supervisor {
 
     // ───────────────────────────── Claude ─────────────────────────────
 
-    fn write_claude_config(&self, home: &std::path::Path, workdir: &str) -> Result<()> {
+    fn write_claude_config(
+        &self,
+        home: &std::path::Path,
+        workdir: &str,
+        claude_ai_connectors: bool,
+    ) -> Result<()> {
         let claude_dir = home.join(".claude");
         std::fs::create_dir_all(&claude_dir)?;
         let path = home.join(".claude.json");
@@ -556,7 +561,7 @@ impl Supervisor {
         std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
         std::fs::write(
             claude_dir.join("settings.json"),
-            serde_json::to_string_pretty(&claude::user_settings())?,
+            serde_json::to_string_pretty(&claude::user_settings(claude_ai_connectors))?,
         )?;
         Ok(())
     }
@@ -567,7 +572,11 @@ impl Supervisor {
         };
         let spec = &config.spec;
         let workdir = config.workdir.clone();
-        self.write_claude_config(&paths.home, &workdir)?;
+        self.write_claude_config(
+            &paths.home,
+            &workdir,
+            spec.project.settings.claude_ai_connectors,
+        )?;
         if self.session_socket.is_some() && fctl_can_edit(&paths).await {
             if let Err(e) = claude::write_instructions(&paths.home, prompt::AGENTS_MD) {
                 tracing::warn!("writing ~/AGENTS.md failed: {e:#}");
@@ -594,11 +603,9 @@ impl Supervisor {
             .claude_credential
             .clone()
             .unwrap_or_else(|| spec.credentials.claude.clone());
+        let project_env = fctl_domain::settings::session_env(&spec.project.settings);
         let mut env = std::collections::BTreeMap::new();
-        for (k, v) in spec
-            .project
-            .settings
-            .env
+        for (k, v) in project_env
             .iter()
             .chain(spec.secrets.iter())
             .chain(config.env.iter())

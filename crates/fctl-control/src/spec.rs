@@ -103,6 +103,10 @@ pub async fn build(
     let secrets = crate::api::projects::decrypted_secrets(db, keys, &project.id).await?;
     let author = creator(db, &row.created_by).await?;
     let git_author = bot_identity(cfg, now).await;
+    let mut settings = project.settings();
+    // Agents from before `claude_ai_connectors` ignore it, but every agent
+    // passes the project's environment on to Claude. Not stored.
+    settings.env = fctl_domain::settings::session_env(&settings);
     Ok(SessionSpec {
         session_id: row.session_id(),
         number: row.number.max(0) as u32,
@@ -113,7 +117,7 @@ pub async fn build(
             name: project.name.clone(),
             repo,
             default_branch: project.default_branch.clone(),
-            settings: project.settings(),
+            settings,
         },
         branch: row
             .branch
