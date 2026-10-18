@@ -449,9 +449,11 @@ export const Transcript = memo(function Transcript({
   hasMoreBefore: boolean;
   loadingOlder: boolean;
 }) {
-  // A tool call without a result runs only while the agent works on a turn
-  // and its work comes through; after a stop or a crash it never will.
+  // A tool call without a result runs only in the turn the agent works on,
+  // while its work comes through. One from a turn that ended (with a result,
+  // a stop or a failure) never gets one.
   const running = status === "running" && !stall;
+  const turnStart = items.findLastIndex((it) => it.kind === "turn" || it.kind === "status");
   // Tool rows sit in a quiet column; everything else spans the reading width.
   return (
     <div className="flex flex-col">
@@ -465,7 +467,7 @@ export const Transcript = memo(function Transcript({
           Show earlier activity
         </button>
       )}
-      {items.map((it) => (
+      {items.map((it, i) => (
         <div
           key={it.key}
           className={cn(
@@ -477,7 +479,7 @@ export const Transcript = memo(function Transcript({
             item={it}
             live={it.kind === "tool" ? live : undefined}
             sessionId={sessionId}
-            running={it.kind === "tool" ? running : undefined}
+            running={it.kind === "tool" ? running && i > turnStart : undefined}
             stalled={it.kind === "setup" ? !!stall : undefined}
           />
         </div>

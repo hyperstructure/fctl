@@ -60,6 +60,9 @@ fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 
 `fctl run` uses the project from `fctl projects use` when `-p` is missing.
 
+`fctl attach` also says when the session's runner goes away or can't reach
+the agent in its sandbox, and when it is back.
+
 A session's title starts as the first line of its task. Agents rename it to
 what they work on, and say what the session is about, with the same
 command: in a sandbox, `fctl edit --title … --description …` without a

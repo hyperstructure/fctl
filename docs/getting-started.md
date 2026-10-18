@@ -174,6 +174,11 @@ turns them off.
   it in a browser. From a terminal, `fctl open my-app#12 --claude` opens the
   desktop app, or claude.ai when it is not installed.
 
+If the agent's work stops coming through, because the session's runner went
+away or can't reach the agent in its sandbox, the session page says so and
+since when. The agent may well be working meanwhile: its work shows up once
+the runner gets through, and messages you send wait for it.
+
 When the agent finishes a turn, the session waits for you. It sleeps after the
 project's idle timeout; **Resume** (or `fctl resume my-app#12 "…"`) picks it up
 where it left off, with the same conversation and branch.

@@ -262,6 +262,25 @@ Browsers and the CLI open `GET /api/v1/sessions/{id}/ws`. The first frame is a
 snapshot (summary, recent events, presence, in-progress text); after that
 frames are incremental. Older history is paged over HTTP.
 
+The snapshot and `runner_connected` frames say whether the agent's work can
+come through:
+
+- **The runner is connected** when its uplink is open and SessionDO heard
+  from it within the last minute. Hosts ping every 20 seconds, but one that
+  is frozen or cut off (a laptop gone to sleep) can leave its socket open
+  for a long time. SessionDO has no timer while its sockets hibernate, so
+  viewers' pings, every 25 seconds, notice an uplink that went quiet.
+  Otherwise the frames say when the runner was last heard from.
+- **The runner can't reach the agent** when its host says so
+  (`UplinkUp::AgentLink`): once it has had no working link to fctl-agent
+  for 10 seconds, with when it last heard from it and what went wrong. Hosts
+  say it again after every reconnect, and SessionDO forgets it when the
+  uplink closes. Older hosts never say it.
+
+The session page and `fctl attach` say which, and since when, once it has
+lasted 10 seconds (a host that restarts reconnects within them), and show
+nothing in progress meanwhile.
+
 ### Attachments
 
 A task, message or resume can carry files: up to 10, of at most 20 MB each.
@@ -433,7 +452,9 @@ Restarting or upgrading the host does not stop agents. The host pings the
 agent every 15 seconds and replaces a link that carries nothing for a
 minute, or gets no hello within 30 seconds of attaching: it kills the exec,
 starts fctl-agent again if it is gone, and attaches again, waiting longer
-after each failure (`crates/fctl-host/src/liveness.rs`).
+after each failure (`crates/fctl-host/src/liveness.rs`). Once it has had no
+working link for 10 seconds, the session's viewers hear that the agent
+can't be reached, and since when ([Viewers](#viewers)).
 
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
