@@ -1,0 +1,11 @@
+{
+  "name": "fctl",
+  "short_name": "fctl",
+  "description": "A software factory where Claude agents build software on machines you own.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#171717",
+  "theme_color": "#171717",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

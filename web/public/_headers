@@ -8,3 +8,7 @@
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# The service worker: browsers check it for updates; never let a cache hold an old one.
+/sw.js
+  Cache-Control: no-cache

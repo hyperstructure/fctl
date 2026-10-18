@@ -1,10 +1,13 @@
-// Settings: profile, Claude, sign-in methods, devices and tokens, appearance,
-// your data (export) and the danger zone (deleting the account).
+// Settings: profile, Claude, notifications, sign-in methods, devices and
+// tokens, appearance, your data (export) and the danger zone (deleting the
+// account).
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
 import {
   ArrowUpRight,
+  Bell,
+  BellOff,
   Download,
   KeyRound,
   Laptop,
@@ -28,13 +31,16 @@ import {
   NameFields,
   nameParts,
   Section,
+  Skeleton,
   Spinner,
+  Switch,
   toast,
 } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago } from "@/lib/format";
+import { ago, browserName } from "@/lib/format";
+import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
 
@@ -65,6 +71,7 @@ export function SettingsPage() {
       <div className="mt-6">
         <Profile me={me} />
         <Claude me={me} />
+        <Notifications me={me} />
         <SignIn me={me} />
         <Tokens />
         <Appearance />
@@ -358,6 +365,218 @@ function Claude({ me }: { me: G.Me }) {
   );
 }
 
+function Notifications({ me }: { me: G.Me }) {
+  const list = useQuery({ queryKey: keys.notifications, queryFn: api.notifications });
+  const [support] = useState(pushSupport);
+  const [allowed, setAllowed] = useState(permission);
+  const n = list.data;
+  const set = (next: G.Notifications) => queryClient.setQueryData(keys.notifications, next);
+  const update = useMutation({
+    mutationFn: (b: G.UpdateNotificationsRequest) => api.updateNotifications(b),
+    onSuccess: set,
+    onError: (e) => {
+      toast(e.message, "error");
+      void list.refetch();
+    },
+  });
+  const change = (b: G.UpdateNotificationsRequest) => {
+    if (n) set({ ...n, settings: { ...n.settings, ...b } });
+    update.mutate(b);
+  };
+  const on = useMutation({
+    mutationFn: () => enablePush(n?.public_key ?? "", me.user.id),
+    onSuccess: () => {
+      toast("Notifications are on in this browser");
+      void list.refetch();
+    },
+    onSettled: () => setAllowed(permission()),
+  });
+  const off = useMutation({
+    mutationFn: (id?: string) => disablePush(id),
+    onSuccess: () => {
+      toast("Notifications are off in this browser");
+      void list.refetch();
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.removePushDevice(id),
+    onSuccess: set,
+    onError: (e) => toast(e.message, "error"),
+  });
+  const test = useMutation({
+    mutationFn: api.testNotification,
+    onSuccess: (r) =>
+      r.failed
+        ? toast(`Sent to ${r.sent} of ${r.sent + r.failed} browsers`, r.sent ? "info" : "error")
+        : toast(r.sent === 1 ? "Sent. It should show in a moment." : `Sent to ${r.sent} browsers`),
+    onError: (e) => toast(e.message, "error"),
+  });
+  const here = allowed === "granted" ? n?.devices.find((d) => d.current) : undefined;
+  return (
+    <Section
+      title="Notifications"
+      description="Sessions you follow notify you when they wait for your reply, pause on a usage limit or fail. You follow the sessions you start; follow others from their page."
+    >
+      {!n ? (
+        <Skeleton className="h-28 w-full" />
+      ) : (
+        <div className="flex flex-col gap-6">
+          {!n.public_key ? (
+            <Banner tone="warn">
+              This instance can't send notifications: it has no master key (FCTL_MASTER_KEY).
+            </Banner>
+          ) : support === "install" ? (
+            <Banner tone="info">
+              On iPhone and iPad, notifications come to fctl on the Home Screen. Tap Share, then Add to Home
+              Screen, open fctl from there and turn them on.
+            </Banner>
+          ) : support === "unsupported" ? (
+            <Banner tone="info">This browser can't show notifications.</Banner>
+          ) : (
+            <div>
+              <div className="flex items-center gap-3 border-y border-line py-3">
+                <span
+                  className={cn(
+                    "flex size-8 items-center justify-center rounded-md border",
+                    here ? "border-accent/30 bg-accent-soft text-accent" : "border-line bg-raised text-ink-3",
+                  )}
+                >
+                  {here ? <Bell className="size-4" /> : <BellOff className="size-4" />}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13.5px] text-ink">
+                    {here ? "On in this browser" : "Off in this browser"}
+                  </div>
+                  <div className="text-[12px] text-ink-4">
+                    {here
+                      ? (here.name ?? "This browser")
+                      : allowed === "denied"
+                        ? "Notifications are blocked for this site. Allow them in your browser's site settings."
+                        : browserName(navigator.userAgent)}
+                  </div>
+                </div>
+                {here ? (
+                  <>
+                    <Button size="sm" variant="ghost" onClick={() => test.mutate()} loading={test.isPending}>
+                      Send a test
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => off.mutate(here.id)}
+                      loading={off.isPending}
+                    >
+                      Turn off
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => on.mutate()}
+                    loading={on.isPending}
+                    disabled={allowed === "denied"}
+                  >
+                    Turn on
+                  </Button>
+                )}
+              </div>
+              {on.error && (
+                <Banner tone="error" className="mt-3">
+                  {on.error.message}
+                </Banner>
+              )}
+            </div>
+          )}
+
+          <div>
+            <h3 className="text-[13.5px] font-medium text-ink">Notify me when a session I follow</h3>
+            <ul className="mt-2 divide-y divide-line border-y border-line">
+              <SwitchRow
+                label="Waits for my reply"
+                checked={n.settings.waiting}
+                onChange={(v) => change({ waiting: v })}
+              />
+              <SwitchRow
+                label="Pauses on a usage limit"
+                hint="It continues on its own when the limit resets."
+                checked={n.settings.paused}
+                onChange={(v) => change({ paused: v })}
+              />
+              <SwitchRow label="Fails" checked={n.settings.failed} onChange={(v) => change({ failed: v })} />
+            </ul>
+          </div>
+          <ul className="divide-y divide-line border-y border-line">
+            <SwitchRow
+              label="Follow the sessions I start or resume"
+              hint="Off: you follow only the sessions you choose."
+              checked={n.settings.follow_started}
+              onChange={(v) => change({ follow_started: v })}
+            />
+          </ul>
+
+          {n.devices.length > 0 && (
+            <div>
+              <h3 className="text-[13.5px] font-medium text-ink">Browsers that get them</h3>
+              <ul className="mt-2 divide-y divide-line border-y border-line">
+                {n.devices.map((d) => (
+                  <li key={d.id} className="flex items-center gap-3 py-2.5">
+                    <Bell className="size-4 text-ink-4" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[13px] text-ink">
+                        {d.name ?? "Browser"}
+                        {d.current && <span className="ml-2 text-[11.5px] text-accent">this browser</span>}
+                      </div>
+                      <div className="text-[11.5px] text-ink-4">
+                        added {ago(d.created_at)}
+                        {d.last_sent_at ? ` · last notified ${ago(d.last_sent_at)}` : " · nothing sent yet"}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => (d.current ? off.mutate(d.id) : remove.mutate(d.id))}
+                    >
+                      Remove
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className="text-[12.5px] leading-relaxed text-ink-3">
+            Several that arrive close together come as one, and at most one a minute. Sessions you're looking
+            at don't notify you.
+          </p>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function SwitchRow({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <li className="flex items-center justify-between gap-4 py-2.5">
+      <div className="min-w-0">
+        <div className="text-[13.5px] text-ink">{label}</div>
+        {hint && <div className="text-[12px] text-ink-4">{hint}</div>}
+      </div>
+      <Switch checked={checked} onChange={onChange} label={label} />
+    </li>
+  );
+}
+
 function SignIn({ me }: { me: G.Me }) {
   const { data: instance } = useInstance();
   const [current, setCurrent] = useState("");
@@ -514,7 +733,7 @@ function Tokens() {
               </span>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px] text-ink">
-                  {t.name ?? (t.kind === "web" ? browser(t.user_agent) : "CLI")}
+                  {t.name ?? (t.kind === "web" ? browserName(t.user_agent) : "CLI")}
                   {t.current && <span className="ml-2 text-[11.5px] text-accent">this device</span>}
                 </div>
                 <div className="text-[11.5px] text-ink-4">
@@ -573,31 +792,6 @@ function Tokens() {
   );
 }
 
-function browser(ua?: string): string {
-  if (!ua) return "Browser";
-  const name = /Edg\//.test(ua)
-    ? "Edge"
-    : /Chrome\//.test(ua)
-      ? "Chrome"
-      : /Firefox\//.test(ua)
-        ? "Firefox"
-        : /Safari\//.test(ua)
-          ? "Safari"
-          : "Browser";
-  const os = /Mac OS X/.test(ua)
-    ? "macOS"
-    : /Windows/.test(ua)
-      ? "Windows"
-      : /iPhone|iPad/.test(ua)
-        ? "iOS"
-        : /Android/.test(ua)
-          ? "Android"
-          : /Linux/.test(ua)
-            ? "Linux"
-            : "";
-  return os ? `${name} on ${os}` : name;
-}
-
 function Appearance() {
   const [theme, setTheme] = useTheme();
   return (
@@ -633,7 +827,8 @@ function YourData() {
       <div className="flex flex-col items-start gap-4">
         <p className="max-w-xl text-[13.5px] leading-relaxed text-ink-3">
           Your account, sign-in methods, devices and tokens, Claude connections (without their secrets),
-          projects, the sessions you started with their full transcripts, and your activity log.
+          notification settings and browsers, projects, the sessions you started with their full transcripts,
+          the sessions you follow, and your activity log.
         </p>
         <a
           href="/api/v1/me/export"
@@ -669,7 +864,8 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
   const plan = useQuery({ queryKey: keys.accountDeletion, queryFn: api.accountDeletion, enabled: open });
   const remove = useMutation({
     mutationFn: () => api.deleteAccount({ email: typed }),
-    onSuccess: () => {
+    onSuccess: async () => {
+      await forgetPush();
       queryClient.clear();
       window.location.assign("/login?deleted=1");
     },
