@@ -59,8 +59,8 @@ const sizes = {
     "aria-expanded:border-accent/70 aria-expanded:bg-sunken aria-expanded:shadow-[0_0_0_3px_var(--c-accent-soft)]",
   sm:
     "h-7 gap-1.5 rounded-md border border-line px-2 text-[12.5px] text-ink-2 " +
-    "hover:border-line-strong hover:bg-raised hover:text-ink " +
-    "aria-expanded:border-line-strong aria-expanded:bg-raised aria-expanded:text-ink " +
+    "hover:border-line-strong hover:bg-hover hover:text-ink " +
+    "aria-expanded:border-line-strong aria-expanded:bg-hover aria-expanded:text-ink " +
     "focus-visible:border-accent/70 focus-visible:shadow-[0_0_0_3px_var(--c-accent-soft)] active:scale-[0.97]",
 };
 
