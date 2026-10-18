@@ -525,6 +525,7 @@ name = "fctl-agent"
 version = "0.1.2"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "fctl-domain",
  "fctl-proto",
@@ -602,6 +603,7 @@ name = "fctl-host"
 version = "0.1.2"
 dependencies = [
  "anyhow",
+ "base64",
  "fctl-client",
  "fctl-domain",
  "fctl-proto",

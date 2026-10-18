@@ -43,6 +43,15 @@ export function duration(ms: number): string {
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 export const num = (n: number) => compact.format(n);
 
+/** `912 B`, `245 KB`, `1.2 MB`: decimal units, as file managers (and fctl's Rust side) show them. */
+export function bytes(n: number): string {
+  if (n < 1000) return `${n} B`;
+  if (n < 1e6) return `${Math.round(n / 1000)} KB`;
+  if (n < 1e7) return `${(n / 1e6).toFixed(1)} MB`;
+  if (n < 1e9) return `${Math.round(n / 1e6)} MB`;
+  return `${(n / 1e9).toFixed(1)} GB`;
+}
+
 /** An amount of memory in MiB: "512 MiB", "8 GiB", "15.6 GiB" (GiB to a tenth from 1 GiB up). */
 export function memory(mb: number): string {
   if (mb < 1024) return `${Math.round(mb)} MiB`;

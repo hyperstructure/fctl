@@ -1,7 +1,7 @@
 //! Input validation. Every function returns the cleaned value or an
 //! [`ApiError`] naming the field, so handlers can return it as is.
 
-use fctl_proto::ApiError;
+use fctl_proto::{ApiError, AttachmentId};
 
 pub type Result<T> = std::result::Result<T, ApiError>;
 
@@ -300,6 +300,42 @@ pub fn message(field: &str, input: &str) -> Result<String> {
     Ok(s.to_owned())
 }
 
+/// A message sent with `files` attachments: like [`message`], but it may be
+/// empty when files go with it.
+pub fn message_with_files(field: &str, input: &str, files: usize) -> Result<String> {
+    if files > 0 && input.trim().is_empty() {
+        return Ok(String::new());
+    }
+    message(field, input)
+}
+
+/// The attachments of one message: well-formed ids, each once, at most
+/// [`crate::files::MAX_FILES_PER_MESSAGE`].
+pub fn attachment_ids(ids: &[AttachmentId]) -> Result<Vec<AttachmentId>> {
+    let mut out: Vec<AttachmentId> = Vec::with_capacity(ids.len());
+    for id in ids {
+        if !AttachmentId::is_valid(id.as_str()) {
+            return Err(ApiError::validation(
+                "attachments",
+                "Unknown attachment; upload the file again",
+            ));
+        }
+        if !out.contains(id) {
+            out.push(id.clone());
+        }
+    }
+    if out.len() > crate::files::MAX_FILES_PER_MESSAGE {
+        return Err(ApiError::validation(
+            "attachments",
+            format!(
+                "Attach at most {} files to one message",
+                crate::files::MAX_FILES_PER_MESSAGE
+            ),
+        ));
+    }
+    Ok(out)
+}
+
 /// A Claude model alias or id.
 pub fn model(input: &str) -> Result<String> {
     let s = input.trim();
@@ -343,6 +379,27 @@ pub fn image(input: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn messages_with_files() {
+        assert_eq!(
+            message_with_files("text", "  ", 1).ok(),
+            Some(String::new())
+        );
+        assert!(message_with_files("text", "  ", 0).is_err());
+        assert_eq!(
+            message_with_files("text", " hi ", 2).ok(),
+            Some("hi".into())
+        );
+        let id = |s: &str| AttachmentId(s.into());
+        let ids = attachment_ids(&[id("att_1"), id("att_2"), id("att_1")]);
+        assert_eq!(ids.ok(), Some(vec![id("att_1"), id("att_2")]));
+        assert!(attachment_ids(&[id("ses_1")]).is_err());
+        assert!(attachment_ids(&[id("att_../x")]).is_err());
+        let many: Vec<AttachmentId> = (0..11).map(|i| id(&format!("att_{i}"))).collect();
+        assert!(attachment_ids(&many).is_err());
+        assert!(attachment_ids(&many[..10]).is_ok());
+    }
 
     #[test]
     fn session_titles() {

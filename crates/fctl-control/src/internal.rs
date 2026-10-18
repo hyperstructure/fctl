@@ -5,11 +5,11 @@
 //! requests), and identity travels in `X-Fctl-*` headers it sets itself.
 
 use crate::error::{AppError, AppResult, internal};
-use fctl_proto::event::UserMessage;
+use fctl_proto::event::{Attachment, UserMessage};
 use fctl_proto::runner::StopReason;
 use fctl_proto::session::{RunnerRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::Delivery;
-use fctl_proto::{ApiError, DeliveryId, LoginJobId, Millis, ProjectId, SessionId};
+use fctl_proto::{ApiError, AttachmentId, DeliveryId, LoginJobId, Millis, ProjectId, SessionId};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use worker::{Env, Headers, Method, Request, RequestInit, Response, Stub};
 
@@ -128,6 +128,36 @@ pub struct LoginCode {
     pub code: String,
 }
 
+// ───────────────────────────── FilesObject ─────────────────────────────
+
+/// A new upload, sent to `/store` in the `meta` query parameter; the bytes
+/// are the request body.
+#[derive(Serialize, Deserialize)]
+pub struct StoreFile {
+    pub id: AttachmentId,
+    /// Already sanitized.
+    pub name: String,
+    /// The client's type or one guessed from the name; the object replaces it
+    /// for images it recognizes.
+    pub media_type: String,
+    pub uploaded_by: String,
+}
+
+/// Uploads that a message in `session_id` sends: from now on they belong to
+/// that session (again for the same session is fine).
+#[derive(Serialize, Deserialize)]
+pub struct ClaimFiles {
+    pub session_id: SessionId,
+    pub user_id: String,
+    pub ids: Vec<AttachmentId>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ClaimedFiles {
+    /// In the order of the ids.
+    pub attachments: Vec<Attachment>,
+}
+
 // ───────────────────────────── calling ─────────────────────────────
 
 pub fn session_stub(env: &Env, session_id: &str) -> AppResult<Stub> {
@@ -135,6 +165,40 @@ pub fn session_stub(env: &Env, session_id: &str) -> AppResult<Stub> {
         .durable_object("SESSION")?
         .id_from_name(session_id)?
         .get_stub()?)
+}
+
+/// The FilesObject of a project.
+pub fn files_stub(env: &Env, project_id: &str) -> AppResult<Stub> {
+    Ok(env
+        .durable_object("FILES")?
+        .id_from_name(project_id)?
+        .get_stub()?)
+}
+
+/// Claims uploads for a message in `session_id` and returns them; nothing to
+/// do without ids.
+pub async fn claim_files(
+    env: &Env,
+    project_id: &str,
+    session_id: &SessionId,
+    user_id: &str,
+    ids: &[AttachmentId],
+) -> AppResult<Vec<Attachment>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stub = files_stub(env, project_id)?;
+    let out: ClaimedFiles = post(
+        &stub,
+        "/claim",
+        &ClaimFiles {
+            session_id: session_id.clone(),
+            user_id: user_id.to_owned(),
+            ids: ids.to_vec(),
+        },
+    )
+    .await?;
+    Ok(out.attachments)
 }
 
 pub fn fleet_stub(env: &Env) -> AppResult<Stub> {
@@ -179,6 +243,25 @@ async fn decode<T: DeserializeOwned>(mut res: Response) -> AppResult<T> {
         });
     }
     Ok(serde_json::from_str(&text)?)
+}
+
+/// Sends a request body through to a Durable Object unread (a
+/// `ReadableStream`) and decodes the JSON answer.
+pub async fn post_body<T: DeserializeOwned>(
+    stub: &Stub,
+    path: &str,
+    body: wasm_bindgen::JsValue,
+) -> AppResult<T> {
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(body));
+    let req = Request::new_with_init(&format!("https://internal{path}"), &init)?;
+    decode(stub.fetch_with_request(req).await?).await
+}
+
+/// GETs from a Durable Object and returns its response as is (file bodies).
+pub async fn fetch(stub: &Stub, path: &str) -> AppResult<Response> {
+    let req = build(Method::Get, path, None, &[])?;
+    Ok(stub.fetch_with_request(req).await?)
 }
 
 /// POSTs JSON to a Durable Object and decodes the JSON answer.

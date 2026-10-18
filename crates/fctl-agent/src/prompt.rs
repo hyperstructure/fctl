@@ -1,8 +1,10 @@
 //! The text fctl gives Claude: what it appends to the system prompt, and the
 //! AGENTS.md at the root of the sandbox's home, beside the checkout.
 
-use fctl_domain::size;
+use fctl_domain::{files, size};
+use fctl_proto::event::Attachment;
 use fctl_proto::runner::{SandboxSize, SessionSpec};
+use std::path::PathBuf;
 
 /// `~/AGENTS.md`: how the agent keeps its session's title and description
 /// about the work (Claude reads it through `~/.claude/CLAUDE.md`).
@@ -96,6 +98,52 @@ pub fn fresh_resume(branch: &str, task: Option<&str>) -> String {
     s
 }
 
+/// One attached file, as a message describes it to Claude.
+pub struct FileNote<'a> {
+    pub attachment: &'a Attachment,
+    /// Where it was saved; `None` if it never reached the sandbox.
+    pub path: Option<PathBuf>,
+    /// Whether the image is also in the message.
+    pub inline: bool,
+}
+
+/// The list of files that follows a message's text (empty without files).
+pub fn files_note(files: &[FileNote<'_>]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("Attached files (saved in the sandbox):");
+    for f in files {
+        let a = f.attachment;
+        let mut facts = vec![a.media_type.clone()];
+        if let (Some(w), Some(h)) = (a.width, a.height) {
+            facts.push(format!("{w}×{h}"));
+        }
+        facts.push(files::human_size(a.size));
+        let facts = facts.join(", ");
+        match &f.path {
+            Some(p) if f.inline => {
+                s.push_str(&format!("\n- {} ({facts}; shown below)", p.display()))
+            }
+            Some(p) => s.push_str(&format!("\n- {} ({facts})", p.display())),
+            None => s.push_str(&format!(
+                "\n- {} ({facts}): it did not reach the sandbox",
+                a.name
+            )),
+        }
+    }
+    s
+}
+
+/// A message's text followed by the list of its files.
+pub fn with_files(text: &str, note: &str) -> String {
+    match (text.trim().is_empty(), note.is_empty()) {
+        (_, true) => text.to_owned(),
+        (true, false) => note.to_owned(),
+        (false, false) => format!("{}\n\n{note}", text.trim_end()),
+    }
+}
+
 /// A user turn as Claude sees it: messages from others carry their name.
 pub fn user_turn(text: &str, author: Option<&str>, starter: &str) -> String {
     match author {
@@ -142,6 +190,7 @@ mod tests {
             base_branch: "main".into(),
             prompt: Some("Build it".into()),
             task: Some("Build it".into()),
+            task_attachments: vec![],
             author: UserRef {
                 id: UserId("usr_1".into()),
                 name: "Ada".into(),
@@ -202,6 +251,51 @@ mod tests {
         assert!(!bare.contains("original task"));
         let text = fresh_resume("fctl/7", Some(" Add a dark mode toggle "));
         assert!(text.contains("original task was:\n\nAdd a dark mode toggle\n"));
+    }
+
+    #[test]
+    fn lists_files_after_the_text() {
+        let shot = Attachment {
+            id: fctl_proto::AttachmentId("att_1".into()),
+            name: "shot.png".into(),
+            media_type: "image/png".into(),
+            size: 245_300,
+            width: Some(1280),
+            height: Some(720),
+        };
+        let log = Attachment {
+            id: fctl_proto::AttachmentId("att_2".into()),
+            name: "build.log".into(),
+            media_type: "text/plain".into(),
+            size: 1_234_567,
+            width: None,
+            height: None,
+        };
+        let note = files_note(&[
+            FileNote {
+                attachment: &shot,
+                path: Some(PathBuf::from("/home/agent/attachments/att_1/shot.png")),
+                inline: true,
+            },
+            FileNote {
+                attachment: &log,
+                path: None,
+                inline: false,
+            },
+        ]);
+        assert_eq!(
+            note,
+            "Attached files (saved in the sandbox):\n\
+             - /home/agent/attachments/att_1/shot.png (image/png, 1280×720, 245 KB; shown below)\n\
+             - build.log (text/plain, 1.2 MB): it did not reach the sandbox"
+        );
+        assert_eq!(
+            with_files("Fix this ", &note),
+            format!("Fix this\n\n{note}")
+        );
+        assert_eq!(with_files("  ", &note), note);
+        assert_eq!(with_files("Fix this", ""), "Fix this");
+        assert_eq!(files_note(&[]), "");
     }
 
     #[test]

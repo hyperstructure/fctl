@@ -13,3 +13,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0005](0005-three-repositories.md) | fctl, fctl-site and design are separate repositories |
 | [0006](0006-conventional-commits-and-workflow-releases.md) | Conventional Commits, and releases from a workflow |
 | [0007](0007-agents-name-their-sessions-through-fctl-agent.md) | Agents name their sessions through fctl-agent |
+| [0008](0008-attachments-in-a-durable-object-per-project.md) | Attachments live in a Durable Object per project |

@@ -16,6 +16,8 @@ use tokio::sync::mpsc;
 pub struct Paths {
     pub workdir: PathBuf,
     pub home: PathBuf,
+    /// Where attachments are saved: `~/attachments`, outside the repository.
+    pub attachments: PathBuf,
     /// Holds the GitHub token the credential helper reads.
     pub token_file: PathBuf,
     pub helper: PathBuf,
@@ -26,6 +28,7 @@ impl Paths {
         Self {
             workdir: workdir.to_path_buf(),
             home: home.to_path_buf(),
+            attachments: home.join("attachments"),
             token_file: state.join("github-token"),
             helper: state.join("git-credential-fctl"),
         }

@@ -6,6 +6,7 @@
 //! `StartSession`. Session events do not use this connection; each session has
 //! its own uplink (see [`crate::uplink`]).
 
+use crate::event::Attachment;
 use crate::session::{ProjectSettings, RepoRef, RunnerRef, SessionStatus, UserRef};
 use crate::{CredentialId, LoginJobId, Millis, ProjectId, SessionId};
 use serde::{Deserialize, Serialize};
@@ -221,6 +222,10 @@ pub struct SessionSpec {
     /// earlier conversation is gone (its sandbox expired) starts from it.
     #[serde(default)]
     pub task: Option<String>,
+    /// Files attached to the task. The host fetches them like a message's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Attachment>>", optional))]
+    pub task_attachments: Vec<Attachment>,
     pub author: UserRef,
     /// UUID passed to `claude --session-id` (or `--resume`).
     pub claude_session_id: String,

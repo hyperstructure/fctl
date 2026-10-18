@@ -6,7 +6,7 @@
 
 use fctl_client::ws;
 use fctl_proto::event::LogLine;
-use fctl_proto::uplink::{AgentEvent, SessionState, UplinkDown, UplinkUp};
+use fctl_proto::uplink::{AgentEvent, FEATURE_ATTACHMENTS, SessionState, UplinkDown, UplinkUp};
 use fctl_proto::{PROTOCOL_VERSION, RunnerId};
 use futures::StreamExt;
 use std::time::Duration;
@@ -95,6 +95,7 @@ async fn run(
             &UplinkUp::Hello {
                 runner_id: runner_id.clone(),
                 protocol: PROTOCOL_VERSION,
+                features: vec![FEATURE_ATTACHMENTS.to_owned()],
             },
         )
         .await

@@ -8,6 +8,7 @@ pub mod config;
 pub mod daemon;
 pub mod driver;
 pub mod expiry;
+pub mod files;
 pub mod image;
 pub mod login;
 pub mod service;

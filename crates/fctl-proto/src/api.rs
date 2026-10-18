@@ -10,8 +10,8 @@ use crate::session::{
     InstanceRole, Project, ProjectRole, ProjectSettings, Session, SessionRole, UserRef,
 };
 use crate::{
-    AllowId, CredentialId, DeliveryId, IdentityId, InviteId, LoginJobId, Millis, ProjectId,
-    RunnerId, SessionId, TokenId, UserId,
+    AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId, LoginJobId, Millis,
+    ProjectId, RunnerId, SessionId, TokenId, UserId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -653,6 +653,7 @@ pub struct SessionList {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct CreateSessionRequest {
+    /// The task. May be empty when `attachments` are given.
     pub prompt: String,
     pub title: Option<String>,
     /// Branch to start from (default: the project's default branch).
@@ -661,6 +662,10 @@ pub struct CreateSessionRequest {
     pub branch: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Files to send with it: ids from `POST /api/v1/projects/{id}/attachments`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<AttachmentId>>", optional))]
+    pub attachments: Vec<AttachmentId>,
 }
 
 #[skip_serializing_none]
@@ -677,9 +682,14 @@ pub struct UpdateSessionRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct SendMessageRequest {
+    /// May be empty when `attachments` are given.
     pub text: String,
     /// Idempotency key; retries with the same key deliver once.
     pub client_id: Option<String>,
+    /// Files to send with it: ids from `POST /api/v1/sessions/{id}/attachments`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<AttachmentId>>", optional))]
+    pub attachments: Vec<AttachmentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -693,6 +703,10 @@ pub struct SendMessageResponse {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct ResumeSessionRequest {
     pub prompt: Option<String>,
+    /// Files to send with the prompt: ids from `POST /api/v1/sessions/{id}/attachments`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<AttachmentId>>", optional))]
+    pub attachments: Vec<AttachmentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

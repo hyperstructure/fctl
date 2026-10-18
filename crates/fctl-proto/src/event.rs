@@ -7,7 +7,7 @@
 //! and travel separately (see `viewer::ViewerServer::Stream`).
 
 use crate::session::{RemoteControlState, SessionStatus, UserRef};
-use crate::{DeliveryId, Millis};
+use crate::{AttachmentId, DeliveryId, Millis};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -97,8 +97,32 @@ pub struct UserMessage {
     pub id: DeliveryId,
     /// Absent for system messages.
     pub author: Option<UserRef>,
+    /// Empty when the message is only attachments.
     pub text: String,
     pub source: MessageSource,
+    /// Files sent with the message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Attachment>>", optional))]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A file someone attached to a message. The control plane keeps its bytes
+/// (`GET /api/v1/sessions/{id}/attachments/{attachment}`); fctl-agent saves it
+/// in the sandbox and tells Claude where.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct Attachment {
+    pub id: AttachmentId,
+    /// The file's name, without directories.
+    pub name: String,
+    /// For example `image/png`; `application/octet-stream` when unknown.
+    pub media_type: String,
+    /// Bytes.
+    pub size: u64,
+    /// Pixel size of PNG, JPEG, GIF and WebP images.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 #[skip_serializing_none]
@@ -235,6 +259,7 @@ mod tests {
                 }),
                 text: "hi".into(),
                 source: MessageSource::Web,
+                attachments: vec![],
             }),
         };
         let json = serde_json::to_value(&ev)?;

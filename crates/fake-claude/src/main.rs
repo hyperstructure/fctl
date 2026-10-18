@@ -18,6 +18,7 @@
 //! | `overage` | reports paid extra usage starting |
 //! | `refresh` | asks its host for a fresh OAuth token |
 //! | `crash` | exits with status 3 |
+//! | (attached files) | says how many images the message holds and checks that each listed file is on disk |
 //!
 //! Environment: `FAKE_CLAUDE_API_KEY_SOURCE` overrides the reported
 //! `apiKeySource` (default `none`); `FAKE_CLAUDE_DELAY_MS` sets the delay
@@ -127,7 +128,7 @@ impl Session {
         }));
     }
 
-    fn turn(&mut self, text: &str, input: &mpsc::Receiver<Value>) {
+    fn turn(&mut self, text: &str, images: usize, input: &mpsc::Receiver<Value>) {
         INTERRUPTED.store(false, Ordering::SeqCst);
         let started = Instant::now();
         let lower = text.to_lowercase();
@@ -195,6 +196,9 @@ impl Session {
             self.result(started, "Interrupted", "error_during_execution");
             return;
         }
+        if let Some(files) = describe_files(text, images) {
+            self.stream_text(&files);
+        }
         let ls = std::process::Command::new("ls")
             .arg("-la")
             .output()
@@ -257,6 +261,32 @@ impl Session {
         self.stream_text(done);
         self.result(started, done, "success");
     }
+}
+
+/// What fake-claude says about a message's files: the images in it, and
+/// whether each file the message lists is on disk.
+fn describe_files(text: &str, images: usize) -> Option<String> {
+    let listed: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.starts_with("Attached files"))
+        .skip(1)
+        .filter_map(|l| l.strip_prefix("- "))
+        .map(|l| l.rsplit_once(" (").map_or(l, |(path, _)| path))
+        .collect();
+    if listed.is_empty() && images == 0 {
+        return None;
+    }
+    let mut s = format!(
+        "The message holds {images} {}.",
+        if images == 1 { "image" } else { "images" }
+    );
+    for path in listed {
+        match std::fs::metadata(path) {
+            Ok(m) if m.is_file() => s.push_str(&format!(" {path} is {} bytes.", m.len())),
+            _ => s.push_str(&format!(" {path} is not on disk.")),
+        }
+    }
+    Some(s)
 }
 
 /// The title after `rename` (any case), to the end of its line.
@@ -385,8 +415,17 @@ fn main() {
                         _ => String::new(),
                     })
                     .unwrap_or_default();
+                let images = v
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .map_or(0, |blocks| {
+                        blocks
+                            .iter()
+                            .filter(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+                            .count()
+                    });
                 // Drain anything that arrived meanwhile into the turn's control channel.
-                session.turn(&text, &turn_rx);
+                session.turn(&text, images, &turn_rx);
             }
             _ => {}
         }

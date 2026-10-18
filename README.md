@@ -21,7 +21,8 @@
 fctl runs Claude Code agents in sandboxes on your own Mac (or Linux box),
 around the clock, on your Claude subscription — never on API billing. Start
 work from the web app, the terminal or your phone; follow every session live;
-message an agent to steer it; share projects and sessions with your team.
+message an agent to steer it, with screenshots and files; share projects and
+sessions with your team.
 
 ```sh
 curl -fsSL https://fctl.sh/install | sh

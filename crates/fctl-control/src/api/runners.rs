@@ -164,13 +164,13 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 }
 
 #[derive(serde::Deserialize)]
-struct RunnerAuth {
-    id: String,
-    name: String,
+pub(crate) struct RunnerAuth {
+    pub id: String,
+    pub name: String,
 }
 
 /// Authenticates a host by its runner token.
-async fn runner_auth(ctx: &Ctx, req: &Request) -> AppResult<RunnerAuth> {
+pub(crate) async fn runner_auth(ctx: &Ctx, req: &Request) -> AppResult<RunnerAuth> {
     let token = http::header(req, "Authorization")
         .and_then(|h| h.strip_prefix("Bearer ").map(str::to_owned))
         .filter(|t| t.starts_with(SecretKind::Runner.prefix()))

@@ -24,7 +24,16 @@ interface Base {
 }
 
 export type Item =
-  | (Base & { kind: "user"; author?: G.UserRef; text: string; source: G.MessageSource; pending?: boolean })
+  | (Base & {
+      kind: "user";
+      author?: G.UserRef;
+      text: string;
+      source: G.MessageSource;
+      attachments?: G.Attachment[];
+      /** Local previews of a message not stored yet, by attachment id. */
+      previews?: Record<string, string>;
+      pending?: boolean;
+    })
   | (Base & { kind: "prose"; text: string })
   | (Base & { kind: "thinking"; text: string })
   | (Base & {
@@ -126,6 +135,7 @@ export class TranscriptBuilder {
           author: ev.data.author,
           text: ev.data.text,
           source: ev.data.source,
+          attachments: ev.data.attachments,
         });
         return;
       case "status": {
