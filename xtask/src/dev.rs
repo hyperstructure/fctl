@@ -272,7 +272,7 @@ fn ensure_basics(token: &str) -> Result<()> {
                 "/me/claude/token",
                 Some(&auth),
                 Some(
-                    json!({ "token": "sk-ant-oat01-fctl-dev-fake-claude", "label": "fake-claude" }),
+                    json!({ "token": "sk-ant-oat01-fctl-dev-fake-claude-0000000000", "label": "fake-claude" }),
                 ),
             )?,
         )?;
