@@ -247,6 +247,11 @@ imports so it loads in every repository
   assigns the canonical `seq`, broadcasts them, and acknowledges `agent_seq`.
   After any reconnect SessionDO announces the last acknowledged `agent_seq`
   and the host replays the journal from there.
+- SessionDO stores events in `agent_seq` order. After a reconnect, newer
+  events can arrive before the replay of older ones, which went over a link
+  to the agent or an uplink that closed: they wait for it, for at most a
+  minute, rather than acknowledge the older ones unseen
+  (`crates/fctl-domain/src/journal.rs`).
 - Streaming deltas (`stream_event`) are forwarded but not stored; SessionDO
   keeps the in-progress text in memory so late viewers see it.
 - Host status (`provisioning`, `preparing`) is sent as idempotent state, not
