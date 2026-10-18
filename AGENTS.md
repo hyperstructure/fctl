@@ -105,6 +105,12 @@ it needs GitHub access (CI uses a read-only deploy key).
 - One focused change per pull request; update docs in the same change when
   behavior changes. A person merges agents' pull requests unless they ask
   the agent to.
+- A pull request that changes how fctl looks shows it with screenshots in
+  its description: before and after when it changes something that exists,
+  after alone when it adds something. When a later commit changes what a
+  screenshot shows, replace it. Attach them with `gh pr edit --attach`;
+  never commit them. How:
+  [.claude/skills/screenshots/SKILL.md](.claude/skills/screenshots/SKILL.md).
 - Never push to `main` directly. Only the Release workflow does (its
   release commits).
 - Releases are made by the Release workflow from those commits: version,

@@ -64,7 +64,8 @@ gh pr comment N --body "…"   # for comments on the conversation
 Leave resolving threads to the reviewer. If a comment asks for something
 outside the pull request, say so and offer an issue (the `issues` skill).
 After changes, update the description so it still says what the pull
-request does: it becomes the commit message.
+request does: it becomes the commit message. Replace screenshots that no
+longer match (the `screenshots` skill).
 
 ## Keeping the branch current
 
