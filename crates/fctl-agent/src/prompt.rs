@@ -1,6 +1,7 @@
 //! The text fctl gives Claude: what it appends to the system prompt, and the
 //! AGENTS.md at the root of the sandbox's home, beside the checkout.
 
+use crate::tasks::{self, Task};
 use crate::workspace::Paths;
 use fctl_domain::{files, size};
 use fctl_proto::event::Attachment;
@@ -174,6 +175,12 @@ pub fn system_prompt(
     s.push_str("- Messages from people other than the session's starter begin with their name.\n");
     s.push_str("- Never print, log or commit secrets. Project secrets are available as environment variables.\n");
     s.push_str("- If you are blocked on a decision only a person can make, say so plainly and stop; someone will answer.\n");
+    let idle = tasks::idle_timeout(spec);
+    s.push_str(&format!(
+        "- When your turn ends, the session waits for a message, and after {} without one it stops, along with everything still running in the sandbox. Background work you start (a shell command with `run_in_background`, a subagent, a Monitor) keeps the session up while it runs, for up to {} after your turn ends: you can end your turn to wait for it, and you get its result in a new turn. Stop background processes you no longer need, like a dev server, so that the session can stop.\n",
+        tasks::duration(idle),
+        tasks::duration(tasks::limit(idle))
+    ));
     if let Some(extra) = spec
         .project
         .settings
@@ -244,6 +251,20 @@ pub fn fresh_resume(branch: &str, task: Option<&str>, other_repos: bool) -> Stri
         s.push_str(task);
     }
     s.push_str("\n\nCatch up on what the branch already contains, then reply with a short summary of where things stand. If a message follows, act on it.");
+    s
+}
+
+/// What comes before the first message after the session stopped while
+/// background tasks ran: they didn't finish. Claude Code reports the tasks
+/// it lost when it resumes the conversation too, in its own words.
+pub fn unfinished_tasks(tasks: &[Task]) -> String {
+    let mut s = String::from(
+        "The session stopped while these background tasks were still running, so they didn't finish:",
+    );
+    for t in tasks {
+        s.push_str(&format!("\n- {}", t.label()));
+    }
+    s.push_str("\nStart again the ones you still need.");
     s
 }
 
@@ -394,6 +415,47 @@ mod tests {
             ]
         );
         assert!(sandbox_env(None).is_empty());
+    }
+
+    #[test]
+    fn says_how_long_background_work_keeps_the_session_up() {
+        let text = system_prompt(
+            &spec_with(serde_json::Value::Null),
+            "/home/agent/workspace",
+            &paths(),
+            None,
+        );
+        assert!(text.contains("after 10 minutes without one it stops"));
+        assert!(text.contains(
+            "for up to an hour after your turn ends: you can end your turn to wait for it"
+        ));
+        // A project that waits longer for messages waits as long for background work.
+        let text = system_prompt(&spec(), "/work", &paths(), None);
+        assert!(text.contains("after 2 hours without one it stops"));
+        assert!(text.contains("for up to 2 hours after your turn ends"));
+    }
+
+    #[test]
+    fn says_which_background_tasks_did_not_finish() {
+        let tasks = [
+            Task {
+                id: "a1".into(),
+                description: "Review the images branch diff".into(),
+                kind: Some("local_agent".into()),
+            },
+            Task {
+                id: "b1".into(),
+                description: "Start the dev stack".into(),
+                kind: Some("local_bash".into()),
+            },
+        ];
+        assert_eq!(
+            unfinished_tasks(&tasks),
+            "The session stopped while these background tasks were still running, so they didn't finish:\n\
+             - Review the images branch diff (subagent)\n\
+             - Start the dev stack (shell command)\n\
+             Start again the ones you still need."
+        );
     }
 
     #[test]

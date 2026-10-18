@@ -10,6 +10,7 @@ use crate::journal::Journal;
 use crate::link::{self, LinkEvent};
 use crate::local;
 use crate::prompt;
+use crate::tasks::{self, Task, Tasks};
 use crate::workspace::{self, Paths};
 use anyhow::Result;
 use base64::Engine;
@@ -61,6 +62,10 @@ struct Persisted {
     title: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    /// Background tasks that were still running when the session stopped:
+    /// the next message tells Claude they didn't finish.
+    #[serde(default)]
+    unfinished: Vec<Task>,
 }
 
 pub(crate) enum Work {
@@ -92,8 +97,22 @@ pub struct Supervisor {
     /// Messages that arrived before Claude was ready.
     queue: VecDeque<Delivery>,
     turn_active: bool,
-    stopping: Option<(StopReason, Instant)>,
+    /// The turn under way is one Claude started on its own, which its
+    /// `idle` ends as well as its `result`.
+    claude_turn: bool,
+    /// Claude reports its turns (`session_state_changed`), so its other
+    /// messages needn't tell.
+    reports_turns: bool,
+    /// Claude's background tasks that still run.
+    tasks: Tasks,
+    /// Why the session stops, and when it stops anyway.
+    stopping: Option<(String, Instant)>,
+    /// Since when the session has waited with nothing running: the idle
+    /// timeout's clock.
     idle_since: Option<Instant>,
+    /// Since the last turn ended, while the session waits: background work
+    /// keeps it up for [`tasks::limit`] from then.
+    waiting_since: Option<Instant>,
     resume_at: Option<i64>,
     github_expires_at: i64,
     pending_creds: HashMap<String, CredFor>,
@@ -161,8 +180,12 @@ impl Supervisor {
                 work_tx,
                 queue: VecDeque::new(),
                 turn_active: false,
+                claude_turn: false,
+                reports_turns: false,
+                tasks: Tasks::default(),
                 stopping: None,
                 idle_since: None,
+                waiting_since: None,
                 resume_at: None,
                 github_expires_at: i64::MAX,
                 pending_creds: HashMap::new(),
@@ -325,7 +348,10 @@ impl Supervisor {
             } => {
                 self.on_credentials(request_id, claude, github, github_read, error);
             }
-            HostToAgent::Stop { reason, grace_ms } => self.begin_stop(reason, grace_ms).await,
+            HostToAgent::Stop { reason, grace_ms } => {
+                self.begin_stop(stop_text(reason).to_owned(), grace_ms)
+                    .await
+            }
             HostToAgent::Published {
                 request_id,
                 file,
@@ -365,6 +391,7 @@ impl Supervisor {
         if self.state.status == status && self.state.reason == reason {
             return;
         }
+        let waited = self.state.status == SessionStatus::Idle;
         self.state.status = status;
         self.state.reason = reason;
         self.state.resume_at = if status == SessionStatus::Paused {
@@ -372,7 +399,14 @@ impl Supervisor {
         } else {
             None
         };
-        self.idle_since = (status == SessionStatus::Idle).then(Instant::now);
+        let waits = status == SessionStatus::Idle;
+        // The idle clock starts once background work has ended too.
+        self.idle_since = (waits && self.tasks.is_empty()).then(Instant::now);
+        self.waiting_since = match (waits, waited) {
+            (true, true) => self.waiting_since,
+            (true, false) => Some(Instant::now()),
+            (false, _) => None,
+        };
         self.flush();
         self.send(&AgentToHost::State {
             state: self.state.clone(),
@@ -865,6 +899,8 @@ impl Supervisor {
         }
         env.insert("IS_SANDBOX".into(), "1".into());
         env.insert("DISABLE_AUTOUPDATER".into(), "1".into());
+        // Turns Claude starts on its own (for background work) count too.
+        env.insert(tasks::SESSION_STATE_ENV.into(), "1".into());
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
         env.insert("FCTL_SESSION_ID".into(), spec.session_id.0.clone());
         env.insert("FCTL_SESSION_URL".into(), spec.web_url.clone());
@@ -978,7 +1014,7 @@ impl Supervisor {
         if self.turn_active {
             self.set_status(SessionStatus::Running, None);
         } else {
-            self.set_status(SessionStatus::Idle, Some("Waiting for a message".into()));
+            self.wait();
         }
         while let Some(d) = self.queue.pop_front() {
             self.on_delivery(d).await;
@@ -1014,11 +1050,24 @@ impl Supervisor {
         images: Vec<Value>,
         delivery: Option<&DeliveryId>,
     ) {
+        if self.claude.is_none() {
+            return;
+        }
+        // The first message after a stop that cut background work short.
+        let text = if self.persisted.unfinished.is_empty() {
+            text.to_owned()
+        } else {
+            let note = prompt::unfinished_tasks(&std::mem::take(&mut self.persisted.unfinished));
+            self.persist();
+            format!("{note}\n\n{text}")
+        };
         if let Some(c) = &self.claude {
             let mut content = vec![json!({ "type": "text", "text": text })];
             content.extend(images);
             c.send_user(content, &fctl_domain::ids::uuid_v4());
             self.turn_active = true;
+            // A turn of Claude's own now has this message to answer too.
+            self.claude_turn = false;
             self.idle_since = None;
             if let Some(id) = delivery {
                 self.mark_delivered(id);
@@ -1115,6 +1164,19 @@ impl Supervisor {
     }
 
     async fn on_claude_message(&mut self, v: Value) {
+        // Claude's word on its turns: acted on, not kept.
+        if let Some(state) = tasks::session_state(&v) {
+            self.reports_turns = true;
+            match state {
+                "idle" => self.claude_went_idle(),
+                "running" | "requires_action" if !self.turn_active => self.claude_started_turn(),
+                _ => {}
+            }
+            return;
+        }
+        if !self.turn_active && !self.reports_turns && tasks::in_turn(&v) {
+            self.claude_started_turn();
+        }
         let kind = ev::classify(&v);
         if ev::is_ephemeral(kind) {
             self.send(&AgentToHost::Stream { event: v });
@@ -1136,16 +1198,61 @@ impl Supervisor {
             .and_then(Value::as_u64)
             .unwrap_or(0)
             > 0;
+        let tasks_changed = self.tasks.observe(&v);
         self.emit(EventBody::Claude(v));
         if is_result {
             self.turn_active = more_queued;
+            self.claude_turn = false;
             if !more_queued
                 && self.stopping.is_none()
                 && self.state.status == SessionStatus::Running
             {
-                self.set_status(SessionStatus::Idle, Some("Waiting for a message".into()));
+                self.wait();
             }
             self.after_turn();
+        } else if tasks_changed
+            && !self.turn_active
+            && self.stopping.is_none()
+            && self.state.status == SessionStatus::Idle
+        {
+            self.wait();
+        }
+    }
+
+    /// The session waits: for Claude's background tasks while any run,
+    /// then for a message.
+    fn wait(&mut self) {
+        let reason = tasks::waiting_reason(self.tasks.len());
+        self.set_status(SessionStatus::Idle, Some(reason));
+    }
+
+    /// Claude started a turn on its own, to take what its background work
+    /// reported: it counts as any other, and stops the idle clock.
+    fn claude_started_turn(&mut self) {
+        self.turn_active = true;
+        self.claude_turn = true;
+        self.idle_since = None;
+        if self.stopping.is_some() || self.state.status == SessionStatus::Paused {
+            // A session that stops takes no more turns, and a paused one
+            // waits for its usage limit to reset.
+            if let Some(c) = self.claude.as_mut() {
+                c.request_nowait(json!({ "subtype": "interrupt" }));
+            }
+        } else if self.state.status == SessionStatus::Idle {
+            self.set_status(SessionStatus::Running, None);
+        }
+    }
+
+    /// Claude says no turn is under way. A `result` ends each turn, but one
+    /// Claude started on its own can end without.
+    fn claude_went_idle(&mut self) {
+        if !(self.turn_active && self.claude_turn) {
+            return;
+        }
+        self.turn_active = false;
+        self.claude_turn = false;
+        if self.stopping.is_none() && self.state.status == SessionStatus::Running {
+            self.wait();
         }
     }
 
@@ -1320,6 +1427,10 @@ impl Supervisor {
             None => return,
         };
         self.turn_active = false;
+        self.claude_turn = false;
+        // A restarted Claude Code doesn't follow the old one's background
+        // tasks.
+        self.tasks.take();
         if self.stopping.is_some() || self.state.status.is_terminal() {
             return;
         }
@@ -1387,12 +1498,19 @@ impl Supervisor {
                 kind: CredentialKind::Github,
             });
         }
-        // Idle timeout.
-        if let (Some(since), Some(cfg)) = (self.idle_since, self.config.as_ref())
-            && since.elapsed() > Duration::from_secs(cfg.spec.idle_timeout_secs.max(60))
+        // The idle timeout, and the most background work may add to it.
+        if let Some(idle) = self.config.as_ref().map(|c| tasks::idle_timeout(&c.spec))
             && self.stopping.is_none()
         {
-            self.begin_stop(StopReason::Idle, 30_000).await;
+            let limit = tasks::limit(idle);
+            if self.idle_since.is_some_and(|t| t.elapsed() > idle) {
+                self.begin_stop(stop_text(StopReason::Idle).to_owned(), 30_000)
+                    .await;
+            } else if !self.tasks.is_empty()
+                && self.waiting_since.is_some_and(|t| t.elapsed() > limit)
+            {
+                self.begin_stop(tasks::limit_reason(limit), 30_000).await;
+            }
         }
         // A stop whose grace period ran out.
         if let Some((_, deadline)) = self.stopping
@@ -1403,13 +1521,15 @@ impl Supervisor {
         }
     }
 
-    async fn begin_stop(&mut self, reason: StopReason, grace_ms: u64) {
+    /// Stops the session for the reason its status gives (`why`): once the
+    /// turn under way ends, interrupted, or after `grace_ms` anyway.
+    async fn begin_stop(&mut self, why: String, grace_ms: u64) {
         if self.stopping.is_some() {
             return;
         }
         let deadline = Instant::now() + Duration::from_millis(grace_ms.clamp(1_000, 120_000));
-        self.stopping = Some((reason, deadline));
-        self.set_status(SessionStatus::Stopping, Some(stop_text(reason).into()));
+        self.stopping = Some((why.clone(), deadline));
+        self.set_status(SessionStatus::Stopping, Some(why));
         if self.turn_active {
             if let Some(c) = self.claude.as_mut() {
                 c.request_nowait(json!({ "subtype": "interrupt" }));
@@ -1423,6 +1543,19 @@ impl Supervisor {
     async fn finish(&mut self) {
         if self.exit_after.is_some() {
             return;
+        }
+        // Claude's background work stops with it: the transcript says what,
+        // and so does the next message, for Claude.
+        let unfinished = self.tasks.take();
+        if !unfinished.is_empty() {
+            let notice = tasks::stopped_notice(&unfinished);
+            self.notice(NoticeLevel::Warn, "background_tasks_stopped", &notice, None);
+            for t in unfinished {
+                if !self.persisted.unfinished.iter().any(|u| u.id == t.id) {
+                    self.persisted.unfinished.push(t);
+                }
+            }
+            self.persist();
         }
         if let Some(mut c) = self.claude.take() {
             c.kill().await;
@@ -1442,8 +1575,8 @@ impl Supervisor {
             }
             self.emit(EventBody::Git(st));
         }
-        let (status, reason) = match self.stopping {
-            Some((r, _)) => (SessionStatus::Stopped, Some(stop_text(r).to_owned())),
+        let (status, reason) = match &self.stopping {
+            Some((why, _)) => (SessionStatus::Stopped, Some(why.clone())),
             None if self.state.status == SessionStatus::Failed => {
                 (SessionStatus::Failed, self.state.reason.clone())
             }
@@ -1800,6 +1933,330 @@ mod tests {
         );
         sup.on_published(&request_id, Some(file), None);
         assert!(host_rx.try_recv().is_err());
+        Ok(())
+    }
+
+    /// A configured supervisor in the middle of a turn, with a host link.
+    fn in_a_turn(
+        dir: &std::path::Path,
+    ) -> anyhow::Result<(Supervisor, mpsc::UnboundedReceiver<String>)> {
+        let (mut sup, _claude, _work) = Supervisor::new(dir.join("state"), None)?;
+        sup.config = Some(config(dir, false)?);
+        let (host_tx, host_rx) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        sup.turn_active = true;
+        sup.set_status(SessionStatus::Running, None);
+        Ok((sup, host_rx))
+    }
+
+    /// A Claude Code that keeps what it is sent, in `stdin.jsonl` in `dir`.
+    fn stub_claude(dir: &std::path::Path, sup: &Supervisor) -> anyhow::Result<Claude> {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("claude");
+        std::fs::write(&bin, "#!/bin/sh\nexec cat > \"$HOME/stdin.jsonl\"\n")?;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+        Claude::spawn(
+            LaunchSpec {
+                bin: &bin.display().to_string(),
+                cwd: dir,
+                home: dir,
+                claude_session_id: "s",
+                resume: false,
+                model: None,
+                effort: None,
+                append_system_prompt: "",
+                setting_sources: "user",
+                extra_args: &[],
+                env: Default::default(),
+            },
+            sup.claude_tx.clone(),
+        )
+    }
+
+    /// What the stub Claude Code has been sent, once it has `n` lines.
+    async fn sent_to_claude(dir: &std::path::Path, n: usize) -> anyhow::Result<Vec<Value>> {
+        for _ in 0..250 {
+            let text = std::fs::read_to_string(dir.join("stdin.jsonl")).unwrap_or_default();
+            let lines: Vec<Value> = text
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect();
+            if lines.len() >= n {
+                return Ok(lines);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        anyhow::bail!("Claude got fewer than {n} lines")
+    }
+
+    fn task_started(id: &str, description: &str, kind: &str) -> Value {
+        json!({"type": "system", "subtype": "task_started", "task_id": id, "tool_use_id": "toolu_1",
+               "description": description, "task_type": kind, "is_backgrounded": true,
+               "session_id": "s", "uuid": "u"})
+    }
+
+    fn task_ended(id: &str) -> Value {
+        json!({"type": "system", "subtype": "task_notification", "task_id": id, "tool_use_id": "toolu_1",
+               "status": "completed", "output_file": "", "summary": "Done", "session_id": "s", "uuid": "u"})
+    }
+
+    fn turn_state(state: &str) -> Value {
+        json!({"type": "system", "subtype": "session_state_changed", "state": state, "session_id": "s", "uuid": "u"})
+    }
+
+    fn result() -> Value {
+        json!({"type": "result", "subtype": "success", "is_error": false, "result": "Done",
+               "queued_turn_count": 0, "session_id": "s", "uuid": "u"})
+    }
+
+    fn waiting(sup: &Supervisor) -> (SessionStatus, Option<&str>) {
+        (sup.state.status, sup.state.reason.as_deref())
+    }
+
+    /// The events the host has been sent since last asked.
+    fn events_sent(host: &mut mpsc::UnboundedReceiver<String>) -> Vec<EventBody> {
+        let mut out = vec![];
+        while let Ok(text) = host.try_recv() {
+            if let Ok(AgentToHost::Events { events }) = serde_json::from_str(&text) {
+                out.extend(events.into_iter().map(|e| e.body));
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn the_idle_clock_waits_for_background_tasks() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        sup.on_claude_message(task_started("a1", "Review the diff", "local_agent"))
+            .await;
+        sup.on_claude_message(task_started("b1", "Start the dev stack", "local_bash"))
+            .await;
+        // A foreground task that ends within the turn.
+        sup.on_claude_message(task_started("c1", "Run the tests", "local_bash"))
+            .await;
+        sup.on_claude_message(task_ended("c1")).await;
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+
+        sup.on_claude_message(result()).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for 2 background tasks"))
+        );
+        assert!(sup.idle_since.is_none() && sup.waiting_since.is_some());
+        // Well past the idle timeout, the session still waits.
+        sup.waiting_since = Some(Instant::now() - Duration::from_secs(30 * 60));
+        sup.on_tick().await;
+        assert!(sup.stopping.is_none());
+
+        sup.on_claude_message(task_ended("a1")).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for a background task"))
+        );
+        assert!(sup.idle_since.is_none());
+        sup.on_claude_message(task_ended("b1")).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for a message"))
+        );
+        // The idle clock starts now, not at the end of the turn.
+        assert!(
+            sup.idle_since
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(5))
+        );
+        sup.on_tick().await;
+        assert!(sup.stopping.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_turn_claude_starts_on_its_own_counts() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_turn(dir.path())?;
+        sup.on_claude_message(turn_state("running")).await;
+        sup.on_claude_message(task_started("a1", "Review the diff", "local_agent"))
+            .await;
+        sup.on_claude_message(result()).await;
+        sup.on_claude_message(turn_state("idle")).await;
+        sup.on_claude_message(task_ended("a1")).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for a message"))
+        );
+
+        // Claude takes the result in a turn of its own.
+        sup.on_claude_message(turn_state("running")).await;
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        assert!(sup.turn_active && sup.idle_since.is_none());
+        sup.on_claude_message(result()).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for a message"))
+        );
+        assert!(!sup.turn_active && sup.idle_since.is_some());
+
+        // One that ends without a result ends all the same.
+        sup.on_claude_message(turn_state("running")).await;
+        sup.on_claude_message(turn_state("idle")).await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Idle);
+        assert!(!sup.turn_active);
+        // Claude's reports of its turns aren't kept.
+        let kept = events_sent(&mut host);
+        assert!(!kept.is_empty());
+        assert!(kept.iter().all(
+            |e| !matches!(e, EventBody::Claude(v) if v["subtype"] == "session_state_changed")
+        ));
+
+        // `idle` doesn't end a turn that answers a message: its result does.
+        sup.turn_active = true;
+        sup.set_status(SessionStatus::Running, None);
+        sup.on_claude_message(turn_state("idle")).await;
+        assert!(sup.turn_active);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn without_turn_reports_the_first_message_of_a_turn_starts_it() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        sup.on_claude_message(result()).await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Idle);
+        // A background subagent works while the conversation waits.
+        let subagent = json!({"type": "assistant", "parent_tool_use_id": "toolu_1",
+            "message": {"id": "m1", "role": "assistant", "content": [{"type": "text", "text": "Reviewing"}]}});
+        sup.on_claude_message(subagent).await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Idle);
+        let delta = json!({"type": "stream_event", "parent_tool_use_id": null,
+            "event": {"type": "message_start", "message": {"id": "m2"}}});
+        sup.on_claude_message(delta.clone()).await;
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        sup.on_claude_message(result()).await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Idle);
+
+        // Once Claude reports its turns, its messages don't have to tell.
+        sup.on_claude_message(turn_state("idle")).await;
+        sup.on_claude_message(delta).await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Idle);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn background_work_keeps_a_session_up_for_an_hour() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_turn(dir.path())?;
+        sup.on_claude_message(task_started("b1", "Start the dev stack", "local_bash"))
+            .await;
+        sup.on_claude_message(result()).await;
+        sup.waiting_since = Some(Instant::now() - tasks::LIMIT + Duration::from_secs(60));
+        sup.on_tick().await;
+        assert!(sup.stopping.is_none());
+        events_sent(&mut host);
+
+        sup.waiting_since = Some(Instant::now() - tasks::LIMIT - Duration::from_secs(1));
+        sup.on_tick().await;
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Stopped,
+                Some("Stopped after an hour waiting for background tasks")
+            )
+        );
+        let notices: Vec<String> = events_sent(&mut host)
+            .into_iter()
+            .filter_map(|e| match e {
+                EventBody::Notice(n) if n.code == "background_tasks_stopped" => Some(n.message),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notices,
+            [
+                "Stopped a background task that was still running: Start the dev stack (shell command)"
+            ]
+        );
+        // The next run tells Claude.
+        let (again, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        assert_eq!(
+            again.persisted.unfinished,
+            [Task {
+                id: "b1".into(),
+                description: "Start the dev stack".into(),
+                kind: Some("local_bash".into()),
+            }]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_next_message_says_which_tasks_did_not_finish() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        sup.on_claude_message(task_started("a1", "Review the diff", "local_agent"))
+            .await;
+        sup.on_claude_message(result()).await;
+        // A person stops the session.
+        sup.on_frame(HostToAgent::Stop {
+            reason: StopReason::User,
+            grace_ms: 30_000,
+        })
+        .await;
+        assert_eq!(waiting(&sup), (SessionStatus::Stopped, Some("Stopped")));
+
+        let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        next.claude = Some(stub_claude(dir.path(), &next)?);
+        next.send_turn("Please continue", Some("Bob"), None, &[])
+            .await;
+        next.send_turn("And then this", None, None, &[]).await;
+        let sent = sent_to_claude(dir.path(), 2).await?;
+        let text = |i: usize| {
+            sent[i]["message"]["content"][0]["text"]
+                .as_str()
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            text(0).as_deref(),
+            Some(
+                "The session stopped while these background tasks were still running, so they didn't finish:\n\
+                 - Review the diff (subagent)\n\
+                 Start again the ones you still need.\n\n\
+                 Bob wrote:\n\nPlease continue"
+            )
+        );
+        assert_eq!(text(1).as_deref(), Some("And then this"));
+        let (later, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        assert!(later.persisted.unfinished.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn turns_claude_starts_while_paused_or_stopping_are_interrupted() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        sup.claude = Some(stub_claude(dir.path(), &sup)?);
+        sup.on_claude_message(result()).await;
+        sup.set_status(
+            SessionStatus::Paused,
+            Some("Waiting for the usage limit to reset".into()),
+        );
+        sup.on_claude_message(turn_state("running")).await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Paused);
+        let sent = sent_to_claude(dir.path(), 1).await?;
+        assert_eq!(sent[0]["request"]["subtype"], "interrupt");
+        sup.on_claude_message(result()).await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Paused);
+
+        // A stop interrupts the turn under way, and the one Claude starts
+        // before the grace period ends.
+        sup.turn_active = true;
+        sup.set_status(SessionStatus::Running, None);
+        sup.begin_stop("Stopped".into(), 30_000).await;
+        sup.on_claude_message(result()).await;
+        sup.on_claude_message(turn_state("running")).await;
+        let sent = sent_to_claude(dir.path(), 3).await?;
+        assert_eq!(sent[1]["request"]["subtype"], "interrupt");
+        assert_eq!(sent[2]["request"]["subtype"], "interrupt");
+        assert_eq!(waiting(&sup).0, SessionStatus::Stopping);
         Ok(())
     }
 }
