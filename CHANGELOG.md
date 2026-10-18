@@ -2,6 +2,22 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.3.0 (2026-10-18)
+
+### Features
+
+- Open Remote Control sessions in the Claude desktop and mobile apps ([#42](https://github.com/hyperstructure/fctl/pull/42))
+- **web:** Use hyperstructure's logo and make the app installable ([#44](https://github.com/hyperstructure/fctl/pull/44))
+- Add Python 3.15, Rust, Bun and TypeScript to the sandbox image ([#45](https://github.com/hyperstructure/fctl/pull/45))
+
+### Fixes
+
+- **web:** Pad session rows so the hover highlight has room ([#38](https://github.com/hyperstructure/fctl/pull/38))
+
+### Documentation
+
+- Add agent rules for screenshots in pull requests ([#43](https://github.com/hyperstructure/fctl/pull/43))
+
 ## 0.2.0 (2026-10-18)
 
 ### Features
