@@ -2,4 +2,13 @@
 import type { ClaudeCredential } from "./ClaudeCredential";
 import type { GithubCredential } from "./GithubCredential";
 
-export type SessionCredentials = { claude: ClaudeCredential, github?: GithubCredential, };
+export type SessionCredentials = { claude: ClaudeCredential, 
+/**
+ * For the primary repository and the project's other writable ones.
+ */
+github?: GithubCredential, 
+/**
+ * Read-only, for the project's read-only repositories (every repository
+ * of the account, for an owner-wide grant).
+ */
+github_read?: GithubCredential, };

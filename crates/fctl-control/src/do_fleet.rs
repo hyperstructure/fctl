@@ -28,6 +28,13 @@ use worker::{
 };
 
 const TAG_FEED: &str = "feed";
+
+/// The answer to a host's credential request.
+struct Credentials {
+    claude: Option<fctl_proto::runner::ClaudeCredential>,
+    github: Option<fctl_proto::runner::GithubCredential>,
+    github_read: Option<fctl_proto::runner::GithubCredential>,
+}
 /// Starting a session may be attempted this many times before it fails.
 const MAX_ATTEMPTS: i64 = 5;
 /// A runner that stays away this long loses its sessions.
@@ -502,16 +509,18 @@ impl FleetObject {
             } => {
                 let reply = self.credential(&session_id, kind, now).await;
                 let msg = match reply {
-                    Ok((claude, github)) => FleetToHost::Credential {
+                    Ok(c) => FleetToHost::Credential {
                         request_id,
-                        claude,
-                        github,
+                        claude: c.claude,
+                        github: c.github,
+                        github_read: c.github_read,
                         error: None,
                     },
                     Err(e) => FleetToHost::Credential {
                         request_id,
                         claude: None,
                         github: None,
+                        github_read: None,
                         error: Some(e.message),
                     },
                 };
@@ -1022,13 +1031,7 @@ impl FleetObject {
         session_id: &SessionId,
         kind: CredentialKind,
         now: i64,
-    ) -> std::result::Result<
-        (
-            Option<fctl_proto::runner::ClaudeCredential>,
-            Option<fctl_proto::runner::GithubCredential>,
-        ),
-        ApiError,
-    > {
+    ) -> std::result::Result<Credentials, ApiError> {
         let db = self
             .env
             .d1("DB")
@@ -1044,13 +1047,21 @@ impl FleetObject {
                     .await
                     .map_err(|e| e.0)?
                     .ok_or_else(|| ApiError::not_found("Project"))?;
-                let repo = project.repo().ok_or_else(|| {
-                    ApiError::new(ErrorCode::NotConfigured, "The project has no repository")
-                })?;
-                let token = spec::github_token(&cfg, &repo, now)
+                let grants = spec::grants(&db, &project.id).await.map_err(|e| e.0)?;
+                let tokens = spec::github_tokens(&cfg, project.repo().as_ref(), &grants, now)
                     .await
                     .map_err(|e| e.0)?;
-                Ok((None, Some(token)))
+                if tokens.write.is_none() && tokens.read.is_none() {
+                    return Err(ApiError::new(
+                        ErrorCode::NotConfigured,
+                        "The project has no repositories",
+                    ));
+                }
+                Ok(Credentials {
+                    claude: None,
+                    github: tokens.write,
+                    github_read: tokens.read,
+                })
             }
             CredentialKind::Claude => {
                 let keys = crypto::keys(&cfg).map_err(|e| e.0)?;
@@ -1067,7 +1078,11 @@ impl FleetObject {
                 self.refreshing.borrow_mut().insert(cred_id.clone());
                 let result = spec::claude_credential(&db, &keys, &cred_id, now).await;
                 self.refreshing.borrow_mut().remove(&cred_id);
-                Ok((Some(result.map_err(|e| e.0)?), None))
+                Ok(Credentials {
+                    claude: Some(result.map_err(|e| e.0)?),
+                    github: None,
+                    github_read: None,
+                })
             }
         }
     }

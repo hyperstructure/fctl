@@ -13,7 +13,9 @@ use anyhow::Result;
 use fctl_domain::events::{self as ev, BillingGuard, ClaudeKind};
 use fctl_proto::agent::{AgentConfig, AgentHello, AgentToHost, HostToAgent};
 use fctl_proto::event::{EventBody, GitState, LogLevel, LogLine, LogSource, Notice, NoticeLevel};
-use fctl_proto::runner::{ClaudeCredential, ClaudeCredentialKind, CredentialKind, StopReason};
+use fctl_proto::runner::{
+    ClaudeCredential, ClaudeCredentialKind, CredentialKind, GithubCredential, StopReason,
+};
 use fctl_proto::session::{RemoteControlState, SessionStatus};
 use fctl_proto::uplink::{AgentEvent, Delivery, DeliveryKind, SessionState};
 use fctl_proto::{DeliveryId, PROTOCOL_VERSION};
@@ -252,9 +254,10 @@ impl Supervisor {
                 request_id,
                 claude,
                 github,
+                github_read,
                 error,
             } => {
-                self.on_credentials(request_id, claude, github, error);
+                self.on_credentials(request_id, claude, github, github_read, error);
             }
             HostToAgent::Stop { reason, grace_ms } => self.begin_stop(reason, grace_ms).await,
         }
@@ -346,8 +349,9 @@ impl Supervisor {
         let paths = Paths::new(&workdir, &home, &self.state_dir);
         self.state.branch = Some(config.spec.branch.clone());
         self.state.claude_session_id = Some(config.spec.claude_session_id.clone());
-        if let Some(gh) = &config.spec.credentials.github {
-            self.github_expires_at = gh.expires_at;
+        let creds = &config.spec.credentials;
+        if let Some(at) = expiry(creds.github.as_ref(), creds.github_read.as_ref()) {
+            self.github_expires_at = at;
         }
         self.claude_credential = Some(config.spec.credentials.claude.clone());
         self.paths = Some(paths.clone());
@@ -357,6 +361,19 @@ impl Supervisor {
             SessionStatus::Preparing,
             Some("Preparing the workspace".into()),
         );
+        let repos = spec.project.repos.as_deref().unwrap_or_default();
+        if !repos.is_empty() {
+            self.log(
+                LogSource::Agent,
+                LogLevel::Info,
+                &prompt::repos_line(repos, &paths.repos.display().to_string()),
+            );
+        }
+        for r in repos {
+            if let Some(why) = &r.unavailable {
+                self.notice(NoticeLevel::Warn, "repo_unavailable", why, None);
+            }
+        }
         let work = self.work_tx.clone();
         tokio::spawn(async move {
             let (log_tx, mut log_rx) = mpsc::unbounded_channel::<(LogLevel, String)>();
@@ -368,9 +385,12 @@ impl Supervisor {
             });
             let result = async {
                 workspace::configure_git(&paths, &spec.git_author).await?;
-                if let Some(gh) = &spec.credentials.github {
-                    workspace::write_github_token(&paths, gh)?;
-                }
+                workspace::write_routes(&paths, &spec)?;
+                workspace::write_github_tokens(
+                    &paths,
+                    spec.credentials.github.as_ref(),
+                    spec.credentials.github_read.as_ref(),
+                )?;
                 workspace::prepare(&paths, &spec, &log_tx).await?;
                 if let Some(script) = spec
                     .project
@@ -525,7 +545,7 @@ impl Supervisor {
             && (self.persisted.claude_started
                 || claude::conversation_exists(&paths.home, &spec.claude_session_id));
         let fresh_resume = wants_resume && !resume;
-        let system = prompt::system_prompt(spec, &workdir);
+        let system = prompt::system_prompt(spec, &workdir, &paths);
         let bin = config.claude_bin.clone().unwrap_or_else(|| "claude".into());
         let launch = LaunchSpec {
             bin: &bin,
@@ -610,7 +630,8 @@ impl Supervisor {
                 LogLevel::Info,
                 "The earlier conversation went with the old sandbox; Claude starts a new one on the branch",
             );
-            let text = prompt::fresh_resume(&spec.branch, spec.task.as_deref());
+            let other_repos = spec.project.repos.as_ref().is_some_and(|r| !r.is_empty());
+            let text = prompt::fresh_resume(&spec.branch, spec.task.as_deref(), other_repos);
             self.send_turn(&text, None, None).await;
         } else if !resume && let Some(p) = spec.prompt.clone() {
             self.send_turn(&p, None, None).await;
@@ -760,45 +781,23 @@ impl Supervisor {
         }
     }
 
-    /// After each turn: git state, push, pull request.
+    /// After each turn: git state, pushes and pull requests, in every
+    /// repository.
     fn after_turn(&mut self) {
         let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) else {
             return;
         };
         let work = self.work_tx.clone();
         tokio::spawn(async move {
-            let spec = &config.spec;
-            let Ok(mut st) = workspace::state(&paths, spec).await else {
+            let Ok(synced) =
+                workspace::sync(&paths, &config.spec, config.push_on_commit, true).await
+            else {
                 return;
             };
-            if spec.project.repo.is_some() && config.push_on_commit && st.ahead > 0 && !st.pushed {
-                match workspace::push(&paths, &st).await {
-                    Ok(true) => {
-                        let _ = work.send(Work::Log(
-                            LogLevel::Info,
-                            format!("Pushed {}", st.branch.clone().unwrap_or_default()),
-                            LogSource::Agent,
-                        ));
-                        if let Ok(fresh) = workspace::state(&paths, spec).await {
-                            st = fresh;
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        let _ = work.send(Work::Log(
-                            LogLevel::Warn,
-                            format!("{e:#}"),
-                            LogSource::Agent,
-                        ));
-                    }
-                }
+            for (level, text) in synced.logs {
+                let _ = work.send(Work::Log(level, text, LogSource::Agent));
             }
-            if st.pushed
-                && let Some(b) = st.branch.clone()
-            {
-                st.pull_request = workspace::pull_request(&paths, &b).await;
-            }
-            let _ = work.send(Work::Git(st));
+            let _ = work.send(Work::Git(synced.state));
         });
     }
 
@@ -894,13 +893,18 @@ impl Supervisor {
         &mut self,
         request_id: Option<String>,
         claude: Option<ClaudeCredential>,
-        github: Option<fctl_proto::runner::GithubCredential>,
+        github: Option<GithubCredential>,
+        github_read: Option<GithubCredential>,
         error: Option<String>,
     ) {
-        if let (Some(gh), Some(paths)) = (&github, &self.paths) {
-            self.github_expires_at = gh.expires_at;
-            if let Err(e) = workspace::write_github_token(paths, gh) {
-                tracing::warn!("writing the GitHub token failed: {e:#}");
+        if let (Some(at), Some(paths)) =
+            (expiry(github.as_ref(), github_read.as_ref()), &self.paths)
+        {
+            self.github_expires_at = at;
+            if let Err(e) =
+                workspace::write_github_tokens(paths, github.as_ref(), github_read.as_ref())
+            {
+                tracing::warn!("writing the GitHub tokens failed: {e:#}");
             }
         }
         if let Some(c) = &claude {
@@ -1002,7 +1006,7 @@ impl Supervisor {
                 self.on_delivery(d).await;
             }
         }
-        // GitHub tokens last an hour; refresh ten minutes early.
+        // GitHub tokens last an hour; refresh both ten minutes early.
         if self.github_expires_at - now < 10 * 60 * 1000 && self.host.is_some() {
             self.github_expires_at = now + 5 * 60 * 1000; // retry in five minutes if this fails
             let rid = self.request_id();
@@ -1054,18 +1058,13 @@ impl Supervisor {
             c.kill().await;
         }
         if let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone())
-            && let Ok(mut st) = workspace::state(&paths, &config.spec).await
+            && let Ok(synced) =
+                workspace::sync(&paths, &config.spec, config.push_on_commit, false).await
         {
-            if config.spec.project.repo.is_some()
-                && config.push_on_commit
-                && st.ahead > 0
-                && !st.pushed
-                && workspace::push(&paths, &st).await.is_ok()
-                && let Ok(fresh) = workspace::state(&paths, &config.spec).await
-            {
-                st = fresh;
+            for (level, text) in synced.logs {
+                self.log(LogSource::Agent, level, &text);
             }
-            self.emit(EventBody::Git(st));
+            self.emit(EventBody::Git(synced.state));
         }
         let (status, reason) = match self.stopping {
             Some((r, _)) => (SessionStatus::Stopped, Some(stop_text(r).to_owned())),
@@ -1080,6 +1079,11 @@ impl Supervisor {
         // Give the host a moment to read everything.
         self.exit_after = Some(Instant::now() + Duration::from_secs(3));
     }
+}
+
+/// When the first of a session's GitHub tokens expires.
+fn expiry(write: Option<&GithubCredential>, read: Option<&GithubCredential>) -> Option<i64> {
+    write.iter().chain(read.iter()).map(|c| c.expires_at).min()
 }
 
 fn stop_text(r: StopReason) -> &'static str {

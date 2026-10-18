@@ -972,14 +972,16 @@ impl SessionObject {
         changed
     }
 
+    /// Counts changes in every repository; the session's pull request is the
+    /// primary repository's, or another repository's when it has none.
     fn apply_git(s: &mut Session, g: &GitState) {
         if let Some(b) = &g.branch {
             s.branch = Some(b.clone());
         }
-        s.stats.files_changed = g.files.len() as u32;
-        s.stats.additions = g.files.iter().filter_map(|f| f.additions).sum();
-        s.stats.deletions = g.files.iter().filter_map(|f| f.deletions).sum();
-        if let Some(pr) = &g.pull_request {
+        s.stats.files_changed = g.all_files().count() as u32;
+        s.stats.additions = g.all_files().filter_map(|f| f.additions).sum();
+        s.stats.deletions = g.all_files().filter_map(|f| f.deletions).sum();
+        if let Some(pr) = g.pull_requests().next() {
             s.pull_request = Some(pr.clone());
         }
     }

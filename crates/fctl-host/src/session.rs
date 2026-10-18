@@ -61,6 +61,7 @@ pub enum SessionCmd {
         request_id: Option<String>,
         claude: Option<ClaudeCredential>,
         github: Option<GithubCredential>,
+        github_read: Option<GithubCredential>,
         error: Option<String>,
     },
 }
@@ -411,9 +412,9 @@ async fn run(
                     }
                 }
                 Some(SessionCmd::Superseded) => superseded = true,
-                Some(SessionCmd::Credentials { request_id, claude, github, error }) => {
+                Some(SessionCmd::Credentials { request_id, claude, github, github_read, error }) => {
                     if let Some(l) = &link {
-                        l.send(HostToAgent::Credentials { request_id, claude, github, error });
+                        l.send(HostToAgent::Credentials { request_id, claude, github, github_read, error });
                     }
                 }
                 None => break (SessionStatus::Stopped, Some("host shutting down".into())),

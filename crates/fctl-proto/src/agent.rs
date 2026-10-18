@@ -25,7 +25,8 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct AgentConfig {
     pub spec: SessionSpec,
-    /// Where the repository is cloned (the agent's working directory).
+    /// Where the primary repository is cloned (the agent's working
+    /// directory). Other repositories go under `~/repos/<owner>/<name>`.
     pub workdir: String,
     /// HOME for Claude (its config and transcripts live here).
     pub home: Option<String>,
@@ -35,7 +36,7 @@ pub struct AgentConfig {
     pub claude_args: Vec<String>,
     /// Extra environment for Claude (host configuration, not secrets).
     pub env: BTreeMap<String, String>,
-    /// Push the branch after each turn that produced commits.
+    /// Push the session branch after each turn that produced commits.
     pub push_on_commit: bool,
     /// Number events after this one: the control plane already has the
     /// session's earlier events, from a sandbox that no longer exists.
@@ -73,6 +74,10 @@ pub enum HostToAgent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         github: Option<GithubCredential>,
+        /// See [`crate::runner::SessionCredentials::github_read`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        github_read: Option<GithubCredential>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<String>,

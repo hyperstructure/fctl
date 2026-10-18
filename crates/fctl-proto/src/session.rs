@@ -271,6 +271,69 @@ impl RepoRef {
     pub fn clone_url(&self) -> String {
         format!("https://github.com/{}/{}.git", self.owner, self.name)
     }
+
+    /// Whether both name the same repository (GitHub ignores case).
+    pub fn same(&self, other: &RepoRef) -> bool {
+        self.owner.eq_ignore_ascii_case(&other.owner) && self.name.eq_ignore_ascii_case(&other.name)
+    }
+}
+
+/// What agents may do in a repository (`Read` < `Write`).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum RepoAccess {
+    /// Clone and fetch it, and read its issues, pull requests and CI results.
+    #[default]
+    Read,
+    /// Also push branches, open pull requests and comment on issues.
+    Write,
+}
+
+impl RepoAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            _ => None,
+        }
+    }
+}
+
+/// A repository a project's agents may use besides its primary one, or an
+/// owner-wide grant: every repository of an account the GitHub App can reach.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct RepoGrant {
+    pub owner: String,
+    /// Absent for an owner-wide grant.
+    pub name: Option<String>,
+    pub access: RepoAccess,
+}
+
+impl RepoGrant {
+    /// `owner/name`, or `owner/*` for an owner-wide grant.
+    pub fn label(&self) -> String {
+        format!("{}/{}", self.owner, self.name.as_deref().unwrap_or("*"))
+    }
+
+    /// The repository, unless this is an owner-wide grant.
+    pub fn repo(&self) -> Option<RepoRef> {
+        self.name.as_ref().map(|name| RepoRef {
+            owner: self.owner.clone(),
+            name: name.clone(),
+        })
+    }
 }
 
 /// Settings agents use for a project. Every field has a sensible default, so
