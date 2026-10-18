@@ -314,10 +314,11 @@ export function Select<T extends string>({
       >
         {current?.icon && <span className="shrink-0 text-ink-3 [&_svg]:size-3.5">{current.icon}</span>}
         <Value
-          labels={options.map((o) => o.label)}
+          text={current?.label ?? (value || placeholder || "")}
           index={selected}
-          fallback={value || placeholder || ""}
-          placeholder={placeholder}
+          // An empty value is a placeholder, as an option with value="" is in HTML.
+          muted={!value}
+          sizes={placeholder ? [...options.map((o) => o.label), placeholder] : options.map((o) => o.label)}
         />
         <Chevron />
       </button>
@@ -404,29 +405,28 @@ export function Select<T extends string>({
   );
 }
 
-/** The trigger's text: as wide as the longest option, rolling up or down to a new value. */
+/** The trigger's text: as wide as the longest of `sizes`, rolling up or down to a new value. */
 function Value({
-  labels,
+  text,
   index,
-  fallback,
-  placeholder,
+  muted,
+  sizes,
 }: {
-  labels: string[];
+  text: string;
   index: number;
-  fallback: string;
-  placeholder?: string;
+  muted: boolean;
+  sizes: string[];
 }) {
-  const text = labels[index] ?? fallback;
-  const [shown, setShown] = useState({ text, index });
-  const [roll, setRoll] = useState<{ from: string; dir: 1 | -1 } | null>(null);
+  const [shown, setShown] = useState({ text, index, muted });
+  const [roll, setRoll] = useState<{ from: string; muted: boolean; dir: 1 | -1 } | null>(null);
   if (shown.text !== text) {
-    setShown({ text, index });
-    setRoll({ from: shown.text, dir: index < shown.index ? -1 : 1 });
+    setShown({ text, index, muted });
+    setRoll({ from: shown.text, muted: shown.muted, dir: index < shown.index ? -1 : 1 });
   }
   const dir = roll ? ({ "--roll": roll.dir } as CSSProperties) : undefined;
   return (
     <span className="grid min-w-0 flex-1 grid-cols-1 overflow-hidden">
-      {(placeholder ? [...labels, placeholder] : labels).map((l, i) => (
+      {sizes.map((l, i) => (
         <span key={i} aria-hidden="true" className="invisible col-start-1 row-start-1 truncate">
           {l}
         </span>
@@ -436,7 +436,7 @@ function Value({
           key={`${roll.from}-out`}
           aria-hidden="true"
           style={dir}
-          className="col-start-1 row-start-1 animate-roll-out truncate"
+          className={cn("col-start-1 row-start-1 animate-roll-out truncate", roll.muted && "text-ink-4")}
         >
           {roll.from}
         </span>
@@ -444,11 +444,7 @@ function Value({
       <span
         key={text}
         style={dir}
-        className={cn(
-          "col-start-1 row-start-1 truncate",
-          roll && "animate-roll-in",
-          index < 0 && placeholder && text === placeholder && "text-ink-4",
-        )}
+        className={cn("col-start-1 row-start-1 truncate", roll && "animate-roll-in", muted && "text-ink-4")}
         onAnimationEnd={() => setRoll(null)}
       >
         {text}

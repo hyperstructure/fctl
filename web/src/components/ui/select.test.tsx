@@ -209,6 +209,15 @@ describe("Select", () => {
     expect(s.onChange).not.toHaveBeenCalled();
   });
 
+  it("shows the empty value muted, as a placeholder", () => {
+    const container = render(<Select aria-label="Effort" value="" options={EFFORT} onChange={() => {}} />);
+    const label = container.querySelector(
+      '[role="combobox"] span:not([aria-hidden]) > span:not([aria-hidden])',
+    );
+    expect(label?.textContent).toBe("Claude's default");
+    expect(label?.classList.contains("text-ink-4")).toBe(true);
+  });
+
   it("shows a value none of its options has", () => {
     const container = render(
       <Select aria-label="Effort" value="ultra" options={EFFORT} onChange={() => {}} />,
