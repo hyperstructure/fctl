@@ -713,17 +713,29 @@ function SignInSettings({
 }) {
   const { data: me } = useMe();
   const users = useQuery({ queryKey: keys.users, queryFn: api.users });
-  const [confirm, setConfirm] = useState(false);
+  // A change that would stop people until they set two-factor up asks first, naming them.
+  const [confirm, setConfirm] = useState<{ body: G.UpdateInstanceSettingsRequest; missing: G.User[] } | null>(
+    null,
+  );
+  const current: G.InstanceSettings = s ?? {
+    publish_screenshots: false,
+    require_two_factor: false,
+    two_factor_google: false,
+  };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter((u) => u.two_factor);
+  const missingWith = (next: G.InstanceSettings) => active.filter((u) => lacksTwoFactor(u, next));
+  const missingNow = missingWith(current);
   // Who requiring it would stop until they set it up.
-  const would = {
-    ...(s ?? { publish_screenshots: false, two_factor_google: false }),
-    require_two_factor: true,
-  };
-  const missing = active.filter((u) => lacksTwoFactor(u, would));
+  const missing = missingWith({ ...current, require_two_factor: true });
   const share = active.length ? using.length / active.length : 0;
-  const meMissing = missing.some((u) => u.id === me?.user.id);
+  const change = (body: G.UpdateInstanceSettingsRequest) => {
+    const next = { ...current, ...body } as G.InstanceSettings;
+    const newly = missingWith(next).filter((u) => !missingNow.some((m) => m.id === u.id));
+    if (newly.length > 0) setConfirm({ body, missing: newly });
+    else save(body);
+  };
+  const google = confirm?.body.two_factor_google !== undefined;
   return (
     <Section
       title="Sign-in"
@@ -741,9 +753,9 @@ function SignInSettings({
             </span>
           </span>
           <Switch
-            checked={s?.require_two_factor ?? false}
+            checked={current.require_two_factor}
             disabled={!s || saving}
-            onChange={(v) => (v && missing.length > 0 ? setConfirm(true) : save({ require_two_factor: v }))}
+            onChange={(v) => change({ require_two_factor: v })}
             label="Require two-factor sign-in"
           />
         </div>
@@ -768,7 +780,7 @@ function SignInSettings({
               <div className="flex items-center gap-2.5 text-[12px] text-ink-4">
                 <AvatarStack users={missing} max={6} size={20} />
                 <span className="min-w-0">
-                  {s?.require_two_factor
+                  {current.require_two_factor
                     ? `${missing.length === 1 ? "1 person sets" : `${missing.length} people set`} it up before anything else`
                     : `${missing.length === 1 ? "1 person" : `${missing.length} people`} would set it up first if you required it`}
                 </span>
@@ -785,54 +797,64 @@ function SignInSettings({
             </span>
           </span>
           <Switch
-            checked={s?.two_factor_google ?? false}
+            checked={current.two_factor_google}
             disabled={!s || saving}
-            onChange={(v) => save({ two_factor_google: v })}
+            onChange={(v) => change({ two_factor_google: v })}
             label="Ask for codes on Google sign-in too"
           />
         </div>
       </div>
       <Dialog
-        open={confirm}
-        onClose={() => setConfirm(false)}
-        title="Require two-factor sign-in?"
-        description="Everyone who signs in with a password will need a code from an authenticator app."
+        open={!!confirm}
+        onClose={() => setConfirm(null)}
+        title={google ? "Ask for codes on Google sign-in too?" : "Require two-factor sign-in?"}
+        description={
+          google
+            ? "Google sign-ins will take a code too, and people who sign in only with Google will need two-factor."
+            : "Everyone who signs in with a password will need a code from an authenticator app."
+        }
       >
-        <div className="flex flex-col gap-5">
-          <div className="flex flex-col gap-2.5">
-            <p className="text-[13.5px] leading-relaxed text-ink-2">
-              {missing.length === 1 ? `${missing[0]?.name} hasn't` : `These ${missing.length} people haven't`}{" "}
-              set it up yet. Until they do, fctl asks them to before anything else, and their CLI and access
-              tokens stop working.
-            </p>
-            <ul className="flex max-h-48 flex-col gap-1.5 overflow-y-auto">
-              {missing.map((u) => (
-                <li key={u.id} className="flex items-center gap-2.5 text-[13px] text-ink">
-                  <Avatar user={u} size={22} />
-                  <span className="truncate">{u.name}</span>
-                  <span className="truncate text-[12px] text-ink-4">{u.email}</span>
-                </li>
-              ))}
-            </ul>
-            {meMissing && (
-              <Banner tone="info">You haven't set it up either: you'll set yours up right after this.</Banner>
-            )}
+        {confirm && (
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-2.5">
+              <p className="text-[13.5px] leading-relaxed text-ink-2">
+                {confirm.missing.length === 1
+                  ? `${confirm.missing[0]?.name} hasn't`
+                  : `These ${confirm.missing.length} people haven't`}{" "}
+                set it up yet. Until they do, fctl asks them to before anything else, and their CLI and access
+                tokens stop working.
+              </p>
+              <ul className="flex max-h-48 flex-col gap-1.5 overflow-y-auto">
+                {confirm.missing.map((u) => (
+                  <li key={u.id} className="flex items-center gap-2.5 text-[13px] text-ink">
+                    <Avatar user={u} size={22} />
+                    <span className="truncate">{u.name}</span>
+                    <span className="truncate text-[12px] text-ink-4">{u.email}</span>
+                  </li>
+                ))}
+              </ul>
+              {confirm.missing.some((u) => u.id === me?.user.id) && (
+                <Banner tone="info">
+                  You haven't set it up either: you'll set yours up right after this.
+                </Banner>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfirm(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  save(confirm.body);
+                  setConfirm(null);
+                }}
+              >
+                {google ? "Ask for codes" : "Require it"}
+              </Button>
+            </div>
           </div>
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setConfirm(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              onClick={() => {
-                setConfirm(false);
-                save({ require_two_factor: true });
-              }}
-            >
-              Require it
-            </Button>
-          </div>
-        </div>
+        )}
       </Dialog>
     </Section>
   );
