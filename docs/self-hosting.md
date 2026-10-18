@@ -199,6 +199,12 @@ copy in your own registry ([Sandbox images](sandbox-images.md)).
   Settings → Notifications, and keeps it in D1, sealed with the master key.
   Browsers allow notifications only from `https://` origins (and
   `http://localhost`).
+- **Published screenshots** stay off until an admin allows them (Admin →
+  Settings, `fctl admin set --publish-screenshots on`) and a project turns
+  them on. Its agents then publish screenshots for pull requests at links
+  on your instance's domain, which anyone who has one can open until they
+  expire (30 days unless the project chooses 24 hours to 60 days). If your
+  instance has a privacy policy, say so there.
 - **Costs.** The control plane is request- and storage-priced on Cloudflare;
   the work happens on your hardware and your Claude subscriptions. fctl never
   makes Anthropic API calls.
