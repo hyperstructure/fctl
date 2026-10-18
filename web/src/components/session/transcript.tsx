@@ -20,6 +20,7 @@ import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { clock, duration, until } from "@/lib/format";
 import { repoChanges } from "@/lib/git";
+import { claudeAppLink } from "@/lib/remote-control";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
 import { ToolRow } from "./tool";
@@ -306,12 +307,7 @@ const ItemView = memo(function ItemView({
       return item.rc.session_url ? (
         <Milestone icon={<Radio />} tone="ok">
           Followable in the Claude apps ·{" "}
-          <a
-            href={item.rc.session_url}
-            target="_blank"
-            rel="noreferrer"
-            className="underline underline-offset-2"
-          >
+          <a {...claudeAppLink(item.rc.session_url)} className="underline underline-offset-2">
             open
           </a>
         </Milestone>

@@ -114,24 +114,42 @@ export function MenuItem({
   onClick,
   danger,
   icon,
+  link,
+  className,
 }: {
   children: ReactNode;
   onClick: () => void;
   danger?: boolean;
   icon?: ReactNode;
+  /** Makes the item a link; `onClick` still runs (to close the menu). */
+  link?: { href: string; target?: string; rel?: string };
+  className?: string;
 }) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      className={cn(
-        "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors",
-        danger ? "text-danger hover:bg-danger-soft" : "text-ink-2 hover:bg-line hover:text-ink",
-      )}
-    >
+  const classes = cn(
+    "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors",
+    danger ? "text-danger hover:bg-danger-soft" : "text-ink-2 hover:bg-line hover:text-ink",
+    className,
+  );
+  const content = (
+    <>
       {icon && <span className="text-ink-4 [&_svg]:size-3.5">{icon}</span>}
       {children}
+    </>
+  );
+  return link ? (
+    <a
+      role="menuitem"
+      href={link.href}
+      target={link.target}
+      rel={link.rel}
+      onClick={onClick}
+      className={classes}
+    >
+      {content}
+    </a>
+  ) : (
+    <button type="button" role="menuitem" onClick={onClick} className={classes}>
+      {content}
     </button>
   );
 }

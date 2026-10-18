@@ -114,7 +114,7 @@ enum Command {
     Open {
         /// A session or project (default: the instance).
         target: Option<String>,
-        /// Open the session's Remote Control link (Claude apps) instead.
+        /// Open the session in the Claude app instead, or on claude.ai without one.
         #[arg(long)]
         claude: bool,
     },
