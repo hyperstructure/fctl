@@ -243,6 +243,26 @@ message resumes them on other runners. When the host isn't connected,
 FleetDO stops its sessions at once and the CLI stops the sandboxes on the
 machine with the driver.
 
+### A runner that goes away
+
+A host that stops answering (a laptop gone to sleep, a host that hangs or
+crashed, a network that dropped) leaves its agents at work in their
+sandboxes, journaling what they do, and the session page says since when
+the runner hasn't been heard from ([Viewers](#viewers)). Once its control
+connection has been closed for ten minutes, FleetDO marks its sessions
+stopped, so that a message resumes them on another runner, and remembers
+which ones it stopped this way (`stopped_away`, in its storage).
+
+When the runner comes back and its hello reports one of them still
+running, and no other run of it has started since, the session carries
+on there. FleetDO assigns it to the runner again and gives it back its
+runner, so that the host's uplink gets in and replays the agent's journal,
+and the transcript says the runner is back. That includes a session
+resumed meanwhile that no runner took: the agent that still runs gets the
+messages. A session that runs on another runner by then, or that someone
+stopped, archived or deleted, stops instead, with a reason that says which
+(`fctl_domain::reconcile`).
+
 ### Repositories
 
 A project has a primary repository and may list more of the same GitHub
