@@ -14,6 +14,7 @@ trusts.
 | Project secrets | encrypted in D1 | that project's sessions, as environment variables |
 | Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
 | GitHub App key | a Worker secret | the control plane, to mint short-lived tokens |
+| Web Push (VAPID) key | encrypted in D1 | the control plane, to sign notifications |
 | Master key | a Worker secret | the control plane |
 
 Encrypted values are bound to their row (the AES-GCM associated data names the
@@ -34,6 +35,14 @@ owner and purpose), so a value copied between rows does not decrypt.
 - The web app ships a strict Content-Security-Policy (`script-src 'self'`, no
   inline scripts), `frame-ancestors 'none'`, HSTS, and renders agent output
   as text (Markdown is parsed into elements, never injected as HTML).
+- Notifications go through each browser's push service (Google's for
+  Chrome, Mozilla's for Firefox, Apple's for Safari, Microsoft's for Edge),
+  encrypted for that browser alone (RFC 8291): the service sees when one
+  goes and how big it is, not what it says. They name the session and
+  quote the start of the agent's last message, and show like any
+  notification, on a lock screen too; people choose what notifies them in
+  Settings. The control plane only sends to `https://` addresses of named
+  hosts, and to at most 20 browsers per person.
 - File uploads are `application/octet-stream` bodies, which browsers cannot
   send cross-site without asking first, and pass the same origin check.
   Attached files are served with `nosniff` and a sandboxing
@@ -122,12 +131,15 @@ it runs, and keep nothing secret on disk but their runner token
   message sent are deleted after a day.
 - Expired browser sessions and tokens, password resets, device codes and
   invitations are deleted within the hour, and audit log entries after a
-  year.
+  year. A browser's notification subscription goes with the sign-in that
+  made it (signing out, revoking or expiry), or when its push service says
+  it is gone. A person's notifications wait in their Durable Object for at
+  most a minute and are deleted once sent.
 - People delete their own account in Settings (Danger zone) or with
   `fctl account delete`, and admins can delete anyone's but an owner's. Both
   delete the account's sign-in methods, tokens, Claude connections,
-  memberships and shares, and the projects only it is a member of, with their
-  sessions. Sessions and projects it created that others still use stay,
+  memberships, shares, follows and notification settings and browsers, and
+  the projects only it is a member of, with their sessions. Sessions and projects it created that others still use stay,
   credited to "Deleted user": the account remains only as a disabled
   placeholder, without its name, email or picture. An instance's last owner
   cannot delete their account.

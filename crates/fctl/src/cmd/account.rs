@@ -10,8 +10,9 @@ use std::path::PathBuf;
 #[derive(Subcommand)]
 pub enum AccountCmd {
     /// Download your personal data as JSON: your account, sign-in methods,
-    /// devices and tokens, Claude connections (without secrets), projects, the
-    /// sessions you started with their transcripts, and your activity.
+    /// devices and tokens, Claude connections (without secrets), notification
+    /// settings and browsers, projects, the sessions you started with their
+    /// transcripts, the sessions you follow, and your activity.
     Export {
         /// Where to write it (default: fctl-export-<date>.json here; `-` prints it).
         #[arg(short, long)]

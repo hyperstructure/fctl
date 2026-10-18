@@ -50,6 +50,12 @@ claude.ai connector, `claude.ai Fake Docs`, unless
 `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, so sessions in a project with
 claude.ai connectors turned off show none (`fctl logs --json`).
 
+Notifications work locally too: `http://localhost:5173` is a secure
+context, so turn them on in Settings → Notifications, follow a session and
+give it a task. The dev control plane sends them through your browser's real
+push service, so it needs the internet. A finished turn notifies you unless
+the session's tab is visible; `limit` pauses a session.
+
 `--no-host` skips the host; `--no-vite` serves the built web app from
 wrangler instead. Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/`
 to start over.

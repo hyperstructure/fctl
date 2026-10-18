@@ -15,3 +15,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0007](0007-agents-name-their-sessions-through-fctl-agent.md) | Agents name their sessions through fctl-agent |
 | [0008](0008-attachments-in-a-durable-object-per-project.md) | Attachments live in a Durable Object per project |
 | [0009](0009-projects-span-an-accounts-repositories.md) | Projects span the repositories of one GitHub account |
+| [0010](0010-notifications-are-web-push-from-a-durable-object-per-person.md) | Notifications are Web Push, sent from a Durable Object per person |
