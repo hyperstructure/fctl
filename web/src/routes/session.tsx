@@ -8,6 +8,7 @@ import {
   ExternalLink,
   GitBranch,
   GitPullRequest,
+  Globe,
   PanelRight,
   Play,
   Share2,
@@ -42,6 +43,7 @@ import { ago, duration, num, until } from "@/lib/format";
 import { hasChanges, type RepoChanges, repoChanges } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
 import { keys, useMe, useProject } from "@/lib/queries";
+import { claudeAppLink } from "@/lib/remote-control";
 
 export function SessionPage() {
   const { id } = useParams({ from: "/app/s/$id" });
@@ -165,9 +167,7 @@ export function SessionPage() {
               {s.viewers.length > 1 && <AvatarStack users={s.viewers.map((v) => v.user)} />}
               {rc?.session_url && (
                 <a
-                  href={rc.session_url}
-                  target="_blank"
-                  rel="noreferrer"
+                  {...claudeAppLink(rc.session_url)}
                   className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 sm:inline-flex"
                 >
                   Open in Claude <ArrowUpRight className="size-3.5" />
@@ -194,6 +194,26 @@ export function SessionPage() {
               >
                 {(close) => (
                   <>
+                    {rc?.session_url && (
+                      <>
+                        {/* The header has no room for the button on phones. */}
+                        <MenuItem
+                          icon={<ArrowUpRight />}
+                          link={claudeAppLink(rc.session_url)}
+                          onClick={close}
+                          className="sm:hidden"
+                        >
+                          Open in Claude
+                        </MenuItem>
+                        <MenuItem
+                          icon={<Globe />}
+                          link={{ href: rc.session_url, target: "_blank", rel: "noreferrer" }}
+                          onClick={close}
+                        >
+                          Open on claude.ai
+                        </MenuItem>
+                      </>
+                    )}
                     {isOwner && status && !["stopped", "failed"].includes(status) && (
                       <MenuItem
                         icon={<Square />}
@@ -517,14 +537,25 @@ function Rail({
       </RailSection>
       <RailSection title="Follow along">
         {session.remote_control?.session_url ? (
-          <a
-            href={session.remote_control.session_url}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center justify-between rounded-md border border-accent/25 bg-accent-soft px-3 py-2 text-[12.5px] text-accent"
-          >
-            Open in the Claude apps <ArrowUpRight className="size-3.5" />
-          </a>
+          <>
+            <a
+              {...claudeAppLink(session.remote_control.session_url)}
+              className="flex items-center justify-between rounded-md border border-accent/25 bg-accent-soft px-3 py-2 text-[12.5px] text-accent"
+            >
+              Open in the Claude app <ArrowUpRight className="size-3.5" />
+            </a>
+            <div className="mt-3 flex items-center justify-between">
+              <span className="text-[12.5px] text-ink-4">Browser</span>
+              <a
+                href={session.remote_control.session_url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-raised hover:text-ink"
+              >
+                claude.ai <ArrowUpRight className="size-3.5" />
+              </a>
+            </div>
+          </>
         ) : (
           <p className="text-[12.5px] leading-relaxed text-ink-4">
             {session.remote_control?.unavailable_reason ??

@@ -22,6 +22,19 @@ pub fn open_browser(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Opens a `claude://` link in the Claude desktop app. False when no app
+/// takes such links: macOS `open` fails then, but `xdg-open` may hand the
+/// link to a browser, so on Linux it asks `xdg-mime` for a handler first.
+pub fn open_claude_app(link: &str) -> bool {
+    let handled = cfg!(target_os = "macos")
+        || std::process::Command::new("xdg-mime")
+            .args(["query", "default", "x-scheme-handler/claude"])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty());
+    handled && open_browser(link)
+}
+
 pub async fn login(url: Option<&str>, no_browser: bool, json: bool) -> Result<()> {
     let server = match url {
         Some(u) => config::normalize_server(u),

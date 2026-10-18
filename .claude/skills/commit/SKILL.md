@@ -54,7 +54,8 @@ CI checks every pull request title, and again when you edit it.
 
 Plain prose for someone reading `git log` in a year: what was wrong or
 missing, what changed and why this way, and how you verified it (tests,
-`cargo xtask dev`, screenshots of UI in both themes). Link the issue:
+`cargo xtask dev`). A change to how fctl looks shows it with screenshots:
+the `screenshots` skill. Link the issue:
 `Fixes #12` only when the pull request does everything it asks (merging
 closes it), `Refs #12` otherwise (the `issues` skill).
 

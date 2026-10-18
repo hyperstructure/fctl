@@ -297,9 +297,9 @@ function SessionRow({ s }: { s: G.Session }) {
     <Link
       to="/s/$id"
       params={{ id: s.id }}
-      className="group flex items-center gap-3.5 border-b border-line py-3 transition-colors last:border-b-0 hover:bg-raised/30"
+      className="group flex items-center gap-3.5 border-b border-line p-3 transition-colors last:border-b-0 hover:bg-raised/30"
     >
-      <StatusDot status={s.status} className="ml-1" />
+      <StatusDot status={s.status} />
       <div className="min-w-0 flex-1">
         <div className="truncate text-[14.5px] text-ink transition-colors group-hover:text-ink">
           {s.title}
