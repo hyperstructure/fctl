@@ -61,7 +61,7 @@ export const CodeInput = forwardRef<
                     : current
                       ? "border-accent/70 bg-sunken shadow-[0_0_0_3px_var(--c-accent-soft)]"
                       : "border-line-strong bg-sunken/60",
-                state === "busy" && "opacity-70",
+                (state === "busy" || disabled) && state !== "ok" && "opacity-55",
               )}
               style={state === "ok" ? { transitionDelay: `${i * 35}ms` } : undefined}
             >

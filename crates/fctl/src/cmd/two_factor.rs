@@ -58,7 +58,7 @@ pub enum TwoFactorCmd {
     },
     /// Choose whether Google sign-ins ask you for a code too.
     Google {
-        #[arg(value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        #[arg(value_name = "ON|OFF", action = clap::ArgAction::Set, value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         on: bool,
     },
 }
@@ -213,12 +213,12 @@ pub async fn run(api: &Api, cmd: TwoFactorCmd, json: bool) -> Result<()> {
 pub fn summary(t: &TwoFactor) -> String {
     match t.authenticator_since {
         Some(_) => format!(
-            "on: authenticator app, {} recovery code{} left",
+            "on (authenticator app, {} recovery code{} left)",
             t.recovery_codes,
             if t.recovery_codes == 1 { "" } else { "s" }
         ),
         None if t.setup_required => {
-            "required, not set up: run `fctl account two-factor enable`".to_owned()
+            "required and not set up (run `fctl account two-factor enable`)".to_owned()
         }
         None => "off".to_owned(),
     }
@@ -257,7 +257,14 @@ fn print_status(t: &TwoFactor) {
         "don't ask for a code"
     };
     println!("Google sign-ins     {google}");
-    if t.required {
+    if t.setup_required {
+        println!(
+            "{}",
+            style::amber(
+                "This instance requires two-factor sign-in: set it up with `fctl account two-factor enable`."
+            )
+        );
+    } else if t.required {
         println!(
             "{}",
             style::dim("This instance requires two-factor sign-in, so it stays on.")
@@ -290,12 +297,20 @@ fn print_setup(setup: &AuthenticatorSetup) {
     }
 }
 
-/// Prints QR rows with half blocks: each line holds two rows of modules,
-/// dark on a light ground with a quiet zone around, whatever the terminal's
-/// colors.
+/// Prints QR rows dark on a light ground, whatever the terminal's colors.
 fn print_qr(rows: &[String]) {
-    const QUIET: usize = 2;
-    let n = rows.len();
+    for line in qr_lines(rows) {
+        println!("  \x1b[30;107m{line}\x1b[0m");
+    }
+}
+
+/// Modules around the code that stay light, for scanners to find it.
+const QUIET: usize = 2;
+
+/// QR rows as half blocks, two rows of modules to a line, with the quiet
+/// zone around them: `▀` is a dark module over a light one.
+fn qr_lines(rows: &[String]) -> Vec<String> {
+    let size = rows.len() + 2 * QUIET;
     let dark = |y: usize, x: usize| -> bool {
         y >= QUIET
             && x >= QUIET
@@ -304,20 +319,19 @@ fn print_qr(rows: &[String]) {
                 .and_then(|r| r.as_bytes().get(x - QUIET))
                 == Some(&b'1')
     };
-    let size = n + 2 * QUIET;
-    for y in (0..size).step_by(2) {
-        let mut line = String::from("  \x1b[30;107m");
-        for x in 0..size {
-            line.push(match (dark(y, x), y + 1 < size && dark(y + 1, x)) {
-                (true, true) => '█',
-                (true, false) => '▀',
-                (false, true) => '▄',
-                (false, false) => ' ',
-            });
-        }
-        line.push_str("\x1b[0m");
-        println!("{line}");
-    }
+    (0..size)
+        .step_by(2)
+        .map(|y| {
+            (0..size)
+                .map(|x| match (dark(y, x), dark(y + 1, x)) {
+                    (true, true) => '█',
+                    (true, false) => '▀',
+                    (false, true) => '▄',
+                    (false, false) => ' ',
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn print_recovery_codes(codes: &[String]) {
@@ -353,4 +367,45 @@ fn read_stdin_line() -> Result<String> {
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;
     Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn half_blocks_hold_two_rows_of_modules() {
+        let rows = fctl_domain::qr::rows(
+            "otpauth://totp/fctl:ada%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=fctl",
+        )
+        .unwrap_or_default();
+        let lines = qr_lines(&rows);
+        let size = rows.len() + 2 * QUIET;
+        assert_eq!(lines.len(), size.div_ceil(2));
+        // Reading the blocks back gives the modules, quiet zone and all.
+        for (y, line) in lines.iter().enumerate() {
+            let chars: Vec<char> = line.chars().collect();
+            assert_eq!(chars.len(), size);
+            for (x, c) in chars.iter().enumerate() {
+                let (top, bottom) = match c {
+                    '█' => (true, true),
+                    '▀' => (true, false),
+                    '▄' => (false, true),
+                    _ => (false, false),
+                };
+                let module = |row: usize| {
+                    row >= QUIET
+                        && x >= QUIET
+                        && rows
+                            .get(row - QUIET)
+                            .and_then(|r| r.as_bytes().get(x - QUIET))
+                            == Some(&b'1')
+                };
+                assert_eq!(top, module(2 * y), "({x}, {})", 2 * y);
+                assert_eq!(bottom, module(2 * y + 1), "({x}, {})", 2 * y + 1);
+            }
+        }
+        // The quiet zone is light.
+        assert!(lines[0].chars().all(|c| c == ' '));
+    }
 }

@@ -801,9 +801,9 @@ function SignInSettings({
         <div className="flex flex-col gap-5">
           <div className="flex flex-col gap-2.5">
             <p className="text-[13.5px] leading-relaxed text-ink-2">
-              {missing.length === 1 ? "This person hasn't" : `These ${missing.length} people haven't`} set it
-              up yet. Until {missing.length === 1 ? "they do, they" : "they do, they"} can only set it up: in
-              the browser, and with the CLI, where their tokens stop working meanwhile.
+              {missing.length === 1 ? `${missing[0]?.name} hasn't` : `These ${missing.length} people haven't`}{" "}
+              set it up yet. Until they do, fctl asks them to before anything else, and their CLI and access
+              tokens stop working.
             </p>
             <ul className="flex max-h-48 flex-col gap-1.5 overflow-y-auto">
               {missing.map((u) => (

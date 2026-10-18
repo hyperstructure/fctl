@@ -11,6 +11,12 @@ email and password your invite set up, or with Google if your instance has it.
 Access is by allowlist: if you cannot sign up, ask an admin to allow your
 email.
 
+Turn on two-factor sign-in in **Settings → Two-factor sign-in**, so that a
+password alone can't sign anyone in: scan the QR code with an authenticator
+app (1Password, Google Authenticator, the passwords app on your phone) and
+keep the recovery codes it gives you. If your instance requires it, it asks
+you to set it up when you first sign in.
+
 The app installs on your phone and computer and then opens in its own
 window, from the home screen or the Dock: in Safari on an iPhone or iPad,
 choose **Share → Add to Home Screen**; in Safari on a Mac, **File → Add to

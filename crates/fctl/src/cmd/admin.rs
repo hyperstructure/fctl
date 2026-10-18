@@ -331,11 +331,17 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 updated.name,
                 updated.email
             );
+            let required = api
+                .instance_settings()
+                .await
+                .is_ok_and(|s| fctl_domain::two_factor::required(&s, updated.has_password));
             println!(
                 "{}",
-                style::dim(
-                    "Their authenticator app's codes and recovery codes no longer work; they set it up again in Settings."
-                )
+                style::dim(if required {
+                    "Their authenticator app's codes and recovery codes no longer work. The instance requires two-factor sign-in, so they set it up again before anything else."
+                } else {
+                    "Their authenticator app's codes and recovery codes no longer work, and their password alone signs them in until they set it up again."
+                })
             );
         }
         AdminCmd::Drain { runner } => {

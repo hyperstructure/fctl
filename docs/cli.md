@@ -14,6 +14,9 @@ fctl whoami
 fctl logout
 ```
 
+You approve the device in the browser, signed in there, so two-factor
+sign-in happens in the browser too.
+
 For scripts and CI, create a personal access token and pass it as
 `FCTL_TOKEN`:
 
@@ -303,9 +306,17 @@ fctl admin disallow '*@example.com'        # its users lose access
 fctl admin runners                         # with their images; draining ones say who drained them
 fctl admin drain studio-mac                # no new sessions start on it (name or id)
 fctl admin undrain studio-mac
-fctl admin settings                        # what the instance allows
+fctl admin settings                        # what the instance allows and requires
 fctl admin set --publish-screenshots on    # projects may publish screenshots
+fctl admin set --require-two-factor on     # everyone who signs in with a password needs it
+fctl admin set --two-factor-google on      # Google sign-ins ask for codes too
+fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 ```
+
+`fctl admin users` says who has two-factor sign-in. With it required, the
+command that requires it lists who hasn't set it up yet: until they do,
+they can only set it up, in the browser or with `fctl account two-factor
+enable`, and their other requests fail.
 
 ## Your account
 
@@ -316,6 +327,21 @@ fctl account export                        # your data as JSON: fctl-export-<dat
 fctl account export -o - | jq .sessions    # or print it
 fctl account delete                        # shows what goes, asks for your email address
 ```
+
+Two-factor sign-in takes a code from an authenticator app after your
+password, and after Google if you choose:
+
+```sh
+fctl account two-factor                    # what you have, and what the instance requires
+fctl account two-factor enable             # prints a QR code, asks for the app's code, shows recovery codes
+fctl account two-factor recovery-codes     # ten new ones; the old ones stop working
+fctl account two-factor google on          # Google sign-ins ask you for a code too
+fctl account two-factor disable            # asks for a code (not while the instance requires it)
+```
+
+`2fa` is short for `two-factor`. Without a terminal, `enable --json` prints
+the setup (the key, the `otpauth://` link and the QR code's rows), and
+`fctl account two-factor confirm --setup … --code …` finishes it.
 
 With a commit email, the commits in the sessions you start end with a
 `Co-authored-by` trailer that has your name and that address, for everyone

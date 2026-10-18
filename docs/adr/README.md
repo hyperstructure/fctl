@@ -27,3 +27,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0019](0019-hosts-make-room-when-their-disk-runs-low.md) | Hosts make room when their disk runs low |
 | [0020](0020-sessions-carry-on-when-their-runner-comes-back.md) | Sessions carry on when their runner comes back |
 | [0021](0021-rulesets-protect-main-and-release-tags.md) | Rulesets protect main and the release tags |
+| [0022](0022-two-factor-sign-in-with-authenticator-apps.md) | Two-factor sign-in with authenticator apps, which admins can require |

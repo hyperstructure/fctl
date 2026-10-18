@@ -33,7 +33,10 @@ export function ConfirmWithCode<T>({
     mutationFn: submit,
     onSuccess: onDone,
     onError: (e: ApiFailure) => {
-      if (e.code === "rate_limited" && e.retryAfter) setLockedUntil(Date.now() + e.retryAfter * 1000);
+      if (e.code === "rate_limited" && e.retryAfter) {
+        setLockedUntil(Date.now() + e.retryAfter * 1000);
+        setCode("");
+      }
       if (e.field === "code") {
         setErrors((n) => n + 1);
         setCode("");

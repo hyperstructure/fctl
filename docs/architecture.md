@@ -80,7 +80,9 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
 
 - Users sign in with email and password (argon2id, OWASP parameters) or with a
   linked Google account (OIDC, linked from Settings or created on first
-  Google sign-in when the email is allowed).
+  Google sign-in when the email is allowed). With
+  [two-factor sign-in](#two-factor-sign-in), a code from an authenticator
+  app follows the password.
 - **Access is an allowlist.** Admins add exact emails or `*@domain` patterns.
   Signing up requires a matching entry; removing an exact entry disables that
   user. The first account is created through a one-time setup link
@@ -97,10 +99,60 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   `application/octet-stream`, which browsers cannot send cross-site without
   asking first either. WebSocket upgrades check the origin too.
 
+### Two-factor sign-in
+
+People turn it on in Settings, or with `fctl account two-factor enable`,
+with an authenticator app: TOTP (RFC 6238) with HMAC-SHA1, six digits and
+30-second steps, the parameters every app takes
+(`crates/fctl-domain/src/totp.rs`). The CLI signs in through the browser
+(the device flow), so two-factor happens there
+([ADR 0022](adr/0022-two-factor-sign-in-with-authenticator-apps.md)).
+
+1. **Setting it up.** The control plane makes a 160-bit secret and returns
+   it as a QR code, an `otpauth://` link (which phones open in their
+   authenticator app) and a key to type in, together with the secret sealed
+   for that person (AES-GCM, bound to `totp-setup:<user>`, for 15 minutes).
+   Nothing is stored until a code from the app confirms it. Then D1 keeps
+   the secret sealed again (`authenticator_apps`, bound to `totp:<user>`),
+   and the first app comes with ten recovery codes, of which D1 keeps the
+   SHA-256. Setting up an app takes the password when the caller signed in
+   more than 15 minutes ago; turning two-factor off and getting new
+   recovery codes take a current code.
+2. **Signing in.** A sign-in with a password then starts no web session. It
+   leaves a challenge (`sign_in_challenges`, for ten minutes) that the
+   browser holds in the `__Host-fctl-2fa` cookie, and the page asks for a
+   code: `POST /api/v1/auth/two-factor/verify` takes one from the app, for
+   the time steps around now, or a recovery code, and signs in. Each works
+   once: codes of a time step up to the last one used are refused
+   (`last_step`). A Google sign-in asks for a code when the person chose
+   that, or the instance's admins did for everyone, and lands on
+   `/two-factor`; otherwise Google's own sign-in is enough. A password reset
+   asks for a code too, and its new password takes effect only once the
+   code checks out.
+3. **Wrong codes.** Five in a row make sign-ins wait a minute, and each
+   further one twice as long, up to an hour
+   (`fctl_domain::two_factor::lockout_ms`), besides the rate limits per
+   address and account.
+
+Admins require it of everyone (Admin → Settings → Sign-in, or `fctl admin
+set --require-two-factor on`): of every account that signs in with a
+password and, once Google sign-ins ask for codes too
+(`--two-factor-google`), of every account. An account it is required of
+that hasn't set it up can do nothing else until it has: the control plane
+answers its other requests, from browser sessions and CLI and access tokens
+alike, with `two_factor_setup_required` (`api::two_factor::open_while_required`),
+and the web app shows the page that sets it up instead of the app. Admins
+reset it for someone who lost their phone and recovery codes (`fctl admin
+reset-two-factor`). Turning it on, replacing the app, turning it off, an
+admin's reset and a sign-in with a recovery code go in the audit log, and
+email the person when email is set up.
+
 ## Data
 
 **D1** (`crates/fctl-control/migrations`) holds relational state: users,
-identities, allowlist, auth tokens, device codes, projects, their members and
+identities, two-factor sign-in (sealed authenticator secrets, hashed
+recovery codes, sign-ins waiting for a code), allowlist, auth tokens,
+device codes, projects, their members and
 repositories, sessions (summary rows), shares, who follows which session,
 notification settings and browsers (push subscriptions), runners, encrypted
 credentials and project secrets, the latest plan usage of each Claude
@@ -129,7 +181,8 @@ and shares cascade) and, in the same batch, queues its sessions in
 `session_purges` and the project in `file_purges`; their Durable Object
 storage, the event logs and the attached files and published screenshots,
 is deleted right after. An hourly cron trigger (`src/housekeeping.rs`) retries what failed and
-deletes expired tokens, password resets, device codes and invites, the
+deletes expired tokens, password resets, sign-ins waiting for a code,
+device codes and invites, the
 links of expired published screenshots, abandoned Claude logins, and audit
 log entries older than a year. Deleting an account
 (`src/api/account.rs`) does the same for the projects only that account is a

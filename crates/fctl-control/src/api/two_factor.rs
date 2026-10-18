@@ -530,7 +530,7 @@ async fn check_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<CodeUse
 fn code_used() -> AppError {
     validation(
         "code",
-        "That code was just used. Wait for the next one and enter it.",
+        "That code was just used. Enter the next one the app shows.",
     )
 }
 

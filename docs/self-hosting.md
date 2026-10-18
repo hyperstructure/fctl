@@ -68,7 +68,10 @@ This sets, once:
   after that, the link does nothing. `--new-setup-token` prints a fresh one.
 
 Sign in, then allow your team under **Admin → Access**: exact emails (which
-also creates invite links) or whole domains (`*@acme.dev`).
+also creates invite links) or whole domains (`*@acme.dev`). To require
+two-factor sign-in of everyone, turn it on under **Admin → Settings →
+Sign-in** (or `fctl admin set --require-two-factor on`); it seals each
+authenticator app's secret with `FCTL_MASTER_KEY`.
 
 ## 4. Connect GitHub (optional, recommended)
 

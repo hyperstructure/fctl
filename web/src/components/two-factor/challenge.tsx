@@ -13,19 +13,20 @@ import { clock, formatRecoveryCode, isRecoveryCode } from "@/lib/two-factor";
 
 /** The page's title and subtitle while a sign-in waits for its code. */
 export function challengeCopy(c: G.TwoFactorChallenge | null | undefined, instance?: string) {
-  const app = instance
-    ? `the code your authenticator app shows for ${instance}`
-    : "the code your authenticator app shows";
+  const it = instance ? `the code it shows for ${instance}` : "the code it shows";
   switch (c?.reason) {
     case "password_reset":
       return {
         title: "Confirm it's you.",
-        subtitle: `Your new password takes effect once you enter ${app}.`,
+        subtitle: `Your new password takes effect once you enter the code your authenticator app shows${instance ? ` for ${instance}` : ""}.`,
       };
     case "google":
-      return { title: "One more step.", subtitle: `Google signed you in. Now enter ${app}.` };
+      return {
+        title: "One more step.",
+        subtitle: `Google signed you in. Now open your authenticator app and enter ${it}.`,
+      };
     default:
-      return { title: "Enter your code.", subtitle: `Open your authenticator app and enter ${app}.` };
+      return { title: "Enter your code.", subtitle: `Open your authenticator app and enter ${it}.` };
   }
 }
 
@@ -68,8 +69,11 @@ export function SecondFactorStep({
     mutationFn: (c: string) => api.verifyTwoFactor({ code: c }),
     onSuccess: (r) => setTimeout(() => onSignedIn(r), 420),
     onError: (e: ApiFailure) => {
-      if (e.code === "rate_limited" && e.retryAfter) setLockedUntil(Date.now() + e.retryAfter * 1000);
-      else if (e.code === "unauthorized") setExpired(true);
+      if (e.code === "rate_limited" && e.retryAfter) {
+        setLockedUntil(Date.now() + e.retryAfter * 1000);
+        setCode("");
+        setRecovery("");
+      } else if (e.code === "unauthorized") setExpired(true);
       else if (e.field === "code") {
         setErrors((n) => n + 1);
         setCode("");
