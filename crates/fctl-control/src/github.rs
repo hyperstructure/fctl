@@ -1,11 +1,14 @@
 //! GitHub App client: app JWTs, installation tokens, repositories.
 //!
-//! Sessions get installation tokens scoped to their one repository, valid for
-//! an hour. Hosts ask for fresh ones through the runner connection.
+//! Sessions get installation tokens for their project's repositories, valid
+//! for an hour: one that can write (the primary repository and the other
+//! writable ones) and one that can only read. Hosts ask for fresh ones
+//! through the runner connection.
 
 use crate::config::GithubConfig;
 use crate::crypto;
 use crate::error::{AppError, AppResult, internal, not_configured, unavailable};
+use fctl_domain::repos::{ReadScope, TokenPlan};
 use fctl_proto::api::GithubRepo;
 use fctl_proto::runner::GithubCredential;
 use fctl_proto::session::RepoRef;
@@ -13,7 +16,7 @@ use fctl_proto::{ApiError, ErrorCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use worker::{Fetch, Headers, Method, Request, RequestInit};
 
 const API: &str = "https://api.github.com";
@@ -61,7 +64,7 @@ struct RepoList {
     repositories: Vec<RepoJson>,
 }
 
-/// The permissions agents get on their repository.
+/// The permissions agents get on repositories they may write to.
 pub fn session_permissions() -> Value {
     json!({
         "contents": "write",
@@ -73,6 +76,29 @@ pub fn session_permissions() -> Value {
         "statuses": "read",
         "metadata": "read"
     })
+}
+
+/// The permissions agents get on read-only repositories.
+pub fn read_permissions() -> Value {
+    json!({
+        "contents": "read",
+        "pull_requests": "read",
+        "issues": "read",
+        "checks": "read",
+        "actions": "read",
+        "statuses": "read",
+        "metadata": "read"
+    })
+}
+
+/// A session's tokens (see [`TokenPlan`]).
+#[derive(Default)]
+pub struct SessionTokens {
+    pub write: Option<GithubCredential>,
+    pub read: Option<GithubCredential>,
+    /// Listed repositories the installation cannot reach, left out of the
+    /// tokens.
+    pub unreachable: Vec<String>,
 }
 
 pub fn from_config(cfg: &crate::config::Config, now: i64) -> AppResult<Github<'_>> {
@@ -183,13 +209,13 @@ impl<'a> Github<'a> {
             .collect())
     }
 
-    /// A token for one installation, optionally narrowed to repositories and permissions.
-    pub async fn installation_token(
+    /// Asks for a token; GitHub's refusal comes back as `Ok(Err((status, message)))`.
+    async fn mint(
         &self,
         installation_id: u64,
         repos: Option<&[&str]>,
         permissions: Option<Value>,
-    ) -> AppResult<GithubCredential> {
+    ) -> AppResult<Result<GithubCredential, (u16, String)>> {
         let mut body = serde_json::Map::new();
         if let Some(r) = repos {
             body.insert("repositories".into(), json!(r));
@@ -208,27 +234,146 @@ impl<'a> Github<'a> {
             let msg = v
                 .get("message")
                 .and_then(Value::as_str)
-                .unwrap_or("unknown error");
+                .unwrap_or("unknown error")
+                .to_owned();
             worker::console_error!("installation token failed: {status} {msg}");
-            return Err(unavailable(&format!("GitHub refused a token: {msg}")));
+            return Ok(Err((status, msg)));
         }
         let t: TokenResponse = serde_json::from_value(v)?;
         let expires_at = parse_rfc3339_ms(&t.expires_at).unwrap_or(self.now + 55 * 60 * 1000);
-        Ok(GithubCredential {
+        Ok(Ok(GithubCredential {
             token: t.token,
             expires_at,
+        }))
+    }
+
+    /// A token for one installation, optionally narrowed to repositories and permissions.
+    pub async fn installation_token(
+        &self,
+        installation_id: u64,
+        repos: Option<&[&str]>,
+        permissions: Option<Value>,
+    ) -> AppResult<GithubCredential> {
+        self.mint(installation_id, repos, permissions)
+            .await?
+            .map_err(|(_, msg)| refused(&msg))
+    }
+
+    /// Tokens for a session's repositories. A listed repository the
+    /// installation cannot reach (it left the installation, was renamed or
+    /// deleted) is left out and reported, so one stale entry does not stop
+    /// every session; the caller decides about the primary repository.
+    pub async fn session_tokens(&self, plan: &TokenPlan) -> AppResult<SessionTokens> {
+        let inst = self.installation_id(&plan.owner).await?;
+        let mut listed = plan.write.clone();
+        if let ReadScope::Repos(names) = &plan.read {
+            listed.extend(names.iter().cloned());
+        }
+        let mut reach = Reach {
+            listed,
+            reachable: None,
+            unreachable: Vec::new(),
+        };
+        let write = self
+            .listed_token(inst, &plan.write, session_permissions(), &mut reach)
+            .await?;
+        let read = match &plan.read {
+            ReadScope::None => None,
+            ReadScope::All => Some(
+                self.installation_token(inst, None, Some(read_permissions()))
+                    .await?,
+            ),
+            ReadScope::Repos(names) => {
+                self.listed_token(inst, names, read_permissions(), &mut reach)
+                    .await?
+            }
+        };
+        Ok(SessionTokens {
+            write,
+            read,
+            unreachable: reach.unreachable,
         })
     }
 
-    /// A token for agents working on `repo`.
-    pub async fn session_token(&self, repo: &RepoRef) -> AppResult<GithubCredential> {
-        let inst = self.installation_id(&repo.owner).await?;
-        self.installation_token(
-            inst,
-            Some(&[repo.name.as_str()]),
-            Some(session_permissions()),
-        )
-        .await
+    /// A token for `names`, without the ones the installation cannot reach.
+    async fn listed_token(
+        &self,
+        inst: u64,
+        names: &[String],
+        permissions: Value,
+        reach: &mut Reach,
+    ) -> AppResult<Option<GithubCredential>> {
+        if names.is_empty() {
+            return Ok(None);
+        }
+        let all: Vec<&str> = names.iter().map(String::as_str).collect();
+        let msg = match self
+            .mint(inst, Some(&all), Some(permissions.clone()))
+            .await?
+        {
+            Ok(token) => return Ok(Some(token)),
+            // "There is at least one repository that does not exist or is
+            // not accessible to the parent installation."
+            Err((422, msg)) => msg,
+            Err((_, msg)) => return Err(refused(&msg)),
+        };
+        let reachable = match &reach.reachable {
+            Some(r) => r,
+            None => reach
+                .reachable
+                .insert(self.reachable(inst, &reach.listed).await?),
+        };
+        let (keep, gone): (Vec<&str>, Vec<&str>) = all
+            .iter()
+            .partition(|n| reachable.contains(&n.to_lowercase()));
+        if gone.is_empty() {
+            return Err(refused(&msg));
+        }
+        reach
+            .unreachable
+            .extend(gone.iter().map(|n| (*n).to_owned()));
+        if keep.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.installation_token(inst, Some(&keep), Some(permissions))
+                .await?,
+        ))
+    }
+
+    /// Which of `names` (on the installation's account) the installation can
+    /// reach, lowercase.
+    async fn reachable(&self, inst: u64, names: &[String]) -> AppResult<HashSet<String>> {
+        let wanted: HashSet<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        let token = self.installation_token(inst, None, None).await?;
+        let mut found = HashSet::new();
+        for page in 1..=30 {
+            let (status, v) = self
+                .call(
+                    Method::Get,
+                    &format!("/installation/repositories?per_page=100&page={page}"),
+                    &format!("token {}", token.token),
+                    None,
+                )
+                .await?;
+            if status != 200 {
+                return Err(unavailable(
+                    "GitHub did not list the installation's repositories",
+                ));
+            }
+            let list: RepoList = serde_json::from_value(v)?;
+            let n = list.repositories.len();
+            found.extend(
+                list.repositories
+                    .into_iter()
+                    .map(|r| r.name.to_lowercase())
+                    .filter(|name| wanted.contains(name)),
+            );
+            if n < 100 || found.len() == wanted.len() {
+                break;
+            }
+        }
+        Ok(found)
     }
 
     async fn installation_call(
@@ -338,6 +483,17 @@ impl<'a> Github<'a> {
         }
         Ok(to_repo(serde_json::from_value(v)?))
     }
+}
+
+/// The listed repositories of a session, and which the installation reaches.
+struct Reach {
+    listed: Vec<String>,
+    reachable: Option<HashSet<String>>,
+    unreachable: Vec<String>,
+}
+
+fn refused(msg: &str) -> AppError {
+    unavailable(&format!("GitHub refused a token: {msg}"))
 }
 
 fn to_repo(r: RepoJson) -> GithubRepo {

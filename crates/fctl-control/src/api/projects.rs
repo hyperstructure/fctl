@@ -264,6 +264,9 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             repo_name = None;
         } else {
             let parsed = RepoRef::parse(r).ok_or_else(|| validation("repo", "Use owner/name"))?;
+            // The project's other repositories share its account.
+            let grants = crate::spec::grants(&ctx.db, &row.id).await?;
+            fctl_domain::repos::check_primary(&parsed, &grants)?;
             if ctx.cfg.github.is_some() {
                 github::from_config(&ctx.cfg, ctx.now)?
                     .get_repo(&parsed)
@@ -293,22 +296,36 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         Some(false) => None,
         None => row.archived_at,
     };
-    q(
+    batch(
         &ctx.db,
-        "UPDATE projects SET name = ?, description = ?, repo_owner = ?, repo_name = ?, default_branch = ?, settings = ?, archived_at = ?, updated_at = ? WHERE id = ?",
-        &[
-            s(&name),
-            os(description.as_deref()),
-            os(owner.as_deref()),
-            os(repo_name.as_deref()),
-            s(&default_branch),
-            s(&serde_json::to_string(&settings)?),
-            crate::db::on(archived_at),
-            n(ctx.now),
-            s(&row.id),
+        vec![
+            q(
+                &ctx.db,
+                "UPDATE projects SET name = ?, description = ?, repo_owner = ?, repo_name = ?, default_branch = ?, settings = ?, archived_at = ?, updated_at = ? WHERE id = ?",
+                &[
+                    s(&name),
+                    os(description.as_deref()),
+                    os(owner.as_deref()),
+                    os(repo_name.as_deref()),
+                    s(&default_branch),
+                    s(&serde_json::to_string(&settings)?),
+                    crate::db::on(archived_at),
+                    n(ctx.now),
+                    s(&row.id),
+                ],
+            )?,
+            // The primary repository is not listed again among the others.
+            q(
+                &ctx.db,
+                "DELETE FROM project_repos WHERE project_id = ? AND owner = ? AND name = ?",
+                &[
+                    s(&row.id),
+                    os(owner.as_deref()),
+                    os(repo_name.as_deref()),
+                ],
+            )?,
         ],
-    )?
-    .run()
+    )
     .await?;
     ctx.audit("project.updated", Some(&row.id), None);
     let p = access::project(ctx, &row.id).await?;

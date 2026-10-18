@@ -96,9 +96,9 @@ and release downloads).
 ## Data
 
 **D1** (`crates/fctl-control/migrations`) holds relational state: users,
-identities, allowlist, auth tokens, device codes, projects, members, sessions
-(summary rows), shares, runners, encrypted credentials and project secrets,
-and the audit log.
+identities, allowlist, auth tokens, device codes, projects, their members and
+repositories, sessions (summary rows), shares, runners, encrypted credentials
+and project secrets, and the audit log.
 
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
@@ -125,7 +125,8 @@ placeholder row only while sessions or projects it created remain.
 ## Sessions
 
 A session is one Claude conversation in one sandbox, on a branch of the
-project's repository.
+project's repository (and the same branch in the project's other
+repositories it changes; see [Repositories](#repositories)).
 
 ```
 queued → provisioning → preparing → running ⇄ idle → stopped
@@ -135,18 +136,48 @@ queued → provisioning → preparing → running ⇄ idle → stopped
 
 1. `POST /api/v1/projects/{id}/sessions` creates the row and asks FleetDO to
    schedule it. Without a free runner it stays `queued`.
-2. FleetDO builds the `SessionSpec` just in time (repository, branch, agent
-   settings, secrets, a fresh GitHub installation token, the starter's Claude
+2. FleetDO builds the `SessionSpec` just in time (repositories, branch, agent
+   settings, secrets, fresh GitHub installation tokens, the starter's Claude
    credential) and sends `start_session` to a runner.
 3. The host creates a sandbox with its driver, injects `fctl-agent`, starts it
    detached, attaches to it, and opens the session uplink to SessionDO.
-4. fctl-agent clones the repository, creates the branch, runs the project's
-   setup script, writes Claude's configuration, and starts
+4. fctl-agent clones the primary repository, creates the branch, runs the
+   project's setup script, writes Claude's configuration, and starts
    `claude -p --input-format stream-json --output-format stream-json`.
 5. Claude's messages flow back as events; messages from people flow down as
    deliveries. A finished turn makes the session `idle`; the sandbox stays up
    until the idle timeout, then stops. Stopped sessions can be resumed
    (`claude --resume`).
+
+### Repositories
+
+A project has a primary repository and may list more of the same GitHub
+account (`project_repos`), each read only or read and write, or grant read
+access to every repository of the account the GitHub App reaches
+(`owner/*`). One installation mints a session's tokens: one that can write
+(the primary repository and the writable ones) and one that can only read.
+A token carries one set of permissions, hence two; they are refreshed
+together (`CredentialKind::Github`). A listed repository the installation no
+longer reaches is left out of them and marked unavailable in the spec, and
+the agent posts a notice; an unreachable primary repository fails the
+session.
+
+- **Credentials.** git asks fctl-agent's credential helper, which reads the
+  repository path git sends (`credential.useHttpPath`): writable
+  repositories get the token that can write, others the read-only one. `gh`
+  holds one token per host, the one that can write.
+- **Clones.** The primary repository is cloned into `~/workspace` before
+  Claude starts. The system prompt lists the others, and Claude clones them
+  when it needs them, into `~/repos/<owner>/<name>`.
+- **After each turn** fctl-agent finds those clones by their `origin`. In a
+  writable one, work on the default branch moves to the session branch
+  (which Claude is told to use), new commits on it are pushed, and its pull
+  request is looked up. The `git` event carries the primary repository in
+  its fields and the others in `repos`.
+
+Older hosts and agents ignore the list and the second token, and work on the
+primary repository alone
+([ADR 0009](adr/0009-projects-span-an-accounts-repositories.md)).
 
 ### Titles
 

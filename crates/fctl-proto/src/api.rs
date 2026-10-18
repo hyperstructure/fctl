@@ -7,7 +7,7 @@
 use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, SandboxLimits};
 use crate::session::{
-    InstanceRole, Project, ProjectRole, ProjectSettings, Session, SessionRole, UserRef,
+    InstanceRole, Project, ProjectRole, ProjectSettings, RepoAccess, Session, SessionRole, UserRef,
 };
 use crate::{
     AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId, LoginJobId, Millis,
@@ -636,6 +636,48 @@ pub struct SecretList {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SetSecretRequest {
     pub value: String,
+}
+
+// ───────────────────────────── project repositories ─────────────────────────────
+
+/// A repository a project's agents may use. All of a project's repositories
+/// belong to one GitHub account, so one installation of the GitHub App mints
+/// their tokens.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ProjectRepo {
+    pub owner: String,
+    /// Absent for an owner-wide grant: every repository of `owner` the
+    /// GitHub App can reach.
+    pub name: Option<String>,
+    pub access: RepoAccess,
+    /// The project's primary repository, cloned into each agent's working
+    /// directory. Agents clone the others when they need them.
+    pub primary: bool,
+    pub added_by: Option<UserRef>,
+    pub added_at: Option<Millis>,
+}
+
+/// `GET /api/v1/projects/{id}/repos`: the primary repository first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectRepoList {
+    pub repos: Vec<ProjectRepo>,
+}
+
+/// `POST /api/v1/projects/{id}/repos`: adds a repository, or changes its
+/// access. `DELETE /api/v1/projects/{id}/repos/{owner}/{name}` (`*` for an
+/// owner-wide grant) removes one.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AddProjectRepoRequest {
+    /// `owner/name`, or `owner/*` for every repository of `owner` the GitHub
+    /// App can reach.
+    pub repo: String,
+    /// `read` when absent. Owner-wide grants are always read-only.
+    pub access: Option<RepoAccess>,
 }
 
 // ───────────────────────────── sessions ─────────────────────────────

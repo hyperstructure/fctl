@@ -39,8 +39,9 @@ import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, duration, num, until } from "@/lib/format";
+import { hasChanges, type RepoChanges, repoChanges } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
-import { keys, useMe } from "@/lib/queries";
+import { keys, useMe, useProject } from "@/lib/queries";
 
 export function SessionPage() {
   const { id } = useParams({ from: "/app/s/$id" });
@@ -332,6 +333,110 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
+/** A repository's changed files, totals and pull request. */
+function Changes({
+  repo,
+  title,
+  limit,
+  showTotals,
+}: {
+  repo: RepoChanges;
+  /** The repository's name, when the session has more than one. */
+  title?: string;
+  limit: number;
+  showTotals: boolean;
+}) {
+  const { files, ahead } = repo;
+  const maxChange = Math.max(1, ...files.map((f) => (f.additions ?? 0) + (f.deletions ?? 0)));
+  return (
+    <div>
+      {title && (
+        <div className="mb-1.5 flex items-baseline justify-between gap-2">
+          <span className="min-w-0 truncate font-mono text-[12px] text-ink-2" title={title}>
+            {title}
+          </span>
+          {repo.readOnly && <span className="shrink-0 text-[11.5px] text-ink-4">read only</span>}
+        </div>
+      )}
+      {files.length === 0 ? (
+        <p className="text-[12.5px] text-ink-4">No changes yet.</p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {files.slice(0, limit).map((f) => {
+            const a = f.additions ?? 0;
+            const d = f.deletions ?? 0;
+            return (
+              <li key={f.path} className="flex items-center gap-2 text-[12px]">
+                <span
+                  className={cn(
+                    "w-3 shrink-0 text-center font-mono text-[11px]",
+                    f.status === "added" || f.status === "untracked"
+                      ? "text-accent"
+                      : f.status === "deleted"
+                        ? "text-danger"
+                        : "text-blue",
+                  )}
+                >
+                  {f.status === "added" || f.status === "untracked"
+                    ? "A"
+                    : f.status === "deleted"
+                      ? "D"
+                      : f.status === "renamed"
+                        ? "R"
+                        : "M"}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-ink-2" title={f.path}>
+                  {f.path}
+                </span>
+                <span className="flex h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-raised">
+                  <span className="bg-accent/80" style={{ width: `${(a / maxChange) * 100}%` }} />
+                  <span className="bg-danger/70" style={{ width: `${(d / maxChange) * 100}%` }} />
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {showTotals && (
+        <div className="mt-3 flex flex-wrap gap-x-3 text-[12px] text-ink-4">
+          <span>
+            <span className="text-accent">+{repo.additions}</span>{" "}
+            <span className="text-danger">−{repo.deletions}</span>
+          </span>
+          {ahead > 0 && (
+            <span>
+              {ahead} {ahead === 1 ? "commit" : "commits"}
+            </span>
+          )}
+          <span>
+            {repo.pushed
+              ? "pushed"
+              : ahead > 0
+                ? repo.readOnly
+                  ? "kept in the sandbox"
+                  : "not pushed yet"
+                : ""}
+          </span>
+        </div>
+      )}
+      {repo.pr && (
+        <a
+          href={repo.pr.url}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-3 flex items-center gap-2 rounded-md border border-line px-3 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
+        >
+          <GitPullRequest className="size-3.5 text-accent" />
+          <span className="min-w-0 flex-1 truncate">
+            {repo.pr.title ?? `Pull request #${repo.pr.number}`}
+          </span>
+          <ArrowUpRight className="size-3.5 text-ink-4" />
+        </a>
+      )}
+    </div>
+  );
+}
+
 function Rail({
   session,
   git,
@@ -346,77 +451,35 @@ function Rail({
   runnerConnected: boolean;
 }) {
   const st = session.stats;
-  const files = git?.files ?? [];
-  const maxChange = Math.max(1, ...files.map((f) => (f.additions ?? 0) + (f.deletions ?? 0)));
+  const project = useProject(session.project_slug).data;
+  const [primary, ...others] = repoChanges(
+    git ?? { ahead: 0, behind: 0, files: [], uncommitted: 0, pushed: false },
+  );
+  // Several repositories: each under its name, those without changes left out.
+  const changed = others.filter(hasChanges);
   return (
     <aside className="sticky top-0 hidden h-dvh w-[300px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
       <RailSection title="Changes">
-        {files.length === 0 ? (
-          <p className="text-[12.5px] text-ink-4">No changes yet.</p>
+        {primary && others.length === 0 ? (
+          <Changes
+            repo={{ ...primary, pr: session.pull_request ?? primary.pr }}
+            limit={60}
+            showTotals={!!git}
+          />
         ) : (
-          <ul className="flex flex-col gap-1">
-            {files.slice(0, 60).map((f) => {
-              const a = f.additions ?? 0;
-              const d = f.deletions ?? 0;
-              return (
-                <li key={f.path} className="flex items-center gap-2 text-[12px]">
-                  <span
-                    className={cn(
-                      "w-3 shrink-0 text-center font-mono text-[11px]",
-                      f.status === "added" || f.status === "untracked"
-                        ? "text-accent"
-                        : f.status === "deleted"
-                          ? "text-danger"
-                          : "text-blue",
-                    )}
-                  >
-                    {f.status === "added" || f.status === "untracked"
-                      ? "A"
-                      : f.status === "deleted"
-                        ? "D"
-                        : f.status === "renamed"
-                          ? "R"
-                          : "M"}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-ink-2" title={f.path}>
-                    {f.path}
-                  </span>
-                  <span className="flex h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-raised">
-                    <span className="bg-accent/80" style={{ width: `${(a / maxChange) * 100}%` }} />
-                    <span className="bg-danger/70" style={{ width: `${(d / maxChange) * 100}%` }} />
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {git && (
-          <div className="mt-3 flex flex-wrap gap-x-3 text-[12px] text-ink-4">
-            <span>
-              <span className="text-accent">+{st.additions}</span>{" "}
-              <span className="text-danger">−{st.deletions}</span>
-            </span>
-            {git.ahead > 0 && (
-              <span>
-                {git.ahead} {git.ahead === 1 ? "commit" : "commits"}
-              </span>
+          <div className="flex flex-col gap-5">
+            {primary && (hasChanges(primary) || changed.length === 0) && (
+              <Changes
+                repo={primary}
+                title={project?.repo ? `${project.repo.owner}/${project.repo.name}` : "~/workspace"}
+                limit={30}
+                showTotals={hasChanges(primary)}
+              />
             )}
-            <span>{git.pushed ? "pushed" : git.ahead > 0 ? "not pushed yet" : ""}</span>
+            {changed.map((r) => (
+              <Changes key={r.name} repo={r} title={r.name} limit={30} showTotals />
+            ))}
           </div>
-        )}
-        {session.pull_request && (
-          <a
-            href={session.pull_request.url}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 flex items-center gap-2 rounded-md border border-line px-3 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
-          >
-            <GitPullRequest className="size-3.5 text-accent" />
-            <span className="min-w-0 flex-1 truncate">
-              {session.pull_request.title ?? `Pull request #${session.pull_request.number}`}
-            </span>
-            <ArrowUpRight className="size-3.5 text-ink-4" />
-          </a>
         )}
       </RailSection>
       <RailSection title="Work">

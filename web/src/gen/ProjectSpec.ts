@@ -2,5 +2,16 @@
 import type { ProjectId } from "./ProjectId";
 import type { ProjectSettings } from "./ProjectSettings";
 import type { RepoRef } from "./RepoRef";
+import type { SessionRepo } from "./SessionRepo";
 
-export type ProjectSpec = { id: ProjectId, slug: string, name: string, repo?: RepoRef, default_branch: string, settings: ProjectSettings, };
+export type ProjectSpec = { id: ProjectId, slug: string, name: string, 
+/**
+ * The primary repository, cloned into the agent's working directory.
+ */
+repo?: RepoRef, default_branch: string, settings: ProjectSettings, 
+/**
+ * Other repositories the agent may use, cloned when it needs them.
+ * Absent when there are none. Older agents ignore it and work in the
+ * primary repository only.
+ */
+repos?: Array<SessionRepo>, };

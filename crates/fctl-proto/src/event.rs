@@ -6,7 +6,7 @@
 //! without a protocol change; streaming deltas (`stream_event`) are ephemeral
 //! and travel separately (see `viewer::ViewerServer::Stream`).
 
-use crate::session::{RemoteControlState, SessionStatus, UserRef};
+use crate::session::{PullRequestRef, RemoteControlState, RepoAccess, SessionStatus, UserRef};
 use crate::{AttachmentId, DeliveryId, Millis};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -187,7 +187,8 @@ pub struct CommitInfo {
     pub subject: String,
 }
 
-/// Repository state of a session's workspace.
+/// Repository state of a session's workspace. The fields describe the
+/// primary repository; `repos` the others the agent cloned.
 #[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -207,7 +208,84 @@ pub struct GitState {
     /// Whether the branch's latest commit is on the remote.
     pub pushed: bool,
     /// The pull request of the branch, when one exists.
-    pub pull_request: Option<crate::session::PullRequestRef>,
+    pub pull_request: Option<PullRequestRef>,
+    /// The project's other repositories the agent cloned. Absent from agents
+    /// that work in the primary repository only.
+    pub repos: Option<Vec<RepoGitState>>,
+}
+
+impl GitState {
+    /// Every changed file, in the primary repository and the others.
+    pub fn all_files(&self) -> impl Iterator<Item = &FileChange> {
+        self.files
+            .iter()
+            .chain(self.repos.iter().flatten().flat_map(|r| r.files.iter()))
+    }
+
+    /// The pull requests of the session branch, the primary repository's first.
+    pub fn pull_requests(&self) -> impl Iterator<Item = &PullRequestRef> {
+        self.pull_request.iter().chain(
+            self.repos
+                .iter()
+                .flatten()
+                .filter_map(|r| r.pull_request.as_ref()),
+        )
+    }
+}
+
+/// Another repository's state (see [`GitState::repos`]): the same facts,
+/// relative to its default branch.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct RepoGitState {
+    pub owner: String,
+    pub name: String,
+    pub access: RepoAccess,
+    /// Where it is cloned in the sandbox.
+    pub path: Option<String>,
+    pub branch: Option<String>,
+    pub base: Option<String>,
+    pub head: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub files: Vec<FileChange>,
+    pub uncommitted: u32,
+    pub last_commit: Option<CommitInfo>,
+    pub pushed: bool,
+    pub pull_request: Option<PullRequestRef>,
+}
+
+impl RepoGitState {
+    pub fn new(
+        repo: &crate::session::RepoRef,
+        access: RepoAccess,
+        path: Option<String>,
+        st: GitState,
+    ) -> Self {
+        Self {
+            owner: repo.owner.clone(),
+            name: repo.name.clone(),
+            access,
+            path,
+            branch: st.branch,
+            base: st.base,
+            head: st.head,
+            ahead: st.ahead,
+            behind: st.behind,
+            files: st.files,
+            uncommitted: st.uncommitted,
+            last_commit: st.last_commit,
+            pushed: st.pushed,
+            pull_request: st.pull_request,
+        }
+    }
+
+    /// `owner/name`.
+    pub fn full_name(&self) -> String {
+        format!("{}/{}", self.owner, self.name)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,6 +347,45 @@ mod tests {
         assert!(json["data"]["author"].get("avatar_url").is_none());
         let back: SessionEvent = serde_json::from_value(json)?;
         assert_eq!(back, ev);
+        Ok(())
+    }
+
+    #[test]
+    fn git_state_of_one_repository_keeps_its_shape() -> Result<(), serde_json::Error> {
+        // What agents that know one repository send, and older clients read.
+        let old = serde_json::json!({
+            "branch": "fctl/1", "base": "main", "ahead": 1, "behind": 0,
+            "files": [{ "path": "a.rs", "status": "added", "additions": 3, "deletions": 0 }],
+            "uncommitted": 0, "pushed": true
+        });
+        let st: GitState = serde_json::from_value(old.clone())?;
+        assert_eq!(st.repos, None);
+        assert_eq!(serde_json::to_value(&st)?, old);
+        let mut st = st;
+        st.repos = Some(vec![RepoGitState {
+            owner: "acme".into(),
+            name: "lib".into(),
+            access: RepoAccess::Write,
+            files: vec![FileChange {
+                path: "b.rs".into(),
+                status: "modified".into(),
+                additions: Some(1),
+                deletions: Some(2),
+            }],
+            pull_request: Some(PullRequestRef {
+                number: 7,
+                url: "https://github.com/acme/lib/pull/7".into(),
+                title: None,
+                state: None,
+            }),
+            ..Default::default()
+        }]);
+        assert_eq!(st.all_files().count(), 2);
+        let prs: Vec<u64> = st.pull_requests().map(|p| p.number).collect();
+        assert_eq!(prs, [7]);
+        let json = serde_json::to_value(&st)?;
+        assert_eq!(json["repos"][0]["access"], "write");
+        assert_eq!(serde_json::from_value::<GitState>(json)?, st);
         Ok(())
     }
 

@@ -7,7 +7,9 @@
 //! its own uplink (see [`crate::uplink`]).
 
 use crate::event::Attachment;
-use crate::session::{ProjectSettings, RepoRef, RunnerRef, SessionStatus, UserRef};
+use crate::session::{
+    ProjectSettings, RepoAccess, RepoGrant, RepoRef, RunnerRef, SessionStatus, UserRef,
+};
 use crate::{CredentialId, LoginJobId, Millis, ProjectId, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -103,7 +105,7 @@ pub struct HostHeartbeat {
 pub enum CredentialKind {
     /// A fresh Claude access token (the old one expired or was rejected).
     Claude,
-    /// A fresh GitHub installation token for the session's repository.
+    /// Fresh GitHub installation tokens for the session's repositories.
     Github,
 }
 
@@ -167,7 +169,8 @@ pub struct ClaudeCredential {
     pub account: Option<ClaudeAccount>,
 }
 
-/// A GitHub installation token, scoped to the session's repository.
+/// A GitHub installation token, scoped to some of the session's
+/// repositories and valid for an hour.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct GithubCredential {
@@ -180,7 +183,12 @@ pub struct GithubCredential {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct SessionCredentials {
     pub claude: ClaudeCredential,
+    /// For the primary repository and the project's other writable ones.
     pub github: Option<GithubCredential>,
+    /// Read-only, for the project's read-only repositories (every repository
+    /// of the account, for an owner-wide grant).
+    #[serde(default)]
+    pub github_read: Option<GithubCredential>,
 }
 
 #[skip_serializing_none]
@@ -190,9 +198,40 @@ pub struct ProjectSpec {
     pub id: ProjectId,
     pub slug: String,
     pub name: String,
+    /// The primary repository, cloned into the agent's working directory.
     pub repo: Option<RepoRef>,
     pub default_branch: String,
     pub settings: ProjectSettings,
+    /// Other repositories the agent may use, cloned when it needs them.
+    /// Absent when there are none. Older agents ignore it and work in the
+    /// primary repository only.
+    #[serde(default)]
+    pub repos: Option<Vec<SessionRepo>>,
+}
+
+/// A repository a session's agent may use besides the primary one, or every
+/// repository of an account (an owner-wide grant).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SessionRepo {
+    pub owner: String,
+    /// Absent for an owner-wide grant.
+    pub name: Option<String>,
+    pub access: RepoAccess,
+    /// Why the session has no token for it (it left the GitHub App's
+    /// installation). The agent says so and works without it.
+    pub unavailable: Option<String>,
+}
+
+impl SessionRepo {
+    pub fn grant(&self) -> RepoGrant {
+        RepoGrant {
+            owner: self.owner.clone(),
+            name: self.name.clone(),
+            access: self.access,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -360,6 +399,10 @@ pub enum FleetToHost {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         github: Option<GithubCredential>,
+        /// See [`SessionCredentials::github_read`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        github_read: Option<GithubCredential>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<String>,
@@ -378,4 +421,80 @@ pub enum FleetToHost {
         job_id: LoginJobId,
     },
     Ping,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec_json() -> serde_json::Value {
+        serde_json::json!({
+            "session_id": "ses_1",
+            "number": 1,
+            "title": "T",
+            "project": {
+                "id": "prj_1", "slug": "app", "name": "App",
+                "repo": { "owner": "acme", "name": "app" },
+                "default_branch": "main", "settings": {}
+            },
+            "branch": "fctl/1", "base_branch": "main",
+            "author": { "id": "usr_1", "name": "Ada" },
+            "claude_session_id": "00000000-0000-0000-0000-000000000000",
+            "resume": false, "secrets": {},
+            "credentials": {
+                "claude": { "id": "crd_1", "kind": "oauth", "access_token": "a", "scopes": [] },
+                "github": { "token": "ghs_w", "expires_at": 1 }
+            },
+            "git_author": { "name": "bot", "email": "bot@example.com" },
+            "co_authors": [], "web_url": "https://fctl.test/s/ses_1", "idle_timeout_secs": 60
+        })
+    }
+
+    #[test]
+    fn specs_without_other_repositories_read_and_write_as_before() -> serde_json::Result<()> {
+        let spec: SessionSpec = serde_json::from_value(spec_json())?;
+        assert_eq!(spec.project.repos, None);
+        assert_eq!(spec.credentials.github_read, None);
+        let json = serde_json::to_value(&spec)?;
+        assert!(json["project"].get("repos").is_none());
+        assert!(json["credentials"].get("github_read").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn specs_carry_other_repositories_and_a_read_token() -> serde_json::Result<()> {
+        let mut json = spec_json();
+        json["project"]["repos"] = serde_json::json!([
+            { "owner": "acme", "name": "lib", "access": "write" },
+            { "owner": "acme", "access": "read" }
+        ]);
+        json["credentials"]["github_read"] =
+            serde_json::json!({ "token": "ghs_r", "expires_at": 2 });
+        let spec: SessionSpec = serde_json::from_value(json)?;
+        let repos = spec.project.repos.unwrap_or_default();
+        assert_eq!(repos[0].grant().label(), "acme/lib");
+        assert_eq!(repos[1].grant().label(), "acme/*");
+        assert_eq!(repos[1].access, RepoAccess::Read);
+        assert_eq!(
+            spec.credentials.github_read.map(|c| c.token),
+            Some("ghs_r".into())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn credentials_messages_add_the_read_token_as_an_option() -> serde_json::Result<()> {
+        // From a control plane that sends one token.
+        let msg: FleetToHost = serde_json::from_value(serde_json::json!({
+            "type": "credential", "request_id": "r1",
+            "github": { "token": "ghs_w", "expires_at": 1 }
+        }))?;
+        let FleetToHost::Credential { github_read, .. } = &msg else {
+            panic!("expected a credential");
+        };
+        assert_eq!(github_read, &None);
+        let json = serde_json::to_value(&msg)?;
+        assert!(json.get("github_read").is_none());
+        Ok(())
+    }
 }

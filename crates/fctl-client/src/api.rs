@@ -186,6 +186,38 @@ impl Api {
         self.get("/github/repos").await
     }
 
+    /// The repositories a project's agents may use, the primary one first.
+    pub async fn project_repos(&self, project: &str) -> Result<ProjectRepoList> {
+        self.get(&format!("/projects/{}/repos", enc(project))).await
+    }
+
+    /// Lets a project's agents use a repository, or changes their access.
+    pub async fn add_project_repo(
+        &self,
+        project: &str,
+        req: &AddProjectRepoRequest,
+    ) -> Result<ProjectRepoList> {
+        self.post(&format!("/projects/{}/repos", enc(project)), req)
+            .await
+    }
+
+    /// Removes a repository from a project; `name` is `None` for an
+    /// owner-wide grant.
+    pub async fn remove_project_repo(
+        &self,
+        project: &str,
+        owner: &str,
+        name: Option<&str>,
+    ) -> Result<ProjectRepoList> {
+        self.delete(&format!(
+            "/projects/{}/repos/{}/{}",
+            enc(project),
+            enc(owner),
+            enc(name.unwrap_or("*"))
+        ))
+        .await
+    }
+
     // ── sessions ──
 
     pub async fn sessions(

@@ -3,13 +3,14 @@
 use crate::db::{int, int_bool, opt_int};
 use crate::internal::LiveRunners;
 use fctl_proto::api::{
-    AllowEntry, ClaudeCredentialInfo, CredentialStatus, Identity, Runner, RunnerStatus, User,
-    UserStatus,
+    AllowEntry, ClaudeCredentialInfo, CredentialStatus, Identity, ProjectRepo, Runner,
+    RunnerStatus, User, UserStatus,
 };
 use fctl_proto::runner::{ClaudeAccount, ClaudeCredentialKind, HostHello};
 use fctl_proto::session::{
     InstanceRole, Project, ProjectRole, ProjectSettings, PullRequestRef, RemoteControlState,
-    RepoRef, RunnerRef, Session, SessionRole, SessionStats, SessionStatus, UserRef,
+    RepoAccess, RepoGrant, RepoRef, RunnerRef, Session, SessionRole, SessionStats, SessionStatus,
+    UserRef,
 };
 use fctl_proto::{AllowId, CredentialId, IdentityId, ProjectId, RunnerId, SessionId, UserId};
 use serde::Deserialize;
@@ -225,6 +226,57 @@ impl ProjectRow {
             active_sessions: self.active_sessions.max(0) as u32,
             total_sessions: self.total_sessions.max(0) as u32,
             last_activity_at: self.last_activity_at,
+        }
+    }
+}
+
+/// A repository a project's agents may use besides its primary one
+/// (`project_repos`; `name` is `*` for an owner-wide grant).
+#[derive(Clone, Debug, Deserialize)]
+pub struct RepoRow {
+    pub owner: String,
+    pub name: String,
+    pub access: String,
+    pub added_by: Option<String>,
+    pub adder_name: Option<String>,
+    pub adder_avatar: Option<String>,
+    #[serde(deserialize_with = "int")]
+    pub created_at: i64,
+}
+
+/// SELECT for [`RepoRow`]. Bind: `?1` = project id.
+pub const REPO_SELECT: &str = "SELECT r.owner, r.name, r.access, r.added_by, u.name AS adder_name, \
+    u.avatar_url AS adder_avatar, r.created_at FROM project_repos r LEFT JOIN users u ON u.id = r.added_by \
+    WHERE r.project_id = ?1 ORDER BY r.owner, r.name = '*' DESC, r.name";
+
+/// `name` of an owner-wide grant in `project_repos`.
+pub const ALL_REPOS: &str = "*";
+
+impl RepoRow {
+    pub fn grant(&self) -> RepoGrant {
+        RepoGrant {
+            owner: self.owner.clone(),
+            name: (self.name != ALL_REPOS).then(|| self.name.clone()),
+            access: RepoAccess::parse(&self.access).unwrap_or_default(),
+        }
+    }
+
+    pub fn to_repo(&self) -> ProjectRepo {
+        let grant = self.grant();
+        ProjectRepo {
+            owner: grant.owner,
+            name: grant.name,
+            access: grant.access,
+            primary: false,
+            added_by: match (&self.added_by, &self.adder_name) {
+                (Some(id), Some(name)) => Some(UserRef {
+                    id: UserId(id.clone()),
+                    name: name.clone(),
+                    avatar_url: self.adder_avatar.clone(),
+                }),
+                _ => None,
+            },
+            added_at: Some(self.created_at),
         }
     }
 }

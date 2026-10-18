@@ -409,6 +409,7 @@ impl Daemon {
                 request_id,
                 claude,
                 github,
+                github_read,
                 error,
             } => {
                 if let Some((sid, agent_request)) = self.pending_creds.remove(&request_id)
@@ -418,6 +419,7 @@ impl Daemon {
                         request_id: Some(agent_request),
                         claude,
                         github,
+                        github_read,
                         error,
                     });
                 }

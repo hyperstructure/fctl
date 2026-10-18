@@ -7,7 +7,8 @@ import type { SessionSpec } from "./SessionSpec";
  */
 export type AgentConfig = { spec: SessionSpec, 
 /**
- * Where the repository is cloned (the agent's working directory).
+ * Where the primary repository is cloned (the agent's working
+ * directory). Other repositories go under `~/repos/<owner>/<name>`.
  */
 workdir: string, 
 /**
@@ -27,7 +28,7 @@ claude_args: Array<string>,
  */
 env: { [key in string]: string }, 
 /**
- * Push the branch after each turn that produced commits.
+ * Push the session branch after each turn that produced commits.
  */
 push_on_commit: boolean, 
 /**

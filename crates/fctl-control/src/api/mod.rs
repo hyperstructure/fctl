@@ -5,5 +5,6 @@ pub mod auth;
 pub mod claude;
 pub mod google;
 pub mod projects;
+pub mod repos;
 pub mod runners;
 pub mod sessions;

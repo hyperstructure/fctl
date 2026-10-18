@@ -6,14 +6,15 @@ use crate::db::{n, on, q, s};
 use crate::error::{AppError, AppResult, internal};
 use crate::github;
 use crate::model::{
-    CredentialRow, CredentialSecret, PROJECT_SELECT, ProjectRow, SESSION_SELECT, SessionRow,
+    CredentialRow, CredentialSecret, PROJECT_SELECT, ProjectRow, REPO_SELECT, RepoRow,
+    SESSION_SELECT, SessionRow,
 };
 use fctl_domain::size::Want;
 use fctl_proto::runner::{
-    ClaudeCredential, ClaudeCredentialKind, GitIdentity, GithubCredential, ProjectSpec,
-    SessionCredentials, SessionSpec,
+    ClaudeCredential, ClaudeCredentialKind, GitIdentity, ProjectSpec, SessionCredentials,
+    SessionRepo, SessionSpec,
 };
-use fctl_proto::session::{ProjectSettings, RepoRef};
+use fctl_proto::session::{ProjectSettings, RepoGrant, RepoRef};
 use fctl_proto::{ApiError, CredentialId, ErrorCode, ProjectId};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -48,6 +49,12 @@ pub async fn project_row(db: &D1Database, id: &str) -> AppResult<Option<ProjectR
     )?
     .first()
     .await
+}
+
+/// The repositories a project's agents may use besides its primary one.
+pub async fn grants(db: &D1Database, project_id: &str) -> AppResult<Vec<RepoGrant>> {
+    let rows: Vec<RepoRow> = q(db, REPO_SELECT, &[s(project_id)])?.all().await?;
+    Ok(rows.iter().map(RepoRow::grant).collect())
 }
 
 /// The CPUs and memory each of these sessions asks for (its project's
@@ -96,10 +103,23 @@ pub async fn build(
     })?;
     let claude = claude_credential(db, keys, &cred_id, now).await?;
     let repo = project.repo();
-    let github = match (&repo, cfg.github.is_some()) {
-        (Some(r), true) => Some(github_token(cfg, r, now).await?),
-        _ => None,
-    };
+    let grants = grants(db, &project.id).await?;
+    let tokens = github_tokens(cfg, repo.as_ref(), &grants, now).await?;
+    let repos = (!grants.is_empty()).then(|| {
+        grants
+            .iter()
+            .map(|g| SessionRepo {
+                owner: g.owner.clone(),
+                name: g.name.clone(),
+                access: g.access,
+                unavailable: g
+                    .name
+                    .as_ref()
+                    .filter(|n| tokens.unreachable.iter().any(|u| u.eq_ignore_ascii_case(n)))
+                    .map(|_| unreachable_notice(cfg, g)),
+            })
+            .collect()
+    });
     let secrets = crate::api::projects::decrypted_secrets(db, keys, &project.id).await?;
     let author = creator(db, &row.created_by).await?;
     let git_author = bot_identity(cfg, now).await;
@@ -118,6 +138,7 @@ pub async fn build(
             repo,
             default_branch: project.default_branch.clone(),
             settings,
+            repos,
         },
         branch: row
             .branch
@@ -144,7 +165,11 @@ pub async fn build(
         model: row.model.clone(),
         effort: row.effort.clone(),
         secrets,
-        credentials: SessionCredentials { claude, github },
+        credentials: SessionCredentials {
+            claude,
+            github: tokens.write,
+            github_read: tokens.read,
+        },
         git_author,
         co_authors: author.into_iter().collect(),
         web_url: cfg.url(&format!("/s/{}", row.id)),
@@ -208,8 +233,49 @@ async fn bot_identity(cfg: &Config, _now: i64) -> GitIdentity {
     GitIdentity { name: login, email }
 }
 
-pub async fn github_token(cfg: &Config, repo: &RepoRef, now: i64) -> AppResult<GithubCredential> {
-    github::from_config(cfg, now)?.session_token(repo).await
+/// A session's GitHub tokens (none without a GitHub App or repositories).
+/// Listed repositories the GitHub App cannot reach are left out; without the
+/// primary repository the session cannot start.
+pub async fn github_tokens(
+    cfg: &Config,
+    primary: Option<&RepoRef>,
+    grants: &[RepoGrant],
+    now: i64,
+) -> AppResult<github::SessionTokens> {
+    let (Some(gh), Some(plan)) = (
+        cfg.github.as_ref(),
+        fctl_domain::repos::token_plan(primary, grants),
+    ) else {
+        return Ok(github::SessionTokens::default());
+    };
+    let tokens = github::from_config(cfg, now)?.session_tokens(&plan).await?;
+    if let Some(p) = primary
+        && tokens
+            .unreachable
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(&p.name))
+    {
+        return Err(AppError(ApiError::new(
+            ErrorCode::NotConfigured,
+            format!(
+                "The {} GitHub App can't reach {}. Add the repository to the app's installation on {}, or link the project to another one.",
+                gh.slug,
+                p.full_name(),
+                p.owner
+            ),
+        )));
+    }
+    Ok(tokens)
+}
+
+/// What the agent tells people about a listed repository it has no token for.
+fn unreachable_notice(cfg: &Config, g: &RepoGrant) -> String {
+    let app = cfg.github.as_ref().map_or("fctl", |gh| gh.slug.as_str());
+    format!(
+        "The {app} GitHub App can't reach {}, so this session works without it. Add the repository to the app's installation on {}, or remove it from the project.",
+        g.label(),
+        g.owner
+    )
 }
 
 /// The credential with a valid access token, refreshing an OAuth login when

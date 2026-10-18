@@ -4,8 +4,10 @@ use crate::config;
 use crate::style;
 use anyhow::{Result, bail};
 use clap::Subcommand;
-use fctl_proto::api::{CreateProjectRequest, CreateRepoRequest};
-use fctl_proto::session::ProjectSettings;
+use fctl_proto::api::{
+    AddProjectRepoRequest, CreateProjectRequest, CreateRepoRequest, ProjectRepoList,
+};
+use fctl_proto::session::{ProjectSettings, RepoAccess};
 use std::io::{BufRead, IsTerminal, Write};
 
 #[derive(Subcommand)]
@@ -44,6 +46,9 @@ pub enum ProjectsCmd {
         /// The project (slug or id).
         project: String,
     },
+    /// The repositories the project's agents may use besides its primary one.
+    #[command(subcommand)]
+    Repos(ReposCmd),
     /// Delete a project with its sessions and their transcripts (owners only).
     /// Its repository on GitHub stays. This cannot be undone.
     Delete {
@@ -53,6 +58,102 @@ pub enum ProjectsCmd {
         #[arg(long, value_name = "SLUG")]
         confirm: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ReposCmd {
+    /// List them, the primary repository first.
+    List {
+        /// The project (slug or id); default from `fctl projects use`.
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// Let agents use a repository, or change what they may do in it.
+    ///
+    /// Agents clone it when they need it, in sessions that start afterwards.
+    Add {
+        /// owner/name, or owner/* for every repository of the account the
+        /// GitHub App can reach (read only). The project's repositories all
+        /// belong to one account.
+        repo: String,
+        /// Let agents push branches and open pull requests (default: read only).
+        #[arg(long)]
+        write: bool,
+        /// The project (slug or id); default from `fctl projects use`.
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// Stop agents from using a repository.
+    ///
+    /// Running sessions lose it when their GitHub tokens are next refreshed,
+    /// within the hour.
+    Remove {
+        /// owner/name, or owner/*.
+        repo: String,
+        /// The project (slug or id); default from `fctl projects use`.
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+}
+
+fn print_repos(list: &ProjectRepoList) {
+    for r in &list.repos {
+        let name = match &r.name {
+            Some(n) => format!("{}/{n}", r.owner),
+            None => format!("{}/*", r.owner),
+        };
+        let access = match (r.primary, r.access, &r.name) {
+            (true, ..) => "primary, read and write".to_owned(),
+            (_, RepoAccess::Write, _) => "read and write".to_owned(),
+            (_, RepoAccess::Read, Some(_)) => "read only".to_owned(),
+            (_, RepoAccess::Read, None) => format!("read only, every repository of {}", r.owner),
+        };
+        println!("{:<40} {}", style::bold(&name), style::dim(&access));
+    }
+}
+
+async fn repos(api: &fctl_client::Api, cmd: ReposCmd, json: bool) -> Result<()> {
+    let list = match cmd {
+        ReposCmd::List { project } => {
+            let project = super::sessions::project_or_default(project)?;
+            let list = api.project_repos(&project).await?;
+            if !json && list.repos.is_empty() {
+                println!(
+                    "{project} has no repositories. Add one with `fctl projects repos add owner/name -p {project}`."
+                );
+                return Ok(());
+            }
+            list
+        }
+        ReposCmd::Add {
+            repo,
+            write,
+            project,
+        } => {
+            let project = super::sessions::project_or_default(project)?;
+            let req = AddProjectRepoRequest {
+                repo,
+                access: Some(if write {
+                    RepoAccess::Write
+                } else {
+                    RepoAccess::Read
+                }),
+            };
+            api.add_project_repo(&project, &req).await?
+        }
+        ReposCmd::Remove { repo, project } => {
+            let project = super::sessions::project_or_default(project)?;
+            let (owner, name) =
+                fctl_domain::repos::parse(&repo).map_err(|e| anyhow::anyhow!(e.message))?;
+            api.remove_project_repo(&project, &owner, name.as_deref())
+                .await?
+        }
+    };
+    if json {
+        return style::print_json(&list);
+    }
+    print_repos(&list);
+    Ok(())
 }
 
 pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<()> {
@@ -108,6 +209,27 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     .map(|r| r.full_name())
                     .unwrap_or_else(|| "—".into())
             );
+            let others: Vec<String> = api
+                .project_repos(p.id.as_str())
+                .await?
+                .repos
+                .into_iter()
+                .filter(|r| !r.primary)
+                .map(|r| {
+                    let access = match r.access {
+                        RepoAccess::Write => "read and write",
+                        RepoAccess::Read => "read only",
+                    };
+                    format!(
+                        "{}/{} ({access})",
+                        r.owner,
+                        r.name.as_deref().unwrap_or("*")
+                    )
+                })
+                .collect();
+            if !others.is_empty() {
+                println!("also:    {}", others.join(", "));
+            }
             println!("branch:  {}", p.default_branch);
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
             println!("{}", style::dim(&format!("{}/p/{}", api.base(), p.slug)));
@@ -148,6 +270,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 style::dim(&format!("{}/p/{}", api.base(), p.slug))
             );
         }
+        ProjectsCmd::Repos(cmd) => repos(&api, cmd, json).await?,
         ProjectsCmd::Use { project } => {
             let p = api.project(&project).await?;
             let mut cfg = config::CliConfig::load();

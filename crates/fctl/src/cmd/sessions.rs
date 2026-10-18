@@ -104,7 +104,7 @@ pub async fn resolve(api: &Api, reference: &str) -> Result<Session> {
     bail!("Refer to a session by id (ses_…) or as project#number")
 }
 
-fn project_or_default(p: Option<String>) -> Result<String> {
+pub fn project_or_default(p: Option<String>) -> Result<String> {
     p.or_else(|| config::CliConfig::load().project).context(
         "Which project? Pass --project, or set a default with `fctl projects use <project>`.",
     )

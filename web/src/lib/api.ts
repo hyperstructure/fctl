@@ -121,6 +121,12 @@ export const api = {
     request<G.SecretList>("PUT", `/projects/${enc(id)}/secrets/${enc(name)}`, { value }),
   deleteSecret: (id: string, name: string) =>
     request<G.SecretList>("DELETE", `/projects/${enc(id)}/secrets/${enc(name)}`),
+  projectRepos: (id: string) => request<G.ProjectRepoList>("GET", `/projects/${enc(id)}/repos`),
+  addProjectRepo: (id: string, b: G.AddProjectRepoRequest) =>
+    request<G.ProjectRepoList>("POST", `/projects/${enc(id)}/repos`, b),
+  /** `name` absent: the owner-wide grant. */
+  removeProjectRepo: (id: string, owner: string, name?: string) =>
+    request<G.ProjectRepoList>("DELETE", `/projects/${enc(id)}/repos/${enc(owner)}/${enc(name ?? "*")}`),
   github: () => request<G.GithubInfo>("GET", "/github"),
   githubRepos: () => request<G.GithubRepoList>("GET", "/github/repos"),
 

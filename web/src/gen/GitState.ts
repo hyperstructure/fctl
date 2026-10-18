@@ -2,9 +2,11 @@
 import type { CommitInfo } from "./CommitInfo";
 import type { FileChange } from "./FileChange";
 import type { PullRequestRef } from "./PullRequestRef";
+import type { RepoGitState } from "./RepoGitState";
 
 /**
- * Repository state of a session's workspace.
+ * Repository state of a session's workspace. The fields describe the
+ * primary repository; `repos` the others the agent cloned.
  */
 export type GitState = { branch?: string, base?: string, head?: string, 
 /**
@@ -26,4 +28,9 @@ pushed: boolean,
 /**
  * The pull request of the branch, when one exists.
  */
-pull_request?: PullRequestRef, };
+pull_request?: PullRequestRef, 
+/**
+ * The project's other repositories the agent cloned. Absent from agents
+ * that work in the primary repository only.
+ */
+repos?: Array<RepoGitState>, };

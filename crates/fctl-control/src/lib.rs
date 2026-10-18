@@ -147,6 +147,11 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Delete, ["projects", id, "secrets", name]) => {
             api::projects::delete_secret(ctx, id, name).await
         }
+        (Get, ["projects", id, "repos"]) => api::repos::list(ctx, id).await,
+        (Post, ["projects", id, "repos"]) => api::repos::add(ctx, req, id).await,
+        (Delete, ["projects", id, "repos", owner, name]) => {
+            api::repos::remove(ctx, id, owner, name).await
+        }
         (Post, ["projects", id, "sessions"]) => api::sessions::create(ctx, req, id).await,
         (Post, ["projects", id, "attachments"]) => api::attachments::upload(ctx, req, id).await,
         (Get, ["github"]) => api::projects::github_info(ctx).await,
