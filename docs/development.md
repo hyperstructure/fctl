@@ -11,6 +11,11 @@ subscription, Cloudflare account or GitHub App.
   wrangler). The web app depends on
   [@hyperstructure/design](https://github.com/hyperstructure/design) through
   git, so `npm ci` needs read access to that repository while it is private.
+- [worker-build](https://crates.io/crates/worker-build), which builds the
+  control plane for wrangler. The first `cargo xtask dev` installs it with
+  `cargo install` if it isn't on your PATH. On Linux that needs pkg-config
+  and OpenSSL's headers: `sudo apt install pkg-config libssl-dev` on Debian
+  and Ubuntu.
 - Optional, for release builds: [zig](https://ziglang.org) and
   `cargo install cargo-zigbuild`.
 

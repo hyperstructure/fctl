@@ -46,6 +46,9 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     if !root.join("node_modules").exists() {
         util::npm_install(root)?;
     }
+    // wrangler dev builds the Worker with `worker-build --dev` (wrangler.toml):
+    // this installs it when it is missing.
+    util::worker_build()?;
     dev_vars(root)?;
     run(Command::new("cargo")
         .args([
