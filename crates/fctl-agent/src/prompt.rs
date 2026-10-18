@@ -1,10 +1,47 @@
-//! The text fctl appends to Claude's system prompt.
+//! The text fctl gives Claude: what it appends to the system prompt, and the
+//! AGENTS.md at the root of the sandbox's home, beside the checkout.
 
 use crate::workspace::Paths;
-use fctl_proto::runner::{SessionRepo, SessionSpec};
+use fctl_domain::size;
+use fctl_proto::runner::{SandboxSize, SessionRepo, SessionSpec};
 use fctl_proto::session::RepoAccess;
 
-pub fn system_prompt(spec: &SessionSpec, workdir: &str, paths: &Paths) -> String {
+/// `~/AGENTS.md`: how the agent keeps its session's title and description
+/// about the work (Claude reads it through `~/.claude/CLAUDE.md`).
+pub const AGENTS_MD: &str = r#"# fctl
+
+This sandbox runs an fctl session. People find sessions in fctl's lists by
+their titles, and a new session's title is only the first line of its task.
+Keep the title and description about the work with `fctl edit`, which talks
+to this session directly (no sign-in needed):
+
+```sh
+fctl edit --title "Retry failed uploads in the sync worker" \
+  --description "Uploads that time out are retried with backoff, and the worker has tests for it."
+```
+
+- Name the session as soon as you understand the task, before the work
+  itself.
+- The title says what the work is, not what was asked: at most 60
+  characters, sentence case, no full stop. "Fix the flaky login test", not
+  "Can you look at the login test?".
+- The description is one or two plain sentences: what the session is doing
+  and why.
+- Follow-ups that continue the same work keep the title. When a message
+  turns the session to different work, rename it for the new scope, or name
+  both when it now covers both ("Fix the login redirect; export audit
+  logs"), and update the description.
+- If `fctl edit` fails, carry on with the task.
+"#;
+
+/// `paths` say where the other repositories go; `sandbox` what the sandbox
+/// is limited to, when its driver limits it.
+pub fn system_prompt(
+    spec: &SessionSpec,
+    workdir: &str,
+    paths: &Paths,
+    sandbox: Option<SandboxSize>,
+) -> String {
     let mut s = String::new();
     s.push_str("You are running as an autonomous agent in fctl, a software factory. ");
     s.push_str("Your work happens in a sandbox; people follow along live and may message you.\n\n");
@@ -57,6 +94,16 @@ pub fn system_prompt(spec: &SessionSpec, workdir: &str, paths: &Paths) -> String
                 paths.read_token_file.display()
             ));
         }
+    }
+    if let Some(size) = sandbox {
+        // With Docker, nproc and free show the whole VM while cgroups hold
+        // the sandbox to its size, so build tools would start too many jobs.
+        s.push_str(&format!(
+            "- This sandbox has {} and {} of memory ($FCTL_SANDBOX_CPUS, $FCTL_SANDBOX_MEMORY_MB), even where `nproc` and `free` show more. Size parallel builds and test runs to these limits (for example `make -j{}`): when the sandbox runs out of memory, the kernel kills a process, which then exits with code 137.\n",
+            size::cpus(size.cpus),
+            size::memory(size.memory_mb.into()),
+            size.cpus
+        ));
     }
     s.push_str("- Work in small, verified steps: read before you change, and run the project's tests and linters.\n");
     s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn; never force-push and never rewrite published history.\n");
@@ -163,9 +210,98 @@ pub fn user_turn(text: &str, author: Option<&str>, starter: &str) -> String {
     }
 }
 
+/// The sandbox's size for Claude, its tools and the setup script.
+pub fn sandbox_env(sandbox: Option<SandboxSize>) -> Vec<(String, String)> {
+    sandbox
+        .map(|s| {
+            vec![
+                ("FCTL_SANDBOX_CPUS".to_owned(), s.cpus.to_string()),
+                ("FCTL_SANDBOX_MEMORY_MB".to_owned(), s.memory_mb.to_string()),
+            ]
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fctl_proto::runner::{
+        ClaudeCredential, ClaudeCredentialKind, GitIdentity, ProjectSpec, SessionCredentials,
+    };
+    use fctl_proto::session::{ProjectSettings, UserRef};
+    use fctl_proto::{CredentialId, ProjectId, SessionId, UserId};
+
+    fn spec() -> SessionSpec {
+        SessionSpec {
+            session_id: SessionId("ses_1".into()),
+            number: 1,
+            title: "Build it".into(),
+            project: ProjectSpec {
+                id: ProjectId("prj_1".into()),
+                slug: "app".into(),
+                name: "App".into(),
+                repo: None,
+                default_branch: "main".into(),
+                settings: ProjectSettings::default(),
+                repos: None,
+            },
+            branch: "fctl/1".into(),
+            base_branch: "main".into(),
+            prompt: Some("Build it".into()),
+            task: Some("Build it".into()),
+            author: UserRef {
+                id: UserId("usr_1".into()),
+                name: "Ada".into(),
+                avatar_url: None,
+            },
+            claude_session_id: "uuid".into(),
+            resume: false,
+            model: None,
+            effort: None,
+            secrets: Default::default(),
+            credentials: SessionCredentials {
+                claude: ClaudeCredential {
+                    id: CredentialId("crd_1".into()),
+                    kind: ClaudeCredentialKind::SetupToken,
+                    access_token: "token".into(),
+                    scopes: vec![],
+                    expires_at: None,
+                    subscription_type: None,
+                    account: None,
+                },
+                github: None,
+                github_read: None,
+            },
+            git_author: GitIdentity {
+                name: "fctl".into(),
+                email: "agent@fctl.invalid".into(),
+            },
+            co_authors: vec![],
+            web_url: "https://app.fctl.sh/s/ses_1".into(),
+            idle_timeout_secs: 7200,
+            run_id: None,
+        }
+    }
+
+    #[test]
+    fn tells_claude_the_sandboxs_size() {
+        let size = SandboxSize {
+            cpus: 4,
+            memory_mb: 8192,
+        };
+        let text = system_prompt(&spec(), "/work", &paths(), Some(size));
+        assert!(text.contains("This sandbox has 4 CPUs and 8 GiB of memory"));
+        assert!(text.contains("`make -j4`"));
+        assert!(!system_prompt(&spec(), "/work", &paths(), None).contains("This sandbox has"));
+        assert_eq!(
+            sandbox_env(Some(size)),
+            [
+                ("FCTL_SANDBOX_CPUS".to_owned(), "4".to_owned()),
+                ("FCTL_SANDBOX_MEMORY_MB".to_owned(), "8192".to_owned())
+            ]
+        );
+        assert!(sandbox_env(None).is_empty());
+    }
 
     #[test]
     fn fresh_resume_names_the_branch_and_task() {
@@ -178,7 +314,8 @@ mod tests {
         assert!(text.contains("The other repositories are not cloned yet"));
     }
 
-    fn spec(repos: serde_json::Value) -> SessionSpec {
+    /// acme/app, with `repos` as the project's other repositories.
+    fn spec_with(repos: serde_json::Value) -> SessionSpec {
         let mut v = serde_json::json!({
             "session_id": "ses_test",
             "number": 12,
@@ -222,9 +359,10 @@ mod tests {
     #[test]
     fn one_repository_reads_as_before() {
         let text = system_prompt(
-            &spec(serde_json::Value::Null),
+            &spec_with(serde_json::Value::Null),
             "/home/agent/workspace",
             &paths(),
+            None,
         );
         assert!(text.contains("The repository acme/app is cloned at /home/agent/workspace"));
         assert!(text.contains(
@@ -242,7 +380,7 @@ mod tests {
             { "owner": "acme", "access": "read" },
             { "owner": "acme", "name": "gone", "access": "write", "unavailable": "The fctl GitHub App can't reach acme/gone." }
         ]);
-        let text = system_prompt(&spec(repos), "/home/agent/workspace", &paths());
+        let text = system_prompt(&spec_with(repos), "/home/agent/workspace", &paths(), None);
         assert!(text.contains("into /home/agent/repos/<owner>/<name> (for example `git clone https://github.com/acme/lib /home/agent/repos/acme/lib`)"));
         assert!(text.contains("  - acme/lib (read and write)\n"));
         assert!(text.contains("  - acme/docs (read only)\n"));
@@ -256,7 +394,7 @@ mod tests {
     #[test]
     fn read_only_repositories_need_no_branch() {
         let repos = serde_json::json!([{ "owner": "acme", "access": "read" }]);
-        let text = system_prompt(&spec(repos), "/home/agent/workspace", &paths());
+        let text = system_prompt(&spec_with(repos), "/home/agent/workspace", &paths(), None);
         assert!(text.contains("  - any repository of acme (read only)\n"));
         assert!(
             text.contains("git clone https://github.com/acme/<name> /home/agent/repos/acme/<name>")
@@ -270,9 +408,9 @@ mod tests {
     #[test]
     fn without_a_primary_repository_the_others_are_the_work() {
         let mut spec =
-            spec(serde_json::json!([{ "owner": "acme", "name": "lib", "access": "write" }]));
+            spec_with(serde_json::json!([{ "owner": "acme", "name": "lib", "access": "write" }]));
         spec.project.repo = None;
-        let text = system_prompt(&spec, "/home/agent/workspace", &paths());
+        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None);
         assert!(text.contains(
             "- Your working directory is /home/agent/workspace, an empty git repository.\n"
         ));
@@ -294,6 +432,13 @@ mod tests {
             repos_line(&repos, "/root/repos"),
             "Other repositories, cloned when the agent needs them into /root/repos: acme/lib (read and write), acme/* (read only), acme/gone (unavailable)"
         );
+    }
+
+    #[test]
+    fn agents_md_shows_how_to_name_the_session() {
+        assert!(AGENTS_MD.contains("fctl edit --title"));
+        assert!(AGENTS_MD.contains("--description"));
+        assert!(AGENTS_MD.contains("rename it for the new scope"));
     }
 
     #[test]

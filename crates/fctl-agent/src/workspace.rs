@@ -912,16 +912,16 @@ pub fn keep_pull_requests(st: &mut GitState, last: &GitState) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
 
-    fn spec() -> Result<SessionSpec> {
+    pub(crate) fn spec() -> Result<SessionSpec> {
         spec_with(serde_json::Value::Null)
     }
 
     /// acme/widgets, with `repos` as the project's other repositories.
-    fn spec_with(repos: serde_json::Value) -> Result<SessionSpec> {
+    pub(crate) fn spec_with(repos: serde_json::Value) -> Result<SessionSpec> {
         let mut spec = serde_json::json!({
             "session_id": "ses_test",
             "number": 1,

@@ -39,6 +39,8 @@ fctl run --branch fix/login --base develop "…"
 fctl sessions                    # recent sessions
 fctl sessions --active -p my-app
 fctl show my-app#12              # status, branch, pull request, usage
+fctl edit my-app#12 --title "Fix the flaky login test"
+fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" clears it
 fctl logs my-app#12              # the transcript
 fctl logs -f my-app#12           # …and keep following
 
@@ -54,6 +56,13 @@ fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 
 `fctl run` uses the project from `fctl projects use` when `-p` is missing.
 
+A session's title starts as the first line of its task. Agents rename it to
+what they work on, and say what the session is about, with the same
+command: in a sandbox, `fctl edit --title … --description …` without a
+session edits the one the sandbox runs, through fctl-agent and without a
+sign-in. The sandbox's `~/AGENTS.md` asks them to do it once they
+understand the task, and again when the work turns to something else.
+
 ## Projects
 
 ```sh
@@ -61,6 +70,7 @@ fctl projects list
 fctl projects show my-app
 fctl projects create "My app" --repo my-org/my-app
 fctl projects create "New thing" --new-repo new-thing --public
+fctl projects create "Site" --repo my-org/site --no-connectors   # no claude.ai connectors in its sessions
 fctl projects use my-app
 fctl projects delete my-app            # with its sessions; asks you to type the slug
 ```
@@ -94,6 +104,7 @@ fctl claude status
 ```sh
 fctl host install                # register this machine and start the service
 fctl host install --driver lima --capacity 2 --build-image
+fctl host install --cpus 4 --memory 8g --max-memory 12g   # sandbox sizes
 fctl host install --token fctl_rt_…   # with a runner token from an admin
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host run                    # run in the foreground (what the service runs)
@@ -118,10 +129,27 @@ name = "studio-mac"
 driver = "apple"         # apple | lima | docker | process | auto (picks at every start)
 capacity = 4             # concurrent sessions
 image = "fctl-agent:latest"
-cpus = 4                 # per session
-memory_mb = 8192         # per session
+cpus = 4                 # per sandbox, when the project sets none
+memory_mb = 8192         # per sandbox, when the project sets none
+max_cpus = 8             # the most one sandbox may have (unset: all there is)
+max_memory_mb = 12288
 keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them)
 ```
+
+A project's Settings → Sandbox can ask for more CPUs or memory than the
+host's default. Sessions only start on a host whose maximum covers that;
+when none does, they stay queued and say so ("No runner can give this
+session 32 GiB of memory (the most is 15.6 GiB)"). Without `max_cpus` and
+`max_memory_mb`, the maximum is what the machine has, or with Docker the
+Docker daemon's: on macOS that is the VM of OrbStack, Docker Desktop or
+Colima, which is usually smaller than the Mac. A default above the maximum
+is lowered to it. `fctl host status` shows the sizes the host gives. The
+host measures them when it starts and when it reconnects, so run `fctl host
+restart` after changing `host.toml` or resizing the Docker VM.
+
+Agents are told their sandbox's size in their instructions and in
+`FCTL_SANDBOX_CPUS` and `FCTL_SANDBOX_MEMORY_MB`: with Docker, `nproc` and
+`free` show the whole VM rather than the sandbox's share.
 
 ## Admin
 
@@ -173,8 +201,11 @@ fctl completions zsh > ~/.zfunc/_fctl  # or print them: bash, zsh, fish, elvish,
 ```
 
 `--install` writes the script under `~/.local/share/fctl/completions` (fish:
-`~/.config/fish/completions`) and adds a marked block to `~/.zshrc`,
-`~/.bashrc` (`~/.bash_profile` on macOS) once. Delete both to undo it.
+`~/.config/fish/completions`) and adds a marked block once to the end of
+`~/.zshrc` or `~/.bashrc`. Bash on macOS starts as a login shell, which reads
+only the first of `~/.bash_profile`, `~/.bash_login` and `~/.profile` that
+exists, so the block goes in that file (a new `~/.profile` if there is none).
+Delete the script and the block to undo it.
 
 ## Exit codes and output
 

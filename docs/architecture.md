@@ -41,7 +41,7 @@ before changing anything that crosses a component boundary.
 | `crates/fake-claude` | A scripted stand-in for `claude` that speaks stream-json. Used by tests and `cargo xtask dev`. | dev, CI |
 | `xtask` | Development automation (`cargo xtask dev`, `check`, `gen`, `deploy`, `dist`, `publish`). | dev, CI |
 | `web/` | The web app (React, Vite, TypeScript, WebGL). Served by fctl-control. | browser |
-| `images/agent` | The default sandbox image (Debian, git, gh, node, python, claude). | sandboxes |
+| `images/agent` | The default sandbox image (Debian, git, gh, node, python, claude, fctl). | sandboxes |
 
 Two more repositories complete the picture:
 [hyperstructure/design](https://github.com/hyperstructure/design)
@@ -170,7 +170,22 @@ session.
   its fields and the others in `repos`.
 
 Older hosts and agents ignore the list and the second token, and work on the
-primary repository alone.
+primary repository alone
+([ADR 0008](adr/0008-projects-span-an-accounts-repositories.md)).
+
+### Titles
+
+A session's title starts as the first line of its task. Once the agent
+understands the work it renames the session, and says in a sentence or two
+what it is about, with `fctl edit` in its sandbox; it does so again when
+the work turns to something else. fctl reaches fctl-agent over the session
+socket, and fctl-agent keeps the title and description in the session
+state it reports. SessionDO applies them when they differ from the agent's
+previous report, so a person's rename stands until the agent renames the
+session again, and writes them through to D1. fctl-agent tells Claude how
+in `~/AGENTS.md`, which Claude's user memory (`~/.claude/CLAUDE.md`)
+imports so it loads in every repository
+([ADR 0007](adr/0007-agents-name-their-sessions-through-fctl-agent.md)).
 
 ### Event flow and reliability
 
@@ -209,6 +224,15 @@ the control plane, which refreshes once per user and answers. With a full
 login, fctl-agent enables Remote Control with the `remote_control` control
 request, so the session also appears in claude.ai/code and the Claude apps.
 
+A full login also brings the person's claude.ai connectors (Claude Code
+fetches them with the `user:mcp_servers` scope). A project can turn them off
+(`claude_ai_connectors` in its settings): the control plane then adds
+`ENABLE_CLAUDEAI_MCP_SERVERS=false` to the environment in the session's
+spec, which every fctl-agent passes to Claude, and fctl-agent writes
+`disableClaudeAiConnectors` into Claude's user settings, which no
+repository settings can undo. An update that leaves the field out keeps
+the stored value, so a client from before it can't turn connectors back on.
+
 Guards against API billing: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 `ANTHROPIC_BASE_URL`, Bedrock/Vertex/Foundry switches and `apiKeyHelper` never
 reach Claude; the `system/init` message must report no API key source; a
@@ -227,9 +251,24 @@ running Linux sandbox and can exec processes in it with piped stdio.
 | `docker` | containers in Docker/OrbStack/Colima (a VM on macOS) | macOS, Linux |
 | `process` | none: a directory and a process | development, trusted hosts |
 
+A sandbox gets the CPUs and memory its project's settings ask for, or the
+host's default. Hosts send the default and a per-sandbox maximum in their
+hello (`HostHello.sandbox`): the configured `max_cpus` and `max_memory_mb`,
+within what the sandboxes run on (the Docker daemon's VM with Docker,
+otherwise the machine). FleetDO only assigns a session to a host whose
+maximum covers its size; one that fits nowhere stays queued with the reason,
+and the sessions queued behind it may start meanwhile. Hosts that send no
+limits (older versions) take any size. The host passes the size it applied
+to fctl-agent (`AgentConfig.sandbox`), which tells Claude: with Docker,
+`nproc` and `free` show the VM, not the sandbox's cgroup limits. The
+process driver limits nothing.
+
 fctl-agent runs detached inside the sandbox and listens on a unix socket; the
 host talks to it through `fctl-agent attach` over the driver's exec channel.
-Restarting or upgrading the host does not stop agents.
+Restarting or upgrading the host does not stop agents. A second socket beside
+it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
+serves programs in the sandbox: `fctl edit` names and describes the session
+there, with no fctl credentials in the sandbox.
 
 A stopped session keeps its sandbox, so resuming continues Claude's
 conversation. The host records when each one stopped (`stopped.json` in its
@@ -248,7 +287,8 @@ All protocols are JSON with a `type` tag and live in `fctl-proto`:
 - `viewer` — SessionDO ⇄ browser/CLI.
 - `runner` — FleetDO ⇄ host (control connection).
 - `uplink` — SessionDO ⇄ host (one per session).
-- `agent` — host ⇄ fctl-agent.
+- `agent` — host ⇄ fctl-agent, and `fctl` ⇄ fctl-agent in the sandbox
+  (the session socket).
 - `event` — the session event model shared by all of them.
 
 Changing a type means: update `fctl-proto`, run `cargo xtask gen` (regenerates

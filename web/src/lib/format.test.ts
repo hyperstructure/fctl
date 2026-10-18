@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agoShort, duration, initials, until } from "./format";
+import { agoShort, cpus, duration, initials, memory, sandboxLimits, until } from "./format";
 
 describe("format", () => {
   const now = Date.UTC(2026, 9, 17, 12, 0, 0);
@@ -26,6 +26,19 @@ describe("format", () => {
     expect(until(now + 30_000, now)).toBe("30s");
     expect(until(now + 10 * 60_000, now)).toBe("10 min");
     expect(until(now - 1, now)).toBe("0s");
+  });
+
+  it("formats sandbox sizes", () => {
+    expect(memory(512)).toBe("512 MiB");
+    expect(memory(1024)).toBe("1 GiB");
+    expect(memory(1536)).toBe("1.5 GiB");
+    expect(memory(8192)).toBe("8 GiB");
+    expect(memory(15_990)).toBe("15.6 GiB");
+    expect(cpus(1)).toBe("1 CPU");
+    expect(cpus(10)).toBe("10 CPUs");
+    expect(
+      sandboxLimits({ default: { cpus: 4, memory_mb: 8192 }, max: { cpus: 10, memory_mb: 15_990 } }),
+    ).toBe("4 CPUs and 8 GiB by default, at most 10 CPUs and 15.6 GiB");
   });
 
   it("derives initials", () => {

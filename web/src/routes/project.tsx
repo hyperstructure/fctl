@@ -2,8 +2,9 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { ArrowRight, ArrowUp, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
+import { StartButton, useStartSession } from "@/components/session/start";
 import {
   Avatar,
   Banner,
@@ -24,7 +25,7 @@ import {
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, agoShort, stamp } from "@/lib/format";
+import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
 import {
   keys,
   queryClient,
@@ -32,6 +33,7 @@ import {
   useMe,
   useProject,
   useProjectRepos,
+  useRunners,
   useSessions,
 } from "@/lib/queries";
 
@@ -136,7 +138,6 @@ export function ProjectPage() {
 }
 
 function Sessions({ project }: { project: G.Project }) {
-  const navigate = useNavigate();
   const [filter, setFilter] = useState<"active" | "all" | "mine">("all");
   const list = useSessions({
     project: project.slug,
@@ -146,18 +147,14 @@ function Sessions({ project }: { project: G.Project }) {
   });
   const [prompt, setPrompt] = useState("");
   const canStart = project.role !== "viewer";
-  const start = useMutation({
-    mutationFn: () => api.createSession(project.slug, { prompt }),
-    onSuccess: (s) => navigate({ to: "/s/$id", params: { id: s.id } }),
-    onError: (e) => toast(e.message, "error"),
-  });
+  const { start, starting } = useStartSession();
   return (
     <div className="flex flex-col gap-10">
       {canStart && (
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (prompt.trim()) start.mutate();
+            start(project.slug, prompt);
           }}
           className="relative rounded-2xl border border-line-strong bg-surface/80 transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-[0_0_0_4px_var(--c-accent-soft)]"
         >
@@ -165,11 +162,12 @@ function Sessions({ project }: { project: G.Project }) {
             bare
             minRows={2}
             value={prompt}
+            readOnly={starting}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && prompt.trim()) {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
-                start.mutate();
+                start(project.slug, prompt);
               }
             }}
             placeholder={`What should an agent do in ${project.name}?`}
@@ -177,16 +175,9 @@ function Sessions({ project }: { project: G.Project }) {
           />
           <div className="absolute right-3 bottom-3 flex items-center gap-3">
             <span className="text-[11.5px] text-ink-4">⌘↵</span>
-            <button
-              type="submit"
-              disabled={!prompt.trim() || start.isPending}
-              className={cn(
-                "flex h-9 items-center gap-2 rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all",
-                prompt.trim() ? "bg-ink text-canvas" : "bg-raised text-ink-4",
-              )}
-            >
-              Start a session <ArrowUp className="size-4" />
-            </button>
+            <StartButton starting={starting} disabled={!prompt.trim()}>
+              Start a session
+            </StartButton>
           </div>
         </form>
       )}
@@ -434,6 +425,25 @@ function Repositories({ project }: { project: G.Project }) {
   );
 }
 
+/** The most CPUs and memory any enabled runner gives a sandbox, when runners say. */
+function LargestSandbox() {
+  const runners = useRunners();
+  const limits = (runners.data?.runners ?? [])
+    .filter((r) => r.status !== "disabled")
+    .flatMap((r) => (r.sandbox ? [r.sandbox.max] : []));
+  if (limits.length === 0) return null;
+  const most = {
+    cpus: Math.max(...limits.map((l) => l.cpus)),
+    memory_mb: Math.max(...limits.map((l) => l.memory_mb)),
+  };
+  return (
+    <p className="-mt-2 text-[12.5px] text-ink-3">
+      Empty CPUs and Memory take the runner's default. Runners give a sandbox at most {cpus(most.cpus)} and{" "}
+      {memory(most.memory_mb)}; a session that asks for more stays queued.
+    </p>
+  );
+}
+
 function Settings({ project }: { project: G.Project }) {
   const [s, setS] = useState<G.ProjectSettings>(project.settings);
   const [name, setName] = useState(project.name);
@@ -574,6 +584,20 @@ function Settings({ project }: { project: G.Project }) {
               label="Remote Control"
             />
           </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              claude.ai connectors
+              <span className="block text-[12.5px] text-ink-4">
+                Agents can use the connectors of the person who starts a session (mail, files, docs) without
+                asking. Only with a full Claude login.
+              </span>
+            </span>
+            <Switch
+              checked={s.claude_ai_connectors}
+              onChange={(v) => set("claude_ai_connectors", v)}
+              label="claude.ai connectors"
+            />
+          </div>
         </div>
       </Section>
       <Section title="Sandbox" description="Where agents run.">
@@ -651,6 +675,7 @@ function Settings({ project }: { project: G.Project }) {
               )}
             </Field>
           </div>
+          <LargestSandbox />
           <Field
             label="Environment"
             hint="KEY=value per line. Not secret; use Secrets for credentials."

@@ -4,6 +4,7 @@ use crate::config;
 use crate::style;
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use fctl_domain::size;
 use fctl_proto::session::InstanceRole;
 
 #[derive(Subcommand)]
@@ -130,6 +131,24 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     r.capacity,
                     style::dim(&r.version.unwrap_or_default())
                 );
+                if let Some(l) = &r.sandbox {
+                    println!(
+                        "  {}",
+                        style::dim(&format!("sandboxes: {}", size::limits(l)))
+                    );
+                }
+                let free: Vec<String> = [
+                    r.memory_available_mb
+                        .map(|m| format!("{} of memory", size::memory(m))),
+                    r.disk_available_mb
+                        .map(|d| format!("{} of disk", size::memory(d))),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if !free.is_empty() {
+                    println!("  {}", style::dim(&format!("free: {}", free.join(", "))));
+                }
             }
         }
     }

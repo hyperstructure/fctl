@@ -72,13 +72,46 @@ pub struct Claude {
 /// become commit messages; the session link is in the system prompt).
 /// `attribution.pr` is the long-supported form: a Claude Code that rejects a
 /// key skips the whole file, permissions included.
-pub fn user_settings() -> Value {
-    json!({
+///
+/// Without `claude_ai_connectors`, `disableClaudeAiConnectors` too: a
+/// repository's settings can set `ENABLE_CLAUDEAI_MCP_SERVERS` back on, but
+/// no settings source can undo this one. Claude Code skips keys it doesn't
+/// know (2.1.302 does), so one from before the key only has the variable.
+pub fn user_settings(claude_ai_connectors: bool) -> Value {
+    let mut settings = json!({
         "$schema": "https://json.schemastore.org/claude-code-settings.json",
         "permissions": { "defaultMode": "bypassPermissions" },
         "env": { "DISABLE_AUTOUPDATER": "1" },
         "attribution": { "pr": "" }
-    })
+    });
+    if !claude_ai_connectors {
+        settings["disableClaudeAiConnectors"] = json!(true);
+    }
+    settings
+}
+
+/// The line in `~/.claude/CLAUDE.md`, Claude's user memory, that loads
+/// fctl's `~/AGENTS.md`. User memory loads in every repository (also when
+/// fctl ignores the repository's settings), and unlike a CLAUDE.md beside
+/// the checkout it never makes Claude skip a repository's own AGENTS.md.
+pub const AGENTS_IMPORT: &str = "@~/AGENTS.md";
+
+/// Writes `~/AGENTS.md` and imports it into Claude's user memory, keeping
+/// whatever else the image put there.
+pub fn write_instructions(home: &Path, agents_md: &str) -> Result<()> {
+    std::fs::write(home.join("AGENTS.md"), agents_md)?;
+    let memory = home.join(".claude/CLAUDE.md");
+    let mut text = std::fs::read_to_string(&memory).unwrap_or_default();
+    if !text.lines().any(|l| l.trim() == AGENTS_IMPORT) {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(AGENTS_IMPORT);
+        text.push('\n');
+        std::fs::create_dir_all(home.join(".claude"))?;
+        std::fs::write(&memory, text)?;
+    }
+    Ok(())
 }
 
 /// Whether Claude Code has this conversation under `home`: it keeps them as
@@ -360,10 +393,41 @@ mod tests {
 
     #[test]
     fn user_settings_keep_pull_requests_plain() {
-        let s = user_settings();
+        let s = user_settings(true);
         assert_eq!(s["attribution"]["pr"], "");
         assert_eq!(s["permissions"]["defaultMode"], "bypassPermissions");
         assert!(s.get("apiKeyHelper").is_none());
+    }
+
+    #[test]
+    fn user_settings_turn_connectors_off() {
+        assert!(
+            user_settings(true)
+                .get("disableClaudeAiConnectors")
+                .is_none()
+        );
+        let s = user_settings(false);
+        assert_eq!(s["disableClaudeAiConnectors"], true);
+        assert_eq!(s["permissions"]["defaultMode"], "bypassPermissions");
+    }
+
+    #[test]
+    fn user_memory_imports_agents_md_once() -> anyhow::Result<()> {
+        let home = tempfile::tempdir()?;
+        write_instructions(home.path(), "# fctl\n")?;
+        write_instructions(home.path(), "# fctl\n")?;
+        let memory = std::fs::read_to_string(home.path().join(".claude/CLAUDE.md"))?;
+        assert_eq!(memory, "@~/AGENTS.md\n");
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("AGENTS.md"))?,
+            "# fctl\n"
+        );
+        // An image's own user memory stays, with the import after it.
+        std::fs::write(home.path().join(".claude/CLAUDE.md"), "Use pnpm.")?;
+        write_instructions(home.path(), "# fctl\n")?;
+        let memory = std::fs::read_to_string(home.path().join(".claude/CLAUDE.md"))?;
+        assert_eq!(memory, "Use pnpm.\n@~/AGENTS.md\n");
+        Ok(())
     }
 
     #[test]

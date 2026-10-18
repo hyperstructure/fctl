@@ -94,7 +94,9 @@ starts again after a reboot or a power cut.
 In the app, choose **New project**. Link an existing GitHub repository, create
 a new one, or start without a repository. Optionally add a setup script (it
 runs in the clone before the agent starts, e.g. `npm ci`) and instructions for
-agents. From the terminal:
+agents. The **claude.ai connectors** switch starts off: turn it on only if
+agents should use the connectors (mail, files, docs) of whoever starts a
+session, without asking. From the terminal:
 
 ```sh
 fctl projects create "My app" --repo my-org/my-app
@@ -119,7 +121,9 @@ agent keeps working. The agent works on a branch named
 `fctl/<number>-<title>`, commits as it goes, pushes, and opens a pull request
 when it is done (projects can turn that off). In the project's other
 repositories it changes, it uses the same branch and opens a pull request in
-each.
+each. Once it understands the task it renames the session to what it is
+working on and describes it in a sentence or two, so the floor shows the work
+rather than the first line of your task.
 
 ## 7. Follow along and steer
 

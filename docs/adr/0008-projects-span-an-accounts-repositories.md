@@ -1,4 +1,4 @@
-# 0007: Projects span the repositories of one GitHub account
+# 0008: Projects span the repositories of one GitHub account
 
 2026-10-18 · accepted
 

@@ -9,13 +9,15 @@ use crate::model::{
     CredentialRow, CredentialSecret, PROJECT_SELECT, ProjectRow, REPO_SELECT, RepoRow,
     SESSION_SELECT, SessionRow,
 };
+use fctl_domain::size::Want;
 use fctl_proto::runner::{
     ClaudeCredential, ClaudeCredentialKind, GitIdentity, ProjectSpec, SessionCredentials,
     SessionRepo, SessionSpec,
 };
-use fctl_proto::session::{RepoGrant, RepoRef};
+use fctl_proto::session::{ProjectSettings, RepoGrant, RepoRef};
 use fctl_proto::{ApiError, CredentialId, ErrorCode, ProjectId};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use worker::{D1Database, Fetch, Headers, Method, Request, RequestInit};
 
 /// Claude Code's OAuth client and token endpoint (as `claude` itself uses them).
@@ -53,6 +55,31 @@ pub async fn project_row(db: &D1Database, id: &str) -> AppResult<Option<ProjectR
 pub async fn grants(db: &D1Database, project_id: &str) -> AppResult<Vec<RepoGrant>> {
     let rows: Vec<RepoRow> = q(db, REPO_SELECT, &[s(project_id)])?.all().await?;
     Ok(rows.iter().map(RepoRow::grant).collect())
+}
+
+/// The CPUs and memory each of these sessions asks for (its project's
+/// sandbox settings), in one query.
+pub async fn session_wants(db: &D1Database, ids: &[&str]) -> AppResult<HashMap<String, Want>> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        id: String,
+        settings: String,
+    }
+    let rows: Vec<Row> = q(
+        db,
+        "SELECT s.id AS id, p.settings AS settings FROM sessions s JOIN projects p ON p.id = s.project_id \
+         WHERE s.id IN (SELECT value FROM json_each(?))",
+        &[s(&serde_json::to_string(ids)?)],
+    )?
+    .all()
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let settings: ProjectSettings = serde_json::from_str(&r.settings).unwrap_or_default();
+            (r.id, Want::of(&settings))
+        })
+        .collect())
 }
 
 pub async fn build(
@@ -96,6 +123,10 @@ pub async fn build(
     let secrets = crate::api::projects::decrypted_secrets(db, keys, &project.id).await?;
     let author = creator(db, &row.created_by).await?;
     let git_author = bot_identity(cfg, now).await;
+    let mut settings = project.settings();
+    // Agents from before `claude_ai_connectors` ignore it, but every agent
+    // passes the project's environment on to Claude. Not stored.
+    settings.env = fctl_domain::settings::session_env(&settings);
     Ok(SessionSpec {
         session_id: row.session_id(),
         number: row.number.max(0) as u32,
@@ -106,7 +137,7 @@ pub async fn build(
             name: project.name.clone(),
             repo,
             default_branch: project.default_branch.clone(),
-            settings: project.settings(),
+            settings,
             repos,
         },
         branch: row

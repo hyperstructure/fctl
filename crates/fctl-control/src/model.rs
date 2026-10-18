@@ -1,6 +1,7 @@
 //! Database rows and their conversion to wire types.
 
 use crate::db::{int, int_bool, opt_int};
+use crate::internal::LiveRunners;
 use fctl_proto::api::{
     AllowEntry, ClaudeCredentialInfo, CredentialStatus, Identity, ProjectRepo, Runner,
     RunnerStatus, User, UserStatus,
@@ -300,6 +301,7 @@ pub struct SessionRow {
     #[serde(deserialize_with = "int")]
     pub number: i64,
     pub title: String,
+    pub description: Option<String>,
     pub prompt: String,
     pub status: String,
     pub status_reason: Option<String>,
@@ -364,6 +366,7 @@ impl SessionRow {
             project_slug: self.project_slug.clone(),
             number: self.number.max(0) as u32,
             title: self.title.clone(),
+            description: self.description.clone(),
             status: self.status(),
             status_reason: self.status_reason.clone(),
             resume_at: self.resume_at,
@@ -405,7 +408,7 @@ impl SessionRow {
 
 /// SELECT for sessions with the caller's project and share roles.
 /// Bind: `?1` = caller user id.
-pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.prompt, \
+pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
     s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.remote_control, s.stats, s.archived, \
@@ -442,8 +445,10 @@ impl RunnerRow {
             .and_then(|s| serde_json::from_str(s).ok())
     }
 
-    pub fn to_runner(&self, online: bool) -> Runner {
+    pub fn to_runner(&self, live: &LiveRunners) -> Runner {
         let hello = self.hello();
+        let online = live.online.contains(&self.id);
+        let free = live.free.get(&self.id).copied().unwrap_or_default();
         Runner {
             id: RunnerId(self.id.clone()),
             name: self.name.clone(),
@@ -467,6 +472,9 @@ impl RunnerRow {
             active_sessions: self.active_sessions.max(0) as u32,
             cpus: hello.as_ref().map(|h| h.cpus),
             memory_mb: hello.as_ref().map(|h| h.memory_mb),
+            memory_available_mb: free.memory_mb,
+            disk_available_mb: free.disk_mb,
+            sandbox: hello.as_ref().and_then(|h| h.sandbox),
             labels: hello.as_ref().map(|h| h.labels.clone()).unwrap_or_default(),
             last_seen_at: self.last_seen_at,
             created_at: self.created_at,

@@ -7,7 +7,7 @@ use clap::Subcommand;
 use fctl_proto::api::{
     AddProjectRepoRequest, CreateProjectRequest, CreateRepoRequest, ProjectRepoList,
 };
-use fctl_proto::session::RepoAccess;
+use fctl_proto::session::{ProjectSettings, RepoAccess};
 use std::io::{BufRead, IsTerminal, Write};
 
 #[derive(Subcommand)]
@@ -35,6 +35,11 @@ pub enum ProjectsCmd {
         /// A sentence for people (agents do not see it).
         #[arg(long)]
         description: Option<String>,
+        /// Turn off claude.ai connectors in the project's sessions. With
+        /// them, agents can use the connectors (mail, files, docs) of the
+        /// person who starts a session without asking.
+        #[arg(long)]
+        no_connectors: bool,
     },
     /// Use this project by default for `fctl run` and `fctl sessions`.
     Use {
@@ -236,6 +241,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             public,
             slug,
             description,
+            no_connectors,
         } => {
             let req = CreateProjectRequest {
                 name,
@@ -248,7 +254,10 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     description: None,
                 }),
                 default_branch: None,
-                settings: None,
+                settings: no_connectors.then(|| ProjectSettings {
+                    claude_ai_connectors: false,
+                    ..Default::default()
+                }),
             };
             let p = api.create_project(&req).await?;
             if json {

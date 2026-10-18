@@ -12,10 +12,12 @@ use crate::internal::{
     Schedule, Stop,
 };
 use crate::spec;
+use fctl_domain::schedule::{Slot, Wait};
+use fctl_domain::size::Want;
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::runner::{
     ClaudeLoginUpdate, CredentialKind, FleetToHost, HostHello, HostSessionReport, HostToFleet,
-    StopReason,
+    SandboxLimits, StopReason,
 };
 use fctl_proto::session::{RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
@@ -77,6 +79,8 @@ struct RunnerSocket {
 struct QueueRow {
     session_id: String,
     attempts: f64,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -93,6 +97,34 @@ struct LiveRow {
     hello: Option<String>,
     connected: f64,
     last_seen: Option<f64>,
+    #[serde(default)]
+    memory_available_mb: Option<f64>,
+    #[serde(default)]
+    disk_available_mb: Option<f64>,
+}
+
+/// A connected runner, as scheduling sees it.
+struct Candidate {
+    id: String,
+    name: String,
+    capacity: u32,
+    active: u32,
+    labels: Vec<String>,
+    sandbox: Option<SandboxLimits>,
+}
+
+impl Candidate {
+    fn slot(&self) -> Slot<'_> {
+        Slot {
+            id: &self.id,
+            online: true,
+            enabled: true,
+            capacity: self.capacity,
+            active: self.active,
+            labels: &self.labels,
+            sandbox: self.sandbox,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -135,6 +167,10 @@ impl DurableObject for FleetObject {
         // Columns added after the first release. A failing statement throws past
         // Rust (workers-rs does not catch every SQL error), so check first.
         add_column(&sql, "assignments", "run_id", "TEXT");
+        // Why a queued session waits, as it last said.
+        add_column(&sql, "queue", "reason", "TEXT");
+        add_column(&sql, "runners", "memory_available_mb", "INTEGER");
+        add_column(&sql, "runners", "disk_available_mb", "INTEGER");
         Self {
             state,
             env,
@@ -354,7 +390,7 @@ impl FleetObject {
     fn live_rows(&self) -> Vec<LiveRow> {
         self.sql
             .exec(
-                "SELECT id, name, hello, connected, last_seen FROM runners",
+                "SELECT id, name, hello, connected, last_seen, memory_available_mb, disk_available_mb FROM runners",
                 None,
             )
             .and_then(|c| c.to_array::<LiveRow>())
@@ -366,6 +402,13 @@ impl FleetObject {
         for r in self.live_rows() {
             if r.connected > 0.0 && self.runner_socket(&r.id).is_some() {
                 out.online.push(r.id.clone());
+                out.free.insert(
+                    r.id.clone(),
+                    internal::Free {
+                        memory_mb: r.memory_available_mb.map(|m| m as u64),
+                        disk_mb: r.disk_available_mb.map(|d| d as u64),
+                    },
+                );
             }
             if let Some(t) = r.last_seen {
                 out.last_seen.insert(r.id, t as i64);
@@ -389,10 +432,7 @@ impl FleetObject {
         .await
         .map_err(|e| e.0)?;
         let live = self.live_runners();
-        Ok(rows
-            .iter()
-            .map(|r| r.to_runner(live.online.contains(&r.id)))
-            .collect())
+        Ok(rows.iter().map(|r| r.to_runner(&live)).collect())
     }
 
     async fn ensure_alarm(&self) {
@@ -432,9 +472,16 @@ impl FleetObject {
             HostToFleet::Hello(hello) => self.on_hello(ws, rs, *hello, now).await,
             HostToFleet::Heartbeat(hb) => {
                 let sessions = serde_json::to_string(&hb.sessions).unwrap_or_else(|_| "[]".into());
+                let mib =
+                    |v: Option<u64>| SqlStorageValue::from(v.and_then(|v| i64::try_from(v).ok()));
                 let _ = self.sql.exec(
-                    "UPDATE runners SET sessions = ? WHERE id = ?",
-                    Some(vec![sv(&sessions), sv(&rs.id)]),
+                    "UPDATE runners SET sessions = ?, memory_available_mb = ?, disk_available_mb = ? WHERE id = ?",
+                    Some(vec![
+                        sv(&sessions),
+                        mib(hb.memory_available_mb),
+                        mib(hb.disk_available_mb),
+                        sv(&rs.id),
+                    ]),
                 );
                 // Persist liveness in D1 now and then (every heartbeat is fine: one write per 15 s).
                 if let Ok(db) = self.env.d1("DB")
@@ -726,26 +773,42 @@ impl FleetObject {
             Some(vec![sv(b.session_id.as_str()), iv(now)]),
         );
         self.dispatch().await;
-        let still_queued = self
+        let queued = self
             .sql
             .exec(
-                "SELECT session_id, attempts FROM queue WHERE session_id = ?",
+                "SELECT session_id, attempts, reason FROM queue WHERE session_id = ?",
                 Some(vec![sv(b.session_id.as_str())]),
             )
             .and_then(|c| c.to_array::<QueueRow>())
-            .map(|r| !r.is_empty())
-            .unwrap_or(false);
-        if still_queued {
-            self.session_control(
-                &b.session_id,
-                Some(SessionStatus::Queued),
-                Some("Waiting for a runner".into()),
-                false,
-            )
-            .await;
+            .ok()
+            .and_then(|r| r.into_iter().next());
+        let still_queued = queued.is_some();
+        if let Some(item) = queued {
+            // Dispatch says why it waits; one already running skipped it.
+            if item.reason.is_none() {
+                self.note_waiting(&item, Wait::NoRunner.reason()).await;
+            }
             self.ensure_alarm().await;
         }
         Ok(serde_json::json!({ "ok": true, "queued": still_queued }))
+    }
+
+    /// Shows why a queued session waits, when that changed.
+    async fn note_waiting(&self, item: &QueueRow, reason: String) {
+        if item.reason.as_deref() == Some(reason.as_str()) {
+            return;
+        }
+        let _ = self.sql.exec(
+            "UPDATE queue SET reason = ? WHERE session_id = ?",
+            Some(vec![sv(&reason), sv(&item.session_id)]),
+        );
+        self.session_control(
+            &SessionId(item.session_id.clone()),
+            Some(SessionStatus::Queued),
+            Some(reason),
+            false,
+        )
+        .await;
     }
 
     async fn dispatch(&self) {
@@ -761,7 +824,7 @@ impl FleetObject {
         let now = now_ms();
         let queued: Vec<QueueRow> = self
             .sql
-            .exec("SELECT session_id, attempts FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
+            .exec("SELECT session_id, attempts, reason FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
             .and_then(|c| c.to_array::<QueueRow>())
             .unwrap_or_default();
         if queued.is_empty() {
@@ -773,9 +836,33 @@ impl FleetObject {
             worker::console_error!("FCTL_MASTER_KEY is missing: sessions cannot start");
             return;
         };
+        // What the sessions ask for, read when some runner could take one.
+        let wants = if self.candidates().is_empty() {
+            None
+        } else {
+            let ids: Vec<&str> = queued.iter().map(|q| q.session_id.as_str()).collect();
+            match spec::session_wants(&db, &ids).await {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    worker::console_error!("reading queued sessions' sizes: {}", e.0.message);
+                    return;
+                }
+            }
+        };
         for item in queued {
-            let Some((runner_id, runner_name)) = self.pick_runner() else {
-                break;
+            // A session that cannot start now says why and lets the ones
+            // behind it try: a smaller one may fit where it does not.
+            let Some(wants) = &wants else {
+                self.note_waiting(&item, Wait::NoRunner.reason()).await;
+                continue;
+            };
+            let want = wants.get(&item.session_id).copied().unwrap_or_default();
+            let (runner_id, runner_name) = match self.pick_runner(want) {
+                Ok(r) => r,
+                Err(wait) => {
+                    self.note_waiting(&item, wait.reason()).await;
+                    continue;
+                }
             };
             let session_id = SessionId(item.session_id.clone());
             let built = spec::build(&db, &cfg, &keys, &item.session_id, now).await;
@@ -873,8 +960,8 @@ impl FleetObject {
         }
     }
 
-    /// The least loaded connected runner with a free slot.
-    fn pick_runner(&self) -> Option<(String, String)> {
+    /// Connected runners that said hello, with their assigned sessions.
+    fn candidates(&self) -> Vec<Candidate> {
         #[derive(Deserialize)]
         struct C {
             runner_id: String,
@@ -888,8 +975,7 @@ impl FleetObject {
             )
             .and_then(|c| c.to_array::<C>())
             .unwrap_or_default();
-        let rows = self.live_rows();
-        let candidates: Vec<(LiveRow, u32, u32, Vec<String>)> = rows
+        self.live_rows()
             .into_iter()
             .filter(|r| r.connected > 0.0 && self.runner_socket(&r.id).is_some())
             .filter_map(|r| {
@@ -898,26 +984,30 @@ impl FleetObject {
                     .iter()
                     .find(|c| c.runner_id == r.id)
                     .map_or(0, |c| c.n as u32);
-                Some((r, hello.capacity, n, hello.labels))
+                Some(Candidate {
+                    id: r.id,
+                    name: r.name,
+                    capacity: hello.capacity,
+                    active: n,
+                    labels: hello.labels,
+                    sandbox: hello.sandbox,
+                })
             })
-            .collect();
-        let slots: Vec<fctl_domain::schedule::Slot<'_>> = candidates
-            .iter()
-            .map(|(r, cap, n, labels)| fctl_domain::schedule::Slot {
-                id: r.id.as_str(),
-                online: true,
-                enabled: true,
-                capacity: *cap,
-                active: *n,
-                labels: labels.as_slice(),
-            })
-            .collect();
-        let chosen = fctl_domain::schedule::pick(&slots, &[])?;
+            .collect()
+    }
+
+    /// The least loaded connected runner with a free slot that gives a
+    /// sandbox what the session wants, or why there is none.
+    fn pick_runner(&self, want: Want) -> std::result::Result<(String, String), Wait> {
+        let candidates = self.candidates();
+        let slots: Vec<Slot<'_>> = candidates.iter().map(Candidate::slot).collect();
+        let chosen = fctl_domain::schedule::pick(&slots, &[], want)?;
         let name = candidates
             .iter()
-            .find(|(r, ..)| r.id == chosen.id)
-            .map(|(r, ..)| r.name.clone())?;
-        Some((chosen.id.to_owned(), name))
+            .find(|c| c.id == chosen.id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        Ok((chosen.id.to_owned(), name))
     }
 
     async fn stop(&self, b: Stop) -> std::result::Result<serde_json::Value, ApiError> {

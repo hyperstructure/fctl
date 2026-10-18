@@ -1,4 +1,5 @@
-//! Host ⇄ fctl-agent (the supervisor inside a sandbox).
+//! Host ⇄ fctl-agent (the supervisor inside a sandbox), and `fctl` in the
+//! sandbox ⇄ fctl-agent.
 //!
 //! Framing: one JSON value per line (`\n`), UTF-8, compact. fctl-agent runs
 //! detached in the sandbox and listens on a unix socket; the host reaches it
@@ -6,12 +7,19 @@
 //! directly for the `process` driver). Several attaches over the lifetime of
 //! a session are normal: after each one the host sends `Replay` with the last
 //! `agent_seq` the control plane acknowledged.
+//!
+//! A second socket, the session socket ([`SESSION_SOCKET_ENV`]), serves
+//! programs inside the sandbox: `fctl edit` sends one [`SessionRequest`] and
+//! reads one [`SessionReply`]. That is how an agent names and describes its
+//! own session without credentials for the control plane.
 
-use crate::DeliveryId;
 use crate::event::LogLine;
-use crate::runner::{ClaudeCredential, CredentialKind, GithubCredential, SessionSpec, StopReason};
+use crate::runner::{
+    ClaudeCredential, CredentialKind, GithubCredential, SandboxSize, SessionSpec, StopReason,
+};
 use crate::session::SessionStatus;
 use crate::uplink::{AgentEvent, Delivery, SessionState};
+use crate::{ApiError, DeliveryId, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use std::collections::BTreeMap;
@@ -42,6 +50,10 @@ pub struct AgentConfig {
     /// session's earlier events, from a sandbox that no longer exists.
     #[serde(default)]
     pub first_agent_seq: Option<u64>,
+    /// What the sandbox is limited to, when its driver limits it (not the
+    /// process driver).
+    #[serde(default)]
+    pub sandbox: Option<SandboxSize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -142,4 +154,89 @@ pub enum AgentToHost {
         reason: Option<String>,
     },
     Pong,
+}
+
+/// The environment variable that holds the session socket's path, set for
+/// Claude and everything it runs.
+pub const SESSION_SOCKET_ENV: &str = "FCTL_SESSION_SOCKET";
+
+/// Longest request the session socket accepts.
+pub const MAX_SESSION_REQUEST_BYTES: usize = 64 * 1024;
+
+/// From `fctl` in the sandbox to fctl-agent: one per connection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionRequest {
+    /// Rename the session or say what it is about. Absent fields stay as
+    /// they are; an empty description clears it.
+    Edit {
+        /// The session the caller means (from `FCTL_SESSION_ID`); fctl-agent
+        /// refuses a request for another one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+}
+
+/// fctl-agent's answer on the session socket.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionReply {
+    /// The session as the agent now describes it. fctl-agent passes it on
+    /// to the control plane as soon as its host is connected.
+    Edited {
+        id: SessionId,
+        project_slug: String,
+        number: u32,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    Error {
+        error: ApiError,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::uplink::SessionState;
+
+    #[test]
+    fn session_socket_wire_format() -> Result<(), serde_json::Error> {
+        let req: SessionRequest =
+            serde_json::from_str(r#"{"type":"edit","title":"Fix the flaky login test"}"#)?;
+        assert_eq!(
+            req,
+            SessionRequest::Edit {
+                session_id: None,
+                title: Some("Fix the flaky login test".into()),
+                description: None,
+            }
+        );
+        let reply = serde_json::to_value(SessionReply::Edited {
+            id: SessionId("ses_1".into()),
+            project_slug: "widgets".into(),
+            number: 7,
+            title: "Fix the flaky login test".into(),
+            description: None,
+        })?;
+        assert_eq!(reply["type"], "edited");
+        assert_eq!(reply["id"], "ses_1");
+        assert!(reply.get("description").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn state_from_older_agents_has_no_title() -> Result<(), serde_json::Error> {
+        let st: SessionState = serde_json::from_str(r#"{"status":"running"}"#)?;
+        assert_eq!(st.title, None);
+        assert_eq!(st.description, None);
+        let json = serde_json::to_value(&st)?;
+        assert!(json.get("title").is_none());
+        Ok(())
+    }
 }

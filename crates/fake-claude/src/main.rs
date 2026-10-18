@@ -12,6 +12,7 @@
 //! |---|---|
 //! | (anything) | streams a short answer, runs a fake `Bash` tool, answers again |
 //! | `write <name>` | creates `<name>` in the working directory and commits it |
+//! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `slow` | streams for about ten seconds (try interrupting) |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds |
 //! | `overage` | reports paid extra usage starting |
@@ -20,7 +21,9 @@
 //!
 //! Environment: `FAKE_CLAUDE_API_KEY_SOURCE` overrides the reported
 //! `apiKeySource` (default `none`); `FAKE_CLAUDE_DELAY_MS` sets the delay
-//! between streamed chunks (default 25).
+//! between streamed chunks (default 25). `system/init` lists a claude.ai
+//! connector (`claude.ai Fake Docs`), as Claude Code does on a full login,
+//! unless `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, `0`, `no` or `off`.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -230,10 +233,45 @@ impl Session {
                 self.tool("Bash", json!({"command": format!("git add {name} && git commit -m 'Add {name}'"), "description": "Commit the file"}), &commit, false);
             }
         }
+        if let Some(title) = rename_to(text) {
+            let description = "Renamed by fake-claude with fctl edit.";
+            let out = std::process::Command::new("fctl")
+                .args(["edit", "--title", &title, "--description", description])
+                .output();
+            let (output, failed) = match out {
+                Ok(o) => (
+                    String::from_utf8_lossy(&o.stdout).into_owned()
+                        + &String::from_utf8_lossy(&o.stderr),
+                    !o.status.success(),
+                ),
+                Err(e) => (format!("fctl: {e}"), true),
+            };
+            self.tool(
+                "Bash",
+                json!({"command": format!("fctl edit --title {title:?} --description {description:?}"), "description": "Name the session"}),
+                &output,
+                failed,
+            );
+        }
         let done = "Done. Everything looks good: the change is committed and ready for review.";
         self.stream_text(done);
         self.result(started, done, "success");
     }
+}
+
+/// The title after `rename` (any case), to the end of its line.
+fn rename_to(text: &str) -> Option<String> {
+    let at = text.char_indices().find_map(|(i, _)| {
+        text.get(i..i + 7)
+            .filter(|w| w.eq_ignore_ascii_case("rename "))
+            .map(|_| i + 7)
+    })?;
+    let title = text[at..].lines().next().unwrap_or_default().trim();
+    Some(if title.is_empty() {
+        "Renamed by fake-claude".to_owned()
+    } else {
+        title.to_owned()
+    })
 }
 
 fn main() {
@@ -286,10 +324,21 @@ fn main() {
         }
     });
     let source = std::env::var("FAKE_CLAUDE_API_KEY_SOURCE").unwrap_or_else(|_| "none".into());
+    let connectors_off = std::env::var("ENABLE_CLAUDEAI_MCP_SERVERS").is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    });
+    let mcp_servers = if connectors_off {
+        json!([])
+    } else {
+        json!([{"name": "claude.ai Fake Docs", "status": "connected"}])
+    };
     let mut announced = false;
     let announce = |s: &Session| {
         out(
-            &json!({"type": "system", "subtype": "init", "apiKeySource": source, "claude_code_version": "2.1.999", "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": s.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": [], "model": s.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
+            &json!({"type": "system", "subtype": "init", "apiKeySource": source, "claude_code_version": "2.1.999", "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": s.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": mcp_servers, "model": s.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
         );
     };
     for v in rx.iter() {
@@ -341,5 +390,23 @@ fn main() {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rename_to;
+
+    #[test]
+    fn rename_takes_the_rest_of_the_line() {
+        assert_eq!(
+            rename_to("Please rename Fix the login test\nthanks").as_deref(),
+            Some("Fix the login test")
+        );
+        assert_eq!(
+            rename_to("RENAME  ").as_deref(),
+            Some("Renamed by fake-claude")
+        );
+        assert_eq!(rename_to("write notes.md"), None);
     }
 }
