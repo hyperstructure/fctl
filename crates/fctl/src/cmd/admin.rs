@@ -191,6 +191,16 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                         style::dim(&format!("sandboxes: {}", size::limits(l)))
                     );
                 }
+                if let Some(own) = &r.image {
+                    println!(
+                        "  {}",
+                        style::dim(&format!(
+                            "image: {own}; runs {}; builds images from {}",
+                            fctl_domain::image::describe_allowed(r.allowed_images.as_deref()),
+                            fctl_domain::image::describe_builds(r.allowed_builds.as_deref())
+                        ))
+                    );
+                }
                 let free: Vec<String> = [
                     r.memory_available_mb
                         .map(|m| format!("{} of memory", size::memory(m))),
