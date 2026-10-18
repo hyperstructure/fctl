@@ -2,6 +2,32 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.6.0 (2026-10-18)
+
+### Features
+
+- Let hosts allow and build projects' sandbox images ([#88](https://github.com/hyperstructure/fctl/pull/88))
+- **host:** Refresh the default sandbox image and remove old ones ([#89](https://github.com/hyperstructure/fctl/pull/89))
+- **host:** Make room when the disk runs low ([#93](https://github.com/hyperstructure/fctl/pull/93))
+
+### Fixes
+
+- **agent:** Keep the host's link when a second fctl-agent starts ([#82](https://github.com/hyperstructure/fctl/pull/82))
+- Keep fake-claude sessions running while they answer queued messages ([#85](https://github.com/hyperstructure/fctl/pull/85))
+- **agent:** Keep sessions up while agents wait for background tasks ([#91](https://github.com/hyperstructure/fctl/pull/91))
+
+### Documentation
+
+- Explain how Apple container sandboxes use CPUs, the clock and disk ([#77](https://github.com/hyperstructure/fctl/pull/77))
+- Say how agents in a session show recordings ([#78](https://github.com/hyperstructure/fctl/pull/78))
+- Tick the first real-Claude runs in the roadmap ([#81](https://github.com/hyperstructure/fctl/pull/81))
+
+### Other changes
+
+- **web:** Replace Biome's deprecated recommended field with preset ([#83](https://github.com/hyperstructure/fctl/pull/83))
+- **agent:** Fix a flaky test of the host socket's lock ([#84](https://github.com/hyperstructure/fctl/pull/84))
+- Run one fake-claude session through cargo xtask dev ([#86](https://github.com/hyperstructure/fctl/pull/86))
+
 ## 0.5.0 (2026-10-18)
 
 ### Features
