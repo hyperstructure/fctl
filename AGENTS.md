@@ -58,12 +58,14 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
 - Design: the brand palette is yellow `#ffff5d` (lime `#eaff81` on light
   backgrounds), hot pink `#ff00d8`, blue `#007eff`, blackish `#171717`,
   whiteish `#fafafa`. Red is for danger only (`danger`: destructive actions,
-  errors, failures). Use the semantic tokens, not raw colors. Inter (with
-  optical sizes) for text and display, JetBrains Mono for code and small
-  labels. Sentence case everywhere, no decorative uppercase eyebrows above
-  headings, no card grids for prose. Motion is quick and purposeful and
-  respects `prefers-reduced-motion`. The tokens, fonts, WebGL scenes and the
-  mark live in [hyperstructure/design](https://github.com/hyperstructure/design)
+  errors, failures). Hovered rows and buttons fill with `hover`, not
+  `raised`, which is white in the light theme. Use the semantic tokens, not
+  raw colors. Inter (with optical sizes) for text and display, JetBrains Mono
+  for code and small labels. Sentence case everywhere, no decorative
+  uppercase eyebrows above headings, no card grids for prose. Motion is
+  quick and purposeful and respects `prefers-reduced-motion`. The tokens,
+  fonts, WebGL scenes and the mark live in
+  [hyperstructure/design](https://github.com/hyperstructure/design)
   (`@hyperstructure/design`, pinned to a tag in `web/package.json`): change
   them there, tag a release, then bump the tag here.
 - Copy is plain and specific: say what happens ("The agent reads your message

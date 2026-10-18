@@ -157,7 +157,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                   onClick={e.run}
                   className={cn(
                     "flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-[13.5px] transition-colors",
-                    n === i ? "bg-raised text-ink" : "text-ink-2",
+                    n === i ? "bg-hover text-ink" : "text-ink-2",
                   )}
                 >
                   <span className="flex size-4 items-center justify-center text-ink-4">{e.icon}</span>

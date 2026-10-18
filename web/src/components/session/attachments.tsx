@@ -498,7 +498,7 @@ function ImageViewer({
             <a
               href={src}
               download={file.name}
-              className="flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-raised hover:text-ink"
+              className="flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink"
               aria-label={`Download ${file.name}`}
               title="Download"
             >
@@ -509,7 +509,7 @@ function ImageViewer({
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-raised hover:text-ink"
+            className="flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink"
           >
             <X className="size-3.5" />
           </button>
