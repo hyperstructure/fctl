@@ -172,10 +172,11 @@ frames are incremental. Older history is paged over HTTP.
 
 A task, message or resume can carry files: up to 10, of at most 20 MB each.
 
-1. Each file uploads on its own, `POST /api/v1/projects/{id}/attachments`
-   with the bytes as an `application/octet-stream` body, into the project's
-   FilesDO. The answer is an `Attachment` (id, name, media type, size, and
-   pixel size for images).
+1. Each file uploads on its own, the bytes as an `application/octet-stream`
+   body, into the project's FilesDO: `POST /api/v1/projects/{id}/attachments`
+   to start a session, `POST /api/v1/sessions/{id}/attachments` for a
+   message in one (for anyone who may message it). The answer is an
+   `Attachment` (id, name, media type, size, and pixel size for images).
 2. The message sends the ids. The control plane claims the uploads for the
    session (they must be the sender's and not sent in another session) and
    records them on the user message and the delivery; a task's files are

@@ -11,6 +11,6 @@ text: string,
  */
 client_id?: string, 
 /**
- * Files to send with it: ids from `POST /api/v1/projects/{id}/attachments`.
+ * Files to send with it: ids from `POST /api/v1/sessions/{id}/attachments`.
  */
 attachments?: Array<AttachmentId>, };

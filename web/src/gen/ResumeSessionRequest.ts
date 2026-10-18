@@ -3,6 +3,6 @@ import type { AttachmentId } from "./AttachmentId";
 
 export type ResumeSessionRequest = { prompt?: string, 
 /**
- * Files to send with the prompt: ids from `POST /api/v1/projects/{id}/attachments`.
+ * Files to send with the prompt: ids from `POST /api/v1/sessions/{id}/attachments`.
  */
 attachments?: Array<AttachmentId>, };

@@ -678,7 +678,7 @@ pub struct SendMessageRequest {
     pub text: String,
     /// Idempotency key; retries with the same key deliver once.
     pub client_id: Option<String>,
-    /// Files to send with it: ids from `POST /api/v1/projects/{id}/attachments`.
+    /// Files to send with it: ids from `POST /api/v1/sessions/{id}/attachments`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<AttachmentId>>", optional))]
     pub attachments: Vec<AttachmentId>,
@@ -695,7 +695,7 @@ pub struct SendMessageResponse {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct ResumeSessionRequest {
     pub prompt: Option<String>,
-    /// Files to send with the prompt: ids from `POST /api/v1/projects/{id}/attachments`.
+    /// Files to send with the prompt: ids from `POST /api/v1/sessions/{id}/attachments`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<AttachmentId>>", optional))]
     pub attachments: Vec<AttachmentId>,
