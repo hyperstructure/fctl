@@ -51,9 +51,10 @@ npm init -y >/dev/null && npm install playwright
 npx playwright install --with-deps chromium   # sudo installs its system libraries
 ```
 
-Run `cargo xtask dev`, and make what you want to show with the CLI and
-fake-claude (`docs/development.md`): with `FCTL_SERVER` and `FCTL_TOKEN`
-set, `cargo run -p fctl -- run -d -p playground "write notes.md"` starts a
+Run `cargo xtask dev` (in a fresh sandbox it needs `worker-build` first:
+#41), and make what you want to show with the CLI and fake-claude
+(`docs/development.md`): with `FCTL_SERVER` and `FCTL_TOKEN` set,
+`cargo run -p fctl -- run -d -p playground "write notes.md"` starts a
 session. Save this as `~/screenshots/shoot.mjs`. It signs in as the dev
 owner, asks for reduced motion and seeds `Math.random`, so the WebGL scenes
 hold still and draw the same frame on every load: before and after differ
