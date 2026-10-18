@@ -12,8 +12,9 @@
 # - Pull requests that change the image build it without publishing.
 #
 # Each architecture builds on its own runner and is pushed by digest, without
-# a tag, then checked with images/agent/check.sh; the last job tags the two
-# as one image. Moving tags move only to the newest release they cover.
+# a tag, then checked with the release's images/agent/check.sh (this commit's
+# for releases from before it); the last job tags the two as one image. Moving
+# tags move only to the newest release they cover.
 name: Image
 
 on:
@@ -149,7 +150,8 @@ jobs:
       CREATED: ${{ needs.plan.outputs.created }}
       PUSH: ${{ needs.plan.outputs.push }}
     steps:
-      # This workflow's commit, for check.sh, and the image's sources at the release.
+      # This workflow's commit, for releases without check.sh, and the image's
+      # sources at the release.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -196,7 +198,11 @@ jobs:
           CHECK: ${{ steps.build.outputs.image }}
           ARCH: ${{ matrix.arch }}
         run: |
-          docker run --rm -i -e FCTL_VERSION="$VERSION" -e CLAUDE_VERSION="$CLAUDE" "$CHECK" sh -s < images/agent/check.sh
+          # A release's own check.sh describes the image built from its tree, so
+          # rebuilds of it pass however images/agent changes on main since.
+          script=release/images/agent/check.sh
+          [ -f "$script" ] || script=images/agent/check.sh
+          docker run --rm -i -e FCTL_VERSION="$VERSION" -e CLAUDE_VERSION="$CLAUDE" "$CHECK" sh -s < "$script"
           docker image inspect --format '{{.Size}}' "$CHECK" |
             awk -v arch="$ARCH" '{ printf "%s: %.2f GB\n", arch, $1 / 1e9 }' >> "$GITHUB_STEP_SUMMARY"
       - name: Note its digest
