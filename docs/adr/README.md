@@ -23,3 +23,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0015](0015-runners-drain-and-their-sessions-carry-on.md) | Runners drain, and their sessions carry on |
 | [0016](0016-uninstalling-a-host-stops-its-sessions-first.md) | Uninstalling a host stops its sessions first |
 | [0017](0017-hosts-choose-the-images-they-run-and-build.md) | Hosts choose the images they run and build |
+| [0018](0018-hosts-make-room-when-their-disk-runs-low.md) | Hosts make room when their disk runs low |

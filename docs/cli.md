@@ -194,13 +194,13 @@ fctl host uninstall --wait       # drain, and uninstall once none runs
 fctl host uninstall --force      # stop the sessions here now, then uninstall
 ```
 
-Drain a host before maintenance, or when its disk fills up: no new session
-starts on it, and the sessions it has carry on there. Those that wait for a
-message stop once they have waited a minute, and a message resumes each of
-them on this host, where its sandbox has Claude's conversation. So the host
-is empty whenever no turn runs, and `--wait` returns then. Admins can drain
-a runner too, from the runners list or with `fctl admin drain`; whoever
-drained it, either can stop the drain.
+Drain a host before maintenance: no new session starts on it, and the
+sessions it has carry on there. Those that wait for a message stop once
+they have waited a minute, and a message resumes each of them on this host,
+where its sandbox has Claude's conversation. So the host is empty whenever
+no turn runs, and `--wait` returns then. Admins can drain a runner too,
+from the runners list or with `fctl admin drain`; whoever drained it,
+either can stop the drain.
 
 `fctl host uninstall` stops the service, so it never leaves sessions to
 agents nobody sees: when sessions run on the host, it lists them and asks
@@ -227,6 +227,7 @@ memory_mb = 8192         # per sandbox, when the project sets none
 max_cpus = 8             # the most one sandbox may have (unset: all there is)
 max_memory_mb = 12288
 keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them)
+min_free_disk_gb = 20    # disk to keep free for sandboxes (0 keeps none)
 # allowed_images = ["ghcr.io/acme/*"]   # images projects may choose (unset: any)
 # allowed_builds = ["acme/*"]           # repositories it builds images from (unset: none)
 build_timeout_minutes = 60
@@ -261,12 +262,34 @@ Agents are told their sandbox's size in their instructions and in
 `container`, `nproc` counts one CPU more than the sandbox may use.
 
 A stopped session's sandbox takes disk on the host until it has been
-stopped for `keep_stopped_hours`. With Apple's `container`, that is the
-most the session ever stored, even after it deleted the files (a build of
-fctl leaves about 5.5 GB), and `df` in the sandbox shows its 512 GiB disk
-image rather than what the Mac has free. On a Mac short of disk, lower
-`keep_stopped_hours` and run `fctl host restart`: the host removes the
-sandboxes stopped for longer as it starts, and looks again every hour.
+stopped for `keep_stopped_hours`, or until the disk runs low. With Apple's
+`container`, that is the most the session ever stored, even after it
+deleted the files (a build of fctl leaves about 5.5 GB), and `df` in the
+sandbox shows its 512 GiB disk image rather than what the Mac has free.
+
+The host keeps `min_free_disk_gb` free (20 GiB unless `host.toml` says
+otherwise) on the disk where its sandboxes are: Apple's `container` app
+root, Lima's `~/.lima`, Docker's root directory or, with Docker on macOS,
+the disk inside its VM, and the data directory with the process driver. It
+measures every 30 seconds (inside Docker's VM every five minutes, since
+that starts a container). With less free than that:
+
+- It removes stopped sandboxes before `keep_stopped_hours`, those stopped
+  longest first, one at a time, until there is enough free again. A
+  message to one of those sessions resumes it in a new sandbox on its
+  branch, with what the agent pushed, and Claude starts a new conversation.
+- It takes no new sessions meanwhile, only resumes of the sessions whose
+  sandboxes it still has. A session that has nowhere else to go stays
+  queued and says "Waiting for a runner: the ones online are low on disk".
+- `fctl host status`, `fctl host doctor`, `fctl admin runners` and the
+  runners list say how much is free.
+
+Sessions that run carry on, and nothing stops them for disk. When no
+stopped sandbox is left to remove, the host takes sessions again once
+running ones stop and the host removes their sandboxes, or once something
+else frees space. Set `min_free_disk_gb = 0` to remove sandboxes by age
+only, or lower `keep_stopped_hours` to remove them sooner whatever the disk
+has, and run `fctl host restart` after changing either.
 
 ## Admin
 

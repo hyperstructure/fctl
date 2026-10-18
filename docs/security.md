@@ -210,8 +210,10 @@ credentials.
   transcripts there; each downloads from its session.
 - Hosts keep a stopped session's sandbox so it can resume, and remove it
   once it has been stopped for `keep_stopped_hours` (72 by default; 0 keeps
-  them). Resuming after that starts a new sandbox on the session's branch,
-  with everything that was pushed, and a new Claude conversation.
+  them), or sooner when their disk has less free than `min_free_disk_gb`
+  (20 GiB by default). Resuming after that starts a new sandbox on the
+  session's branch, with everything that was pushed, and a new Claude
+  conversation.
 
 ## Reporting a vulnerability
 
