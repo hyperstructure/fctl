@@ -16,6 +16,18 @@ pub struct Slot<'a> {
     pub sandbox: Option<SandboxLimits>,
 }
 
+/// The runner that keeps a session's sandbox from an earlier run: there,
+/// Claude continues the same conversation, with the work it left in the
+/// sandbox.
+#[derive(Clone, Copy, Debug)]
+pub struct Home<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    /// Whether the session waits for it while it runs as many sessions as
+    /// it may, rather than starting elsewhere in a new sandbox.
+    pub wait: bool,
+}
+
 /// Why no runner takes a session now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wait {
@@ -23,6 +35,8 @@ pub enum Wait {
     NoRunner,
     /// The runners that could take it run as many sessions as they may.
     Busy,
+    /// The runner that keeps its sandbox runs as many sessions as it may.
+    Home { name: String },
     /// No online runner gives a sandbox this many CPUs or this much memory.
     TooBig {
         /// The part of its size no runner gives (`None`: some runner gives it).
@@ -40,6 +54,7 @@ impl Wait {
     pub fn reason(&self) -> String {
         match self {
             Self::NoRunner | Self::Busy => "Waiting for a runner".into(),
+            Self::Home { name } => format!("Waiting for {name}, which has this session's sandbox"),
             Self::TooBig {
                 cpus,
                 memory_mb,
@@ -79,10 +94,15 @@ fn parts(cpus: Option<u32>, memory_mb: Option<u32>, memory_suffix: &str) -> Stri
 /// The least loaded online runner with a free slot that has every required
 /// label and gives a sandbox the size the session wants. Ties go to the
 /// runner listed first.
+///
+/// A session's `home` comes first when it is online and could take it: with
+/// a free slot it gets the session, and without one the session waits for
+/// it if `home.wait` says so.
 pub fn pick<'a>(
     slots: &'a [Slot<'a>],
     required_labels: &[String],
     want: Want,
+    home: Option<Home<'_>>,
 ) -> Result<&'a Slot<'a>, Wait> {
     let online: Vec<&Slot> = slots
         .iter()
@@ -91,6 +111,21 @@ pub fn pick<'a>(
         .collect();
     if online.is_empty() {
         return Err(Wait::NoRunner);
+    }
+    if let Some(home) = home
+        && let Some(slot) = online
+            .iter()
+            .copied()
+            .find(|s| s.id == home.id && s.sandbox.is_none_or(|l| want.fits(&l)))
+    {
+        if slot.active < slot.capacity {
+            return Ok(slot);
+        }
+        if home.wait {
+            return Err(Wait::Home {
+                name: home.name.to_owned(),
+            });
+        }
     }
     let fitting: Vec<&Slot> = online
         .iter()
@@ -181,13 +216,16 @@ mod tests {
             slot("d", 1, 1, &none),
         ];
         let any = Want::default();
-        assert_eq!(pick(&slots, &[], any).map(|s| s.id), Ok("b"));
-        assert_eq!(pick(&slots, &gpu, any).map(|s| s.id), Ok("b"));
+        assert_eq!(pick(&slots, &[], any, None).map(|s| s.id), Ok("b"));
+        assert_eq!(pick(&slots, &gpu, any, None).map(|s| s.id), Ok("b"));
         assert_eq!(
-            pick(&slots[2..3], &[], any).map(|s| s.id),
+            pick(&slots[2..3], &[], any, None).map(|s| s.id),
             Err(Wait::NoRunner)
         );
-        assert_eq!(pick(&slots[3..], &[], any).map(|s| s.id), Err(Wait::Busy));
+        assert_eq!(
+            pick(&slots[3..], &[], any, None).map(|s| s.id),
+            Err(Wait::Busy)
+        );
     }
 
     #[test]
@@ -205,18 +243,18 @@ mod tests {
         ];
         // The idle runner first, while the session fits there.
         assert_eq!(
-            pick(&slots, &[], memory(8192)).map(|s| s.id),
+            pick(&slots, &[], memory(8192), None).map(|s| s.id),
             Ok("docker-vm")
         );
         assert_eq!(
-            pick(&slots, &[], memory(16_384)).map(|s| s.id),
+            pick(&slots, &[], memory(16_384), None).map(|s| s.id),
             Ok("studio")
         );
         let many = Want {
             cpus: Some(12),
             memory_mb: None,
         };
-        assert_eq!(pick(&slots, &[], many).map(|s| s.id), Ok("studio"));
+        assert_eq!(pick(&slots, &[], many, None).map(|s| s.id), Ok("studio"));
         // The only runner that fits is full: it waits for that one.
         let full = [
             slots[0].clone(),
@@ -226,7 +264,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            pick(&full, &[], memory(16_384)).map(|s| s.id),
+            pick(&full, &[], memory(16_384), None).map(|s| s.id),
             Err(Wait::Busy)
         );
     }
@@ -235,7 +273,10 @@ mod tests {
     fn older_hosts_take_any_size() {
         let none: Vec<String> = vec![];
         let slots = [slot("old", 4, 0, &none)];
-        assert_eq!(pick(&slots, &[], memory(262_144)).map(|s| s.id), Ok("old"));
+        assert_eq!(
+            pick(&slots, &[], memory(262_144), None).map(|s| s.id),
+            Ok("old")
+        );
     }
 
     #[test]
@@ -251,7 +292,7 @@ mod tests {
                 ..slot("b", 4, 0, &none)
             },
         ];
-        let reason = |want: Want| pick(&slots, &[], want).err().map(|w| w.reason());
+        let reason = |want: Want| pick(&slots, &[], want, None).err().map(|w| w.reason());
         assert_eq!(
             reason(memory(131_072)).as_deref(),
             Some("No runner can give this session 128 GiB of memory (the most is 64 GiB)")
@@ -282,6 +323,80 @@ mod tests {
             })
             .as_deref(),
             Some("No runner can give this session both 8 CPUs and 32 GiB of memory")
+        );
+    }
+
+    fn home(id: &str, wait: bool) -> Option<Home<'_>> {
+        Some(Home { id, name: id, wait })
+    }
+
+    #[test]
+    fn a_resume_goes_back_to_its_sandbox() {
+        let none: Vec<String> = vec![];
+        let slots = [slot("idle", 4, 0, &none), slot("studio", 4, 3, &none)];
+        let any = Want::default();
+        // Busier, but it has the sandbox.
+        assert_eq!(
+            pick(&slots, &[], any, home("studio", true)).map(|s| s.id),
+            Ok("studio")
+        );
+        // Full: the session waits for it, or starts elsewhere once it no
+        // longer waits.
+        let full = [
+            slots[0].clone(),
+            Slot {
+                active: 4,
+                ..slots[1].clone()
+            },
+        ];
+        assert_eq!(
+            pick(&full, &[], any, home("studio", true)).map(|s| s.id),
+            Err(Wait::Home {
+                name: "studio".into()
+            })
+        );
+        assert_eq!(
+            pick(&full, &[], any, home("studio", false)).map(|s| s.id),
+            Ok("idle")
+        );
+        assert_eq!(
+            Wait::Home {
+                name: "studio".into()
+            }
+            .reason(),
+            "Waiting for studio, which has this session's sandbox"
+        );
+    }
+
+    #[test]
+    fn a_resume_whose_home_cannot_take_it_starts_elsewhere() {
+        let none: Vec<String> = vec![];
+        let slots = [
+            slot("idle", 4, 0, &none),
+            Slot {
+                online: false,
+                ..slot("asleep", 4, 0, &none)
+            },
+            Slot {
+                sandbox: limits(4, 8192),
+                active: 4,
+                ..slot("small", 4, 4, &none)
+            },
+        ];
+        // Offline: it doesn't wait.
+        assert_eq!(
+            pick(&slots, &[], Want::default(), home("asleep", true)).map(|s| s.id),
+            Ok("idle")
+        );
+        // Too small now (the project asks for more): it doesn't wait either.
+        assert_eq!(
+            pick(&slots, &[], memory(16_384), home("small", true)).map(|s| s.id),
+            Ok("idle")
+        );
+        // Gone.
+        assert_eq!(
+            pick(&slots, &[], Want::default(), home("removed", true)).map(|s| s.id),
+            Ok("idle")
         );
     }
 }

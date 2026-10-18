@@ -4,7 +4,7 @@
 use crate::config::{HostConfig, means_default_image};
 use crate::driver::{AgentIo, Driver, Sandbox, SandboxSpec, sandbox_name};
 use crate::files;
-use crate::liveness::{Check, Health, Retry};
+use crate::liveness::{Check, Health, Reach, Reached, Retry};
 use crate::uplink::Uplink;
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -17,8 +17,11 @@ use fctl_proto::runner::{
     SessionSpec, StopReason,
 };
 use fctl_proto::session::SessionStatus;
-use fctl_proto::uplink::{Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown};
-use fctl_proto::{ApiError, ErrorCode, RunnerId, SessionId};
+use fctl_proto::uplink::{
+    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown,
+    UplinkUp,
+};
+use fctl_proto::{ApiError, ErrorCode, Millis, RunnerId, SessionId};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -414,6 +417,24 @@ fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     });
 }
 
+/// Tells the session's viewers whether the host reaches the agent.
+fn report_reach(uplink: &Uplink, reached: Reached) {
+    let unreachable = match reached {
+        Reached::Not { since, reason } => Some(AgentUnreachable {
+            since: wall_ms(since),
+            reason,
+        }),
+        Reached::Again => None,
+    };
+    uplink.send(UplinkUp::AgentLink { unreachable });
+}
+
+/// `t` as milliseconds since the Unix epoch.
+fn wall_ms(t: Instant) -> Millis {
+    let ago = Instant::now().saturating_duration_since(t).as_millis();
+    crate::expiry::now_ms() - i64::try_from(ago).unwrap_or(i64::MAX)
+}
+
 async fn prepare(ctx: &HostCtx, spec: &SessionSpec, uplink: &Uplink) -> Result<Sandbox> {
     let (image, fallback_image) = match spec.project.settings.image.as_deref() {
         Some(image) if !means_default_image(image) => (image.to_owned(), None),
@@ -547,6 +568,13 @@ async fn run(
     // ignores the ones it has).
     let mut unconfirmed: Vec<Delivery> = Vec::new();
     let mut said_hello = false;
+    // Whether the agent can be reached, for the session's viewers.
+    let mut reach = Reach::default();
+    reach.down(
+        Instant::now(),
+        Instant::now(),
+        "no answer from fctl-agent yet",
+    );
     let gave_up = || {
         let msg = "fctl-agent stopped responding in the sandbox".to_owned();
         uplink.state(state(SessionStatus::Failed, &msg));
@@ -576,6 +604,7 @@ async fn run(
                     Ok(io) => link = Some(AgentLink::open(io, &sb.name)),
                     Err(e) => {
                         tracing::warn!("attaching to {}: {e:#}", sb.name);
+                        reach.down(Instant::now(), Instant::now(), format!("{e:#}"));
                         let Some(wait) = retry.failed(Instant::now()) else { break gave_up() };
                         attach_at = Some(Instant::now() + wait);
                         restart_agent = true;
@@ -584,7 +613,8 @@ async fn run(
             }
             msg = async { match link.as_mut() { Some(l) => l.rx.recv().await, None => std::future::pending().await } } => {
                 let Some(msg) = msg else {
-                    let answered = link.take().is_some_and(|l| l.health.answered());
+                    let closed = link.take();
+                    let answered = closed.as_ref().is_some_and(|l| l.health.answered());
                     if let Some(done) = exited.clone() {
                         break done;
                     }
@@ -593,9 +623,12 @@ async fn run(
                     }
                     if answered {
                         tracing::info!("the link to fctl-agent in {} closed; attaching again", sb.name);
+                        let heard = closed.as_ref().map_or_else(Instant::now, |l| l.health.last_heard());
+                        reach.down(heard, Instant::now(), "the link to fctl-agent closed");
                         attach_at = Some(Instant::now() + Duration::from_millis(500));
                     } else {
                         tracing::warn!("attaching to {}: the link closed before fctl-agent said hello", sb.name);
+                        reach.down(Instant::now(), Instant::now(), "the link closed before fctl-agent said hello");
                         let Some(wait) = retry.failed(Instant::now()) else { break gave_up() };
                         attach_at = Some(Instant::now() + wait);
                         restart_agent = true;
@@ -608,6 +641,9 @@ async fn run(
                 match msg {
                     AgentToHost::Hello(h) => {
                         retry.reset();
+                        if let Some(r) = reach.up() {
+                            report_reach(&uplink, r);
+                        }
                         tracing::info!(
                             "attached to fctl-agent {} in {} (journal at agent_seq {})",
                             h.version,
@@ -644,7 +680,7 @@ async fn run(
                         set_report(report.lock().map(|r| r.status).unwrap_or(SessionStatus::Running), evs.last().map(|e| e.agent_seq));
                         uplink.events(evs);
                     }
-                    AgentToHost::Stream { event } => uplink.send(fctl_proto::uplink::UplinkUp::Stream { event }),
+                    AgentToHost::Stream { event } => uplink.send(UplinkUp::Stream { event }),
                     AgentToHost::State { state: st } => {
                         set_report(st.status, None);
                         uplink.state(st);
@@ -652,7 +688,7 @@ async fn run(
                     AgentToHost::Log { line } => uplink.log(line),
                     AgentToHost::Delivered { delivery_id, ok, error } => {
                         unconfirmed.retain(|d| d.id != delivery_id);
-                        uplink.send(fctl_proto::uplink::UplinkUp::Delivered { delivery_id, ok, error });
+                        uplink.send(UplinkUp::Delivered { delivery_id, ok, error });
                     }
                     AgentToHost::CredentialRequest { request_id, kind } => {
                         let _ = events.send(SessionEvent::CredentialRequest { session_id: session_id.clone(), request_id, kind });
@@ -768,6 +804,7 @@ async fn run(
                         Check::Fine => {}
                         Check::Ping => l.send(HostToAgent::Ping),
                         Check::Dead(why) => {
+                            reach.down(l.health.last_heard(), Instant::now(), why);
                             let wait = retry.stalled();
                             tracing::warn!(
                                 "{}: {why}; attaching again in {} s",
@@ -779,6 +816,9 @@ async fn run(
                             restart_agent = true;
                         }
                     }
+                }
+                if let Some(r) = reach.check(Instant::now()) {
+                    report_reach(&uplink, r);
                 }
             }
         }

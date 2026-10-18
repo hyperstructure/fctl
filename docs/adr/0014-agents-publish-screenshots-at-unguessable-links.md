@@ -1,4 +1,4 @@
-# 0013: Agents publish screenshots at unguessable links
+# 0014: Agents publish screenshots at unguessable links
 
 2026-10-18 · accepted
 

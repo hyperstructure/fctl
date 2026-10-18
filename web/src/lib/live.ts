@@ -27,6 +27,10 @@ export interface LiveState {
   viewers: G.Presence[];
   connection: Connection;
   runnerConnected: boolean;
+  /** While the runner isn't connected: when it was last heard from, and when this page learned that. */
+  runnerAway?: { lastSeenAt: number; noticedAt: number };
+  /** The connected runner can't reach the agent in the sandbox. */
+  agentUnreachable?: G.AgentUnreachable;
   hasMoreBefore: boolean;
   loadingOlder: boolean;
   firstSeq: number;
@@ -89,6 +93,16 @@ export class LiveSession {
   private set(patch: Partial<LiveState>) {
     this.state = { ...this.state, ...patch };
     for (const l of this.listeners) l();
+  }
+
+  /** The runner's state, as the snapshot or a `runner_connected` message has it. */
+  private runner(connected: boolean, lastSeenAt?: number, agent?: G.AgentUnreachable): Partial<LiveState> {
+    const noticedAt = this.state.runnerAway?.noticedAt ?? Date.now();
+    return {
+      runnerConnected: connected,
+      runnerAway: !connected && lastSeenAt ? { lastSeenAt, noticedAt } : undefined,
+      agentUnreachable: connected ? agent : undefined,
+    };
   }
 
   /** The transcript plus unsent messages; stored messages retire their optimistic copies. */
@@ -202,7 +216,7 @@ export class LiveSession {
           live,
           viewers: m.viewers,
           connection: "live",
-          runnerConnected: m.runner_connected,
+          ...this.runner(m.runner_connected, m.runner_last_seen_at, m.agent_unreachable),
           hasMoreBefore: fresh ? m.has_more_before : this.state.hasMoreBefore,
           firstSeq: this.events[0]?.seq ?? 0,
           lastSeq: Math.max(this.state.lastSeq, events[events.length - 1]?.seq ?? 0, m.next_seq - 1),
@@ -242,7 +256,7 @@ export class LiveSession {
         this.set({ viewers: m.viewers });
         return;
       case "runner_connected":
-        this.set({ runnerConnected: m.connected });
+        this.set(this.runner(m.connected, m.last_seen_at, m.agent_unreachable));
         return;
       case "result": {
         const p = this.pending.get(m.client_id);

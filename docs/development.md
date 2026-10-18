@@ -150,9 +150,11 @@ from [@hyperstructure/design](https://github.com/hyperstructure/design),
 pinned to a tag in `web/package.json` (it has a playground showing all of
 them). Use the semantic colors (`canvas`, `surface`, `ink`, `accent`,
 `highlight`, `pink`, `blue`, `danger`…) rather than raw values; `danger`
-is the one red, for destructive actions, errors and failures only. The
-scenes render dithered to the brand palette; they pause when hidden and
-render one still frame for people who prefer reduced motion.
+is the one red, for destructive actions, errors and failures only. Hovered
+rows and buttons fill with `hover` (`hover:bg-hover`, fainter on large
+rows), not `raised`, which is white in the light theme, as `surface` is.
+The scenes render dithered to the brand palette; they pause when hidden
+and render one still frame for people who prefer reduced motion.
 
 People install the app on their phones and computers.
 `public/manifest.webmanifest` describes it, the `brand-assets` plugin in

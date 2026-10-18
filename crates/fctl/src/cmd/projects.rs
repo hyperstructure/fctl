@@ -46,8 +46,8 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "publish_screenshots", "screenshot_days"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --publish-screenshots on --screenshot-days 7"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days"])),
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -63,6 +63,11 @@ pub enum ProjectsCmd {
         /// claude.ai session link.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         credit_claude: Option<bool>,
+        /// Minutes a session that waits for a message keeps its sandbox, and
+        /// its runner's slot, before it stops (default 10). A message
+        /// resumes it.
+        #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u32).range(1..=10_080))]
+        idle_timeout: Option<u32>,
         /// Let agents publish screenshots for their pull requests (`fctl
         /// publish`), at links anyone who has one can open until they
         /// expire. Needs the instance's admins to allow it too. Off takes
@@ -142,6 +147,13 @@ fn print_repos(list: &ProjectRepoList) {
         };
         println!("{:<40} {}", style::bold(&name), style::dim(&access));
     }
+}
+
+/// When a project's idle sessions stop, in words.
+fn idle(s: &ProjectSettings) -> String {
+    let minutes = fctl_domain::settings::idle_timeout_secs(s) / 60;
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    format!("stop after waiting {minutes} {unit} for a message; a message resumes them")
 }
 
 /// Whether a project's agents publish screenshots, in words.
@@ -290,6 +302,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 println!("also:    {}", others.join(", "));
             }
             println!("branch:  {}", p.default_branch);
+            println!("idle:    sessions {}", idle(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
             println!("{}", style::dim(&format!("{}/p/{}", api.base(), p.slug)));
         }
@@ -334,6 +347,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             project,
             credit_people,
             credit_claude,
+            idle_timeout,
             publish_screenshots,
             screenshot_days,
         } => {
@@ -346,6 +360,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(on) = credit_claude {
                 settings.credit_claude = on;
+            }
+            if idle_timeout.is_some() {
+                settings.idle_timeout_minutes = idle_timeout;
             }
             if let Some(on) = publish_screenshots {
                 settings.publish_screenshots = on;
@@ -371,6 +388,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::accent("✓"),
                     style::bold(&p.slug),
                     credit(&p.settings)
+                );
+            }
+            if idle_timeout.is_some() {
+                println!(
+                    "{} Sessions in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    idle(&p.settings)
                 );
             }
             if publish_screenshots.is_some() || screenshot_days.is_some() {

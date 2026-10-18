@@ -454,8 +454,13 @@ pub async fn send(
     if json {
         return style::print_json(&r);
     }
+    let resumes = if s.status.resumes_for_messages() {
+        "; the session resumes for it"
+    } else {
+        ""
+    };
     println!(
-        "{} Sent to {}#{}",
+        "{} Sent to {}#{}{resumes}",
         style::accent("✓"),
         s.project_slug,
         s.number

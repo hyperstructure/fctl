@@ -5,6 +5,7 @@ export type { AddMemberRequest } from "./AddMemberRequest";
 export type { AddProjectRepoRequest } from "./AddProjectRepoRequest";
 export type { AddPushDeviceRequest } from "./AddPushDeviceRequest";
 export type { AgentConfig } from "./AgentConfig";
+export type { AgentUnreachable } from "./AgentUnreachable";
 export type { AllowEntry } from "./AllowEntry";
 export type { AllowId } from "./AllowId";
 export type { AllowList } from "./AllowList";

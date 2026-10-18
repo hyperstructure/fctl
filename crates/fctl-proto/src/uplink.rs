@@ -87,6 +87,18 @@ pub struct SessionState {
     pub description: Option<String>,
 }
 
+/// The host has no working link to fctl-agent in the session's sandbox: the
+/// last one broke, and attaching again hasn't worked yet. The agent may
+/// well be working; its events wait in its journal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AgentUnreachable {
+    /// When the host last heard from fctl-agent, or began attaching to it.
+    pub since: Millis,
+    /// What went wrong last, as the host saw it.
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -124,6 +136,15 @@ pub enum UplinkUp {
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<String>,
     },
+    /// Whether the host reaches fctl-agent: sent when that changes, and
+    /// again after every reconnect. SessionDO forgets it when the uplink
+    /// closes. Older hosts never send it.
+    AgentLink {
+        /// Absent once the host reaches the agent again.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        unreachable: Option<AgentUnreachable>,
+    },
     Ping,
 }
 
@@ -144,4 +165,35 @@ pub enum UplinkDown {
         delivery: Delivery,
     },
     Pong,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hosts_report_whether_they_reach_the_agent() -> serde_json::Result<()> {
+        let down = UplinkUp::AgentLink {
+            unreachable: Some(AgentUnreachable {
+                since: 1_000,
+                reason: "nothing came from fctl-agent for a minute".into(),
+            }),
+        };
+        let json = serde_json::to_value(&down)?;
+        assert_eq!(json["type"], "agent_link");
+        assert_eq!(json["unreachable"]["since"], 1_000);
+        assert_eq!(serde_json::from_value::<UplinkUp>(json)?, down);
+
+        // Reachable again: nothing but the tag.
+        let up = UplinkUp::AgentLink { unreachable: None };
+        assert_eq!(
+            serde_json::to_string(&up)?,
+            r#"{"type":"agent_link"}"#.to_owned()
+        );
+        assert_eq!(
+            serde_json::from_str::<UplinkUp>(r#"{"type":"agent_link"}"#)?,
+            up
+        );
+        Ok(())
+    }
 }

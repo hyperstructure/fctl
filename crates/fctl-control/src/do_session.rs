@@ -16,9 +16,10 @@ use fctl_proto::api::{EventPage, PlanLimit};
 use fctl_proto::event::{EventBody, GitState, StatusChange, UserMessage};
 use fctl_proto::session::{Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{
-    Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown, UplinkUp,
+    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown,
+    UplinkUp,
 };
-use fctl_proto::viewer::{Presence, ViewerClient};
+use fctl_proto::viewer::{Presence, ViewerClient, ViewerServer};
 use fctl_proto::{ApiError, AttachmentId, ErrorCode};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -34,8 +35,16 @@ const SNAPSHOT_EVENTS: i64 = 400;
 /// Byte budget of the events in one snapshot or page.
 const SNAPSHOT_BYTES: usize = 3_000_000;
 const LIVE_MAX_EVENTS: usize = 6_000;
+/// An uplink that sends nothing for this long counts as away until it does:
+/// hosts ping every 20 seconds, so this one's host is frozen or cut off (a
+/// laptop that went to sleep), and its socket may stay open for a long time.
+const QUIET_MS: i64 = 60_000;
+/// How often an uplink's socket notes when it was last heard from.
+const HEARD_EVERY_MS: i64 = 5_000;
+/// The longest reason a host gives for not reaching its agent that is kept.
+const REASON_MAX_CHARS: usize = 300;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct SocketInfo {
     viewer: Option<ViewerIdentity>,
     runner_id: Option<String>,
@@ -48,6 +57,28 @@ struct SocketInfo {
     /// A viewer whose tab is hidden: its person is not watching.
     #[serde(default)]
     hidden: bool,
+    /// An uplink: when its host last sent something (to within a few seconds).
+    #[serde(default)]
+    heard_at: Option<i64>,
+    /// An uplink that went quiet, which viewers were told is away.
+    #[serde(default)]
+    quiet: bool,
+    /// An uplink: its host can't reach the agent, as it last said.
+    #[serde(default)]
+    agent_unreachable: Option<AgentUnreachable>,
+}
+
+impl SocketInfo {
+    fn heard(&self) -> i64 {
+        self.heard_at.unwrap_or(self.since)
+    }
+}
+
+/// What viewers see of the session's runner (`runner_connected`).
+struct RunnerView {
+    connected: bool,
+    last_seen_at: Option<i64>,
+    agent_unreachable: Option<AgentUnreachable>,
 }
 
 #[derive(Default)]
@@ -251,7 +282,14 @@ impl SessionObject {
                 .filter(|w| w != ws)
                 .count();
             if others == 0 {
-                self.broadcast(r#"{"type":"runner_connected","connected":false}"#);
+                // For the people watching: when the runner was last heard from.
+                let heard = ws
+                    .deserialize_attachment::<SocketInfo>()
+                    .ok()
+                    .flatten()
+                    .map_or_else(now_ms, |i| i.heard());
+                self.set_meta("runner_seen_at", &heard.to_string());
+                self.broadcast_runner(Some(ws));
             }
         } else {
             self.broadcast_presence(Some(ws));
@@ -525,6 +563,7 @@ impl SessionObject {
 
     async fn deliver(&self, b: Deliver) -> std::result::Result<Delivered, ApiError> {
         let now = now_ms();
+        let message = matches!(b.delivery.kind, DeliveryKind::Message { .. });
         if let Some(key) = b.client_key.as_deref() {
             #[derive(Deserialize)]
             struct K {
@@ -539,6 +578,10 @@ impl SessionObject {
                 .and_then(|c| c.to_array::<K>())
                 .unwrap_or_default();
             if let Some(k) = existing.first() {
+                // Sent again after an error: it may not have resumed the session.
+                if message {
+                    self.wake(now).await?;
+                }
                 return Ok(Delivered {
                     delivery_id: fctl_proto::DeliveryId(k.delivery_id.clone()),
                 });
@@ -582,9 +625,64 @@ impl SessionObject {
         if has_files(&b.delivery) && self.uplink_lacks_files() {
             self.old_host_notice(now);
         }
+        if message {
+            self.wake(now).await?;
+        }
         Ok(Delivered {
             delivery_id: b.delivery.id,
         })
+    }
+
+    /// A message resumes a stopped session, on the Claude subscription it
+    /// ran on (a resume runs it on the resumer's), and the message waits in
+    /// the outbox for the new run. One that is still stopping is queued now:
+    /// FleetDO starts it once the last run has stopped.
+    async fn wake(&self, now: i64) -> std::result::Result<(), ApiError> {
+        let Some(stopped) = self.summary().filter(|s| s.status.resumes_for_messages()) else {
+            return Ok(());
+        };
+        let mut s = stopped.clone();
+        self.set_status(
+            &mut s,
+            SessionStatus::Queued,
+            Some("Resuming".into()),
+            None,
+            now,
+        );
+        s.runner = None;
+        self.publish(&mut s, now).await;
+        let scheduled: std::result::Result<serde_json::Value, ApiError> =
+            match internal::fleet_stub(&self.env) {
+                Ok(fleet) => internal::post(
+                    &fleet,
+                    "/schedule",
+                    &internal::Schedule {
+                        session_id: s.id.clone(),
+                    },
+                )
+                .await
+                .map_err(|e| e.0),
+                Err(e) => Err(e.0),
+            };
+        if let Err(e) = scheduled {
+            // Stopped as before: sending the message again resumes it.
+            worker::console_error!("resuming for a message failed: {}", e.message);
+            let mut s = stopped;
+            let (status, reason) = (s.status, s.status_reason.clone());
+            self.set_status(&mut s, status, reason, None, now);
+            self.publish(&mut s, now).await;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Stores a changed summary and tells viewers, D1 and the dashboards.
+    async fn publish(&self, s: &mut Session, now: i64) {
+        s.updated_at = now;
+        self.save_summary(s);
+        self.broadcast_summary(s);
+        self.write_through().await;
+        self.notify_fleet(s);
     }
 
     /// Whether the connected host said hello without the attachments feature.
@@ -648,11 +746,17 @@ impl SessionObject {
         if let Some(a) = b.archived {
             s.archived = a;
         }
+        let new_runner = b.runner.is_some() || b.clear_runner;
         if let Some(r) = b.runner {
             s.runner = Some(r);
         }
         if b.clear_runner {
             s.runner = None;
+        }
+        // When the last run's runner was seen is no news for this one.
+        if new_runner {
+            self.delete_meta("runner_seen_at");
+            self.broadcast_runner(None);
         }
         let mut status_changed = false;
         if let Some(st) = b.status
@@ -762,14 +866,12 @@ impl SessionObject {
         let after = crate::http::query(req, "after").and_then(|v| v.parse::<i64>().ok());
         let pair = WebSocketPair::new()?;
         let now = now_ms();
+        self.check_quiet(now);
         let role = ident.role;
         let info = SocketInfo {
             viewer: Some(ident),
-            runner_id: None,
             since: now,
-            typing_at: None,
-            features: None,
-            hidden: false,
+            ..Default::default()
         };
         self.state
             .accept_websocket_with_tags(&pair.server, &[TAG_VIEWER]);
@@ -806,11 +908,22 @@ impl SessionObject {
         let viewers = serde_json::to_string(&self.presence(None)).unwrap_or_else(|_| "[]".into());
         let session = serde_json::to_string(&summary).unwrap_or_else(|_| "null".into());
         let role = serde_json::to_string(&role).unwrap_or_else(|_| "\"viewer\"".into());
+        let runner = self.runner_view(None);
+        let mut runner_fields = String::new();
+        if let Some(t) = runner.last_seen_at {
+            runner_fields.push_str(&format!(r#","runner_last_seen_at":{t}"#));
+        }
+        if let Some(a) = runner
+            .agent_unreachable
+            .and_then(|a| serde_json::to_string(&a).ok())
+        {
+            runner_fields.push_str(&format!(r#","agent_unreachable":{a}"#));
+        }
         format!(
-            r#"{{"type":"snapshot","session":{session},"role":{role},"events":[{}],"has_more_before":{has_more_before},"next_seq":{},"live":[{live}],"viewers":{viewers},"runner_connected":{}}}"#,
+            r#"{{"type":"snapshot","session":{session},"role":{role},"events":[{}],"has_more_before":{has_more_before},"next_seq":{},"live":[{live}],"viewers":{viewers},"runner_connected":{}{runner_fields}}}"#,
             events.join(","),
             self.next_seq(),
-            self.uplink().is_some()
+            runner.connected
         )
     }
 
@@ -841,6 +954,7 @@ impl SessionObject {
         match msg {
             ViewerClient::Ping => {
                 let _ = ws.send_with_str(r#"{"type":"pong"}"#);
+                self.check_quiet(now_ms());
             }
             ViewerClient::Typing => {
                 info.typing_at = Some(now_ms());
@@ -890,10 +1004,10 @@ impl SessionObject {
         let Some(summary) = self.summary() else {
             return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
         };
-        if !summary.status.accepts_messages() {
+        if !summary.status.accepts_messages() && !summary.status.resumes_for_messages() {
             return Err(api_err(
                 ErrorCode::Conflict,
-                "The session has ended. Resume it to continue.",
+                "The session failed. Resume it to continue.",
             ));
         }
         let author = viewer.user.clone();
@@ -967,12 +1081,9 @@ impl SessionObject {
         self.state
             .accept_websocket_with_tags(&pair.server, &[TAG_UPLINK]);
         pair.server.serialize_attachment(&SocketInfo {
-            viewer: None,
             runner_id: Some(runner_id),
             since: now_ms(),
-            typing_at: None,
-            features: None,
-            hidden: false,
+            ..Default::default()
         })?;
         let pending: Vec<Delivery> = self
             .sql
@@ -989,12 +1100,17 @@ impl SessionObject {
         if let Ok(text) = serde_json::to_string(&welcome) {
             pair.server.send_with_str(&text)?;
         }
-        self.broadcast(r#"{"type":"runner_connected","connected":true}"#);
+        self.delete_meta("runner_seen_at");
+        self.broadcast_runner(None);
         Response::from_websocket(pair.client)
     }
 
     async fn on_uplink(&self, ws: &WebSocket, msg: UplinkUp) {
         let now = now_ms();
+        // Token deltas come by the dozen a second; pings every 20 s suffice.
+        if !matches!(msg, UplinkUp::Stream { .. }) {
+            self.heard(ws, now);
+        }
         match msg {
             UplinkUp::Hello { features, .. } => {
                 let supported = features.iter().any(|f| f == FEATURE_ATTACHMENTS);
@@ -1096,6 +1212,92 @@ impl SessionObject {
                     }
                 }
             }
+            UplinkUp::AgentLink { unreachable } => {
+                let unreachable = unreachable.map(|mut a| {
+                    if let Some((cut, _)) = a.reason.char_indices().nth(REASON_MAX_CHARS) {
+                        a.reason.truncate(cut);
+                    }
+                    a
+                });
+                if let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>()
+                    && info.agent_unreachable != unreachable
+                {
+                    info.agent_unreachable = unreachable;
+                    let _ = ws.serialize_attachment(&info);
+                    self.broadcast_runner(None);
+                }
+            }
+        }
+    }
+
+    /// The uplink sent something: notes when, now and then, and tells viewers
+    /// that a runner that had gone quiet is back.
+    fn heard(&self, ws: &WebSocket, now: i64) {
+        let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() else {
+            return;
+        };
+        let was_quiet = info.quiet;
+        if was_quiet || info.heard_at.is_none_or(|t| now - t >= HEARD_EVERY_MS) {
+            info.quiet = false;
+            info.heard_at = Some(now);
+            let _ = ws.serialize_attachment(&info);
+        }
+        if was_quiet {
+            self.broadcast_runner(None);
+        }
+    }
+
+    /// Tells viewers when the uplink has sent nothing for [`QUIET_MS`]. The
+    /// object has no timer of its own while sockets hibernate, so viewers'
+    /// pings (every 25 s) and new viewers check: it is noticed while someone
+    /// watches.
+    fn check_quiet(&self, now: i64) {
+        let Some(ws) = self.uplink() else { return };
+        let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() else {
+            return;
+        };
+        if info.quiet || now - info.heard() < QUIET_MS {
+            return;
+        }
+        info.quiet = true;
+        let _ = ws.serialize_attachment(&info);
+        self.broadcast_runner(None);
+    }
+
+    /// The runner as viewers see it, leaving out an uplink that is closing.
+    fn runner_view(&self, closing: Option<&WebSocket>) -> RunnerView {
+        let uplink = self
+            .state
+            .get_websockets_with_tag(TAG_UPLINK)
+            .into_iter()
+            .rfind(|w| closing.is_none_or(|c| c != w));
+        match uplink.map(|ws| ws.deserialize_attachment::<SocketInfo>().ok().flatten()) {
+            Some(Some(info)) if info.quiet => RunnerView {
+                connected: false,
+                last_seen_at: Some(info.heard()),
+                agent_unreachable: None,
+            },
+            Some(info) => RunnerView {
+                connected: true,
+                last_seen_at: None,
+                agent_unreachable: info.and_then(|i| i.agent_unreachable),
+            },
+            None => RunnerView {
+                connected: false,
+                last_seen_at: self.meta("runner_seen_at").and_then(|v| v.parse().ok()),
+                agent_unreachable: None,
+            },
+        }
+    }
+
+    fn broadcast_runner(&self, closing: Option<&WebSocket>) {
+        let view = self.runner_view(closing);
+        if let Ok(text) = serde_json::to_string(&ViewerServer::RunnerConnected {
+            connected: view.connected,
+            last_seen_at: view.last_seen_at,
+            agent_unreachable: view.agent_unreachable,
+        }) {
+            self.broadcast(&text);
         }
     }
 
@@ -1157,6 +1359,13 @@ impl SessionObject {
 
     async fn apply_state(&self, state: SessionState, now: i64) {
         let Some(mut s) = self.summary() else { return };
+        // Queued again (a message or a resume) while its last run stops: that
+        // run's uplink still says so. FleetDO starts the next run after it.
+        if s.status == SessionStatus::Queued
+            && (state.status.is_terminal() || state.status == SessionStatus::Stopping)
+        {
+            return;
+        }
         let before = s.status;
         let mut status_changed = false;
         if state.status != s.status

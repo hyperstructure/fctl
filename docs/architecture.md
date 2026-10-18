@@ -144,8 +144,9 @@ repositories it changes; see [Repositories](#repositories)).
 
 ```
 queued → provisioning → preparing → running ⇄ idle → stopped
-                                       │        │
-                                       └─ paused (usage limit) ─┘   failed (any)
+   ▲                                   │        │        │
+   │                                   └─ paused (usage limit) ─┘   failed (any)
+   └──────────── a message or a resume ──────────────────┘
 ```
 
 1. `POST /api/v1/projects/{id}/sessions` creates the row and asks FleetDO to
@@ -160,8 +161,37 @@ queued → provisioning → preparing → running ⇄ idle → stopped
    `claude -p --input-format stream-json --output-format stream-json`.
 5. Claude's messages flow back as events; messages from people flow down as
    deliveries. A finished turn makes the session `idle`; the sandbox stays up
-   until the idle timeout, then stops. Stopped sessions can be resumed
-   (`claude --resume`).
+   until the idle timeout, then stops, and a message resumes the session
+   (`claude --resume`; see [Idle sessions](#idle-sessions)).
+
+### Idle sessions
+
+A session holds a slot on its runner from the moment it starts until its
+sandbox stops. One that waits for a message stops after its project's idle
+timeout (`idle_timeout_minutes`: ten minutes unless the project sets
+another), so that its runner takes other work. fctl-agent ends Claude, and
+the host stops the sandbox and keeps it (see
+[Sandboxes and drivers](#sandboxes-and-drivers)).
+
+A message to a stopped session resumes it: from the web app, `fctl send`,
+`fctl attach` or the API, for anyone who may message the agent. SessionDO
+queues the session again and keeps the message in its outbox for the new
+run, which runs on the Claude subscription the session ran on, as a
+message to an idle session does. A resume (**Resume** for the session's
+owners, `fctl resume`) runs it on the resumer's subscription instead, and
+also starts a failed session, which a message doesn't. A message that comes
+while the session stops queues it too: FleetDO starts the new run once the
+last one has ended, so that two runs of a session never overlap, and
+SessionDO ignores what the last run's uplink still says about stopping.
+
+FleetDO remembers which runner last took each session (`sandboxes`, in its
+storage) and starts a resume there, where the sandbox has Claude's
+conversation and whatever the agent left uncommitted. While that runner
+runs as many sessions as it may, the session waits for it, for up to ten
+minutes. Then, or right away when that runner is offline or no longer
+gives the sandbox the session asks for, the session starts on another
+runner in a new sandbox: the agent clones the session's branch and starts
+a new conversation from the session's task.
 
 ### Repositories
 
@@ -267,6 +297,25 @@ Browsers and the CLI open `GET /api/v1/sessions/{id}/ws`. The first frame is a
 snapshot (summary, recent events, presence, in-progress text); after that
 frames are incremental. Older history is paged over HTTP.
 
+The snapshot and `runner_connected` frames say whether the agent's work can
+come through:
+
+- **The runner is connected** when its uplink is open and SessionDO heard
+  from it within the last minute. Hosts ping every 20 seconds, but one that
+  is frozen or cut off (a laptop gone to sleep) can leave its socket open
+  for a long time. SessionDO has no timer while its sockets hibernate, so
+  viewers' pings, every 25 seconds, notice an uplink that went quiet.
+  Otherwise the frames say when the runner was last heard from.
+- **The runner can't reach the agent** when its host says so
+  (`UplinkUp::AgentLink`): once it has known for 10 seconds that no link to
+  fctl-agent works, with when it last heard from it and what went wrong. Hosts
+  say it again after every reconnect, and SessionDO forgets it when the
+  uplink closes. Older hosts never say it.
+
+The session page and `fctl attach` say which, and since when, once it has
+lasted 10 seconds (a host that restarts reconnects within them), and show
+nothing in progress meanwhile.
+
 ### Attachments
 
 A task, message or resume can carry files: up to 10, of at most 20 MB each.
@@ -304,7 +353,7 @@ with screenshots in its description. GitHub takes those uploads (`gh pr
 edit --attach`) only with a person's token, and sessions have the GitHub
 App's, so in projects that publish screenshots the agent publishes them on
 the control plane instead and puts the links in the pull request
-([ADR 0013](adr/0013-agents-publish-screenshots-at-unguessable-links.md)).
+([ADR 0014](adr/0014-agents-publish-screenshots-at-unguessable-links.md)).
 
 1. `fctl publish shot.png` in the sandbox sends the image to fctl-agent over
    the session socket, which checks that it is a PNG, JPEG, GIF or WebP of
@@ -486,7 +535,10 @@ Restarting or upgrading the host does not stop agents. The host pings the
 agent every 15 seconds and replaces a link that carries nothing for a
 minute, or gets no hello within 30 seconds of attaching: it kills the exec,
 starts fctl-agent again if it is gone, and attaches again, waiting longer
-after each failure (`crates/fctl-host/src/liveness.rs`).
+after each failure (`crates/fctl-host/src/liveness.rs`). Once it has known
+for 10 seconds that no link works, the session's viewers hear that the
+agent can't be reached, and since when ([Viewers](#viewers)); a host that
+wakes from sleep to silent links attaches again within them.
 
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
@@ -503,12 +555,13 @@ serves programs in the sandbox: `fctl edit` names and describes the session
 there, and `fctl publish` publishes screenshots, with no fctl credentials
 in the sandbox.
 
-A stopped session keeps its sandbox, so resuming continues Claude's
-conversation. The host records when each one stopped (`stopped.json` in its
-data directory) and removes those stopped for longer than
-`keep_stopped_hours` (`crates/fctl-host/src/expiry.rs`). Resuming one of those
-creates a new sandbox on the session's branch: the agent finds no
-conversation to resume, so Claude starts a new one with the session's
+A stopped session keeps its sandbox, so resuming it on the same host
+continues Claude's conversation ([Idle sessions](#idle-sessions)). The host
+records when each one stopped (`stopped.json` in its data directory) and
+removes those stopped for longer than `keep_stopped_hours`
+(`crates/fctl-host/src/expiry.rs`). Resuming one of those, or resuming on
+another host, creates a new sandbox on the session's branch: the agent finds
+no conversation to resume, so Claude starts a new one with the session's
 original task, and the agent numbers its events after the ones the control
 plane already has (`first_agent_seq`).
 

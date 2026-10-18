@@ -152,7 +152,7 @@ export function CopyButton({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-raised hover:text-ink",
+        "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink",
         className,
       )}
       onClick={async () => {
