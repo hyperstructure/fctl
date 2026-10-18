@@ -72,11 +72,11 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
    fctl host install --build-image
    ```
 
-   This builds the sandbox image (Debian with git, gh, Node, Python, uv and
-   Claude Code), writes `~/.config/fctl/host.toml`, and installs a launchd
-   agent (`sh.fctl.host`) that starts at login, restarts if it stops, and
-   keeps the Mac from sleeping while it is plugged in, so it can start work
-   at any hour.
+   This builds the sandbox image (Debian with git, gh, Python, uv, Rust,
+   Node, TypeScript, Bun and Claude Code), writes
+   `~/.config/fctl/host.toml`, and installs a launchd agent (`sh.fctl.host`)
+   that starts at login, restarts if it stops, and keeps the Mac from
+   sleeping while it is plugged in, so it can start work at any hour.
 
 3. Check it:
 
