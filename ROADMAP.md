@@ -52,7 +52,7 @@ this file is the overview. Order within a section is priority.
 - [ ] Shared caches per project (npm, cargo, uv) mounted into sandboxes (#3)
 - [x] Notifications when a session waits for you or fails: web push, with
       followers, per-person settings and digests (#4)
-- [ ] The same notifications by email
+- [ ] The same notifications by email (#49)
 - [ ] Homebrew tap: `brew install hyperstructure/tap/fctl` (#5)
 - [x] Usage view: each person's Claude plan limits as sessions report them,
       in Settings, on the floor and in `fctl claude status` (#6)

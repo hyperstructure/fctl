@@ -137,8 +137,10 @@ impl NotifyObject {
         self.set_meta("user", &b.user_id);
         self.sql
             .exec(
+                // Changes can arrive out of order: the newest one stands.
                 "INSERT INTO pending (session_id, at, data) VALUES (?, ?, ?) \
-                 ON CONFLICT (session_id) DO UPDATE SET at = excluded.at, data = excluded.data",
+                 ON CONFLICT (session_id) DO UPDATE SET at = excluded.at, data = excluded.data \
+                 WHERE excluded.at >= pending.at",
                 Some(vec![
                     sv(b.event.session_id.as_str()),
                     iv(b.event.at),

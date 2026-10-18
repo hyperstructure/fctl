@@ -451,9 +451,14 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "followed_sessions".into(),
         rows(
             ctx,
+            // Only the ones they can still see, like the session list.
             "SELECT p.slug AS project, s.number, s.title, f.created_at AS followed_at FROM session_followers f \
-             JOIN sessions s ON s.id = f.session_id JOIN projects p ON p.id = s.project_id WHERE f.user_id = ? ORDER BY f.created_at",
-            &me(),
+             JOIN sessions s ON s.id = f.session_id JOIN projects p ON p.id = s.project_id \
+             LEFT JOIN project_members m ON m.project_id = s.project_id AND m.user_id = ?1 \
+             LEFT JOIN session_shares sh ON sh.session_id = s.id AND sh.user_id = ?1 \
+             WHERE f.user_id = ?1 AND (?2 OR m.role IS NOT NULL OR sh.role IS NOT NULL OR s.created_by = ?1) \
+             ORDER BY f.created_at",
+            &[s(&user.id), crate::db::b(user.is_admin())],
         )
         .await?,
     );

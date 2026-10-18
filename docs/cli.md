@@ -115,8 +115,8 @@ fctl notifications remove psh_01…           # stop notifying a browser
 ```
 
 Several that arrive close together come as one, and at most one a minute.
-People who are looking at a session in the web app aren't notified about
-it.
+People who are looking at a session (in the web app with its tab visible,
+or with `fctl attach`) aren't notified about it.
 
 ## Claude
 
