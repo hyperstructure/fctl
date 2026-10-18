@@ -55,7 +55,8 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   goes through `web/src/lib/live.ts`; do not open extra WebSockets.
 - Design: the brand palette is yellow `#ffff5d` (lime `#eaff81` on light
   backgrounds), hot pink `#ff00d8`, blue `#007eff`, blackish `#171717`,
-  whiteish `#fafafa`; use the semantic tokens, not raw colors. Inter (with
+  whiteish `#fafafa`. Red is for danger only (`danger`: destructive actions,
+  errors, failures). Use the semantic tokens, not raw colors. Inter (with
   optical sizes) for text and display, JetBrains Mono for code and small
   labels. Sentence case everywhere, no decorative uppercase eyebrows above
   headings, no card grids for prose. Motion is quick and purposeful and

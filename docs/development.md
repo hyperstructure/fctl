@@ -139,9 +139,10 @@ Design tokens, fonts, the WebGL scenes, the mark and the app icons come
 from [@hyperstructure/design](https://github.com/hyperstructure/design),
 pinned to a tag in `web/package.json` (it has a playground showing all of
 them). Use the semantic colors (`canvas`, `surface`, `ink`, `accent`,
-`highlight`, `pink`, `blue`…) rather than raw values. The scenes render
-dithered to the brand palette; they pause when hidden and render one still
-frame for people who prefer reduced motion.
+`highlight`, `pink`, `blue`, `danger`…) rather than raw values; `danger`
+is the one red, for destructive actions, errors and failures only. The
+scenes render dithered to the brand palette; they pause when hidden and
+render one still frame for people who prefer reduced motion.
 
 People install the app on their phones and computers.
 `public/manifest.webmanifest` describes it, the `brand-assets` plugin in
