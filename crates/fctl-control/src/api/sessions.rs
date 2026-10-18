@@ -144,7 +144,10 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     )?
     .run()
     .await?;
-    crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await?;
+    // Following is not worth failing a session over: it can be done later.
+    if let Err(e) = crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await {
+        worker::console_error!("following a new session failed: {}", e.0.message);
+    }
     let created = access::session(ctx, id.as_str()).await?;
     let session = created.row.to_session(Some(created.role));
     let stub = internal::session_stub(&ctx.env, id.as_str())?;
@@ -459,7 +462,9 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     )?
     .run()
     .await?;
-    crate::notify::follow_own(&ctx.db, id, &user.id, ctx.now).await?;
+    if let Err(e) = crate::notify::follow_own(&ctx.db, id, &user.id, ctx.now).await {
+        worker::console_error!("following a resumed session failed: {}", e.0.message);
+    }
     let stub = internal::session_stub(&ctx.env, id)?;
     let _: serde_json::Value = internal::post(
         &stub,

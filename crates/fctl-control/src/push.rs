@@ -14,7 +14,6 @@ use crate::db::{Val, batch, n, q, s};
 use crate::error::{AppResult, internal};
 use fctl_domain::random_bytes;
 use fctl_domain::webpush::{self, Delivery, Sender, Subscriber};
-use fctl_proto::SessionId;
 use fctl_proto::api::{PushMessage, PushTestResult};
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
@@ -216,12 +215,7 @@ impl Signer {
 }
 
 /// Encrypts `payload` for one browser and hands it to its push service.
-async fn send(
-    signer: &Signer,
-    device: &DeviceRow,
-    payload: &[u8],
-    topic: Option<&str>,
-) -> AppResult<Delivery> {
+async fn send(signer: &Signer, device: &DeviceRow, payload: &[u8]) -> AppResult<Delivery> {
     let (Some(public_key), Some(auth)) = (
         webpush::decode(&device.p256dh),
         webpush::decode(&device.auth),
@@ -252,9 +246,6 @@ async fn send(
     headers.set("Content-Type", "application/octet-stream")?;
     headers.set("TTL", &TTL_SECS.to_string())?;
     headers.set("Urgency", "normal")?;
-    if let Some(topic) = topic {
-        headers.set("Topic", topic)?;
-    }
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
@@ -269,14 +260,6 @@ async fn send(
         );
     }
     Ok(delivery)
-}
-
-/// The `Topic` of a message about one session: a newer one replaces it at the
-/// push service while the browser is offline. Digests have none, so that a
-/// browser that was away gets every one.
-fn topic(message: &PushMessage) -> Option<&str> {
-    let tag = message.tag.as_str();
-    (message.replaces.is_empty() && SessionId::is_valid(tag) && tag.len() <= 32).then_some(tag)
 }
 
 /// The VAPID contact: the instance's address, or fctl's when it has no https one.
@@ -313,9 +296,8 @@ pub async fn deliver(
         now: now_ms(),
     };
     let payload = serde_json::to_vec(message)?;
-    let topic = topic(message);
     let outcomes =
-        futures::future::join_all(devices.iter().map(|d| send(&signer, d, &payload, topic))).await;
+        futures::future::join_all(devices.iter().map(|d| send(&signer, d, &payload))).await;
     let mut sent: Vec<Val> = vec![n(signer.now)];
     let mut gone: Vec<Val> = Vec::new();
     for (device, outcome) in devices.iter().zip(outcomes) {

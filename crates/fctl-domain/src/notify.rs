@@ -233,7 +233,8 @@ fn digest(events: &[Event], at: Millis) -> PushMessage {
     PushMessage {
         title,
         body: lines.join("\n"),
-        tag: "digest".into(),
+        // Its own tag: a digest that is still shown keeps its sessions.
+        tag: format!("digest-{at}"),
         url: "/".into(),
         replaces: events
             .iter()
@@ -394,7 +395,7 @@ mod tests {
             m.body,
             "my-app#1 · Task 1\nmy-app#2 · Task 2\nmy-app#3 · Task 3\nmy-app#4 · Task 4\nand 2 more"
         );
-        assert_eq!(m.tag, "digest");
+        assert_eq!(m.tag, "digest-6000");
         assert_eq!(m.url, "/");
         assert_eq!(m.replaces.len(), 6);
         assert_eq!(m.at, 6000);

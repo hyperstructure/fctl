@@ -119,28 +119,33 @@ export async function forgetPush(): Promise<void> {
 }
 
 /**
- * At start-up: keeps the server's copy of this browser's subscription
- * current (a new sign-in, renewed keys, a new server key), and ends one that
- * another account turned on.
+ * At start-up: a subscription this browser holds stays on only while the
+ * server has it for this sign-in. One another account turned on, or one that
+ * was removed (in Settings, perhaps from another browser) or outlived its
+ * sign-in, ends here too, so it never comes back by itself. With a new
+ * server key it subscribes again.
  */
 export async function syncPush(userId: string): Promise<void> {
   if (pushSupport() !== "supported" || Notification.permission !== "granted") return;
   const existing = await navigator.serviceWorker.getRegistration();
-  let sub = await existing?.pushManager.getSubscription();
+  const sub = await existing?.pushManager.getSubscription();
   if (!sub) return;
   if (localStorage.getItem(OWNER) !== userId) {
-    await sub.unsubscribe();
+    await forgetPush();
     return;
   }
-  const { public_key } = await api.notifications();
+  const { public_key, devices } = await api.notifications();
   if (!public_key) return;
-  // Registering again also checks for a newer service worker.
-  const reg = await registration();
-  if (!madeWith(sub, public_key)) {
-    await sub.unsubscribe();
-    sub = await subscribe(reg, public_key);
+  const here = devices.find((d) => d.current);
+  if (!here) {
+    await forgetPush();
+    return;
   }
-  await api.addPushDevice(device(sub));
+  if (!madeWith(sub, public_key)) {
+    await api.removePushDevice(here.id);
+    await sub.unsubscribe();
+    await api.addPushDevice(device(await subscribe(await registration(), public_key)));
+  }
 }
 
 /** Follows clicks on notifications: the service worker asks an open window to show a page. */

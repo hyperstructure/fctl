@@ -1012,6 +1012,7 @@ impl SessionObject {
                 let mut out = Vec::new();
                 let mut summary = self.summary();
                 let mut summary_changed = false;
+                let mut turn_ended = false;
                 for e in events {
                     if e.agent_seq <= acked {
                         continue;
@@ -1020,7 +1021,7 @@ impl SessionObject {
                     let mut body = e.body;
                     if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
                         summary_changed |= Self::apply_claude(s, v, &self.mem);
-                        self.remember_reply(v);
+                        turn_ended |= self.remember_reply(v);
                         ev::shape_for_storage(v);
                     }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
@@ -1045,6 +1046,12 @@ impl SessionObject {
                     self.save_summary(&s);
                     if summary_changed {
                         self.broadcast_summary(&s);
+                    }
+                    // A host that reconnects reports its state before it
+                    // replays the events it kept: a turn that ended meanwhile
+                    // shows as a result while the session is already idle.
+                    if turn_ended && s.status == SessionStatus::Idle {
+                        self.notify(&s, notify::Kind::Waiting, now);
                     }
                     self.mark_dirty(now).await;
                 }
@@ -1191,10 +1198,10 @@ impl SessionObject {
     }
 
     /// The end of a turn: what the agent said last, for the notification that
-    /// the session waits for a reply.
-    fn remember_reply(&self, v: &serde_json::Value) {
+    /// the session waits for a reply. Returns whether `v` ended a turn.
+    fn remember_reply(&self, v: &serde_json::Value) -> bool {
         if ev::classify(v) != ClaudeKind::Result {
-            return;
+            return false;
         }
         match v
             .get("result")
@@ -1204,18 +1211,24 @@ impl SessionObject {
             Some(reply) => self.set_meta("last_reply", &reply),
             None => self.delete_meta("last_reply"),
         }
+        true
     }
 
-    /// Tells the people who follow the session that it finished a turn,
-    /// paused or failed (`crate::notify`), except those who can see it now.
+    /// Tells the people who follow the session when a status change means it
+    /// finished a turn, paused or failed.
     fn notify_followers(&self, s: &Session, before: SessionStatus, now: i64) {
         // A new turn: whoever interrupted the last one is not part of it.
         if s.status == SessionStatus::Running && before != SessionStatus::Running {
             self.delete_meta("interrupted_by");
         }
-        let Some(kind) = notify::Kind::of(before, s.status) else {
-            return;
-        };
+        if let Some(kind) = notify::Kind::of(before, s.status) {
+            self.notify(s, kind, now);
+        }
+    }
+
+    /// Hands `kind` to the people who follow the session (`crate::notify`),
+    /// except those who can see it now.
+    fn notify(&self, s: &Session, kind: notify::Kind, now: i64) {
         let mut except = self.watching();
         let detail = match kind {
             notify::Kind::Waiting => {
