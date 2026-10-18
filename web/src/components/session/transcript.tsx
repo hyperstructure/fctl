@@ -1,6 +1,7 @@
 // The transcript: people's messages, the agent's prose, its tool calls, and
 // the session's milestones, with the turn in progress streaming at the end.
 
+import { useMutation } from "@tanstack/react-query";
 import {
   BrainCircuit,
   ChevronRight,
@@ -8,18 +9,22 @@ import {
   CircleStop,
   GitBranch,
   Hourglass,
+  ImageUp,
   Info,
   Radio,
   Sparkles,
+  Trash2,
   TriangleAlert,
 } from "lucide-react";
 import { memo, type ReactNode, useState } from "react";
 import { Markdown } from "@/components/markdown";
-import { Avatar, Spinner } from "@/components/ui";
+import { Avatar, Button, CopyButton, Dialog, Spinner, toast } from "@/components/ui";
 import type * as G from "@/gen";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { clock, duration, until } from "@/lib/format";
+import { bytes, clock, day, duration, until } from "@/lib/format";
 import { repoChanges } from "@/lib/git";
+import { linkToken, markdown } from "@/lib/published";
 import { claudeAppLink } from "@/lib/remote-control";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
@@ -84,6 +89,100 @@ const UserMessage = memo(function UserMessage({
     </div>
   );
 });
+
+/**
+ * A screenshot the agent published for a pull request: the image while its
+ * link works, and for people who manage the session, deleting it sooner.
+ */
+function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?: boolean }) {
+  const [state, setState] = useState<"shown" | "offline" | "deleted">(() =>
+    file.expires_at > Date.now() ? "shown" : "offline",
+  );
+  const [confirm, setConfirm] = useState(false);
+  const token = linkToken(file.url);
+  const del = useMutation({
+    mutationFn: () => api.unpublish(token ?? ""),
+    onSuccess: () => {
+      setState("deleted");
+      setConfirm(false);
+      toast(`Deleted ${file.name}`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const facts = [file.width && file.height ? `${file.width}×${file.height}` : "", bytes(file.size)]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <div className="py-1.5">
+      <Milestone icon={<ImageUp />} tone="info">
+        Published{" "}
+        {state === "shown" ? (
+          <a href={file.url} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+            {file.name}
+          </a>
+        ) : (
+          file.name
+        )}
+        {state === "shown"
+          ? ` · anyone with the link can open it until ${day(file.expires_at)}`
+          : state === "deleted"
+            ? " · deleted"
+            : " · its link no longer works"}
+      </Milestone>
+      {state === "shown" && (
+        <div className="mt-1 ml-5.5 flex flex-wrap items-end gap-3">
+          <a
+            href={file.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`Open ${file.name}`}
+            className="overflow-hidden rounded-lg border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
+          >
+            <img
+              src={file.url}
+              alt={file.name}
+              width={file.width}
+              height={file.height}
+              loading="lazy"
+              decoding="async"
+              onError={() => setState("offline")}
+              className="h-36 w-auto max-w-[min(100%,20rem)] object-cover"
+            />
+          </a>
+          <div className="flex flex-col items-start gap-0.5">
+            <span className="px-2 font-mono text-[10.5px] text-ink-4">{facts}</span>
+            <CopyButton text={markdown(file)} label="Copy Markdown" />
+            {canManage && token && (
+              <button
+                type="button"
+                onClick={() => setConfirm(true)}
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-danger-soft hover:text-danger"
+              >
+                <Trash2 className="size-3.5" />
+                Delete
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      <Dialog
+        open={confirm}
+        onClose={() => setConfirm(false)}
+        title={`Delete ${file.name}?`}
+        description="Its link stops working for everyone, in pull requests too. This can't be undone."
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setConfirm(false)}>
+            Cancel
+          </Button>
+          <Button variant="danger" loading={del.isPending} onClick={() => del.mutate()}>
+            Delete
+          </Button>
+        </div>
+      </Dialog>
+    </div>
+  );
+}
 
 function Thinking({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
@@ -230,10 +329,13 @@ const ItemView = memo(function ItemView({
   item,
   live,
   sessionId,
+  canManage,
 }: {
   item: Item;
   live?: LiveTurn;
   sessionId?: string;
+  /** The viewer manages the session (deletes its published screenshots). */
+  canManage?: boolean;
 }) {
   switch (item.kind) {
     case "user":
@@ -284,6 +386,7 @@ const ItemView = memo(function ItemView({
     case "logs":
       return <Logs lines={item.lines} />;
     case "notice":
+      if (item.notice.published) return <PublishedShot file={item.notice.published} canManage={canManage} />;
       return (
         <Milestone
           icon={
@@ -397,6 +500,7 @@ export const Transcript = memo(function Transcript({
   items,
   live,
   status,
+  canManage,
   onLoadOlder,
   hasMoreBefore,
   loadingOlder,
@@ -405,6 +509,7 @@ export const Transcript = memo(function Transcript({
   items: Item[];
   live: LiveTurn;
   status?: G.SessionStatus;
+  canManage?: boolean;
   onLoadOlder: () => void;
   hasMoreBefore: boolean;
   loadingOlder: boolean;
@@ -430,7 +535,12 @@ export const Transcript = memo(function Transcript({
             it.kind === "tool" && "[contain-intrinsic-size:auto_34px]",
           )}
         >
-          <ItemView item={it} live={it.kind === "tool" ? live : undefined} sessionId={sessionId} />
+          <ItemView
+            item={it}
+            live={it.kind === "tool" ? live : undefined}
+            sessionId={sessionId}
+            canManage={canManage}
+          />
         </div>
       ))}
       <LiveTurnView live={live} status={status} />

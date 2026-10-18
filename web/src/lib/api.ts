@@ -160,6 +160,8 @@ export const api = {
     p.set("limit", String(q.limit ?? 300));
     return request<G.EventPage>("GET", `/sessions/${enc(id)}/events?${p}`);
   },
+  /** Deletes a published screenshot before it expires, by its link's token. */
+  unpublish: (token: string) => request<G.Ok>("DELETE", `/published/${enc(token)}`),
   follow: (id: string) => request<G.Session>("PUT", `/sessions/${enc(id)}/follow`, {}),
   unfollow: (id: string) => request<G.Session>("DELETE", `/sessions/${enc(id)}/follow`),
   shares: (id: string) => request<G.ShareList>("GET", `/sessions/${enc(id)}/shares`),
@@ -202,6 +204,9 @@ export const api = {
     request<{ ok: boolean; disabled: string[] }>("DELETE", `/admin/allowlist/${enc(id)}`),
   createInvite: (b: G.CreateInviteRequest) => request<G.Invite>("POST", "/admin/invites", b),
   audit: (before?: number) => request<G.AuditList>("GET", `/admin/audit${before ? `?before=${before}` : ""}`),
+  instanceSettings: () => request<G.InstanceSettings>("GET", "/admin/settings"),
+  updateInstanceSettings: (b: G.UpdateInstanceSettingsRequest) =>
+    request<G.InstanceSettings>("PATCH", "/admin/settings", b),
 };
 
 export function wsUrl(path: string): string {

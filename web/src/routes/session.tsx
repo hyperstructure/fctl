@@ -339,6 +339,7 @@ export function SessionPage() {
               items={s.items}
               live={s.live}
               status={status}
+              canManage={isOwner}
               onLoadOlder={() => void store.loadOlder()}
               hasMoreBefore={s.hasMoreBefore}
               loadingOlder={s.loadingOlder}

@@ -1,4 +1,5 @@
-// Admin: who gets in, who is here, the machines doing the work, and what happened.
+// Admin: who gets in, who is here, the machines doing the work, what the
+// instance allows, and what happened.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
@@ -13,8 +14,10 @@ import {
   Empty,
   Field,
   Input,
+  Section,
   Select,
   type SelectOption,
+  Switch,
   toast,
 } from "@/components/ui";
 import type * as G from "@/gen";
@@ -23,7 +26,7 @@ import { cn } from "@/lib/cn";
 import { ago, cpus, memory, sandboxLimits } from "@/lib/format";
 import { keys, queryClient, useMe, useRunners } from "@/lib/queries";
 
-type Tab = "access" | "users" | "runners" | "audit";
+type Tab = "access" | "users" | "runners" | "settings" | "audit";
 
 export function Admin() {
   const { tab = "access" } = useSearch({ from: "/app/admin" });
@@ -38,7 +41,7 @@ export function Admin() {
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
       <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">Admin</h1>
       <nav className="mt-8 flex gap-1 border-b border-line">
-        {(["access", "users", "runners", "audit"] as Tab[]).map((t) => (
+        {(["access", "users", "runners", "settings", "audit"] as Tab[]).map((t) => (
           <Link
             key={t}
             to="/admin"
@@ -57,6 +60,7 @@ export function Admin() {
         {tab === "access" && <Access />}
         {tab === "users" && <Users />}
         {tab === "runners" && <Runners />}
+        {tab === "settings" && <InstanceSettings />}
         {tab === "audit" && <Audit />}
       </div>
     </div>
@@ -412,6 +416,44 @@ function RunnerResources({ runner: r }: { runner: G.Runner }) {
     .filter(Boolean)
     .join(" · ");
   return text ? <div className="mt-0.5 text-[12px] text-ink-4">{text}</div> : null;
+}
+
+function InstanceSettings() {
+  const settings = useQuery({ queryKey: keys.instanceSettings, queryFn: api.instanceSettings });
+  const save = useMutation({
+    mutationFn: (b: G.UpdateInstanceSettingsRequest) => api.updateInstanceSettings(b),
+    onSuccess: (s) => {
+      queryClient.setQueryData(keys.instanceSettings, s);
+      void queryClient.invalidateQueries({ queryKey: keys.instance });
+      toast(
+        s.publish_screenshots
+          ? "Projects can now publish screenshots"
+          : "Published screenshots are off and offline",
+      );
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const s = settings.data;
+  return (
+    <Section title="Agents" description="What projects may let their agents do on this instance.">
+      <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+        <span>
+          Published screenshots
+          <span className="block text-[12.5px] text-ink-4">
+            Projects that turn this on let their agents publish screenshots here, at links anyone who has one
+            can open, so that pull requests show them: GitHub takes no uploads from a session. Links work for
+            as long as each project chooses, 24 hours to 60 days. Off takes every published screenshot
+            offline.
+          </span>
+        </span>
+        <Switch
+          checked={s?.publish_screenshots ?? false}
+          onChange={(v) => save.mutate({ publish_screenshots: v })}
+          label="Published screenshots"
+        />
+      </div>
+    </Section>
+  );
 }
 
 function Audit() {

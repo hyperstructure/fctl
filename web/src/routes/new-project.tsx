@@ -53,6 +53,7 @@ export function NewProject() {
                 claude_ai_connectors: connectors,
                 credit_people: true,
                 credit_claude: true,
+                publish_screenshots: false,
                 env: {},
               }
             : undefined,

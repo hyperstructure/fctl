@@ -36,6 +36,7 @@ import { api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
+import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
 import {
   keys,
   queryClient,
@@ -486,7 +487,15 @@ const EFFORTS: SelectOption[] = [
   ...["low", "medium", "high", "xhigh", "max"].map((x) => ({ value: x, label: x })),
 ];
 
+/** How long screenshot links may work, with a project's own choice among them. */
+function dayOptions(current?: number): SelectOption[] {
+  const days = [...new Set([...DAY_CHOICES, current ?? DEFAULT_DAYS])].sort((a, b) => a - b);
+  return days.map((d) => ({ value: String(d), label: lasts(d) }));
+}
+
 function Settings({ project }: { project: G.Project }) {
+  const { data: instance } = useInstance();
+  const { data: me } = useMe();
   const [s, setS] = useState<G.ProjectSettings>(project.settings);
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? "");
@@ -662,6 +671,53 @@ function Settings({ project }: { project: G.Project }) {
               label="Credit Claude in commits"
             />
           </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Publish screenshots
+              <span className="block text-[12.5px] text-ink-4">
+                Agents can publish screenshots at links anyone who has one can open, so that pull requests
+                show them: GitHub takes no uploads from a session. Off takes them offline.
+              </span>
+              {instance && !instance.features.publish_screenshots && (
+                <span className="mt-1 block text-[12.5px] text-amber">
+                  This instance's admins haven't allowed it yet
+                  {me && me.user.role !== "member" ? (
+                    <>
+                      {" "}
+                      (
+                      <Link to="/admin" search={{ tab: "settings" }} className="underline underline-offset-2">
+                        Admin → Settings
+                      </Link>
+                      )
+                    </>
+                  ) : null}
+                  .
+                </span>
+              )}
+            </span>
+            <Switch
+              checked={s.publish_screenshots}
+              onChange={(v) => set("publish_screenshots", v)}
+              label="Publish screenshots"
+            />
+          </div>
+          {s.publish_screenshots && (
+            <Field
+              label="Screenshot links work for"
+              hint="Then they stop working, and the screenshots are deleted."
+              error={err("settings.screenshot_days")}
+            >
+              {(id) => (
+                <Select
+                  id={id}
+                  value={String(s.screenshot_days ?? DEFAULT_DAYS)}
+                  onChange={(v) => set("screenshot_days", Number(v))}
+                  options={dayOptions(s.screenshot_days)}
+                  className="w-full"
+                />
+              )}
+            </Field>
+          )}
         </div>
       </Section>
       <Section title="Sandbox" description="Where agents run.">

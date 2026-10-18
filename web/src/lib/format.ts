@@ -69,6 +69,11 @@ export function sandboxLimits(l: G.SandboxLimits): string {
   return `${cpus(l.default.cpus)} and ${mem(l.default.memory_mb)} by default, at most ${cpus(l.max.cpus)} and ${mem(l.max.memory_mb)}`;
 }
 
+/** A day as the locale writes it, without the year: "17 Nov", "Nov 17". */
+export function day(ms: number): string {
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 export function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
