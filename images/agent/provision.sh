@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # single-quoted scripts expand in the agent's shell
 # Provisions an fctl agent sandbox: the tools agents need, Claude Code and
 # fctl. Used by the Dockerfile (container sandboxes) and by `fctl host image
 # build --driver lima` (the fctl-base VM). Runs as root.
@@ -11,7 +12,15 @@
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
+# Toolchain versions. Rust is the release this repository builds with
+# (rust-toolchain.toml; a test in crates/fctl-host/src/image.rs keeps the two
+# in step), so sessions working on fctl have nothing to download.
 NODE_MAJOR="${NODE_MAJOR:-22}"
+TYPESCRIPT_VERSION="${TYPESCRIPT_VERSION:-7.0.2}"
+BUN_VERSION="${BUN_VERSION:-1.4.3}"
+UV_VERSION="${UV_VERSION:-0.13.1}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.15.0}"
+RUST_VERSION="${RUST_VERSION:-1.99.0}"
 FCTL_VERSION="${FCTL_VERSION:-}"
 FCTL_DOWNLOAD="${FCTL_DOWNLOAD:-}"
 CLAUDE_VERSION="${CLAUDE_VERSION:-}"
@@ -19,22 +28,32 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 apt-get install -y --no-install-recommends \
-  ca-certificates curl git gnupg less openssh-client procps sudo unzip xz-utils zip \
-  build-essential pkg-config jq ripgrep fd-find tree file \
-  python3 python3-venv python3-pip
+  ca-certificates curl wget git gnupg less openssh-client procps psmisc lsof sudo \
+  rsync unzip xz-utils zip zstd \
+  build-essential cmake pkg-config libssl-dev \
+  jq ripgrep fd-find tree file shellcheck sqlite3
+# Debian calls fd `fdfind`.
+ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 # GitHub CLI
 curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
   > /etc/apt/sources.list.d/github-cli.list
 
-# Node.js
+# Node.js and TypeScript. npm leaves out its funding and audit notices and
+# its update check, which only lengthen agents' output.
 curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
 apt-get install -y --no-install-recommends gh nodejs
 corepack enable || true
+npm config set --location=global fund=false audit=false update-notifier=false
+npm install -g "typescript@$TYPESCRIPT_VERSION"
+npm cache clean --force
 
-# uv (Python)
-curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+# uv, and Python for everyone: uv's build of CPython in /opt/uv/python, as
+# python3 and python in /usr/local/bin.
+curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+env UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_PYTHON_BIN_DIR=/usr/local/bin UV_NO_CACHE=1 \
+  uv python install --default --preview-features python-install-default "$PYTHON_VERSION"
 
 rm -rf /var/lib/apt/lists/*
 
@@ -68,6 +87,32 @@ AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
 sudo -u "$AGENT_USER" -H env CLAUDE_VERSION="$CLAUDE_VERSION" \
   bash -c 'curl -fsSL https://claude.ai/install.sh | bash -s -- ${CLAUDE_VERSION:+"$CLAUDE_VERSION"}'
 sudo -u "$AGENT_USER" -H mkdir -p "$AGENT_HOME/workspace"
-grep -q '.local/bin' "$AGENT_HOME/.profile" 2>/dev/null || echo 'export PATH="$HOME/.local/bin:/opt/fctl/bin:$PATH"' >> "$AGENT_HOME/.profile"
-"$AGENT_HOME/.local/bin/claude" --version
-/usr/local/bin/fctl --version
+
+# The agent's PATH: Claude Code and uv's tools in ~/.local/bin, Rust's and
+# Bun's tools, then fctl's supervisor. The Dockerfile sets the same; login
+# shells (setup scripts, the Lima driver's) get it from here.
+cat > /etc/profile.d/fctl.sh <<'EOF'
+PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:/opt/fctl/bin:$PATH"
+EOF
+
+# Runs a script as the agent user in a login shell; it gets the arguments
+# after the script as $1….
+as_agent() {
+  local script="$1"
+  shift
+  sudo -u "$AGENT_USER" -H bash -lc "set -euo pipefail; $script" bash "$@"
+}
+
+# Rust, with the components and targets that rust-toolchain.toml lists, and
+# Bun, in the agent's home: they find their files through HOME alone
+# (fctl-agent passes Claude no RUSTUP_HOME or the like), and agents add
+# toolchains, targets and global tools without sudo.
+as_agent 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs |
+  sh -s -- -y --no-modify-path --profile minimal --default-toolchain "$1" \
+    --component rustfmt,clippy --target wasm32-unknown-unknown' "$RUST_VERSION"
+as_agent 'curl -fsSL https://bun.sh/install | bash -s "bun-v$1"' "$BUN_VERSION"
+as_agent 'ln -sf bun "$HOME/.bun/bin/bunx"'
+
+# What sessions find on the PATH.
+as_agent 'claude --version; fctl --version; python3 --version; uv --version
+  rustc --version; cargo --version; node --version; tsc --version; bun --version'

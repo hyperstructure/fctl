@@ -82,9 +82,9 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
    (`sh.fctl.host`) that starts at login, restarts if it stops, and keeps
    the Mac from sleeping while it is plugged in, so it can start work at any
    hour. The host then pulls the [sandbox image](sandbox-images.md) (Debian
-   with git, gh, Node, Python, uv and Claude Code) in the background. With
-   Lima, add `--build-image`: it prepares the VM that sessions are cloned
-   from, which takes a few minutes.
+   with git, gh, Python, uv, Rust, Node, TypeScript, Bun and Claude Code) in
+   the background. With Lima, add `--build-image`: it prepares the VM that
+   sessions are cloned from, which takes a few minutes.
 
 3. Check it:
 
