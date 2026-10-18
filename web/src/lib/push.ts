@@ -83,7 +83,14 @@ export async function enablePush(publicKey: string, userId: string): Promise<G.P
     await sub.unsubscribe();
     sub = null;
   }
-  sub ??= await subscribe(reg, publicKey);
+  sub ??= await subscribe(reg, publicKey).catch((e: unknown) => {
+    // Brave turns push off until "Use Google services for push messaging" is on.
+    const brave =
+      "brave" in navigator ? " In Brave, turn on Google services for push messaging in its settings." : "";
+    throw new Error(
+      `This browser's push service didn't take the subscription (${e instanceof Error ? e.message : e}).${brave}`,
+    );
+  });
   const added = await api.addPushDevice(device(sub));
   localStorage.setItem(OWNER, userId);
   return added;
