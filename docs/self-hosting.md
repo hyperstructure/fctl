@@ -208,5 +208,7 @@ copy in your own registry ([Sandbox images](sandbox-images.md)).
 - **Costs.** The control plane is request- and storage-priced on Cloudflare;
   the work happens on your hardware and your Claude subscriptions. fctl never
   makes Anthropic API calls.
-- **Removing it.** `npx wrangler delete fctl` and
-  `npx wrangler d1 delete fctl`; `fctl host uninstall` on each host.
+- **Removing it.** `fctl host uninstall` on each host first, while the
+  control plane can still stop their sessions (`--force` stops the ones
+  that run), then `npx wrangler delete fctl` and
+  `npx wrangler d1 delete fctl`.

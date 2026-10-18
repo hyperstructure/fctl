@@ -4,13 +4,13 @@ use crate::cmd::admin;
 use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
-use std::io::IsTerminal;
 use clap::Subcommand;
 use fctl_domain::size;
 use fctl_host::config::means_default_image;
 use fctl_host::driver::Driver;
 use fctl_host::{HostConfig, service};
 use fctl_proto::api::{RunnerDetail, RunnerStatus};
+use std::io::IsTerminal;
 
 #[derive(Subcommand)]
 pub enum HostCmd {
@@ -470,7 +470,8 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
                 wait_until_drained(&api, d, json).await?;
             } else {
                 let interactive = !json && std::io::stdin().is_terminal();
-                let stop = force || (interactive && confirm("Stop them and uninstall now? [y/N] ")?);
+                let stop =
+                    force || (interactive && confirm("Stop them and uninstall now? [y/N] ")?);
                 if !stop {
                     let (them, sessions) = if n == 1 {
                         ("it", "1 session runs".to_owned())
@@ -551,11 +552,7 @@ fn confirm(question: &str) -> Result<bool> {
 
 /// Waits, for two minutes at most, until the sessions this runner was asked
 /// to stop have stopped.
-async fn wait_until_stopped(
-    api: &fctl_client::Api,
-    mut d: RunnerDetail,
-    json: bool,
-) -> Result<()> {
+async fn wait_until_stopped(api: &fctl_client::Api, mut d: RunnerDetail, json: bool) -> Result<()> {
     if !json {
         println!("{}", style::dim("Stopping…"));
     }

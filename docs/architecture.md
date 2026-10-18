@@ -227,6 +227,17 @@ The runners list, `fctl admin runners` and `fctl host status`
 (`GET /api/v1/runner`, with the runner token) show who started the drain,
 when, and the sessions that still run.
 
+Removing a machine is the step that moves its sessions elsewhere.
+`fctl host uninstall` asks the control plane which sessions run on the
+host; with any, it drains the runner and waits for them (`--wait`) or
+stops them (`--force`, or yes when it asks). Stopping drains the runner
+with `stop_sessions`: FleetDO marks each session stopping and asks the host
+to stop it (`StopReason::Shutdown`), so its agent pushes its work, and it
+forgets the runner as the home of every session whose sandbox it has, so a
+message resumes them on other runners. When the host isn't connected,
+FleetDO stops its sessions at once and the CLI stops the sandboxes on the
+machine with the driver.
+
 ### Repositories
 
 A project has a primary repository and may list more of the same GitHub
