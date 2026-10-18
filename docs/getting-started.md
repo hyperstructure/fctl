@@ -184,7 +184,10 @@ turns them off.
 If the agent's work stops coming through, because the session's runner went
 away or can't reach the agent in its sandbox, the session page says so and
 since when. The agent may well be working meanwhile: its work shows up once
-the runner gets through, and messages you send wait for it.
+the runner gets through, and messages you send wait for it. After ten
+minutes away the session shows as stopped, and a message resumes it on
+another runner. If the runner comes back with the agent still running
+before the session runs anywhere else, the session carries on there.
 
 When the agent finishes a turn, the session waits for you. After the
 project's idle timeout (ten minutes unless its settings say otherwise) it

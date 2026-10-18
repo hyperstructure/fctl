@@ -13,9 +13,11 @@ use crate::internal::{
 };
 use crate::spec;
 use fctl_domain::image::{HostImages, ImageWant};
+use fctl_domain::reconcile::{self, Known, Unassigned};
 use fctl_domain::schedule::{Home, Slot, Wait};
 use fctl_domain::size::Want;
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
+use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
     ClaudeLoginUpdate, CredentialKind, FleetToHost, HostHello, HostSessionReport, HostToFleet,
     SandboxLimits, StopReason,
@@ -189,6 +191,9 @@ impl DurableObject for FleetObject {
             // The runner that last took each session: it keeps the session's
             // sandbox, so a resume goes back to it.
             "CREATE TABLE IF NOT EXISTS sandboxes (session_id TEXT PRIMARY KEY, runner_id TEXT NOT NULL, since INTEGER NOT NULL)",
+            // Sessions stopped because their runner stayed away: they carry
+            // on if it comes back with them.
+            "CREATE TABLE IF NOT EXISTS stopped_away (session_id TEXT PRIMARY KEY, runner_id TEXT NOT NULL, since INTEGER NOT NULL)",
         ] {
             if let Err(e) = sql.exec(stmt, None) {
                 worker::console_error!("fleet schema: {e}");
@@ -589,19 +594,26 @@ impl FleetObject {
                 // A report from an earlier run must not end a newer one.
                 #[derive(Deserialize)]
                 struct R {
+                    runner_id: String,
                     run_id: Option<String>,
                 }
-                let current: Option<Option<String>> = self
+                let current: Option<R> = self
                     .sql
                     .exec(
-                        "SELECT run_id FROM assignments WHERE session_id = ? AND runner_id = ?",
-                        Some(vec![sv(session_id.as_str()), sv(&rs.id)]),
+                        "SELECT runner_id, run_id FROM assignments WHERE session_id = ?",
+                        Some(vec![sv(session_id.as_str())]),
                     )
                     .and_then(|c| c.to_array::<R>())
                     .ok()
-                    .and_then(|r| r.into_iter().next().map(|r| r.run_id));
-                let stale =
-                    matches!((&run_id, &current), (Some(ended), Some(Some(cur))) if ended != cur);
+                    .and_then(|r| r.into_iter().next());
+                let stale = reconcile::ended_earlier(
+                    &rs.id,
+                    run_id.as_deref(),
+                    current.as_ref().map(|c| reconcile::Current {
+                        runner_id: &c.runner_id,
+                        run_id: c.run_id.as_deref(),
+                    }),
+                );
                 let queued_again = self.queued(session_id.as_str());
                 if stale {
                     worker::console_log!("ignoring the end of an earlier run of {session_id}");
@@ -676,14 +688,15 @@ impl FleetObject {
         if let Ok(text) = serde_json::to_string(&welcome) {
             let _ = ws.send_with_str(&text);
         }
-        self.reconcile(&rs.id, &hello.sessions, now).await;
+        self.reconcile(rs, &hello.sessions, now).await;
         self.stop_idle_if_draining(&rs.id, &hello.sessions).await;
         self.feed_runner(&rs.id).await;
         self.dispatch().await;
     }
 
     /// Matches what the host reports with what we assigned to it.
-    async fn reconcile(&self, runner_id: &str, reported: &[HostSessionReport], _now: i64) {
+    async fn reconcile(&self, rs: &RunnerSocket, reported: &[HostSessionReport], now: i64) {
+        let runner_id = rs.id.as_str();
         let assigned: Vec<AssignRow> = self
             .sql
             .exec(
@@ -713,40 +726,136 @@ impl FleetObject {
                 .await;
             }
         }
-        // Reported, but not ours (deleted, reassigned or already ended): stop it.
+        // Reported, but not assigned to it: the runner was away, or the
+        // session was deleted, stopped or resumed elsewhere meanwhile.
         let assigned_ids: HashSet<&str> = assigned.iter().map(|a| a.session_id.as_str()).collect();
+        let db = self.env.d1("DB");
         for r in reported {
-            if !assigned_ids.contains(r.session_id.as_str()) && r.status.is_active() {
-                let still_ours = match self.env.d1("DB") {
-                    Ok(db) => spec::session_row(&db, r.session_id.as_str())
-                        .await
-                        .ok()
-                        .flatten()
-                        .filter(|row| {
-                            row.runner_id.as_deref() == Some(runner_id)
-                                && !row.status().is_terminal()
-                        })
-                        .is_some(),
-                    Err(_) => false,
-                };
-                if still_ours {
+            let id = r.session_id.as_str();
+            if assigned_ids.contains(id) || !r.status.is_active() {
+                continue;
+            }
+            // Without the session, the run is left alone until the next hello.
+            let row = match &db {
+                Ok(db) => spec::session_row(db, id).await.map_err(|e| e.0.message),
+                Err(e) => Err(e.to_string()),
+            };
+            let row = match row {
+                Ok(row) => row,
+                Err(e) => {
+                    worker::console_error!("reconciling {id} on {}: {e}", rs.name);
+                    continue;
+                }
+            };
+            let known = row.as_ref().map(|row| Known {
+                runner_id: row.runner_id.as_deref(),
+                status: row.status(),
+                archived: row.archived,
+            });
+            match reconcile::unassigned(runner_id, known, self.stopped_away(id, runner_id)) {
+                Unassigned::Keep => {
                     let _ = self.sql.exec(
                         "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted) VALUES (?, ?, ?, 1)",
-                        Some(vec![sv(r.session_id.as_str()), sv(runner_id), iv(now_ms())]),
+                        Some(vec![sv(id), sv(runner_id), iv(now)]),
                     );
-                    self.set_home(r.session_id.as_str(), runner_id, now_ms());
-                } else {
+                    self.set_home(id, runner_id, now);
+                }
+                Unassigned::CarryOn => self.carry_on(rs, r, now).await,
+                Unassigned::Stop(reason) => {
+                    let _ = self.sql.exec(
+                        "DELETE FROM stopped_away WHERE session_id = ?",
+                        Some(vec![sv(id)]),
+                    );
                     self.send_runner(
                         runner_id,
                         &FleetToHost::StopSession {
                             session_id: r.session_id.clone(),
-                            reason: StopReason::Deleted,
+                            reason,
                             destroy: false,
                         },
                     );
                 }
             }
         }
+    }
+
+    /// Whether the fleet stopped the session because `runner_id` stayed away.
+    fn stopped_away(&self, session_id: &str, runner_id: &str) -> bool {
+        #[derive(Deserialize)]
+        struct R {
+            runner_id: String,
+        }
+        self.sql
+            .exec(
+                "SELECT runner_id FROM stopped_away WHERE session_id = ?",
+                Some(vec![sv(session_id)]),
+            )
+            .and_then(|c| c.to_array::<R>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .is_some_and(|r| r.runner_id == runner_id)
+    }
+
+    /// The fleet stopped the session because its runner stayed away, and the
+    /// runner is back with the agent still running: the session carries on
+    /// there. The host's uplink, which may connect again now, brings what the
+    /// agent did meanwhile, and the messages sent since.
+    async fn carry_on(&self, rs: &RunnerSocket, r: &HostSessionReport, now: i64) {
+        let id = r.session_id.as_str();
+        // Resumed meanwhile, but no runner took it: this run gets the messages.
+        let _ = self
+            .sql
+            .exec("DELETE FROM queue WHERE session_id = ?", Some(vec![sv(id)]));
+        let _ = self.sql.exec(
+            "DELETE FROM stopped_away WHERE session_id = ?",
+            Some(vec![sv(id)]),
+        );
+        let _ = self.sql.exec(
+            "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted) VALUES (?, ?, ?, 1)",
+            Some(vec![sv(id), sv(&rs.id), iv(now)]),
+        );
+        self.set_home(id, &rs.id, now);
+        // Uplinks connect only to the sessions of their runner.
+        if let Ok(db) = self.env.d1("DB")
+            && let Ok(q) = crate::db::q(
+                &db,
+                "UPDATE sessions SET runner_id = ?, updated_at = ? WHERE id = ?",
+                &[crate::db::s(&rs.id), crate::db::n(now), crate::db::s(id)],
+            )
+            && let Err(e) = q.run().await
+        {
+            worker::console_error!("carrying {id} on: {}", e.0.message);
+        }
+        let notice = Notice {
+            level: NoticeLevel::Info,
+            code: "runner_back".into(),
+            message: format!(
+                "Runner {} is back with the agent still running, so the session carries on there.",
+                rs.name
+            ),
+            until: None,
+            published: None,
+        };
+        if let Ok(stub) = internal::session_stub(&self.env, id) {
+            let done: std::result::Result<serde_json::Value, _> = internal::post(
+                &stub,
+                "/control",
+                &ControlState {
+                    status: Some(r.status),
+                    runner: Some(RunnerRef {
+                        id: RunnerId(rs.id.clone()),
+                        name: rs.name.clone(),
+                    }),
+                    notice: Some(notice),
+                    ..Default::default()
+                },
+            )
+            .await;
+            if let Err(e) = done {
+                worker::console_error!("carrying {id} on: {}", e.0.message);
+            }
+        }
+        worker::console_log!("{id} carries on: {} is back", rs.name);
     }
 
     async fn on_start_result(
@@ -763,6 +872,11 @@ impl FleetObject {
                 Some(vec![sv(session_id.as_str()), sv(runner_id)]),
             );
             self.set_home(session_id.as_str(), runner_id, now);
+            // A new run: one left on a runner that was away stops if it comes back.
+            let _ = self.sql.exec(
+                "DELETE FROM stopped_away WHERE session_id = ?",
+                Some(vec![sv(session_id.as_str())]),
+            );
             return;
         }
         let _ = self.sql.exec(
@@ -809,8 +923,14 @@ impl FleetObject {
         }
     }
 
-    /// Runners offline for longer than the grace period lose their sessions.
+    /// Runners offline for longer than the grace period lose their sessions,
+    /// which carry on if the runner comes back with them before they run
+    /// anywhere else.
     async fn expire_offline_runners(&self, now: i64) {
+        let _ = self.sql.exec(
+            "DELETE FROM stopped_away WHERE since < ?",
+            Some(vec![iv(now - HOME_KEEP_MS)]),
+        );
         for r in self.live_rows() {
             let offline_for = now - r.last_seen.map_or(now, |t| t as i64);
             if r.connected > 0.0 || offline_for < RUNNER_GRACE_MS {
@@ -833,10 +953,17 @@ impl FleetObject {
                 if self.queued(&a.session_id) {
                     continue;
                 }
+                let _ = self.sql.exec(
+                    "INSERT OR REPLACE INTO stopped_away (session_id, runner_id, since) VALUES (?, ?, ?)",
+                    Some(vec![sv(&a.session_id), sv(&r.id), iv(now)]),
+                );
                 self.session_control(
                     &SessionId(a.session_id),
                     Some(SessionStatus::Stopped),
-                    Some(format!("Runner {} has been offline for 10 minutes. Resume the session to continue elsewhere.", r.name)),
+                    Some(format!(
+                        "Runner {} has been offline for 10 minutes. If it comes back with the agent still running, the session carries on there; a message resumes it on another runner.",
+                        r.name
+                    )),
                     true,
                 )
                 .await;
@@ -889,6 +1016,10 @@ impl FleetObject {
     async fn stop_all(&self, runner_id: &str, runner_name: &str) {
         let _ = self.sql.exec(
             "DELETE FROM sandboxes WHERE runner_id = ?",
+            Some(vec![sv(runner_id)]),
+        );
+        let _ = self.sql.exec(
+            "DELETE FROM stopped_away WHERE runner_id = ?",
             Some(vec![sv(runner_id)]),
         );
         let assigned: Vec<AssignRow> = self
@@ -1394,6 +1525,12 @@ impl FleetObject {
     }
 
     async fn stop(&self, b: Stop) -> std::result::Result<serde_json::Value, ApiError> {
+        // Stopped by a person, or deleted: it doesn't carry on when a runner
+        // that was away comes back with it.
+        let _ = self.sql.exec(
+            "DELETE FROM stopped_away WHERE session_id = ?",
+            Some(vec![sv(b.session_id.as_str())]),
+        );
         let removed_from_queue = self
             .sql
             .exec(

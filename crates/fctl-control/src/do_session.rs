@@ -820,7 +820,6 @@ impl SessionObject {
         // When the last run's runner was seen is no news for this one.
         if new_runner {
             self.delete_meta("runner_seen_at");
-            self.broadcast_runner(None);
         }
         let mut status_changed = false;
         if let Some(st) = b.status
@@ -829,9 +828,20 @@ impl SessionObject {
             status_changed = true;
             self.set_status(&mut s, st, b.reason.clone(), None, now);
         }
+        if let Some(notice) = b.notice
+            && let Some(json) = self.append(now, &EventBody::Notice(notice), None)
+        {
+            self.broadcast_events(&[json]);
+        }
         s.updated_at = now;
         self.save_summary(&s);
         self.broadcast_summary(&s);
+        // After the summary: viewers of a session that the fleet stopped
+        // because its runner stayed away don't take this for the runner's
+        // return.
+        if new_runner {
+            self.broadcast_runner(None);
+        }
         // The API wrote the title to D1 already; writing it again now keeps
         // a write-through that raced it from leaving the old one there.
         if status_changed || described {

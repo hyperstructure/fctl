@@ -59,6 +59,9 @@ pub struct ControlState {
     pub description: Option<String>,
     #[serde(default)]
     pub archived: Option<bool>,
+    /// Said in the transcript, after the status.
+    #[serde(default)]
+    pub notice: Option<fctl_proto::event::Notice>,
 }
 
 /// FleetObject asks a session on a draining runner whether it stops now: it
