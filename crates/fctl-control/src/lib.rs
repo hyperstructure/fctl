@@ -127,6 +127,8 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Patch, ["runners", id]) => api::runners::update(ctx, req, id).await,
         (Delete, ["runners", id]) => api::runners::delete(ctx, id).await,
         (Post, ["runners", id, "token"]) => api::runners::rotate_token(ctx, id).await,
+        (Get, ["runner"]) => api::runners::this_runner(ctx, req).await,
+        (Post, ["runner", "drain"]) => api::runners::drain_this_runner(ctx, req).await,
         (Get, ["runner", "connect"]) => api::runners::connect(ctx, req).await,
         (Get, ["runner", "sessions", id, "uplink"]) => api::runners::uplink(ctx, req, id).await,
         (Get, ["runner", "sessions", id, "attachments", file]) => {

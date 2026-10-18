@@ -8,7 +8,9 @@
 //! connections stay open; everything that must survive lives in SQLite.
 
 use crate::ctx::now_ms;
-use crate::internal::{self, ControlState, Deliver, Delivered, InitSession, ViewerIdentity};
+use crate::internal::{
+    self, ControlState, Deliver, Delivered, DrainStop, DrainStopped, InitSession, ViewerIdentity,
+};
 use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_domain::journal::{self, Take};
 use fctl_domain::notify;
@@ -44,6 +46,9 @@ const QUIET_MS: i64 = 60_000;
 const HEARD_EVERY_MS: i64 = 5_000;
 /// The longest reason a host gives for not reaching its agent that is kept.
 const REASON_MAX_CHARS: usize = 300;
+/// How long a session on a draining runner waits for a message before it
+/// stops, so that quick replies still reach the running agent.
+const DRAIN_IDLE_MS: i64 = 60_000;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct SocketInfo {
@@ -183,6 +188,10 @@ impl DurableObject for SessionObject {
             },
             (worker::Method::Post, "/control") => match req.json::<ControlState>().await {
                 Ok(b) => self.control(b).await,
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
+            (worker::Method::Post, "/drain-stop") => match req.json::<DrainStop>().await {
+                Ok(b) => self.drain_stop(b).await.map(|d| serde_json::json!(d)),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
             },
             (worker::Method::Get, "/summary") => match self.summary() {
@@ -690,6 +699,36 @@ impl SessionObject {
         Ok(())
     }
 
+    /// Its runner drains: the session stops now if it has waited for a
+    /// message for a while and none is on its way to the agent. Checking and
+    /// marking it stopping happen together, so a message that comes after
+    /// waits for the next run (`deliver`), which starts on the same runner.
+    async fn drain_stop(&self, b: DrainStop) -> std::result::Result<DrainStopped, ApiError> {
+        let now = now_ms();
+        let meta_ms = |key: &str| self.meta(key).and_then(|v| v.parse::<i64>().ok());
+        let Some(mut s) = self.summary() else {
+            return Ok(DrainStopped { stopping: false });
+        };
+        let idle_since = meta_ms("idle_since");
+        let waited = s.status == SessionStatus::Idle
+            && idle_since.is_some_and(|t| now - t >= DRAIN_IDLE_MS)
+            // A message the agent took after it went idle starts a turn.
+            && meta_ms("last_delivered").is_none_or(|d| idle_since.is_some_and(|t| d < t))
+            && !self.messages_waiting();
+        if !waited {
+            return Ok(DrainStopped { stopping: false });
+        }
+        self.set_status(
+            &mut s,
+            SessionStatus::Stopping,
+            Some(format!("Stopping: {} is draining", b.runner_name)),
+            None,
+            now,
+        );
+        self.publish(&mut s, now).await;
+        Ok(DrainStopped { stopping: true })
+    }
+
     /// Stores a changed summary and tells viewers, D1 and the dashboards.
     async fn publish(&self, s: &mut Session, now: i64) {
         s.updated_at = now;
@@ -811,6 +850,11 @@ impl SessionObject {
         resume_at: Option<i64>,
         now: i64,
     ) {
+        if status != SessionStatus::Idle {
+            self.delete_meta("idle_since");
+        } else if s.status != SessionStatus::Idle {
+            self.set_meta("idle_since", &now.to_string());
+        }
         s.status = status;
         s.status_reason = reason.clone();
         s.resume_at = resume_at;
@@ -1248,6 +1292,8 @@ impl SessionObject {
                     "DELETE FROM outbox WHERE id = ?",
                     Some(vec![sv(delivery_id.as_str())]),
                 );
+                // The agent took it: a turn starts, whatever the status says yet.
+                self.set_meta("last_delivered", &now.to_string());
                 if !ok {
                     let notice = fctl_proto::event::Notice {
                         level: fctl_proto::event::NoticeLevel::Warn,

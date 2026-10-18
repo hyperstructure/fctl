@@ -490,6 +490,7 @@ impl RunnerRow {
             sandbox: hello.as_ref().and_then(|h| h.sandbox),
             labels: hello.as_ref().map(|h| h.labels.clone()).unwrap_or_default(),
             last_seen_at: self.last_seen_at,
+            drain: live.drains.get(&self.id).cloned(),
             created_at: self.created_at,
             created_by: match (&self.created_by, &self.creator_name) {
                 (Some(id), Some(name)) => Some(UserRef {

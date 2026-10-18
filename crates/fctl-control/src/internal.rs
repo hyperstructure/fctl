@@ -61,6 +61,20 @@ pub struct ControlState {
     pub archived: Option<bool>,
 }
 
+/// FleetObject asks a session on a draining runner whether it stops now: it
+/// does when it has waited for a message for a while and none is on its way.
+#[derive(Serialize, Deserialize)]
+pub struct DrainStop {
+    /// The runner, for the reason the session shows.
+    pub runner_name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DrainStopped {
+    /// Whether the session is stopping now (its host should stop it).
+    pub stopping: bool,
+}
+
 /// Who opens a viewer socket.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ViewerIdentity {
@@ -80,6 +94,17 @@ pub struct Stop {
     pub session_id: SessionId,
     pub reason: StopReason,
     pub destroy: bool,
+}
+
+/// Drains a runner, or stops draining it.
+#[derive(Serialize, Deserialize)]
+pub struct Drain {
+    pub runner_id: String,
+    pub runner_name: String,
+    pub draining: bool,
+    /// The admin who did it; absent when the runner's host did.
+    #[serde(default)]
+    pub by: Option<UserRef>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -110,6 +135,9 @@ pub struct LiveRunners {
     /// What online runners had free at their last heartbeat.
     #[serde(default)]
     pub free: std::collections::BTreeMap<String, Free>,
+    /// The runners that drain.
+    #[serde(default)]
+    pub drains: std::collections::BTreeMap<String, fctl_proto::api::RunnerDrain>,
 }
 
 /// Free memory and disk, in MiB.

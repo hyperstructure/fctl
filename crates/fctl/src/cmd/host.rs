@@ -1,5 +1,6 @@
 //! `fctl host …`: run this machine as a runner.
 
+use crate::cmd::admin;
 use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
@@ -8,6 +9,7 @@ use fctl_domain::size;
 use fctl_host::config::means_default_image;
 use fctl_host::driver::Driver;
 use fctl_host::{HostConfig, service};
+use fctl_proto::api::{RunnerDetail, RunnerStatus};
 
 #[derive(Subcommand)]
 pub enum HostCmd {
@@ -65,6 +67,15 @@ pub enum HostCmd {
     Image(ImageCmd),
     /// Restart the service (sessions keep running).
     Restart,
+    /// Take no new sessions; the ones here carry on, and a message resumes
+    /// them here.
+    Drain {
+        /// Wait until no session runs here.
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Take new sessions again.
+    Undrain,
     /// Stop and remove the service (sandboxes are kept).
     Uninstall,
 }
@@ -236,9 +247,14 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 Ok(d) => Some(cfg.sandbox_limits(d.resources().await)),
                 Err(_) => None,
             };
+            // What the control plane says about this runner and its sessions.
+            let runner = match runner_api() {
+                Ok(api) => api.this_runner().await.map_err(anyhow::Error::from),
+                Err(e) => Err(e),
+            };
             if json {
                 return style::print_json(
-                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "service_installed": installed, "service_running": running }),
+                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
@@ -256,6 +272,27 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     _ => style::dim("not installed"),
                 }
             );
+            match runner {
+                Ok(d) => {
+                    let state = match d.runner.status {
+                        RunnerStatus::Online => style::accent("online"),
+                        RunnerStatus::Offline => style::dim("offline"),
+                        RunnerStatus::Disabled => style::red("disabled"),
+                    };
+                    match admin::drain_line(&d.runner) {
+                        Some(drain) => println!("runner:   {state}, {}", style::amber(&drain)),
+                        None => println!("runner:   {state}"),
+                    }
+                    if !d.sessions.is_empty() {
+                        println!("sessions:");
+                        admin::print_sessions(&d.sessions);
+                    }
+                }
+                Err(e) => println!(
+                    "runner:   {}",
+                    style::dim(&format!("could not ask {}: {e:#}", cfg.server))
+                ),
+            }
             Ok(())
         }
         HostCmd::Doctor => doctor().await,
@@ -326,12 +363,106 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             println!("Restarted. Sessions keep running in their sandboxes.");
             Ok(())
         }
+        HostCmd::Drain { wait } => {
+            let api = runner_api()?;
+            let mut d = api.drain_this_runner(true).await?;
+            if !json {
+                println!(
+                    "{} Draining {}: no new sessions start here.",
+                    style::accent("✓"),
+                    style::bold(&d.runner.name)
+                );
+                println!(
+                    "{}",
+                    style::dim(&admin::still_running(d.sessions.len() as u32, "here"))
+                );
+                admin::print_sessions(&d.sessions);
+            }
+            if wait {
+                d = wait_until_drained(&api, d, json).await?;
+            } else if !json && !d.sessions.is_empty() {
+                println!(
+                    "{}",
+                    style::dim(
+                        "`fctl host drain --wait` waits until none runs here; `fctl host undrain` takes new sessions again."
+                    )
+                );
+            }
+            if json {
+                return style::print_json(&d);
+            }
+            Ok(())
+        }
+        HostCmd::Undrain => {
+            let d = runner_api()?.drain_this_runner(false).await?;
+            if json {
+                return style::print_json(&d);
+            }
+            println!(
+                "{} {} takes new sessions again.",
+                style::accent("✓"),
+                style::bold(&d.runner.name)
+            );
+            Ok(())
+        }
         HostCmd::Uninstall => {
             service::uninstall()?;
             println!("Removed the service. Configuration and sandboxes are kept.");
             Ok(())
         }
     }
+}
+
+/// The control plane, as this machine's runner (its token).
+fn runner_api() -> Result<fctl_client::Api> {
+    const NOT_A_RUNNER: &str = "This machine is not a runner yet: run `fctl host install`";
+    let cfg = HostConfig::load().context(NOT_A_RUNNER)?;
+    let token = HostConfig::load_token().context(NOT_A_RUNNER)?;
+    Ok(fctl_client::Api::new(&cfg.server, Some(token)))
+}
+
+/// Polls until no session runs on this runner, saying what changes.
+async fn wait_until_drained(
+    api: &fctl_client::Api,
+    mut d: RunnerDetail,
+    json: bool,
+) -> Result<RunnerDetail> {
+    let key = |d: &RunnerDetail| -> Vec<(String, &'static str)> {
+        d.sessions
+            .iter()
+            .map(|s| (s.id.0.clone(), s.status.as_str()))
+            .collect()
+    };
+    if !json && !d.sessions.is_empty() {
+        println!(
+            "{}",
+            style::dim(
+                "Waiting until none runs here (Ctrl-C stops waiting; the host keeps draining)…"
+            )
+        );
+    }
+    while !d.sessions.is_empty() {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let next = api.this_runner().await?;
+        if !json && key(&next) != key(&d) && !next.sessions.is_empty() {
+            println!(
+                "{}",
+                style::dim(&format!(
+                    "{} left:",
+                    match next.sessions.len() {
+                        1 => "1 session".to_owned(),
+                        n => format!("{n} sessions"),
+                    }
+                ))
+            );
+            admin::print_sessions(&next.sessions);
+        }
+        d = next;
+    }
+    if !json {
+        println!("{} No sessions run here.", style::accent("✓"));
+    }
+    Ok(d)
 }
 
 /// `--memory 8g`: MiB, at least 512.
