@@ -82,6 +82,26 @@ impl Daemon {
         })
     }
 
+    /// Pulls the host's sandbox image in the background when it isn't here
+    /// yet, so that the first session after an upgrade doesn't wait for it.
+    fn prefetch_image(&self) {
+        if !self.ctx.driver.uses_images() {
+            return;
+        }
+        let ctx = self.ctx.clone();
+        tokio::spawn(async move {
+            let image = ctx.cfg.image();
+            if ctx.driver.has_image(&image).await {
+                return;
+            }
+            tracing::info!("pulling {image}");
+            match ctx.driver.pull(&image, false).await {
+                Ok(()) => tracing::info!("pulled {image}"),
+                Err(e) => tracing::warn!("pulling {image}: {e:#} (sessions try again)"),
+            }
+        });
+    }
+
     /// Re-attaches to sandboxes that survived a restart.
     async fn recover(&mut self) {
         match self.ctx.driver.list().await {
@@ -167,13 +187,14 @@ impl Daemon {
             capacity: self.ctx.cfg.capacity,
             labels: self.ctx.cfg.labels.clone(),
             sessions: self.reports(),
-            image: Some(self.ctx.cfg.image.clone()),
+            image: Some(self.ctx.cfg.image()),
             sandbox: Some(self.ctx.refresh_sandbox_limits().await),
         }
     }
 
     pub async fn run(mut self) -> Result<()> {
         keep_awake();
+        self.prefetch_image();
         self.recover().await;
         self.sweep_stopped().await;
         let url = format!(

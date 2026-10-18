@@ -22,6 +22,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub struct SandboxSpec {
     pub name: String,
     pub image: String,
+    /// The image to use when `image` is not here and can't be pulled.
+    pub fallback_image: Option<String>,
     pub cpus: u32,
     pub memory_mb: u32,
 }
@@ -136,6 +138,28 @@ impl Driver {
     /// Whether agents inside need a Linux fctl-agent binary copied in.
     pub fn needs_linux_agent(&self) -> bool {
         !matches!(self, Self::Process(_))
+    }
+
+    /// Whether sandboxes are made from images (Lima clones its base VM, and
+    /// the process driver has none).
+    pub fn uses_images(&self) -> bool {
+        matches!(self, Self::Container(_))
+    }
+
+    /// Whether `image` is on this host.
+    pub async fn has_image(&self, image: &str) -> bool {
+        match self {
+            Self::Container(d) => d.has_image(image).await,
+            _ => false,
+        }
+    }
+
+    /// Pulls `image` from its registry; `progress` shows the CLI's own output.
+    pub async fn pull(&self, image: &str, progress: bool) -> Result<()> {
+        match self {
+            Self::Container(d) => d.pull(image, progress).await,
+            _ => anyhow::bail!("the {} driver does not use images", self.name()),
+        }
     }
 
     pub async fn probe(&self) -> DriverInfo {

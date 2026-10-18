@@ -1,7 +1,7 @@
 //! One task per session: sandbox, fctl-agent, and the bridge between the
 //! agent and the session's uplink.
 
-use crate::config::HostConfig;
+use crate::config::{HostConfig, means_default_image};
 use crate::driver::{Driver, Sandbox, SandboxSpec, sandbox_name};
 use crate::files;
 use crate::uplink::Uplink;
@@ -265,16 +265,15 @@ fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
 }
 
 async fn prepare(ctx: &HostCtx, spec: &SessionSpec, uplink: &Uplink) -> Result<Sandbox> {
-    let image = spec
-        .project
-        .settings
-        .image
-        .clone()
-        .unwrap_or_else(|| ctx.cfg.image.clone());
+    let (image, fallback_image) = match spec.project.settings.image.as_deref() {
+        Some(image) if !means_default_image(image) => (image.to_owned(), None),
+        _ => (ctx.cfg.image(), ctx.cfg.fallback_image()),
+    };
     let size = ctx.sandbox_size(spec);
     let sspec = SandboxSpec {
         name: sandbox_name(spec.session_id.as_str()),
         image,
+        fallback_image,
         cpus: size.cpus,
         memory_mb: size.memory_mb,
     };

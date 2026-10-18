@@ -664,7 +664,7 @@ function Settings({ project }: { project: G.Project }) {
                 value={s.image ?? ""}
                 onChange={(e) => set("image", e.target.value || undefined)}
                 className="font-mono"
-                placeholder="fctl-agent:latest"
+                placeholder="ghcr.io/hyperstructure/fctl-agent"
               />
             )}
           </Field>

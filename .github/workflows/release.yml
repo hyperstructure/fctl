@@ -6,11 +6,13 @@
 # version, and pushes the release commit and tag to main. The "Build" jobs
 # then cross-compile the release binaries, all at once (`cargo xtask dist
 # build`), and "Publish" makes the archives from them, makes the GitHub
-# release with the notes, publishes to https://fctl.sh/releases and starts CI
-# on main, which redeploys app.fctl.sh. `tag` rebuilds an existing release tag
-# from main; `dry_run` only shows what would ship. Tags pushed by hand do not
-# publish anything: starting this workflow takes write access to Actions,
-# which agents running in fctl sessions do not have.
+# release with the notes, publishes to https://fctl.sh/releases, starts CI on
+# main, which redeploys app.fctl.sh, and starts the Image workflow, which
+# publishes the release's sandbox image to ghcr.io/hyperstructure/fctl-agent.
+# `tag` rebuilds an existing release tag from main; `dry_run` only shows what
+# would ship. Tags pushed by hand do not publish anything: starting this
+# workflow takes write access to Actions, which agents running in fctl
+# sessions do not have.
 name: Release
 
 on:
@@ -212,3 +214,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         # Pushes made with this workflow's token start no workflows; a dispatch does.
         run: gh workflow run ci.yml --ref main
+      - name: Publish the sandbox image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Hosts pull the image with their own version's tag. It installs fctl
+        # from fctl.sh/releases, so it is built once the release is there.
+        run: gh workflow run image.yml --ref main -f tag="$TAG"

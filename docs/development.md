@@ -164,7 +164,12 @@ tag, builds the binaries in parallel jobs (`cargo xtask dist build`: fctl
 for macOS and Linux on arm64 and x86_64, and the Linux agents), makes the
 archives from them (`cargo xtask dist package`), creates the GitHub release
 with the notes, publishes to `https://fctl.sh/releases` (`cargo xtask
-publish --latest`) and redeploys app.fctl.sh.
+publish --latest`), redeploys app.fctl.sh, and starts the **Image**
+workflow, which publishes the release's sandbox image to
+`ghcr.io/hyperstructure/fctl-agent`. The Image workflow also runs every day,
+to rebuild the latest release's image when Claude Code has a newer release,
+and on pull requests that change `images/agent`, which it builds for both
+architectures and checks with `images/agent/check.sh` without publishing.
 
 ```sh
 cargo xtask release --dry-run   # the next version and its notes
