@@ -142,6 +142,11 @@ each. Once it understands the task it renames the session to what it is
 working on and describes it in a sentence or two, so the floor shows the work
 rather than the first line of your task.
 
+The agent's commits are authored by the GitHub App, with Claude as
+co-author. To be a co-author of the commits in the sessions you start, set
+a commit email in **Settings → Profile**: an address your GitHub account
+has, such as its noreply address. Anyone who can read the repository sees it.
+
 ## 7. Follow along and steer
 
 - **Web app** — the session page streams the transcript as the agent writes

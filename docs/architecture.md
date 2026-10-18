@@ -186,6 +186,31 @@ Older hosts and agents ignore the list and the second token, and work on the
 primary repository alone
 ([ADR 0009](adr/0009-projects-span-an-accounts-repositories.md)).
 
+### Commits
+
+Commits are authored by the GitHub App's bot (`git_author` in the spec),
+and Claude adds its `Co-authored-by` trailer. People are credited only with
+an address they chose: the commit email in Settings → Profile (`fctl
+account set --commit-email`), kept on their user row and shown only to
+them. When the person who started a session has one, FleetDO puts their
+name and that address in the spec's `co_authored_by`, and fctl-agent sets
+`attribution.commit` in Claude's user settings to Claude's trailer followed
+by theirs:
+
+```
+Co-authored-by: Claude <noreply@anthropic.com>
+Co-authored-by: Ada Lovelace <1234+ada@users.noreply.github.com>
+```
+
+GitHub links a commit to the account that has the address, and a squash
+merge keeps the trailers of the commits it squashes. Without a commit
+email, Claude Code's own trailer (which names the model) is the only one.
+The setting reaches the commits Claude makes, not those a script makes, and
+a repository's own Claude settings or CLAUDE.md can replace it. Sign-in
+emails never go into commits: `co_authors`, which older control planes
+filled with one, stays empty, and agents ignore it
+([ADR 0011](adr/0011-commits-credit-people-with-an-address-they-choose.md)).
+
 ### Titles
 
 A session's title starts as the first line of its task. Once the agent

@@ -194,10 +194,19 @@ fctl admin runners
 ## Your account
 
 ```sh
+fctl account set --commit-email 1234+ada@users.noreply.github.com
+fctl account set --commit-email ""         # commits stop crediting you
 fctl account export                        # your data as JSON: fctl-export-<date>.json
 fctl account export -o - | jq .sessions    # or print it
 fctl account delete                        # shows what goes, asks for your email address
 ```
+
+With a commit email, the commits in the sessions you start end with a
+`Co-authored-by` trailer that has your name and that address, for everyone
+who can read the repository. Use an address your GitHub account has, such
+as its noreply address (GitHub → Settings → Emails), so GitHub links the
+commits to you. Sessions take a change when they next start or resume;
+`fctl whoami` shows the address.
 
 The export holds your account, sign-in methods, devices and tokens, Claude
 connections (without their secrets), notification settings and browsers,
