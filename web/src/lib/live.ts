@@ -89,10 +89,21 @@ export class LiveSession {
 
   /** The transcript plus unsent messages; stored messages retire their optimistic copies. */
   private show(items: Item[], added: G.SessionEvent[] = []): Item[] {
+    const ids = (files?: G.Attachment[]) => (files ?? []).map((f) => f.id).join(",");
     for (const e of added) {
       if (e.kind !== "user_message") continue;
-      const i = this.outbox.findIndex((x) => x.kind === "user" && x.text === e.data.text.trim());
-      if (i >= 0) this.outbox = this.outbox.filter((_, n) => n !== i);
+      const i = this.outbox.findIndex(
+        (x) =>
+          x.kind === "user" &&
+          x.text === e.data.text.trim() &&
+          ids(x.attachments) === ids(e.data.attachments),
+      );
+      const done = this.outbox[i];
+      if (!done) continue;
+      // The stored message loads its images from the server.
+      if (done.kind === "user")
+        for (const url of Object.values(done.previews ?? {})) URL.revokeObjectURL(url);
+      this.outbox = this.outbox.filter((_, n) => n !== i);
     }
     return this.outbox.length ? items.concat(this.outbox) : items;
   }
@@ -223,9 +234,17 @@ export class LiveSession {
     }
   }
 
-  /** Sends a message; shows it right away and resolves once it is stored. */
-  send(text: string, author?: G.UserRef): Promise<void> {
+  /**
+   * Sends a message with its uploaded files; shows it right away (images
+   * from their local previews) and resolves once it is stored.
+   */
+  send(
+    text: string,
+    author?: G.UserRef,
+    files?: { attachments: G.Attachment[]; previews: Record<string, string> },
+  ): Promise<void> {
     const client_id = `web-${Date.now().toString(36)}-${++this.counter}`;
+    const attachments = files?.attachments ?? [];
     const optimistic: Item = {
       kind: "user",
       key: `pending-${client_id}`,
@@ -234,8 +253,11 @@ export class LiveSession {
       author,
       text: text.trim(),
       source: "web",
+      attachments,
+      previews: files?.previews,
       pending: true,
     };
+    const ids = attachments.map((a) => a.id);
     this.outbox = [...this.outbox, optimistic];
     this.set({ items: this.show(this.builder.items) });
     const drop = () => {
@@ -251,10 +273,10 @@ export class LiveSession {
             reject(e);
           },
         });
-        this.raw({ type: "send", client_id, text });
+        this.raw({ type: "send", client_id, text, attachments: ids });
       } else {
         // Not connected: fall back to HTTP (idempotent by client id).
-        api.sendMessage(this.id, { text, client_id }).then(
+        api.sendMessage(this.id, { text, client_id, attachments: ids }).then(
           () => resolve(),
           (e) => {
             drop();

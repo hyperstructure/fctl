@@ -5,9 +5,27 @@ import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, ArrowUp, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { Avatar, Button, firstNames, GLCanvas, Skeleton, StatusDot, Textarea, toast } from "@/components/ui";
+import {
+  AttachButton,
+  DraftTray,
+  DropHint,
+  useAttachments,
+  useFileDrop,
+} from "@/components/session/attachments";
+import {
+  Avatar,
+  Button,
+  firstNames,
+  GLCanvas,
+  Skeleton,
+  Spinner,
+  StatusDot,
+  Textarea,
+  toast,
+} from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
+import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
 import { agoShort, stamp } from "@/lib/format";
@@ -106,27 +124,55 @@ function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<Foun
 
 function QuickStart({ projects }: { projects: G.Project[] }) {
   const navigate = useNavigate();
-  const [project, setProject] = useState(projects[0]?.slug ?? "");
+  const editable = projects.filter((p) => p.role !== "viewer");
+  const first = editable[0]?.slug;
+  const [project, setProject] = useState(first ?? "");
   const [prompt, setPrompt] = useState("");
+  const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    if (!project && projects[0]) setProject(projects[0].slug);
-  }, [projects, project]);
+    if (!project && first) setProject(first);
+  }, [first, project]);
+  const files = useAttachments(editable.length ? project : undefined);
+  const attach = (f: File[], pasted?: boolean) => {
+    files.add(f, { pasted });
+    ref.current?.focus();
+  };
+  const dragging = useFileDrop(attach, editable.length > 0);
   const start = useMutation({
-    mutationFn: () => api.createSession(project, { prompt }),
+    mutationFn: async () => {
+      // Waits for files still uploading.
+      const { files: sent, restore } = await files.take();
+      try {
+        const s = await api.createSession(project, {
+          prompt,
+          attachments: sent.attachments.map((a) => a.id),
+        });
+        for (const url of Object.values(sent.previews)) URL.revokeObjectURL(url);
+        return s;
+      } catch (e) {
+        restore();
+        throw e;
+      }
+    },
     onSuccess: (s) => navigate({ to: "/s/$id", params: { id: s.id } }),
     onError: (e) => toast(e.message, "error"),
   });
-  const editable = projects.filter((p) => p.role !== "viewer");
+  const ready = !!prompt.trim() || files.drafts.length > 0;
   if (!editable.length) return null;
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (prompt.trim()) start.mutate();
+        if (ready) start.mutate();
       }}
-      className="group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]"
+      className={cn(
+        "group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]",
+        dragging && "border-accent/50",
+      )}
     >
+      <DraftTray drafts={files.drafts} onRemove={files.remove} onRetry={files.retry} className="px-4 pt-4" />
       <Textarea
+        ref={ref}
         bare
         minRows={2}
         maxRows={10}
@@ -135,14 +181,21 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
-            if (prompt.trim()) start.mutate();
+            if (ready) start.mutate();
           }
+        }}
+        onPaste={(e) => {
+          const pasted = filesFromPaste(e.clipboardData);
+          if (!pasted.length) return;
+          e.preventDefault();
+          attach(pasted, true);
         }}
         placeholder="What should an agent build next?"
         className="block px-5 pt-4 pb-14 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
         aria-label="Task for a new session"
       />
-      <div className="absolute right-3 bottom-3 left-4 flex items-center gap-3">
+      <div className="absolute right-3 bottom-3 left-2.5 flex items-center gap-2">
+        <AttachButton onFiles={(f) => attach(f)} />
         <label className="flex min-w-0 items-center gap-2 text-[12.5px] text-ink-3">
           <span className="text-ink-4">in</span>
           <select
@@ -161,15 +214,16 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
         <span className="hidden text-[11.5px] text-ink-4 sm:inline">⌘↵ to start</span>
         <button
           type="submit"
-          disabled={!prompt.trim() || start.isPending}
+          disabled={!ready || start.isPending}
           className={cn(
             "flex h-9 items-center gap-2 rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all duration-200 ease-[var(--ease-spring)]",
-            prompt.trim() ? "bg-ink text-canvas hover:scale-[1.03]" : "bg-raised text-ink-4",
+            ready ? "bg-ink text-canvas hover:scale-[1.03]" : "bg-raised text-ink-4",
           )}
         >
-          Start <ArrowUp className="size-4" />
+          Start {start.isPending ? <Spinner className="size-4" /> : <ArrowUp className="size-4" />}
         </button>
       </div>
+      <DropHint show={dragging} />
     </form>
   );
 }

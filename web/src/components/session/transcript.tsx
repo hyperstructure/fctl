@@ -20,6 +20,7 @@ import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { clock, duration, until } from "@/lib/format";
 import type { Item, LiveTurn } from "@/lib/transcript";
+import { MessageFiles } from "./attachments";
 import { ToolRow } from "./tool";
 
 function Milestone({
@@ -48,8 +49,15 @@ function Milestone({
   );
 }
 
-const UserMessage = memo(function UserMessage({ item }: { item: Extract<Item, { kind: "user" }> }) {
+const UserMessage = memo(function UserMessage({
+  item,
+  sessionId,
+}: {
+  item: Extract<Item, { kind: "user" }>;
+  sessionId?: string;
+}) {
   const author = item.author;
+  const files = item.attachments ?? [];
   return (
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
       <div className="mb-1.5 flex items-center gap-2 text-[12.5px]">
@@ -61,9 +69,16 @@ const UserMessage = memo(function UserMessage({ item }: { item: Extract<Item, { 
           {item.source === "remote_control" && " · from the Claude app"}
         </span>
       </div>
-      <div className="ml-7 rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap text-ink">
-        {item.text}
-      </div>
+      {item.text && (
+        <div className="ml-7 rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap text-ink">
+          {item.text}
+        </div>
+      )}
+      {files.length > 0 && (
+        <div className={cn("ml-7", item.text && "mt-2")}>
+          <MessageFiles sessionId={sessionId} files={files} previews={item.previews} pending={item.pending} />
+        </div>
+      )}
     </div>
   );
 });
@@ -208,10 +223,18 @@ function GitItem({ git }: { git: G.GitState }) {
   );
 }
 
-const ItemView = memo(function ItemView({ item, live }: { item: Item; live?: LiveTurn }) {
+const ItemView = memo(function ItemView({
+  item,
+  live,
+  sessionId,
+}: {
+  item: Item;
+  live?: LiveTurn;
+  sessionId?: string;
+}) {
   switch (item.kind) {
     case "user":
-      return <UserMessage item={item} />;
+      return <UserMessage item={item} sessionId={sessionId} />;
     case "prose":
       return (
         <div className="animate-fade py-2">
@@ -372,6 +395,7 @@ export function LiveTurnView({
 }
 
 export const Transcript = memo(function Transcript({
+  sessionId,
   items,
   live,
   status,
@@ -379,6 +403,7 @@ export const Transcript = memo(function Transcript({
   hasMoreBefore,
   loadingOlder,
 }: {
+  sessionId: string;
   items: Item[];
   live: LiveTurn;
   status?: G.SessionStatus;
@@ -407,7 +432,7 @@ export const Transcript = memo(function Transcript({
             it.kind === "tool" && "[contain-intrinsic-size:auto_34px]",
           )}
         >
-          <ItemView item={it} live={it.kind === "tool" ? live : undefined} />
+          <ItemView item={it} live={it.kind === "tool" ? live : undefined} sessionId={sessionId} />
         </div>
       ))}
       <LiveTurnView live={live} status={status} />
