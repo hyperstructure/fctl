@@ -44,8 +44,13 @@ this file is the overview. Order within a section is priority.
 
 ## 0.2 — run it every day
 
-- [ ] First real-Claude runs on the hyperstructure Mac host; harden the Apple
-      container driver (DNS, clock, disk, caches) from what they show (#1)
+- [x] First real-Claude runs on the hyperstructure Mac host with the Apple
+      container driver: provisioning, a full login, host restarts, DNS,
+      clock and disk (#1)
+- [ ] The same with a long-lived token, an OAuth refresh and a usage-limit
+      pause (#79)
+- [ ] Hosts make room when their disk runs low, starting with stopped
+      sandboxes (#76)
 - [x] CI on GitHub Actions: checks on pull requests, deploys from `main`,
       releases from tags
 - [x] Prebuilt sandbox images (GHCR) so `fctl host image build` is a pull (#2)
