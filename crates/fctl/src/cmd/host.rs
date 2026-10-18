@@ -124,7 +124,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             };
             let d = Driver::select(&driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
             if build_image {
-                fctl_host::image::build(&d, &cfg.image).await?;
+                fctl_host::image::build(&d, &cfg.image, &cfg.download_base).await?;
             }
             let info = d.probe().await;
             if !info.available {
@@ -229,7 +229,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             let cfg = HostConfig::load().unwrap_or_default();
             let name = driver.unwrap_or(cfg.driver.clone());
             let d = Driver::select(&name, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
-            fctl_host::image::build(&d, tag.as_deref().unwrap_or(&cfg.image)).await
+            fctl_host::image::build(&d, tag.as_deref().unwrap_or(&cfg.image), &cfg.download_base)
+                .await
         }
         HostCmd::Restart => {
             service::restart()?;

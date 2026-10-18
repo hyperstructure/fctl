@@ -3,13 +3,15 @@
 # fctl. Used by the Dockerfile (container sandboxes) and by `fctl host image
 # build --driver lima` (the fctl-base VM). Runs as root.
 #
-# FCTL_VERSION picks the fctl release (`fctl host image build` passes its
-# own version); empty means the latest.
+# FCTL_VERSION picks the fctl release and FCTL_DOWNLOAD where releases come
+# from (`fctl host image build` passes its own version and download_base);
+# empty means the latest, from https://fctl.sh/releases.
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 FCTL_VERSION="${FCTL_VERSION:-}"
+FCTL_DOWNLOAD="${FCTL_DOWNLOAD:-}"
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
@@ -48,7 +50,8 @@ chown -R "$AGENT_USER" /opt/fctl
 # fctl-agent in at session start, so the one in the archive goes.
 install_fctl() {
   curl -fsSL https://fctl.sh/install |
-    env FCTL_VERSION="$1" FCTL_INSTALL_DIR=/usr/local/bin FCTL_NO_COMPLETIONS=1 sh
+    env FCTL_VERSION="$1" FCTL_DOWNLOAD="$FCTL_DOWNLOAD" FCTL_INSTALL_DIR=/usr/local/bin \
+      FCTL_NO_COMPLETIONS=1 sh
 }
 if ! install_fctl "$FCTL_VERSION"; then
   [ -n "$FCTL_VERSION" ] || exit 1
