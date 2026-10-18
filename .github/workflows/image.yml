@@ -144,7 +144,6 @@ jobs:
       contents: read
       packages: write
     env:
-      REF: ${{ needs.plan.outputs.ref }}
       VERSION: ${{ needs.plan.outputs.version }}
       CLAUDE: ${{ needs.plan.outputs.claude }}
       CREATED: ${{ needs.plan.outputs.created }}
