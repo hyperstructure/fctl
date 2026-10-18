@@ -35,6 +35,10 @@ Release (see .claude/skills/release/SKILL.md)
   lint-commit [<subject>] [--range <a..b>]
                                 Check Conventional Commit subjects (CI: pull request titles)
   dist [--target <triple>]...   Cross-compile release archives into dist/v<version>/
+  dist build <package> --target <triple>
+                                Only cross-compile fctl or fctl-agent, into dist/bin/v<version>/
+  dist package [--target <triple>]...
+                                Only make the archives, from the binaries in dist/bin/v<version>/
   publish [<version>] [--latest]
                                 Upload dist/v<version> to the releases store (fctl.sh/releases)
 ";
@@ -122,8 +126,25 @@ fn main() -> Result<()> {
         }
         "dist" => {
             let targets = a.values("--target")?;
-            a.done()?;
-            dist::dist(&root, &targets).map(|_| ())
+            match a.optional().as_deref() {
+                None => {
+                    a.done()?;
+                    dist::dist(&root, &targets).map(|_| ())
+                }
+                Some("build") => {
+                    let package = a.positional("package (fctl or fctl-agent)")?;
+                    a.done()?;
+                    let [target] = targets.as_slice() else {
+                        bail!("dist build takes one --target");
+                    };
+                    dist::build(&root, &package, target).map(|_| ())
+                }
+                Some("package") => {
+                    a.done()?;
+                    dist::package(&root, &targets).map(|_| ())
+                }
+                Some(other) => bail!("unknown dist command `{other}` (cargo xtask help)"),
+            }
         }
         "publish" => {
             let latest = a.flag("--latest");

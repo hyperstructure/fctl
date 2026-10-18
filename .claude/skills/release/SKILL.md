@@ -44,19 +44,22 @@ or GitHub → Actions → Release → Run workflow. With the GitHub App API:
 `POST /repos/hyperstructure/fctl/actions/workflows/release.yml/dispatches`
 with `{"ref": "main", "inputs": {"bump": "auto"}}`.
 
-It runs two jobs:
+It runs in three steps:
 
 1. **Version and notes**: `cargo xtask release` sets the version in
    `Cargo.toml` and `Cargo.lock`, adds the notes to `CHANGELOG.md`, commits
    `chore(release): vX.Y.Z`, tags it, and pushes both to `main` at once (a
    `main` that moved meanwhile rejects the push; start it again).
-2. **Build and publish**: builds fctl for macOS and Linux (arm64 and
-   x86_64) and the Linux agents, creates the GitHub release with the
-   notes, publishes the files to https://fctl.sh/releases (moving
-   `latest`), installs it with the installer as a check, and starts CI on
-   `main`, which redeploys app.fctl.sh.
+2. **Build**: a job for each binary, all at once (`cargo xtask dist
+   build`): fctl for macOS and Linux (arm64 and x86_64) and the Linux
+   agents.
+3. **Publish**: makes the archives from those binaries (`cargo xtask dist
+   package`), creates the GitHub release with the notes, publishes the
+   files to https://fctl.sh/releases (moving `latest`), installs it with
+   the installer as a check, and starts CI on `main`, which redeploys
+   app.fctl.sh.
 
-Follow it with `gh run watch` or in the Actions tab; it takes about 20
+Follow it with `gh run watch` or in the Actions tab; it takes about 10
 minutes.
 
 ## 3. After
@@ -72,8 +75,11 @@ minutes.
 
 - **Before the release commit** (version and notes failed): fix the cause
   in a pull request, merge it, start the workflow again.
-- **After the tag was pushed** (build or publish failed): if it was the
-  infrastructure, rebuild the tag with
+- **After the tag was pushed** (a build or publish failed): if it was the
+  infrastructure, run the failed jobs again (`gh run rerun <run-id>
+  --failed`, or "Re-run failed jobs" on the run's page); Publish uses the
+  binaries the Build jobs made, which are kept for 7 days. Or rebuild the
+  tag from the start with
   `gh workflow run release.yml --ref main -f tag=vX.Y.Z`. If the code is
   broken, fix it and release a patch.
 - Never move or delete a published tag or its files on fctl.sh: installed

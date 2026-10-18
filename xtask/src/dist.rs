@@ -6,6 +6,10 @@
 //!   fctl-agent-<arch>-linux     standalone agents (hosts download these on demand)
 //!   *.sha256, SHA256SUMS, manifest.json
 //!
+//! The two halves also run apart, so that the Release workflow builds the
+//! binaries in parallel jobs: `dist build` cross-compiles one binary into
+//! dist/bin/v<version>/, and `dist package` makes the archives from them.
+//!
 //! `cargo xtask publish` uploads a dist directory to the releases store
 //! (deploy/releases.toml) that https://fctl.sh/releases serves.
 
@@ -39,7 +43,42 @@ fn agent_asset(arch: &str) -> String {
     format!("fctl-agent-{arch}-linux")
 }
 
-fn build(root: &Path, package: &str, target: &str) -> Result<PathBuf> {
+fn targets_or_all(targets: &[String]) -> Vec<String> {
+    if targets.is_empty() {
+        TARGETS.iter().map(|t| (*t).to_owned()).collect()
+    } else {
+        targets.to_vec()
+    }
+}
+
+fn arches(targets: &[String]) -> Vec<&str> {
+    let mut arches: Vec<&str> = targets.iter().map(|t| arch(t)).collect();
+    arches.sort_unstable();
+    arches.dedup();
+    arches
+}
+
+/// What the archives for `targets` are made of, as (package, target): the
+/// agent for each architecture (every archive carries the one for its own),
+/// and fctl for each target.
+fn binaries(targets: &[String]) -> Vec<(&'static str, String)> {
+    let agents = arches(targets)
+        .into_iter()
+        .map(|a| ("fctl-agent", agent_target(a)));
+    agents
+        .chain(targets.iter().map(|t| ("fctl", t.clone())))
+        .collect()
+}
+
+/// Where `dist build` leaves a binary for `dist package`.
+fn built(root: &Path, version: &str, package: &str, target: &str) -> PathBuf {
+    root.join("dist")
+        .join("bin")
+        .join(format!("v{version}"))
+        .join(format!("{package}-{target}"))
+}
+
+fn zigbuild(root: &Path, package: &str, target: &str) -> Result<PathBuf> {
     let mut cmd = Command::new("cargo");
     cmd.args([
         "zigbuild",
@@ -90,48 +129,73 @@ fn tarball(out: &Path, files: &[(&str, &Path)]) -> Result<()> {
     Ok(())
 }
 
+/// Builds the archives for `targets` (all of them when empty): every binary
+/// they need, then the archives.
 pub fn dist(root: &Path, targets: &[String]) -> Result<PathBuf> {
+    let targets = targets_or_all(targets);
+    for (package, target) in binaries(&targets) {
+        build(root, package, &target)?;
+    }
+    package(root, &targets)
+}
+
+/// Cross-compiles one release binary (fctl or fctl-agent) into
+/// dist/bin/v<version>/.
+pub fn build(root: &Path, package: &str, target: &str) -> Result<PathBuf> {
+    if !["fctl", "fctl-agent"].contains(&package) {
+        bail!("releases have fctl and fctl-agent, not {package}");
+    }
     if !util::has("cargo-zigbuild") {
         bail!(
             "cargo-zigbuild is missing: `cargo install cargo-zigbuild --locked` (and zig 0.13+ on PATH)"
         );
     }
-    let targets: Vec<String> = if targets.is_empty() {
-        TARGETS.iter().map(|t| (*t).to_owned()).collect()
-    } else {
-        targets.to_vec()
-    };
+    let out = built(root, &util::version(root)?, package, target);
+    let bin = zigbuild(root, package, target)?;
+    let mut bytes = std::fs::read(&bin)?;
+    if target.ends_with("apple-darwin") {
+        // zig links with its own deployment target; lower it (see macho.rs).
+        let before = crate::macho::set_min_macos(&mut bytes, MACOS_DEPLOYMENT_TARGET)?;
+        eprintln!(
+            "{target}: minimum macOS {} → {MACOS_DEPLOYMENT_TARGET}",
+            crate::macho::decode_version(before)
+        );
+    }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&out, bytes)?;
+    std::fs::set_permissions(&out, std::fs::metadata(&bin)?.permissions())?;
+    eprintln!("{package} for {target} in {}", out.display());
+    Ok(out)
+}
+
+/// Makes dist/v<version>/ for `targets` (all of them when empty) from the
+/// binaries `dist build` left in dist/bin/v<version>/.
+pub fn package(root: &Path, targets: &[String]) -> Result<PathBuf> {
+    let targets = targets_or_all(targets);
     let version = util::version(root)?;
+    for (package, target) in binaries(&targets) {
+        let bin = built(root, &version, package, &target);
+        if !bin.is_file() {
+            bail!(
+                "{} is missing: run `cargo xtask dist build {package} --target {target}`",
+                bin.display()
+            );
+        }
+    }
     let out = root.join("dist").join(format!("v{version}"));
     if out.exists() {
         std::fs::remove_dir_all(&out)?;
     }
     std::fs::create_dir_all(&out)?;
 
-    // Agents first: every archive carries the one for its architecture.
-    let mut arches: Vec<&str> = targets.iter().map(|t| arch(t)).collect();
-    arches.sort_unstable();
-    arches.dedup();
-    for a in &arches {
-        let bin = build(root, "fctl-agent", &agent_target(a))?;
-        std::fs::copy(&bin, out.join(agent_asset(a)))?;
+    for a in arches(&targets) {
+        let agent = built(root, &version, "fctl-agent", &agent_target(a));
+        std::fs::copy(&agent, out.join(agent_asset(a)))?;
     }
-    let work = util::target_dir(root).join("xtask-dist");
-    std::fs::create_dir_all(&work)?;
     for target in &targets {
-        let mut fctl = build(root, "fctl", target)?;
-        if target.ends_with("apple-darwin") {
-            // zig links with its own deployment target; lower it (see macho.rs).
-            let mut bytes = std::fs::read(&fctl)?;
-            let before = crate::macho::set_min_macos(&mut bytes, MACOS_DEPLOYMENT_TARGET)?;
-            eprintln!(
-                "{target}: minimum macOS {} → {MACOS_DEPLOYMENT_TARGET}",
-                crate::macho::decode_version(before)
-            );
-            let patched = work.join(format!("fctl-{target}"));
-            std::fs::write(&patched, bytes)?;
-            fctl = patched;
-        }
+        let fctl = built(root, &version, "fctl", target);
         let agent = out.join(agent_asset(arch(target)));
         tarball(
             &out.join(format!("fctl-{target}.tar.gz")),
@@ -256,5 +320,97 @@ mod tests {
         assert_eq!(arch("aarch64-apple-darwin"), "aarch64");
         assert_eq!(agent_target("x86_64"), "x86_64-unknown-linux-musl");
         assert_eq!(agent_asset("aarch64"), "fctl-agent-aarch64-linux");
+    }
+
+    #[test]
+    fn an_agent_per_arch_and_fctl_per_target() {
+        assert_eq!(
+            binaries(&targets_or_all(&[])),
+            [
+                ("fctl-agent", "aarch64-unknown-linux-musl".to_owned()),
+                ("fctl-agent", "x86_64-unknown-linux-musl".to_owned()),
+                ("fctl", "aarch64-apple-darwin".to_owned()),
+                ("fctl", "x86_64-apple-darwin".to_owned()),
+                ("fctl", "aarch64-unknown-linux-musl".to_owned()),
+                ("fctl", "x86_64-unknown-linux-musl".to_owned()),
+            ]
+        );
+    }
+
+    /// The Release workflow builds each binary in a job of its own, and
+    /// `dist package` fails there, after the tag was pushed, if one is missing.
+    #[test]
+    fn the_release_workflow_builds_every_binary() {
+        let workflow = include_str!("../../.github/workflows/release.yml");
+        for (package, target) in binaries(&targets_or_all(&[])) {
+            let job = format!("- {{ package: {package}, target: {target} }}");
+            assert!(workflow.contains(&job), "release.yml has no `{job}`");
+        }
+    }
+
+    #[test]
+    fn packages_what_dist_build_left() {
+        use std::io::Read;
+        let root = std::env::temp_dir().join(format!("xtask-package-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.package]\nversion = \"1.2.3\"\n",
+        )
+        .unwrap();
+        let targets = ["aarch64-apple-darwin".to_owned()];
+        assert!(package(&root, &targets).is_err(), "nothing was built yet");
+        for (package, target) in binaries(&targets) {
+            let bin = built(&root, "1.2.3", package, &target);
+            std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+            std::fs::write(&bin, format!("{package} for {target}")).unwrap();
+        }
+
+        let out = package(&root, &targets).unwrap();
+        assert_eq!(out, root.join("dist/v1.2.3"));
+        let mut names: Vec<String> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "SHA256SUMS",
+                "fctl-aarch64-apple-darwin.tar.gz",
+                "fctl-aarch64-apple-darwin.tar.gz.sha256",
+                "fctl-agent-aarch64-linux",
+                "fctl-agent-aarch64-linux.sha256",
+                "manifest.json",
+            ]
+        );
+        let agent = "fctl-agent for aarch64-unknown-linux-musl";
+        assert_eq!(
+            std::fs::read_to_string(out.join("fctl-agent-aarch64-linux")).unwrap(),
+            agent
+        );
+        let archive = std::fs::File::open(out.join("fctl-aarch64-apple-darwin.tar.gz")).unwrap();
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+        let files: Vec<(String, String)> = archive
+            .entries()
+            .unwrap()
+            .map(|e| {
+                let mut e = e.unwrap();
+                let mut data = String::new();
+                e.read_to_string(&mut data).unwrap();
+                (e.path().unwrap().display().to_string(), data)
+            })
+            .collect();
+        assert_eq!(
+            files,
+            [
+                (
+                    "fctl".to_owned(),
+                    "fctl for aarch64-apple-darwin".to_owned()
+                ),
+                ("fctl-agent-aarch64-linux".to_owned(), agent.to_owned()),
+            ]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
