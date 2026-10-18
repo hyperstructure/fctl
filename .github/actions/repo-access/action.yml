@@ -1,7 +1,8 @@
-name: Access to a private hyperstructure repository
+name: Access to a hyperstructure repository
 description: >
-  Lets git (and so npm) reach one private repository over SSH with its deploy
-  key, through a host alias so that several keys can coexist.
+  Lets git reach one hyperstructure repository over SSH with its deploy key
+  (CI pushes fctl.sh's docs pin to fctl-site with one), through a host alias
+  so that several keys can coexist.
 inputs:
   repo:
     description: The repository name in hyperstructure, e.g. design
