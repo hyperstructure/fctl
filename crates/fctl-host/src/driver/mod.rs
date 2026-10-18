@@ -175,6 +175,21 @@ impl Driver {
         }
     }
 
+    /// Pulls `image`, or `fallback` when `image` can't be pulled and isn't
+    /// here either; returns the image it pulled.
+    pub async fn pull_or_fallback(
+        &self,
+        image: &str,
+        fallback: Option<&str>,
+        progress: bool,
+        log: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<String> {
+        match self {
+            Self::Container(d) => d.pull_or_fallback(image, fallback, progress, log).await,
+            _ => anyhow::bail!("the {} driver does not use images", self.name()),
+        }
+    }
+
     pub async fn probe(&self) -> DriverInfo {
         match self {
             Self::Process(d) => d.probe().await,
