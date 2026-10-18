@@ -915,8 +915,8 @@ function Settings({ project }: { project: G.Project }) {
           <LargestSandbox />
           <p className="-mt-2 text-[12.5px] text-ink-3">
             A session that waits for a message longer than the idle timeout stops, and its runner takes other
-            work. A message resumes it. Work its agent left running in the background keeps it up for up to an hour
-            after the turn, or for the idle timeout when that is longer.
+            work. A message resumes it. Work its agent left running in the background keeps it up for up to an
+            hour after the turn, or for the idle timeout when that is longer.
           </p>
           <Field
             label="Environment"

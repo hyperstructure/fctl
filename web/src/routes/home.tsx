@@ -18,8 +18,9 @@ import type * as G from "@/gen";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
-import { agoShort, stamp, statusReason } from "@/lib/format";
+import { agoShort, stamp } from "@/lib/format";
 import { useMe, useProjects, useRunners, useSessions } from "@/lib/queries";
+import { statusReason, waitsForYou } from "@/lib/status";
 
 const ACTIVE: G.SessionStatus[] = [
   "queued",
@@ -344,8 +345,11 @@ export function Home() {
   const recent = useSessions({ status: "ended", limit: 12 });
   const f = useFeed();
   const activeList = (active.data?.sessions ?? []).filter((s) => ACTIVE.includes(s.status));
-  const working = activeList.filter((s) => s.status === "running").length;
-  const waiting = activeList.filter((s) => s.status === "idle").length;
+  // A session that waits for its agent's background work is at work too.
+  const working = activeList.filter(
+    (s) => s.status === "running" || (s.status === "idle" && !waitsForYou(s)),
+  ).length;
+  const waiting = activeList.filter(waitsForYou).length;
   const onlineRunners = (f.runners.length ? f.runners : (runners.data?.runners ?? [])).filter(
     (r) => r.status === "online",
   );

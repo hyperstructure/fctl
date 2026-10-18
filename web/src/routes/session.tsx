@@ -44,12 +44,13 @@ import {
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, duration, num, statusReason, until } from "@/lib/format";
+import { ago, duration, num, until } from "@/lib/format";
 import { hasChanges, type RepoChanges, repoChanges } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink } from "@/lib/remote-control";
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
+import { statusReason } from "@/lib/status";
 
 export function SessionPage() {
   const { id } = useParams({ from: "/app/s/$id" });
