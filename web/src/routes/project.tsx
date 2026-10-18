@@ -248,7 +248,7 @@ function Sessions({ project }: { project: G.Project }) {
                 key={s.id}
                 to="/s/$id"
                 params={{ id: s.id }}
-                className="group flex items-center gap-3.5 border-b border-line py-3 transition-colors hover:bg-raised/30"
+                className="group flex items-center gap-3.5 border-b border-line p-3 transition-colors hover:bg-raised/30"
               >
                 <span className="w-9 shrink-0 text-right font-mono text-[12px] text-ink-4">#{s.number}</span>
                 <StatusDot status={s.status} />
@@ -729,7 +729,7 @@ function Settings({ project }: { project: G.Project }) {
           </Field>
         </div>
       </Section>
-      <div className="sticky bottom-4 mt-4 flex justify-end">
+      <div className="sticky bottom-[max(1rem,env(safe-area-inset-bottom))] mt-4 flex justify-end">
         <Button type="submit" variant="primary" loading={save.isPending}>
           Save settings
         </Button>

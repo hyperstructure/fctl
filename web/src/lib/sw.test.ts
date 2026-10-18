@@ -1,4 +1,5 @@
-// The service worker (public/sw.js), run in a stand-in for its global scope.
+// The service worker's notifications (public/sw.js), run in a stand-in for
+// its global scope.
 import { describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import source from "../../public/sw.js?raw";
@@ -77,7 +78,6 @@ describe("the service worker", () => {
       renotify: true,
       timestamp: message.at,
       icon: "/icon-192.png",
-      badge: "/badge-96.png",
       data: { url: "/s/ses_12" },
     });
     expect(w.shown.every((n) => n.close.mock.calls.length === 0)).toBe(true);

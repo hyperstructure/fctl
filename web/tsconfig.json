@@ -16,9 +16,8 @@
     "isolatedModules": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "allowImportingTsExtensions": true,
     "types": ["vite/client"],
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src", "vite.config.ts", "brand-icons.ts", "brand-icons.test.ts"]
+  "include": ["src", "vite.config.ts"]
 }

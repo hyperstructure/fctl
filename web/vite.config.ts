@@ -1,38 +1,41 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
-import { brandIcons, favicon } from "./brand-icons.ts";
 
-/**
- * Serves and emits /favicon.svg from @hyperstructure/design, and PNG icons
- * drawn from its mark (brand-icons.ts): one source for the mark.
- */
+const require = createRequire(import.meta.url);
+
+/** The favicon and app icons at the root, and where they are in @hyperstructure/design. */
+export const BRAND_ASSETS: Record<string, string> = {
+  "favicon.svg": "assets/favicon.svg",
+  "apple-touch-icon.png": "assets/icons/apple-touch-icon.png",
+  "icon-192.png": "assets/icons/icon-192.png",
+  "icon-512.png": "assets/icons/icon-512.png",
+  "icon-maskable-512.png": "assets/icons/icon-maskable-512.png",
+  "icon-maskable-1024.png": "assets/icons/icon-maskable-1024.png",
+};
+
+/** Serves and emits the favicon and app icons from @hyperstructure/design (one source for the mark). */
 function brandAssets(): Plugin {
-  let icons: Record<string, Buffer> | undefined;
-  const pngs = () => {
-    icons ??= brandIcons();
-    return icons;
-  };
+  const read = (file: string) =>
+    readFileSync(require.resolve(`@hyperstructure/design/${BRAND_ASSETS[file]}`));
   return {
     name: "brand-assets",
     configureServer(server) {
-      server.middlewares.use("/favicon.svg", (_req, res) => {
-        res.setHeader("content-type", "image/svg+xml");
-        res.end(favicon());
-      });
       server.middlewares.use((req, res, next) => {
-        const icon = pngs()[req.url?.slice(1) ?? ""];
-        if (!icon) return next();
-        res.setHeader("content-type", "image/png");
-        res.end(icon);
+        const file = req.url?.split("?")[0]?.slice(1) ?? "";
+        if (!Object.hasOwn(BRAND_ASSETS, file)) return next();
+        res.setHeader("content-type", file.endsWith(".svg") ? "image/svg+xml" : "image/png");
+        res.end(read(file));
       });
     },
     generateBundle() {
-      this.emitFile({ type: "asset", fileName: "favicon.svg", source: favicon() });
-      for (const [fileName, source] of Object.entries(pngs()))
-        this.emitFile({ type: "asset", fileName, source });
+      for (const file of Object.keys(BRAND_ASSETS)) {
+        this.emitFile({ type: "asset", fileName: file, source: read(file) });
+      }
     },
   };
 }

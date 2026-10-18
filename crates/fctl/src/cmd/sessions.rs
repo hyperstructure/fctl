@@ -555,9 +555,16 @@ pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> R
         Some(t) if t.starts_with("ses_") || t.contains('#') => {
             let s = resolve(&api, t).await?;
             if claude {
-                s.remote_control.and_then(|r| r.session_url).context(
+                let url = s.remote_control.and_then(|r| r.session_url).context(
                     "This session has no Remote Control link (it needs a full Claude login)",
-                )?
+                )?;
+                // The Claude app opens the session itself; without one, the browser does.
+                if let Some(app) = fctl_domain::remote_control::claude_app_url(&url)
+                    && crate::cmd::auth::open_claude_app(&app)
+                {
+                    return Ok(());
+                }
+                url
             } else {
                 format!("{}/s/{}", api.base(), s.id)
             }
