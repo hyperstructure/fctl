@@ -227,7 +227,12 @@ pub async fn serve(ctx: &Ctx, req: &Request, token: &str) -> AppResult<Response>
     h.set("ETag", &etag)?;
     h.set("Cache-Control", "public, no-cache")?;
     h.set("X-Content-Type-Options", "nosniff")?;
-    h.set("Content-Security-Policy", "default-src 'none'; sandbox")?;
+    // As for attachments: the browser's own page for an image opened in a
+    // tab styles it inline, and nothing in it may run.
+    h.set(
+        "Content-Security-Policy",
+        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+    )?;
     // Pages elsewhere show it (GitHub through its image proxy).
     h.set("Cross-Origin-Resource-Policy", "cross-origin")?;
     h.set("Referrer-Policy", "no-referrer")?;
