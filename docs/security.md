@@ -103,14 +103,15 @@ The `process` driver has no isolation at all and is for development only.
 
 ## Commits
 
-Agents' commits are authored by the GitHub App's bot and carry Claude's
-`Co-authored-by` trailer. They name the person who started the session only
-when that person chose a commit email (Settings → Profile, or `fctl account
-set --commit-email`) and the project credits people: a second trailer then
-carries their name and that address. Maintainers turn that off with **Credit
-people in commits** in the project's settings (`fctl projects set
---commit-credit off`); its sessions then don't receive the address at all.
-Everyone who can read the repository sees the address in the commits, and
+Agents' commits are authored by the GitHub App's bot. They carry Claude's
+`Co-authored-by` trailer unless the project turns off **Credit Claude in
+commits**. They name the person who started the session only when that
+person chose a commit email (Settings → Profile, or `fctl account set
+--commit-email`) and the project credits people: a trailer then carries
+their name and that address. Maintainers turn that off with **Credit people
+in commits** in the project's settings (`fctl projects set --credit-people
+off`); its sessions then don't receive the address at all. Everyone who can
+read the repository sees the address in the commits, and
 people who can see the session see it in the transcript; commits keep it
 after it is removed or the account deleted. Settings and the API show the
 address only to its owner, not to admins. fctl never puts sign-in emails in

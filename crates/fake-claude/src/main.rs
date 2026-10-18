@@ -11,7 +11,7 @@
 //! | Word | Behavior |
 //! |---|---|
 //! | (anything) | reports plan usage, streams a short answer, runs a fake `Bash` tool, answers again |
-//! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message with `attribution.commit` from `~/.claude/settings.json` when that is set |
+//! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message as Claude Code does: with `attribution.commit` from `~/.claude/settings.json`, or Claude's trailer when that is unset |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `slow` | streams for about ten seconds (try interrupting) |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds |
@@ -298,17 +298,25 @@ impl Session {
     }
 }
 
-/// What Claude Code ends commit messages with, from the user settings
-/// fctl-agent writes (`attribution.commit` in `~/.claude/settings.json`).
-/// Unset, Claude Code adds its own trailer; fake-claude adds none.
+/// What Claude Code ends commit messages with: `attribution.commit` from
+/// the user settings fctl-agent writes (`~/.claude/settings.json`), where
+/// empty means nothing, or its own trailer when that is unset. Claude
+/// Code's names the model; fake-claude's says Claude.
 fn commit_attribution() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let settings = std::path::Path::new(&home).join(".claude/settings.json");
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(settings).ok()?).ok()?;
-    v.pointer("/attribution/commit")
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_owned)
+    let configured = std::env::var_os("HOME")
+        .and_then(|home| {
+            std::fs::read_to_string(std::path::Path::new(&home).join(".claude/settings.json")).ok()
+        })
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|v| {
+            v.pointer("/attribution/commit")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    match configured {
+        Some(text) => Some(text).filter(|t| !t.trim().is_empty()),
+        None => Some("Co-Authored-By: Claude <noreply@anthropic.com>".into()),
+    }
 }
 
 /// What fake-claude says about a message's files: the images in it, and

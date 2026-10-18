@@ -52,10 +52,15 @@ remote_control: boolean,
 claude_ai_connectors: boolean, 
 /**
  * Credit the person who started a session in its commits, with a
- * `Co-authored-by` trailer for the commit email they chose. Off, the
- * commits credit Claude alone.
+ * `Co-authored-by` trailer for the commit email they chose.
  */
-commit_credit: boolean, 
+credit_people: boolean, 
+/**
+ * Credit Claude in commits, as Claude Code does by default: its
+ * `Co-authored-by` trailer, and in Remote Control sessions the
+ * claude.ai session link. Older agents always do.
+ */
+credit_claude: boolean, 
 /**
  * Non-secret environment variables for sandboxes.
  */

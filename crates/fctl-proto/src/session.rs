@@ -367,9 +367,12 @@ pub struct ProjectSettings {
     /// session. Only full Claude logins have them.
     pub claude_ai_connectors: bool,
     /// Credit the person who started a session in its commits, with a
-    /// `Co-authored-by` trailer for the commit email they chose. Off, the
-    /// commits credit Claude alone.
-    pub commit_credit: bool,
+    /// `Co-authored-by` trailer for the commit email they chose.
+    pub credit_people: bool,
+    /// Credit Claude in commits, as Claude Code does by default: its
+    /// `Co-authored-by` trailer, and in Remote Control sessions the
+    /// claude.ai session link. Older agents always do.
+    pub credit_claude: bool,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
 }
@@ -388,7 +391,8 @@ impl Default for ProjectSettings {
             auto_pull_request: true,
             remote_control: true,
             claude_ai_connectors: true,
-            commit_credit: true,
+            credit_people: true,
+            credit_claude: true,
             env: Default::default(),
         }
     }
@@ -514,14 +518,16 @@ mod tests {
     #[test]
     fn settings_stored_before_a_field_get_its_default() -> Result<(), serde_json::Error> {
         // A project saved before `claude_ai_connectors` existed keeps its
-        // connectors, and one from before `commit_credit` credits people.
+        // connectors, and one from before the credit settings credits
+        // people and Claude.
         let old: ProjectSettings =
             serde_json::from_str(r#"{"auto_pull_request":false,"remote_control":true,"env":{}}"#)?;
         assert!(old.claude_ai_connectors);
-        assert!(old.commit_credit);
+        assert!(old.credit_people && old.credit_claude);
         assert!(!old.auto_pull_request);
-        let off: ProjectSettings = serde_json::from_str(r#"{"commit_credit":false}"#)?;
-        assert!(!off.commit_credit);
+        let off: ProjectSettings =
+            serde_json::from_str(r#"{"credit_people":false,"credit_claude":false}"#)?;
+        assert!(!off.credit_people && !off.credit_claude);
         assert!(off.claude_ai_connectors);
         let off: ProjectSettings = serde_json::from_str(r#"{"claude_ai_connectors":false}"#)?;
         assert_eq!(

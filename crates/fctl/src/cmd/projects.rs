@@ -46,8 +46,8 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["commit_credit"])),
-        after_help = "Examples:\n  fctl projects set --commit-credit off\n  fctl projects set -p my-app --commit-credit on"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude"])),
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -55,9 +55,14 @@ pub enum ProjectsCmd {
         project: Option<String>,
         /// Credit the person who started a session in its commits, with a
         /// Co-authored-by trailer for the commit email they set (`fctl
-        /// account set`). Off, the commits credit Claude alone.
+        /// account set`).
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
-        commit_credit: Option<bool>,
+        credit_people: Option<bool>,
+        /// Credit Claude in commits, as Claude Code does by default: its
+        /// Co-authored-by trailer, and in Remote Control sessions the
+        /// claude.ai session link.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        credit_claude: Option<bool>,
     },
     /// Use this project by default for `fctl run` and `fctl sessions`.
     Use {
@@ -127,6 +132,18 @@ fn print_repos(list: &ProjectRepoList) {
             (_, RepoAccess::Read, None) => format!("read only, every repository of {}", r.owner),
         };
         println!("{:<40} {}", style::bold(&name), style::dim(&access));
+    }
+}
+
+/// What the commits in a project's sessions credit, in words.
+fn credit(s: &ProjectSettings) -> &'static str {
+    match (s.credit_claude, s.credit_people) {
+        (true, true) => "credit Claude, and whoever started the session if they set a commit email",
+        (true, false) => "credit Claude alone",
+        (false, true) => {
+            "credit whoever started the session if they set a commit email, not Claude"
+        }
+        (false, false) => "credit nobody",
     }
 }
 
@@ -291,14 +308,18 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
         ProjectsCmd::Repos(cmd) => repos(&api, cmd, json).await?,
         ProjectsCmd::Set {
             project,
-            commit_credit,
+            credit_people,
+            credit_claude,
         } => {
             let project = super::sessions::project_or_default(project)?;
             let p = api.project(&project).await?;
             // An update replaces all settings: send the others as they are.
             let mut settings = p.settings.clone();
-            if let Some(on) = commit_credit {
-                settings.commit_credit = on;
+            if let Some(on) = credit_people {
+                settings.credit_people = on;
+            }
+            if let Some(on) = credit_claude {
+                settings.credit_claude = on;
             }
             let p = api
                 .update_project(
@@ -312,15 +333,11 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             if json {
                 return style::print_json(&p);
             }
-            let credit = if p.settings.commit_credit {
-                "credit whoever started them, if they set a commit email"
-            } else {
-                "credit Claude alone"
-            };
             println!(
-                "{} Commits in {}'s sessions {credit}",
+                "{} Commits in {}'s sessions {}",
                 style::accent("✓"),
-                style::bold(&p.slug)
+                style::bold(&p.slug),
+                credit(&p.settings)
             );
             println!(
                 "{}",

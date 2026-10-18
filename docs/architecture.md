@@ -188,29 +188,40 @@ primary repository alone
 
 ### Commits
 
-Commits are authored by the GitHub App's bot (`git_author` in the spec),
-and Claude adds its `Co-authored-by` trailer. People are credited only with
-an address they chose: the commit email in Settings → Profile (`fctl
-account set --commit-email`), kept on their user row and shown only to
-them. When the person who started a session has one, and the project
-credits people (`commit_credit` in its settings, on unless a maintainer
-turns it off), FleetDO puts their name and that address in the spec's
-`co_authored_by`, and fctl-agent sets `attribution.commit` in Claude's user
-settings to Claude's trailer followed by theirs:
+Commits are authored by the GitHub App's bot (`git_author` in the spec).
+Two project settings, both on unless a maintainer turns them off, decide
+who else they credit with `Co-authored-by` trailers:
+
+- **Credit people in commits** (`credit_people`): the person who started
+  the session, with an address they chose: the commit email in Settings →
+  Profile (`fctl account set --commit-email`), kept on their user row and
+  shown only to them. FleetDO puts their name and that address in the
+  spec's `co_authored_by`; when the project credits nobody, it doesn't
+  look the address up, so it never leaves the control plane.
+- **Credit Claude in commits** (`credit_claude`): Claude, as Claude Code
+  does by default.
+
+fctl-agent turns them into Claude Code's `attribution` in Claude's user
+settings. With both, `attribution.commit` is Claude's trailer followed by
+the person's:
 
 ```
 Co-authored-by: Claude <noreply@anthropic.com>
 Co-authored-by: Ada Lovelace <1234+ada@users.noreply.github.com>
 ```
 
+With Claude alone it stays unset, so Claude Code's own trailer, which names
+the model, ends commits. Without Claude it holds only the people's
+trailers, or nothing, and `attribution.sessionUrl` is `false`, so Remote
+Control sessions leave out the claude.ai session link too. Agents from
+before `credit_claude` always credit Claude.
+
 GitHub links a commit to the account that has the address, and a squash
-merge keeps the trailers of the commits it squashes. Without a commit
-email, or in a project that credits nobody, Claude Code's own trailer
-(which names the model) is the only one, and the address never leaves the
-control plane. Claude Code's setting reaches the commits Claude makes, not
-those a script makes, and a repository's own Claude settings or CLAUDE.md
-can replace it. Sign-in emails never go into commits: `co_authors`, which
-older control planes filled with one, stays empty, and agents ignore it
+merge keeps the trailers of the commits it squashes. Claude Code's setting
+reaches the commits Claude makes, not those a script makes, and a
+repository's own Claude settings or CLAUDE.md can replace it. Sign-in
+emails never go into commits: `co_authors`, which older control planes
+filled with one, stays empty, and agents ignore it
 ([ADR 0011](adr/0011-commits-credit-people-with-an-address-they-choose.md)).
 
 ### Titles

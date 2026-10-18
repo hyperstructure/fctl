@@ -124,7 +124,7 @@ pub async fn build(
     let git_author = bot_identity(cfg, now).await;
     let mut settings = project.settings();
     // A project that credits nobody never sends a commit email to a sandbox.
-    let author = if settings.commit_credit {
+    let author = if settings.credit_people {
         creator(db, &row.created_by).await?
     } else {
         None
