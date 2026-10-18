@@ -43,15 +43,17 @@ before changing anything that crosses a component boundary.
 | `crates/fake-claude` | A scripted stand-in for `claude` that speaks stream-json. Used by tests and `cargo xtask dev`. | dev, CI |
 | `xtask` | Development automation (`cargo xtask dev`, `check`, `gen`, `deploy`, `dist`, `publish`). | dev, CI |
 | `web/` | The web app (React, Vite, TypeScript, WebGL), installable on phones and computers. Served by fctl-control. | browser |
-| `images/agent` | The default sandbox image (Debian, git, gh, Python, Rust, Node.js, Bun, claude, fctl). | sandboxes |
 
-Two more repositories complete the picture:
+Three more repositories complete the picture:
 [hyperstructure/design](https://github.com/hyperstructure/design)
 (`@hyperstructure/design`: tokens, fonts, the WebGL scenes and the marks,
-used by `web/`) and
+used by `web/`),
 [hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site)
 (fctl.sh: the landing page, these docs rendered from `docs/`, the installer
-and release downloads).
+and release downloads) and
+[hyperstructure/sandbox](https://github.com/hyperstructure/sandbox) (the
+default sandbox image: Debian, git, gh, Python, Rust, Node.js, Bun, claude
+and fctl, published to `ghcr.io/hyperstructure/sandbox`).
 
 ## Principles
 
@@ -355,6 +357,18 @@ they already pass every Claude message on.
 
 A driver turns a `SandboxSpec` (image, CPUs, memory, environment) into a
 running Linux sandbox and can exec processes in it with piped stdio.
+
+The image is the project's or, without one, the host's: unless `host.toml`
+sets another, the default image of the host's own version,
+`ghcr.io/hyperstructure/sandbox:<version>`. hyperstructure/sandbox's Image
+workflow publishes it for arm64 and amd64 within the hour after every
+release, and rebuilds the latest release's when Claude Code has a newer
+release, since fctl turns off Claude Code's auto-updater. The host pulls the
+image when it starts and when a sandbox needs one it doesn't have, never
+over one it has, and falls back to `latest` when its version's can't be
+pulled ([Sandbox images](sandbox-images.md)). `fctl host image build`
+builds it on the host instead, from that repository's `main`, which it
+downloads; the Lima driver's base VM gets the image's `provision.sh`.
 
 | Driver | Isolation | Host |
 |---|---|---|

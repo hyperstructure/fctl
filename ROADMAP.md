@@ -48,7 +48,7 @@ this file is the overview. Order within a section is priority.
       container driver (DNS, clock, disk, caches) from what they show (#1)
 - [x] CI on GitHub Actions: checks on pull requests, deploys from `main`,
       releases from tags
-- [ ] Prebuilt sandbox images (GHCR) so `fctl host image build` is a pull (#2)
+- [x] Prebuilt sandbox images (GHCR) so `fctl host image build` is a pull (#2)
 - [ ] Shared caches per project (npm, cargo, uv) mounted into sandboxes (#3)
 - [x] Notifications when a session waits for you or fails: web push, with
       followers, per-person settings and digests (#4)

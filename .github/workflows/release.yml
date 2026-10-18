@@ -7,10 +7,12 @@
 # then cross-compile the release binaries, all at once (`cargo xtask dist
 # build`), and "Publish" makes the archives from them, makes the GitHub
 # release with the notes, publishes to https://fctl.sh/releases and starts CI
-# on main, which redeploys app.fctl.sh. `tag` rebuilds an existing release tag
-# from main; `dry_run` only shows what would ship. Tags pushed by hand do not
-# publish anything: starting this workflow takes write access to Actions,
-# which agents running in fctl sessions do not have.
+# on main, which redeploys app.fctl.sh. Within the hour, hyperstructure/sandbox
+# publishes the release's sandbox image, ghcr.io/hyperstructure/sandbox:<version>.
+# `tag` rebuilds an existing release tag from main; `dry_run` only shows what
+# would ship. Tags pushed by hand do not publish anything: starting this
+# workflow takes write access to Actions, which agents running in fctl
+# sessions do not have.
 name: Release
 
 on:

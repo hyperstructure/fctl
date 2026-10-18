@@ -28,6 +28,13 @@ pub struct ContainerDriver {
     bin: String,
 }
 
+/// Why a sandbox wasn't created.
+enum Create {
+    /// Its image isn't on this host and pulling it failed.
+    NoImage(anyhow::Error),
+    Failed(anyhow::Error),
+}
+
 impl ContainerDriver {
     pub fn apple() -> Self {
         Self {
@@ -195,6 +202,33 @@ impl ContainerDriver {
             "Creating sandbox {} from {}",
             spec.name, spec.image
         ));
+        let pull_error = match self.create(spec, &spec.image, log).await {
+            Ok(()) => return Ok(sb),
+            Err(Create::Failed(e)) => return Err(e),
+            Err(Create::NoImage(e)) => e,
+        };
+        let missing = format!("{} is not on this host and can't be pulled", spec.image);
+        if let Some(fallback) = &spec.fallback_image {
+            log(format!("{missing}; starting from {fallback} instead"));
+            match self.create(spec, fallback, log).await {
+                Ok(()) => return Ok(sb),
+                Err(Create::Failed(e)) => return Err(e),
+                Err(Create::NoImage(_)) => {}
+            }
+            return Err(pull_error.context(format!(
+                "{missing} (`fctl host image build` builds it here)"
+            )));
+        }
+        Err(pull_error.context(missing))
+    }
+
+    /// Starts the sandbox from `image`, pulling the image when it isn't here.
+    async fn create(
+        &self,
+        spec: &SandboxSpec,
+        image: &str,
+        log: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<(), Create> {
         let cpus = spec.cpus.max(1).to_string();
         let memory = match self.flavor {
             Flavor::Apple => format!("{}M", spec.memory_mb.max(512)),
@@ -215,28 +249,53 @@ impl ContainerDriver {
             "--init",
             "--entrypoint",
             "tail",
-            &spec.image,
+            image,
             "-f",
             "/dev/null",
         ];
-        if let Err(e) = self.run(&args).await {
-            // A missing image: pull it and try once more.
-            log(format!("Pulling {}", spec.image));
-            let pull = match self.flavor {
-                Flavor::Apple => self.run(&["image", "pull", &spec.image]).await,
-                Flavor::Docker => self.run(&["pull", &spec.image]).await,
-            };
-            if pull.is_err() {
-                return Err(e).with_context(|| {
-                    format!(
-                        "starting {} (is the image {} built? run `fctl host image build`)",
-                        spec.name, spec.image
-                    )
-                });
-            }
-            self.run(&args).await?;
+        let failed =
+            |e: anyhow::Error| Create::Failed(e.context(format!("starting {}", spec.name)));
+        let Err(e) = self.run(&args).await else {
+            return Ok(());
+        };
+        // A runtime that doesn't answer isn't missing the image.
+        if e.is::<TimedOut>() || self.has_image(image).await {
+            return Err(failed(e));
         }
-        Ok(sb)
+        log(format!("Pulling {image}"));
+        self.pull(image, false).await.map_err(Create::NoImage)?;
+        self.run(&args).await.map(drop).map_err(failed)
+    }
+
+    pub async fn has_image(&self, image: &str) -> bool {
+        let inspect: &[&str] = match self.flavor {
+            Flavor::Apple => &["image", "inspect", image],
+            Flavor::Docker => &["image", "inspect", "--format", "{{.Id}}", image],
+        };
+        self.run(inspect).await.is_ok()
+    }
+
+    /// Pulls `image` for the platform sandboxes run on: without one, Apple's
+    /// `container` pulls every platform an image has.
+    pub async fn pull(&self, image: &str, progress: bool) -> Result<()> {
+        let platform = format!("linux/{}", linux_arch(std::env::consts::ARCH));
+        let args: &[&str] = match self.flavor {
+            Flavor::Apple => &["image", "pull", "--platform", &platform, image],
+            Flavor::Docker => &["pull", image],
+        };
+        if !progress {
+            return self.run(args).await.map(drop);
+        }
+        let status = tokio::process::Command::new(&self.bin)
+            .args(args)
+            .stdin(Stdio::null())
+            .status()
+            .await
+            .map_err(|e| super::spawn_error(&self.bin, e))?;
+        if !status.success() {
+            anyhow::bail!("{} {} failed ({status})", self.bin, args.join(" "));
+        }
+        Ok(())
     }
 
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
@@ -361,6 +420,15 @@ impl ContainerDriver {
     }
 }
 
+/// An architecture as images name it: `arm64` for Rust's `aarch64`.
+fn linux_arch(arch: &str) -> &str {
+    match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    }
+}
+
 /// `docker info --format '{{.NCPU}} {{.MemTotal}}'`: CPUs, and memory in bytes.
 fn docker_resources(out: &str) -> Option<SandboxSize> {
     let mut words = out.split_whitespace();
@@ -402,6 +470,200 @@ mod tests {
         ] {
             assert_eq!(docker_resources(bad), None, "{bad}");
         }
+    }
+
+    /// A stand-in for the `docker` or `container` CLI with no sandboxes yet:
+    /// `have` are the images on the host, `registry` those it can pull. It
+    /// writes each call to `calls`, and with `fail_run` every `run` fails.
+    struct FakeCli {
+        dir: tempfile::TempDir,
+    }
+
+    impl FakeCli {
+        fn new(have: &[&str], registry: &[&str]) -> Result<Self> {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir()?;
+            let root = dir.path();
+            for (sub, images) in [("have", have), ("registry", registry)] {
+                std::fs::create_dir(root.join(sub))?;
+                for image in images {
+                    std::fs::write(root.join(sub).join(image.replace(['/', ':'], "_")), "")?;
+                }
+            }
+            let script = format!(
+                r#"#!/bin/sh
+d='{}'
+echo "$*" >> "$d/calls"
+key() {{ printf '%s' "$1" | tr '/:' '__'; }}
+for last in "$@"; do :; done
+pull() {{
+  [ -e "$d/registry/$(key "$last")" ] || {{ echo "$last: manifest unknown" >&2; exit 1; }}
+  touch "$d/have/$(key "$last")"
+}}
+case "$1 $2" in
+  "image inspect") [ -e "$d/have/$(key "$last")" ] ;;
+  "image pull" | "pull "*) pull ;;
+  "inspect "*) exit 1 ;;
+  "run "*)
+    [ ! -e "$d/fail_run" ] || {{ echo "no room for it" >&2; exit 1; }}
+    while [ $# -gt 0 ] && [ "$1" != tail ]; do shift; done
+    [ -e "$d/have/$(key "$2")" ] || {{ echo "Unable to find image '$2' locally" >&2; exit 125; }} ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+"#,
+                root.display()
+            );
+            let bin = root.join("cli");
+            std::fs::write(&bin, script)?;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+            Ok(Self { dir })
+        }
+
+        fn driver(&self, flavor: Flavor) -> ContainerDriver {
+            ContainerDriver {
+                flavor,
+                bin: self.dir.path().join("cli").display().to_string(),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.path().join("calls"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        /// Creates the sandbox: the image it started from, and the log.
+        async fn ensure(
+            &self,
+            flavor: Flavor,
+            spec: &SandboxSpec,
+        ) -> Result<(String, Vec<String>)> {
+            let lines = Mutex::new(Vec::new());
+            let log = |line: String| {
+                lines
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(line)
+            };
+            self.driver(flavor).ensure(spec, &log).await?;
+            let run = self
+                .calls()
+                .into_iter()
+                .rev()
+                .find(|c| c.starts_with("run "));
+            let image = run
+                .as_deref()
+                .and_then(|c| c.split(" tail ").nth(1)?.split(' ').next())
+                .unwrap_or_default()
+                .to_owned();
+            Ok((
+                image,
+                lines.into_inner().unwrap_or_else(PoisonError::into_inner),
+            ))
+        }
+    }
+
+    use std::sync::{Mutex, PoisonError};
+
+    const VERSION_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:0.3.0";
+    const LATEST_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:latest";
+
+    fn spec(image: &str, fallback: Option<&str>) -> SandboxSpec {
+        SandboxSpec {
+            name: "fctl-ses-1".into(),
+            image: image.into(),
+            fallback_image: fallback.map(str::to_owned),
+            cpus: 2,
+            memory_mb: 2048,
+        }
+    }
+
+    fn error_of<T: std::fmt::Debug>(result: Result<T>) -> String {
+        match result {
+            Ok(v) => format!("no error: {v:?}"),
+            Err(e) => format!("{e:#}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sandboxes_pull_their_image_when_it_is_not_here() -> Result<()> {
+        let default = spec(VERSION_IMAGE, Some(LATEST_IMAGE));
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let (image, log) = cli.ensure(Flavor::Docker, &default).await?;
+        assert_eq!(image, VERSION_IMAGE);
+        assert_eq!(
+            log,
+            [format!("Creating sandbox fctl-ses-1 from {VERSION_IMAGE}")]
+        );
+
+        let cli = FakeCli::new(&[], &[VERSION_IMAGE, LATEST_IMAGE])?;
+        let (image, log) = cli.ensure(Flavor::Docker, &default).await?;
+        assert_eq!(image, VERSION_IMAGE);
+        assert_eq!(log[1], format!("Pulling {VERSION_IMAGE}"));
+        assert!(cli.calls().contains(&format!("pull {VERSION_IMAGE}")));
+
+        // Apple's CLI pulls every platform of an image unless told one.
+        let cli = FakeCli::new(&[], &[VERSION_IMAGE])?;
+        let (image, _) = cli
+            .ensure(Flavor::Apple, &spec(VERSION_IMAGE, None))
+            .await?;
+        assert_eq!(image, VERSION_IMAGE);
+        let platform = format!("linux/{}", linux_arch(std::env::consts::ARCH));
+        let pull = format!("image pull --platform {platform} {VERSION_IMAGE}");
+        assert!(cli.calls().contains(&pull), "{:?}", cli.calls());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_default_image_falls_back_to_the_latest_published_one() -> Result<()> {
+        // A release's image is published a few minutes after the release.
+        let default = spec(VERSION_IMAGE, Some(LATEST_IMAGE));
+        let cli = FakeCli::new(&[], &[LATEST_IMAGE])?;
+        let (image, log) = cli.ensure(Flavor::Docker, &default).await?;
+        assert_eq!(image, LATEST_IMAGE);
+        let note = format!(
+            "{VERSION_IMAGE} is not on this host and can't be pulled; starting from {LATEST_IMAGE} instead"
+        );
+        assert!(log.contains(&note), "{log:?}");
+
+        let cli = FakeCli::new(&[], &[])?;
+        let error = error_of(cli.ensure(Flavor::Docker, &default).await);
+        let missing = format!("{VERSION_IMAGE} is not on this host and can't be pulled");
+        assert!(
+            error.starts_with(&format!(
+                "{missing} (`fctl host image build` builds it here): "
+            )),
+            "{error}"
+        );
+        assert!(
+            error.ends_with(&format!("{VERSION_IMAGE}: manifest unknown")),
+            "{error}"
+        );
+
+        // A project's own image has nothing to fall back to.
+        let project = spec("ghcr.io/acme/agent:1", None);
+        let error = error_of(cli.ensure(Flavor::Docker, &project).await);
+        let missing = "ghcr.io/acme/agent:1 is not on this host and can't be pulled: ";
+        assert!(error.starts_with(missing), "{error}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn other_failures_are_not_about_the_image() -> Result<()> {
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[LATEST_IMAGE])?;
+        std::fs::write(cli.dir.path().join("fail_run"), "")?;
+        let default = spec(VERSION_IMAGE, Some(LATEST_IMAGE));
+        let error = error_of(cli.ensure(Flavor::Docker, &default).await);
+        assert!(error.starts_with("starting fctl-ses-1: "), "{error}");
+        assert!(error.contains("no room for it"), "{error}");
+        assert!(
+            !cli.calls().iter().any(|c| c.contains("pull")),
+            "{:?}",
+            cli.calls()
+        );
+        Ok(())
     }
 
     #[tokio::test]
