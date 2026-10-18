@@ -25,6 +25,10 @@ pub struct UserRow {
     #[serde(default)]
     pub family_name: Option<String>,
     pub avatar_url: Option<String>,
+    /// Commits of the sessions they start credit them with it. Only for them
+    /// (`Me`), not in [`User`], which admins see.
+    #[serde(default)]
+    pub commit_email: Option<String>,
     pub password_hash: Option<String>,
     pub role: String,
     pub status: String,
@@ -86,6 +90,7 @@ pub fn user_columns(alias: &str) -> String {
         "given_name",
         "family_name",
         "avatar_url",
+        "commit_email",
         "password_hash",
         "role",
         "status",

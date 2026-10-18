@@ -57,9 +57,17 @@ secrets: { [key in string]: string }, credentials: SessionCredentials,
  */
 git_author: GitIdentity, 
 /**
- * Added as `Co-authored-by` trailers (the person who started the session).
+ * Not used, and empty. Control planes from before `co_authored_by`
+ * sent the starter's sign-in email here, which no agent may put in a
+ * commit; older agents still expect the field.
  */
 co_authors: Array<GitIdentity>, 
+/**
+ * Credited in commits with `Co-authored-by` trailers: the person who
+ * started the session, with the commit email they chose. Absent when
+ * nobody chose one; older agents add no trailers.
+ */
+co_authored_by?: Array<GitIdentity>, 
 /**
  * The web URL of the session, for links in pull requests.
  */

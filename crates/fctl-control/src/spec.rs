@@ -171,7 +171,8 @@ pub async fn build(
             github_read: tokens.read,
         },
         git_author,
-        co_authors: author.into_iter().collect(),
+        co_authors: Vec::new(),
+        co_authored_by: author.into_iter().collect(),
         web_url: cfg.url(&format!("/s/{}", row.id)),
         idle_timeout_secs: project
             .settings()
@@ -181,22 +182,26 @@ pub async fn build(
     })
 }
 
+/// The person who started the session, as its commits credit them: with
+/// the commit email they chose, never their sign-in email. `None` without
+/// one, and then commits don't name them.
 async fn creator(db: &D1Database, user_id: &str) -> AppResult<Option<GitIdentity>> {
     #[derive(serde::Deserialize)]
     struct U {
         name: String,
-        email: String,
+        commit_email: Option<String>,
     }
     let u: Option<U> = q(
         db,
-        "SELECT name, email FROM users WHERE id = ?",
+        "SELECT name, commit_email FROM users WHERE id = ?",
         &[s(user_id)],
     )?
     .first()
     .await?;
-    Ok(u.map(|u| GitIdentity {
-        name: u.name,
-        email: u.email,
+    Ok(u.and_then(|U { name, commit_email }| {
+        commit_email
+            .filter(|e| !e.is_empty())
+            .map(|email| GitIdentity { name, email })
     }))
 }
 

@@ -30,6 +30,30 @@ pub fn email(input: &str) -> Result<String> {
     Ok(e)
 }
 
+/// The address commits credit someone with (`Co-authored-by: Name
+/// <address>`), or `None` when empty. It keeps its case, since GitHub
+/// matches it against its accounts, and its local part is a plain
+/// dot-atom, so it can't break the trailer.
+pub fn commit_email(input: &str) -> Result<Option<String>> {
+    let e = input.trim();
+    if e.is_empty() {
+        return Ok(None);
+    }
+    let bad = || ApiError::validation("commit_email", "Enter a valid email address");
+    email(e).map_err(|_| bad())?;
+    let local = e.split('@').next().unwrap_or_default();
+    if local.starts_with('.')
+        || local.ends_with('.')
+        || local.contains("..")
+        || !local
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-/=?^_`{|}~.".contains(c))
+    {
+        return Err(bad());
+    }
+    Ok(Some(e.to_owned()))
+}
+
 /// Passwords: 10–256 characters, not trivially guessable.
 pub fn password(pw: &str, email: Option<&str>) -> Result<()> {
     let n = pw.chars().count();
@@ -453,6 +477,40 @@ pub fn device_name(input: &str) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_emails() {
+        assert_eq!(commit_email(" ").ok(), Some(None));
+        // GitHub's noreply form, case kept.
+        assert_eq!(
+            commit_email(" 1234+Octo-Cat@users.noreply.github.com ")
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("1234+Octo-Cat@users.noreply.github.com")
+        );
+        assert!(commit_email("ada.lovelace@example.com").is_ok());
+        for bad in [
+            "ada",
+            "ada@example",
+            "Ada <ada@example.com>",
+            "ada>@example.com",
+            "ada@example.com>",
+            "ada\n@example.com",
+            "\"ada\"@example.com",
+            ".ada@example.com",
+            "ada..l@example.com",
+            "ada@@example.com",
+        ] {
+            let err = commit_email(bad).err();
+            assert_eq!(
+                err.and_then(|e| e.field).as_deref(),
+                Some("commit_email"),
+                "{bad:?}"
+            );
+        }
+        assert!(commit_email(&format!("{}@example.com", "a".repeat(65))).is_err());
+    }
 
     #[test]
     fn push_subscriptions() {

@@ -189,7 +189,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
     // A placeholder if what they created stays, otherwise nothing at all.
     statements.push(q(
         db,
-        "UPDATE users SET email = ?, name = ?, given_name = NULL, family_name = NULL, avatar_url = NULL, password_hash = NULL, role = 'member', \
+        "UPDATE users SET email = ?, name = ?, given_name = NULL, family_name = NULL, avatar_url = NULL, commit_email = NULL, password_hash = NULL, role = 'member', \
          status = 'disabled', default_credential_id = NULL, last_login_at = NULL, updated_at = ? \
          WHERE id = ? AND (EXISTS (SELECT 1 FROM sessions WHERE created_by = ?) OR EXISTS (SELECT 1 FROM projects WHERE created_by = ?))",
         &[
@@ -381,6 +381,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             "given_name": user.given_name,
             "family_name": user.family_name,
             "avatar_url": user.avatar_url,
+            "commit_email": user.commit_email,
             "role": user.role,
             "status": user.status,
             "has_password": user.password_hash.is_some(),

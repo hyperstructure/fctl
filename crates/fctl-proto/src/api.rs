@@ -126,12 +126,17 @@ pub struct Identity {
 }
 
 /// `GET /api/v1/auth/me`.
+#[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct Me {
     pub user: User,
     pub identities: Vec<Identity>,
     pub claude: Vec<ClaudeCredentialInfo>,
+    /// The address the commits of sessions you start credit you with, in a
+    /// `Co-authored-by` trailer. Only you see it here; absent when you have
+    /// none, and then commits don't name you.
+    pub commit_email: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -166,7 +171,7 @@ pub struct AuthResponse {
 }
 
 #[skip_serializing_none]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct UpdateMeRequest {
     /// First and last name (send both; an empty last name clears it).
@@ -175,6 +180,9 @@ pub struct UpdateMeRequest {
     /// The full name alone, from older clients: the parts become unknown.
     pub name: Option<String>,
     pub avatar_url: Option<String>,
+    /// The address commits credit you with (`Me.commit_email`); an empty
+    /// one removes it.
+    pub commit_email: Option<String>,
 }
 
 #[skip_serializing_none]

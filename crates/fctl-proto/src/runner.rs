@@ -279,8 +279,16 @@ pub struct SessionSpec {
     pub credentials: SessionCredentials,
     /// Commits are authored as this identity (the GitHub App's bot).
     pub git_author: GitIdentity,
-    /// Added as `Co-authored-by` trailers (the person who started the session).
+    /// Not used, and empty. Control planes from before `co_authored_by`
+    /// sent the starter's sign-in email here, which no agent may put in a
+    /// commit; older agents still expect the field.
     pub co_authors: Vec<GitIdentity>,
+    /// Credited in commits with `Co-authored-by` trailers: the person who
+    /// started the session, with the commit email they chose. Absent when
+    /// nobody chose one; older agents add no trailers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<GitIdentity>>", optional))]
+    pub co_authored_by: Vec<GitIdentity>,
     /// The web URL of the session, for links in pull requests.
     pub web_url: String,
     pub idle_timeout_secs: u64,
@@ -479,6 +487,32 @@ mod tests {
             spec.credentials.github_read.map(|c| c.token),
             Some("ghs_r".into())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn only_co_authored_by_credits_people() -> serde_json::Result<()> {
+        // An older control plane's spec: the starter's sign-in email in
+        // `co_authors`, which is not consent to put it in commits.
+        let mut json = spec_json();
+        json["co_authors"] = serde_json::json!([{ "name": "Ada", "email": "ada@example.com" }]);
+        let spec: SessionSpec = serde_json::from_value(json)?;
+        assert!(spec.co_authored_by.is_empty());
+
+        let mut json = spec_json();
+        json["co_authored_by"] =
+            serde_json::json!([{ "name": "Ada", "email": "1+ada@users.noreply.github.com" }]);
+        let spec: SessionSpec = serde_json::from_value(json)?;
+        assert_eq!(
+            spec.co_authored_by[0].email,
+            "1+ada@users.noreply.github.com"
+        );
+
+        // Older agents need `co_authors`; nobody to credit leaves the new field out.
+        let spec: SessionSpec = serde_json::from_value(spec_json())?;
+        let json = serde_json::to_value(&spec)?;
+        assert_eq!(json["co_authors"], serde_json::json!([]));
+        assert!(json.get("co_authored_by").is_none());
         Ok(())
     }
 

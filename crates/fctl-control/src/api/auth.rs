@@ -333,14 +333,19 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         Some(_) => return Err(validation("avatar_url", "Use an https:// image URL")),
         None => user.avatar_url.clone(),
     };
+    let commit_email = match body.commit_email.as_deref() {
+        Some(e) => validate::commit_email(e)?,
+        None => user.commit_email.clone(),
+    };
     q(
         &ctx.db,
-        "UPDATE users SET name = ?, given_name = ?, family_name = ?, avatar_url = ?, updated_at = ? WHERE id = ?",
+        "UPDATE users SET name = ?, given_name = ?, family_name = ?, avatar_url = ?, commit_email = ?, updated_at = ? WHERE id = ?",
         &[
             s(&person.full),
             os(person.given.as_deref()),
             os(person.family.as_deref()),
             os(avatar.as_deref()),
+            os(commit_email.as_deref()),
             n(ctx.now),
             s(&user.id),
         ],
