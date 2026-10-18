@@ -169,7 +169,7 @@ fctl host run                    # run in the foreground (what the service runs)
 fctl host status                 # with the runner's sessions, and whether it drains
 fctl host doctor                 # check the driver, image, agent binary, connection
 fctl host logs -n 200
-fctl host image pull             # pull the sandbox image again, for a newer build
+fctl host image pull             # pull the sandbox image again now (the host does every 6 hours)
 fctl host image build            # build it here instead (with Lima: the base VM)
 fctl host image build --source ~/src/sandbox   # from a checkout of hyperstructure/sandbox
 fctl host restart                # sessions keep running

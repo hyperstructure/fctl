@@ -554,11 +554,16 @@ sets another, the default image of the host's own version,
 workflow publishes it for arm64 and amd64 within the hour after every
 release, and rebuilds the latest release's when Claude Code has a newer
 release, since fctl turns off Claude Code's auto-updater. The host pulls the
-image when it starts and when a sandbox needs one it doesn't have, never
-over one it has, and falls back to `latest` when its version's can't be
-pulled ([Sandbox images](sandbox-images.md)). `fctl host image build`
-builds it on the host instead, from that repository's `main`, which it
-downloads; the Lima driver's base VM gets the image's `provision.sh`.
+image when it starts and when a sandbox needs one it doesn't have, and falls
+back to `latest` when its version's can't be pulled. On the default image,
+it pulls its tag again when it starts and every 6 hours, unless the image
+there was built on the host: only the Image workflow sets the
+`org.opencontainers.image.revision` label. It also removes the default
+images that sessions no longer start from, without force, so that Docker
+keeps those a sandbox uses (`crates/fctl-host/src/refresh.rs`,
+[Sandbox images](sandbox-images.md)). `fctl host image build` builds it on
+the host instead, from that repository's `main`, which it downloads; the
+Lima driver's base VM gets the image's `provision.sh`.
 
 | Driver | Isolation | Host |
 |---|---|---|
