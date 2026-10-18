@@ -10,6 +10,7 @@ pub mod files;
 pub mod ids;
 pub mod naming;
 pub mod perm;
+pub mod remote_control;
 pub mod repos;
 pub mod schedule;
 pub mod settings;
