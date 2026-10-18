@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Provisions an fctl agent sandbox: the tools agents need, and Claude Code.
-# Used by the Dockerfile (container sandboxes) and by `fctl host image build
-# --driver lima` (the fctl-base VM). Runs as root.
+# Provisions an fctl agent sandbox: the tools agents need, Claude Code and
+# fctl. Used by the Dockerfile (container sandboxes) and by `fctl host image
+# build --driver lima` (the fctl-base VM). Runs as root.
+#
+# FCTL_VERSION picks the fctl release (`fctl host image build` passes its
+# own version); empty means the latest.
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
+FCTL_VERSION="${FCTL_VERSION:-}"
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
@@ -38,9 +42,25 @@ chmod 0440 "/etc/sudoers.d/90-fctl-$AGENT_USER"
 mkdir -p /opt/fctl/bin
 chown -R "$AGENT_USER" /opt/fctl
 
+# fctl, for everyone on the machine: agents name and describe their session
+# with `fctl edit`. A version that is not published (a development build of
+# the host) gets the latest release instead. The host copies its own
+# fctl-agent in at session start, so the one in the archive goes.
+install_fctl() {
+  curl -fsSL https://fctl.sh/install |
+    env FCTL_VERSION="$1" FCTL_INSTALL_DIR=/usr/local/bin FCTL_NO_COMPLETIONS=1 sh
+}
+if ! install_fctl "$FCTL_VERSION"; then
+  [ -n "$FCTL_VERSION" ] || exit 1
+  echo "fctl $FCTL_VERSION is not published; installing the latest release" >&2
+  install_fctl ""
+fi
+rm -f /usr/local/bin/fctl-agent-*-linux
+
 # Claude Code, installed for the agent user (native build, ~/.local/bin/claude).
 AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
 sudo -u "$AGENT_USER" -H bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
 sudo -u "$AGENT_USER" -H mkdir -p "$AGENT_HOME/workspace"
 grep -q '.local/bin' "$AGENT_HOME/.profile" 2>/dev/null || echo 'export PATH="$HOME/.local/bin:/opt/fctl/bin:$PATH"' >> "$AGENT_HOME/.profile"
 "$AGENT_HOME/.local/bin/claude" --version
+/usr/local/bin/fctl --version

@@ -25,6 +25,9 @@ pub async fn build(driver: &Driver, tag: &str) -> Result<()> {
     std::fs::write(dir.join("Dockerfile"), DOCKERFILE)?;
     std::fs::write(dir.join("provision.sh"), PROVISION)?;
     let ctx = dir.display().to_string();
+    // The image's fctl matches this host's (provision.sh falls back to the
+    // latest release when this version is not published).
+    let version = format!("FCTL_VERSION={}", crate::agentbin::VERSION);
     let result = match driver.name() {
         "apple" => {
             run_inherit(
@@ -33,6 +36,8 @@ pub async fn build(driver: &Driver, tag: &str) -> Result<()> {
                     "build",
                     "--tag",
                     tag,
+                    "--build-arg",
+                    &version,
                     "--file",
                     &format!("{ctx}/Dockerfile"),
                     &ctx,
@@ -40,7 +45,13 @@ pub async fn build(driver: &Driver, tag: &str) -> Result<()> {
             )
             .await
         }
-        "docker" => run_inherit("docker", &["build", "--tag", tag, &ctx]).await,
+        "docker" => {
+            run_inherit(
+                "docker",
+                &["build", "--tag", tag, "--build-arg", &version, &ctx],
+            )
+            .await
+        }
         "lima" => build_lima_base(&dir).await,
         _ => {
             println!(
@@ -76,18 +87,11 @@ async fn build_lima_base(dir: &std::path::Path) -> Result<()> {
     )
     .await?;
     // Lima's default user becomes the agent user.
-    run_inherit(
-        "limactl",
-        &[
-            "shell",
-            BASE_VM,
-            "--",
-            "sh",
-            "-c",
-            "sudo AGENT_USER=$(id -un) bash /tmp/provision.sh",
-        ],
-    )
-    .await?;
+    let provision = format!(
+        "sudo AGENT_USER=$(id -un) FCTL_VERSION={} bash /tmp/provision.sh",
+        crate::agentbin::VERSION
+    );
+    run_inherit("limactl", &["shell", BASE_VM, "--", "sh", "-c", &provision]).await?;
     run_inherit("limactl", &["stop", BASE_VM]).await?;
     println!("The {BASE_VM} VM is ready; sessions are cloned from it.");
     Ok(())
