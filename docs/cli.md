@@ -172,8 +172,9 @@ session 32 GiB of memory (the most is 15.6 GiB)"). Without `max_cpus` and
 Docker daemon's: on macOS that is the VM of OrbStack, Docker Desktop or
 Colima, which is usually smaller than the Mac. A default above the maximum
 is lowered to it. `fctl host status` shows the sizes the host gives. The
-host measures them when it starts and when it reconnects, so run `fctl host
-restart` after changing `host.toml` or resizing the Docker VM.
+host measures them when it starts and every five minutes, and the control
+plane learns them when the host connects, so run `fctl host restart` after
+changing `host.toml` or resizing the Docker VM.
 
 Agents are told their sandbox's size in their instructions and in
 `FCTL_SANDBOX_CPUS` and `FCTL_SANDBOX_MEMORY_MB`: with Docker, `nproc` and
