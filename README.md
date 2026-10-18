@@ -27,7 +27,7 @@ sessions with your team.
 ```sh
 curl -fsSL https://fctl.sh/install | sh
 fctl login app.fctl.sh
-fctl host install --build-image          # this machine now runs agents
+fctl host install                        # this machine now runs agents
 fctl run -p my-app "Add a dark mode toggle"
 ```
 

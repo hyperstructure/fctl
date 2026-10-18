@@ -5,6 +5,7 @@ use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use fctl_domain::size;
+use fctl_host::config::means_default_image;
 use fctl_host::driver::Driver;
 use fctl_host::{HostConfig, service};
 
@@ -33,7 +34,8 @@ pub enum HostCmd {
         /// The most memory one sandbox may have, like 16g (new hosts: all of the machine's or the Docker VM's).
         #[arg(long, value_parser = memory_arg)]
         max_memory: Option<u32>,
-        /// Sandbox image.
+        /// Sandbox image for sessions whose project sets none (default: the
+        /// published image of this version; "" goes back to it).
         #[arg(long)]
         image: Option<String>,
         /// Use an existing runner token instead of registering a new runner.
@@ -42,7 +44,8 @@ pub enum HostCmd {
         /// Write the configuration but do not install a service.
         #[arg(long)]
         no_service: bool,
-        /// Also build the sandbox image now.
+        /// Also build the sandbox image here (the Lima base VM, or for a host
+        /// that can't pull the published image).
         #[arg(long)]
         build_image: bool,
     },
@@ -57,7 +60,7 @@ pub enum HostCmd {
         #[arg(short = 'n', long, default_value_t = 100)]
         lines: usize,
     },
-    /// Build the default sandbox image with this host's driver.
+    /// Pull the sandbox image, or build it with this host's driver.
     #[command(subcommand)]
     Image(ImageCmd),
     /// Restart the service (sessions keep running).
@@ -68,14 +71,20 @@ pub enum HostCmd {
 
 #[derive(Subcommand)]
 pub enum ImageCmd {
-    /// Build `fctl-agent:latest` (or the Lima base VM).
+    /// Pull the host's sandbox image now (again: for a newer build of it).
+    Pull,
+    /// Build the default image here instead of pulling it (or the Lima base VM).
     Build {
         /// apple, docker or lima (default: the host's driver).
         #[arg(long)]
         driver: Option<String>,
-        /// Image tag (default: the host's image, fctl-agent:latest).
+        /// Image tag (default: the host's image, so that sessions use the build).
         #[arg(long)]
         tag: Option<String>,
+        /// A checkout of hyperstructure/sandbox to build from (default: its
+        /// main branch, downloaded from GitHub).
+        #[arg(long, value_name = "DIR")]
+        source: Option<std::path::PathBuf>,
     },
 }
 
@@ -112,7 +121,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             cfg.max_cpus = max_cpus.or(cfg.max_cpus);
             cfg.max_memory_mb = max_memory.or(cfg.max_memory_mb);
             if let Some(i) = image {
-                cfg.image = i;
+                cfg.image = (!means_default_image(&i)).then_some(i);
             }
             // Registering a runner leaves something behind, so it waits until
             // everything that can fail on this machine has passed.
@@ -145,7 +154,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             };
             let d = Driver::select(&driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
             if build_image {
-                fctl_host::image::build(&d, &cfg.image, &cfg.download_base).await?;
+                fctl_host::image::build(&d, &cfg.image(), &cfg.download_base, None).await?;
             }
             let info = d.probe().await;
             if !info.available {
@@ -189,13 +198,18 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 style::accent("✓"),
                 HostConfig::path().display()
             );
-            if !build_image && d.needs_linux_agent() {
+            if !build_image && d.uses_images() {
                 println!(
                     "{}",
                     style::dim(&format!(
-                        "Build the sandbox image once with `fctl host image build` (tag {}).",
-                        cfg.image
+                        "Sessions start from {}; the host pulls it when it starts.",
+                        cfg.image()
                     ))
+                );
+            } else if !build_image && d.needs_linux_agent() {
+                println!(
+                    "{}",
+                    style::dim("Prepare the base VM once with `fctl host image build`.")
                 );
             }
             if !no_service {
@@ -224,7 +238,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             };
             if json {
                 return style::print_json(
-                    &serde_json::json!({ "config": cfg, "sandbox": sandbox, "service_installed": installed, "service_running": running }),
+                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "service_installed": installed, "service_running": running }),
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
@@ -233,7 +247,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             if let Some(l) = &sandbox {
                 println!("sandbox:  {}", size::limits(l));
             }
-            println!("image:    {}", cfg.image);
+            println!("image:    {}", cfg.image());
             println!(
                 "service:  {}",
                 match (installed, running) {
@@ -255,12 +269,38 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             Ok(())
         }
-        HostCmd::Image(ImageCmd::Build { driver, tag }) => {
+        HostCmd::Image(ImageCmd::Pull) => {
+            let cfg = HostConfig::load().unwrap_or_default();
+            let d = Driver::select(&cfg.driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
+            if !d.uses_images() {
+                bail!(
+                    "The {} driver doesn't use images{}",
+                    d.name(),
+                    if d.needs_linux_agent() {
+                        ": its sessions clone the base VM that `fctl host image build` prepares"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            let image = cfg.image();
+            d.pull(&image, !json).await?;
+            if json {
+                return style::print_json(&serde_json::json!({ "image": image }));
+            }
+            println!("{} Pulled {image}", style::accent("✓"));
+            Ok(())
+        }
+        HostCmd::Image(ImageCmd::Build {
+            driver,
+            tag,
+            source,
+        }) => {
             let cfg = HostConfig::load().unwrap_or_default();
             let name = driver.unwrap_or(cfg.driver.clone());
             let d = Driver::select(&name, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
-            fctl_host::image::build(&d, tag.as_deref().unwrap_or(&cfg.image), &cfg.download_base)
-                .await
+            let tag = tag.unwrap_or_else(|| cfg.image());
+            fctl_host::image::build(&d, &tag, &cfg.download_base, source.as_deref()).await
         }
         HostCmd::Restart => {
             service::restart()?;
@@ -325,6 +365,23 @@ async fn doctor() -> Result<()> {
             check(d.available, &line, "");
         } else {
             println!("{} {}", style::dim("·"), style::dim(&line));
+        }
+    }
+    if let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), None).await
+        && d.uses_images()
+        && d.probe().await.available
+    {
+        let image = cfg.image();
+        if d.has_image(&image).await {
+            check(true, &format!("sandbox image {image}"), "");
+        } else {
+            println!(
+                "{} {}",
+                style::dim("·"),
+                style::dim(&format!(
+                    "sandbox image {image}: not here yet (the host pulls it when it starts; `fctl host image pull` pulls it now)"
+                ))
+            );
         }
     }
     let (installed, running) = service::status();

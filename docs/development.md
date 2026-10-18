@@ -107,7 +107,6 @@ production build of the web app.
 | `crates/fake-claude` | The scripted Claude stand-in |
 | `xtask` | `cargo xtask`: dev, check, gen, deploy, secrets, dist, publish |
 | `web` | The web app (React, TanStack Router and Query, Tailwind, WebGL) |
-| `images/agent` | The default sandbox image |
 | `deploy/instances` | Instance descriptions for `cargo xtask deploy` |
 | `docs` | These docs; `docs/adr` records decisions |
 
@@ -144,9 +143,10 @@ Design tokens, fonts, the WebGL scenes, the mark and the app icons come
 from [@hyperstructure/design](https://github.com/hyperstructure/design),
 pinned to a tag in `web/package.json` (it has a playground showing all of
 them). Use the semantic colors (`canvas`, `surface`, `ink`, `accent`,
-`highlight`, `pink`, `blue`…) rather than raw values. The scenes render
-dithered to the brand palette; they pause when hidden and render one still
-frame for people who prefer reduced motion.
+`highlight`, `pink`, `blue`, `danger`…) rather than raw values; `danger`
+is the one red, for destructive actions, errors and failures only. The
+scenes render dithered to the brand palette; they pause when hidden and
+render one still frame for people who prefer reduced motion.
 
 People install the app on their phones and computers.
 `public/manifest.webmanifest` describes it, the `brand-assets` plugin in
@@ -177,7 +177,11 @@ tag, builds the binaries in parallel jobs (`cargo xtask dist build`: fctl
 for macOS and Linux on arm64 and x86_64, and the Linux agents), makes the
 archives from them (`cargo xtask dist package`), creates the GitHub release
 with the notes, publishes to `https://fctl.sh/releases` (`cargo xtask
-publish --latest`) and redeploys app.fctl.sh.
+publish --latest`) and redeploys app.fctl.sh. Within the hour,
+[hyperstructure/sandbox](https://github.com/hyperstructure/sandbox), where
+the default sandbox image lives, publishes the release's image to
+`ghcr.io/hyperstructure/sandbox`: its Image workflow looks for new releases
+on fctl.sh every hour.
 
 ```sh
 cargo xtask release --dry-run   # the next version and its notes

@@ -123,8 +123,9 @@ links in someone else's text.
 
 ## Other repositories
 
-hyperstructure has three repositories: fctl (this one), fctl-site (fctl.sh)
-and design (`@hyperstructure/design`). An fctl session's GitHub token covers
+hyperstructure has four repositories: fctl (this one), fctl-site (fctl.sh),
+design (`@hyperstructure/design`) and sandbox (the default sandbox image,
+public). An fctl session's GitHub token covers
 only its own repository. When a change needs work in another one, name it
 in your pull request or issue ("fctl-site needs the new docs page in
 `PAGES`") and tell the person. Only open the change there yourself when you

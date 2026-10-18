@@ -88,14 +88,16 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
    otherwise ask one for a runner token and pass `--token`):
 
    ```sh
-   fctl host install --build-image
+   fctl host install
    ```
 
-   This builds the sandbox image (Debian with git, gh, Python, uv, Rust,
-   Node, TypeScript, Bun and Claude Code), writes
-   `~/.config/fctl/host.toml`, and installs a launchd agent (`sh.fctl.host`)
-   that starts at login, restarts if it stops, and keeps the Mac from
-   sleeping while it is plugged in, so it can start work at any hour.
+   This writes `~/.config/fctl/host.toml` and installs a launchd agent
+   (`sh.fctl.host`) that starts at login, restarts if it stops, and keeps
+   the Mac from sleeping while it is plugged in, so it can start work at any
+   hour. The host then pulls the [sandbox image](sandbox-images.md) (Debian
+   with git, gh, Python, uv, Rust, Node, TypeScript, Bun and Claude Code) in
+   the background. With Lima, add `--build-image`: it prepares the VM that
+   sessions are cloned from, which takes a few minutes.
 
 3. Check it:
 
