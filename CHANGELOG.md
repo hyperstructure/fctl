@@ -2,6 +2,29 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.5.0 (2026-10-18)
+
+### Features
+
+- Stop idle sessions after ten minutes and resume them for a message ([#67](https://github.com/hyperstructure/fctl/pull/67))
+- Show when a session's runner is away or can't reach its agent ([#69](https://github.com/hyperstructure/fctl/pull/69))
+- Let agents publish screenshots for pull requests on fctl ([#71](https://github.com/hyperstructure/fctl/pull/71))
+- **web:** Turn the 404 and error pages into a stream you can play with ([#72](https://github.com/hyperstructure/fctl/pull/72))
+- Drain runners so they take no new sessions ([#74](https://github.com/hyperstructure/fctl/pull/74))
+- Ask before fctl host uninstall stops the sessions on a host ([#75](https://github.com/hyperstructure/fctl/pull/75))
+
+### Fixes
+
+- Let fake-claude sessions continue after a usage limit resets ([#64](https://github.com/hyperstructure/fctl/pull/64))
+- **host:** Fall back to latest when the sandbox image isn't published ([#62](https://github.com/hyperstructure/fctl/pull/62))
+- **web:** Make hover fills visible in the light theme ([#65](https://github.com/hyperstructure/fctl/pull/65))
+- **control:** Keep events that newer ones overtook after a reconnect ([#70](https://github.com/hyperstructure/fctl/pull/70))
+- Resume a session for messages that come as it stops ([#73](https://github.com/hyperstructure/fctl/pull/73))
+
+### Other changes
+
+- **deps:** Use @hyperstructure/design v0.4.0 ([#68](https://github.com/hyperstructure/fctl/pull/68))
+
 ## 0.4.0 (2026-10-18)
 
 ### Features
