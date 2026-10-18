@@ -1,6 +1,6 @@
 ---
 name: release
-description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases, updates the CHANGELOG and redeploys app.fctl.sh. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
+description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases and the sandbox image to GHCR, updates the CHANGELOG and redeploys app.fctl.sh. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
 ---
 
 # Releasing fctl
@@ -53,8 +53,15 @@ It runs two jobs:
 2. **Build and publish**: builds fctl for macOS and Linux (arm64 and
    x86_64) and the Linux agents, creates the GitHub release with the
    notes, publishes the files to https://fctl.sh/releases (moving
-   `latest`), installs it with the installer as a check, and starts CI on
-   `main`, which redeploys app.fctl.sh.
+   `latest`), installs it with the installer as a check, starts the
+   **Image** workflow, and starts CI on `main`, which redeploys
+   app.fctl.sh.
+
+The Image workflow (`.github/workflows/image.yml`) builds the release's
+sandbox image from its tag, for arm64 and amd64, and publishes it as
+`ghcr.io/hyperstructure/fctl-agent:X.Y.Z`, moving `X.Y` and `latest`.
+Hosts of the new version pull it; until it is there, their sessions start
+from `latest`.
 
 Follow it with `gh run watch` or in the Actions tab; it takes about 20
 minutes.
@@ -65,6 +72,10 @@ minutes.
   `fctl self update --check` sees it.
 - The GitHub release and `CHANGELOG.md` on `main` have the notes.
 - `https://app.fctl.sh/api/v1/health` reports the version once CI is done.
+- The Image workflow's run for the tag passed (`gh run list --workflow
+  image.yml`), and `docker buildx imagetools inspect
+  ghcr.io/hyperstructure/fctl-agent:X.Y.Z` lists linux/amd64 and
+  linux/arm64.
 - Hosts update with `fctl self update` (it restarts the host service;
   running sessions keep going).
 
@@ -76,6 +87,10 @@ minutes.
   infrastructure, rebuild the tag with
   `gh workflow run release.yml --ref main -f tag=vX.Y.Z`. If the code is
   broken, fix it and release a patch.
+- **The image** (the Image workflow failed): fix the cause in a pull
+  request if it is the workflow, then start it again for the tag:
+  `gh workflow run image.yml --ref main -f tag=vX.Y.Z`. It builds from the
+  tag, so a broken `images/agent` needs a patch release.
 - Never move or delete a published tag or its files on fctl.sh: installed
   CLIs and hosts download releases by version.
 

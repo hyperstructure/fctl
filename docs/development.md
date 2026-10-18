@@ -145,7 +145,12 @@ last tag, adds the notes to `CHANGELOG.md`, pushes the release commit and
 tag, builds the archives (`cargo xtask dist`: fctl for macOS and Linux on
 arm64 and x86_64, and the Linux agents), creates the GitHub release with
 the notes, publishes to `https://fctl.sh/releases` (`cargo xtask publish
---latest`) and redeploys app.fctl.sh.
+--latest`), starts the **Image** workflow, which publishes the release's
+sandbox image to `ghcr.io/hyperstructure/fctl-agent`, and redeploys
+app.fctl.sh. The Image workflow also runs every day, to rebuild the latest
+release's image when Claude Code has a newer release, and on pull requests
+that change `images/agent`, which it builds for both architectures and
+checks with `images/agent/check.sh` without publishing.
 
 ```sh
 cargo xtask release --dry-run   # the next version and its notes

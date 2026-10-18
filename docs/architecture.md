@@ -42,7 +42,7 @@ before changing anything that crosses a component boundary.
 | `crates/fake-claude` | A scripted stand-in for `claude` that speaks stream-json. Used by tests and `cargo xtask dev`. | dev, CI |
 | `xtask` | Development automation (`cargo xtask dev`, `check`, `gen`, `deploy`, `dist`, `publish`). | dev, CI |
 | `web/` | The web app (React, Vite, TypeScript, WebGL). Served by fctl-control. | browser |
-| `images/agent` | The default sandbox image (Debian, git, gh, node, python, claude, fctl). | sandboxes |
+| `images/agent` | The default sandbox image (Debian, git, gh, node, python, claude, fctl), published to `ghcr.io/hyperstructure/fctl-agent`. | sandboxes |
 
 Two more repositories complete the picture:
 [hyperstructure/design](https://github.com/hyperstructure/design)
@@ -279,6 +279,16 @@ until the limit resets.
 
 A driver turns a `SandboxSpec` (image, CPUs, memory, environment) into a
 running Linux sandbox and can exec processes in it with piped stdio.
+
+The image is the project's or, without one, the host's: unless `host.toml`
+sets another, the default image of the host's own version,
+`ghcr.io/hyperstructure/fctl-agent:<version>`. The Image workflow
+(`.github/workflows/image.yml`) publishes it for arm64 and amd64 with every
+release and rebuilds the latest release's when Claude Code has a newer
+release, since fctl turns off Claude Code's auto-updater. The host pulls the
+image when it starts and when a sandbox needs one it doesn't have, never
+over one it has, and falls back to `latest` when its version's can't be
+pulled ([Sandbox images](sandbox-images.md)).
 
 | Driver | Isolation | Host |
 |---|---|---|

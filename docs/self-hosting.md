@@ -173,21 +173,22 @@ On each machine that runs agents, follow
 ```sh
 curl -fsSL https://fctl.sh/install | sh
 fctl login fctl.acme.dev
-fctl host install --build-image
+fctl host install
 ```
 
 Hosts download their release from `https://fctl.sh/releases` by default; set
 `download_base` in `host.toml` to mirror them elsewhere (`fctl host image
-build` installs fctl in the default image from there too).
+build` installs fctl in the default image from there too). They pull the
+sandbox image from `ghcr.io/hyperstructure/fctl-agent`; set `image` to use
+a copy in your own registry ([Sandbox images](sandbox-images.md)).
 
 ## Operating it
 
 - **Upgrades.** `git pull && cargo xtask deploy acme`; migrations apply first.
   Hosts and agents tolerate a control plane one version ahead. Upgrade hosts
   by running the installer again and `fctl host restart` (running sessions
-  continue), then `fctl host image build`: it brings the default image's
-  fctl, which agents name their sessions with, to the host's version (and
-  its Claude Code up to date).
+  continue): new sessions start from the sandbox image of the new version,
+  which the host pulls when it starts.
 - **Backups.** D1 keeps 30 days of point-in-time history (Time Travel):
   `npx wrangler d1 time-travel restore`. For a copy, `npx wrangler d1 export`.
   Session event logs live in Durable Object storage.

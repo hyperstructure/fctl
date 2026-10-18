@@ -118,7 +118,8 @@ fctl host run                    # run in the foreground (what the service runs)
 fctl host status
 fctl host doctor                 # check the driver, image, agent binary, connection
 fctl host logs -n 200
-fctl host image build            # (re)build fctl-agent:latest for this driver
+fctl host image pull             # pull the sandbox image again, for a newer build
+fctl host image build            # build it here instead (with Lima: the base VM)
 fctl host restart                # sessions keep running
 fctl host uninstall              # sandboxes are kept
 ```
@@ -135,13 +136,18 @@ server = "https://app.fctl.sh"
 name = "studio-mac"
 driver = "apple"         # apple | lima | docker | process | auto (picks at every start)
 capacity = 4             # concurrent sessions
-image = "fctl-agent:latest"
+# image = "ghcr.io/acme/agent:1"   # unset: the published image of the host's version
 cpus = 4                 # per sandbox, when the project sets none
 memory_mb = 8192         # per sandbox, when the project sets none
 max_cpus = 8             # the most one sandbox may have (unset: all there is)
 max_memory_mb = 12288
 keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them)
 ```
+
+Sessions start from their project's image or, without one, the host's:
+unless `image` sets another, the published image of the host's own version,
+`ghcr.io/hyperstructure/fctl-agent:<version>`, which the host pulls when it
+starts. [Sandbox images](sandbox-images.md) has the details.
 
 A project's Settings → Sandbox can ask for more CPUs or memory than the
 host's default. Sessions only start on a host whose maximum covers that;

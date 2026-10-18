@@ -23,6 +23,7 @@ Three pieces make up a factory:
 | Start using fctl on an instance someone set up | [Getting started](getting-started.md) |
 | Drive everything from a terminal or a script | [The CLI](cli.md) |
 | Run your own instance on your Cloudflare account | [Self-hosting](self-hosting.md) |
+| Know what sessions run in, or build an image for them | [Sandbox images](sandbox-images.md) |
 | Understand how the pieces talk to each other | [Architecture](architecture.md) |
 | Know what fctl does with your credentials | [Security](security.md) |
 | Work on fctl itself | [Development](development.md) |
