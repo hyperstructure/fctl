@@ -269,7 +269,7 @@ fn ensure_basics(token: &str) -> Result<()> {
             "adding a Claude credential",
             &call(
                 "POST",
-                "/me/claude",
+                "/me/claude/token",
                 Some(&auth),
                 Some(
                     json!({ "token": "sk-ant-oat01-fctl-dev-fake-claude", "label": "fake-claude" }),
