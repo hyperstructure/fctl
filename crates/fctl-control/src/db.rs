@@ -28,6 +28,11 @@ pub fn on(v: Option<i64>) -> Val {
     v.map_or(JsValue::NULL, |x| JsValue::from_f64(x as f64))
 }
 
+/// Fractions and other non-integers.
+pub fn of(v: Option<f64>) -> Val {
+    v.map_or(JsValue::NULL, JsValue::from_f64)
+}
+
 pub fn b(v: bool) -> Val {
     JsValue::from_f64(if v { 1.0 } else { 0.0 })
 }

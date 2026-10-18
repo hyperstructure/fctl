@@ -4,7 +4,8 @@ use crate::config;
 use crate::style;
 use anyhow::{Result, bail};
 use clap::Subcommand;
-use fctl_proto::api::ClaudeLoginState;
+use fctl_domain::usage::{self as plan, Standing};
+use fctl_proto::api::{ClaudeLoginState, PlanLimit};
 use std::io::{BufRead, Write};
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ pub enum ClaudeCmd {
         #[arg(long)]
         login: bool,
     },
-    /// Show connected subscriptions.
+    /// Show connected subscriptions and how much of each plan's limits is used.
     Status,
 }
 
@@ -38,6 +39,51 @@ fn read_secret(prompt: &str) -> Result<String> {
     }
     r?;
     Ok(line.trim().to_owned())
+}
+
+/// A credential's plan limits, one line each, as sessions last reported them.
+fn print_usage(usage: &[PlanLimit]) {
+    let Some(reported) = usage.iter().map(|l| l.observed_at).max() else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let labels: Vec<String> = usage.iter().map(|l| plan::label(&l.window)).collect();
+    let width = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    for (l, label) in usage.iter().zip(labels) {
+        let resets = l
+            .resets_at
+            .map(|t| format!("resets {}", style::until(t)))
+            .unwrap_or_default();
+        let used = l
+            .utilization
+            .map(|u| format!("{}% used", (u * 100.0).round()));
+        let line = match plan::standing(l, now) {
+            Standing::Reset => style::dim(&format!(
+                "started over {}",
+                l.resets_at.map(style::ago).unwrap_or_default()
+            )),
+            Standing::Reached => style::amber(&join(&["limit reached".into(), resets])),
+            Standing::Close => style::amber(&join(&[used.unwrap_or_default(), resets])),
+            Standing::Fine => join(&[used.unwrap_or_default(), resets]),
+        };
+        println!("    {label:<width$}  {line}");
+    }
+    println!(
+        "    {}",
+        style::dim(&format!("reported by a session {}", style::ago(reported)))
+    );
+}
+
+fn join(parts: &[String]) -> String {
+    parts
+        .iter()
+        .filter(|p| !p.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()> {
@@ -72,6 +118,7 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                         .map(|t| format!(" · {t}"))
                         .unwrap_or_default()
                 );
+                print_usage(&c.usage);
             }
             Ok(())
         }

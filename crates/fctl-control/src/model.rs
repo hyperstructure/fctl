@@ -3,8 +3,8 @@
 use crate::db::{int, int_bool, opt_int};
 use crate::internal::LiveRunners;
 use fctl_proto::api::{
-    AllowEntry, ClaudeCredentialInfo, CredentialStatus, Identity, ProjectRepo, Runner,
-    RunnerStatus, User, UserStatus,
+    AllowEntry, ClaudeCredentialInfo, CredentialStatus, Identity, LimitStatus, PlanLimit,
+    ProjectRepo, Runner, RunnerStatus, User, UserStatus,
 };
 use fctl_proto::runner::{ClaudeAccount, ClaudeCredentialKind, HostHello};
 use fctl_proto::session::{
@@ -521,6 +521,43 @@ pub struct CredentialRow {
     pub created_at: i64,
     #[serde(deserialize_with = "opt_int", default)]
     pub last_used_at: Option<i64>,
+    /// Its plan usage, from [`USAGE_JSON`] when the query selects it.
+    #[serde(default)]
+    pub usage: Option<String>,
+}
+
+/// A credential's plan usage as one JSON array of its `claude_usage` rows,
+/// for queries that name the credential `c`:
+/// `SELECT c.*, {USAGE_JSON} AS usage FROM claude_credentials c …`.
+pub const USAGE_JSON: &str = "(SELECT json_group_array(json_object('window', u.window, \
+    'utilization', u.utilization, 'resets_at', u.resets_at, 'status', u.status, \
+    'observed_at', u.observed_at)) FROM claude_usage u WHERE u.credential_id = c.id)";
+
+/// Plan usage selected with [`USAGE_JSON`], in display order.
+pub fn plan_usage(json: Option<&str>) -> Vec<PlanLimit> {
+    #[derive(Deserialize)]
+    struct Row {
+        window: String,
+        utilization: Option<f64>,
+        resets_at: Option<f64>,
+        status: Option<String>,
+        observed_at: f64,
+    }
+    let rows: Vec<Row> = json
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    let mut usage: Vec<PlanLimit> = rows
+        .into_iter()
+        .map(|r| PlanLimit {
+            window: r.window,
+            utilization: r.utilization,
+            resets_at: r.resets_at.map(|t| t as i64),
+            status: r.status.as_deref().and_then(LimitStatus::parse),
+            observed_at: r.observed_at as i64,
+        })
+        .collect();
+    fctl_domain::usage::sort(&mut usage);
+    usage
 }
 
 impl CredentialRow {
@@ -566,6 +603,7 @@ impl CredentialRow {
             created_at: self.created_at,
             last_used_at: self.last_used_at,
             expires_at: self.expires_at,
+            usage: plan_usage(self.usage.as_deref()),
         }
     }
 }

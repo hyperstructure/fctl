@@ -425,6 +425,16 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         .await?,
     );
     doc.insert(
+        "claude_plan_usage".into(),
+        rows(
+            ctx,
+            "SELECT c.account_email, c.label, u.window, u.utilization, u.resets_at, u.status, u.observed_at \
+             FROM claude_usage u JOIN claude_credentials c ON c.id = u.credential_id WHERE c.user_id = ? ORDER BY c.created_at, u.window",
+            &me(),
+        )
+        .await?,
+    );
+    doc.insert(
         "notification_settings".into(),
         json!(crate::notify::settings(&ctx.db, &user.id).await?),
     );

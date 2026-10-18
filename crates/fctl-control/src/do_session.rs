@@ -11,7 +11,8 @@ use crate::ctx::now_ms;
 use crate::internal::{self, ControlState, Deliver, Delivered, InitSession, ViewerIdentity};
 use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_domain::notify;
-use fctl_proto::api::EventPage;
+use fctl_domain::usage as plan;
+use fctl_proto::api::{EventPage, PlanLimit};
 use fctl_proto::event::{EventBody, GitState, StatusChange, UserMessage};
 use fctl_proto::session::{Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{
@@ -1012,6 +1013,7 @@ impl SessionObject {
                 let mut out = Vec::new();
                 let mut summary = self.summary();
                 let mut summary_changed = false;
+                let mut usage = Vec::new();
                 for e in events {
                     if e.agent_seq <= acked {
                         continue;
@@ -1021,6 +1023,7 @@ impl SessionObject {
                     if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
                         summary_changed |= Self::apply_claude(s, v, &self.mem);
                         self.remember_reply(v);
+                        plan::merge(&mut usage, plan::readings(v, now));
                         ev::shape_for_storage(v);
                     }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
@@ -1039,6 +1042,7 @@ impl SessionObject {
                 self.set_meta("acked_agent_seq", &acked.to_string());
                 self.broadcast_events(&out);
                 self.send_uplink(&UplinkDown::Ack { agent_seq: acked });
+                self.record_usage(usage);
                 if let Some(mut s) = summary {
                     s.last_activity_at = Some(now);
                     s.updated_at = now;
@@ -1188,6 +1192,21 @@ impl SessionObject {
         }
         self.notify_fleet(&s);
         self.notify_followers(&s, before, now);
+    }
+
+    /// Keeps the plan usage the agent reported with the session's Claude
+    /// credential, for its owner (`crate::usage`).
+    fn record_usage(&self, readings: Vec<PlanLimit>) {
+        if readings.is_empty() {
+            return;
+        }
+        let Some(s) = self.summary() else { return };
+        let env = self.env.clone();
+        self.state.wait_until(async move {
+            if let Err(e) = crate::usage::record(&env, s.id.as_str(), &readings).await {
+                worker::console_error!("recording plan usage failed: {}", e.0.message);
+            }
+        });
     }
 
     /// The end of a turn: what the agent said last, for the notification that
