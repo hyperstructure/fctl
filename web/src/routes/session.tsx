@@ -50,6 +50,7 @@ import { useLiveSession } from "@/lib/live";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink } from "@/lib/remote-control";
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
+import { statusReason } from "@/lib/status";
 
 export function SessionPage() {
   const { id } = useParams({ from: "/app/s/$id" });
@@ -161,8 +162,8 @@ export function SessionPage() {
                       {session.project_slug}#{session.number}
                     </Link>
                     <StatusPill status={session.status} />
-                    {session.status_reason && session.status !== "running" && session.status !== "idle" && (
-                      <span className="truncate text-ink-4">{session.status_reason}</span>
+                    {statusReason(session) && (
+                      <span className="truncate text-ink-4">{statusReason(session)}</span>
                     )}
                     {session.resume_at && (
                       <span className="text-amber">resumes in {until(session.resume_at)}</span>

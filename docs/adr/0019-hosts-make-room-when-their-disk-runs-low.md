@@ -1,4 +1,4 @@
-# 0018: Hosts make room when their disk runs low
+# 0019: Hosts make room when their disk runs low
 
 2026-10-18 · accepted
 

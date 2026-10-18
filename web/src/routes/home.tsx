@@ -20,6 +20,7 @@ import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
 import { agoShort, lowOnDisk, stamp } from "@/lib/format";
 import { useMe, useProjects, useRunners, useSessions } from "@/lib/queries";
+import { statusReason, waitsForYou } from "@/lib/status";
 
 const ACTIVE: G.SessionStatus[] = [
   "queued",
@@ -313,9 +314,7 @@ function SessionRow({ s }: { s: G.Session }) {
           <span className="font-mono">
             {s.project_slug}#{s.number}
           </span>
-          {s.status_reason && s.status !== "running" && s.status !== "idle" && (
-            <span className="truncate">· {s.status_reason}</span>
-          )}
+          {statusReason(s) && <span className="truncate">· {statusReason(s)}</span>}
           {s.stats.files_changed > 0 && (
             <span>
               · <span className="text-accent/80">+{s.stats.additions}</span>{" "}
@@ -346,8 +345,11 @@ export function Home() {
   const recent = useSessions({ status: "ended", limit: 12 });
   const f = useFeed();
   const activeList = (active.data?.sessions ?? []).filter((s) => ACTIVE.includes(s.status));
-  const working = activeList.filter((s) => s.status === "running").length;
-  const waiting = activeList.filter((s) => s.status === "idle").length;
+  // A session that waits for its agent's background work is at work too.
+  const working = activeList.filter(
+    (s) => s.status === "running" || (s.status === "idle" && !waitsForYou(s)),
+  ).length;
+  const waiting = activeList.filter(waitsForYou).length;
   const onlineRunners = (f.runners.length ? f.runners : (runners.data?.runners ?? [])).filter(
     (r) => r.status === "online",
   );
