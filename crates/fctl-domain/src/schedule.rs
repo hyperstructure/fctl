@@ -14,6 +14,9 @@ pub struct Slot<'a> {
     pub labels: &'a [String],
     /// What it gives each sandbox. `None` (older hosts) takes any size.
     pub sandbox: Option<SandboxLimits>,
+    /// It drains: no new session starts on it, but the sessions whose
+    /// sandboxes it has still resume there.
+    pub draining: bool,
 }
 
 /// The runner that keeps a session's sandbox from an earlier run: there,
@@ -37,6 +40,8 @@ pub enum Wait {
     Busy,
     /// The runner that keeps its sandbox runs as many sessions as it may.
     Home { name: String },
+    /// Every online runner that could take it drains.
+    Draining,
     /// No online runner gives a sandbox this many CPUs or this much memory.
     TooBig {
         /// The part of its size no runner gives (`None`: some runner gives it).
@@ -55,6 +60,7 @@ impl Wait {
         match self {
             Self::NoRunner | Self::Busy => "Waiting for a runner".into(),
             Self::Home { name } => format!("Waiting for {name}, which has this session's sandbox"),
+            Self::Draining => "Waiting for a runner: the ones online are draining".into(),
             Self::TooBig {
                 cpus,
                 memory_mb,
@@ -95,9 +101,10 @@ fn parts(cpus: Option<u32>, memory_mb: Option<u32>, memory_suffix: &str) -> Stri
 /// label and gives a sandbox the size the session wants. Ties go to the
 /// runner listed first.
 ///
-/// A session's `home` comes first when it is online and could take it: with
-/// a free slot it gets the session, and without one the session waits for
-/// it if `home.wait` says so.
+/// A session's `home` comes first when it is online and could take it, also
+/// while it drains: with a free slot it gets the session, and without one
+/// the session waits for it if `home.wait` says so. Other runners that drain
+/// take no sessions.
 pub fn pick<'a>(
     slots: &'a [Slot<'a>],
     required_labels: &[String],
@@ -127,13 +134,17 @@ pub fn pick<'a>(
             });
         }
     }
-    let fitting: Vec<&Slot> = online
+    let open: Vec<&Slot> = online.iter().copied().filter(|s| !s.draining).collect();
+    if open.is_empty() {
+        return Err(Wait::Draining);
+    }
+    let fitting: Vec<&Slot> = open
         .iter()
         .copied()
         .filter(|s| s.sandbox.is_none_or(|l| want.fits(&l)))
         .collect();
     if fitting.is_empty() {
-        return Err(too_big(&online, want));
+        return Err(too_big(&open, want));
     }
     fitting
         .into_iter()
@@ -179,6 +190,7 @@ mod tests {
             active,
             labels,
             sandbox: None,
+            draining: false,
         }
     }
 
@@ -397,6 +409,45 @@ mod tests {
         assert_eq!(
             pick(&slots, &[], Want::default(), home("removed", true)).map(|s| s.id),
             Ok("idle")
+        );
+    }
+
+    #[test]
+    fn a_draining_runner_takes_only_resumes_of_its_own_sessions() {
+        let none: Vec<String> = vec![];
+        let slots = [
+            Slot {
+                draining: true,
+                ..slot("studio", 4, 0, &none)
+            },
+            slot("laptop", 1, 0, &none),
+        ];
+        let any = Want::default();
+        // Emptier, but draining: new sessions go elsewhere.
+        assert_eq!(pick(&slots, &[], any, None).map(|s| s.id), Ok("laptop"));
+        // A resume goes back to its sandbox there.
+        assert_eq!(
+            pick(&slots, &[], any, home("studio", true)).map(|s| s.id),
+            Ok("studio")
+        );
+        // The other one is full: a new session waits, and says why when
+        // every runner online drains.
+        let full = [
+            slots[0].clone(),
+            Slot {
+                active: 1,
+                ..slots[1].clone()
+            },
+        ];
+        assert_eq!(pick(&full, &[], any, None).map(|s| s.id), Err(Wait::Busy));
+        let draining = [slots[0].clone()];
+        assert_eq!(
+            pick(&draining, &[], any, None).map(|s| s.id),
+            Err(Wait::Draining)
+        );
+        assert_eq!(
+            Wait::Draining.reason(),
+            "Waiting for a runner: the ones online are draining"
         );
     }
 }

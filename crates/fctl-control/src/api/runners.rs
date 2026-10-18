@@ -96,6 +96,20 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         )
         .await?;
     }
+    if let Some(draining) = body.draining {
+        let name: Option<NameRow> = q(&ctx.db, "SELECT name FROM runners WHERE id = ?", &[s(id)])?
+            .first()
+            .await?;
+        let by = ctx.user()?.to_ref();
+        drain(
+            ctx,
+            id,
+            &name.map(|n| n.name).unwrap_or_default(),
+            draining,
+            Some(by),
+        )
+        .await?;
+    }
     ctx.audit("runner.updated", Some(id), None);
     let rows: Vec<RunnerRow> = q(
         &ctx.db,
@@ -161,6 +175,111 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         .ok_or_else(|| not_found("Runner"))?
         .to_runner(&LiveRunners::default());
     http::ok(&RunnerRegistration { runner, token })
+}
+
+#[derive(serde::Deserialize)]
+struct NameRow {
+    name: String,
+}
+
+/// Drains a runner or stops draining it (`by`: the admin, or `None` for its
+/// host), and records who did.
+async fn drain(
+    ctx: &Ctx,
+    id: &str,
+    name: &str,
+    draining: bool,
+    by: Option<fctl_proto::session::UserRef>,
+) -> AppResult<()> {
+    let stub = internal::fleet_stub(&ctx.env)?;
+    let _: serde_json::Value = internal::post(
+        &stub,
+        "/drain",
+        &internal::Drain {
+            runner_id: id.to_owned(),
+            runner_name: name.to_owned(),
+            draining,
+            by: by.clone(),
+        },
+    )
+    .await?;
+    ctx.audit(
+        if draining {
+            "runner.drained"
+        } else {
+            "runner.undrained"
+        },
+        Some(id),
+        Some(serde_json::json!({ "by": if by.is_some() { "admin" } else { "host" } })),
+    );
+    Ok(())
+}
+
+/// The runner and the sessions it runs, as its host asks for them.
+async fn detail(ctx: &Ctx, id: &str) -> AppResult<RunnerDetail> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        id: String,
+        project_slug: String,
+        #[serde(deserialize_with = "crate::db::int")]
+        number: i64,
+        title: String,
+        status: String,
+        #[serde(deserialize_with = "crate::db::opt_int", default)]
+        resume_at: Option<i64>,
+    }
+    let rows: Vec<RunnerRow> = q(
+        &ctx.db,
+        &format!("{RUNNER_SELECT} WHERE r.id = ?"),
+        &[s(id)],
+    )?
+    .all()
+    .await?;
+    let live = live(ctx).await;
+    let runner = rows
+        .first()
+        .ok_or_else(|| not_found("Runner"))?
+        .to_runner(&live);
+    let sessions: Vec<Row> = q(
+        &ctx.db,
+        "SELECT s.id, p.slug AS project_slug, s.number, s.title, s.status, s.resume_at FROM sessions s \
+         JOIN projects p ON p.id = s.project_id WHERE s.runner_id = ? \
+         AND s.status IN ('provisioning','preparing','running','idle','paused','stopping') ORDER BY s.created_at",
+        &[s(id)],
+    )?
+    .all()
+    .await?;
+    Ok(RunnerDetail {
+        runner,
+        sessions: sessions
+            .into_iter()
+            .filter_map(|r| {
+                Some(RunnerSession {
+                    id: fctl_proto::SessionId(r.id),
+                    project_slug: r.project_slug,
+                    number: r.number.max(0) as u32,
+                    title: r.title,
+                    status: fctl_proto::session::SessionStatus::parse(&r.status)?,
+                    resume_at: r.resume_at,
+                })
+            })
+            .collect(),
+    })
+}
+
+/// `GET /api/v1/runner`: the runner whose token this is, and its sessions.
+pub async fn this_runner(ctx: &Ctx, req: &Request) -> AppResult<Response> {
+    let r = runner_auth(ctx, req).await?;
+    http::ok(&detail(ctx, &r.id).await?)
+}
+
+/// `POST /api/v1/runner/drain`: the host drains its runner (`fctl host
+/// drain`), or stops draining it.
+pub async fn drain_this_runner(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
+    let r = runner_auth(ctx, req).await?;
+    let body: DrainRequest = http::body(req).await?;
+    drain(ctx, &r.id, &r.name, body.draining, None).await?;
+    http::ok(&detail(ctx, &r.id).await?)
 }
 
 #[derive(serde::Deserialize)]

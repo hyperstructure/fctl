@@ -2,11 +2,13 @@
 
 use crate::config;
 use crate::style;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::builder::BoolishValueParser;
 use clap::{ArgGroup, Subcommand};
 use fctl_domain::size;
-use fctl_proto::api::{InstanceSettings, UpdateInstanceSettingsRequest};
+use fctl_proto::api::{
+    InstanceSettings, Runner, RunnerSession, UpdateInstanceSettingsRequest, UpdateRunnerRequest,
+};
 use fctl_proto::session::InstanceRole;
 
 #[derive(Subcommand)]
@@ -30,6 +32,17 @@ pub enum AdminCmd {
     },
     /// List runners.
     Runners,
+    /// Drain a runner: no new session starts on it, and the sessions it has
+    /// carry on there.
+    Drain {
+        /// The runner's name or id.
+        runner: String,
+    },
+    /// Stop draining a runner: it takes new sessions again.
+    Undrain {
+        /// The runner's name or id.
+        runner: String,
+    },
     /// Show the instance's settings.
     Settings,
     /// Change the instance's settings.
@@ -153,20 +166,25 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 return style::print_json(&list);
             }
             for r in list.runners {
-                let state = match r.status {
-                    fctl_proto::api::RunnerStatus::Online => style::accent("online"),
-                    fctl_proto::api::RunnerStatus::Offline => style::dim("offline"),
-                    fctl_proto::api::RunnerStatus::Disabled => style::red("disabled"),
+                let state = match (r.status, &r.drain) {
+                    (fctl_proto::api::RunnerStatus::Disabled, _) => style::red("disabled"),
+                    (_, Some(_)) if r.active_sessions > 0 => style::amber("draining"),
+                    (_, Some(_)) => style::amber("drained"),
+                    (fctl_proto::api::RunnerStatus::Online, None) => style::accent("online"),
+                    (fctl_proto::api::RunnerStatus::Offline, None) => style::dim("offline"),
                 };
                 println!(
                     "{:<24} {:<8} {:<8} {}/{} sessions  {}",
                     style::bold(&r.name),
                     state,
-                    r.driver.unwrap_or_default(),
+                    r.driver.as_deref().unwrap_or_default(),
                     r.active_sessions,
                     r.capacity,
-                    style::dim(&r.version.unwrap_or_default())
+                    style::dim(r.version.as_deref().unwrap_or_default())
                 );
+                if let Some(d) = drain_line(&r) {
+                    println!("  {}", style::dim(&d));
+                }
                 if let Some(l) = &r.sandbox {
                     println!(
                         "  {}",
@@ -207,6 +225,120 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             }
             print_settings(&settings);
         }
+        AdminCmd::Drain { runner } => {
+            let r = find_runner(&api, &runner).await?;
+            let r = api
+                .update_runner(
+                    r.id.as_str(),
+                    &UpdateRunnerRequest {
+                        draining: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            if json {
+                return style::print_json(&r);
+            }
+            println!(
+                "{} Draining {}: no new sessions start on it.",
+                style::accent("✓"),
+                style::bold(&r.name)
+            );
+            println!("{}", style::dim(&still_running(r.active_sessions, "there")));
+        }
+        AdminCmd::Undrain { runner } => {
+            let r = find_runner(&api, &runner).await?;
+            let r = api
+                .update_runner(
+                    r.id.as_str(),
+                    &UpdateRunnerRequest {
+                        draining: Some(false),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            if json {
+                return style::print_json(&r);
+            }
+            println!(
+                "{} {} takes new sessions again.",
+                style::accent("✓"),
+                style::bold(&r.name)
+            );
+        }
     }
     Ok(())
+}
+
+/// A runner by its id or name.
+async fn find_runner(api: &fctl_client::Api, which: &str) -> Result<Runner> {
+    let all = api.runners().await?.runners;
+    if let Some(r) = all.iter().find(|r| r.id.as_str() == which) {
+        return Ok(r.clone());
+    }
+    let named: Vec<&Runner> = all.iter().filter(|r| r.name == which).collect();
+    match named.as_slice() {
+        [r] => Ok((*r).clone()),
+        [] => bail!("No runner is called {which}. `fctl admin runners` lists them."),
+        _ => bail!(
+            "{} runners are called {which}; use one of their ids: {}",
+            named.len(),
+            named
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// Who started draining a runner and when, and what still runs on it:
+/// `Ada Lovelace started draining it 3m ago: 2 sessions left`.
+pub(crate) fn drain_line(r: &Runner) -> Option<String> {
+    let d = r.drain.as_ref()?;
+    let who =
+        d.by.as_ref()
+            .map_or_else(|| "its host".to_owned(), |u| u.name.clone());
+    let left = match r.active_sessions {
+        0 => "no sessions left".to_owned(),
+        1 => "1 session left".to_owned(),
+        n => format!("{n} sessions left"),
+    };
+    Some(format!(
+        "{who} started draining it {}: {left}",
+        style::ago(d.since)
+    ))
+}
+
+/// What a drain leaves running, and what happens to it.
+pub(crate) fn still_running(n: u32, place: &str) -> String {
+    match n {
+        0 => format!("No sessions run {place}."),
+        1 => format!(
+            "1 session still runs {place} and carries on. Once idle for a minute it stops, and a message resumes it {place}."
+        ),
+        _ => format!(
+            "{n} sessions still run {place} and carry on. Idle ones stop after a minute, and a message resumes them {place}."
+        ),
+    }
+}
+
+/// The sessions a runner runs, one a line.
+pub(crate) fn print_sessions(sessions: &[RunnerSession]) {
+    for s in sessions {
+        let mut status = style::status(s.status);
+        if let Some(at) = s.resume_at {
+            status = format!(
+                "{status} {}",
+                style::dim(&format!("(resumes {})", style::until(at)))
+            );
+        }
+        println!(
+            "  {} {}#{} {}",
+            status,
+            s.project_slug,
+            s.number,
+            style::dim(&s.title)
+        );
+    }
 }

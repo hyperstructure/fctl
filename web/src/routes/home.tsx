@@ -348,9 +348,11 @@ export function Home() {
   const activeList = (active.data?.sessions ?? []).filter((s) => ACTIVE.includes(s.status));
   const working = activeList.filter((s) => s.status === "running").length;
   const waiting = activeList.filter((s) => s.status === "idle").length;
-  const online = (f.runners.length ? f.runners : (runners.data?.runners ?? [])).filter(
+  const onlineRunners = (f.runners.length ? f.runners : (runners.data?.runners ?? [])).filter(
     (r) => r.status === "online",
-  ).length;
+  );
+  const online = onlineRunners.length;
+  const draining = onlineRunners.filter((r) => r.drain).length;
   const floor = useRef<FoundryHandle | null>(null);
   // The plan that sessions you start run on.
   const usage = me?.claude.find((c) => c.is_default)?.usage;
@@ -389,6 +391,7 @@ export function Home() {
             <span className="text-ink-4">
               {" "}
               · {online} {online === 1 ? "runner" : "runners"} online
+              {draining > 0 && `, ${draining} draining`}
             </span>
           </p>
         </div>

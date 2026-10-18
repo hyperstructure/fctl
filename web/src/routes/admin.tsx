@@ -294,6 +294,18 @@ function Runners() {
     mutationFn: (r: G.Runner) => api.updateRunner(r.id, { enabled: r.status === "disabled" }),
     onSuccess: () => runners.refetch(),
   });
+  const drain = useMutation({
+    mutationFn: (r: G.Runner) => api.updateRunner(r.id, { draining: !r.drain }),
+    onSuccess: (r) => {
+      toast(
+        r.drain ? `Draining ${r.name}: no new sessions start on it` : `${r.name} takes new sessions again`,
+      );
+      void runners.refetch();
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  // Disabling a runner that runs sessions, or removing one, asks first.
+  const [confirm, setConfirm] = useState<{ runner: G.Runner; action: "disable" | "remove" } | null>(null);
   const site = location.hostname.startsWith("app.")
     ? `https://${location.hostname.slice(4)}`
     : location.origin;
@@ -337,46 +349,85 @@ function Runners() {
       ) : (
         <ul className="border-t border-line">
           {runners.data?.runners.map((r) => (
-            <li key={r.id} className="flex items-center gap-4 border-b border-line py-4">
+            <li key={r.id} className="flex items-start gap-4 border-b border-line py-4 sm:items-center">
               <span
                 className={cn(
-                  "size-2 shrink-0 rounded-full",
-                  r.status === "online"
-                    ? "bg-accent shadow-[0_0_10px_var(--c-accent)]"
-                    : r.status === "disabled"
-                      ? "bg-danger"
-                      : "bg-ink-4",
+                  "mt-1.5 size-2 shrink-0 rounded-full sm:mt-0",
+                  r.status === "disabled"
+                    ? "bg-danger"
+                    : r.drain
+                      ? "bg-amber"
+                      : r.status === "online"
+                        ? "bg-accent shadow-[0_0_10px_var(--c-accent)]"
+                        : "bg-ink-4",
                 )}
               />
-              <div className="min-w-0 flex-1">
-                <div className="text-[14px] text-ink">
-                  {r.name} <span className="ml-1 text-[12px] text-ink-4">{r.status}</span>
+              {/* On a phone the actions go under the runner's details. */}
+              <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[14px] text-ink">
+                    {r.name} <span className="ml-1 text-[12px] text-ink-4">{runnerState(r)}</span>
+                  </div>
+                  <div className="mt-0.5 text-[12px] text-ink-4">
+                    {r.hostname ? `${r.hostname} · ` : ""}
+                    {r.os && r.arch ? `${r.os}/${r.arch} · ` : ""}
+                    {r.driver ? `${r.driver} driver · ` : ""}
+                    {r.active_sessions}/{r.capacity} sessions
+                    {r.version ? ` · fctl ${r.version}` : ""}
+                    {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
+                  </div>
+                  {r.drain && r.status !== "disabled" && <DrainLine runner={r} />}
+                  <RunnerResources runner={r} />
                 </div>
-                <div className="mt-0.5 text-[12px] text-ink-4">
-                  {r.hostname ? `${r.hostname} · ` : ""}
-                  {r.os && r.arch ? `${r.os}/${r.arch} · ` : ""}
-                  {r.driver ? `${r.driver} driver · ` : ""}
-                  {r.active_sessions}/{r.capacity} sessions
-                  {r.version ? ` · fctl ${r.version}` : ""}
-                  {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
+                <div className="-ml-2.5 flex shrink-0 items-center gap-1 sm:ml-0">
+                  {r.status !== "disabled" && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => drain.mutate(r)}
+                      loading={drain.isPending && drain.variables?.id === r.id}
+                    >
+                      {r.drain ? "Stop draining" : "Drain"}
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      r.status !== "disabled" && r.active_sessions > 0
+                        ? setConfirm({ runner: r, action: "disable" })
+                        : toggle.mutate(r)
+                    }
+                  >
+                    {r.status === "disabled" ? "Enable" : "Disable"}
+                  </Button>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${r.name}`}
+                    className="rounded p-1.5 text-ink-4 hover:text-danger"
+                    onClick={() => setConfirm({ runner: r, action: "remove" })}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
                 </div>
-                <RunnerResources runner={r} />
               </div>
-              <Button size="sm" variant="ghost" onClick={() => toggle.mutate(r)}>
-                {r.status === "disabled" ? "Enable" : "Disable"}
-              </Button>
-              <button
-                type="button"
-                aria-label={`Remove ${r.name}`}
-                className="rounded p-1.5 text-ink-4 hover:text-danger"
-                onClick={() => remove.mutate(r.id)}
-              >
-                <Trash2 className="size-3.5" />
-              </button>
             </li>
           ))}
         </ul>
       )}
+      <ConfirmRunner
+        confirm={confirm}
+        onClose={() => setConfirm(null)}
+        onDrain={(r) => {
+          drain.mutate(r);
+          setConfirm(null);
+        }}
+        onConfirm={(r, action) => {
+          if (action === "disable") toggle.mutate(r);
+          else remove.mutate(r.id);
+          setConfirm(null);
+        }}
+      />
       <Dialog
         open={!!reg}
         onClose={() => setReg(null)}
@@ -399,6 +450,84 @@ function Runners() {
         )}
       </Dialog>
     </div>
+  );
+}
+
+/** "online", or how far a drain has come: "draining" while sessions run, then "drained". */
+function runnerState(r: G.Runner): string {
+  if (r.status === "disabled" || !r.drain) return r.status;
+  return r.active_sessions > 0 ? "draining" : "drained";
+}
+
+/** Who drained a runner, when, and what still runs on it. */
+function DrainLine({ runner: r }: { runner: G.Runner }) {
+  if (!r.drain) return null;
+  const who = r.drain.by?.name ?? "Its host";
+  const n = r.active_sessions;
+  return (
+    <div className="mt-0.5 text-[12px] text-amber">
+      {who} started draining it {ago(r.drain.since)}: no new sessions start on it
+      {n === 0
+        ? ", and none runs."
+        : n === 1
+          ? ", and 1 session still runs."
+          : `, and ${n} sessions still run.`}
+    </div>
+  );
+}
+
+/** Disabling a runner that runs sessions, or removing one, says what happens first. */
+function ConfirmRunner({
+  confirm,
+  onClose,
+  onDrain,
+  onConfirm,
+}: {
+  confirm: { runner: G.Runner; action: "disable" | "remove" } | null;
+  onClose: () => void;
+  onDrain: (r: G.Runner) => void;
+  onConfirm: (r: G.Runner, action: "disable" | "remove") => void;
+}) {
+  const r = confirm?.runner;
+  const action = confirm?.action ?? "disable";
+  const running = r?.active_sessions ?? 0;
+  return (
+    <Dialog
+      open={!!confirm}
+      onClose={onClose}
+      title={`${action === "disable" ? "Disable" : "Remove"} ${r?.name ?? "the runner"}?`}
+      description={
+        action === "disable"
+          ? "It disconnects at once and can't connect again until you enable it."
+          : "Its token stops working: the machine has to be registered again to run sessions."
+      }
+    >
+      <div className="flex flex-col gap-5">
+        {running > 0 && (
+          <Banner tone="warn">
+            {running === 1
+              ? "A session runs on it. Its agent keeps working in its sandbox without reaching fctl, and the session stops after ten minutes."
+              : `${running} sessions run on it. Their agents keep working in their sandboxes without reaching fctl, and the sessions stop after ten minutes.`}
+            {r?.drain
+              ? ""
+              : ` Drain it instead to let ${running === 1 ? "it" : "them"} finish: no new sessions start on it meanwhile.`}
+          </Banner>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          {running > 0 && r && !r.drain && (
+            <Button type="button" onClick={() => onDrain(r)}>
+              Drain instead
+            </Button>
+          )}
+          <Button type="button" variant="danger" onClick={() => r && onConfirm(r, action)}>
+            {action === "disable" ? "Disable" : "Remove"}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 

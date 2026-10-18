@@ -7,7 +7,8 @@
 use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, SandboxLimits};
 use crate::session::{
-    InstanceRole, Project, ProjectRole, ProjectSettings, RepoAccess, Session, SessionRole, UserRef,
+    InstanceRole, Project, ProjectRole, ProjectSettings, RepoAccess, Session, SessionRole,
+    SessionStatus, UserRef,
 };
 use crate::{
     AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId, LoginJobId, Millis,
@@ -544,6 +545,21 @@ pub struct Runner {
     pub last_seen_at: Option<Millis>,
     pub created_at: Millis,
     pub created_by: Option<UserRef>,
+    /// Set while the runner drains: no new session starts on it, and the
+    /// sessions it has carry on there. Absent otherwise, and from control
+    /// planes that can't drain runners.
+    pub drain: Option<RunnerDrain>,
+}
+
+/// A runner that drains.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct RunnerDrain {
+    /// When it started draining.
+    pub since: Millis,
+    /// The admin who drained it. Absent when its host did (`fctl host drain`).
+    pub by: Option<UserRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -567,11 +583,44 @@ pub struct RunnerRegistration {
 }
 
 #[skip_serializing_none]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct UpdateRunnerRequest {
     pub name: Option<String>,
     pub enabled: Option<bool>,
+    /// Drain the runner (no new sessions start on it), or stop draining it.
+    pub draining: Option<bool>,
+}
+
+/// `POST /api/v1/runner/drain`, with the runner token: a host drains itself,
+/// or stops draining.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DrainRequest {
+    pub draining: bool,
+}
+
+/// `GET /api/v1/runner`, with the runner token: the runner as the control
+/// plane sees it, and the sessions it runs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RunnerDetail {
+    pub runner: Runner,
+    pub sessions: Vec<RunnerSession>,
+}
+
+/// A session a runner runs.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct RunnerSession {
+    pub id: SessionId,
+    pub project_slug: String,
+    pub number: u32,
+    pub title: String,
+    pub status: SessionStatus,
+    /// When a paused session resumes on its own.
+    pub resume_at: Option<Millis>,
 }
 
 // ───────────────────────────── projects ─────────────────────────────
@@ -1181,6 +1230,19 @@ mod tests {
             }
         );
         assert!(stored.paused && stored.failed && stored.follow_started);
+        Ok(())
+    }
+
+    #[test]
+    fn runners_from_older_control_planes_have_no_drain() -> Result<(), serde_json::Error> {
+        let old: Runner = serde_json::from_value(serde_json::json!({
+            "id": "rnr_1", "name": "studio", "status": "online", "drivers": [],
+            "capacity": 4, "active_sessions": 1, "labels": [], "created_at": 1
+        }))?;
+        assert_eq!(old.drain, None);
+        // An update from an older client changes nothing about draining.
+        let update: UpdateRunnerRequest = serde_json::from_str(r#"{"enabled":true}"#)?;
+        assert_eq!(update.draining, None);
         Ok(())
     }
 

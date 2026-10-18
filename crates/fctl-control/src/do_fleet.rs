@@ -8,8 +8,8 @@
 use crate::crypto;
 use crate::ctx::now_ms;
 use crate::internal::{
-    self, Activity, ClaudeUsage, ControlState, FeedIdentity, LiveRunners, LoginCode, LoginStart,
-    NotifySession, Schedule, Stop,
+    self, Activity, ClaudeUsage, ControlState, Drain, DrainStop, DrainStopped, FeedIdentity,
+    LiveRunners, LoginCode, LoginStart, NotifySession, Schedule, Stop,
 };
 use crate::spec;
 use fctl_domain::schedule::{Home, Slot, Wait};
@@ -110,6 +110,10 @@ struct LiveRow {
     memory_available_mb: Option<f64>,
     #[serde(default)]
     disk_available_mb: Option<f64>,
+    #[serde(default)]
+    draining_since: Option<f64>,
+    #[serde(default)]
+    drained_by: Option<String>,
 }
 
 /// A connected runner, as scheduling sees it.
@@ -120,6 +124,7 @@ struct Candidate {
     active: u32,
     labels: Vec<String>,
     sandbox: Option<SandboxLimits>,
+    draining: bool,
 }
 
 impl Candidate {
@@ -132,6 +137,7 @@ impl Candidate {
             active: self.active,
             labels: &self.labels,
             sandbox: self.sandbox,
+            draining: self.draining,
         }
     }
 }
@@ -183,6 +189,10 @@ impl DurableObject for FleetObject {
         add_column(&sql, "queue", "reason", "TEXT");
         add_column(&sql, "runners", "memory_available_mb", "INTEGER");
         add_column(&sql, "runners", "disk_available_mb", "INTEGER");
+        // Set while the runner drains: since when, and the admin who drained
+        // it (JSON), or none when its host did.
+        add_column(&sql, "runners", "draining_since", "INTEGER");
+        add_column(&sql, "runners", "drained_by", "TEXT");
         Self {
             state,
             env,
@@ -227,6 +237,10 @@ impl DurableObject for FleetObject {
                     self.feed_usage(b);
                     Ok(serde_json::json!({ "ok": true }))
                 }
+                Err(e) => Err(ApiError::bad_request(e.to_string())),
+            },
+            (worker::Method::Post, "/drain") => match req.json::<Drain>().await {
+                Ok(b) => self.drain(b).await,
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
             },
             (worker::Method::Post, "/runner-disabled") => {
@@ -409,7 +423,7 @@ impl FleetObject {
     fn live_rows(&self) -> Vec<LiveRow> {
         self.sql
             .exec(
-                "SELECT id, name, hello, connected, last_seen, memory_available_mb, disk_available_mb FROM runners",
+                "SELECT id, name, hello, connected, last_seen, memory_available_mb, disk_available_mb, draining_since, drained_by FROM runners",
                 None,
             )
             .and_then(|c| c.to_array::<LiveRow>())
@@ -426,6 +440,18 @@ impl FleetObject {
                     internal::Free {
                         memory_mb: r.memory_available_mb.map(|m| m as u64),
                         disk_mb: r.disk_available_mb.map(|d| d as u64),
+                    },
+                );
+            }
+            if let Some(since) = r.draining_since {
+                out.drains.insert(
+                    r.id.clone(),
+                    fctl_proto::api::RunnerDrain {
+                        since: since as i64,
+                        by: r
+                            .drained_by
+                            .as_deref()
+                            .and_then(|b| serde_json::from_str(b).ok()),
                     },
                 );
             }
@@ -525,6 +551,7 @@ impl FleetObject {
                 {
                     let _ = q.run().await;
                 }
+                self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
                 self.dispatch().await;
             }
             HostToFleet::StartResult {
@@ -632,6 +659,7 @@ impl FleetObject {
             let _ = ws.send_with_str(&text);
         }
         self.reconcile(&rs.id, &hello.sessions, now).await;
+        self.stop_idle_if_draining(&rs.id, &hello.sessions).await;
         self.feed_runner(&rs.id).await;
         self.dispatch().await;
     }
@@ -794,6 +822,120 @@ impl FleetObject {
                     true,
                 )
                 .await;
+            }
+        }
+    }
+
+    // ───────────────────────────── draining ─────────────────────────────
+
+    /// Drains a runner (no new session starts on it; the sessions it has
+    /// carry on there), or stops draining it.
+    async fn drain(&self, b: Drain) -> std::result::Result<serde_json::Value, ApiError> {
+        let now = now_ms();
+        if b.draining {
+            let by = b.by.as_ref().and_then(|u| serde_json::to_string(u).ok());
+            // Draining again keeps when it started, and who started it.
+            let _ = self.sql.exec(
+                "INSERT INTO runners (id, name, connected, draining_since, drained_by) VALUES (?, ?, 0, ?, ?) \
+                 ON CONFLICT (id) DO UPDATE SET \
+                 drained_by = CASE WHEN runners.draining_since IS NULL THEN excluded.drained_by ELSE runners.drained_by END, \
+                 draining_since = COALESCE(runners.draining_since, excluded.draining_since)",
+                Some(vec![
+                    sv(&b.runner_id),
+                    sv(&b.runner_name),
+                    iv(now),
+                    SqlStorageValue::from(by),
+                ]),
+            );
+            let reported = self.reported_sessions(&b.runner_id);
+            self.stop_idle_if_draining(&b.runner_id, &reported).await;
+        } else {
+            let _ = self.sql.exec(
+                "UPDATE runners SET draining_since = NULL, drained_by = NULL WHERE id = ?",
+                Some(vec![sv(&b.runner_id)]),
+            );
+        }
+        self.feed_runner(&b.runner_id).await;
+        self.dispatch().await;
+        Ok(serde_json::json!({ "ok": true }))
+    }
+
+    /// The sessions a runner reported last.
+    fn reported_sessions(&self, runner_id: &str) -> Vec<HostSessionReport> {
+        #[derive(Deserialize)]
+        struct R {
+            sessions: Option<String>,
+        }
+        self.sql
+            .exec(
+                "SELECT sessions FROM runners WHERE id = ?",
+                Some(vec![sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<R>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .and_then(|r| r.sessions)
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default()
+    }
+
+    /// On a draining runner, the sessions that wait for a message stop once
+    /// they have waited a minute (SessionObject decides, so that none stops
+    /// with a message on its way), rather than after their idle timeout. A
+    /// message resumes them there.
+    async fn stop_idle_if_draining(&self, runner_id: &str, reported: &[HostSessionReport]) {
+        #[derive(Deserialize)]
+        struct R {
+            name: String,
+        }
+        let Some(name) = self
+            .sql
+            .exec(
+                "SELECT name FROM runners WHERE id = ? AND draining_since IS NOT NULL",
+                Some(vec![sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<R>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .map(|r| r.name)
+        else {
+            return;
+        };
+        let assigned: HashSet<String> = self
+            .sql
+            .exec(
+                "SELECT session_id, runner_id, accepted FROM assignments WHERE runner_id = ?",
+                Some(vec![sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<AssignRow>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| a.session_id)
+            .collect();
+        for r in reported {
+            if r.status != SessionStatus::Idle || !assigned.contains(r.session_id.as_str()) {
+                continue;
+            }
+            let Ok(stub) = internal::session_stub(&self.env, r.session_id.as_str()) else {
+                continue;
+            };
+            let asked: std::result::Result<DrainStopped, _> = internal::post(
+                &stub,
+                "/drain-stop",
+                &DrainStop {
+                    runner_name: name.clone(),
+                },
+            )
+            .await;
+            if asked.is_ok_and(|a| a.stopping) {
+                self.send_runner(
+                    runner_id,
+                    &FleetToHost::StopSession {
+                        session_id: r.session_id.clone(),
+                        reason: StopReason::Idle,
+                        destroy: false,
+                    },
+                );
             }
         }
     }
@@ -1041,6 +1183,7 @@ impl FleetObject {
                     active: n,
                     labels: hello.labels,
                     sandbox: hello.sandbox,
+                    draining: r.draining_since.is_some(),
                 })
             })
             .collect()

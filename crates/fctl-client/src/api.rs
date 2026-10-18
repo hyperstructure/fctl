@@ -523,6 +523,20 @@ impl Api {
         self.delete(&format!("/runners/{}", enc(id))).await
     }
 
+    pub async fn update_runner(&self, id: &str, req: &UpdateRunnerRequest) -> Result<Runner> {
+        self.patch(&format!("/runners/{}", enc(id)), req).await
+    }
+
+    /// The runner whose token this client has, and the sessions it runs.
+    pub async fn this_runner(&self) -> Result<RunnerDetail> {
+        self.get("/runner").await
+    }
+
+    /// Drains the runner whose token this client has, or stops draining it.
+    pub async fn drain_this_runner(&self, draining: bool) -> Result<RunnerDetail> {
+        self.post("/runner/drain", &DrainRequest { draining }).await
+    }
+
     // ── Claude ──
 
     pub async fn add_claude_token(&self, token: &str, label: Option<String>) -> Result<Me> {
