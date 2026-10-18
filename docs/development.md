@@ -121,13 +121,24 @@ npm run check      # Biome and TypeScript
 npm test
 ```
 
-Design tokens, fonts, the WebGL scenes and the mark come from
-[@hyperstructure/design](https://github.com/hyperstructure/design), pinned
-to a tag in `web/package.json` (it has a playground showing all of them).
-Use the semantic colors (`canvas`, `surface`, `ink`, `accent`, `highlight`,
-`pink`, `blue`…) rather than raw values. The scenes render dithered to the
-brand palette; they pause when hidden and render one still frame for people
-who prefer reduced motion.
+Design tokens, fonts, the WebGL scenes, the mark and the app icons come
+from [@hyperstructure/design](https://github.com/hyperstructure/design),
+pinned to a tag in `web/package.json` (it has a playground showing all of
+them). Use the semantic colors (`canvas`, `surface`, `ink`, `accent`,
+`highlight`, `pink`, `blue`…) rather than raw values. The scenes render
+dithered to the brand palette; they pause when hidden and render one still
+frame for people who prefer reduced motion.
+
+People install the app on their phones and computers.
+`public/manifest.webmanifest` describes it, the `brand-assets` plugin in
+`vite.config.ts` serves the favicon and icons from the design package, and
+`public/sw.js` shows `public/offline.html` when a page cannot load offline.
+The service worker registers only in production builds: to try installing,
+run `cargo xtask dev --no-vite` and open http://127.0.0.1:8787 (Chrome's
+DevTools → Application shows the manifest and the worker). In the installed
+app on a phone, the page reaches under the notch and the home indicator, so
+anything fixed to an edge of the screen keeps clear of them with
+`env(safe-area-inset-*)`, as the message box does.
 
 ## Other repositories
 

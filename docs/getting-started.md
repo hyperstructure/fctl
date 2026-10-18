@@ -11,6 +11,12 @@ email and password your invite set up, or with Google if your instance has it.
 Access is by allowlist: if you cannot sign up, ask an admin to allow your
 email.
 
+The app installs on your phone and computer and then opens in its own
+window, from the home screen or the Dock: in Safari on an iPhone or iPad,
+choose **Share → Add to Home Screen**; in Safari on a Mac, **File → Add to
+Dock**; in Chrome or Edge, the install button in the address bar (on
+Android, **⋮ → Add to home screen**).
+
 ## 2. Install the CLI
 
 ```sh

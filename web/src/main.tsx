@@ -7,6 +7,12 @@ import { Toaster } from "@/components/ui";
 import { queryClient } from "@/lib/queries";
 import { router } from "./router";
 
+// Makes the app installable and shows an offline page (public/sw.js). Not in
+// development, where it would outlive the dev server on this origin.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+
 const root = document.getElementById("root");
 if (root) {
   createRoot(root).render(

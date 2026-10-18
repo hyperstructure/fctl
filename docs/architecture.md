@@ -41,7 +41,7 @@ before changing anything that crosses a component boundary.
 | `crates/fctl` | The `fctl` binary: CLI for people and agents, plus `fctl host …`. | macOS, Linux |
 | `crates/fake-claude` | A scripted stand-in for `claude` that speaks stream-json. Used by tests and `cargo xtask dev`. | dev, CI |
 | `xtask` | Development automation (`cargo xtask dev`, `check`, `gen`, `deploy`, `dist`, `publish`). | dev, CI |
-| `web/` | The web app (React, Vite, TypeScript, WebGL). Served by fctl-control. | browser |
+| `web/` | The web app (React, Vite, TypeScript, WebGL), installable on phones and computers. Served by fctl-control. | browser |
 | `images/agent` | The default sandbox image (Debian, git, gh, node, python, claude, fctl), published to `ghcr.io/hyperstructure/fctl-agent`. | sandboxes |
 
 Two more repositories complete the picture:
