@@ -160,10 +160,11 @@ Releases come from `main` through the **Release** workflow: Actions →
 Release → Run workflow, or `gh workflow run release.yml --ref main -f
 bump=auto`. It picks the version from the Conventional Commits since the
 last tag, adds the notes to `CHANGELOG.md`, pushes the release commit and
-tag, builds the archives (`cargo xtask dist`: fctl for macOS and Linux on
-arm64 and x86_64, and the Linux agents), creates the GitHub release with
-the notes, publishes to `https://fctl.sh/releases` (`cargo xtask publish
---latest`) and redeploys app.fctl.sh.
+tag, builds the binaries in parallel jobs (`cargo xtask dist build`: fctl
+for macOS and Linux on arm64 and x86_64, and the Linux agents), makes the
+archives from them (`cargo xtask dist package`), creates the GitHub release
+with the notes, publishes to `https://fctl.sh/releases` (`cargo xtask
+publish --latest`) and redeploys app.fctl.sh.
 
 ```sh
 cargo xtask release --dry-run   # the next version and its notes
@@ -176,6 +177,9 @@ commit and pull request conventions in
 [.claude/skills/commit/SKILL.md](../.claude/skills/commit/SKILL.md).
 
 To build locally: `cargo xtask dist` (or `--target aarch64-apple-darwin`).
+It does what the Release workflow does in separate jobs: `cargo xtask dist
+build <fctl|fctl-agent> --target <triple>` for each binary, into
+`dist/bin/v<version>/`, then `cargo xtask dist package`.
 
 ## Deploying
 
