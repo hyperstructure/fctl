@@ -54,7 +54,8 @@ this file is the overview. Order within a section is priority.
       followers, per-person settings and digests (#4)
 - [ ] The same notifications by email
 - [ ] Homebrew tap: `brew install hyperstructure/tap/fctl` (#5)
-- [ ] Usage view: each person's Claude plan limits as sessions report them (#6)
+- [x] Usage view: each person's Claude plan limits as sessions report them,
+      in Settings, on the floor and in `fctl claude status` (#6)
 - [x] Projects that span several repositories, or read every repository of
       an organization (#17)
 - [x] macOS release binaries that run on macOS 12 and later, not only 15+ (#7)
