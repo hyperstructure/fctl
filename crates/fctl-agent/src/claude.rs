@@ -72,13 +72,22 @@ pub struct Claude {
 /// become commit messages; the session link is in the system prompt).
 /// `attribution.pr` is the long-supported form: a Claude Code that rejects a
 /// key skips the whole file, permissions included.
-pub fn user_settings() -> Value {
-    json!({
+///
+/// Without `claude_ai_connectors`, `disableClaudeAiConnectors` too: a
+/// repository's settings can set `ENABLE_CLAUDEAI_MCP_SERVERS` back on, but
+/// no settings source can undo this one. Claude Code skips keys it doesn't
+/// know (2.1.302 does), so one from before the key only has the variable.
+pub fn user_settings(claude_ai_connectors: bool) -> Value {
+    let mut settings = json!({
         "$schema": "https://json.schemastore.org/claude-code-settings.json",
         "permissions": { "defaultMode": "bypassPermissions" },
         "env": { "DISABLE_AUTOUPDATER": "1" },
         "attribution": { "pr": "" }
-    })
+    });
+    if !claude_ai_connectors {
+        settings["disableClaudeAiConnectors"] = json!(true);
+    }
+    settings
 }
 
 /// The line in `~/.claude/CLAUDE.md`, Claude's user memory, that loads
@@ -384,10 +393,22 @@ mod tests {
 
     #[test]
     fn user_settings_keep_pull_requests_plain() {
-        let s = user_settings();
+        let s = user_settings(true);
         assert_eq!(s["attribution"]["pr"], "");
         assert_eq!(s["permissions"]["defaultMode"], "bypassPermissions");
         assert!(s.get("apiKeyHelper").is_none());
+    }
+
+    #[test]
+    fn user_settings_turn_connectors_off() {
+        assert!(
+            user_settings(true)
+                .get("disableClaudeAiConnectors")
+                .is_none()
+        );
+        let s = user_settings(false);
+        assert_eq!(s["disableClaudeAiConnectors"], true);
+        assert_eq!(s["permissions"]["defaultMode"], "bypassPermissions");
     }
 
     #[test]

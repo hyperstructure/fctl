@@ -300,6 +300,9 @@ pub struct ProjectSettings {
     pub auto_pull_request: bool,
     /// Enable Remote Control (follow in the Claude apps) when the credential allows it.
     pub remote_control: bool,
+    /// Let agents use the claude.ai connectors of the person who starts a
+    /// session. Only full Claude logins have them.
+    pub claude_ai_connectors: bool,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
 }
@@ -317,6 +320,7 @@ impl Default for ProjectSettings {
             idle_timeout_minutes: None,
             auto_pull_request: true,
             remote_control: true,
+            claude_ai_connectors: true,
             env: Default::default(),
         }
     }
@@ -429,4 +433,27 @@ pub struct Session {
     /// The caller's role.
     pub role: Option<SessionRole>,
     pub archived: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_stored_before_a_field_get_its_default() -> Result<(), serde_json::Error> {
+        // A project saved before `claude_ai_connectors` existed keeps its connectors.
+        let old: ProjectSettings =
+            serde_json::from_str(r#"{"auto_pull_request":false,"remote_control":true,"env":{}}"#)?;
+        assert!(old.claude_ai_connectors);
+        assert!(!old.auto_pull_request);
+        let off: ProjectSettings = serde_json::from_str(r#"{"claude_ai_connectors":false}"#)?;
+        assert_eq!(
+            off,
+            ProjectSettings {
+                claude_ai_connectors: false,
+                ..Default::default()
+            }
+        );
+        Ok(())
+    }
 }

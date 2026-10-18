@@ -22,7 +22,9 @@
 //!
 //! Environment: `FAKE_CLAUDE_API_KEY_SOURCE` overrides the reported
 //! `apiKeySource` (default `none`); `FAKE_CLAUDE_DELAY_MS` sets the delay
-//! between streamed chunks (default 25).
+//! between streamed chunks (default 25). `system/init` lists a claude.ai
+//! connector (`claude.ai Fake Docs`), as Claude Code does on a full login,
+//! unless `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, `0`, `no` or `off`.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -352,10 +354,21 @@ fn main() {
         }
     });
     let source = std::env::var("FAKE_CLAUDE_API_KEY_SOURCE").unwrap_or_else(|_| "none".into());
+    let connectors_off = std::env::var("ENABLE_CLAUDEAI_MCP_SERVERS").is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    });
+    let mcp_servers = if connectors_off {
+        json!([])
+    } else {
+        json!([{"name": "claude.ai Fake Docs", "status": "connected"}])
+    };
     let mut announced = false;
     let announce = |s: &Session| {
         out(
-            &json!({"type": "system", "subtype": "init", "apiKeySource": source, "claude_code_version": "2.1.999", "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": s.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": [], "model": s.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
+            &json!({"type": "system", "subtype": "init", "apiKeySource": source, "claude_code_version": "2.1.999", "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": s.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": mcp_servers, "model": s.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
         );
     };
     for v in rx.iter() {
