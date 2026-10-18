@@ -2,6 +2,27 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.4.0 (2026-10-18)
+
+### Features
+
+- Notify people when a session waits for them, pauses or fails ([#48](https://github.com/hyperstructure/fctl/pull/48))
+- Show Claude plan usage in Settings, on the floor and in the CLI ([#58](https://github.com/hyperstructure/fctl/pull/58))
+- **host:** Pull the sandbox image from GHCR instead of building it ([#39](https://github.com/hyperstructure/fctl/pull/39))
+- Credit the person who started a session in its commits ([#55](https://github.com/hyperstructure/fctl/pull/55))
+- **web:** Replace native selects with an animated Select ([#61](https://github.com/hyperstructure/fctl/pull/61))
+
+### Fixes
+
+- Stop removed browsers coming back and digests replacing each other ([#52](https://github.com/hyperstructure/fctl/pull/52))
+- Keep runners online and agents reachable when Docker hangs ([#57](https://github.com/hyperstructure/fctl/pull/57))
+- **xtask:** Install worker-build when cargo xtask dev needs it ([#54](https://github.com/hyperstructure/fctl/pull/54))
+- **web:** Make destructive actions and errors red instead of pink ([#60](https://github.com/hyperstructure/fctl/pull/60))
+
+### Other changes
+
+- **release:** Build the binaries in parallel and without warnings ([#50](https://github.com/hyperstructure/fctl/pull/50))
+
 ## 0.3.0 (2026-10-18)
 
 ### Features
