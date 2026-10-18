@@ -298,6 +298,37 @@ impl ContainerDriver {
         Ok(())
     }
 
+    /// Pulls `image`, or `fallback` when `image` can't be pulled and isn't
+    /// here either: what sandboxes start from then. Returns the image it
+    /// pulled, and says in `log` when it falls back.
+    pub async fn pull_or_fallback(
+        &self,
+        image: &str,
+        fallback: Option<&str>,
+        progress: bool,
+        log: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<String> {
+        let error = match self.pull(image, progress).await {
+            Ok(()) => return Ok(image.to_owned()),
+            Err(e) => e,
+        };
+        let Some(fallback) = fallback else {
+            return Err(error);
+        };
+        if self.has_image(image).await {
+            return Err(error);
+        }
+        log(format!(
+            "{image} can't be pulled; pulling {fallback} instead"
+        ));
+        match self.pull(fallback, progress).await {
+            Ok(()) => Ok(fallback.to_owned()),
+            Err(_) => Err(error.context(format!(
+                "{image} can't be pulled, and neither can {fallback} (`fctl host image build` builds it here)"
+            ))),
+        }
+    }
+
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
         let src = binary.display().to_string();
         let dest = format!("{}:{AGENT_PATH}", sb.name);
@@ -647,6 +678,96 @@ esac
         let error = error_of(cli.ensure(Flavor::Docker, &project).await);
         let missing = "ghcr.io/acme/agent:1 is not on this host and can't be pulled: ";
         assert!(error.starts_with(missing), "{error}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pulling_the_default_image_falls_back_to_the_latest_published_one() -> Result<()> {
+        let lines = Mutex::new(Vec::new());
+        let log = |line: String| {
+            lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line)
+        };
+        let logged = || lines.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let fallback = Some(LATEST_IMAGE);
+
+        let cli = FakeCli::new(&[], &[VERSION_IMAGE, LATEST_IMAGE])?;
+        let docker = cli.driver(Flavor::Docker);
+        let pulled = docker
+            .pull_or_fallback(VERSION_IMAGE, fallback, false, &log)
+            .await?;
+        assert_eq!(pulled, VERSION_IMAGE);
+        assert_eq!(cli.calls(), [format!("pull {VERSION_IMAGE}")]);
+        assert!(logged().is_empty());
+
+        // A release's image is published within the hour after the release.
+        let cli = FakeCli::new(&[], &[LATEST_IMAGE])?;
+        let docker = cli.driver(Flavor::Docker);
+        let pulled = docker
+            .pull_or_fallback(VERSION_IMAGE, fallback, false, &log)
+            .await?;
+        assert_eq!(pulled, LATEST_IMAGE);
+        assert!(
+            cli.calls().contains(&format!("pull {LATEST_IMAGE}")),
+            "{:?}",
+            cli.calls()
+        );
+        let note = format!("{VERSION_IMAGE} can't be pulled; pulling {LATEST_IMAGE} instead");
+        assert_eq!(logged(), [note]);
+
+        // Sessions start from an image that is here, a build of it say.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[LATEST_IMAGE])?;
+        let docker = cli.driver(Flavor::Docker);
+        let error = error_of(
+            docker
+                .pull_or_fallback(VERSION_IMAGE, fallback, false, &log)
+                .await,
+        );
+        assert!(
+            error.ends_with(&format!("{VERSION_IMAGE}: manifest unknown")),
+            "{error}"
+        );
+        assert!(!cli.calls().contains(&format!("pull {LATEST_IMAGE}")));
+
+        let cli = FakeCli::new(&[], &[])?;
+        let docker = cli.driver(Flavor::Docker);
+        let error = error_of(
+            docker
+                .pull_or_fallback(VERSION_IMAGE, fallback, false, &log)
+                .await,
+        );
+        assert!(
+            error.starts_with(&format!(
+                "{VERSION_IMAGE} can't be pulled, and neither can {LATEST_IMAGE} (`fctl host image build` builds it here): "
+            )),
+            "{error}"
+        );
+        assert!(
+            error.ends_with(&format!("{VERSION_IMAGE}: manifest unknown")),
+            "{error}"
+        );
+
+        // An image set in host.toml has nothing to fall back to.
+        let error = error_of(
+            docker
+                .pull_or_fallback("ghcr.io/acme/agent:1", None, false, &log)
+                .await,
+        );
+        assert!(
+            error.ends_with("ghcr.io/acme/agent:1: manifest unknown"),
+            "{error}"
+        );
+        assert_eq!(
+            cli.calls(),
+            [
+                format!("pull {VERSION_IMAGE}"),
+                format!("image inspect --format {{{{.Id}}}} {VERSION_IMAGE}"),
+                format!("pull {LATEST_IMAGE}"),
+                "pull ghcr.io/acme/agent:1".to_owned(),
+            ]
+        );
         Ok(())
     }
 
