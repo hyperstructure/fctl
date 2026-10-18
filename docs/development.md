@@ -172,7 +172,7 @@ commit and pull request conventions in
 To build locally: `cargo xtask dist` (or `--target aarch64-apple-darwin`).
 It does what the Release workflow does in separate jobs: `cargo xtask dist
 build <fctl|fctl-agent> --target <triple>` for each binary, into
-`dist/bin/`, then `cargo xtask dist package`.
+`dist/bin/v<version>/`, then `cargo xtask dist package`.
 
 ## Deploying
 
