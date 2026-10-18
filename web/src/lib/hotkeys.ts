@@ -9,7 +9,12 @@ export function useHotkey(combo: string, fn: (e: KeyboardEvent) => void, opts: {
     const shift = parts.includes("shift");
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      const typing = !!t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+      // A combobox (Select) takes letters to jump to an option, as a native select does.
+      const typing =
+        !!t &&
+        (t.isContentEditable ||
+          ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) ||
+          t.getAttribute("role") === "combobox");
       if (typing && !opts.inInputs && !mod) return;
       if (mod !== (e.metaKey || e.ctrlKey)) return;
       if (shift !== e.shiftKey) return;

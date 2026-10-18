@@ -139,6 +139,7 @@ export function Select<T extends string>({
   };
 
   // The list joins the top layer and sits by its trigger, following it as the page scrolls.
+  // It closes when the trigger loses focus, or on a press elsewhere (iOS keeps focus on taps).
   useLayoutEffect(() => {
     const el = list.current;
     const t = trigger.current;
@@ -157,12 +158,20 @@ export function Select<T extends string>({
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => place(t, el));
     };
+    const outside = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (el.contains(target) || t.contains(target)) return;
+      window.clearTimeout(timer.current);
+      setPhase((p) => (p === "open" ? "closing" : p));
+    };
     window.addEventListener("resize", follow);
     window.addEventListener("scroll", follow, true);
+    document.addEventListener("pointerdown", outside, true);
     return () => {
       cancelAnimationFrame(frame);
       window.removeEventListener("resize", follow);
       window.removeEventListener("scroll", follow, true);
+      document.removeEventListener("pointerdown", outside, true);
     };
   }, [mounted]);
 
@@ -326,8 +335,8 @@ export function Select<T extends string>({
             "shadow-[0_18px_50px_-12px_rgb(0_0_0/0.5),0_2px_8px_-2px_rgb(0_0_0/0.18)]",
             "data-[state=closed]:pointer-events-none data-[state=closed]:animate-listbox-out data-[state=open]:animate-listbox-in",
           )}
-          // Keep focus on the trigger.
-          onPointerDown={(e) => e.preventDefault()}
+          // Keep focus on the trigger. (Cancelling pointerdown instead would cancel taps in WebKit.)
+          onMouseDown={(e) => e.preventDefault()}
           onPointerLeave={() => picked === null && setActive(-1)}
           onAnimationEnd={(e) => {
             if (e.target === e.currentTarget && phase === "closing") done();
@@ -488,7 +497,7 @@ function Check({ draw, className }: { draw: boolean; className?: string }) {
 function place(trigger: HTMLElement, list: HTMLElement) {
   const r = trigger.getBoundingClientRect();
   const { clientWidth: vw, clientHeight: vh } = document.documentElement;
-  list.style.minWidth = `${r.width}px`;
+  list.style.minWidth = `${Math.min(r.width, vw - 2 * MARGIN)}px`;
   const height = list.scrollHeight + list.offsetHeight - list.clientHeight;
   const below = vh - r.bottom - GAP - MARGIN;
   const above = r.top - GAP - MARGIN;

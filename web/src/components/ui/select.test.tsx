@@ -162,6 +162,20 @@ describe("Select", () => {
     expect(s.shown()).toBe("low");
   });
 
+  it("closes on a press elsewhere, but not on one in the list", () => {
+    const s = setup("low");
+    s.press("Enter");
+    act(() => {
+      s.options()[0]?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(s.trigger.getAttribute("aria-expanded")).toBe("true");
+    act(() => {
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(s.trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(s.onChange).not.toHaveBeenCalled();
+  });
+
   it("jumps to what people type", () => {
     const s = setup("low");
     s.press("m");
