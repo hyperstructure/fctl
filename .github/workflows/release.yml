@@ -158,6 +158,9 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # The Cloudflare token is a secret of the production environment, which
+    # only main may use: a workflow on another branch cannot read it.
+    environment: production
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
     steps:
