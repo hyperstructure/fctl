@@ -19,6 +19,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { PlanUsageList } from "@/components/plan-usage";
 import {
   Avatar,
   Banner,
@@ -194,7 +195,8 @@ function Claude({ me }: { me: G.Me }) {
       description={
         <>
           Sessions you start run on your own Claude subscription. fctl refuses API keys and stops a session
-          before it would draw on paid extra usage.
+          before it would draw on paid extra usage. Each connection shows how much of its plan's limits is
+          used, as sessions last reported it.
         </>
       }
     >
@@ -202,48 +204,61 @@ function Claude({ me }: { me: G.Me }) {
         {me.claude.length > 0 && (
           <ul className="divide-y divide-line border-y border-line">
             {me.claude.map((c) => (
-              <li key={c.id} className="flex items-center gap-3 py-3">
-                <span
-                  className={cn(
-                    "flex size-8 items-center justify-center rounded-md border",
-                    c.remote_control
-                      ? "border-accent/30 bg-accent-soft text-accent"
-                      : "border-line bg-raised text-ink-3",
-                  )}
-                >
-                  {c.remote_control ? <Radio className="size-4" /> : <KeyRound className="size-4" />}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13.5px] text-ink">
-                    {c.account_email ?? c.label ?? (c.kind === "oauth" ? "Claude login" : "Long-lived token")}
-                    {c.is_default && (
-                      <span className="ml-2 rounded-full bg-raised px-1.5 py-0.5 text-[10.5px] text-ink-3">
-                        used for new sessions
-                      </span>
+              <li key={c.id} className="py-3">
+                <div className="flex items-center gap-3">
+                  <span
+                    className={cn(
+                      "flex size-8 items-center justify-center rounded-md border",
+                      c.remote_control
+                        ? "border-accent/30 bg-accent-soft text-accent"
+                        : "border-line bg-raised text-ink-3",
                     )}
+                  >
+                    {c.remote_control ? <Radio className="size-4" /> : <KeyRound className="size-4" />}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13.5px] text-ink">
+                      {c.account_email ??
+                        c.label ??
+                        (c.kind === "oauth" ? "Claude login" : "Long-lived token")}
+                      {c.is_default && (
+                        <span className="ml-2 rounded-full bg-raised px-1.5 py-0.5 text-[10.5px] text-ink-3">
+                          used for new sessions
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[12px] text-ink-4">
+                      {c.kind === "oauth"
+                        ? "Full login · Remote Control"
+                        : "Inference only · no Remote Control"}
+                      {c.subscription_type && ` · ${c.subscription_type}`}
+                      {c.status === "invalid" && <span className="text-danger"> · needs reconnecting</span>}
+                      {c.last_used_at && ` · used ${ago(c.last_used_at)}`}
+                    </div>
                   </div>
-                  <div className="text-[12px] text-ink-4">
-                    {c.kind === "oauth"
-                      ? "Full login · Remote Control"
-                      : "Inference only · no Remote Control"}
-                    {c.subscription_type && ` · ${c.subscription_type}`}
-                    {c.status === "invalid" && <span className="text-danger"> · needs reconnecting</span>}
-                    {c.last_used_at && ` · used ${ago(c.last_used_at)}`}
-                  </div>
+                  {!c.is_default && (
+                    <Button size="sm" variant="ghost" onClick={() => makeDefault.mutate(c.id)}>
+                      Use by default
+                    </Button>
+                  )}
+                  <button
+                    type="button"
+                    aria-label="Remove"
+                    onClick={() => remove.mutate(c.id)}
+                    className="rounded p-1.5 text-ink-4 hover:text-danger"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
                 </div>
-                {!c.is_default && (
-                  <Button size="sm" variant="ghost" onClick={() => makeDefault.mutate(c.id)}>
-                    Use by default
-                  </Button>
-                )}
-                <button
-                  type="button"
-                  aria-label="Remove"
-                  onClick={() => remove.mutate(c.id)}
-                  className="rounded p-1.5 text-ink-4 hover:text-danger"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
+                <div className="mt-3 pl-11">
+                  {c.usage?.length ? (
+                    <PlanUsageList usage={c.usage} />
+                  ) : (
+                    <p className="text-[12px] text-ink-4">
+                      Plan usage shows here once a session runs on this connection.
+                    </p>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
