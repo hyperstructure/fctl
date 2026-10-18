@@ -35,6 +35,8 @@ import {
   Input,
   Menu,
   MenuItem,
+  Select,
+  type SelectOption,
   Skeleton,
   StatusPill,
   toast,
@@ -637,6 +639,11 @@ function Rail({
   );
 }
 
+const SHARE_ROLES: SelectOption<G.SessionRole>[] = [
+  { value: "viewer", label: "Can view", description: "Reads the transcript" },
+  { value: "editor", label: "Can message", description: "Also messages and interrupts the agent" },
+];
+
 function ShareDialog({ open, onClose, session }: { open: boolean; onClose: () => void; session: G.Session }) {
   const shares = useQuery({
     queryKey: keys.shares(session.id),
@@ -679,14 +686,7 @@ function ShareDialog({ open, onClose, session }: { open: boolean; onClose: () =>
             />
           )}
         </Field>
-        <select
-          value={role}
-          onChange={(e) => setRole(e.target.value as G.SessionRole)}
-          className="h-9.5 rounded-md border border-line-strong bg-sunken/60 px-2 text-[13px] text-ink"
-        >
-          <option value="viewer">Can view</option>
-          <option value="editor">Can message</option>
-        </select>
+        <Select aria-label="Access" value={role} onChange={setRole} options={SHARE_ROLES} />
         <Button type="submit" variant="primary" loading={add.isPending}>
           Share
         </Button>

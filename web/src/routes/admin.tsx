@@ -4,7 +4,19 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
 import { Cpu, Globe, Link2, MailPlus, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { Avatar, Banner, Button, CodeBox, Dialog, Empty, Field, Input, toast } from "@/components/ui";
+import {
+  Avatar,
+  Banner,
+  Button,
+  CodeBox,
+  Dialog,
+  Empty,
+  Field,
+  Input,
+  Select,
+  type SelectOption,
+  toast,
+} from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -170,6 +182,13 @@ function Access() {
   );
 }
 
+/** Instance roles; only owners make owners. */
+const instanceRoles = (actor?: G.InstanceRole): SelectOption<G.InstanceRole>[] => [
+  { value: "member", label: "Member", description: "Uses the projects they belong to" },
+  { value: "admin", label: "Admin", description: "Also manages people, runners and instance settings" },
+  { value: "owner", label: "Owner", description: "Also manages admins", disabled: actor !== "owner" },
+];
+
 function Users() {
   const { data: me } = useMe();
   const users = useQuery({ queryKey: keys.users, queryFn: api.users });
@@ -204,16 +223,14 @@ function Users() {
                 {u.email} · {u.last_login_at ? `active ${ago(u.last_login_at)}` : "never signed in"}
               </div>
             </div>
-            <select
+            <Select
+              size="sm"
+              aria-label={`Role of ${u.name}`}
               value={u.role}
               disabled={u.id === me?.user.id}
-              onChange={(e) => update.mutate({ id: u.id, body: { role: e.target.value as G.InstanceRole } })}
-              className="rounded-md border border-line bg-transparent px-2 py-1 text-[12.5px] text-ink-2"
-            >
-              <option value="member">member</option>
-              <option value="admin">admin</option>
-              {me?.user.role === "owner" && <option value="owner">owner</option>}
-            </select>
+              onChange={(role) => update.mutate({ id: u.id, body: { role } })}
+              options={instanceRoles(me?.user.role)}
+            />
             {u.id !== me?.user.id && (
               <>
                 <Button

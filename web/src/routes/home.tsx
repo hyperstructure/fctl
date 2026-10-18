@@ -13,7 +13,7 @@ import {
   useFileDrop,
 } from "@/components/session/attachments";
 import { StartButton, useStartSession } from "@/components/session/start";
-import { Avatar, Button, firstNames, GLCanvas, Skeleton, StatusDot, Textarea } from "@/components/ui";
+import { Avatar, Button, firstNames, GLCanvas, Select, Skeleton, StatusDot, Textarea } from "@/components/ui";
 import type * as G from "@/gen";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
@@ -167,21 +167,25 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
       />
       <div className="absolute right-3 bottom-3 left-2.5 flex items-center gap-2">
         <AttachButton onFiles={(f) => attach(f)} />
-        <label className="flex min-w-0 items-center gap-2 text-[12.5px] text-ink-3">
+        <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
           <span className="text-ink-4">in</span>
-          <select
+          <Select
+            size="sm"
+            aria-label="Project"
             value={project}
             disabled={starting}
-            onChange={(e) => setProject(e.target.value)}
-            className="min-w-0 truncate rounded-md border border-line bg-raised px-2 py-1 text-[12.5px] text-ink outline-none"
-          >
-            {editable.map((p) => (
-              <option key={p.id} value={p.slug}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={setProject}
+            options={editable.map((p) => ({
+              value: p.slug,
+              label: p.name,
+              description: p.repo && (
+                <span className="font-mono text-[11.5px]">
+                  {p.repo.owner}/{p.repo.name}
+                </span>
+              ),
+            }))}
+          />
+        </div>
         <span className="flex-1" />
         <span className="hidden text-[11.5px] text-ink-4 sm:inline">⌘↵ to start</span>
         <StartButton

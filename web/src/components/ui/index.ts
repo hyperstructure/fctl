@@ -7,3 +7,4 @@ export * from "./icons";
 export * from "./misc";
 export * from "./name-fields";
 export * from "./overlay";
+export * from "./select";
