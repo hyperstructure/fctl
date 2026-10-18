@@ -211,6 +211,7 @@ export function SessionPage() {
                     aria-pressed={following}
                     onClick={() => follow.mutate()}
                     disabled={follow.isPending}
+                    className={cn(following && "bg-accent-soft")}
                   >
                     {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
                   </IconButton>
