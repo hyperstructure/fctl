@@ -222,3 +222,103 @@
   animation-duration: 220ms;
   animation-timing-function: var(--ease-out);
 }
+
+/* The not-found and error pages (components/stream-screen.tsx). The code
+   stands in .stream-screen-code; the stream draws it over that box and the
+   text stays hidden unless WebGL is missing. */
+.stream-screen {
+  --code-h: min(27vh, 27svh, 30vw);
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+  align-items: center;
+  overflow: hidden;
+  padding: clamp(92px, 15vh, 156px) clamp(16px, 5vw, 64px) 72px;
+  text-align: center;
+}
+@media (max-width: 640px) {
+  .stream-screen {
+    --code-h: min(26vh, 34vw);
+  }
+  /* Room at the sides for the glyphs to fall over. */
+  .stream-screen-code {
+    width: 80vw;
+  }
+}
+.stream-screen-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  width: 100%;
+  height: 100%;
+  touch-action: pan-y;
+}
+.stream-screen-shade {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(to bottom, var(--c-canvas), transparent 16%, transparent 84%, var(--c-canvas));
+  opacity: 0.8;
+}
+.stream-screen-code {
+  display: grid;
+  place-items: center;
+  width: min(88vw, 960px);
+  height: var(--code-h);
+  font-family: var(--font-display);
+  font-size: var(--code-h);
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.03em;
+  background: linear-gradient(to bottom, var(--c-pink), var(--c-blue));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  user-select: none;
+  visibility: hidden;
+}
+.stream-screen-code.visible {
+  visibility: visible;
+}
+.stream-screen-copy {
+  position: relative;
+  max-width: 34em;
+  margin-top: clamp(40px, 8vh, 80px);
+}
+/* A pool of canvas behind the copy keeps it readable over the threads. */
+.stream-screen-copy::before {
+  content: "";
+  position: absolute;
+  inset: -48px -72px;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(closest-side, var(--c-canvas) 55%, transparent);
+  opacity: 0.94;
+}
+.stream-screen-hint {
+  position: absolute;
+  inset: auto 0 22px;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--c-ink-4);
+  opacity: 0;
+  transition: opacity 800ms var(--ease-out) 1.4s;
+}
+.stream-screen.live .stream-screen-hint {
+  opacity: 1;
+}
+/* The address that has no page, and the one meant. */
+.error-path {
+  padding: 0.1em 0.38em;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: var(--c-raised);
+  color: var(--c-ink);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  overflow-wrap: anywhere;
+}

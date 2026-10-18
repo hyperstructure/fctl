@@ -156,6 +156,16 @@ rows), not `raised`, which is white in the light theme, as `surface` is.
 The scenes render dithered to the brand palette; they pause when hidden
 and render one still frame for people who prefer reduced motion.
 
+An address the app doesn't know shows `src/routes/not-found.tsx`, and a
+request that fails before a page can show (the control plane's 5xx, no
+connection) or a page that crashes shows `src/routes/error.tsx`, the
+router's error page. Both are the design package's stream, with the code
+as glyphs people can throw (`src/components/stream-screen.tsx`); on the
+error page the power goes out and "Try again" turns it back on, asking
+`/api/v1/health` before it loads the page again. To see it, block
+`/api/v1/auth/me` in DevTools (Network → Block request URL) and reload.
+fctl.sh has its own 404 and 5xx pages, in hyperstructure/fctl-site.
+
 People install the app on their phones and computers.
 `public/manifest.webmanifest` describes it, the `brand-assets` plugin in
 `vite.config.ts` serves the favicon and icons from the design package, and

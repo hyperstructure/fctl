@@ -8,6 +8,7 @@ import { keys, queryClient } from "@/lib/queries";
 import { Admin } from "@/routes/admin";
 import { InvitePage, LoginPage, ResetPage, SetupPage } from "@/routes/auth";
 import { DevicePage } from "@/routes/device";
+import { ErrorPage } from "@/routes/error";
 import { Home } from "@/routes/home";
 import { NewProject } from "@/routes/new-project";
 import { NotFound } from "@/routes/not-found";
@@ -29,7 +30,8 @@ async function me() {
   });
 }
 
-const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound });
+// Unknown addresses get NotFound; a failed request or a crash anywhere, ErrorPage.
+const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound, errorComponent: ErrorPage });
 
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 // Search values arrive JSON-parsed (`?deleted=1` is the number 1).
