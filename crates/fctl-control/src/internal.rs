@@ -51,6 +51,9 @@ pub struct ControlState {
     pub clear_runner: bool,
     #[serde(default)]
     pub title: Option<String>,
+    /// A new description; empty clears it.
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub archived: Option<bool>,
 }

@@ -9,6 +9,7 @@ mod attachments;
 mod claude;
 mod journal;
 mod link;
+mod local;
 mod prompt;
 mod supervisor;
 mod workspace;

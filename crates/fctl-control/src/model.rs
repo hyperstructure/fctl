@@ -249,6 +249,7 @@ pub struct SessionRow {
     #[serde(deserialize_with = "int")]
     pub number: i64,
     pub title: String,
+    pub description: Option<String>,
     pub prompt: String,
     /// The task's attachments, JSON.
     #[serde(default)]
@@ -316,6 +317,7 @@ impl SessionRow {
             project_slug: self.project_slug.clone(),
             number: self.number.max(0) as u32,
             title: self.title.clone(),
+            description: self.description.clone(),
             status: self.status(),
             status_reason: self.status_reason.clone(),
             resume_at: self.resume_at,
@@ -357,7 +359,7 @@ impl SessionRow {
 
 /// SELECT for sessions with the caller's project and share roles.
 /// Bind: `?1` = caller user id.
-pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.prompt, s.prompt_attachments, \
+pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
     s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.remote_control, s.stats, s.archived, \

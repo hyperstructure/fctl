@@ -528,10 +528,10 @@ pub async fn pull_request(p: &Paths, branch: &str) -> Option<PullRequestRef> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn spec() -> Result<SessionSpec> {
+    pub(crate) fn spec() -> Result<SessionSpec> {
         Ok(serde_json::from_value(serde_json::json!({
             "session_id": "ses_test",
             "number": 1,

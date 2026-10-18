@@ -441,7 +441,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     );
     let sessions: Vec<Value> = q(
         &ctx.db,
-        "SELECT s.id, p.slug AS project, s.number, s.title, s.prompt, s.status, s.branch, s.base_branch, \
+        "SELECT s.id, p.slug AS project, s.number, s.title, s.description, s.prompt, s.status, s.branch, s.base_branch, \
          s.model, s.effort, s.pr_url AS pull_request, s.created_at, s.started_at, s.ended_at \
          FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.created_by = ? ORDER BY s.created_at",
         &me(),

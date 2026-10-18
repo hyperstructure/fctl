@@ -600,8 +600,15 @@ impl SessionObject {
             return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
         };
         let now = now_ms();
+        let mut described = false;
         if let Some(t) = b.title {
+            described |= s.title != t;
             s.title = t;
+        }
+        if let Some(d) = b.description {
+            let d = (!d.is_empty()).then_some(d);
+            described |= s.description != d;
+            s.description = d;
         }
         if let Some(a) = b.archived {
             s.archived = a;
@@ -622,7 +629,9 @@ impl SessionObject {
         s.updated_at = now;
         self.save_summary(&s);
         self.broadcast_summary(&s);
-        if status_changed {
+        // The API wrote the title to D1 already; writing it again now keeps
+        // a write-through that raced it from leaving the old one there.
+        if status_changed || described {
             self.write_through().await;
         }
         self.notify_fleet(&s);
@@ -1106,6 +1115,7 @@ impl SessionObject {
                 now,
             );
         }
+        let described = self.apply_agent_description(&mut s, &state);
         if let Some(b) = state.branch {
             s.branch = Some(b);
         }
@@ -1127,12 +1137,48 @@ impl SessionObject {
         s.updated_at = now;
         self.save_summary(&s);
         self.broadcast_summary(&s);
-        if status_changed {
+        if status_changed || described {
             self.write_through().await;
         } else {
             self.mark_dirty(now).await;
         }
         self.notify_fleet(&s);
+    }
+
+    /// The agent named or described the session (`fctl edit` in its
+    /// sandbox). Its state repeats both with every report, so only a value
+    /// that differs from its previous report counts: a person's rename
+    /// stands until the agent renames the session again. Values come from
+    /// the sandbox, so they are validated again here.
+    fn apply_agent_description(&self, s: &mut Session, state: &SessionState) -> bool {
+        let mut changed = false;
+        if let Some(t) = state.title.as_deref()
+            && self.meta("agent_title").as_deref() != Some(t)
+        {
+            self.set_meta("agent_title", t);
+            match fctl_domain::validate::session_title(t) {
+                Ok(t) => {
+                    changed |= s.title != t;
+                    s.title = t;
+                }
+                Err(e) => worker::console_error!("ignoring the agent's title: {}", e.message),
+            }
+        }
+        if let Some(d) = state.description.as_deref()
+            && self.meta("agent_description").as_deref() != Some(d)
+        {
+            self.set_meta("agent_description", d);
+            match fctl_domain::validate::session_description(d) {
+                Ok(d) => {
+                    changed |= s.description != d;
+                    s.description = d;
+                }
+                Err(e) => {
+                    worker::console_error!("ignoring the agent's description: {}", e.message)
+                }
+            }
+        }
+        changed
     }
 
     // ───────────────────────────── write-through ─────────────────────────────
@@ -1175,10 +1221,12 @@ impl SessionObject {
         let pr = s.pull_request.clone();
         let res = crate::db::q(
             &db,
-            "UPDATE sessions SET status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), branch = COALESCE(?, branch), \
-             remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, updated_at = ?, last_activity_at = ?, \
-             started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
+            "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
+             branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
+             updated_at = ?, last_activity_at = ?, started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
             &[
+                crate::db::s(&s.title),
+                crate::db::os(s.description.as_deref()),
                 crate::db::s(s.status.as_str()),
                 crate::db::os(s.status_reason.as_deref()),
                 crate::db::on(s.resume_at),

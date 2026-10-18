@@ -8,7 +8,8 @@ pub const DOCKERFILE: &str = include_str!("../../../images/agent/Dockerfile");
 pub const PROVISION: &str = include_str!("../../../images/agent/provision.sh");
 
 /// Builds `tag` with the driver's tooling, streaming output to the terminal.
-pub async fn build(driver: &Driver, tag: &str) -> Result<()> {
+/// The image gets this host's version of fctl, from `download_base`.
+pub async fn build(driver: &Driver, tag: &str, download_base: &str) -> Result<()> {
     if driver.name() != "process" {
         let info = driver.probe().await;
         // Lima only needs limactl here: its base VM is what this builds.
@@ -25,6 +26,10 @@ pub async fn build(driver: &Driver, tag: &str) -> Result<()> {
     std::fs::write(dir.join("Dockerfile"), DOCKERFILE)?;
     std::fs::write(dir.join("provision.sh"), PROVISION)?;
     let ctx = dir.display().to_string();
+    // provision.sh installs the latest release when this version is not
+    // published (a development build).
+    let version = format!("FCTL_VERSION={}", crate::agentbin::VERSION);
+    let download = format!("FCTL_DOWNLOAD={download_base}");
     let result = match driver.name() {
         "apple" => {
             run_inherit(
@@ -33,6 +38,10 @@ pub async fn build(driver: &Driver, tag: &str) -> Result<()> {
                     "build",
                     "--tag",
                     tag,
+                    "--build-arg",
+                    &version,
+                    "--build-arg",
+                    &download,
                     "--file",
                     &format!("{ctx}/Dockerfile"),
                     &ctx,
@@ -40,8 +49,23 @@ pub async fn build(driver: &Driver, tag: &str) -> Result<()> {
             )
             .await
         }
-        "docker" => run_inherit("docker", &["build", "--tag", tag, &ctx]).await,
-        "lima" => build_lima_base(&dir).await,
+        "docker" => {
+            run_inherit(
+                "docker",
+                &[
+                    "build",
+                    "--tag",
+                    tag,
+                    "--build-arg",
+                    &version,
+                    "--build-arg",
+                    &download,
+                    &ctx,
+                ],
+            )
+            .await
+        }
+        "lima" => build_lima_base(&dir, &[&version, &download]).await,
         _ => {
             println!(
                 "The process driver runs agents directly on this machine; there is no image to build."
@@ -56,7 +80,7 @@ pub async fn build(driver: &Driver, tag: &str) -> Result<()> {
     result
 }
 
-async fn build_lima_base(dir: &std::path::Path) -> Result<()> {
+async fn build_lima_base(dir: &std::path::Path, env: &[&str]) -> Result<()> {
     run_inherit(
         "limactl",
         &[
@@ -76,21 +100,20 @@ async fn build_lima_base(dir: &std::path::Path) -> Result<()> {
     )
     .await?;
     // Lima's default user becomes the agent user.
-    run_inherit(
-        "limactl",
-        &[
-            "shell",
-            BASE_VM,
-            "--",
-            "sh",
-            "-c",
-            "sudo AGENT_USER=$(id -un) bash /tmp/provision.sh",
-        ],
-    )
-    .await?;
+    let env: Vec<String> = env.iter().map(|v| shell_quote(v)).collect();
+    let provision = format!(
+        "sudo AGENT_USER=$(id -un) {} bash /tmp/provision.sh",
+        env.join(" ")
+    );
+    run_inherit("limactl", &["shell", BASE_VM, "--", "sh", "-c", &provision]).await?;
     run_inherit("limactl", &["stop", BASE_VM]).await?;
     println!("The {BASE_VM} VM is ready; sessions are cloned from it.");
     Ok(())
+}
+
+/// `'…'` for sh.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 async fn run_inherit(program: &str, args: &[&str]) -> Result<()> {
@@ -108,4 +131,18 @@ async fn run_inherit(program: &str, args: &[&str]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_quote;
+
+    #[test]
+    fn quotes_values_for_sh() {
+        assert_eq!(
+            shell_quote("FCTL_DOWNLOAD=https://fctl.sh/releases"),
+            "'FCTL_DOWNLOAD=https://fctl.sh/releases'"
+        );
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
 }

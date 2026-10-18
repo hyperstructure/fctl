@@ -117,7 +117,9 @@ them in its sandbox and gets screenshots in the message itself.
 `fctl run` follows the session live in your terminal; Ctrl-C detaches and the
 agent keeps working. The agent works on a branch named
 `fctl/<number>-<title>`, commits as it goes, pushes, and opens a pull request
-when it is done (projects can turn that off).
+when it is done (projects can turn that off). Once it understands the task it
+renames the session to what it is working on and describes it in a sentence
+or two, so the floor shows the work rather than the first line of your task.
 
 ## 7. Follow along and steer
 

@@ -40,6 +40,8 @@ fctl run -p my-app -a screenshot.png "Make the header match this"   # attach fil
 fctl sessions                    # recent sessions
 fctl sessions --active -p my-app
 fctl show my-app#12              # status, branch, pull request, usage
+fctl edit my-app#12 --title "Fix the flaky login test"
+fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" clears it
 fctl logs my-app#12              # the transcript
 fctl logs -f my-app#12           # …and keep following
 
@@ -55,6 +57,13 @@ fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 ```
 
 `fctl run` uses the project from `fctl projects use` when `-p` is missing.
+
+A session's title starts as the first line of its task. Agents rename it to
+what they work on, and say what the session is about, with the same
+command: in a sandbox, `fctl edit --title … --description …` without a
+session edits the one the sandbox runs, through fctl-agent and without a
+sign-in. The sandbox's `~/AGENTS.md` asks them to do it once they
+understand the task, and again when the work turns to something else.
 
 `--attach` (`-a`) sends files with the task or message (`run`, `send`,
 `resume`): up to 10, of at most 20 MB each. The agent finds them in

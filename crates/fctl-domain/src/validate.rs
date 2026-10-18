@@ -155,6 +155,35 @@ pub fn text(field: &str, input: &str, max: usize) -> Result<String> {
     Ok(s)
 }
 
+/// A session title: a [`name`] without control characters. Agents write
+/// titles too, and terminals print them.
+pub fn session_title(input: &str) -> Result<String> {
+    let s = name("title", input)?;
+    if s.chars().any(char::is_control) {
+        return Err(ApiError::validation("title", "Remove control characters"));
+    }
+    Ok(s)
+}
+
+/// What a session is about: one paragraph of at most 500 characters (runs
+/// of whitespace, newlines too, become one space). Empty clears it.
+pub fn session_description(input: &str) -> Result<Option<String>> {
+    let s = collapse_spaces(input);
+    if s.chars().count() > 500 {
+        return Err(ApiError::validation(
+            "description",
+            "Use at most 500 characters",
+        ));
+    }
+    if s.chars().any(char::is_control) {
+        return Err(ApiError::validation(
+            "description",
+            "Remove control characters",
+        ));
+    }
+    Ok((!s.is_empty()).then_some(s))
+}
+
 fn collapse_spaces(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -370,6 +399,34 @@ mod tests {
         let many: Vec<AttachmentId> = (0..11).map(|i| id(&format!("att_{i}"))).collect();
         assert!(attachment_ids(&many).is_err());
         assert!(attachment_ids(&many[..10]).is_ok());
+    }
+
+    #[test]
+    fn session_titles() {
+        assert_eq!(
+            session_title("  Fix the   flaky login test ")
+                .ok()
+                .as_deref(),
+            Some("Fix the flaky login test")
+        );
+        assert!(session_title(" ").is_err());
+        assert!(session_title(&"x".repeat(81)).is_err());
+        let escape = session_title("Fix \u{1b}[31mlogin").map_err(|e| e.message);
+        assert_eq!(escape, Err("Remove control characters".into()));
+    }
+
+    #[test]
+    fn session_descriptions() {
+        assert_eq!(
+            session_description("Retries uploads.\n\nAdds tests.").ok(),
+            Some(Some("Retries uploads. Adds tests.".into()))
+        );
+        assert_eq!(session_description("  ").ok(), Some(None));
+        assert_eq!(
+            session_description(&"x".repeat(501)).map_err(|e| e.field),
+            Err(Some("description".into()))
+        );
+        assert!(session_description("bell \u{7}").is_err());
     }
 
     #[test]

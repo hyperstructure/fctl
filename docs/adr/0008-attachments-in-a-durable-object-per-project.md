@@ -1,4 +1,4 @@
-# 0007: Attachments live in a Durable Object per project
+# 0008: Attachments live in a Durable Object per project
 
 2026-10-18 · accepted
 

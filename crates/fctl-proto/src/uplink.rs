@@ -77,6 +77,14 @@ pub struct SessionState {
     pub claude_session_id: Option<String>,
     pub remote_control: Option<RemoteControlState>,
     pub stats: Option<SessionStats>,
+    /// The title the agent gave the session (`fctl edit` in the sandbox).
+    /// SessionDO applies it when it differs from the title the agent
+    /// reported before, so a person's rename stands until the agent renames
+    /// the session again.
+    pub title: Option<String>,
+    /// What the agent says the session is about, applied the same way; an
+    /// empty string clears it.
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
