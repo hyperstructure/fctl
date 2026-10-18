@@ -14,7 +14,7 @@ use super::{
 use anyhow::{Context, Result};
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -28,6 +28,17 @@ pub enum Flavor {
 pub struct ContainerDriver {
     flavor: Flavor,
     bin: String,
+}
+
+/// An image on this host, as its runtime describes it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ImageInfo {
+    /// Docker's image ID, or with Apple's `container` the digest of the
+    /// image's index: a pull that brings a newer build changes it. Empty
+    /// when the runtime's description can't be read.
+    pub id: String,
+    /// Its labels (with Apple's `container`, those of each platform).
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Why a sandbox wasn't created.
@@ -50,6 +61,12 @@ impl ContainerDriver {
             flavor: Flavor::Docker,
             bin: std::env::var("FCTL_DOCKER_BIN").unwrap_or_else(|_| "docker".into()),
         }
+    }
+
+    /// A driver whose CLI is `bin`, a stand-in.
+    #[cfg(test)]
+    pub(crate) fn with_bin(flavor: Flavor, bin: String) -> Self {
+        Self { flavor, bin }
     }
 
     pub fn flavor_name(&self) -> &'static str {
@@ -373,15 +390,6 @@ impl ContainerDriver {
         }
     }
 
-    /// Removes an image; fails while a sandbox uses it.
-    pub async fn remove_image(&self, image: &str) -> Result<()> {
-        let args: &[&str] = match self.flavor {
-            Flavor::Apple => &["image", "delete", image],
-            Flavor::Docker => &["image", "rm", image],
-        };
-        self.run(args).await.map(drop)
-    }
-
     pub async fn has_image(&self, image: &str) -> bool {
         let inspect: &[&str] = match self.flavor {
             Flavor::Apple => &["image", "inspect", image],
@@ -442,6 +450,47 @@ impl ContainerDriver {
                 "{image} can't be pulled, and neither can {fallback} (`fctl host image build` builds it here)"
             ))),
         }
+    }
+
+    /// What the runtime says about `image`: `None` when it isn't here, and
+    /// an empty [`ImageInfo`] when its description can't be read. An error
+    /// only when the runtime doesn't answer.
+    pub async fn image(&self, image: &str) -> Result<Option<ImageInfo>> {
+        match self.run(&["image", "inspect", image]).await {
+            Ok(out) => Ok(Some(image_info(&out).unwrap_or_default())),
+            Err(e) if e.is::<TimedOut>() => Err(e),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Gives `image` another name, `name`.
+    pub async fn tag_image(&self, image: &str, name: &str) -> Result<()> {
+        self.run(&["image", "tag", image, name]).await.map(drop)
+    }
+
+    /// Removes the name `image`, and the image once no other name refers to
+    /// it, without force: Docker refuses while a container uses it, stopped
+    /// ones included. Apple's `container` doesn't check, but each of its
+    /// containers has a copy of the image's filesystem, so it still starts.
+    pub async fn remove_image(&self, image: &str) -> Result<()> {
+        let args: &[&str] = match self.flavor {
+            Flavor::Apple => &["image", "delete", image],
+            Flavor::Docker => &["image", "rm", image],
+        };
+        self.run(args).await.map(drop)
+    }
+
+    /// The names (`repository:tag`) of `repository`'s images on this host.
+    pub async fn images(&self, repository: &str) -> Result<Vec<String>> {
+        let out = match self.flavor {
+            Flavor::Apple => self.run(&["image", "list", "--quiet"]).await?,
+            Flavor::Docker => {
+                let format = "{{.Repository}}:{{.Tag}}";
+                self.run(&["image", "ls", "--format", format, repository])
+                    .await?
+            }
+        };
+        Ok(names_in(&out, repository))
     }
 
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
@@ -625,6 +674,48 @@ fn linux_arch(arch: &str) -> &str {
     }
 }
 
+/// An image's ID and labels from `image inspect`: Docker's, or Apple's,
+/// whose `index` became `configuration.descriptor` in its 1.0.
+fn image_info(out: &str) -> Option<ImageInfo> {
+    let v: Value = serde_json::from_str(out).ok()?;
+    let image = v.get(0)?;
+    let id = image
+        .get("Id")
+        .or_else(|| image.pointer("/configuration/descriptor/digest"))
+        .or_else(|| image.pointer("/index/digest"))
+        .and_then(Value::as_str)?;
+    let variants = image.get("variants").and_then(Value::as_array);
+    let configs = image.pointer("/Config/Labels").into_iter().chain(
+        variants
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.pointer("/config/config/Labels")),
+    );
+    let mut labels = BTreeMap::new();
+    for (k, v) in configs.filter_map(Value::as_object).flatten() {
+        if let Some(v) = v.as_str() {
+            labels.insert(k.clone(), v.to_owned());
+        }
+    }
+    Some(ImageInfo {
+        id: id.to_owned(),
+        labels,
+    })
+}
+
+/// The tagged names of `repository` in a list of image names, one per line.
+fn names_in(out: &str, repository: &str) -> Vec<String> {
+    out.lines()
+        .map(str::trim)
+        .filter(|name| {
+            name.strip_prefix(repository)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .is_some_and(|tag| !tag.is_empty() && tag != "<none>")
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 /// `docker info --format '{{.NCPU}} {{.MemTotal}}'`: CPUs, and memory in bytes.
 fn docker_resources(out: &str) -> Option<SandboxSize> {
     let mut words = out.split_whitespace();
@@ -644,123 +735,10 @@ fn installed(bin: &str) -> bool {
 }
 
 #[cfg(test)]
-pub(crate) mod fake {
-    use super::*;
-    use anyhow::Result;
-    use std::sync::{Mutex, PoisonError};
-
-    /// A stand-in for the `docker` or `container` CLI with no sandboxes yet:
-    /// `have` are the images on the host, `registry` those it can pull. It
-    /// writes each call to `calls`; with `fail_run` every `run` fails, and with
-    /// `fail_build` every `build`. A build lists its context in `context` and
-    /// copies its Dockerfile to `dockerfile`; `size` holds the size images
-    /// have (1000 bytes without it).
-    pub struct FakeCli {
-        pub dir: tempfile::TempDir,
-    }
-
-    impl FakeCli {
-        pub fn new(have: &[&str], registry: &[&str]) -> Result<Self> {
-            use std::os::unix::fs::PermissionsExt;
-            let dir = tempfile::tempdir()?;
-            let root = dir.path();
-            for (sub, images) in [("have", have), ("registry", registry)] {
-                std::fs::create_dir(root.join(sub))?;
-                for image in images {
-                    std::fs::write(root.join(sub).join(image.replace(['/', ':'], "_")), "")?;
-                }
-            }
-            let script = format!(
-                r##"#!/bin/sh
-d='{}'
-echo "$*" >> "$d/calls"
-key() {{ printf '%s' "$1" | tr '/:' '__'; }}
-for last in "$@"; do :; done
-pull() {{
-  [ -e "$d/registry/$(key "$last")" ] || {{ echo "$last: manifest unknown" >&2; exit 1; }}
-  touch "$d/have/$(key "$last")"
-}}
-case "$1 $2" in
-  "image inspect")
-    [ -e "$d/have/$(key "$last")" ] || exit 1
-    [ "$4" != '{{{{.Size}}}}' ] || cat "$d/size" 2>/dev/null || echo 1000 ;;
-  "image rm" | "image delete") rm "$d/have/$(key "$last")" ;;
-  "build "*)
-    [ ! -e "$d/fail_build" ] || {{ echo "#3 ERROR: process did not complete successfully: exit code: 1" >&2; exit 1; }}
-    echo "#1 [internal] load build definition from Dockerfile"
-    echo "#5 [1/2] FROM debian" >&2
-    echo "#5 0.1 noise"
-    (cd "$last" && find . | sort) > "$d/context"
-    cat "$5" > "$d/dockerfile"
-    touch "$d/have/$(key "$3")" ;;
-  "image pull" | "pull "*) pull ;;
-  "inspect "*) exit 1 ;;
-  "run "*)
-    [ ! -e "$d/fail_run" ] || {{ echo "no room for it" >&2; exit 1; }}
-    while [ $# -gt 0 ] && [ "$1" != tail ]; do shift; done
-    [ -e "$d/have/$(key "$2")" ] || {{ echo "Unable to find image '$2' locally" >&2; exit 125; }} ;;
-  *) echo "unexpected: $*" >&2; exit 2 ;;
-esac
-"##,
-                root.display()
-            );
-            let bin = root.join("cli");
-            std::fs::write(&bin, script)?;
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
-            Ok(Self { dir })
-        }
-
-        pub fn driver(&self, flavor: Flavor) -> ContainerDriver {
-            ContainerDriver {
-                flavor,
-                bin: self.dir.path().join("cli").display().to_string(),
-            }
-        }
-
-        pub fn calls(&self) -> Vec<String> {
-            std::fs::read_to_string(self.dir.path().join("calls"))
-                .unwrap_or_default()
-                .lines()
-                .map(str::to_owned)
-                .collect()
-        }
-
-        /// Creates the sandbox: the image it started from, and the log.
-        pub async fn ensure(
-            &self,
-            flavor: Flavor,
-            spec: &SandboxSpec,
-        ) -> Result<(String, Vec<String>)> {
-            let lines = Mutex::new(Vec::new());
-            let log = |line: String| {
-                lines
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(line)
-            };
-            self.driver(flavor).ensure(spec, &log).await?;
-            let run = self
-                .calls()
-                .into_iter()
-                .rev()
-                .find(|c| c.starts_with("run "));
-            let image = run
-                .as_deref()
-                .and_then(|c| c.split(" tail ").nth(1)?.split(' ').next())
-                .unwrap_or_default()
-                .to_owned();
-            Ok((
-                image,
-                lines.into_inner().unwrap_or_else(PoisonError::into_inner),
-            ))
-        }
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use super::fake::FakeCli;
     use super::*;
+    use crate::driver::fake::FakeCli;
+    use std::sync::{Mutex, PoisonError};
 
     #[test]
     fn build_logs_show_the_steps() {
@@ -815,7 +793,92 @@ mod tests {
         }
     }
 
-    use std::sync::{Mutex, PoisonError};
+    #[test]
+    fn reads_an_images_id_and_labels() {
+        let labels = BTreeMap::from([
+            (
+                "org.opencontainers.image.revision".to_owned(),
+                "12685ad".to_owned(),
+            ),
+            (
+                "sh.fctl.claude-code.version".to_owned(),
+                "2.1.302".to_owned(),
+            ),
+        ]);
+        let published = |id: &str| ImageInfo {
+            id: id.into(),
+            labels: labels.clone(),
+        };
+        let docker = r#"[{
+            "Id": "sha256:4f1c",
+            "RepoTags": ["ghcr.io/hyperstructure/sandbox:0.5.0"],
+            "Config": {"User": "agent", "Labels": {
+                "org.opencontainers.image.revision": "12685ad",
+                "sh.fctl.claude-code.version": "2.1.302"
+            }}
+        }]"#;
+        assert_eq!(image_info(docker), Some(published("sha256:4f1c")));
+        let built = r#"[{"Id": "sha256:77aa", "Config": {"User": "agent", "Labels": null}}]"#;
+        assert_eq!(
+            image_info(built),
+            Some(ImageInfo {
+                id: "sha256:77aa".into(),
+                labels: BTreeMap::new(),
+            })
+        );
+        // Apple's `container` from 1.0: an attestation has no image config.
+        let apple = r#"[{
+            "id": "9a8b",
+            "configuration": {
+                "name": "ghcr.io/hyperstructure/sandbox:0.5.0",
+                "descriptor": {"digest": "sha256:9a8b", "size": 1609}
+            },
+            "variants": [
+                {"platform": {"os": "linux", "architecture": "arm64"}, "digest": "sha256:01", "size": 1,
+                 "config": {"os": "linux", "architecture": "arm64", "config": {"User": "agent", "Labels": {
+                    "org.opencontainers.image.revision": "12685ad",
+                    "sh.fctl.claude-code.version": "2.1.302"
+                 }}}},
+                {"platform": {"os": "unknown", "architecture": "unknown"}, "digest": "sha256:02", "size": 1,
+                 "config": {"os": "unknown", "architecture": "unknown"}}
+            ]
+        }]"#;
+        assert_eq!(image_info(apple), Some(published("sha256:9a8b")));
+        // …and before it.
+        let apple_0 = r#"[{
+            "name": "ghcr.io/hyperstructure/sandbox:0.5.0",
+            "index": {"digest": "sha256:9a8b", "size": 1609},
+            "variants": [{"platform": {"os": "linux", "architecture": "arm64"}, "size": 1,
+                "config": {"os": "linux", "architecture": "arm64", "config": {"Labels": {
+                    "org.opencontainers.image.revision": "12685ad",
+                    "sh.fctl.claude-code.version": "2.1.302"
+                }}}}]
+        }]"#;
+        assert_eq!(image_info(apple_0), Some(published("sha256:9a8b")));
+        for unreadable in ["", "[]", "{}", "[{\"Config\": {}}]", "Error: no such image"] {
+            assert_eq!(image_info(unreadable), None, "{unreadable}");
+        }
+    }
+
+    #[test]
+    fn lists_the_tagged_names_of_a_repository() {
+        let repository = "ghcr.io/hyperstructure/sandbox";
+        // `docker image ls` lists a build without a tag as `<none>`, and
+        // Apple's `container image list --quiet` lists every image.
+        let out = "ghcr.io/hyperstructure/sandbox:0.5.0\n\
+                   ghcr.io/hyperstructure/sandbox:<none>\n\
+                   ghcr.io/hyperstructure/sandbox-dev:1\n\
+                   ghcr.io/hyperstructure/sandbox@sha256:9a8b\n\
+                   docker.io/library/debian:bookworm-slim\n\
+                   ghcr.io/hyperstructure/sandbox:latest\n";
+        assert_eq!(
+            names_in(out, repository),
+            [
+                "ghcr.io/hyperstructure/sandbox:0.5.0",
+                "ghcr.io/hyperstructure/sandbox:latest"
+            ]
+        );
+    }
 
     const VERSION_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:0.3.0";
     const LATEST_IMAGE: &str = "ghcr.io/hyperstructure/sandbox:latest";
@@ -993,7 +1056,7 @@ mod tests {
     #[tokio::test]
     async fn other_failures_are_not_about_the_image() -> Result<()> {
         let cli = FakeCli::new(&[VERSION_IMAGE], &[LATEST_IMAGE])?;
-        std::fs::write(cli.dir.path().join("fail_run"), "")?;
+        cli.fail_runs()?;
         let default = spec(VERSION_IMAGE, Some(LATEST_IMAGE));
         let error = error_of(cli.ensure(Flavor::Docker, &default).await);
         assert!(error.starts_with("starting fctl-ses-1: "), "{error}");

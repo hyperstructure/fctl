@@ -36,7 +36,7 @@ Its labels say what is inside:
 |---|---|
 | `org.opencontainers.image.version`, `sh.fctl.version` | fctl's version |
 | `sh.fctl.claude-code.version` | Claude Code's version |
-| `org.opencontainers.image.revision` | the commit of hyperstructure/sandbox it was built from |
+| `org.opencontainers.image.revision` | the commit of hyperstructure/sandbox it was built from; images built elsewhere have none |
 | `org.opencontainers.image.created` | when it was built |
 
 ```sh
@@ -55,28 +55,41 @@ before its image is published, the host pulls `latest` instead, and
 sessions start from it and say so in their log. The first session after the
 version's image is published pulls it.
 
-The host pulls a tag once. To get a newer build of it, with a newer Claude
-Code, run `fctl host image pull`. While the version's image can't be
-pulled, it pulls `latest` instead, and says so.
+The host pulls its tag again when it starts and every 6 hours, so new
+sessions start from the newest build of it, with the newest Claude Code.
+Sessions don't wait for that: they start from the build that is there, and
+a tag that hasn't changed costs one request to ghcr.io. `fctl host image
+pull` pulls it now. While the version's image can't be pulled, it pulls
+`latest` instead, and says so.
 
 - **Another image.** `image` in `host.toml` (or `fctl host install --image
   …`) sets the image for sessions whose project sets none, and a project
   can choose one for its own sessions ([Your own
   image](#your-own-image)). `fctl-agent:latest`, the name the default
-  image had when hosts built it themselves, means the default.
+  image had when hosts built it themselves, means the default. On another
+  image, the host pulls it when it isn't there, only `fctl host image pull`
+  pulls it again, and the host leaves the default image's tags alone.
 - **Building it.** `fctl host image build` builds the default image on the
   host with its driver, from the `main` branch of hyperstructure/sandbox,
   under the same name, so sessions use the build: for a host that can't
   reach ghcr.io, for instance. `--source DIR` builds from a checkout of the
   repository instead, to try changes to the image with fctl. The host never
-  replaces a build with the published image; `fctl host image pull` does.
+  replaces a build with the published image, which it tells apart by its
+  `org.opencontainers.image.revision` label; `fctl host image pull` does.
 - **Lima** sessions clone the `fctl-base` VM instead, which `fctl host
   image build` prepares with the image's provisioning script. The process
   driver uses no image.
-- **Disk.** The images of earlier versions stay on the host until you
-  remove them: `docker image rm ghcr.io/hyperstructure/sandbox:0.4.0`
-  (with Apple container, `container image delete`) removes one that no
-  sandbox uses.
+- **Disk.** The host removes the default images that sessions no longer
+  start from: builds that a newer one replaced, other versions' images, and
+  `latest` once the version's image is there. It does that when it starts,
+  after each pull and after the sweep removes stopped sandboxes, and leaves
+  images built on the host and tags it doesn't pull, like `0.4`, alone. It
+  removes them without force: with Docker, an image that a sandbox uses,
+  stopped ones too, stays until the sweep removes the sandbox
+  (`keep_stopped_hours`), and a build that a newer one replaced keeps the
+  name `<tag>-replaced-<the start of its ID>` until then. Apple's
+  `container` gives each sandbox its own copy of the image's filesystem,
+  so the host removes them right away, and stopped sandboxes still start.
 
 ## Its layout
 

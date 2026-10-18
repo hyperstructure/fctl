@@ -8,7 +8,7 @@ use clap::Subcommand;
 use fctl_domain::{image, size};
 use fctl_host::config::means_default_image;
 use fctl_host::driver::Driver;
-use fctl_host::{HostConfig, service};
+use fctl_host::{HostConfig, refresh, service};
 use fctl_proto::api::{RunnerDetail, RunnerStatus};
 use std::io::IsTerminal;
 
@@ -387,22 +387,42 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 }
             };
             // The default image falls back to `latest` until its version's is published.
-            let pulled = d
-                .pull_or_fallback(&image, cfg.fallback_image().as_deref(), !json, &note)
-                .await?;
-            let instead_of = (pulled != image).then_some(&image);
+            let pulled = refresh::pull(&d, &cfg, !json, &note).await?;
+            let removed = refresh::clean_up(&d, &cfg).await;
+            let instead_of = (pulled.image != image).then_some(&image);
             if json {
-                return style::print_json(
-                    &serde_json::json!({ "image": pulled, "instead_of": instead_of }),
-                );
+                return style::print_json(&serde_json::json!({
+                    "image": pulled.image,
+                    "instead_of": instead_of,
+                    "newer": pulled.newer.is_some(),
+                    "removed": removed,
+                }));
             }
-            println!("{} Pulled {pulled}", style::accent("✓"));
+            let newer = match &pulled.newer {
+                Some(build) => format!(", a newer build{}", refresh::claude_code(build)),
+                None => String::new(),
+            };
+            println!("{} Pulled {}{newer}", style::accent("✓"), pulled.image);
             if instead_of.is_some() {
                 println!(
                     "  {}",
                     style::dim(&format!(
                         "Sessions start from it until {image} can be pulled: a release's image is published within the hour after the release."
                     ))
+                );
+            }
+            for name in &removed {
+                let what = refresh::describe(name);
+                println!("  {}", style::dim(&format!("Removed {what}")));
+            }
+            if let Some(name) = &pulled.replaced
+                && !removed.contains(name)
+            {
+                println!(
+                    "  {}",
+                    style::dim(
+                        "The build it replaced stays until no sandbox uses it; the host removes it then."
+                    )
                 );
             }
             Ok(())
@@ -780,8 +800,15 @@ async fn doctor() -> Result<()> {
         && d.probe().await.available
     {
         let image = cfg.image();
-        if d.has_image(&image).await {
-            check(true, &format!("sandbox image {image}"), "");
+        if let Ok(Some(here)) = d.image(&image).await {
+            let detail = if refresh::published(&here) {
+                refresh::claude_code(&here)
+            } else if cfg.image.is_none() {
+                " (built here: the host doesn't pull over it)".into()
+            } else {
+                String::new()
+            };
+            check(true, &format!("sandbox image {image}{detail}"), "");
         } else {
             let meanwhile = match cfg.fallback_image() {
                 Some(f) if d.has_image(&f).await => {

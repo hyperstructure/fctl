@@ -100,9 +100,11 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   default sandbox image, `ghcr.io/hyperstructure/sandbox`, published for
   every release. Hosts pull it, and `fctl host image build` builds its
   `main`. The host relies on its layout (the `agent` user, the PATH,
-  `/opt/fctl/bin`) and on `Dockerfile` and `provision.sh` at its root:
-  change those there, together with `docs/sandbox-images.md` here. Its Rust
-  is the one in `rust-toolchain.toml`; bump the two together.
+  `/opt/fctl/bin`), on `Dockerfile` and `provision.sh` at its root, and on
+  the `org.opencontainers.image.revision` label that only its Image
+  workflow sets (hosts pull again over, and remove, only images that have
+  it): change those there, together with `docs/sandbox-images.md` here.
+  Its Rust is the one in `rust-toolchain.toml`; bump the two together.
 
 design and fctl-site are private for now: `npm ci` reaches the design
 package over git, so it needs GitHub access (CI uses a read-only deploy

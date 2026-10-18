@@ -1092,7 +1092,7 @@ mod tests {
 
     use crate::driver::Driver;
     use crate::driver::container::Flavor;
-    use crate::driver::container::fake::FakeCli;
+    use crate::driver::fake::FakeCli;
     use crate::session::HostCtx;
     use std::sync::{Arc, Mutex, PoisonError};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
