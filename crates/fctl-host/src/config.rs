@@ -265,8 +265,8 @@ impl HostConfig {
             .then(|| format!("{IMAGE_REPOSITORY}:latest"))
     }
 
-    /// [`image`](Self::image), then [`fallback_image`](Self::fallback_image):
-    /// the images on this host that it can count on.
+    /// The images sessions whose project sets none start from:
+    /// [`image`](Self::image), then [`fallback_image`](Self::fallback_image).
     pub fn own_images(&self) -> Vec<String> {
         std::iter::once(self.image())
             .chain(self.fallback_image())

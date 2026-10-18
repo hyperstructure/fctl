@@ -109,6 +109,9 @@ pub struct HostHeartbeat {
     pub sessions: Vec<HostSessionReport>,
     pub load1: Option<f32>,
     pub memory_available_mb: Option<u64>,
+    /// Free disk (MiB) where its sandboxes are (see
+    /// [`HostHello::min_free_disk_mb`]). Older hosts measure their data
+    /// directory.
     pub disk_available_mb: Option<u64>,
 }
 
