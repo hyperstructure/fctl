@@ -44,10 +44,22 @@ outside it except through these channels:
 - **Network.** Sandboxes have outbound network access (to install
   dependencies and reach GitHub and Claude). Do not run hosts on networks
   where an outbound connection from an untrusted process is a problem.
-- **GitHub.** A token for one repository, with the permissions in
-  [self-hosting](self-hosting.md#4-connect-github-optional-recommended),
-  valid for an hour and refreshed on demand. It cannot reach other
-  repositories.
+- **GitHub.** Installation tokens for the project's repositories and no
+  others, valid for an hour and refreshed on demand
+  ([self-hosting](self-hosting.md#what-sessions-get) has the details):
+  - one that can write (contents, pull requests, issues and workflows) to
+    the primary repository and the others listed as read and write. git
+    and `gh` use it.
+  - one that can only read (contents, pull requests, issues and CI
+    results) the repositories listed as read only, or every repository of
+    the account the GitHub App can reach when the project grants that
+    (`owner/*`). git uses it for those repositories.
+
+  An agent can push to, open pull requests in, and change the workflows of
+  every repository it can write to, so list as writable only the ones it
+  needs. Reading a whole account includes its private repositories.
+  Running sessions lose a repository removed from the project when their
+  tokens are next refreshed, within the hour.
 - **Claude.** A short-lived access token for the session's owner. Refresh
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host.

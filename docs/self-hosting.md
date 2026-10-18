@@ -73,7 +73,7 @@ also creates invite links) or whole domains (`*@acme.dev`).
 ## 4. Connect GitHub (optional, recommended)
 
 With a GitHub App, projects link repositories, agents get short-lived tokens
-for exactly one repository, and fctl can create new repositories.
+for their project's repositories only, and fctl can create new repositories.
 
 1. Create an app under your organization: **Settings → Developer settings →
    GitHub Apps → New GitHub App**. Turn the webhook off. Repository
@@ -90,7 +90,7 @@ for exactly one repository, and fctl can create new repositories.
    | Metadata | Read | required |
 
 2. Install it on the organization (all repositories, or the ones agents may
-   touch).
+   touch, including those they only read, such as private dependencies).
 3. Generate a private key, and fill in the instance file:
 
    ```toml
@@ -110,6 +110,26 @@ for exactly one repository, and fctl can create new repositories.
 
 The key is converted to PKCS#8 and stored as the `GITHUB_APP_PRIVATE_KEY`
 secret; it never reaches a host or a sandbox.
+
+### What sessions get
+
+A project has a primary repository and may list more, each read only or
+read and write, or let agents read every repository of the account that the
+app can reach (`owner/*`); they all belong to one account, whose
+installation mints the tokens. Each session gets up to two, valid for an
+hour and refreshed through its host:
+
+| Token | Repositories | Permissions |
+|---|---|---|
+| Write | the primary repository and those listed as read and write | contents, pull requests, issues and workflows: write; checks, actions, commit statuses: read |
+| Read only | those listed as read only, or the account's (`owner/*`) | contents, pull requests, issues, checks, actions, commit statuses: read |
+
+Agents may write only to repositories that are named: reading a whole
+account is as far as an owner-wide grant goes. A listed repository the
+installation no longer reaches (removed from it, renamed or deleted) is left
+out of the tokens, and the session says so; a session whose primary
+repository is out of reach does not start. People manage the list under the
+project's **Repositories** tab or with `fctl projects repos`.
 
 ## 5. Google sign-in (optional)
 

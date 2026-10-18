@@ -65,6 +65,21 @@ fctl projects use my-app
 fctl projects delete my-app            # with its sessions; asks you to type the slug
 ```
 
+Agents start in the project's repository and can use more of the same GitHub
+account. They clone them when they need them, into `~/repos/<owner>/<name>`;
+in each one they change, they work on the session's branch, which fctl
+pushes after every turn, and open a pull request.
+
+```sh
+fctl projects repos list -p my-app
+fctl projects repos add my-org/my-lib --write -p my-app   # agents may push and open pull requests
+fctl projects repos add my-org/design -p my-app           # read only, like a private dependency
+fctl projects repos add 'my-org/*' -p my-app              # read every repository the GitHub App reaches
+fctl projects repos remove my-org/design -p my-app
+```
+
+Changes apply to sessions that start afterwards.
+
 ## Claude
 
 ```sh

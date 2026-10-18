@@ -101,6 +101,11 @@ fctl projects create "My app" --repo my-org/my-app
 fctl projects use my-app
 ```
 
+Agents can use more repositories of the same account: add them under the
+project's **Repositories** tab, each read only (a private dependency, say)
+or read and write, or let agents read every repository the GitHub App can
+reach. From the terminal: `fctl projects repos add my-org/my-lib --write`.
+
 ## 6. Start a session
 
 Describe the task on the floor or the project page, or:
@@ -112,7 +117,9 @@ fctl run "Add a dark mode toggle to the settings page"
 `fctl run` follows the session live in your terminal; Ctrl-C detaches and the
 agent keeps working. The agent works on a branch named
 `fctl/<number>-<title>`, commits as it goes, pushes, and opens a pull request
-when it is done (projects can turn that off).
+when it is done (projects can turn that off). In the project's other
+repositories it changes, it uses the same branch and opens a pull request in
+each.
 
 ## 7. Follow along and steer
 
