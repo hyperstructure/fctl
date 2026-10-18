@@ -576,8 +576,20 @@ maximum covers its size; one that fits nowhere stays queued with the reason,
 and the sessions queued behind it may start meanwhile. Hosts that send no
 limits (older versions) take any size. The host passes the size it applied
 to fctl-agent (`AgentConfig.sandbox`), which tells Claude: with Docker,
-`nproc` and `free` show the VM, not the sandbox's cgroup limits. The
-process driver limits nothing.
+`nproc` and `free` show the VM, not the sandbox's cgroup limits, and with
+Apple's `container`, `nproc` counts one CPU more than the sandbox may use.
+The process driver limits nothing.
+
+An Apple `container` sandbox is a VM of its own. Apple's runtime gives the
+VM one CPU and 128 MiB more than the sandbox's size, for the guest kernel
+and its init, and holds the container to the size with cgroups. It sets
+the VM's clock from the Mac's every 30 seconds, so the clock is right
+again within half a minute of the Mac waking, and the VM resolves names
+through the Mac. The root filesystem is a sparse 512 GiB disk image cloned
+from the image's, so `df` shows about 500 GB free whatever the Mac has.
+What a session writes there takes space on the Mac until the host removes
+the sandbox, even once the files are deleted: the runtime doesn't hand
+freed blocks back.
 
 fctl-agent runs detached inside the sandbox and listens on a unix socket; the
 host talks to it through `fctl-agent attach` over the driver's exec channel.

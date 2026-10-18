@@ -235,7 +235,16 @@ changing `host.toml` or resizing the Docker VM.
 
 Agents are told their sandbox's size in their instructions and in
 `FCTL_SANDBOX_CPUS` and `FCTL_SANDBOX_MEMORY_MB`: with Docker, `nproc` and
-`free` show the whole VM rather than the sandbox's share.
+`free` show the whole VM rather than the sandbox's share, and with Apple's
+`container`, `nproc` counts one CPU more than the sandbox may use.
+
+A stopped session's sandbox takes disk on the host until it has been
+stopped for `keep_stopped_hours`. With Apple's `container`, that is the
+most the session ever stored, even after it deleted the files (a build of
+fctl leaves about 5.5 GB), and `df` in the sandbox shows its 512 GiB disk
+image rather than what the Mac has free. On a Mac short of disk, lower
+`keep_stopped_hours` and run `fctl host restart`: the host removes the
+sandboxes stopped for longer as it starts, and looks again every hour.
 
 ## Admin
 
