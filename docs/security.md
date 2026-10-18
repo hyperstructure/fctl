@@ -51,6 +51,10 @@ outside it except through these channels:
 - **Claude.** A short-lived access token for the session's owner. Refresh
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host.
+- **fctl.** No fctl credentials enter a sandbox. Through fctl-agent's
+  session socket, anything the agent runs can rename its own session and
+  describe it (`fctl edit`), and nothing else; the control plane checks
+  both values again.
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 
