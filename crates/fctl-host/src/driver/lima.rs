@@ -3,7 +3,8 @@
 //! Heavier than containers, but a full VM on any Mac (Intel too) or Linux host.
 
 use super::{
-    AGENT_PATH, AgentIo, Sandbox, SandboxInfo, SandboxSpec, attach_script, run_cmd, serve_script,
+    AGENT_PATH, AgentIo, COMMAND_TIMEOUT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec,
+    attach_script, run_cmd_within, serve_script,
 };
 use anyhow::{Context, Result};
 use fctl_proto::runner::DriverInfo;
@@ -25,7 +26,12 @@ impl LimaDriver {
     }
 
     async fn run(&self, args: &[&str]) -> Result<String> {
-        run_cmd(&self.bin, args).await
+        // Cloning, booting and shutting down a VM take minutes.
+        let limit = match args.first() {
+            Some(&("clone" | "start" | "stop")) => SLOW_COMMAND_TIMEOUT,
+            _ => COMMAND_TIMEOUT,
+        };
+        run_cmd_within(&self.bin, args, limit).await
     }
 
     async fn instances(&self) -> Vec<(String, String)> {

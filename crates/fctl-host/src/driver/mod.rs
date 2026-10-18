@@ -15,7 +15,18 @@ pub mod process;
 use anyhow::Result;
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
+
+/// How long a driver command may run before the host kills it. Runtimes
+/// answer in seconds; one that takes longer is stuck (an overloaded Docker
+/// VM, say), and nothing that waits on it may hang with it.
+pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long pulling an image, or cloning, booting or shutting down a VM,
+/// may take.
+pub const SLOW_COMMAND_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// What to create.
 #[derive(Clone, Debug)]
@@ -116,13 +127,15 @@ impl Driver {
 
     /// Every driver this host could use, for the runner's hello.
     pub async fn probe_all(data_dir: &Path) -> Vec<DriverInfo> {
-        let mut out = vec![
-            container::ContainerDriver::apple().probe().await,
-            container::ContainerDriver::docker().probe().await,
-            lima::LimaDriver::new().probe().await,
-        ];
-        out.push(process::ProcessDriver::new(data_dir, None).probe().await);
-        out
+        let (apple, docker, lima, process) = (
+            container::ContainerDriver::apple(),
+            container::ContainerDriver::docker(),
+            lima::LimaDriver::new(),
+            process::ProcessDriver::new(data_dir, None),
+        );
+        let (apple, docker, lima, process) =
+            tokio::join!(apple.probe(), docker.probe(), lima.probe(), process.probe());
+        vec![apple, docker, lima, process]
     }
 
     pub fn name(&self) -> &'static str {
@@ -150,14 +163,15 @@ impl Driver {
     /// the VM of OrbStack, Docker Desktop or Colima), otherwise this
     /// machine's. Memory is 0 when unknown.
     pub async fn resources(&self) -> SandboxSize {
-        if let Self::Container(d) = self
-            && let Some(size) = d.resources().await
-        {
-            return size;
-        }
-        SandboxSize {
-            cpus: crate::sysinfo::cpus(),
-            memory_mb: u32::try_from(crate::sysinfo::memory_mb()).unwrap_or(u32::MAX),
+        self.measure().await.unwrap_or_else(machine)
+    }
+
+    /// [`resources`](Self::resources), or `None` when the Docker daemon
+    /// doesn't say.
+    pub async fn measure(&self) -> Option<SandboxSize> {
+        match self {
+            Self::Container(d) if d.flavor_name() == "docker" => d.resources().await,
+            _ => Some(machine()),
         }
     }
 
@@ -284,14 +298,25 @@ impl Driver {
     }
 }
 
-/// Runs a host command, capturing output; errors carry stderr.
+/// This machine's CPUs and memory.
+pub fn machine() -> SandboxSize {
+    SandboxSize {
+        cpus: crate::sysinfo::cpus(),
+        memory_mb: u32::try_from(crate::sysinfo::memory_mb()).unwrap_or(u32::MAX),
+    }
+}
+
+/// Runs a host command, capturing output; errors carry stderr. One still
+/// running after [`COMMAND_TIMEOUT`] is killed.
 pub async fn run_cmd(program: &str, args: &[&str]) -> Result<String> {
-    let out = tokio::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await
-        .map_err(|e| spawn_error(program, e))?;
+    run_cmd_within(program, args, COMMAND_TIMEOUT).await
+}
+
+/// [`run_cmd`] with a time limit of its own.
+pub async fn run_cmd_within(program: &str, args: &[&str], limit: Duration) -> Result<String> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args).stdin(Stdio::null());
+    let out = output_within(&mut cmd, program, || command_line(program, args), limit).await?;
     if !out.status.success() {
         anyhow::bail!(
             "{program} {} failed: {}",
@@ -300,6 +325,76 @@ pub async fn run_cmd(program: &str, args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Runs `cmd` to its end and captures its output. One still running after
+/// `limit` is killed, and the host logs which (`what`).
+pub async fn output_within(
+    cmd: &mut tokio::process::Command,
+    program: &str,
+    what: impl FnOnce() -> String,
+    limit: Duration,
+) -> Result<std::process::Output> {
+    // Dropping the unfinished `output()` kills the process.
+    let run = cmd.kill_on_drop(true).output();
+    match tokio::time::timeout(limit, run).await {
+        Ok(out) => out.map_err(|e| spawn_error(program, e)),
+        Err(_) => {
+            let e = TimedOut {
+                command: what(),
+                after: limit,
+            };
+            tracing::warn!("{e}");
+            Err(e.into())
+        }
+    }
+}
+
+/// A driver command that ran past its time limit, and was killed.
+#[derive(Debug)]
+pub struct TimedOut {
+    pub command: String,
+    pub after: Duration,
+}
+
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let after = match self.after.as_secs() {
+            0 => format!("{} ms", self.after.as_millis()),
+            s if s >= 120 && s % 60 == 0 => format!("{} minutes", s / 60),
+            s => format!("{s} seconds"),
+        };
+        write!(
+            f,
+            "`{}` did not finish within {after}, so the host stopped it",
+            self.command
+        )
+    }
+}
+
+impl std::error::Error for TimedOut {}
+
+/// Whether `r` failed because its command ran out of time.
+pub fn timed_out<T>(r: &Result<T>) -> bool {
+    r.as_ref().is_err_and(|e| e.is::<TimedOut>())
+}
+
+/// A command as the log shows it: arguments with spaces quoted, and long
+/// ones (scripts) cut short.
+pub(crate) fn command_line(program: &str, args: &[&str]) -> String {
+    let mut line = program.to_owned();
+    for a in args {
+        line.push(' ');
+        if a.is_empty() || a.contains(char::is_whitespace) {
+            line.push_str(&format!("'{a}'"));
+        } else {
+            line.push_str(a);
+        }
+    }
+    match line.char_indices().nth(160) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line,
+    }
 }
 
 /// Why `program` could not be started, naming a missing program plainly.
@@ -324,6 +419,70 @@ mod tests {
         assert_eq!(
             e.as_deref(),
             Some("`fctl-test-missing-program` is not installed (not found on the PATH)")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_that_hangs_is_killed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let pid = dir.path().join("pid");
+        let script = format!("echo $$ > '{}'; exec sleep 30", pid.display());
+        let started = std::time::Instant::now();
+        let r = run_cmd_within("sh", &["-c", &script], Duration::from_millis(500)).await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(timed_out(&r));
+        let e = r.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            e.starts_with(&format!("`sh -c 'echo $$ > '{}'", pid.display())),
+            "{e}"
+        );
+        assert!(
+            e.ends_with("did not finish within 500 ms, so the host stopped it"),
+            "{e}"
+        );
+        // Gone, or a zombie until the runtime reaps it.
+        let pid = std::fs::read_to_string(&pid)?;
+        let mut stat = String::new();
+        for _ in 0..20 {
+            let ps = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid.trim()])
+                .output()?;
+            stat = String::from_utf8_lossy(&ps.stdout).trim().to_owned();
+            if stat.is_empty() || stat.starts_with('Z') {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        anyhow::bail!("sleep {} still runs: {stat}", pid.trim())
+    }
+
+    #[tokio::test]
+    async fn quick_commands_keep_their_output_and_errors() {
+        let ok = run_cmd("sh", &["-c", "echo hi"]).await.ok();
+        assert_eq!(ok.as_deref(), Some("hi\n"));
+        let failed = run_cmd("sh", &["-c", "echo nope >&2; exit 3"]).await;
+        assert!(!timed_out(&failed));
+        let e = failed.err().map(|e| e.to_string());
+        assert_eq!(e.as_deref(), Some("sh -c failed: nope"));
+    }
+
+    #[test]
+    fn long_commands_are_cut_short_in_the_log() {
+        assert_eq!(
+            command_line("docker", &["ps", "--format", "{{.Names}}\t{{.State}}"]),
+            "docker ps --format '{{.Names}}\t{{.State}}'"
+        );
+        let script = "x".repeat(300);
+        let line = command_line("sh", &["-c", &script]);
+        assert_eq!(line.chars().count(), 161);
+        assert!(line.ends_with('…'));
+        let e = TimedOut {
+            command: "docker pull x".into(),
+            after: SLOW_COMMAND_TIMEOUT,
+        };
+        assert_eq!(
+            e.to_string(),
+            "`docker pull x` did not finish within 30 minutes, so the host stopped it"
         );
     }
 

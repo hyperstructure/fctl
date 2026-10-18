@@ -4,7 +4,7 @@ use crate::ctx::{Authed, Ctx};
 use crate::db::{n, on, os, q, s};
 use crate::error::{AppError, AppResult};
 use crate::http::{self, SESSION_COOKIE};
-use crate::model::{CredentialRow, IdentityRow, UserRow, user_columns};
+use crate::model::{CredentialRow, IdentityRow, USAGE_JSON, UserRow, user_columns};
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
@@ -276,7 +276,9 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
     .await?;
     let creds: Vec<CredentialRow> = q(
         &ctx.db,
-        "SELECT * FROM claude_credentials WHERE user_id = ? ORDER BY created_at",
+        &format!(
+            "SELECT c.*, {USAGE_JSON} AS usage FROM claude_credentials c WHERE c.user_id = ? ORDER BY c.created_at"
+        ),
         &[s(&user.id)],
     )?
     .all()

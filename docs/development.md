@@ -45,7 +45,10 @@ host's own fctl comes first on its agents' PATH), `slow` streams slowly,
 pause), `refresh` asks the host for a new OAuth token, and `crash` exits
 mid-turn. Anything else gets a short answer with a tool call. A message with
 attached files also gets a sentence about them: how many images it holds,
-and whether each listed file is on disk. Its `system/init` message lists a
+and whether each listed file is on disk. Turns other than `limit` and
+`crash` report plan usage as Claude Code does (`unifiedWindows`), with
+five-hour and weekly windows that follow the clock, so Settings → Claude,
+the floor and `fctl claude status` show it. Its `system/init` message lists a
 claude.ai connector, `claude.ai Fake Docs`, unless
 `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, so sessions in a project with
 claude.ai connectors turned off show none (`fctl logs --json`). Its commits

@@ -2,6 +2,7 @@
 import type { ClaudeCredentialKind } from "./ClaudeCredentialKind";
 import type { CredentialId } from "./CredentialId";
 import type { CredentialStatus } from "./CredentialStatus";
+import type { PlanLimit } from "./PlanLimit";
 
 export type ClaudeCredentialInfo = { id: CredentialId, kind: ClaudeCredentialKind, label?: string, account_email?: string, subscription_type?: string, 
 /**
@@ -11,4 +12,10 @@ remote_control: boolean, status: CredentialStatus,
 /**
  * Used for new sessions.
  */
-is_default: boolean, created_at: number, last_used_at?: number, expires_at?: number, };
+is_default: boolean, created_at: number, last_used_at?: number, expires_at?: number, 
+/**
+ * How much of the plan's usage limits is used, as the sessions on this
+ * credential last reported it: one entry per limit, the five-hour
+ * window first. Empty until a session reports one.
+ */
+usage?: Array<PlanLimit>, };

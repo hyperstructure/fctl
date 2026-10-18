@@ -233,12 +233,22 @@ impl Supervisor {
     async fn on_link(&mut self, e: LinkEvent) {
         match e {
             LinkEvent::Connected(id, tx) => {
+                let (seq, acked) = (self.journal.last_seq(), self.journal.acked());
+                match self.host.as_ref() {
+                    Some((old, _)) => tracing::info!(
+                        "host link {id} replaces link {old}; journal at agent_seq {seq}, {acked} acknowledged"
+                    ),
+                    None => tracing::info!(
+                        "host link {id} attached; journal at agent_seq {seq}, {acked} acknowledged"
+                    ),
+                }
                 self.host = Some((id, tx));
                 let hello = self.hello();
                 self.send(&hello);
             }
             LinkEvent::Disconnected(id) => {
                 if self.host.as_ref().is_some_and(|(cur, _)| *cur == id) {
+                    tracing::info!("host link {id} detached");
                     self.host = None;
                 }
             }
@@ -268,6 +278,12 @@ impl Supervisor {
                 self.outbox.clear();
                 match self.journal.read_after(after_agent_seq) {
                     Ok(events) => {
+                        if let Some((id, _)) = &self.host {
+                            tracing::info!(
+                                "replaying {} events after agent_seq {after_agent_seq} to host link {id}",
+                                events.len()
+                            );
+                        }
                         for chunk in events.chunks(100) {
                             self.send(&AgentToHost::Events {
                                 events: chunk.to_vec(),

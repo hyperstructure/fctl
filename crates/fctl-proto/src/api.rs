@@ -850,6 +850,66 @@ pub struct ClaudeCredentialInfo {
     pub created_at: Millis,
     pub last_used_at: Option<Millis>,
     pub expires_at: Option<Millis>,
+    /// How much of the plan's usage limits is used, as the sessions on this
+    /// credential last reported it: one entry per limit, the five-hour
+    /// window first. Empty until a session reports one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<PlanLimit>>", optional))]
+    pub usage: Vec<PlanLimit>,
+}
+
+/// Where a Claude plan limit stands, as Claude reported it for the limit
+/// that is closest to stopping requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum LimitStatus {
+    Allowed,
+    /// Close to the limit.
+    AllowedWarning,
+    /// The limit is reached: sessions pause until it resets.
+    Rejected,
+}
+
+impl LimitStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::AllowedWarning => "allowed_warning",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "allowed" => Some(Self::Allowed),
+            "allowed_warning" => Some(Self::AllowedWarning),
+            "rejected" => Some(Self::Rejected),
+            _ => None,
+        }
+    }
+}
+
+/// One of a Claude plan's usage limits, from the `rate_limit_event`s that
+/// sessions report.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PlanLimit {
+    /// The limit's window, as Claude names it: `five_hour`, `seven_day`
+    /// (the week, every model), or a model's own weekly limit
+    /// (`seven_day_opus`, `seven_day_sonnet`, …).
+    pub window: String,
+    /// The share of the limit used, from 0 to 1. Usage can run a little past
+    /// the limit, so it can be more.
+    pub utilization: Option<f64>,
+    /// When the window starts over.
+    pub resets_at: Option<Millis>,
+    /// Present when Claude reported this limit as the one closest to
+    /// stopping requests.
+    pub status: Option<LimitStatus>,
+    /// When a session reported it.
+    pub observed_at: Millis,
 }
 
 #[skip_serializing_none]
@@ -1053,6 +1113,12 @@ pub enum FeedServer {
     },
     ClaudeLogin {
         job: Box<ClaudeLoginJob>,
+    },
+    /// A session reported new plan usage for one of the person's Claude
+    /// credentials: all its limits, as `ClaudeCredentialInfo.usage`.
+    ClaudeUsage {
+        credential_id: CredentialId,
+        usage: Vec<PlanLimit>,
     },
     Pong,
 }

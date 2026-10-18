@@ -22,6 +22,7 @@ mod model;
 mod notify;
 mod push;
 mod spec;
+mod usage;
 
 use ctx::Ctx;
 pub use do_files::FilesObject;
