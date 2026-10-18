@@ -105,6 +105,10 @@ pub struct Drain {
     /// The admin who did it; absent when the runner's host did.
     #[serde(default)]
     pub by: Option<UserRef>,
+    /// Also stop its sessions, and resume them elsewhere from then on: its
+    /// host is being uninstalled.
+    #[serde(default)]
+    pub stop_sessions: bool,
 }
 
 #[derive(Serialize, Deserialize)]

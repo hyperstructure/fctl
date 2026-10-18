@@ -106,6 +106,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             id,
             &name.map(|n| n.name).unwrap_or_default(),
             draining,
+            false,
             Some(by),
         )
         .await?;
@@ -183,12 +184,14 @@ struct NameRow {
 }
 
 /// Drains a runner or stops draining it (`by`: the admin, or `None` for its
-/// host), and records who did.
+/// host), and records who did. With `stop_sessions` it also stops the
+/// sessions the runner runs, which then resume elsewhere.
 async fn drain(
     ctx: &Ctx,
     id: &str,
     name: &str,
     draining: bool,
+    stop_sessions: bool,
     by: Option<fctl_proto::session::UserRef>,
 ) -> AppResult<()> {
     let stub = internal::fleet_stub(&ctx.env)?;
@@ -200,6 +203,7 @@ async fn drain(
             runner_name: name.to_owned(),
             draining,
             by: by.clone(),
+            stop_sessions: draining && stop_sessions,
         },
     )
     .await?;
@@ -210,7 +214,10 @@ async fn drain(
             "runner.undrained"
         },
         Some(id),
-        Some(serde_json::json!({ "by": if by.is_some() { "admin" } else { "host" } })),
+        Some(serde_json::json!({
+            "by": if by.is_some() { "admin" } else { "host" },
+            "stop_sessions": draining && stop_sessions,
+        })),
     );
     Ok(())
 }
@@ -278,7 +285,8 @@ pub async fn this_runner(ctx: &Ctx, req: &Request) -> AppResult<Response> {
 pub async fn drain_this_runner(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let r = runner_auth(ctx, req).await?;
     let body: DrainRequest = http::body(req).await?;
-    drain(ctx, &r.id, &r.name, body.draining, None).await?;
+    let stop = body.stop_sessions.unwrap_or(false);
+    drain(ctx, &r.id, &r.name, body.draining, stop, None).await?;
     http::ok(&detail(ctx, &r.id).await?)
 }
 
