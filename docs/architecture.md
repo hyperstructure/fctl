@@ -102,8 +102,8 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
 identities, allowlist, auth tokens, device codes, projects, their members and
 repositories, sessions (summary rows), shares, who follows which session,
 notification settings and browsers (push subscriptions), runners, encrypted
-credentials and project secrets, the instance's sealed Web Push key, and the
-audit log.
+credentials and project secrets, the latest plan usage of each Claude
+credential, the instance's sealed Web Push key, and the audit log.
 
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
@@ -214,7 +214,9 @@ imports so it loads in every repository
 - Host status (`provisioning`, `preparing`) is sent as idempotent state, not
   as sequenced events.
 - Deliveries (messages, interrupts, stops) wait in SessionDO's outbox until
-  the agent confirms them; the agent remembers delivered ids.
+  the agent confirms them; the agent remembers delivered ids. The host keeps
+  them too, and sends the unconfirmed ones again over a new link to the
+  agent.
 
 ### Viewers
 
@@ -323,6 +325,34 @@ reach Claude; the `system/init` message must report no API key source; a
 `rate_limit_event` showing overage use interrupts the session and pauses it
 until the limit resets.
 
+### Plan usage
+
+Settings shows how much of each connection's plan is used, and the floor
+shows it for the connection new sessions run on, so people see what is left
+before they start work. Sessions report it; fctl asks Anthropic for nothing.
+Claude Code writes a `rate_limit_event` when a limit's status changes and,
+in recent versions, whenever the five-hour or weekly window moves by a
+percent (`unifiedWindows`). fctl-agent passes it on like every other Claude
+message.
+
+1. SessionDO turns each one into readings, one per limit
+   (`fctl_domain::usage`): the five-hour window, the week, and a model's own
+   weekly limit when Claude names it, each with the share used, when it
+   resets, and Claude's status for the limit closest to stopping requests.
+   Paid extra usage is not a plan limit and is left out.
+2. It keeps them with the Claude credential the session runs on now (a
+   resumed session runs on the resumer's), in D1's `claude_usage`: one row
+   per credential and limit, which a later reading replaces.
+3. `/auth/me` returns them on each credential (`ClaudeCredentialInfo.usage`,
+   `fctl claude status`), and FleetDO sends the credential's owner a
+   `claude_usage` feed message, so Settings and the floor change while
+   sessions run.
+
+Readings change only while sessions run, so the apps say when a session last
+reported them, and a window whose reset time has passed counts as started
+over. Removing the connection deletes them. Hosts and agents need no update:
+they already pass every Claude message on.
+
 ## Sandboxes and drivers
 
 A driver turns a `SandboxSpec` (image, CPUs, memory, environment) into a
@@ -361,7 +391,22 @@ process driver limits nothing.
 
 fctl-agent runs detached inside the sandbox and listens on a unix socket; the
 host talks to it through `fctl-agent attach` over the driver's exec channel.
-Restarting or upgrading the host does not stop agents. A second socket beside
+Restarting or upgrading the host does not stop agents. The host pings the
+agent every 15 seconds and replaces a link that carries nothing for a
+minute, or gets no hello within 30 seconds of attaching: it kills the exec,
+starts fctl-agent again if it is gone, and attaches again, waiting longer
+after each failure (`crates/fctl-host/src/liveness.rs`).
+
+Driver commands that hang, as they do in an overloaded Docker VM, are
+killed after a minute (image pulls and VM boots after 30), and the control
+connection never waits on one: the hello reports what the drivers said
+when the host last probed them (at start and every five minutes), and
+sweeps and cleanups of sandboxes run in tasks of their own, so heartbeats
+keep flowing. A host that starts while its driver doesn't answer waits to
+connect until it can list its sandboxes, rather than report sessions as
+gone that may still run.
+
+A second socket beside
 it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
 serves programs in the sandbox: `fctl edit` names and describes the session
 there, with no fctl credentials in the sandbox.

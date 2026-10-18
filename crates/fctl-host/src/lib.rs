@@ -10,6 +10,7 @@ pub mod driver;
 pub mod expiry;
 pub mod files;
 pub mod image;
+pub mod liveness;
 pub mod login;
 pub mod service;
 pub mod session;

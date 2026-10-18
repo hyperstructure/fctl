@@ -8,8 +8,8 @@
 use crate::crypto;
 use crate::ctx::now_ms;
 use crate::internal::{
-    self, Activity, ControlState, FeedIdentity, LiveRunners, LoginCode, LoginStart, NotifySession,
-    Schedule, Stop,
+    self, Activity, ClaudeUsage, ControlState, FeedIdentity, LiveRunners, LoginCode, LoginStart,
+    NotifySession, Schedule, Stop,
 };
 use crate::spec;
 use fctl_domain::schedule::{Slot, Wait};
@@ -206,6 +206,13 @@ impl DurableObject for FleetObject {
             (worker::Method::Post, "/activity") => match req.json::<Activity>().await {
                 Ok(b) => {
                     self.feed_activity(b);
+                    Ok(serde_json::json!({ "ok": true }))
+                }
+                Err(e) => Err(ApiError::bad_request(e.to_string())),
+            },
+            (worker::Method::Post, "/usage") => match req.json::<ClaudeUsage>().await {
+                Ok(b) => {
+                    self.feed_usage(b);
                     Ok(serde_json::json!({ "ok": true }))
                 }
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
@@ -1406,6 +1413,20 @@ impl FleetObject {
         };
         for (ws, _) in self.feed_sockets() {
             let _ = ws.send_with_str(&text);
+        }
+    }
+
+    fn feed_usage(&self, u: ClaudeUsage) {
+        let Ok(text) = serde_json::to_string(&FeedServer::ClaudeUsage {
+            credential_id: u.credential_id,
+            usage: u.usage,
+        }) else {
+            return;
+        };
+        for (ws, ident) in self.feed_sockets() {
+            if ident.user_id == u.user_id {
+                let _ = ws.send_with_str(&text);
+            }
         }
     }
 

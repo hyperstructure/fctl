@@ -2,16 +2,17 @@
 //! agent and the session's uplink.
 
 use crate::config::{HostConfig, means_default_image};
-use crate::driver::{Driver, Sandbox, SandboxSpec, sandbox_name};
+use crate::driver::{AgentIo, Driver, Sandbox, SandboxSpec, sandbox_name};
 use crate::files;
+use crate::liveness::{Check, Health, Retry};
 use crate::uplink::Uplink;
 use anyhow::{Context, Result};
 use fctl_domain::size::Want;
 use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES};
 use fctl_proto::event::{LogLevel, LogLine, LogSource};
 use fctl_proto::runner::{
-    ClaudeCredential, CredentialKind, GithubCredential, SandboxLimits, SandboxSize, SessionSpec,
-    StopReason,
+    ClaudeCredential, CredentialKind, DriverInfo, GithubCredential, SandboxLimits, SandboxSize,
+    SessionSpec, StopReason,
 };
 use fctl_proto::session::SessionStatus;
 use fctl_proto::uplink::{Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown};
@@ -27,11 +28,27 @@ pub struct HostCtx {
     pub driver: Driver,
     pub token: String,
     pub runner_id: Mutex<Option<RunnerId>>,
-    /// What this host gives each sandbox, as of the last hello.
+    /// What this host gives each sandbox, as last measured.
     pub sandbox: Mutex<SandboxLimits>,
+    /// The drivers this host could use, as last probed.
+    pub drivers: Mutex<Vec<DriverInfo>>,
 }
 
 impl HostCtx {
+    /// Before [`refresh_facts`](Self::refresh_facts): sandboxes sized by
+    /// this machine, and no drivers probed.
+    pub fn new(cfg: HostConfig, driver: Driver, token: String) -> Self {
+        let sandbox = cfg.sandbox_limits(crate::driver::machine());
+        Self {
+            cfg,
+            driver,
+            token,
+            runner_id: Mutex::new(None),
+            sandbox: Mutex::new(sandbox),
+            drivers: Mutex::new(Vec::new()),
+        }
+    }
+
     pub fn runner_id(&self) -> RunnerId {
         self.runner_id
             .lock()
@@ -44,12 +61,25 @@ impl HostCtx {
         *self.sandbox.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Measures what the sandboxes run on again (the Docker VM may have
-    /// been resized) and returns the limits that follow.
-    pub async fn refresh_sandbox_limits(&self) -> SandboxLimits {
-        let limits = self.cfg.sandbox_limits(self.driver.resources().await);
-        *self.sandbox.lock().unwrap_or_else(PoisonError::into_inner) = limits;
-        limits
+    pub fn drivers(&self) -> Vec<DriverInfo> {
+        self.drivers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Probes the drivers and measures what sandboxes run on again (Docker's
+    /// VM may have been resized). The runner's hello reports what this
+    /// found last, so the control connection never waits on a runtime; a
+    /// Docker daemon that doesn't answer leaves the limits as they were.
+    pub async fn refresh_facts(&self) {
+        let data_dir = self.cfg.data_dir();
+        let (drivers, size) = tokio::join!(Driver::probe_all(&data_dir), self.driver.measure());
+        *self.drivers.lock().unwrap_or_else(PoisonError::into_inner) = drivers;
+        if let Some(size) = size {
+            *self.sandbox.lock().unwrap_or_else(PoisonError::into_inner) =
+                self.cfg.sandbox_limits(size);
+        }
     }
 
     /// The CPUs and memory a session's sandbox gets on this host.
@@ -140,19 +170,44 @@ pub fn spawn(
     SessionHandle { tx, report }
 }
 
-/// A framed connection to fctl-agent.
+/// A framed connection to fctl-agent. Dropping it kills the exec that
+/// carries it.
 struct AgentLink {
     tx: mpsc::UnboundedSender<HostToAgent>,
     rx: mpsc::UnboundedReceiver<AgentToHost>,
+    health: Health,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
     _child: Option<tokio::process::Child>,
 }
 
+impl Drop for AgentLink {
+    fn drop(&mut self) {
+        for t in &self.tasks {
+            t.abort();
+        }
+    }
+}
+
 impl AgentLink {
-    fn open(io: crate::driver::AgentIo) -> Self {
+    fn open(io: AgentIo, sandbox: &str) -> Self {
         let (tx, mut out_rx) = mpsc::unbounded_channel::<HostToAgent>();
         let (in_tx, rx) = mpsc::unbounded_channel::<AgentToHost>();
+        let mut tasks = Vec::new();
+        let mut child = io.child;
+        // Why an exec failed: the runtime's errors, or fctl-agent's.
+        if let Some(stderr) = child.as_mut().and_then(|c| c.stderr.take()) {
+            let sandbox = sandbox.to_owned();
+            tasks.push(tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !line.trim().is_empty() {
+                        tracing::warn!("attaching to {sandbox}: {}", line.trim());
+                    }
+                }
+            }));
+        }
         let mut writer = io.writer;
-        tokio::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             while let Some(msg) = out_rx.recv().await {
                 let Ok(mut line) = serde_json::to_string(&msg) else {
                     continue;
@@ -163,9 +218,9 @@ impl AgentLink {
                     break;
                 }
             }
-        });
+        }));
         let reader = io.reader;
-        tokio::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             let mut reader = BufReader::with_capacity(256 * 1024, reader);
             let mut line = String::new();
             loop {
@@ -187,11 +242,13 @@ impl AgentLink {
                     Err(e) => tracing::warn!("malformed frame from fctl-agent: {e}"),
                 }
             }
-        });
+        }));
         Self {
             tx,
             rx,
-            _child: io.child,
+            health: Health::new(Instant::now()),
+            tasks,
+            _child: child,
         }
     }
 
@@ -230,6 +287,37 @@ fn route(
     match link {
         Some(l) => l.send(HostToAgent::Deliver { delivery }),
         None => queued.push(HostToAgent::Deliver { delivery }),
+    }
+}
+
+/// Sends the deliveries the agent hasn't confirmed over a new link, but
+/// not those already waiting for one.
+fn resend(
+    unconfirmed: &[Delivery],
+    jobs: &mpsc::UnboundedSender<files::Job>,
+    link: &AgentLink,
+    queued: &mut Vec<HostToAgent>,
+) {
+    let waiting = |d: &Delivery| {
+        queued
+            .iter()
+            .any(|f| matches!(f, HostToAgent::Deliver { delivery } if delivery.id == d.id))
+    };
+    let again: Vec<Delivery> = unconfirmed
+        .iter()
+        .filter(|d| !waiting(d))
+        .cloned()
+        .collect();
+    for d in again {
+        route(d, jobs, Some(link), queued);
+    }
+}
+
+/// Keeps `delivery` until the agent confirms it (the latest copy of each).
+fn remember(unconfirmed: &mut Vec<Delivery>, delivery: &Delivery) {
+    match unconfirmed.iter_mut().find(|d| d.id == delivery.id) {
+        Some(d) => *d = delivery.clone(),
+        None => unconfirmed.push(delivery.clone()),
     }
 }
 
@@ -323,14 +411,43 @@ async fn run(
                 SessionStatus::Provisioning,
                 &format!("Creating the sandbox on {}", ctx.cfg.name),
             ));
-            match prepare(&ctx, spec, &uplink).await {
-                Ok(sb) => sb,
-                Err(e) => {
+            // A stop calls off the preparation: a runtime that hangs may
+            // keep it waiting until its commands time out.
+            let preparing = prepare(&ctx, spec, &uplink);
+            tokio::pin!(preparing);
+            let mut listening = true;
+            let prepared = loop {
+                tokio::select! {
+                    r = &mut preparing => break Ok(r),
+                    c = cmds.recv(), if listening => match c {
+                        Some(SessionCmd::Stop { destroy, .. }) => break Err(destroy),
+                        // Nothing else is for an agent that isn't there yet.
+                        Some(_) => {}
+                        None => listening = false,
+                    },
+                }
+            };
+            match prepared {
+                Ok(Ok(sb)) => sb,
+                Ok(Err(e)) => {
                     let msg = format!("{e:#}");
                     host_log(&uplink, LogLevel::Error, msg.clone());
                     uplink.state(state(SessionStatus::Failed, &msg));
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     return (SessionStatus::Failed, Some(msg));
+                }
+                Err(destroy) => {
+                    let sb = ctx.driver.handle(&sandbox_name(session_id.as_str()));
+                    if let Err(e) = ctx.driver.stop(&sb).await {
+                        tracing::warn!("stopping {}: {e:#}", sb.name);
+                    }
+                    if destroy && let Err(e) = ctx.driver.remove(&sb).await {
+                        tracing::warn!("removing {}: {e:#}", sb.name);
+                    }
+                    let msg = "Stopped before it started".to_owned();
+                    uplink.state(state(SessionStatus::Stopped, &msg));
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    return (SessionStatus::Stopped, Some(msg));
                 }
             }
         }
@@ -352,50 +469,90 @@ async fn run(
     let mut agent_files = false;
     let mut exited: Option<(SessionStatus, Option<String>)> = None;
     let mut stop: Option<(bool, Instant)> = None;
-    let mut attach_failures = 0u32;
     let mut superseded = false;
     // A fresh agent for a resumed session numbers its events after the ones
     // the control plane has, so it waits for the uplink's Welcome.
     let mut configure_when_welcomed = false;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    // Attaching runs in a task of its own, so that a runtime that hangs
+    // doesn't hold up the session; after a failure it waits, and starts
+    // fctl-agent again first in case it is gone (harmless when it isn't).
+    let mut attaching: Option<tokio::task::JoinHandle<Result<AgentIo>>> = None;
+    let mut attach_at = Some(Instant::now());
+    let mut restart_agent = false;
+    let mut retry = Retry::default();
+    // Deliveries the agent hasn't confirmed. Frames sent over a link that
+    // died may have died with it, so a new link gets these again (the agent
+    // ignores the ones it has).
+    let mut unconfirmed: Vec<Delivery> = Vec::new();
+    let mut said_hello = false;
+    let gave_up = || {
+        let msg = "fctl-agent stopped responding in the sandbox".to_owned();
+        uplink.state(state(SessionStatus::Failed, &msg));
+        (SessionStatus::Failed, Some(msg))
+    };
 
     let outcome = loop {
-        if link.is_none() && exited.is_none() {
-            match ctx.driver.attach(&sb).await {
-                Ok(io) => {
-                    attach_failures = 0;
-                    link = Some(AgentLink::open(io));
+        if link.is_none()
+            && attaching.is_none()
+            && exited.is_none()
+            && attach_at.is_some_and(|at| Instant::now() >= at)
+        {
+            attach_at = None;
+            let (ctx, sb) = (ctx.clone(), sb.clone());
+            let restart = std::mem::take(&mut restart_agent);
+            attaching = Some(tokio::spawn(async move {
+                if restart && let Err(e) = ctx.driver.start_agent(&sb).await {
+                    tracing::warn!("starting fctl-agent in {}: {e:#}", sb.name);
                 }
-                Err(e) => {
-                    attach_failures += 1;
-                    tracing::warn!("attaching to {}: {e:#}", sb.name);
-                    if attach_failures >= 5 {
-                        let msg = "fctl-agent stopped responding in the sandbox".to_owned();
-                        uplink.state(state(SessionStatus::Failed, &msg));
-                        break (SessionStatus::Failed, Some(msg));
-                    }
-                    let _ = ctx.driver.start_agent(&sb).await;
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    continue;
-                }
-            }
+                ctx.driver.attach(&sb).await
+            }));
         }
         tokio::select! {
+            r = async { match attaching.as_mut() { Some(a) => a.await, None => std::future::pending().await } } => {
+                attaching = None;
+                match r.map_err(anyhow::Error::from).and_then(|r| r) {
+                    Ok(io) => link = Some(AgentLink::open(io, &sb.name)),
+                    Err(e) => {
+                        tracing::warn!("attaching to {}: {e:#}", sb.name);
+                        let Some(wait) = retry.failed(Instant::now()) else { break gave_up() };
+                        attach_at = Some(Instant::now() + wait);
+                        restart_agent = true;
+                    }
+                }
+            }
             msg = async { match link.as_mut() { Some(l) => l.rx.recv().await, None => std::future::pending().await } } => {
                 let Some(msg) = msg else {
-                    link = None;
+                    let answered = link.take().is_some_and(|l| l.health.answered());
                     if let Some(done) = exited.clone() {
                         break done;
                     }
                     if stop.is_some() {
                         break (SessionStatus::Stopped, Some("Stopped".into()));
                     }
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if answered {
+                        tracing::info!("the link to fctl-agent in {} closed; attaching again", sb.name);
+                        attach_at = Some(Instant::now() + Duration::from_millis(500));
+                    } else {
+                        tracing::warn!("attaching to {}: the link closed before fctl-agent said hello", sb.name);
+                        let Some(wait) = retry.failed(Instant::now()) else { break gave_up() };
+                        attach_at = Some(Instant::now() + wait);
+                        restart_agent = true;
+                    }
                     continue;
                 };
-                let Some(l) = link.as_ref() else { continue };
+                let Some(l) = link.as_mut() else { continue };
+                l.health.heard(Instant::now());
+                let l = &*l;
                 match msg {
                     AgentToHost::Hello(h) => {
+                        retry.reset();
+                        tracing::info!(
+                            "attached to fctl-agent {} in {} (journal at agent_seq {})",
+                            h.version,
+                            sb.name,
+                            h.agent_seq
+                        );
                         set_report(h.status, Some(h.agent_seq));
                         agent_files = h.features.iter().any(|f| f == FEATURE_ATTACHMENTS);
                         if !h.configured {
@@ -413,10 +570,14 @@ async fn run(
                         }
                         if welcomed {
                             l.send(HostToAgent::Replay { after_agent_seq: acked });
+                            if said_hello {
+                                resend(&unconfirmed, &jobs, l, &mut queued);
+                            }
                             for frame in queued.drain(..) {
                                 to_agent(l, frame, agent_files, &uplink);
                             }
                         }
+                        said_hello = true;
                     }
                     AgentToHost::Events { events: evs } => {
                         set_report(report.lock().map(|r| r.status).unwrap_or(SessionStatus::Running), evs.last().map(|e| e.agent_seq));
@@ -429,6 +590,7 @@ async fn run(
                     }
                     AgentToHost::Log { line } => uplink.log(line),
                     AgentToHost::Delivered { delivery_id, ok, error } => {
+                        unconfirmed.retain(|d| d.id != delivery_id);
                         uplink.send(fctl_proto::uplink::UplinkUp::Delivered { delivery_id, ok, error });
                     }
                     AgentToHost::CredentialRequest { request_id, kind } => {
@@ -457,6 +619,7 @@ async fn run(
                             l.send(HostToAgent::Replay { after_agent_seq: acked });
                         }
                         for p in pending {
+                            remember(&mut unconfirmed, &p);
                             route(p, &jobs, link.as_ref(), &mut queued);
                         }
                     }
@@ -466,7 +629,10 @@ async fn run(
                             l.send(HostToAgent::Ack { agent_seq });
                         }
                     }
-                    UplinkDown::Deliver { delivery } => route(delivery, &jobs, link.as_ref(), &mut queued),
+                    UplinkDown::Deliver { delivery } => {
+                        remember(&mut unconfirmed, &delivery);
+                        route(delivery, &jobs, link.as_ref(), &mut queued);
+                    }
                     UplinkDown::Pong => {}
                 }
             }
@@ -494,10 +660,13 @@ async fn run(
             c = cmds.recv() => match c {
                 Some(SessionCmd::Stop { reason, destroy }) => {
                     if stop.is_none() {
+                        // Without a link, the agent gets it once the host
+                        // attaches again, or its sandbox stops at the deadline.
                         stop = Some((destroy, Instant::now() + Duration::from_secs(60)));
+                        let frame = HostToAgent::Stop { reason, grace_ms: 30_000 };
                         match &link {
-                            Some(l) => l.send(HostToAgent::Stop { reason, grace_ms: 30_000 }),
-                            None => break (SessionStatus::Stopped, Some("Stopped".into())),
+                            Some(l) => l.send(frame),
+                            None => queued.push(frame),
                         }
                     }
                 }
@@ -518,9 +687,30 @@ async fn run(
                     && let Some(done) = exited.clone() {
                         break done;
                     }
+                // A link that goes quiet is replaced.
+                if let Some(l) = link.as_mut() {
+                    match l.health.check(Instant::now()) {
+                        Check::Fine => {}
+                        Check::Ping => l.send(HostToAgent::Ping),
+                        Check::Dead(why) => {
+                            let wait = retry.stalled();
+                            tracing::warn!(
+                                "{}: {why}; attaching again in {} s",
+                                sb.name,
+                                wait.as_secs()
+                            );
+                            link = None;
+                            attach_at = Some(Instant::now() + wait);
+                            restart_agent = true;
+                        }
+                    }
+                }
             }
         }
     };
+    if let Some(a) = attaching.take() {
+        a.abort();
+    }
 
     // Give the uplink a moment to deliver the agent's last events.
     tokio::time::sleep(Duration::from_millis(1500)).await;

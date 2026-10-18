@@ -17,6 +17,7 @@ pub mod schedule;
 pub mod settings;
 pub mod size;
 pub mod tokens;
+pub mod usage;
 pub mod validate;
 pub mod webpush;
 

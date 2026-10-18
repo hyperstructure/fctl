@@ -8,7 +8,8 @@
 //! fctl-agent attach`.
 
 use super::{
-    AGENT_PATH, AgentIo, Sandbox, SandboxInfo, SandboxSpec, attach_script, run_cmd, serve_script,
+    AGENT_PATH, AgentIo, COMMAND_TIMEOUT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec,
+    TimedOut, attach_script, run_cmd_within, serve_script, timed_out,
 };
 use anyhow::{Context, Result};
 use fctl_proto::runner::{DriverInfo, SandboxSize};
@@ -57,7 +58,13 @@ impl ContainerDriver {
     }
 
     async fn run(&self, args: &[&str]) -> Result<String> {
-        run_cmd(&self.bin, args).await
+        // Pulling an image takes minutes, and so may `run`, which pulls one
+        // that is missing.
+        let limit = match args {
+            ["pull", ..] | ["image", "pull", ..] | ["run", ..] => SLOW_COMMAND_TIMEOUT,
+            _ => COMMAND_TIMEOUT,
+        };
+        run_cmd_within(&self.bin, args, limit).await
     }
 
     pub async fn probe(&self) -> DriverInfo {
@@ -89,40 +96,48 @@ impl ContainerDriver {
                 }),
             };
         }
-        let version = match self.flavor {
-            Flavor::Apple => self
-                .run(&["system", "version", "--format", "json"])
-                .await
-                .ok()
-                .and_then(|s| {
+        // The service must be up, not just the CLI installed.
+        let (version, ready, hung) = match self.flavor {
+            Flavor::Apple => {
+                let version = self.run(&["system", "version", "--format", "json"]).await;
+                // A service that doesn't answer one command won't answer the next.
+                let (ready, hung) = if timed_out(&version) {
+                    (false, true)
+                } else {
+                    let status = self.run(&["system", "status"]).await;
+                    (status.is_ok(), timed_out(&status))
+                };
+                let version = version.ok().and_then(|s| {
                     let v: Value = serde_json::from_str(&s).ok()?;
                     v.get("version")
                         .or_else(|| v.pointer("/0/version"))
                         .and_then(Value::as_str)
                         .map(str::to_owned)
                         .or(Some(s.trim().to_owned()))
-                }),
-            Flavor::Docker => self
-                .run(&["version", "--format", "{{.Server.Version}}"])
-                .await
-                .ok()
-                .map(|s| s.trim().to_owned()),
-        };
-        // The service must be up, not just the CLI installed.
-        let ready = match self.flavor {
-            Flavor::Apple => self.run(&["system", "status"]).await.is_ok(),
-            Flavor::Docker => version.is_some(),
+                });
+                (version, ready, hung)
+            }
+            Flavor::Docker => {
+                let version = self
+                    .run(&["version", "--format", "{{.Server.Version}}"])
+                    .await;
+                let hung = timed_out(&version);
+                let version = version.ok().map(|s| s.trim().to_owned());
+                (version.clone(), version.is_some(), hung)
+            }
         };
         DriverInfo {
             name: self.flavor_name().into(),
             available: ready,
             isolation: isolation.into(),
-            detail: Some(match (self.flavor, ready) {
-                (_, true) => "ready".into(),
-                (Flavor::Apple, false) => {
+            detail: Some(match (self.flavor, ready, hung) {
+                (_, true, _) => "ready".into(),
+                (Flavor::Apple, false, true) => "the `container` service is not answering".into(),
+                (Flavor::Apple, false, false) => {
                     "the `container` service is not running (run `container system start`)".into()
                 }
-                (Flavor::Docker, false) => "the docker daemon is not running".into(),
+                (Flavor::Docker, false, true) => "the docker daemon is not answering".into(),
+                (Flavor::Docker, false, false) => "the docker daemon is not running".into(),
             }),
             version,
         }
@@ -142,25 +157,27 @@ impl ContainerDriver {
         docker_resources(&out)
     }
 
-    /// `running`, `stopped`, … or `None` when it does not exist.
-    async fn state(&self, name: &str) -> Option<String> {
-        match self.flavor {
-            Flavor::Apple => {
-                let out = self.run(&["inspect", name]).await.ok()?;
-                let v: Value = serde_json::from_str(&out).ok()?;
+    /// `running`, `stopped`, … or `None` when it does not exist. An error
+    /// only when the runtime doesn't answer.
+    async fn state(&self, name: &str) -> Result<Option<String>> {
+        let inspect: &[&str] = match self.flavor {
+            Flavor::Apple => &["inspect", name],
+            Flavor::Docker => &["inspect", "--format", "{{.State.Status}}", name],
+        };
+        let out = match self.run(inspect).await {
+            Ok(out) => out,
+            Err(e) if e.is::<TimedOut>() => return Err(e),
+            Err(_) => return Ok(None),
+        };
+        Ok(match self.flavor {
+            Flavor::Apple => serde_json::from_str::<Value>(&out).ok().and_then(|v| {
                 v.pointer("/0/status/state")
                     .or_else(|| v.pointer("/0/status"))
                     .and_then(Value::as_str)
                     .map(str::to_owned)
-            }
-            Flavor::Docker => {
-                let out = self
-                    .run(&["inspect", "--format", "{{.State.Status}}", name])
-                    .await
-                    .ok()?;
-                Some(out.trim().to_owned())
-            }
-        }
+            }),
+            Flavor::Docker => Some(out.trim().to_owned()),
+        })
     }
 
     pub async fn ensure(
@@ -172,7 +189,7 @@ impl ContainerDriver {
             name: spec.name.clone(),
             root: None,
         };
-        match self.state(&spec.name).await.as_deref() {
+        match self.state(&spec.name).await?.as_deref() {
             Some("running") => return Ok(sb),
             Some(_) => {
                 log(format!("Starting the existing sandbox {}", spec.name));
@@ -241,7 +258,8 @@ impl ContainerDriver {
         let Err(e) = self.run(&args).await else {
             return Ok(());
         };
-        if self.has_image(image).await {
+        // A runtime that doesn't answer isn't missing the image.
+        if e.is::<TimedOut>() || self.has_image(image).await {
             return Err(failed(e));
         }
         log(format!("Pulling {image}"));
@@ -331,7 +349,7 @@ impl ContainerDriver {
     }
 
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
-        if self.state(&sb.name).await.as_deref() == Some("running") {
+        if self.state(&sb.name).await?.as_deref() == Some("running") {
             self.run(&["stop", "-t", "20", &sb.name]).await?;
         }
         Ok(())
@@ -342,7 +360,7 @@ impl ContainerDriver {
             Flavor::Apple => &["delete", "--force", &sb.name],
             Flavor::Docker => &["rm", "-f", &sb.name],
         };
-        if self.state(&sb.name).await.is_some() {
+        if self.state(&sb.name).await?.is_some() {
             self.run(args).await?;
         }
         Ok(())

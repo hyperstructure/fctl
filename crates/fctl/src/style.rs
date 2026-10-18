@@ -64,6 +64,20 @@ pub fn ago(ms: i64) -> String {
     }
 }
 
+/// "in 45m", "in 2h 10m", "in 3d 4h".
+pub fn until(ms: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let m = ((ms - now) / 60_000).max(1);
+    match m {
+        0..=59 => format!("in {m}m"),
+        60..=1439 => format!("in {}h {}m", m / 60, m % 60),
+        _ => format!("in {}d {}h", m / 1440, m % 1440 / 60),
+    }
+}
+
 pub fn print_json<T: serde::Serialize>(v: &T) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(v)?);
     Ok(())

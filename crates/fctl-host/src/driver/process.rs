@@ -158,12 +158,12 @@ impl ProcessDriver {
 
     pub async fn exec(&self, sb: &Sandbox, script: &str) -> Result<String> {
         let (home, _) = Self::paths(sb)?;
-        let out = tokio::process::Command::new("sh")
-            .args(["-c", script])
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", script])
             .env("HOME", &home)
-            .current_dir(&home)
-            .output()
-            .await?;
+            .current_dir(&home);
+        let what = || super::command_line("sh", &["-c", script]);
+        let out = super::output_within(&mut cmd, "sh", what, super::COMMAND_TIMEOUT).await?;
         if !out.status.success() {
             anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
         }
@@ -189,7 +189,7 @@ impl ProcessDriver {
         if let Ok(pid) = std::fs::read_to_string(home.join(".fctl/agent.pid")) {
             let pid = pid.trim();
             if !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()) {
-                let _ = tokio::process::Command::new("kill").arg(pid).status().await;
+                let _ = super::run_cmd("kill", &[pid]).await;
             }
         }
         Ok(())

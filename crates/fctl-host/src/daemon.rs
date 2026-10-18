@@ -3,9 +3,14 @@
 //! Sessions outlive the control connection (each has its own uplink) and
 //! outlive the daemon itself: agents keep running in their sandboxes, and a
 //! restarted daemon finds and re-attaches to them.
+//!
+//! The control connection never waits on a driver. The hello reports what
+//! the drivers said when last probed, and sweeping or cleaning up sandboxes
+//! runs in tasks of their own (`Chore`), so heartbeats and pongs keep
+//! flowing while a runtime hangs.
 
 use crate::config::HostConfig;
-use crate::driver::{Driver, sandbox_name, session_of};
+use crate::driver::{Driver, SandboxInfo, sandbox_name, session_of, timed_out};
 use crate::expiry;
 use crate::login::{self, LoginCmd};
 use crate::session::{self, HostCtx, SessionCmd, SessionEvent, SessionHandle, Start};
@@ -13,13 +18,16 @@ use crate::sysinfo;
 use anyhow::Result;
 use fctl_client::ws;
 use fctl_domain::size::{self, Want};
-use fctl_proto::runner::{FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet};
+use fctl_proto::runner::{
+    FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet, SessionSpec, StopReason,
+};
+use fctl_proto::session::SessionStatus;
 use fctl_proto::{LoginJobId, PROTOCOL_VERSION, SessionId};
 use futures::StreamExt;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -33,39 +41,58 @@ pub struct Daemon {
     events_rx: mpsc::UnboundedReceiver<SessionEvent>,
     login_tx: mpsc::UnboundedSender<HostToFleet>,
     login_rx: mpsc::UnboundedReceiver<HostToFleet>,
+    chores_tx: mpsc::UnboundedSender<Chore>,
+    chores_rx: mpsc::UnboundedReceiver<Chore>,
     /// Messages waiting for the control connection.
-    outbox: Vec<HostToFleet>,
-    /// Starts that wait for the previous run of the same session to finish.
-    pending_starts: HashMap<SessionId, Box<fctl_proto::runner::SessionSpec>>,
+    outbox: VecDeque<HostToFleet>,
+    /// Starts that wait for the previous run of the same session to finish,
+    /// or for a chore on its sandbox.
+    pending_starts: HashMap<SessionId, Box<SessionSpec>>,
     next_request: u64,
     /// When to remove expired stopped sandboxes (see `expiry`).
     sweep: tokio::time::Interval,
+    /// Whether a sweep is under way.
+    sweeping: bool,
+    /// Sandboxes that chores stop or remove, with how many hold each.
+    /// Sessions that start in one wait for it.
+    busy: HashMap<String, u32>,
+}
+
+/// What background work on sandboxes that no session runs in reports.
+enum Chore {
+    /// The sweep listed this host's sandboxes.
+    Listed(Result<Vec<SandboxInfo>>),
+    /// The sweep removed a sandbox, or failed to.
+    Removed { name: String, result: Result<()> },
+    /// The sweep is over.
+    Swept,
+    /// A sandbox the control plane asked to stop is stopped (and removed,
+    /// when it asked for that).
+    Stopped { name: String, ended: HostToFleet },
 }
 
 const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
+/// How often the host probes its drivers and measures what sandboxes run on.
+const FACTS_EVERY: Duration = Duration::from_secs(5 * 60);
+const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
 
 impl Daemon {
     pub async fn new(cfg: HostConfig, token: String) -> Result<Self> {
         let data = cfg.data_dir();
         std::fs::create_dir_all(&data)?;
         let driver = Driver::select(&cfg.driver, &data, cfg.agent_bin.clone()).await?;
-        let sandbox = cfg.sandbox_limits(driver.resources().await);
+        let ctx = Arc::new(HostCtx::new(cfg, driver, token));
+        ctx.refresh_facts().await;
         tracing::info!(
             "fctl host {VERSION} on {} using the {} driver, capacity {}, sandboxes {}",
-            cfg.name,
-            driver.name(),
-            cfg.capacity,
-            size::limits(&sandbox)
+            ctx.cfg.name,
+            ctx.driver.name(),
+            ctx.cfg.capacity,
+            size::limits(&ctx.sandbox_limits())
         );
-        let ctx = Arc::new(HostCtx {
-            cfg,
-            driver,
-            token,
-            runner_id: Mutex::new(None),
-            sandbox: Mutex::new(sandbox),
-        });
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (login_tx, login_rx) = mpsc::unbounded_channel();
+        let (chores_tx, chores_rx) = mpsc::unbounded_channel();
         Ok(Self {
             ctx,
             sessions: HashMap::new(),
@@ -75,10 +102,14 @@ impl Daemon {
             events_rx,
             login_tx,
             login_rx,
-            outbox: Vec::new(),
+            chores_tx,
+            chores_rx,
+            outbox: VecDeque::new(),
             pending_starts: HashMap::new(),
             next_request: 0,
             sweep: tokio::time::interval_at(tokio::time::Instant::now() + SWEEP_EVERY, SWEEP_EVERY),
+            sweeping: false,
+            busy: HashMap::new(),
         })
     }
 
@@ -102,9 +133,15 @@ impl Daemon {
         });
     }
 
-    /// Re-attaches to sandboxes that survived a restart.
-    async fn recover(&mut self) {
-        match self.ctx.driver.list().await {
+    /// Re-attaches to sandboxes that survived a restart. False when the
+    /// runtime doesn't answer: the hello must not tell the control plane
+    /// that sessions are gone (it would stop them) when they may still run.
+    async fn recover(&mut self) -> bool {
+        let listed = self.ctx.driver.list().await;
+        if timed_out(&listed) {
+            return false;
+        }
+        match listed {
             Ok(list) => {
                 for sb in list.into_iter().filter(|s| s.running) {
                     if let Some(id) = session_of(&sb.name).map(SessionId) {
@@ -120,19 +157,26 @@ impl Daemon {
             }
             Err(e) => tracing::warn!("listing sandboxes: {e:#}"),
         }
+        true
     }
 
-    /// Removes session sandboxes that have been stopped for longer than
-    /// `keep_stopped_hours` (0 keeps them).
-    async fn sweep_stopped(&mut self) {
+    /// Starts removing session sandboxes that have been stopped for longer
+    /// than `keep_stopped_hours` (0 keeps them), unless a sweep is under way.
+    fn start_sweep(&mut self) {
+        if self.sweeping {
+            return;
+        }
+        self.sweeping = true;
+        let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
+        tokio::spawn(async move {
+            let _ = chores.send(Chore::Listed(ctx.driver.list().await));
+        });
+    }
+
+    /// Picks the sandboxes the sweep removes, and removes them one after
+    /// another in the background.
+    fn sweep_listed(&mut self, list: Vec<SandboxInfo>) {
         let hours = self.ctx.cfg.keep_stopped_hours;
-        let list = match self.ctx.driver.list().await {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::warn!("listing sandboxes: {e:#}");
-                return;
-            }
-        };
         let in_use: HashSet<String> = self
             .sessions
             .keys()
@@ -143,20 +187,93 @@ impl Daemon {
         let stopped = expiry::load(&path);
         let now = expiry::now_ms();
         let keep_ms = (hours > 0).then(|| i64::from(hours) * 3_600_000);
-        let (remove, mut keep) = expiry::plan(&stopped, &list, &in_use, now, keep_ms);
-        for name in remove {
-            let sb = self.ctx.driver.handle(&name);
-            match self.ctx.driver.remove(&sb).await {
-                Ok(()) => tracing::info!("removed {name}: stopped for more than {hours} hours"),
-                Err(e) => {
-                    tracing::warn!("removing {name}: {e:#}");
-                    keep.insert(name.clone(), stopped.get(&name).copied().unwrap_or(now));
-                }
+        let (expired, mut keep) = expiry::plan(&stopped, &list, &in_use, now, keep_ms);
+        // They stay on the list until they are gone, for a host that stops
+        // halfway; one that a chore holds waits for the next sweep.
+        let mut remove = Vec::new();
+        for name in expired {
+            keep.insert(name.clone(), stopped.get(&name).copied().unwrap_or(now));
+            if !self.busy.contains_key(&name) {
+                remove.push(name);
             }
         }
         if let Err(e) = expiry::save(&path, &keep) {
             tracing::warn!("saving {}: {e:#}", path.display());
         }
+        if remove.is_empty() {
+            self.sweeping = false;
+            return;
+        }
+        for name in &remove {
+            self.hold(name);
+        }
+        let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
+        tokio::spawn(async move {
+            for name in remove {
+                let result = ctx.driver.remove(&ctx.driver.handle(&name)).await;
+                let _ = chores.send(Chore::Removed { name, result });
+            }
+            let _ = chores.send(Chore::Swept);
+        });
+    }
+
+    fn on_chore(&mut self, chore: Chore) {
+        match chore {
+            Chore::Listed(Ok(list)) => self.sweep_listed(list),
+            Chore::Listed(Err(e)) => {
+                tracing::warn!("listing sandboxes: {e:#}");
+                self.sweeping = false;
+            }
+            Chore::Removed { name, result } => {
+                match result {
+                    Ok(()) => {
+                        let hours = self.ctx.cfg.keep_stopped_hours;
+                        tracing::info!("removed {name}: stopped for more than {hours} hours");
+                        let path = expiry::path(&self.ctx.cfg.data_dir());
+                        if let Err(e) = expiry::forget(&path, &name) {
+                            tracing::warn!("saving {}: {e:#}", path.display());
+                        }
+                    }
+                    Err(e) => tracing::warn!("removing {name}: {e:#}"),
+                }
+                self.release(&name);
+            }
+            Chore::Swept => self.sweeping = false,
+            Chore::Stopped { name, ended } => {
+                self.outbox.push_back(ended);
+                self.release(&name);
+            }
+        }
+    }
+
+    /// Holds a sandbox for a chore: sessions that start in it wait.
+    fn hold(&mut self, name: &str) {
+        *self.busy.entry(name.to_owned()).or_default() += 1;
+    }
+
+    /// Ends a chore's hold on a sandbox, and starts the session that waited
+    /// for it.
+    fn release(&mut self, name: &str) {
+        if let Some(n) = self.busy.get_mut(name)
+            && *n > 1
+        {
+            *n -= 1;
+            return;
+        }
+        self.busy.remove(name);
+        if let Some(id) = session_of(name).map(SessionId)
+            && !self.sessions.contains_key(&id)
+            && let Some(spec) = self.pending_starts.remove(&id)
+        {
+            tracing::info!("starting {id}: {}", spec.title);
+            self.spawn_session(spec);
+        }
+    }
+
+    fn spawn_session(&mut self, spec: Box<SessionSpec>) {
+        let id = spec.session_id.clone();
+        let h = session::spawn(self.ctx.clone(), Start::New(spec), self.events_tx.clone());
+        self.sessions.insert(id, h);
     }
 
     fn reports(&self) -> Vec<HostSessionReport> {
@@ -173,7 +290,7 @@ impl Daemon {
             .collect()
     }
 
-    async fn hello(&self) -> HostHello {
+    fn hello(&self) -> HostHello {
         HostHello {
             protocol: PROTOCOL_VERSION,
             version: VERSION.into(),
@@ -182,33 +299,69 @@ impl Daemon {
             arch: sysinfo::arch().into(),
             cpus: sysinfo::cpus(),
             memory_mb: sysinfo::memory_mb(),
-            drivers: Driver::probe_all(&self.ctx.cfg.data_dir()).await,
+            drivers: self.ctx.drivers(),
             driver: self.ctx.driver.name().into(),
             capacity: self.ctx.cfg.capacity,
             labels: self.ctx.cfg.labels.clone(),
             sessions: self.reports(),
             image: Some(self.ctx.cfg.image()),
-            sandbox: Some(self.ctx.refresh_sandbox_limits().await),
+            sandbox: Some(self.ctx.sandbox_limits()),
+        }
+    }
+
+    fn heartbeat(&self) -> HostHeartbeat {
+        HostHeartbeat {
+            sessions: self.reports(),
+            load1: sysinfo::load1(),
+            memory_available_mb: sysinfo::memory_available_mb(),
+            disk_available_mb: sysinfo::disk_available_mb(&self.ctx.cfg.data_dir()),
         }
     }
 
     pub async fn run(mut self) -> Result<()> {
+        let mut shutdown = shutdown_signal();
         keep_awake();
+        let mut wait = Duration::from_secs(5);
+        loop {
+            let recovered = tokio::select! {
+                r = self.recover() => r,
+                _ = &mut shutdown => return Ok(()),
+            };
+            if recovered {
+                break;
+            }
+            tracing::warn!(
+                "the {} driver does not answer; connecting once it lists the sandboxes (next try in {} s)",
+                self.ctx.driver.name(),
+                wait.as_secs()
+            );
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = &mut shutdown => return Ok(()),
+            }
+            wait = (wait * 2).min(Duration::from_secs(60));
+        }
+        // Once the runtime answers.
         self.prefetch_image();
-        self.recover().await;
-        self.sweep_stopped().await;
+        self.start_sweep();
+        refresh_facts_every(self.ctx.clone(), FACTS_EVERY);
         let url = format!(
             "{}/api/v1/runner/connect",
             self.ctx.cfg.server.trim_end_matches('/')
         );
         let mut backoff = Duration::from_secs(1);
         loop {
-            match ws::connect(&url, Some(&self.ctx.token)).await {
+            let connected = tokio::select! {
+                c = ws::connect(&url, Some(&self.ctx.token)) => c,
+                _ = &mut shutdown => return Ok(()),
+            };
+            match connected {
                 Ok(socket) => {
                     backoff = Duration::from_secs(1);
                     tracing::info!("connected to {}", self.ctx.cfg.server);
-                    if let Err(e) = self.serve(socket).await {
-                        tracing::warn!("control connection: {e:#}");
+                    match self.serve(socket, &mut shutdown).await {
+                        Ok(()) => tracing::info!("the control plane closed the connection"),
+                        Err(e) => tracing::warn!("control connection: {e:#}"),
                     }
                 }
                 Err(e) => tracing::warn!("cannot reach {}: {e:#}", self.ctx.cfg.server),
@@ -219,25 +372,35 @@ impl Daemon {
             loop {
                 tokio::select! {
                     _ = &mut deadline => break,
-                    Some(ev) = self.events_rx.recv() => { let _ = self.on_session_event(ev); }
-                    Some(msg) = self.login_rx.recv() => self.outbox.push(msg),
-                    _ = self.sweep.tick() => self.sweep_stopped().await,
-                    _ = shutdown_signal() => return Ok(()),
+                    Some(ev) = self.events_rx.recv() => self.on_session_event(ev),
+                    Some(msg) = self.login_rx.recv() => self.outbox.push_back(msg),
+                    Some(chore) = self.chores_rx.recv() => self.on_chore(chore),
+                    _ = self.sweep.tick() => self.start_sweep(),
+                    _ = &mut shutdown => return Ok(()),
                 }
             }
             backoff = (backoff * 2).min(Duration::from_secs(30));
         }
     }
 
-    async fn serve(&mut self, socket: ws::Socket) -> Result<()> {
+    async fn serve(
+        &mut self,
+        socket: ws::Socket,
+        shutdown: &mut oneshot::Receiver<()>,
+    ) -> Result<()> {
         let (mut sink, mut stream) = socket.split();
-        ws::send_json(&mut sink, &HostToFleet::Hello(Box::new(self.hello().await))).await?;
-        for m in std::mem::take(&mut self.outbox) {
-            ws::send_json(&mut sink, &m).await?;
-        }
-        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+        ws::send_json(&mut sink, &HostToFleet::Hello(Box::new(self.hello()))).await?;
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_EVERY);
         heartbeat.tick().await;
         loop {
+            // What the last step queued, and what waited for a connection.
+            // A message that can't be sent waits for the next one.
+            while let Some(m) = self.outbox.pop_front() {
+                if let Err(e) = ws::send_json(&mut sink, &m).await {
+                    self.outbox.push_front(m);
+                    return Err(e);
+                }
+            }
             tokio::select! {
                 msg = ws::next_text(&mut stream) => {
                     let text = match msg {
@@ -245,34 +408,20 @@ impl Daemon {
                         Some(Err(e)) => return Err(e),
                         None => return Ok(()),
                     };
-                    let msg: FleetToHost = match serde_json::from_str(&text) {
-                        Ok(m) => m,
-                        Err(e) => { tracing::warn!("unknown message from the control plane: {e}"); continue; }
-                    };
-                    for reply in self.on_fleet(msg).await {
-                        ws::send_json(&mut sink, &reply).await?;
+                    match serde_json::from_str::<FleetToHost>(&text) {
+                        Ok(msg) => self.on_fleet(msg),
+                        Err(e) => tracing::warn!("unknown message from the control plane: {e}"),
                     }
                 }
-                Some(ev) = self.events_rx.recv() => {
-                    if let Some(m) = self.on_session_event(ev) {
-                        ws::send_json(&mut sink, &m).await?;
-                    }
-                    for m in std::mem::take(&mut self.outbox) {
-                        ws::send_json(&mut sink, &m).await?;
-                    }
-                }
-                Some(msg) = self.login_rx.recv() => ws::send_json(&mut sink, &msg).await?,
-                _ = self.sweep.tick() => self.sweep_stopped().await,
+                Some(ev) = self.events_rx.recv() => self.on_session_event(ev),
+                Some(msg) = self.login_rx.recv() => self.outbox.push_back(msg),
+                Some(chore) = self.chores_rx.recv() => self.on_chore(chore),
+                _ = self.sweep.tick() => self.start_sweep(),
                 _ = heartbeat.tick() => {
-                    let hb = HostHeartbeat {
-                        sessions: self.reports(),
-                        load1: sysinfo::load1(),
-                        memory_available_mb: sysinfo::memory_available_mb(),
-                        disk_available_mb: sysinfo::disk_available_mb(&self.ctx.cfg.data_dir()),
-                    };
-                    ws::send_json(&mut sink, &HostToFleet::Heartbeat(hb)).await?;
+                    let hb = self.heartbeat();
+                    self.outbox.push_back(HostToFleet::Heartbeat(hb));
                 }
-                _ = shutdown_signal() => {
+                _ = &mut *shutdown => {
                     tracing::info!("shutting down; sessions keep running in their sandboxes");
                     std::process::exit(0);
                 }
@@ -280,8 +429,9 @@ impl Daemon {
         }
     }
 
-    /// Handles a session event; returns a message for the control plane (or queues it).
-    fn on_session_event(&mut self, ev: SessionEvent) -> Option<HostToFleet> {
+    /// Handles a session event; what it has for the control plane goes to
+    /// the outbox.
+    fn on_session_event(&mut self, ev: SessionEvent) {
         match ev {
             SessionEvent::CredentialRequest {
                 session_id,
@@ -292,13 +442,11 @@ impl Daemon {
                 let rid = format!("h{}", self.next_request);
                 self.pending_creds
                     .insert(rid.clone(), (session_id.clone(), request_id));
-                let m = HostToFleet::CredentialRequest {
+                self.outbox.push_back(HostToFleet::CredentialRequest {
                     request_id: rid,
                     session_id,
                     kind,
-                };
-                self.outbox.push(m);
-                None
+                });
             }
             SessionEvent::Ended {
                 session_id,
@@ -317,7 +465,7 @@ impl Daemon {
                 if let Err(e) = expiry::note_stopped(&stopped, &name, expiry::now_ms()) {
                     tracing::warn!("saving {}: {e:#}", stopped.display());
                 }
-                self.outbox.push(HostToFleet::SessionEnded {
+                self.outbox.push_back(HostToFleet::SessionEnded {
                     session_id: session_id.clone(),
                     status,
                     reason,
@@ -325,107 +473,36 @@ impl Daemon {
                 });
                 if let Some(spec) = self.pending_starts.remove(&session_id) {
                     tracing::info!("starting the next run of {session_id}");
-                    let h =
-                        session::spawn(self.ctx.clone(), Start::New(spec), self.events_tx.clone());
-                    self.sessions.insert(session_id, h);
+                    self.spawn_session(spec);
                 }
-                None
             }
         }
     }
 
-    async fn on_fleet(&mut self, msg: FleetToHost) -> Vec<HostToFleet> {
+    /// Handles a message from the control plane; replies go to the outbox.
+    fn on_fleet(&mut self, msg: FleetToHost) {
         match msg {
             FleetToHost::Welcome { runner, .. } => {
                 tracing::info!("registered as {} ({})", runner.name, runner.id);
                 if let Ok(mut r) = self.ctx.runner_id.lock() {
                     *r = Some(runner.id);
                 }
-                vec![]
             }
-            FleetToHost::Ping => vec![HostToFleet::Pong],
+            FleetToHost::Ping => self.outbox.push_back(HostToFleet::Pong),
             FleetToHost::StartSession { spec } => {
                 let id = spec.session_id.clone();
-                // The control plane only sends sessions that fit; an older
-                // one may not know this host's limits.
-                let limits = self.ctx.sandbox_limits();
-                if !Want::of(&spec.project.settings).fits(&limits) {
-                    return vec![HostToFleet::StartResult {
-                        session_id: id,
-                        accepted: false,
-                        error: Some(format!(
-                            "{} gives a sandbox at most {} and {} of memory",
-                            self.ctx.cfg.name,
-                            size::cpus(limits.max.cpus),
-                            size::memory(limits.max.memory_mb.into())
-                        )),
-                    }];
-                }
-                if let Some(existing) = self.sessions.get(&id) {
-                    let winding_down = existing
-                        .report
-                        .lock()
-                        .map(|r| {
-                            r.status.is_terminal()
-                                || r.status == fctl_proto::session::SessionStatus::Stopping
-                        })
-                        .unwrap_or(false);
-                    if winding_down {
-                        // A resume while the last run still shuts down: start it right after.
-                        let _ = existing.tx.send(SessionCmd::Superseded);
-                        self.pending_starts.insert(id.clone(), spec);
-                    }
-                    return vec![HostToFleet::StartResult {
-                        session_id: id,
-                        accepted: true,
-                        error: None,
-                    }];
-                }
-                if self.sessions.len() as u32 >= self.ctx.cfg.capacity {
-                    return vec![HostToFleet::StartResult {
-                        session_id: id,
-                        accepted: false,
-                        error: Some("the host is at capacity".into()),
-                    }];
-                }
-                tracing::info!("starting {id}: {}", spec.title);
-                let h = session::spawn(self.ctx.clone(), Start::New(spec), self.events_tx.clone());
-                self.sessions.insert(id.clone(), h);
-                vec![HostToFleet::StartResult {
+                let error = self.start_session(spec).err();
+                self.outbox.push_back(HostToFleet::StartResult {
                     session_id: id,
-                    accepted: true,
-                    error: None,
-                }]
+                    accepted: error.is_none(),
+                    error,
+                });
             }
             FleetToHost::StopSession {
                 session_id,
                 reason,
                 destroy,
-            } => {
-                match self.sessions.get(&session_id) {
-                    Some(h) => {
-                        let _ = h.tx.send(SessionCmd::Stop { reason, destroy });
-                        vec![]
-                    }
-                    None => {
-                        // Not running here: clean up any leftover sandbox.
-                        let sb = self
-                            .ctx
-                            .driver
-                            .handle(&crate::driver::sandbox_name(session_id.as_str()));
-                        let _ = self.ctx.driver.stop(&sb).await;
-                        if destroy {
-                            let _ = self.ctx.driver.remove(&sb).await;
-                        }
-                        vec![HostToFleet::SessionEnded {
-                            session_id,
-                            status: fctl_proto::session::SessionStatus::Stopped,
-                            reason: Some("Stopped".into()),
-                            run_id: None,
-                        }]
-                    }
-                }
-            }
+            } => self.stop_session(session_id, reason, destroy),
             FleetToHost::Credential {
                 request_id,
                 claude,
@@ -444,7 +521,6 @@ impl Daemon {
                         error,
                     });
                 }
-                vec![]
             }
             FleetToHost::ClaudeLoginStart { job_id, user } => {
                 let (tx, rx) = mpsc::unbounded_channel();
@@ -456,22 +532,110 @@ impl Daemon {
                     rx,
                     self.login_tx.clone(),
                 ));
-                vec![]
             }
             FleetToHost::ClaudeLoginCode { job_id, code } => {
                 if let Some(tx) = self.logins.get(&job_id) {
                     let _ = tx.send(LoginCmd::Code(code));
                 }
-                vec![]
             }
             FleetToHost::ClaudeLoginCancel { job_id } => {
                 if let Some(tx) = self.logins.remove(&job_id) {
                     let _ = tx.send(LoginCmd::Cancel);
                 }
-                vec![]
             }
         }
     }
+
+    /// Takes on a session, or says why not.
+    fn start_session(&mut self, spec: Box<SessionSpec>) -> Result<(), String> {
+        let id = spec.session_id.clone();
+        // The control plane only sends sessions that fit; an older one may
+        // not know this host's limits.
+        let limits = self.ctx.sandbox_limits();
+        if !Want::of(&spec.project.settings).fits(&limits) {
+            return Err(format!(
+                "{} gives a sandbox at most {} and {} of memory",
+                self.ctx.cfg.name,
+                size::cpus(limits.max.cpus),
+                size::memory(limits.max.memory_mb.into())
+            ));
+        }
+        if let Some(existing) = self.sessions.get(&id) {
+            let winding_down = existing
+                .report
+                .lock()
+                .map(|r| r.status.is_terminal() || r.status == SessionStatus::Stopping)
+                .unwrap_or(false);
+            if winding_down {
+                // A resume while the last run still shuts down: start it right after.
+                let _ = existing.tx.send(SessionCmd::Superseded);
+                self.pending_starts.insert(id, spec);
+            }
+            return Ok(());
+        }
+        if let Some(waiting) = self.pending_starts.get_mut(&id) {
+            *waiting = spec;
+            return Ok(());
+        }
+        let waiting = self
+            .pending_starts
+            .keys()
+            .filter(|id| !self.sessions.contains_key(*id))
+            .count();
+        if (self.sessions.len() + waiting) as u32 >= self.ctx.cfg.capacity {
+            return Err("the host is at capacity".into());
+        }
+        if self.busy.contains_key(&sandbox_name(id.as_str())) {
+            tracing::info!("{id} starts once its sandbox is stopped or removed");
+            self.pending_starts.insert(id, spec);
+            return Ok(());
+        }
+        tracing::info!("starting {id}: {}", spec.title);
+        self.spawn_session(spec);
+        Ok(())
+    }
+
+    fn stop_session(&mut self, session_id: SessionId, reason: StopReason, destroy: bool) {
+        if let Some(h) = self.sessions.get(&session_id) {
+            let _ = h.tx.send(SessionCmd::Stop { reason, destroy });
+            return;
+        }
+        // Not running here: a start that waits for its sandbox is called
+        // off, and a leftover sandbox is stopped in the background.
+        self.pending_starts.remove(&session_id);
+        let name = sandbox_name(session_id.as_str());
+        self.hold(&name);
+        let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
+        tokio::spawn(async move {
+            let sb = ctx.driver.handle(&name);
+            if let Err(e) = ctx.driver.stop(&sb).await {
+                tracing::warn!("stopping {name}: {e:#}");
+            }
+            if destroy && let Err(e) = ctx.driver.remove(&sb).await {
+                tracing::warn!("removing {name}: {e:#}");
+            }
+            let ended = HostToFleet::SessionEnded {
+                session_id,
+                status: SessionStatus::Stopped,
+                reason: Some("Stopped".into()),
+                run_id: None,
+            };
+            let _ = chores.send(Chore::Stopped { name, ended });
+        });
+    }
+}
+
+/// Probes the drivers and measures what sandboxes run on every `period`, in
+/// the background.
+fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration) {
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            every.tick().await;
+            ctx.refresh_facts().await;
+        }
+    });
 }
 
 fn jitter(d: Duration) -> Duration {
@@ -481,7 +645,18 @@ fn jitter(d: Duration) -> Duration {
     Duration::from_millis((ms as i64 + spread).max(100) as u64)
 }
 
-async fn shutdown_signal() {
+/// Fires on SIGTERM or SIGINT. It listens from the start, so that a signal
+/// that comes while the daemon is busy elsewhere is not lost.
+fn shutdown_signal() -> oneshot::Receiver<()> {
+    let (tx, rx) = oneshot::channel();
+    tokio::spawn(async move {
+        signalled().await;
+        let _ = tx.send(());
+    });
+    rx
+}
+
+async fn signalled() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};

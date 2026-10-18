@@ -10,7 +10,7 @@
 //!
 //! | Word | Behavior |
 //! |---|---|
-//! | (anything) | streams a short answer, runs a fake `Bash` tool, answers again |
+//! | (anything) | reports plan usage, streams a short answer, runs a fake `Bash` tool, answers again |
 //! | `write <name>` | creates `<name>` in the working directory and commits it |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `slow` | streams for about ten seconds (try interrupting) |
@@ -19,6 +19,10 @@
 //! | `refresh` | asks its host for a fresh OAuth token |
 //! | `crash` | exits with status 3 |
 //! | (attached files) | says how many images the message holds and checks that each listed file is on disk |
+//!
+//! Plan usage comes as Claude Code reports it after a response
+//! (`unifiedWindows` in a `rate_limit_event`): the five-hour and weekly
+//! windows follow the clock, so every session reports the same numbers.
 //!
 //! Environment: `FAKE_CLAUDE_API_KEY_SOURCE` overrides the reported
 //! `apiKeySource` (default `none`); `FAKE_CLAUDE_DELAY_MS` sets the delay
@@ -128,6 +132,24 @@ impl Session {
         }));
     }
 
+    /// Plan usage, as Claude Code reports it after a response: each window
+    /// starts over on the clock (every five hours, every week since the
+    /// epoch) and fills up as it goes.
+    fn usage(&self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let window = |secs: u64, start: f64, end: f64| {
+            let elapsed = (now % secs) as f64 / secs as f64;
+            let used = start + (end - start) * elapsed;
+            json!({"utilization": (used * 100.0).round() / 100.0, "resetsAt": now - now % secs + secs})
+        };
+        out(
+            &json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "isUsingOverage": false, "unifiedWindows": {"five_hour": window(5 * 3600, 0.05, 0.85), "seven_day": window(7 * 86_400, 0.1, 0.7)}}, "uuid": uuid(), "session_id": self.id}),
+        );
+    }
+
     fn turn(&mut self, text: &str, images: usize, input: &mpsc::Receiver<Value>) {
         INTERRUPTED.store(false, Ordering::SeqCst);
         let started = Instant::now();
@@ -155,6 +177,7 @@ impl Session {
             );
             return;
         }
+        self.usage();
         if lower.contains("overage") {
             out(
                 &json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "rateLimitType": "five_hour", "isUsingOverage": true, "overageStatus": "allowed"}, "uuid": uuid(), "session_id": self.id}),
