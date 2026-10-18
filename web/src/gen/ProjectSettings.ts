@@ -62,6 +62,19 @@ credit_people: boolean,
  */
 credit_claude: boolean, 
 /**
+ * Let agents publish screenshots on the control plane (`fctl publish`),
+ * at links anyone who has one can open, to show them in pull requests:
+ * GitHub takes no uploads from a session's GitHub App token. Off by
+ * default, and only where the instance's admins allow it
+ * ([`crate::api::InstanceSettings`]). Off, the project's published
+ * screenshots are offline too.
+ */
+publish_screenshots: boolean, 
+/**
+ * Days a published screenshot's link works, 1 to 60. Absent: 30.
+ */
+screenshot_days?: number, 
+/**
  * Non-secret environment variables for sandboxes.
  */
 env: { [key in string]: string }, };

@@ -1,7 +1,8 @@
 //! Deleting what is no longer needed: the event logs of deleted sessions,
-//! the files of deleted projects, expired sign-in records and old audit
-//! entries. Runs from the Worker's hourly cron trigger; deleting a project
-//! also purges its sessions and files right away.
+//! the files of deleted projects, expired sign-in records, the links of
+//! expired published screenshots and old audit entries. Runs from the
+//! Worker's hourly cron trigger; deleting a project also purges its
+//! sessions and files right away.
 
 use crate::db::{n, q, s};
 use crate::error::AppResult;
@@ -129,6 +130,9 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
         ("DELETE FROM password_resets WHERE expires_at < ?", now),
         ("DELETE FROM device_codes WHERE expires_at < ?", now),
         ("DELETE FROM invites WHERE expires_at < ?", now),
+        // Their links stopped working at expiry; their FilesObject deletes
+        // the bytes on its own alarm.
+        ("DELETE FROM published_files WHERE expires_at < ?", now),
         (
             "DELETE FROM claude_login_jobs WHERE updated_at < ?",
             now - LOGIN_JOB_RETENTION_MS,

@@ -29,6 +29,7 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
     )?
     .first()
     .await?;
+    let settings = crate::instance::settings(&ctx.db).await?;
     http::ok(&InstanceInfo {
         name: name
             .map(|r| r.value)
@@ -39,6 +40,7 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
             google: ctx.cfg.google.is_some(),
             email: ctx.cfg.email.is_some(),
             github: ctx.cfg.github.is_some(),
+            publish_screenshots: settings.publish_screenshots,
         },
     })
 }

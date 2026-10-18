@@ -373,6 +373,15 @@ pub struct ProjectSettings {
     /// `Co-authored-by` trailer, and in Remote Control sessions the
     /// claude.ai session link. Older agents always do.
     pub credit_claude: bool,
+    /// Let agents publish screenshots on the control plane (`fctl publish`),
+    /// at links anyone who has one can open, to show them in pull requests:
+    /// GitHub takes no uploads from a session's GitHub App token. Off by
+    /// default, and only where the instance's admins allow it
+    /// ([`crate::api::InstanceSettings`]). Off, the project's published
+    /// screenshots are offline too.
+    pub publish_screenshots: bool,
+    /// Days a published screenshot's link works, 1 to 60. Absent: 30.
+    pub screenshot_days: Option<u32>,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
 }
@@ -393,6 +402,8 @@ impl Default for ProjectSettings {
             claude_ai_connectors: true,
             credit_people: true,
             credit_claude: true,
+            publish_screenshots: false,
+            screenshot_days: None,
             env: Default::default(),
         }
     }
@@ -525,6 +536,14 @@ mod tests {
         assert!(old.claude_ai_connectors);
         assert!(old.credit_people && old.credit_claude);
         assert!(!old.auto_pull_request);
+        // Nothing published screenshots before the setting existed.
+        assert!(!old.publish_screenshots);
+        assert_eq!(old.screenshot_days, None);
+        let on: ProjectSettings =
+            serde_json::from_str(r#"{"publish_screenshots":true,"screenshot_days":7}"#)?;
+        assert!(on.publish_screenshots);
+        assert_eq!(on.screenshot_days, Some(7));
+        assert!(serde_json::to_value(&old)?.get("screenshot_days").is_none());
         let off: ProjectSettings =
             serde_json::from_str(r#"{"credit_people":false,"credit_claude":false}"#)?;
         assert!(!off.credit_people && !off.credit_claude);

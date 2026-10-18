@@ -25,8 +25,9 @@ pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
 /// replaces all settings, so a client from before a setting existed (a tab
 /// opened before a deploy, an older CLI) would reset it to its default
 /// without having shown it: for `claude_ai_connectors`, `credit_people` and
-/// `credit_claude`, on. `sent` is the update's `settings` object as it
-/// arrived.
+/// `credit_claude`, on; for `publish_screenshots`, off; for
+/// `screenshot_days`, 30 days (send `null` to choose the default). `sent`
+/// is the update's `settings` object as it arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
     if sent.get("claude_ai_connectors").is_none() {
         settings.claude_ai_connectors = stored.claude_ai_connectors;
@@ -36,6 +37,12 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("credit_claude").is_none() {
         settings.credit_claude = stored.credit_claude;
+    }
+    if sent.get("publish_screenshots").is_none() {
+        settings.publish_screenshots = stored.publish_screenshots;
+    }
+    if sent.get("screenshot_days").is_none() {
+        settings.screenshot_days = stored.screenshot_days;
     }
 }
 
@@ -112,5 +119,29 @@ mod tests {
         let mut s = ProjectSettings::default();
         keep_unsent(&mut s, &stored, &json!({ "credit_claude": true }));
         assert!(!s.credit_people && s.credit_claude);
+    }
+
+    #[test]
+    fn updates_without_the_screenshot_settings_keep_them() {
+        let stored = ProjectSettings {
+            publish_screenshots: true,
+            screenshot_days: Some(2),
+            ..Default::default()
+        };
+        // An older client would turn publishing off and keep links for 30 days.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "credit_claude": true }));
+        assert!(s.publish_screenshots);
+        assert_eq!(s.screenshot_days, Some(2));
+
+        // Sent, they count, and `null` chooses the default.
+        let mut s = ProjectSettings::default();
+        keep_unsent(
+            &mut s,
+            &stored,
+            &json!({ "publish_screenshots": false, "screenshot_days": null }),
+        );
+        assert!(!s.publish_screenshots);
+        assert_eq!(s.screenshot_days, None);
     }
 }

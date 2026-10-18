@@ -12,14 +12,17 @@ use crate::local;
 use crate::prompt;
 use crate::workspace::{self, Paths};
 use anyhow::Result;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use fctl_domain::events::{self as ev, BillingGuard, ClaudeKind};
-use fctl_domain::validate;
+use fctl_domain::{files, published, validate};
 use fctl_proto::agent::{
     AgentConfig, AgentHello, AgentToHost, HostToAgent, SESSION_SOCKET_ENV, SessionReply,
     SessionRequest,
 };
 use fctl_proto::event::{
     Attachment, EventBody, GitState, LogLevel, LogLine, LogSource, Notice, NoticeLevel,
+    PublishedFile,
 };
 use fctl_proto::runner::{
     ClaudeCredential, ClaudeCredentialKind, CredentialKind, GitIdentity, GithubCredential,
@@ -33,9 +36,12 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// How long `fctl publish` waits for the host to upload a screenshot.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -104,6 +110,8 @@ pub struct Supervisor {
     pending_files: Vec<(Attachment, String)>,
     /// Said once that the sandbox's fctl cannot rename the session.
     told_no_fctl: bool,
+    /// `fctl publish` calls waiting for the host's answer, by request id.
+    publishing: HashMap<String, (oneshot::Sender<SessionReply>, Instant)>,
 }
 
 impl Supervisor {
@@ -162,6 +170,7 @@ impl Supervisor {
                 last_git: None,
                 pending_files: Vec::new(),
                 told_no_fctl: false,
+                publishing: HashMap::new(),
             },
             claude_rx,
             work_rx,
@@ -182,10 +191,7 @@ impl Supervisor {
                 Some(e) = link_rx.recv() => self.on_link(e).await,
                 Some(out) = claude_rx.recv() => self.on_claude(out).await,
                 Some(w) = work_rx.recv() => self.on_work(w).await,
-                Some(call) = local_rx.recv() => {
-                    let reply = self.on_session_request(call.request);
-                    let _ = call.reply.send(reply);
-                }
+                Some(call) = local_rx.recv() => self.on_session_call(call),
                 _ = flush.tick() => self.flush(),
                 _ = tick.tick() => {
                     self.on_tick().await;
@@ -313,6 +319,11 @@ impl Supervisor {
                 self.on_credentials(request_id, claude, github, github_read, error);
             }
             HostToAgent::Stop { reason, grace_ms } => self.begin_stop(reason, grace_ms).await,
+            HostToAgent::Published {
+                request_id,
+                file,
+                error,
+            } => self.on_published(&request_id, file, error),
         }
     }
 
@@ -339,6 +350,7 @@ impl Supervisor {
             code: code.into(),
             message: message.into(),
             until,
+            published: None,
         }));
     }
 
@@ -387,15 +399,134 @@ impl Supervisor {
 
     // ───────────────────────────── the session socket ─────────────────────────────
 
-    fn on_session_request(&mut self, request: SessionRequest) -> SessionReply {
-        match request {
+    /// Answers a program in the sandbox: now, or once the host has
+    /// uploaded the screenshot it publishes.
+    fn on_session_call(&mut self, call: local::Call) {
+        let reply = match call.request {
             SessionRequest::Edit {
                 session_id,
                 title,
                 description,
-            } => self
-                .edit_session(session_id, title, description)
-                .unwrap_or_else(|error| SessionReply::Error { error }),
+            } => self.edit_session(session_id, title, description),
+            SessionRequest::Publish {
+                session_id,
+                name,
+                data,
+            } => match self.publish(session_id, name, data) {
+                Ok(request_id) => {
+                    self.publishing
+                        .insert(request_id, (call.reply, Instant::now()));
+                    return;
+                }
+                Err(error) => Err(error),
+            },
+        };
+        let _ = call
+            .reply
+            .send(reply.unwrap_or_else(|error| SessionReply::Error { error }));
+    }
+
+    /// The spec, if the session started and `session_id` (when given) is
+    /// the one this sandbox runs.
+    fn this_session(
+        &self,
+        session_id: Option<&SessionId>,
+    ) -> std::result::Result<fctl_proto::runner::SessionSpec, ApiError> {
+        let Some(spec) = self.config.as_ref().map(|c| c.spec.clone()) else {
+            return Err(ApiError::new(
+                fctl_proto::ErrorCode::Conflict,
+                "The session is still starting; try again in a moment",
+            ));
+        };
+        if let Some(id) = session_id.filter(|id| **id != spec.session_id) {
+            return Err(ApiError::bad_request(format!(
+                "This sandbox runs {}, not {id}",
+                spec.session_id
+            )));
+        }
+        Ok(spec)
+    }
+
+    /// Hands a screenshot to the host to publish, if the project publishes
+    /// screenshots and it is an image GitHub shows; returns the request's id.
+    fn publish(
+        &mut self,
+        session_id: Option<SessionId>,
+        name: String,
+        data: String,
+    ) -> std::result::Result<String, ApiError> {
+        let spec = self.this_session(session_id.as_ref())?;
+        if !spec.project.settings.publish_screenshots {
+            return Err(ApiError::forbidden(
+                "This project doesn't publish screenshots: its maintainers can turn it on in the project's settings, once the instance's admins allow it. Describe what the screenshots show instead.",
+            ));
+        }
+        let bytes = STANDARD
+            .decode(data.as_bytes())
+            .map_err(|e| ApiError::bad_request(format!("The screenshot isn't base64: {e}")))?;
+        published::check(&bytes)?;
+        if self.host.is_none() {
+            return Err(ApiError::new(
+                fctl_proto::ErrorCode::Unavailable,
+                "fctl-agent can't reach its host right now; try again in a minute",
+            ));
+        }
+        self.next_request += 1;
+        let request_id = format!("pub_{}", self.next_request);
+        self.send(&AgentToHost::Publish {
+            request_id: request_id.clone(),
+            name: files::sanitize_name(&name),
+            data,
+        });
+        Ok(request_id)
+    }
+
+    /// The host's answer to a publish: the caller gets it, and the
+    /// transcript shows what was published.
+    fn on_published(
+        &mut self,
+        request_id: &str,
+        file: Option<PublishedFile>,
+        error: Option<ApiError>,
+    ) {
+        let Some((tx, _)) = self.publishing.remove(request_id) else {
+            return;
+        };
+        let reply = match (file, error) {
+            (Some(file), _) => {
+                self.emit(EventBody::Notice(published_notice(&file, now_ms())));
+                self.flush();
+                SessionReply::Published { file }
+            }
+            (None, error) => SessionReply::Error {
+                error: error.unwrap_or_else(|| {
+                    ApiError::new(
+                        fctl_proto::ErrorCode::Internal,
+                        "The host published nothing",
+                    )
+                }),
+            },
+        };
+        let _ = tx.send(reply);
+    }
+
+    /// Answers the publishes the host left unanswered for too long.
+    fn expire_publishes(&mut self) {
+        let late: Vec<String> = self
+            .publishing
+            .iter()
+            .filter(|(_, (_, since))| since.elapsed() > PUBLISH_TIMEOUT)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in late {
+            if let Some((tx, _)) = self.publishing.remove(&id) {
+                let _ = tx.send(SessionReply::Error {
+                    error: ApiError::new(
+                        fctl_proto::ErrorCode::Unavailable,
+                        "The host didn't publish the screenshot in time; try again",
+                    ),
+                });
+            }
         }
     }
 
@@ -408,18 +539,7 @@ impl Supervisor {
         title: Option<String>,
         description: Option<String>,
     ) -> std::result::Result<SessionReply, ApiError> {
-        let Some(spec) = self.config.as_ref().map(|c| c.spec.clone()) else {
-            return Err(ApiError::new(
-                fctl_proto::ErrorCode::Conflict,
-                "The session is still starting; try again in a moment",
-            ));
-        };
-        if let Some(id) = session_id.filter(|id| *id != spec.session_id) {
-            return Err(ApiError::bad_request(format!(
-                "This sandbox runs {}, not {id}",
-                spec.session_id
-            )));
-        }
+        let spec = self.this_session(session_id.as_ref())?;
         if title.is_none() && description.is_none() {
             return Err(ApiError::bad_request("Give a title, a description or both"));
         }
@@ -651,8 +771,12 @@ impl Supervisor {
             &spec.project.settings,
             &spec.co_authored_by,
         )?;
-        if self.session_socket.is_some() && fctl_can_edit(&paths).await {
-            if let Err(e) = claude::write_instructions(&paths.home, prompt::AGENTS_MD) {
+        if self.session_socket.is_some() && fctl_can(&paths, "edit").await {
+            // Publishing needs the project's consent and an fctl that can.
+            let screenshots =
+                spec.project.settings.publish_screenshots && fctl_can(&paths, "publish").await;
+            let days = screenshots.then(|| published::days(&spec.project.settings));
+            if let Err(e) = claude::write_instructions(&paths.home, &prompt::agents_md(days)) {
                 tracing::warn!("writing ~/AGENTS.md failed: {e:#}");
             }
         } else if !self.told_no_fctl {
@@ -1193,6 +1317,7 @@ impl Supervisor {
 
     async fn on_tick(&mut self) {
         let now = now_ms();
+        self.expire_publishes();
         // Usage limit reset: continue.
         if self.state.status == SessionStatus::Paused && self.resume_at.is_some_and(|t| now >= t) {
             self.resume_at = None;
@@ -1297,14 +1422,38 @@ fn expiry(write: Option<&GithubCredential>, read: Option<&GithubCredential>) -> 
     write.iter().chain(read.iter()).map(|c| c.expires_at).min()
 }
 
-/// Whether the sandbox's `fctl` can name the session: custom images may have
-/// none, and images built before `fctl edit` an older one.
-async fn fctl_can_edit(paths: &Paths) -> bool {
-    let help = workspace::run(&paths.home, &paths.home, "fctl", &["edit", "--help"]);
+/// Whether the sandbox's `fctl` has a command (`edit`, `publish`): custom
+/// images may have none, and older images an older one.
+async fn fctl_can(paths: &Paths, command: &str) -> bool {
+    let args = [command, "--help"];
+    let help = workspace::run(&paths.home, &paths.home, "fctl", &args);
     matches!(
         tokio::time::timeout(Duration::from_secs(10), help).await,
         Ok(Ok(out)) if out.ok
     )
+}
+
+/// What the transcript says about a published screenshot: the link is in
+/// the message for clients from before `published`.
+fn published_notice(file: &PublishedFile, now: i64) -> Notice {
+    let days = ((file.expires_at - now) as f64 / 86_400_000.0)
+        .round()
+        .max(1.0) as i64;
+    let lasts = if days == 1 {
+        "a day".to_owned()
+    } else {
+        format!("{days} days")
+    };
+    Notice {
+        level: NoticeLevel::Info,
+        code: "screenshot_published".into(),
+        message: format!(
+            "Published {} for {lasts}, for anyone with the link: {}",
+            file.name, file.url
+        ),
+        until: None,
+        published: Some(file.clone()),
+    }
 }
 
 fn stop_text(r: StopReason) -> &'static str {
@@ -1349,6 +1498,13 @@ pub async fn serve(socket: PathBuf, state_dir: PathBuf) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// What the supervisor answers right away (`None`: it waits for the host).
+    fn ask(sup: &mut Supervisor, request: SessionRequest) -> Option<SessionReply> {
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call { request, reply: tx });
+        rx.try_recv().ok()
+    }
+
     fn edit(title: Option<&str>, description: Option<&str>) -> SessionRequest {
         SessionRequest::Edit {
             session_id: None,
@@ -1362,8 +1518,8 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let state_dir = dir.path().join("state");
         let (mut sup, _claude, _work) = Supervisor::new(state_dir.clone(), None)?;
-        let early = sup.on_session_request(edit(Some("Too early"), None));
-        assert!(matches!(early, SessionReply::Error { .. }));
+        let early = ask(&mut sup, edit(Some("Too early"), None));
+        assert!(matches!(early, Some(SessionReply::Error { .. })));
 
         sup.config = Some(AgentConfig {
             spec: crate::workspace::tests::spec()?,
@@ -1376,17 +1532,20 @@ mod tests {
             first_agent_seq: None,
             sandbox: None,
         });
-        let reply = sup.on_session_request(edit(
-            Some("  Fix the   login test "),
-            Some("Retries the redirect.\nAdds a test."),
-        ));
-        let SessionReply::Edited {
+        let reply = ask(
+            &mut sup,
+            edit(
+                Some("  Fix the   login test "),
+                Some("Retries the redirect.\nAdds a test."),
+            ),
+        );
+        let Some(SessionReply::Edited {
             id,
             number,
             title,
             description,
             ..
-        } = reply
+        }) = reply
         else {
             panic!("expected Edited, got {reply:?}");
         };
@@ -1399,10 +1558,10 @@ mod tests {
         assert_eq!(sup.state.title.as_deref(), Some("Fix the login test"));
 
         // An empty description clears it; the title stays.
-        let cleared = sup.on_session_request(edit(None, Some("")));
+        let cleared = ask(&mut sup, edit(None, Some("")));
         assert!(matches!(
             cleared,
-            SessionReply::Edited { ref title, description: None, .. } if title == "Fix the login test"
+            Some(SessionReply::Edited { ref title, description: None, .. }) if title == "Fix the login test"
         ));
         assert_eq!(sup.state.description.as_deref(), Some(""));
 
@@ -1410,17 +1569,164 @@ mod tests {
         let (again, _claude, _work) = Supervisor::new(state_dir, None)?;
         assert_eq!(again.state.title.as_deref(), Some("Fix the login test"));
 
-        let invalid = sup.on_session_request(edit(Some(" "), None));
+        let invalid = ask(&mut sup, edit(Some(" "), None));
         assert!(
-            matches!(invalid, SessionReply::Error { ref error } if error.field.as_deref() == Some("title"))
+            matches!(invalid, Some(SessionReply::Error { ref error }) if error.field.as_deref() == Some("title"))
         );
-        let elsewhere = sup.on_session_request(SessionRequest::Edit {
-            session_id: Some(SessionId("ses_other".into())),
-            title: Some("Not mine".into()),
-            description: None,
-        });
-        assert!(matches!(elsewhere, SessionReply::Error { .. }));
+        let elsewhere = ask(
+            &mut sup,
+            SessionRequest::Edit {
+                session_id: Some(SessionId("ses_other".into())),
+                title: Some("Not mine".into()),
+                description: None,
+            },
+        );
+        assert!(matches!(elsewhere, Some(SessionReply::Error { .. })));
         assert_eq!(sup.state.title.as_deref(), Some("Fix the login test"));
+        Ok(())
+    }
+
+    fn config(dir: &std::path::Path, publish: bool) -> anyhow::Result<AgentConfig> {
+        let mut spec = crate::workspace::tests::spec()?;
+        spec.project.settings.publish_screenshots = publish;
+        Ok(AgentConfig {
+            spec,
+            workdir: dir.join("workspace").display().to_string(),
+            home: None,
+            claude_bin: None,
+            claude_args: vec![],
+            env: Default::default(),
+            push_on_commit: true,
+            first_agent_seq: None,
+            sandbox: None,
+        })
+    }
+
+    fn png() -> String {
+        let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        b.extend_from_slice(&1440u32.to_be_bytes());
+        b.extend_from_slice(&900u32.to_be_bytes());
+        b.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        STANDARD.encode(b)
+    }
+
+    fn publish(data: String) -> SessionRequest {
+        SessionRequest::Publish {
+            session_id: Some(SessionId("ses_test".into())),
+            name: "shots/after.png".into(),
+            data,
+        }
+    }
+
+    #[tokio::test]
+    async fn publishes_screenshots_through_the_host() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        sup.config = Some(config(dir.path(), true)?);
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: publish(png()),
+            reply: tx,
+        });
+        // The host uploads it; the caller waits.
+        let AgentToHost::Publish {
+            request_id, name, ..
+        } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a publish frame");
+        };
+        assert_eq!(name, "after.png");
+        assert!(rx.try_recv().is_err());
+
+        let file = PublishedFile {
+            url: "https://fctl.test/api/v1/published/abc/after.png".into(),
+            name: "after.png".into(),
+            media_type: "image/png".into(),
+            size: 33,
+            width: Some(1440),
+            height: Some(900),
+            expires_at: now_ms() + 30 * 86_400_000,
+        };
+        sup.on_frame(HostToAgent::Published {
+            request_id: request_id.clone(),
+            file: Some(file.clone()),
+            error: None,
+        })
+        .await;
+        assert!(matches!(rx.try_recv(), Ok(SessionReply::Published { file: ref f }) if *f == file));
+        // The transcript says so, with the link.
+        let AgentToHost::Events { events } = serde_json::from_str(&host_rx.try_recv()?)? else {
+            panic!("expected events");
+        };
+        let EventBody::Notice(n) = &events[0].body else {
+            panic!("expected a notice");
+        };
+        assert_eq!(n.code, "screenshot_published");
+        assert_eq!(n.published.as_ref(), Some(&file));
+        assert_eq!(
+            n.message,
+            "Published after.png for 30 days, for anyone with the link: https://fctl.test/api/v1/published/abc/after.png"
+        );
+        // A late or repeated answer goes nowhere.
+        sup.on_published(&request_id, Some(file), None);
+        assert!(host_rx.try_recv().is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn publishes_only_where_the_project_does_and_only_images() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        sup.config = Some(config(dir.path(), false)?);
+        let off = ask(&mut sup, publish(png()));
+        assert!(
+            matches!(off, Some(SessionReply::Error { ref error }) if error.message.contains("doesn't publish screenshots"))
+        );
+        sup.config = Some(config(dir.path(), true)?);
+        let svg = ask(&mut sup, publish(STANDARD.encode("<svg/>")));
+        assert!(
+            matches!(svg, Some(SessionReply::Error { ref error }) if error.field.as_deref() == Some("file"))
+        );
+        let garbled = ask(&mut sup, publish("not base64!".into()));
+        assert!(matches!(garbled, Some(SessionReply::Error { .. })));
+        assert!(host_rx.try_recv().is_err());
+
+        // Without a host there is nobody to upload it.
+        sup.host = None;
+        let alone = ask(&mut sup, publish(png()));
+        assert!(
+            matches!(alone, Some(SessionReply::Error { ref error }) if error.code == fctl_proto::ErrorCode::Unavailable)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn gives_up_on_a_host_that_does_not_answer() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        sup.config = Some(config(dir.path(), true)?);
+        let (host_tx, _host_rx) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: publish(png()),
+            reply: tx,
+        });
+        sup.expire_publishes();
+        assert!(rx.try_recv().is_err());
+        for (_, since) in sup.publishing.values_mut() {
+            *since = Instant::now() - PUBLISH_TIMEOUT - Duration::from_secs(1);
+        }
+        sup.expire_publishes();
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionReply::Error { ref error }) if error.message.contains("in time"))
+        );
+        assert!(sup.publishing.is_empty());
         Ok(())
     }
 }

@@ -69,6 +69,8 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::InvitePreview,
         api::AuditEntry,
         api::AuditList,
+        api::InstanceSettings,
+        api::UpdateInstanceSettingsRequest,
         api::Runner,
         api::RunnerList,
         api::CreateRunnerRequest,

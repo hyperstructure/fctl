@@ -333,7 +333,7 @@ pub async fn edit(server: Option<&str>, args: EditArgs, json: bool) -> Result<()
     Ok(())
 }
 
-fn this_sandbox(reference: Option<&str>) -> Option<(PathBuf, String)> {
+pub(crate) fn this_sandbox(reference: Option<&str>) -> Option<(PathBuf, String)> {
     sandbox_session(
         std::env::var_os(SESSION_SOCKET_ENV),
         std::env::var("FCTL_SESSION_ID").ok(),
@@ -387,10 +387,11 @@ async fn edit_here(socket: &Path, id: String, args: EditArgs, json: bool) -> Res
             Ok(())
         }
         SessionReply::Error { error } => bail!("{}", error.message),
+        SessionReply::Published { .. } => bail!("fctl-agent answered another request"),
     }
 }
 
-async fn ask_agent(socket: &Path, request: &SessionRequest) -> Result<SessionReply> {
+pub(crate) async fn ask_agent(socket: &Path, request: &SessionRequest) -> Result<SessionReply> {
     let stream = UnixStream::connect(socket)
         .await
         .with_context(|| format!("fctl-agent is not answering on {}", socket.display()))?;
