@@ -109,6 +109,11 @@ Describe the task on the floor or the project page, or:
 fctl run "Add a dark mode toggle to the settings page"
 ```
 
+To show the agent what you mean, attach screenshots and files: with the
+paperclip, by pasting them into the message box, or by dropping them on the
+page (`fctl run -a screenshot.png "…"` in the terminal). The agent sees
+them in its sandbox and gets screenshots in the message itself.
+
 `fctl run` follows the session live in your terminal; Ctrl-C detaches and the
 agent keeps working. The agent works on a branch named
 `fctl/<number>-<title>`, commits as it goes, pushes, and opens a pull request
@@ -118,8 +123,8 @@ when it is done (projects can turn that off).
 
 - **Web app** — the session page streams the transcript as the agent writes
   it: tool calls, diffs, the files changed so far. Type below to message the
-  agent; it reads your message at its next step. **Interrupt** stops the
-  current turn.
+  agent, with files attached if you like; it reads your message at its next
+  step. **Interrupt** stops the current turn.
 - **Terminal** — `fctl attach my-app#12` streams the session and lets you
   type messages; `fctl send my-app#12 "Use the existing Button component"`
   sends one from a script.

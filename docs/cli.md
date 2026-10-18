@@ -35,6 +35,7 @@ fctl run -p my-app -d -f task.md              # start from a file, don't follow
 echo "Fix the flaky test" | fctl run -p my-app
 fctl run --model opus --effort high "…"       # override the project's agent settings
 fctl run --branch fix/login --base develop "…"
+fctl run -p my-app -a screenshot.png "Make the header match this"   # attach files (repeat -a)
 
 fctl sessions                    # recent sessions
 fctl sessions --active -p my-app
@@ -45,6 +46,7 @@ fctl logs -f my-app#12           # …and keep following
 fctl attach my-app#12            # stream it and type messages (Ctrl-C detaches)
 fctl attach --read-only my-app#12
 fctl send my-app#12 "Use the existing Button component"
+fctl send my-app#12 -a ci.log "This is what CI printed"
 fctl interrupt my-app#12         # stop the current turn
 fctl stop my-app#12              # end the session (its sandbox is kept for resuming)
 fctl resume my-app#12 "Now add tests"
@@ -53,6 +55,11 @@ fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 ```
 
 `fctl run` uses the project from `fctl projects use` when `-p` is missing.
+
+`--attach` (`-a`) sends files with the task or message (`run`, `send`,
+`resume`): up to 10, of at most 20 MB each. The agent finds them in
+`~/attachments/` in its sandbox, and sees images that Claude accepts as
+they are (PNG, JPEG, GIF, WebP up to 2000 px a side) in the message itself.
 
 ## Projects
 

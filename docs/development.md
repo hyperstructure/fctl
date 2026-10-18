@@ -42,7 +42,9 @@ fake-claude reacts to words in the prompt: `write <name>` creates and
 commits a file, `slow` streams slowly, `limit` hits a usage limit, `overage`
 reports paid usage (the session must pause), `refresh` asks the host for a
 new OAuth token, and `crash` exits mid-turn. Anything else gets a short
-answer with a tool call.
+answer with a tool call. A message with attached files also gets a sentence
+about them: how many images it holds, and whether each listed file is on
+disk.
 
 `--no-host` skips the host; `--no-vite` serves the built web app from
 wrangler instead. Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/`
