@@ -292,20 +292,21 @@ async fn find_runner(api: &fctl_client::Api, which: &str) -> Result<Runner> {
     }
 }
 
-/// How long a runner has drained and who drained it, while it drains:
-/// `draining since 3m ago, by Ada Lovelace: 2 sessions left`.
+/// Who started draining a runner and when, and what still runs on it:
+/// `Ada Lovelace started draining it 3m ago: 2 sessions left`.
 pub(crate) fn drain_line(r: &Runner) -> Option<String> {
     let d = r.drain.as_ref()?;
-    let by =
-        d.by.as_ref()
-            .map_or_else(|| "its host".to_owned(), |u| u.name.clone());
+    let who = d
+        .by
+        .as_ref()
+        .map_or_else(|| "its host".to_owned(), |u| u.name.clone());
     let left = match r.active_sessions {
         0 => "no sessions left".to_owned(),
         1 => "1 session left".to_owned(),
         n => format!("{n} sessions left"),
     };
     Some(format!(
-        "draining since {}, by {by}: {left}",
+        "{who} started draining it {}: {left}",
         style::ago(d.since)
     ))
 }
@@ -314,14 +315,11 @@ pub(crate) fn drain_line(r: &Runner) -> Option<String> {
 pub(crate) fn still_running(n: u32, place: &str) -> String {
     match n {
         0 => format!("No sessions run {place}."),
+        1 => format!(
+            "1 session still runs {place} and carries on. Once idle for a minute it stops, and a message resumes it {place}."
+        ),
         _ => format!(
-            "{} still {} {place} and carry on. Idle ones stop after a minute, and a message resumes them {place}.",
-            if n == 1 {
-                "1 session".to_owned()
-            } else {
-                format!("{n} sessions")
-            },
-            if n == 1 { "runs" } else { "run" },
+            "{n} sessions still run {place} and carry on. Idle ones stop after a minute, and a message resumes them {place}."
         ),
     }
 }

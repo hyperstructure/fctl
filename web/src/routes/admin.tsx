@@ -349,10 +349,10 @@ function Runners() {
       ) : (
         <ul className="border-t border-line">
           {runners.data?.runners.map((r) => (
-            <li key={r.id} className="flex items-center gap-4 border-b border-line py-4">
+            <li key={r.id} className="flex items-start gap-4 border-b border-line py-4 sm:items-center">
               <span
                 className={cn(
-                  "size-2 shrink-0 rounded-full",
+                  "mt-1.5 size-2 shrink-0 rounded-full sm:mt-0",
                   r.status === "disabled"
                     ? "bg-danger"
                     : r.drain
@@ -362,50 +362,55 @@ function Runners() {
                         : "bg-ink-4",
                 )}
               />
-              <div className="min-w-0 flex-1">
-                <div className="text-[14px] text-ink">
-                  {r.name} <span className="ml-1 text-[12px] text-ink-4">{runnerState(r)}</span>
+              {/* On a phone the actions go under the runner's details. */}
+              <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[14px] text-ink">
+                    {r.name} <span className="ml-1 text-[12px] text-ink-4">{runnerState(r)}</span>
+                  </div>
+                  <div className="mt-0.5 text-[12px] text-ink-4">
+                    {r.hostname ? `${r.hostname} · ` : ""}
+                    {r.os && r.arch ? `${r.os}/${r.arch} · ` : ""}
+                    {r.driver ? `${r.driver} driver · ` : ""}
+                    {r.active_sessions}/{r.capacity} sessions
+                    {r.version ? ` · fctl ${r.version}` : ""}
+                    {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
+                  </div>
+                  {r.drain && r.status !== "disabled" && <DrainLine runner={r} />}
+                  <RunnerResources runner={r} />
                 </div>
-                <div className="mt-0.5 text-[12px] text-ink-4">
-                  {r.hostname ? `${r.hostname} · ` : ""}
-                  {r.os && r.arch ? `${r.os}/${r.arch} · ` : ""}
-                  {r.driver ? `${r.driver} driver · ` : ""}
-                  {r.active_sessions}/{r.capacity} sessions
-                  {r.version ? ` · fctl ${r.version}` : ""}
-                  {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
+                <div className="-ml-2.5 flex shrink-0 items-center gap-1 sm:ml-0">
+                  {r.status !== "disabled" && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => drain.mutate(r)}
+                      loading={drain.isPending && drain.variables?.id === r.id}
+                    >
+                      {r.drain ? "Stop draining" : "Drain"}
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      r.status !== "disabled" && r.active_sessions > 0
+                        ? setConfirm({ runner: r, action: "disable" })
+                        : toggle.mutate(r)
+                    }
+                  >
+                    {r.status === "disabled" ? "Enable" : "Disable"}
+                  </Button>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${r.name}`}
+                    className="rounded p-1.5 text-ink-4 hover:text-danger"
+                    onClick={() => setConfirm({ runner: r, action: "remove" })}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
                 </div>
-                {r.drain && r.status !== "disabled" && <DrainLine runner={r} />}
-                <RunnerResources runner={r} />
               </div>
-              {r.status !== "disabled" && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => drain.mutate(r)}
-                  loading={drain.isPending && drain.variables?.id === r.id}
-                >
-                  {r.drain ? "Stop draining" : "Drain"}
-                </Button>
-              )}
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() =>
-                  r.status !== "disabled" && r.active_sessions > 0
-                    ? setConfirm({ runner: r, action: "disable" })
-                    : toggle.mutate(r)
-                }
-              >
-                {r.status === "disabled" ? "Enable" : "Disable"}
-              </Button>
-              <button
-                type="button"
-                aria-label={`Remove ${r.name}`}
-                className="rounded p-1.5 text-ink-4 hover:text-danger"
-                onClick={() => setConfirm({ runner: r, action: "remove" })}
-              >
-                <Trash2 className="size-3.5" />
-              </button>
             </li>
           ))}
         </ul>
@@ -454,17 +459,19 @@ function runnerState(r: G.Runner): string {
   return r.active_sessions > 0 ? "draining" : "drained";
 }
 
-function sessionsLeft(n: number): string {
-  return n === 0 ? "no sessions left" : n === 1 ? "1 session left" : `${n} sessions left`;
-}
-
 /** Who drained a runner, when, and what still runs on it. */
 function DrainLine({ runner: r }: { runner: G.Runner }) {
   if (!r.drain) return null;
-  const by = r.drain.by?.name ?? "its host";
+  const who = r.drain.by?.name ?? "Its host";
+  const n = r.active_sessions;
   return (
     <div className="mt-0.5 text-[12px] text-amber">
-      Takes no new sessions: {sessionsLeft(r.active_sessions)}. Drained by {by} {ago(r.drain.since)}.
+      {who} started draining it {ago(r.drain.since)}: no new sessions start on it
+      {n === 0
+        ? ", and none runs."
+        : n === 1
+          ? ", and 1 session still runs."
+          : `, and ${n} sessions still run.`}
     </div>
   );
 }
@@ -498,9 +505,12 @@ function ConfirmRunner({
       <div className="flex flex-col gap-5">
         {running > 0 && (
           <Banner tone="warn">
-            {running === 1 ? "A session runs" : `${running} sessions run`} on it. Their agents keep working in
-            their sandboxes without reaching fctl, and the sessions stop after ten minutes.
-            {r?.drain ? "" : " Drain it instead to let them finish: no new sessions start on it meanwhile."}
+            {running === 1
+              ? "A session runs on it. Its agent keeps working in its sandbox without reaching fctl, and the session stops after ten minutes."
+              : `${running} sessions run on it. Their agents keep working in their sandboxes without reaching fctl, and the sessions stop after ten minutes.`}
+            {r?.drain
+              ? ""
+              : ` Drain it instead to let ${running === 1 ? "it" : "them"} finish: no new sessions start on it meanwhile.`}
           </Banner>
         )}
         <div className="flex justify-end gap-2">
