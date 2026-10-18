@@ -23,6 +23,7 @@ export const keys = {
   session: (id: string) => ["session", id] as const,
   members: (id: string) => ["members", id] as const,
   secrets: (id: string) => ["secrets", id] as const,
+  projectRepos: (id: string) => ["project-repos", id] as const,
   runners: ["runners"] as const,
   users: ["users"] as const,
   allowlist: ["allowlist"] as const,
@@ -55,6 +56,12 @@ export function useMe() {
 export const useProjects = () => useQuery({ queryKey: keys.projects, queryFn: api.projects });
 export const useProject = (id: string) =>
   useQuery({ queryKey: keys.project(id), queryFn: () => api.project(id) });
+export const useProjectRepos = (id?: string) =>
+  useQuery({
+    queryKey: keys.projectRepos(id ?? ""),
+    queryFn: () => api.projectRepos(id ?? ""),
+    enabled: !!id,
+  });
 export const useSessions = (q: { project?: string; status?: string; limit?: number; mine?: boolean }) =>
   useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q) });
 export const useRunners = () =>

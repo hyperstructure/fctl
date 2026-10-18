@@ -19,6 +19,7 @@ import { Avatar, Spinner } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { clock, duration, until } from "@/lib/format";
+import { repoChanges } from "@/lib/git";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { ToolRow } from "./tool";
 
@@ -176,36 +177,37 @@ function Logs({ lines }: { lines: G.LogLine[] }) {
   );
 }
 
+/** One line per repository with changes: the primary one, then the others by name. */
 function GitItem({ git }: { git: G.GitState }) {
-  const add = git.files.reduce((n, f) => n + (f.additions ?? 0), 0);
-  const del = git.files.reduce((n, f) => n + (f.deletions ?? 0), 0);
-  if (!git.files.length && !git.pull_request) return null;
-  return (
-    <Milestone icon={<GitBranch />}>
-      {git.files.length} {git.files.length === 1 ? "file" : "files"} changed{" "}
-      <span className="text-accent/80">+{add}</span> <span className="text-danger/80">−{del}</span>
-      {git.ahead > 0 && (
+  const repos = repoChanges(git).filter((r) => r.files.length > 0 || r.pr);
+  return repos.map((r) => (
+    <Milestone key={r.name ?? ""} icon={<GitBranch />}>
+      {r.name && <span className="font-mono text-ink-3">{r.name}: </span>}
+      {r.files.length} {r.files.length === 1 ? "file" : "files"} changed{" "}
+      <span className="text-accent/80">+{r.additions}</span>{" "}
+      <span className="text-danger/80">−{r.deletions}</span>
+      {r.ahead > 0 && (
         <>
           {" "}
-          · {git.ahead} {git.ahead === 1 ? "commit" : "commits"}
+          · {r.ahead} {r.ahead === 1 ? "commit" : "commits"}
         </>
       )}
-      {git.pushed && <> · pushed</>}
-      {git.pull_request && (
+      {r.pushed && <> · pushed</>}
+      {r.pr && (
         <>
           {" · "}
           <a
-            href={git.pull_request.url}
+            href={r.pr.url}
             target="_blank"
             rel="noreferrer"
             className="text-ink-2 underline decoration-line-strong underline-offset-2 hover:text-ink"
           >
-            PR #{git.pull_request.number}
+            PR #{r.pr.number}
           </a>
         </>
       )}
     </Milestone>
-  );
+  ));
 }
 
 const ItemView = memo(function ItemView({ item, live }: { item: Item; live?: LiveTurn }) {

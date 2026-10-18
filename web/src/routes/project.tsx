@@ -1,9 +1,9 @@
-// A project: its sessions, settings, people and secrets.
+// A project: its sessions, repositories, settings, people and secrets.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { ArrowRight, ArrowUp, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowRight, ArrowUp, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
+import { useEffect, useId, useState } from "react";
 import {
   Avatar,
   Banner,
@@ -25,9 +25,17 @@ import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, stamp } from "@/lib/format";
-import { keys, queryClient, useMe, useProject, useSessions } from "@/lib/queries";
+import {
+  keys,
+  queryClient,
+  useInstance,
+  useMe,
+  useProject,
+  useProjectRepos,
+  useSessions,
+} from "@/lib/queries";
 
-type Tab = "sessions" | "settings" | "members" | "secrets";
+type Tab = "sessions" | "repositories" | "settings" | "members" | "secrets";
 
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
@@ -35,6 +43,7 @@ export function ProjectPage() {
   const project = useProject(slug);
   const p = project.data;
   const manage = p?.role === "owner" || p?.role === "maintainer";
+  const others = (useProjectRepos(p?.id).data?.repos ?? []).filter((r) => !r.primary).length;
   if (project.isError)
     return (
       <div className="mx-auto max-w-xl px-6 py-24">
@@ -61,7 +70,18 @@ export function ProjectPage() {
                 {p.repo.owner}/{p.repo.name}
               </a>
             ) : (
-              <span>No repository</span>
+              others === 0 && <span>No repository</span>
+            )}
+            {others > 0 && (
+              <Link
+                to="/p/$slug"
+                params={{ slug }}
+                search={{ tab: "repositories" }}
+                className="transition-colors hover:text-ink"
+              >
+                {p.repo ? "+" : ""}
+                {others} {others === 1 ? "repository" : "repositories"}
+              </Link>
             )}
             <span className="inline-flex items-center gap-1.5 font-mono">
               <GitBranch className="size-3.5 text-ink-4" />
@@ -79,27 +99,33 @@ export function ProjectPage() {
           <Skeleton className="mt-4 h-4 w-48" />
         </div>
       )}
-      <nav className="mt-8 flex gap-1 border-b border-line">
-        {(["sessions", "settings", "members", "secrets"] as Tab[])
-          .filter((t) => t === "sessions" || t === "members" || manage)
-          .map((t) => (
-            <Link
-              key={t}
-              to="/p/$slug"
-              params={{ slug }}
-              search={{ tab: t === "sessions" ? undefined : t }}
-              className={cn(
-                "relative px-3 py-2.5 text-[13.5px] capitalize transition-colors",
-                tab === t ? "text-ink" : "text-ink-3 hover:text-ink",
-              )}
-            >
-              {t}
-              {tab === t && <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent" />}
-            </Link>
-          ))}
+      {/* Scrolls sideways where the tabs don't fit (phones). */}
+      <nav className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
+        <div className="flex w-max min-w-full gap-1 border-b border-line">
+          {(["sessions", "repositories", "settings", "members", "secrets"] as Tab[])
+            .filter((t) => t === "sessions" || t === "repositories" || t === "members" || manage)
+            .map((t) => (
+              <Link
+                key={t}
+                to="/p/$slug"
+                params={{ slug }}
+                search={{ tab: t === "sessions" ? undefined : t }}
+                className={cn(
+                  "relative shrink-0 px-3 py-2.5 text-[13.5px] capitalize transition-colors",
+                  tab === t ? "text-ink" : "text-ink-3 hover:text-ink",
+                )}
+              >
+                {t}
+                {tab === t && (
+                  <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent" />
+                )}
+              </Link>
+            ))}
+        </div>
       </nav>
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
+        {p && tab === "repositories" && <Repositories project={p} />}
         {p && tab === "settings" && manage && <Settings project={p} />}
         {p && tab === "settings" && p.role === "owner" && <ProjectDangerZone project={p} />}
         {p && tab === "members" && <Members project={p} />}
@@ -221,6 +247,189 @@ function Sessions({ project }: { project: G.Project }) {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+const accessLabel = (a: G.RepoAccess) => (a === "write" ? "Read and write" : "Read only");
+/** GitHub names ignore case. */
+const same = (a: string, b?: string) => a.toLowerCase() === b?.toLowerCase();
+
+function Repositories({ project }: { project: G.Project }) {
+  const manage = project.role === "owner" || project.role === "maintainer";
+  const { data: instance } = useInstance();
+  const repos = useProjectRepos(project.id);
+  const github = useQuery({
+    queryKey: keys.repos,
+    queryFn: api.githubRepos,
+    enabled: manage && !!instance?.features.github,
+  });
+  const [repo, setRepo] = useState("");
+  const [access, setAccess] = useState<G.RepoAccess>("read");
+  const suggestionsId = useId();
+  const list = repos.data?.repos ?? [];
+  const owner = list[0]?.owner;
+  const wide = repo.trim().endsWith("/*");
+  const save = (r: G.ProjectRepoList) => queryClient.setQueryData(keys.projectRepos(project.id), r);
+  const add = useMutation({
+    mutationFn: () => api.addProjectRepo(project.id, { repo: repo.trim(), access: wide ? "read" : access }),
+    onSuccess: (r) => {
+      save(r);
+      setRepo("");
+      setAccess("read");
+    },
+  });
+  const change = useMutation({
+    mutationFn: (b: G.AddProjectRepoRequest) => api.addProjectRepo(project.id, b),
+    onSuccess: save,
+    onError: (e) => toast(e.message, "error"),
+  });
+  const remove = useMutation({
+    mutationFn: (r: G.ProjectRepo) => api.removeProjectRepo(project.id, r.owner, r.name),
+    onSuccess: save,
+    onError: (e) => toast(e.message, "error"),
+  });
+  // The GitHub App's repositories on the project's account that are not listed yet.
+  const suggestions = (github.data?.repos ?? [])
+    .filter((r) => !owner || same(r.owner, owner))
+    .filter((r) => !list.some((l) => same(l.owner, r.owner) && same(l.name ?? "*", r.name)))
+    .map((r) => r.full_name);
+  if (owner && !list.some((l) => !l.name)) suggestions.unshift(`${owner}/*`);
+  return (
+    <div>
+      <p className="mb-6 max-w-2xl text-[13.5px] leading-relaxed text-ink-3">
+        Agents start in the primary repository and clone the others when they need them, into{" "}
+        <code className="font-mono text-[12.5px] text-ink-2">~/repos/&lt;owner&gt;/&lt;name&gt;</code>. They
+        push and open pull requests only where they can write. All of a project's repositories belong to one
+        GitHub account. Changes apply to sessions that start afterwards.
+      </p>
+      {manage && (
+        <form
+          className="mb-6 flex flex-wrap items-end gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (repo.trim()) add.mutate();
+          }}
+        >
+          <Field label="Add a repository" className="min-w-[240px] flex-1" error={add.error?.message}>
+            {(id) => (
+              <>
+                <Input
+                  id={id}
+                  list={suggestionsId}
+                  value={repo}
+                  onChange={(e) => setRepo(e.target.value)}
+                  placeholder={`${owner ?? "owner"}/name, or ${owner ?? "owner"}/* for all of them`}
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  className="font-mono text-[13px]"
+                />
+                <datalist id={suggestionsId}>
+                  {suggestions.map((n) => (
+                    <option key={n} value={n} />
+                  ))}
+                </datalist>
+              </>
+            )}
+          </Field>
+          <select
+            aria-label="Access"
+            value={wide ? "read" : access}
+            disabled={wide}
+            onChange={(e) => setAccess(e.target.value as G.RepoAccess)}
+            className="h-9.5 rounded-md border border-line-strong bg-sunken/60 px-2 text-[13px] disabled:opacity-60"
+          >
+            <option value="read">Read only</option>
+            <option value="write">Read and write</option>
+          </select>
+          <Button
+            type="submit"
+            variant="primary"
+            icon={<Plus className="size-3.5" />}
+            loading={add.isPending}
+            disabled={!repo.trim()}
+          >
+            Add
+          </Button>
+        </form>
+      )}
+      {repos.isPending ? (
+        <div className="space-y-3 py-3">
+          <Skeleton className="h-11" />
+          <Skeleton className="h-11" />
+        </div>
+      ) : list.length === 0 ? (
+        <p className="border-t border-line py-6 text-[13px] text-ink-4">
+          No repositories. Agents work in an empty directory.
+        </p>
+      ) : (
+        <ul className="border-t border-line">
+          {list.map((r) => {
+            const label = `${r.owner}/${r.name ?? "*"}`;
+            return (
+              <li key={label} className="flex items-center gap-3 border-b border-line py-3">
+                {r.name ? (
+                  <GithubIcon className="size-4 shrink-0 text-ink-4" />
+                ) : (
+                  <Building2 className="size-4 shrink-0 text-ink-4" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono text-[13.5px] text-ink">
+                    {r.name ? (
+                      <a
+                        href={`https://github.com/${r.owner}/${r.name}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="transition-colors hover:text-accent"
+                      >
+                        {label}
+                      </a>
+                    ) : (
+                      label
+                    )}
+                  </div>
+                  <div className="truncate text-[12px] text-ink-4">
+                    {r.primary
+                      ? "Primary: agents start in it"
+                      : !r.name
+                        ? `Every repository of ${r.owner} the GitHub App can reach`
+                        : r.added_by && r.added_at
+                          ? `Added by ${r.added_by.name} ${ago(r.added_at)}`
+                          : null}
+                  </div>
+                </div>
+                {manage && !r.primary && r.name ? (
+                  <select
+                    aria-label={`Access to ${label}`}
+                    value={r.access}
+                    onChange={(e) => change.mutate({ repo: label, access: e.target.value as G.RepoAccess })}
+                    className="rounded-md border border-line bg-transparent px-2 py-1 text-[12.5px] text-ink-2"
+                  >
+                    <option value="read">Read only</option>
+                    <option value="write">Read and write</option>
+                  </select>
+                ) : (
+                  <span className="text-[12.5px] text-ink-3">{accessLabel(r.access)}</span>
+                )}
+                {manage &&
+                  (r.primary ? (
+                    <span className="w-[26px] shrink-0" />
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${label}`}
+                      className="rounded p-1.5 text-ink-4 hover:text-danger"
+                      onClick={() => remove.mutate(r)}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  ))}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
