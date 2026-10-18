@@ -283,8 +283,11 @@ provider; on iPhone and iPad they reach fctl on the Home Screen.
 
 A browser's subscription (`push_subscriptions`) belongs to the sign-in that
 made it: signing out, revoking that sign-in or its expiry deletes it, and so
-does a push service that answers it is gone. The web app registers it again
-at start-up, so a new sign-in, new keys or a new VAPID key carry over.
+do removing the browser in Settings and a push service that answers it is
+gone. When the app starts in a browser whose subscription the server no
+longer has for that sign-in, it ends the subscription there too, so it never
+comes back by itself; when the instance's VAPID key changed, it subscribes
+again with the new one.
 
 ## Claude credentials
 

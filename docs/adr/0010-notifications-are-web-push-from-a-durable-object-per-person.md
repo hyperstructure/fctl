@@ -8,8 +8,8 @@ People start sessions and go do something else. Nothing told them when a
 session finished its turn and waited for a reply, paused on a usage limit or
 failed: they had to keep the app open and look
 ([#4](https://github.com/hyperstructure/fctl/issues/4)). Several sessions
-often change at once, when parallel tasks finish together or a host goes
-away, and a notification for each would be noise.
+often change at once, when parallel tasks finish together or a project's
+sessions fail the same way, and a notification for each would be noise.
 
 ## Decision
 
@@ -40,7 +40,8 @@ away, and a notification for each would be noise.
 - **A browser's subscription belongs to the sign-in that made it**
   (`push_subscriptions.token_id`, deleted with the token), so signing out of
   a browser stops its notifications, and another account signing in there
-  does not inherit them.
+  does not inherit them. The web app never brings back a subscription the
+  server dropped: a browser someone removed stays removed.
 
 ## Consequences
 

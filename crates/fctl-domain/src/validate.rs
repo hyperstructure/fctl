@@ -394,18 +394,35 @@ pub fn push_endpoint(input: &str, local: bool) -> Result<String> {
     {
         return Err(bad());
     }
-    let name = webpush::service(s);
-    let named = name.contains('.')
-        && name.parse::<std::net::IpAddr>().is_err()
-        && !name.starts_with('[')
-        && !name.ends_with(".localhost");
-    if !local && (scheme != "https" || !named) {
+    if !local && (scheme != "https" || !public_name(&webpush::service(s))) {
         return Err(ApiError::validation(
             "endpoint",
             "Push endpoints are https:// addresses of a push service",
         ));
     }
     Ok(s.to_owned())
+}
+
+/// A host name on the internet: dot-separated labels of letters, digits and
+/// hyphens, ending in a top-level domain that starts with a letter. That
+/// leaves out IP addresses in every notation (`127.1`, `0x7f.0.0.1`, `[::1]`),
+/// `localhost`, and names with a trailing dot.
+fn public_name(host: &str) -> bool {
+    let labels: Vec<&str> = host.split('.').collect();
+    let ok = |l: &&str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    labels.len() >= 2
+        && labels.iter().all(ok)
+        && labels
+            .last()
+            .is_some_and(|tld| tld.starts_with(|c: char| c.is_ascii_alphabetic()))
+        && !host.eq_ignore_ascii_case("localhost")
+        && !host.to_ascii_lowercase().ends_with(".localhost")
 }
 
 /// A push subscription's keys, as base64url without padding: the browser's
@@ -447,6 +464,21 @@ mod tests {
         assert!(push_endpoint("https://10.0.0.8/push", false).is_err());
         assert!(push_endpoint("https://[::1]/push", false).is_err());
         assert!(push_endpoint("https://push.localhost/x", false).is_err());
+        // IPv4 in other notations, and names that resolve here.
+        for host in [
+            "127.1",
+            "0x7f.0.0.1",
+            "0177.0.0.1",
+            "localhost.",
+            "fcm.googleapis.com.",
+        ] {
+            assert!(
+                push_endpoint(&format!("https://{host}/push"), false).is_err(),
+                "{host}"
+            );
+        }
+        assert!(push_endpoint("https://wns2-par02p.notify.windows.com/w/?token=x", false).is_ok());
+        assert!(push_endpoint("https://push.example.xn--p1ai/x", false).is_ok());
         assert!(push_endpoint("https://user@evil.example/x", false).is_err());
         assert!(push_endpoint("https://fcm.googleapis.com/a b", false).is_err());
         assert!(push_endpoint("javascript:alert(1)", true).is_err());
