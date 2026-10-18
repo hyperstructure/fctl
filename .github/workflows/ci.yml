@@ -36,10 +36,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: ./.github/actions/repo-access
-        with:
-          repo: design
-          key: ${{ secrets.DESIGN_DEPLOY_KEY }}
       - run: npm ci --no-audit --no-fund
       - run: cargo xtask check
 
@@ -60,10 +56,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: ./.github/actions/repo-access
-        with:
-          repo: design
-          key: ${{ secrets.DESIGN_DEPLOY_KEY }}
       # No npm ci: like a fresh clone, cargo xtask dev installs what it needs.
       - run: cargo xtask dev --smoke
 
@@ -90,10 +82,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: ./.github/actions/repo-access
-        with:
-          repo: design
-          key: ${{ secrets.DESIGN_DEPLOY_KEY }}
       - run: npm ci --no-audit --no-fund
       - name: worker-build
         run: command -v worker-build || cargo install worker-build --version 0.8.7 --locked

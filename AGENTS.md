@@ -106,9 +106,8 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   it): change those there, together with `docs/sandbox-images.md` here.
   Its Rust is the one in `rust-toolchain.toml`; bump the two together.
 
-design and fctl-site are private for now: `npm ci` reaches the design
-package over git, so it needs GitHub access (CI uses a read-only deploy
-key). sandbox is public.
+All four repositories are public. `npm ci` downloads the design package
+from GitHub at the tag `web/package.json` pins, without signing in.
 
 ## Commits, pull requests and releases
 

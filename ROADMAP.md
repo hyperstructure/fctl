@@ -39,8 +39,10 @@ this file is the overview. Order within a section is priority.
 - [x] **hyperstructure/design** publishes `@hyperstructure/design`: the
       tokens, fonts, WebGL scenes, fctl's mark and hyperstructure's symbol,
       with a playground. `web/` and fctl-site pin a tag.
-- [ ] Move `@hyperstructure/design` to npm, and drop the deploy keys, once
-      the repositories are public
+- [x] Make the repositories public, and drop the deploy keys that read
+      design and fctl: `npm ci` downloads `@hyperstructure/design` from
+      GitHub without them
+- [ ] Move `@hyperstructure/design` to npm
 
 ## 0.2 — run it every day
 

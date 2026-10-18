@@ -10,7 +10,7 @@ subscription, Cloudflare account or GitHub App.
 - Node.js 22 or newer (`npm ci` at the root installs the web app and
   wrangler). The web app depends on
   [@hyperstructure/design](https://github.com/hyperstructure/design) through
-  git, so `npm ci` needs read access to that repository while it is private.
+  git, at a tag, which `npm ci` downloads from GitHub without signing in.
 - [worker-build](https://crates.io/crates/worker-build), which builds the
   control plane for wrangler. The first `cargo xtask dev` installs it with
   `cargo install` if it isn't on your PATH. On Linux that needs pkg-config
