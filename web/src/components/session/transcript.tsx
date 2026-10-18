@@ -70,7 +70,7 @@ const UserMessage = memo(function UserMessage({
         </span>
       </div>
       {item.text && (
-        <div className="ml-7 rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap text-ink">
+        <div className="ml-7 rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap wrap-anywhere text-ink">
           {item.text}
         </div>
       )}
