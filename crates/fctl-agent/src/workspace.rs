@@ -893,6 +893,24 @@ async fn sync_clone(
     RepoGitState::new(&c.repo, c.access, Some(path), st)
 }
 
+/// Copies the pull requests `last` found to the same branches in `st`.
+pub fn keep_pull_requests(st: &mut GitState, last: &GitState) {
+    if st.pull_request.is_none() && st.branch.is_some() && st.branch == last.branch {
+        st.pull_request = last.pull_request.clone();
+    }
+    for r in st.repos.iter_mut().flatten() {
+        if r.pull_request.is_some() || r.branch.is_none() {
+            continue;
+        }
+        r.pull_request = last
+            .repos
+            .iter()
+            .flatten()
+            .find(|o| o.owner == r.owner && o.name == r.name && o.branch == r.branch)
+            .and_then(|o| o.pull_request.clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1035,6 +1053,57 @@ mod tests {
         let pushed = ["rev-parse", "--verify", "--quiet", "refs/heads/fctl/1-test"];
         assert!(run(&origin, &p.home, "git", &pushed).await?.ok);
         Ok(())
+    }
+
+    #[test]
+    fn pull_requests_outlast_a_state_without_lookups() {
+        let pr = |n: u64| PullRequestRef {
+            number: n,
+            url: format!("https://github.com/acme/x/pull/{n}"),
+            title: None,
+            state: None,
+        };
+        let repo = |name: &str, branch: &str, pr: Option<PullRequestRef>| RepoGitState {
+            owner: "acme".into(),
+            name: name.into(),
+            branch: Some(branch.into()),
+            pull_request: pr,
+            ..Default::default()
+        };
+        let last = GitState {
+            branch: Some("fctl/1".into()),
+            pull_request: Some(pr(1)),
+            repos: Some(vec![
+                repo("lib", "fctl/1", Some(pr(2))),
+                repo("docs", "main", None),
+            ]),
+            ..Default::default()
+        };
+        let mut st = GitState {
+            branch: Some("fctl/1".into()),
+            repos: Some(vec![
+                repo("docs", "main", None),
+                repo("lib", "fctl/1", None),
+                repo("new", "fctl/1", None),
+            ]),
+            ..Default::default()
+        };
+        keep_pull_requests(&mut st, &last);
+        assert_eq!(st.pull_request.map(|p| p.number), Some(1));
+        let prs: Vec<Option<u64>> = st
+            .repos
+            .unwrap_or_default()
+            .iter()
+            .map(|r| r.pull_request.as_ref().map(|p| p.number))
+            .collect();
+        assert_eq!(prs, [None, Some(2), None]);
+        // Another branch is another pull request.
+        let mut moved = GitState {
+            branch: Some("other".into()),
+            ..Default::default()
+        };
+        keep_pull_requests(&mut moved, &last);
+        assert_eq!(moved.pull_request, None);
     }
 
     #[tokio::test]

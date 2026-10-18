@@ -81,6 +81,8 @@ pub struct Supervisor {
     stderr_budget: (Instant, u32),
     claude_credential: Option<ClaudeCredential>,
     exit_after: Option<Instant>,
+    /// The repositories' state after the last turn, for its pull requests.
+    last_git: Option<GitState>,
 }
 
 impl Supervisor {
@@ -132,6 +134,7 @@ impl Supervisor {
                 stderr_budget: (Instant::now(), 0),
                 claude_credential: None,
                 exit_after: None,
+                last_git: None,
             },
             claude_rx,
             work_rx,
@@ -453,6 +456,7 @@ impl Supervisor {
                 if let Some(pr) = &state.pull_request {
                     tracing::info!("pull request #{} {}", pr.number, pr.url);
                 }
+                self.last_git = Some(state.clone());
                 self.emit(EventBody::Git(state));
             }
         }
@@ -1064,7 +1068,13 @@ impl Supervisor {
             for (level, text) in synced.logs {
                 self.log(LogSource::Agent, level, &text);
             }
-            self.emit(EventBody::Git(synced.state));
+            // No lookups while stopping: the pull requests found after the
+            // last turn still stand.
+            let mut st = synced.state;
+            if let Some(last) = &self.last_git {
+                workspace::keep_pull_requests(&mut st, last);
+            }
+            self.emit(EventBody::Git(st));
         }
         let (status, reason) = match self.stopping {
             Some((r, _)) => (SessionStatus::Stopped, Some(stop_text(r).to_owned())),
