@@ -47,11 +47,11 @@ fctl logs -f my-app#12           # …and keep following
 
 fctl attach my-app#12            # stream it and type messages (Ctrl-C detaches)
 fctl attach --read-only my-app#12
-fctl send my-app#12 "Use the existing Button component"
+fctl send my-app#12 "Use the existing Button component"   # a stopped session resumes for it
 fctl send my-app#12 -a ci.log "This is what CI printed"
 fctl interrupt my-app#12         # stop the current turn
 fctl stop my-app#12              # end the session (its sandbox is kept for resuming)
-fctl resume my-app#12 "Now add tests"
+fctl resume my-app#12 "Now add tests"   # also a failed one, on your Claude subscription
 fctl follow my-app#12            # get its notifications (see Notifications)
 fctl unfollow my-app#12
 fctl open my-app#12              # in the browser

@@ -80,7 +80,8 @@ enum Command {
         #[arg(short, long)]
         follow: bool,
     },
-    /// Send a message to a session's agent.
+    /// Send a message to a session's agent. A stopped session resumes for
+    /// it, on the Claude subscription it ran on.
     Send {
         /// A session: its id (ses_…), its URL, or project#number.
         session: String,
@@ -100,7 +101,8 @@ enum Command {
         /// A session: its id (ses_…), its URL, or project#number.
         session: String,
     },
-    /// Resume a stopped session, optionally with a new message.
+    /// Resume a stopped or failed session on your Claude subscription,
+    /// optionally with a new message.
     Resume {
         /// A session: its id (ses_…), its URL, or project#number.
         session: String,

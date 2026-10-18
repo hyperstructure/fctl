@@ -174,9 +174,12 @@ turns them off.
   it in a browser. From a terminal, `fctl open my-app#12 --claude` opens the
   desktop app, or claude.ai when it is not installed.
 
-When the agent finishes a turn, the session waits for you. It sleeps after the
-project's idle timeout; **Resume** (or `fctl resume my-app#12 "…"`) picks it up
-where it left off, with the same conversation and branch.
+When the agent finishes a turn, the session waits for you. After the
+project's idle timeout (ten minutes unless its settings say otherwise) it
+stops, so that its machine takes other work. A message picks it up where it
+left off, on the same machine, with the same conversation and branch: type
+it on the session page or send it with `fctl send`. A session that failed
+needs its owner to **Resume** it (or `fctl resume my-app#12 "…"`).
 
 ## 8. Work together
 

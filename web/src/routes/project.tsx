@@ -734,12 +734,16 @@ function Settings({ project }: { project: G.Project }) {
                   onChange={(e) =>
                     set("idle_timeout_minutes", e.target.value ? Number(e.target.value) : undefined)
                   }
-                  placeholder="120"
+                  placeholder="10"
                 />
               )}
             </Field>
           </div>
           <LargestSandbox />
+          <p className="-mt-2 text-[12.5px] text-ink-3">
+            A session that waits for a message longer than the idle timeout stops, and its runner takes other
+            work. A message resumes it.
+          </p>
           <Field
             label="Environment"
             hint="KEY=value per line. Not secret; use Secrets for credentials."
