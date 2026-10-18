@@ -31,6 +31,17 @@ curl -fsSL https://fctl.sh/install | sh
 
 The installer puts `fctl` in `~/.local/bin` after checking its SHA-256 and
 sets up tab completion for your shell; `fctl self update` keeps it current.
+
+Or install it with [Homebrew](https://brew.sh) (macOS and Linux):
+
+```sh
+brew install hyperstructure/tap/fctl
+```
+
+The formula installs the same release archive, checked against its SHA-256,
+and sets up completions. Update with `brew upgrade fctl` instead of
+`fctl self update`; use one install method per machine.
+
 Then sign in from the terminal; it opens your browser to approve the device:
 
 ```sh

@@ -346,6 +346,9 @@ It downloads the release for this machine, checks its SHA-256, replaces
 version (sessions keep running) and refreshes installed completions.
 `FCTL_DOWNLOAD` points it at another release server.
 
+Installed with Homebrew (`brew install hyperstructure/tap/fctl`)? Update with
+`brew upgrade fctl` instead; Homebrew owns those files.
+
 ## Shell completions
 
 The installer sets up tab completion for your shell. To do it yourself:

@@ -31,6 +31,9 @@ fctl host install                        # this machine now runs agents
 fctl run -p my-app "Add a dark mode toggle"
 ```
 
+Prefer Homebrew? `brew install hyperstructure/tap/fctl` installs the same
+release.
+
 ## How it works
 
 ```
