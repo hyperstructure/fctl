@@ -113,3 +113,37 @@ it needs GitHub access (CI uses a read-only deploy key).
   [.claude/skills/release/SKILL.md](.claude/skills/release/SKILL.md).
 - Record significant decisions in `docs/adr/` (copy the newest one's
   format). The roadmap is in [ROADMAP.md](ROADMAP.md) and GitHub issues.
+
+## Issues
+
+- Before starting on an issue, read it with its comments and the pull
+  requests that mention it (`gh issue view N --comments`), and check that no
+  open pull request already covers it.
+- In a pull request, write `Fixes #N` only when it does everything the issue
+  asks (merging closes it); otherwise `Refs #N`.
+- Tick an item in an issue's checklist only once it is done and verified,
+  and link the evidence. Report partial progress in a comment: what is done,
+  what is left, what blocks it.
+- An issue closes when everything in it is done and verified, or when a
+  person decides it won't be done. Leftovers move to new, linked issues. Ask
+  before closing an issue your task didn't name.
+- New issues: search for duplicates first, follow the shape of #12 and
+  #13, and add labels. Add to other people's issues (a comment or a new
+  section) instead of rewriting them.
+- An fctl session's token covers only this repository: name what
+  hyperstructure/fctl-site or hyperstructure/design need, and tell the
+  person.
+- The procedures: [.claude/skills/issues/SKILL.md](.claude/skills/issues/SKILL.md).
+
+## After opening a pull request
+
+- Wait for CI in the same turn (`gh pr checks N --watch --fail-fast`) and
+  fix failures. Nothing wakes an fctl session when CI finishes or someone
+  reviews (#8).
+- Answer every review comment in its thread: fix it, or say why not.
+- After the merge, don't push to the merged branch; follow-ups go in a new
+  pull request from the updated `main`. Record the merge in the issue, and
+  say whether the change is deployed, released, or waiting for a release
+  (`git tag --contains <sha>`).
+- The procedures:
+  [.claude/skills/pull-requests/SKILL.md](.claude/skills/pull-requests/SKILL.md).
