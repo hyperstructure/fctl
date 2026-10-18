@@ -10,6 +10,7 @@
 use crate::ctx::now_ms;
 use crate::internal::{self, ControlState, Deliver, Delivered, InitSession, ViewerIdentity};
 use fctl_domain::events::{self as ev, ClaudeKind};
+use fctl_domain::journal::{self, Take};
 use fctl_domain::notify;
 use fctl_domain::usage as plan;
 use fctl_proto::api::{EventPage, PlanLimit};
@@ -1131,9 +1132,31 @@ impl SessionObject {
                 let mut summary_changed = false;
                 let mut turn_ended = false;
                 let mut usage = Vec::new();
+                // Newer events that came before older ones wait for them
+                // (`fctl_domain::journal`).
+                let waiting_since = self.meta("waiting_since").and_then(|v| v.parse().ok());
+                let mut waits = false;
                 for e in events {
-                    if e.agent_seq <= acked {
-                        continue;
+                    match journal::take(acked, e.agent_seq, waiting_since, now) {
+                        Take::Seen => continue,
+                        Take::Wait => {
+                            if waiting_since.is_none() {
+                                worker::console_log!(
+                                    "agent_seq {} came before {}: waiting for the host's replay",
+                                    e.agent_seq,
+                                    acked + 1
+                                );
+                                self.set_meta("waiting_since", &now.to_string());
+                            }
+                            waits = true;
+                            break;
+                        }
+                        Take::Store if e.agent_seq > acked + 1 => worker::console_error!(
+                            "agent_seq {} to {} never came; going on without them",
+                            acked + 1,
+                            e.agent_seq - 1
+                        ),
+                        Take::Store => {}
                     }
                     acked = e.agent_seq;
                     let mut body = e.body;
@@ -1155,6 +1178,9 @@ impl SessionObject {
                         out.push(json);
                     }
                     self.pulse(&body, now);
+                }
+                if waiting_since.is_some() && !waits && !out.is_empty() {
+                    self.delete_meta("waiting_since");
                 }
                 self.set_meta("acked_agent_seq", &acked.to_string());
                 self.broadcast_events(&out);
