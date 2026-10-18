@@ -39,12 +39,15 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 const enc = encodeURIComponent;
 
+/** Where a file uploads: a project (to start a session) or a session (a message in it). */
+export type UploadScope = { project: string } | { session: string };
+
 /**
  * Uploads a file to send with a message (XHR, for progress). The body is
  * `application/octet-stream`; the name and type travel in the query.
  */
 function upload(
-  project: string,
+  scope: UploadScope,
   file: Blob,
   name: string,
   onProgress?: (fraction: number) => void,
@@ -52,8 +55,9 @@ function upload(
   const xhr = new XMLHttpRequest();
   const q = new URLSearchParams({ name });
   if (file.type) q.set("type", file.type);
+  const base = "project" in scope ? `/projects/${enc(scope.project)}` : `/sessions/${enc(scope.session)}`;
   const promise = new Promise<G.Attachment>((resolve, reject) => {
-    xhr.open("POST", `/api/v1/projects/${enc(project)}/attachments?${q}`);
+    xhr.open("POST", `/api/v1${base}/attachments?${q}`);
     xhr.setRequestHeader("Accept", "application/json");
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.upload.onprogress = (e) => {

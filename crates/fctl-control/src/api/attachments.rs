@@ -21,11 +21,30 @@ fn enc(s: &str) -> String {
 }
 
 /// `POST /api/v1/projects/{id}/attachments?name=<file name>&type=<media type>`
-/// with the file as an `application/octet-stream` body. Answers with the
-/// [`Attachment`]. Uploads no message sends are deleted after a day.
+/// with the file as an `application/octet-stream` body, for a new session.
+/// Answers with the [`Attachment`]. Uploads no message sends are deleted
+/// after a day.
 pub async fn upload(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppResult<Response> {
     let p = access::project(ctx, project_id).await?;
     p.require_editor()?;
+    store(ctx, req, &p.row.id).await
+}
+
+/// `POST /api/v1/sessions/{id}/attachments?name=…&type=…`: the same for a
+/// message in a session, for anyone who can message it (people it is shared
+/// with need not be members of its project).
+pub async fn upload_to_session(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    session_id: &str,
+) -> AppResult<Response> {
+    let a = access::session(ctx, session_id).await?;
+    a.require_editor()?;
+    store(ctx, req, &a.row.project_id).await
+}
+
+/// Stores the request body in the project's FilesObject.
+async fn store(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppResult<Response> {
     // Browsers cannot send this type cross-site without asking first, which
     // keeps uploads as safe from forged requests as JSON bodies.
     let ct = http::header(req, "Content-Type").unwrap_or_default();
@@ -65,7 +84,7 @@ pub async fn upload(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         .body()
         .map(wasm_bindgen::JsValue::from)
         .unwrap_or_else(|| js_sys::Uint8Array::new_with_length(0).into());
-    let stub = internal::files_stub(&ctx.env, &p.row.id)?;
+    let stub = internal::files_stub(&ctx.env, project_id)?;
     let path = format!("/store?meta={}", enc(&serde_json::to_string(&meta)?));
     let att: Attachment = internal::post_body(&stub, &path, body).await?;
     http::created(&att)

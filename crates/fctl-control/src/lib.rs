@@ -162,6 +162,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["sessions", id, "resume"]) => api::sessions::resume(ctx, req, id).await,
         (Get, ["sessions", id, "events"]) => api::sessions::events(ctx, req, id).await,
         (Get, ["sessions", id, "ws"]) => api::sessions::websocket(ctx, req, id).await,
+        (Post, ["sessions", id, "attachments"]) => {
+            api::attachments::upload_to_session(ctx, req, id).await
+        }
         (Get, ["sessions", id, "attachments", file]) => {
             api::attachments::download(ctx, id, file).await
         }

@@ -271,7 +271,7 @@ export function SessionPage() {
               role={role}
               viewers={s.viewers}
               meId={me?.user.id}
-              projectId={session?.project_id}
+              sessionId={id}
               onSend={(t, files) =>
                 store.send(
                   t,

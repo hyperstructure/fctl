@@ -7,7 +7,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { IconButton, toast } from "@/components/ui";
 import type * as G from "@/gen";
-import { api } from "@/lib/api";
+import { api, type UploadScope } from "@/lib/api";
 import {
   attachmentUrl,
   dragHasFiles,
@@ -41,16 +41,18 @@ export interface SentFiles {
 }
 
 interface Upload {
-  project: string;
+  to: string;
   promise: Promise<G.Attachment>;
   abort: () => void;
 }
 
 /**
- * The files of the message being written. Uploads go to `project` (and again
- * if it changes); `take` waits for them and empties the composer.
+ * The files of the message being written. Uploads go to `scope` (and again
+ * if it changes, like the floor's project picker); `take` waits for them and
+ * empties the composer.
  */
-export function useAttachments(project: string | undefined) {
+export function useAttachments(scope: UploadScope | undefined) {
+  const to = scope ? JSON.stringify(scope) : undefined;
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const uploads = useRef(new Map<string, Upload>());
   const pasted = useRef(0);
@@ -64,8 +66,10 @@ export function useAttachments(project: string | undefined) {
   const start = useCallback(
     (d: Draft, to: string) => {
       uploads.current.get(d.key)?.abort();
-      const up = api.uploadAttachment(to, d.file, d.name, (progress) => patch(d.key, { progress }));
-      const entry = { project: to, ...up };
+      const up = api.uploadAttachment(JSON.parse(to), d.file, d.name, (progress) =>
+        patch(d.key, { progress }),
+      );
+      const entry = { to, ...up };
       uploads.current.set(d.key, entry);
       patch(d.key, { status: "uploading", progress: 0, error: undefined, attachment: undefined });
       up.promise.then(
@@ -81,13 +85,13 @@ export function useAttachments(project: string | undefined) {
     [patch],
   );
 
-  // A new project (the home page's picker) needs its own copies.
+  // Another project (the floor's picker) needs its own copies.
   useEffect(() => {
-    if (!project) return;
+    if (!to) return;
     for (const d of live.current) {
-      if (uploads.current.get(d.key)?.project !== project) start(d, project);
+      if (uploads.current.get(d.key)?.to !== to) start(d, to);
     }
-  }, [project, start]);
+  }, [to, start]);
 
   // Leaving the page cancels uploads and frees the previews.
   useEffect(
@@ -122,9 +126,9 @@ export function useAttachments(project: string | undefined) {
       }
       if (!added.length) return;
       setDrafts((ds) => [...ds, ...added]);
-      if (project) for (const d of added) start(d, project);
+      if (to) for (const d of added) start(d, to);
     },
-    [project, start],
+    [to, start],
   );
 
   const remove = useCallback((key: string) => {
@@ -140,9 +144,9 @@ export function useAttachments(project: string | undefined) {
   const retry = useCallback(
     (key: string) => {
       const d = live.current.find((x) => x.key === key);
-      if (d && project) start(d, project);
+      if (d && to) start(d, to);
     },
-    [project, start],
+    [to, start],
   );
 
   /**

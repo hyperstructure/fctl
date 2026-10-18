@@ -21,7 +21,7 @@ export function Composer({
   role,
   viewers,
   meId,
-  projectId,
+  sessionId,
   onSend,
   onInterrupt,
   onTyping,
@@ -31,8 +31,7 @@ export function Composer({
   role?: G.SessionRole;
   viewers: G.Presence[];
   meId?: string;
-  /** Where attached files upload. */
-  projectId?: string;
+  sessionId: string;
   onSend: (text: string, files: SentFiles) => Promise<void>;
   onInterrupt: () => void;
   onTyping: () => void;
@@ -45,7 +44,7 @@ export function Composer({
   const canWrite = role === "editor" || role === "owner";
   const running = status === "running" || status === "provisioning" || status === "preparing";
   const typing = viewers.filter((v) => v.user.id !== meId && v.typing_at && Date.now() - v.typing_at < 6000);
-  const files = useAttachments(canWrite ? projectId : undefined);
+  const files = useAttachments(canWrite ? { session: sessionId } : undefined);
   const dragging = useFileDrop((f) => {
     files.add(f);
     ref.current?.focus();

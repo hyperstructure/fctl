@@ -87,8 +87,14 @@ fn project_or_default(p: Option<String>) -> Result<String> {
     )
 }
 
+/// Where files upload: a project (for a new session) or a session.
+pub enum UploadTo<'a> {
+    Project(&'a str),
+    Session(&'a str),
+}
+
 /// Uploads files to send with a message; returns their ids.
-pub async fn upload(api: &Api, project: &str, paths: &[PathBuf]) -> Result<Vec<AttachmentId>> {
+pub async fn upload(api: &Api, to: UploadTo<'_>, paths: &[PathBuf]) -> Result<Vec<AttachmentId>> {
     if paths.len() > files::MAX_FILES_PER_MESSAGE {
         bail!(
             "Attach at most {} files to one message",
@@ -113,10 +119,15 @@ pub async fn upload(api: &Api, project: &str, paths: &[PathBuf]) -> Result<Vec<A
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
-        let att = api
-            .upload_attachment(project, &name, Some(files::guess_media_type(&name)), bytes)
-            .await
-            .with_context(|| format!("uploading {}", path.display()))?;
+        let media_type = Some(files::guess_media_type(&name));
+        let att = match to {
+            UploadTo::Project(p) => api.upload_attachment(p, &name, media_type, bytes).await,
+            UploadTo::Session(s) => {
+                api.upload_session_attachment(s, &name, media_type, bytes)
+                    .await
+            }
+        }
+        .with_context(|| format!("uploading {}", path.display()))?;
         ids.push(att.id);
     }
     Ok(ids)
@@ -138,7 +149,7 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
     } else {
         bail!("What should the agent do? `fctl run -p {project} \"Fix the flaky login test\"`");
     };
-    let attachments = upload(&api, &project, &args.attach).await?;
+    let attachments = upload(&api, UploadTo::Project(&project), &args.attach).await?;
     let session = api
         .create_session(
             &project,
@@ -296,7 +307,7 @@ pub async fn send(
     } else {
         message.to_owned()
     };
-    let attachments = upload(&api, s.project_id.as_str(), attach).await?;
+    let attachments = upload(&api, UploadTo::Session(&s.id.0), attach).await?;
     let r = api.send_message(&s.id.0, &text, None, attachments).await?;
     if json {
         return style::print_json(&r);
@@ -344,7 +355,7 @@ pub async fn resume(
     let api = config::api(server)?;
     let s = resolve(&api, reference).await?;
     let prompt = (!message.trim().is_empty()).then(|| message.to_owned());
-    let attachments = upload(&api, s.project_id.as_str(), attach).await?;
+    let attachments = upload(&api, UploadTo::Session(&s.id.0), attach).await?;
     let s = api.resume(&s.id.0, prompt, attachments).await?;
     if json {
         return style::print_json(&s);

@@ -237,8 +237,8 @@ impl Api {
 
     // ── attachments ──
 
-    /// Uploads a file to send with a message, a new session or a resume (by
-    /// its id). Unsent uploads are deleted after a day.
+    /// Uploads a file to start a session with (send it by id). Unsent
+    /// uploads are deleted after a day.
     pub async fn upload_attachment(
         &self,
         project: &str,
@@ -246,7 +246,40 @@ impl Api {
         media_type: Option<&str>,
         bytes: Vec<u8>,
     ) -> Result<Attachment> {
-        let mut path = format!("/projects/{}/attachments?name={}", enc(project), enc(name));
+        self.upload(
+            &format!("/projects/{}", enc(project)),
+            name,
+            media_type,
+            bytes,
+        )
+        .await
+    }
+
+    /// Uploads a file to send with a message or resume in a session.
+    pub async fn upload_session_attachment(
+        &self,
+        session: &str,
+        name: &str,
+        media_type: Option<&str>,
+        bytes: Vec<u8>,
+    ) -> Result<Attachment> {
+        self.upload(
+            &format!("/sessions/{}", enc(session)),
+            name,
+            media_type,
+            bytes,
+        )
+        .await
+    }
+
+    async fn upload(
+        &self,
+        scope: &str,
+        name: &str,
+        media_type: Option<&str>,
+        bytes: Vec<u8>,
+    ) -> Result<Attachment> {
+        let mut path = format!("{scope}/attachments?name={}", enc(name));
         if let Some(t) = media_type {
             path.push_str(&format!("&type={}", enc(t)));
         }

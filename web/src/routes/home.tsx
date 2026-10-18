@@ -132,7 +132,7 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
   useEffect(() => {
     if (!project && first) setProject(first);
   }, [first, project]);
-  const files = useAttachments(editable.length ? project : undefined);
+  const files = useAttachments(editable.length && project ? { project } : undefined);
   const attach = (f: File[], pasted?: boolean) => {
     files.add(f, { pasted });
     ref.current?.focus();
