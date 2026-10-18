@@ -12,7 +12,7 @@
 //! | [`viewer`] | SessionDO ⇄ browsers and the CLI |
 //! | [`runner`] | FleetDO ⇄ hosts (control connection) |
 //! | [`uplink`] | SessionDO ⇄ hosts (one connection per session) |
-//! | [`agent`] | hosts ⇄ fctl-agent inside a sandbox |
+//! | [`agent`] | hosts ⇄ fctl-agent inside a sandbox, and `fctl` ⇄ fctl-agent within it |
 
 pub mod agent;
 pub mod api;

@@ -668,6 +668,8 @@ pub struct CreateSessionRequest {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct UpdateSessionRequest {
     pub title: Option<String>,
+    /// What the session is about; an empty string clears it.
+    pub description: Option<String>,
     pub archived: Option<bool>,
 }
 

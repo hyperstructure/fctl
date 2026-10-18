@@ -114,7 +114,7 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
          sign in   {DEV_EMAIL} / {DEV_PASSWORD}\n  \
          api       {API}/api/v1\n  \
          cli       export FCTL_SERVER={API} FCTL_TOKEN=$(cat .fctl-dev/token)\n\n\
-         Agents run fake-claude: try a task like \"write notes.md\", \"slow\", \"limit\" or \"crash\".\n\
+         Agents run fake-claude: try a task like \"write notes.md\", \"rename Fix the login test\", \"slow\", \"limit\" or \"crash\".\n\
          Ctrl-C stops everything. State lives in .fctl-dev/.\n"
     );
 
@@ -269,10 +269,10 @@ fn ensure_basics(token: &str) -> Result<()> {
             "adding a Claude credential",
             &call(
                 "POST",
-                "/me/claude",
+                "/me/claude/token",
                 Some(&auth),
                 Some(
-                    json!({ "token": "sk-ant-oat01-fctl-dev-fake-claude", "label": "fake-claude" }),
+                    json!({ "token": "sk-ant-oat01-fctl-dev-fake-claude-0000000000", "label": "fake-claude" }),
                 ),
             )?,
         )?;

@@ -206,6 +206,10 @@ impl Api {
         self.get(&format!("/sessions/{}", enc(id))).await
     }
 
+    pub async fn update_session(&self, id: &str, req: &UpdateSessionRequest) -> Result<Session> {
+        self.patch(&format!("/sessions/{}", enc(id)), req).await
+    }
+
     pub async fn create_session(
         &self,
         project: &str,

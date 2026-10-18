@@ -61,6 +61,10 @@ outside it except through these channels:
   the app start with it off (from the CLI: `fctl projects create
   --no-connectors`); projects from before the setting keep their connectors
   until a maintainer turns them off.
+- **fctl.** No fctl credentials enter a sandbox. Through fctl-agent's
+  session socket, anything the agent runs can rename its own session and
+  describe it (`fctl edit`), and nothing else; the control plane checks
+  both values again.
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 

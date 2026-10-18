@@ -110,6 +110,11 @@ export function SessionPage() {
                   <h1 className="truncate font-display text-[21px] leading-tight font-medium tracking-[-0.012em] text-ink">
                     {session.title}
                   </h1>
+                  {session.description && (
+                    <p className="mt-0.5 truncate text-[13.5px] text-ink-2" title={session.description}>
+                      {session.description}
+                    </p>
+                  )}
                   <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
                     <Link
                       to="/p/$slug"

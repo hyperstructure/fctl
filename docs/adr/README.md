@@ -12,3 +12,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0004](0004-events-are-journaled.md) | Agent events are journaled in the sandbox and acknowledged |
 | [0005](0005-three-repositories.md) | fctl, fctl-site and design are separate repositories |
 | [0006](0006-conventional-commits-and-workflow-releases.md) | Conventional Commits, and releases from a workflow |
+| [0007](0007-agents-name-their-sessions-through-fctl-agent.md) | Agents name their sessions through fctl-agent |

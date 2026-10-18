@@ -67,7 +67,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         .map(str::trim)
         .filter(|t| !t.is_empty())
     {
-        Some(t) => validate::name("title", t)?,
+        Some(t) => validate::session_title(t)?,
         None => naming::title_from_prompt(&prompt),
     };
     let model = body
@@ -244,12 +244,26 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let title = body
         .title
         .as_deref()
-        .map(|t| validate::name("title", t))
+        .map(validate::session_title)
+        .transpose()?;
+    // Absent: unchanged. Empty: cleared.
+    let description = body
+        .description
+        .as_deref()
+        .map(validate::session_description)
         .transpose()?;
     q(
         &ctx.db,
-        "UPDATE sessions SET title = COALESCE(?, title), archived = COALESCE(?, archived), updated_at = ? WHERE id = ?",
-        &[os(title.as_deref()), body.archived.map_or(crate::db::null(), crate::db::b), n(ctx.now), s(id)],
+        "UPDATE sessions SET title = COALESCE(?, title), description = CASE WHEN ? THEN ? ELSE description END, \
+         archived = COALESCE(?, archived), updated_at = ? WHERE id = ?",
+        &[
+            os(title.as_deref()),
+            crate::db::b(description.is_some()),
+            os(description.clone().flatten().as_deref()),
+            body.archived.map_or(crate::db::null(), crate::db::b),
+            n(ctx.now),
+            s(id),
+        ],
     )?
     .run()
     .await?;
@@ -259,6 +273,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         "/control",
         &ControlState {
             title,
+            description: description.map(Option::unwrap_or_default),
             archived: body.archived,
             ..Default::default()
         },

@@ -1,4 +1,4 @@
-//! `fctl run`, `sessions`, `show`, `logs`, `send`, `interrupt`, `stop`, `resume`, `open`.
+//! `fctl run`, `sessions`, `show`, `edit`, `logs`, `send`, `interrupt`, `stop`, `resume`, `open`.
 
 use crate::config;
 use crate::render::Renderer;
@@ -6,9 +6,15 @@ use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use fctl_client::Api;
-use fctl_proto::api::CreateSessionRequest;
+use fctl_proto::SessionId;
+use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
+use fctl_proto::api::{CreateSessionRequest, UpdateSessionRequest};
 use fctl_proto::session::Session;
 use std::io::{IsTerminal, Read};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 
 #[derive(Args)]
 pub struct RunArgs {
@@ -38,6 +44,25 @@ pub struct RunArgs {
     /// Start it and return instead of following along.
     #[arg(short, long)]
     pub detach: bool,
+}
+
+#[derive(Args)]
+#[command(group(
+    clap::ArgGroup::new("change")
+        .required(true)
+        .multiple(true)
+        .args(["title", "description"])
+))]
+pub struct EditArgs {
+    /// A session: its id (ses_…), its URL, or project#number. In an fctl
+    /// sandbox, leave it out to edit the session the sandbox runs.
+    pub session: Option<String>,
+    /// The new title: what the work is, in at most 80 characters.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// What the session is about, in a sentence or two ("" clears it).
+    #[arg(long)]
+    pub description: Option<String>,
 }
 
 #[derive(Args)]
@@ -170,6 +195,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         style::bold(&format!("{}#{}", s.project_slug, s.number)),
         s.title
     );
+    if let Some(d) = &s.description {
+        println!("{}", style::dim(d));
+    }
     println!(
         "status:   {}{}",
         style::status(s.status),
@@ -211,6 +239,117 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     }
     println!("{}", style::dim(&format!("{}/s/{}", api.base(), s.id)));
     Ok(())
+}
+
+/// `fctl edit`. In the sandbox of the session it edits (an agent naming its
+/// own session) it asks fctl-agent over the session socket and needs no
+/// sign-in; anywhere else it goes through the API as the signed-in person.
+pub async fn edit(server: Option<&str>, args: EditArgs, json: bool) -> Result<()> {
+    if let Some((socket, id)) = this_sandbox(args.session.as_deref()) {
+        return edit_here(&socket, id, args, json).await;
+    }
+    let reference = args
+        .session
+        .as_deref()
+        .context("Which session? `fctl edit my-app#12 --title \"Fix the flaky login test\"`")?;
+    let api = config::api(server)?;
+    let s = resolve(&api, reference).await?;
+    let s = api
+        .update_session(
+            &s.id.0,
+            &UpdateSessionRequest {
+                title: args.title,
+                description: args.description,
+                archived: None,
+            },
+        )
+        .await?;
+    if json {
+        return style::print_json(&s);
+    }
+    print_edited(
+        &format!("{}#{}", s.project_slug, s.number),
+        &s.title,
+        s.description.as_deref(),
+    );
+    Ok(())
+}
+
+fn this_sandbox(reference: Option<&str>) -> Option<(PathBuf, String)> {
+    sandbox_session(
+        std::env::var_os(SESSION_SOCKET_ENV),
+        std::env::var("FCTL_SESSION_ID").ok(),
+        reference,
+    )
+}
+
+/// The session socket and the session's id, when this runs in an fctl
+/// sandbox and `reference` is that sandbox's session (or absent).
+fn sandbox_session(
+    socket: Option<std::ffi::OsString>,
+    id: Option<String>,
+    reference: Option<&str>,
+) -> Option<(PathBuf, String)> {
+    let socket = socket.filter(|s| !s.is_empty())?;
+    let id = id.filter(|id| !id.is_empty())?;
+    let here = reference.is_none_or(|r| r.trim().rsplit('/').next() == Some(id.as_str()));
+    here.then(|| (PathBuf::from(socket), id))
+}
+
+async fn edit_here(socket: &Path, id: String, args: EditArgs, json: bool) -> Result<()> {
+    let request = SessionRequest::Edit {
+        session_id: Some(SessionId(id)),
+        title: args.title,
+        description: args.description,
+    };
+    let reply = tokio::time::timeout(Duration::from_secs(15), ask_agent(socket, &request))
+        .await
+        .context("fctl-agent did not answer in time")??;
+    match reply {
+        SessionReply::Edited {
+            ref project_slug,
+            number,
+            ref title,
+            ref description,
+            ..
+        } => {
+            if json {
+                // The fields a session has, without the reply's tag.
+                let mut v = serde_json::to_value(&reply)?;
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("type");
+                }
+                return style::print_json(&v);
+            }
+            print_edited(
+                &format!("{project_slug}#{number}"),
+                title,
+                description.as_deref(),
+            );
+            Ok(())
+        }
+        SessionReply::Error { error } => bail!("{}", error.message),
+    }
+}
+
+async fn ask_agent(socket: &Path, request: &SessionRequest) -> Result<SessionReply> {
+    let stream = UnixStream::connect(socket)
+        .await
+        .with_context(|| format!("fctl-agent is not answering on {}", socket.display()))?;
+    let (read, mut write) = stream.into_split();
+    let mut line = serde_json::to_string(request)?;
+    line.push('\n');
+    write.write_all(line.as_bytes()).await?;
+    let mut reply = String::new();
+    BufReader::new(read).read_line(&mut reply).await?;
+    serde_json::from_str(reply.trim()).context("reading fctl-agent's answer")
+}
+
+fn print_edited(reference: &str, title: &str, description: Option<&str>) {
+    println!("{} {} {title}", style::accent("✓"), style::bold(reference));
+    if let Some(d) = description {
+        println!("  {}", style::dim(d));
+    }
 }
 
 pub async fn logs(server: Option<&str>, reference: &str, follow: bool, json: bool) -> Result<()> {
@@ -327,4 +466,39 @@ pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> R
         println!("{url}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edits_go_to_fctl_agent_only_for_its_own_session() {
+        let here = |reference: Option<&str>| {
+            sandbox_session(
+                Some("/home/agent/.fctl/agent.session.sock".into()),
+                Some("ses_01ABC".into()),
+                reference,
+            )
+            .map(|(socket, id)| (socket.display().to_string(), id))
+        };
+        let socket = "/home/agent/.fctl/agent.session.sock".to_owned();
+        assert_eq!(here(None), Some((socket.clone(), "ses_01ABC".into())));
+        assert_eq!(
+            here(Some("ses_01ABC")),
+            Some((socket.clone(), "ses_01ABC".into()))
+        );
+        assert_eq!(
+            here(Some("https://app.fctl.sh/s/ses_01ABC")),
+            Some((socket, "ses_01ABC".into()))
+        );
+        assert_eq!(here(Some("my-app#12")), None);
+        assert_eq!(here(Some("ses_01XYZ")), None);
+        // Outside a sandbox, or with half of its environment.
+        assert_eq!(sandbox_session(None, Some("ses_01ABC".into()), None), None);
+        assert_eq!(
+            sandbox_session(Some("/s.sock".into()), Some(String::new()), None),
+            None
+        );
+    }
 }

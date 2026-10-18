@@ -13,7 +13,17 @@ export type Session = { id: SessionId, project_id: ProjectId, project_slug: stri
 /**
  * Sequential per project (`#12`).
  */
-number: number, title: string, status: SessionStatus, status_reason?: string, 
+number: number, 
+/**
+ * Starts as the first line of the task; the agent renames it to what it
+ * works on (`fctl edit`), and so can its owner.
+ */
+title: string, 
+/**
+ * What the session is about, in a sentence or two (absent until the
+ * agent or its owner writes one).
+ */
+description?: string, status: SessionStatus, status_reason?: string, 
 /**
  * When a paused session resumes on its own.
  */
