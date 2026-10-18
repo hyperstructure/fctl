@@ -3,14 +3,15 @@
 use crate::access;
 use crate::ctx::Ctx;
 use crate::db::{Count, batch, n, os, q, s};
-use crate::error::{AppResult, conflict, forbidden, not_found, validation};
+use crate::error::{AppError, AppResult, conflict, forbidden, not_found, validation};
 use crate::github;
 use crate::http;
 use crate::model::{PROJECT_SELECT, ProjectRow};
-use fctl_domain::{naming, perm, validate};
-use fctl_proto::UserId;
+use fctl_domain::{naming, perm, settings, validate};
 use fctl_proto::api::*;
 use fctl_proto::session::{ProjectRole, ProjectSettings, RepoRef, UserRef};
+use fctl_proto::{ApiError, UserId};
+use serde::Deserialize;
 use worker::{Request, Response};
 
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
@@ -238,7 +239,11 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
 }
 
 pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
-    let body: UpdateProjectRequest = http::body(req).await?;
+    // Read as JSON first: what an update keeps depends on which settings it
+    // sent (see `settings::keep_unsent`).
+    let raw: serde_json::Value = http::body(req).await?;
+    let body = UpdateProjectRequest::deserialize(&raw)
+        .map_err(|e| AppError(ApiError::bad_request(format!("Invalid request body: {e}"))))?;
     let p = access::project(ctx, id).await?;
     p.require_maintainer()?;
     let row = &p.row;
@@ -275,7 +280,12 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         .transpose()?
         .unwrap_or_else(|| row.default_branch.clone());
     let settings = match body.settings {
-        Some(st) => clean_settings(st)?,
+        Some(st) => {
+            let mut st = clean_settings(st)?;
+            let sent = raw.get("settings").unwrap_or(&serde_json::Value::Null);
+            settings::keep_unsent(&mut st, &row.settings(), sent);
+            st
+        }
         None => row.settings(),
     };
     let archived_at = match body.archived {

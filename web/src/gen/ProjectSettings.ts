@@ -46,6 +46,11 @@ auto_pull_request: boolean,
  */
 remote_control: boolean, 
 /**
+ * Let agents use the claude.ai connectors of the person who starts a
+ * session. Only full Claude logins have them.
+ */
+claude_ai_connectors: boolean, 
+/**
  * Non-secret environment variables for sandboxes.
  */
 env: { [key in string]: string }, };

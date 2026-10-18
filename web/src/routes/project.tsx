@@ -365,6 +365,20 @@ function Settings({ project }: { project: G.Project }) {
               label="Remote Control"
             />
           </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              claude.ai connectors
+              <span className="block text-[12.5px] text-ink-4">
+                Agents can use the connectors of the person who starts a session (mail, files, docs) without
+                asking. Only with a full Claude login.
+              </span>
+            </span>
+            <Switch
+              checked={s.claude_ai_connectors}
+              onChange={(v) => set("claude_ai_connectors", v)}
+              label="claude.ai connectors"
+            />
+          </div>
         </div>
       </Section>
       <Section title="Sandbox" description="Where agents run.">
