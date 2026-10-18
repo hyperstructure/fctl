@@ -141,6 +141,7 @@ fctl host doctor                 # check the driver, image, agent binary, connec
 fctl host logs -n 200
 fctl host image pull             # pull the sandbox image again, for a newer build
 fctl host image build            # build it here instead (with Lima: the base VM)
+fctl host image build --source ~/src/sandbox   # from a checkout of hyperstructure/sandbox
 fctl host restart                # sessions keep running
 fctl host uninstall              # sandboxes are kept
 ```
@@ -167,7 +168,7 @@ keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them
 
 Sessions start from their project's image or, without one, the host's:
 unless `image` sets another, the published image of the host's own version,
-`ghcr.io/hyperstructure/fctl-agent:<version>`, which the host pulls when it
+`ghcr.io/hyperstructure/sandbox:<version>`, which the host pulls when it
 starts. [Sandbox images](sandbox-images.md) has the details.
 
 A project's Settings → Sandbox can ask for more CPUs or memory than the

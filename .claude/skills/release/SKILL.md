@@ -1,6 +1,6 @@
 ---
 name: release
-description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases and the sandbox image to GHCR, updates the CHANGELOG and redeploys app.fctl.sh. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
+description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases, updates the CHANGELOG and redeploys app.fctl.sh; hyperstructure/sandbox then publishes the release's sandbox image to GHCR. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
 ---
 
 # Releasing fctl
@@ -56,14 +56,16 @@ It runs in three steps:
 3. **Publish**: makes the archives from those binaries (`cargo xtask dist
    package`), creates the GitHub release with the notes, publishes the
    files to https://fctl.sh/releases (moving `latest`), installs it with
-   the installer as a check, starts CI on `main`, which redeploys
-   app.fctl.sh, and starts the **Image** workflow.
+   the installer as a check, and starts CI on `main`, which redeploys
+   app.fctl.sh.
 
-The Image workflow (`.github/workflows/image.yml`) builds the release's
-sandbox image from its tag, for arm64 and amd64, and publishes it as
-`ghcr.io/hyperstructure/fctl-agent:X.Y.Z`, moving `X.Y` and `latest`.
-Hosts of the new version pull it; until it is there, their sessions start
-from `latest`.
+Within the hour, the Image workflow of
+[hyperstructure/sandbox](https://github.com/hyperstructure/sandbox) finds
+the release on fctl.sh and publishes its sandbox image,
+`ghcr.io/hyperstructure/sandbox:X.Y.Z`, for arm64 and amd64, moving `X.Y`
+and `latest`. Hosts of the new version pull it; until it is there, their
+sessions start from `latest`. To publish it at once:
+`gh workflow run image.yml -R hyperstructure/sandbox`.
 
 Follow it with `gh run watch` or in the Actions tab; it takes about 10
 minutes.
@@ -74,10 +76,10 @@ minutes.
   `fctl self update --check` sees it.
 - The GitHub release and `CHANGELOG.md` on `main` have the notes.
 - `https://app.fctl.sh/api/v1/health` reports the version once CI is done.
-- The Image workflow's run for the tag passed (`gh run list --workflow
-  image.yml`), and `docker buildx imagetools inspect
-  ghcr.io/hyperstructure/fctl-agent:X.Y.Z` lists linux/amd64 and
-  linux/arm64.
+- Within the hour, `docker buildx imagetools inspect
+  ghcr.io/hyperstructure/sandbox:X.Y.Z` lists linux/amd64 and linux/arm64
+  (`gh run list -R hyperstructure/sandbox --workflow image.yml` shows the
+  runs).
 - Hosts update with `fctl self update` (it restarts the host service;
   running sessions keep going).
 
@@ -92,10 +94,12 @@ minutes.
   tag from the start with
   `gh workflow run release.yml --ref main -f tag=vX.Y.Z`. If the code is
   broken, fix it and release a patch.
-- **The image** (the Image workflow failed): fix the cause in a pull
-  request if it is the workflow, then start it again for the tag:
-  `gh workflow run image.yml --ref main -f tag=vX.Y.Z`. It builds from the
-  tag, so a broken `images/agent` needs a patch release.
+- **The image** (hyperstructure/sandbox's Image workflow failed, or the
+  release has no image after an hour): its `publish` skill says what to do.
+  Start it for the release with
+  `gh workflow run image.yml -R hyperstructure/sandbox -f version=X.Y.Z`.
+  The image is built from that repository's `main`, so fixing it takes a
+  pull request there, not an fctl release.
 - Never move or delete a published tag or its files on fctl.sh: installed
   CLIs and hosts download releases by version.
 
@@ -104,3 +108,5 @@ minutes.
 - **hyperstructure/design** releases are tags as well; see its AGENTS.md
   and release skill.
 - **hyperstructure/fctl-site** deploys from `main` and has no releases.
+- **hyperstructure/sandbox** publishes the sandbox image from `main`, for
+  every fctl release; see its AGENTS.md and publish skill.

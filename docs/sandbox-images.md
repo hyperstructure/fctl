@@ -6,11 +6,12 @@ hosts get it, and what images built from it can rely on.
 
 ## The default image
 
-`ghcr.io/hyperstructure/fctl-agent` is built from
-[`images/agent`](../images/agent), which lists the versions: Debian bookworm
-with git, the GitHub CLI, build tools, Python and uv, Rust, Node.js,
-TypeScript, Bun, Claude Code and fctl. It is published for arm64 (Apple
-silicon) and amd64.
+`ghcr.io/hyperstructure/sandbox` is built from
+[hyperstructure/sandbox](https://github.com/hyperstructure/sandbox), a
+public repository whose README lists the versions: Debian bookworm with
+git, the GitHub CLI, build tools, Python and uv, Rust, Node.js, TypeScript,
+Bun, Claude Code and fctl. It is published for arm64 (Apple silicon) and
+amd64.
 
 | Tag | Image |
 |---|---|
@@ -18,13 +19,15 @@ silicon) and amd64.
 | `0.4` | The newest 0.4 release's. |
 | `latest` | The newest release's. |
 
-Each release's image is published a few minutes after the release, by the
-Image workflow (`.github/workflows/image.yml`). fctl turns off Claude Code's
-auto-updater, so an image's Claude Code is as old as the image: every day,
-the workflow rebuilds the latest release's image when Claude Code has a newer
-release, and once the image is a week old, for Debian's updates. A rebuild
+The sandbox repository's Image workflow builds every tag from its `main`
+branch, with that release of fctl and the newest Claude Code. It looks for
+new fctl releases every hour, so a release's image follows within the hour.
+fctl turns off Claude Code's auto-updater, so an image's Claude Code is as
+old as the image: every day, the workflow rebuilds the latest release's
+image when Claude Code has a newer release, and once the image is a week
+old, for Debian's updates. A change to the image rebuilds it too. A rebuild
 moves the tags; to pin one build, add its digest:
-`ghcr.io/hyperstructure/fctl-agent:0.4.0@sha256:…`.
+`ghcr.io/hyperstructure/sandbox:0.4.0@sha256:…`.
 
 Its labels say what is inside:
 
@@ -32,11 +35,11 @@ Its labels say what is inside:
 |---|---|
 | `org.opencontainers.image.version`, `sh.fctl.version` | fctl's version |
 | `sh.fctl.claude-code.version` | Claude Code's version |
-| `org.opencontainers.image.revision` | the commit it was built from |
+| `org.opencontainers.image.revision` | the commit of hyperstructure/sandbox it was built from |
 | `org.opencontainers.image.created` | when it was built |
 
 ```sh
-docker image inspect ghcr.io/hyperstructure/fctl-agent:0.4.0 \
+docker image inspect ghcr.io/hyperstructure/sandbox:0.4.0 \
   --format '{{ index .Config.Labels "sh.fctl.claude-code.version" }}'
 ```
 
@@ -46,8 +49,8 @@ A host whose `host.toml` sets no `image` uses the default image of its own
 version, so upgrading the host (`fctl self update`) moves its new sessions
 to the new version's image. The host pulls the image in the background when
 it starts, and a session that starts before it has the image pulls it
-itself. When the image can't be pulled, as in the minutes before a
-release's image is published, the session starts from `latest` instead and
+itself. When the image can't be pulled, as in the hour after a release
+before its image is published, the session starts from `latest` instead and
 says so in its log.
 
 The host pulls a tag once. To get a newer build of it, with a newer Claude
@@ -56,26 +59,27 @@ Code, run `fctl host image pull`.
 - **Another image.** `image` in `host.toml` (or `fctl host install --image
   …`) sets the image for sessions whose project sets none, and a project's
   Settings → Sandbox → Image sets one for its own sessions.
-  `fctl-agent:latest`, the default image's name before it was published,
-  means the default.
+  `fctl-agent:latest`, the name the default image had when hosts built it
+  themselves, means the default.
 - **Building it.** `fctl host image build` builds the default image on the
-  host with its driver, under the same name, so sessions use the build: for
-  a host that can't reach ghcr.io, or to try changes to `images/agent` with
-  an fctl built from them. The host never replaces a build with the
-  published image; `fctl host image pull` does.
+  host with its driver, from the `main` branch of hyperstructure/sandbox,
+  under the same name, so sessions use the build: for a host that can't
+  reach ghcr.io, for instance. `--source DIR` builds from a checkout of the
+  repository instead, to try changes to the image with fctl. The host never
+  replaces a build with the published image; `fctl host image pull` does.
 - **Lima** sessions clone the `fctl-base` VM instead, which `fctl host
-  image build` prepares with the same provisioning script. The process
+  image build` prepares with the image's provisioning script. The process
   driver uses no image.
 - **Disk.** The images of earlier versions stay on the host until you
-  remove them: `docker image rm ghcr.io/hyperstructure/fctl-agent:0.4.0`
+  remove them: `docker image rm ghcr.io/hyperstructure/sandbox:0.4.0`
   (with Apple container, `container image delete`) removes one that no
   sandbox uses.
 
 ## Its layout
 
 Images built `FROM` the default image can rely on its layout, which stays
-the same from version to version. `images/agent/check.sh` checks every
-build for it:
+the same from version to version. The sandbox repository's `check.sh`
+checks every build for it:
 
 - **The user** is `agent`, uid 1000, with the home directory `/home/agent`
   and sudo without a password: the sandbox is the boundary. Sessions run as
@@ -99,7 +103,7 @@ An image that installs something as root switches back to `agent` at the
 end:
 
 ```dockerfile
-FROM ghcr.io/hyperstructure/fctl-agent:0.4
+FROM ghcr.io/hyperstructure/sandbox:0.4
 USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends postgresql-client \

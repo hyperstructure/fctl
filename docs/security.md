@@ -124,11 +124,12 @@ it runs, and keep nothing secret on disk but their runner token
 (`~/.config/fctl/host-token`, mode 0600).
 
 Sessions run in their project's sandbox image or, without one, the host's:
-by default `ghcr.io/hyperstructure/fctl-agent`, which this repository's
-Image workflow builds from `images/agent`. A host can use its own build of
-it instead (`fctl host image build`) or a copy in another registry (`image`
-in `host.toml`); a project's own image still applies to its sessions
-([Sandbox images](sandbox-images.md)).
+by default `ghcr.io/hyperstructure/sandbox`, which the Image workflow of
+the public [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox)
+repository builds, so anyone can read what goes into it. A host can use its
+own build of it instead (`fctl host image build`) or a copy in another
+registry (`image` in `host.toml`); a project's own image still applies to
+its sessions ([Sandbox images](sandbox-images.md)).
 
 ## Retention
 

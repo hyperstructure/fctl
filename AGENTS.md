@@ -90,9 +90,17 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   policy (`legal/privacy.md`) says what app.fctl.sh stores, who receives it
   and how long it is kept: a change here that alters any of that needs a
   matching change there.
+- [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox): the
+  default sandbox image, `ghcr.io/hyperstructure/sandbox`, published for
+  every release. Hosts pull it, and `fctl host image build` builds its
+  `main`. The host relies on its layout (the `agent` user, the PATH,
+  `/opt/fctl/bin`) and on `Dockerfile` and `provision.sh` at its root:
+  change those there, together with `docs/sandbox-images.md` here. Its Rust
+  is the one in `rust-toolchain.toml`; bump the two together.
 
-Both are private for now: `npm ci` reaches the design package over git, so
-it needs GitHub access (CI uses a read-only deploy key).
+design and fctl-site are private for now: `npm ci` reaches the design
+package over git, so it needs GitHub access (CI uses a read-only deploy
+key). sandbox is public.
 
 ## Commits, pull requests and releases
 
@@ -137,8 +145,8 @@ it needs GitHub access (CI uses a read-only deploy key).
   #13, and add labels. Add to other people's issues (a comment or a new
   section) instead of rewriting them.
 - An fctl session's token covers only this repository: name what
-  hyperstructure/fctl-site or hyperstructure/design need, and tell the
-  person.
+  hyperstructure/fctl-site, hyperstructure/design or hyperstructure/sandbox
+  need, and tell the person.
 - The procedures: [.claude/skills/issues/SKILL.md](.claude/skills/issues/SKILL.md).
 
 ## After opening a pull request

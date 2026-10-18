@@ -179,8 +179,8 @@ fctl host install
 Hosts download their release from `https://fctl.sh/releases` by default; set
 `download_base` in `host.toml` to mirror them elsewhere (`fctl host image
 build` installs fctl in the default image from there too). They pull the
-sandbox image from `ghcr.io/hyperstructure/fctl-agent`; set `image` to use
-a copy in your own registry ([Sandbox images](sandbox-images.md)).
+sandbox image from `ghcr.io/hyperstructure/sandbox`; set `image` to use a
+copy in your own registry ([Sandbox images](sandbox-images.md)).
 
 ## Operating it
 
