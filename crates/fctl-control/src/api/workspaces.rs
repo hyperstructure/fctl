@@ -614,23 +614,34 @@ pub async fn transfer(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<R
         .and_then(|m| WorkspaceRole::parse(&m.role));
     a.require_open()?;
     policy::check_transfer(a.role, to)?;
-    // The old primary admin goes first: one per workspace.
+    // The old primary admin goes first (one per workspace), and only while
+    // the new one is still an admin, so that the workspace always has one.
     batch(
         &ctx.db,
         vec![
             q(
                 &ctx.db,
-                "UPDATE workspace_members SET role = 'admin' WHERE workspace_id = ? AND user_id = ? AND role = 'owner'",
-                &[s(a.id()), s(&me)],
+                "UPDATE workspace_members SET role = 'admin' WHERE workspace_id = ?1 AND user_id = ?2 AND role = 'owner' \
+                 AND EXISTS (SELECT 1 FROM workspace_members t WHERE t.workspace_id = ?1 AND t.user_id = ?3 AND t.role = 'admin')",
+                &[s(a.id()), s(&me), s(body.user_id.as_str())],
             )?,
             q(
                 &ctx.db,
-                "UPDATE workspace_members SET role = 'owner' WHERE workspace_id = ? AND user_id = ? AND role = 'admin'",
+                "UPDATE workspace_members SET role = 'owner' WHERE workspace_id = ?1 AND user_id = ?2 AND role = 'admin' \
+                 AND NOT EXISTS (SELECT 1 FROM workspace_members o WHERE o.workspace_id = ?1 AND o.role = 'owner')",
                 &[s(a.id()), s(body.user_id.as_str())],
             )?,
         ],
     )
     .await?;
+    let became = ws::member(&ctx.db, a.id(), body.user_id.as_str())
+        .await?
+        .and_then(|m| WorkspaceRole::parse(&m.role));
+    if became != Some(WorkspaceRole::Owner) {
+        return Err(conflict(
+            "They stopped being an admin in the meantime, so you are still the primary admin",
+        ));
+    }
     ctx.audit_in(
         Some(a.id()),
         "workspace.transferred",

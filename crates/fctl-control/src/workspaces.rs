@@ -386,7 +386,10 @@ pub async fn join(
     invitation: &InvitationRow,
     now: i64,
 ) -> AppResult<bool> {
-    if member(db, &invitation.workspace_id, &user.id).await?.is_some() {
+    if member(db, &invitation.workspace_id, &user.id)
+        .await?
+        .is_some()
+    {
         q(
             db,
             "DELETE FROM workspace_invitations WHERE id = ?",

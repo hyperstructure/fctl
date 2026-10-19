@@ -562,27 +562,36 @@ pub async fn transfer(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     crate::db::batch(
         &ctx.db,
         vec![
+            // Only while the new one is still an active admin, so that the
+            // instance always has its primary admin.
             q(
                 &ctx.db,
-                "UPDATE users SET role = 'admin', updated_at = ? WHERE id = ? AND role = 'owner'",
-                &[n(ctx.now), s(&actor.id)],
+                "UPDATE users SET role = 'admin', updated_at = ?1 WHERE id = ?2 AND role = 'owner' \
+                 AND EXISTS (SELECT 1 FROM users t WHERE t.id = ?3 AND t.role = 'admin' AND t.status = 'active')",
+                &[n(ctx.now), s(&actor.id), s(&target.id)],
             )?,
             q(
                 &ctx.db,
-                "UPDATE users SET role = 'owner', updated_at = ? WHERE id = ? AND role = 'admin'",
+                "UPDATE users SET role = 'owner', updated_at = ?1 WHERE id = ?2 AND role = 'admin' \
+                 AND NOT EXISTS (SELECT 1 FROM users o WHERE o.role = 'owner')",
                 &[n(ctx.now), s(&target.id)],
             )?,
         ],
     )
     .await?;
+    let updated = auth::user_by_id(ctx, &target.id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
+    if updated.role() != InstanceRole::Owner {
+        return Err(conflict(
+            "They stopped being an admin in the meantime, so you are still the primary admin",
+        ));
+    }
     ctx.audit(
         "instance.transferred",
         Some(&target.id),
         Some(serde_json::json!({ "from": actor.id })),
     );
-    let updated = auth::user_by_id(ctx, &target.id)
-        .await?
-        .ok_or_else(|| not_found("User"))?;
     http::ok(&updated.to_user())
 }
 
