@@ -79,16 +79,16 @@ export function WorkspacePage() {
   return (
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
       {w ? (
-        <header className="flex animate-rise items-start gap-5">
-          <WorkspaceAvatar workspace={w} size={60} />
+        <header className="flex animate-rise items-start gap-4 sm:gap-5">
+          <WorkspaceAvatar workspace={w} size={60} className="max-sm:size-12! max-sm:text-[18px]!" />
           <div className="min-w-0 flex-1">
-            <h1 className="truncate font-display text-[36px] leading-[1.1] font-medium tracking-[-0.022em]">
+            <h1 className="truncate font-display text-[28px] leading-[1.1] font-medium tracking-[-0.022em] sm:text-[36px]">
               {w.name}
             </h1>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
               <span className="text-ink-2">{roleLabel(w.role)}</span>
-              <span>as {w.email}</span>
-              <span className="text-ink-4">·</span>
+              <span className="min-w-0 truncate">as {w.email}</span>
+              <span className="text-ink-4 max-sm:hidden">·</span>
               <span>
                 {w.members} {w.members === 1 ? "person" : "people"}
               </span>
@@ -111,7 +111,13 @@ export function WorkspacePage() {
             </div>
           </div>
           {admin && !w.blocked && (
-            <Link to="/w/$slug" params={{ slug }} search={{ tab: "people" }}>
+            // The People tab has the form; on a phone the name needs the room.
+            <Link
+              to="/w/$slug"
+              params={{ slug }}
+              search={{ tab: "people" }}
+              className="shrink-0 max-sm:hidden"
+            >
               <Button icon={<MailPlus className="size-3.5" />}>Invite</Button>
             </Link>
           )}
@@ -274,8 +280,9 @@ function Projects({ w }: { w: G.Workspace }) {
 function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
   const admin = w.role === "owner" || w.role === "admin";
   const gh = useQuery({ queryKey: keys.workspaceGithub(w.id), queryFn: () => workspaces.github(w.id) });
-  const githubDone = w.github.length > 0 || gh.data?.configured === false;
-  const steps: { done: boolean; title: string; body: string; action: ReactNode }[] = [
+  // Without a GitHub App on the instance there is nothing to connect.
+  const github = w.github.length > 0 || gh.data?.configured === true;
+  const all: { done: boolean; skip?: boolean; title: string; body: string; action: ReactNode }[] = [
     {
       done: w.members > 1,
       title: "Invite the people you work with",
@@ -301,7 +308,8 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
       ),
     },
     {
-      done: githubDone,
+      done: w.github.length > 0,
+      skip: !github,
       title: "Connect a GitHub account",
       body: "Its projects use the repositories of the accounts the workspace works in.",
       action: (
@@ -325,6 +333,7 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
       ),
     },
   ];
+  const steps = all.filter((s) => !s.skip);
   if (!admin || steps.every((s) => s.done)) return null;
   const done = steps.filter((s) => s.done).length;
   return (
