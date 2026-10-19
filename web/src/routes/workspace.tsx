@@ -99,7 +99,9 @@ export function WorkspacePage() {
                     w.runners_online > 0 ? "bg-accent shadow-[0_0_8px_var(--c-accent)]" : "bg-ink-4",
                   )}
                 />
-                {w.runners_online} of {w.runners} {w.runners === 1 ? "runner" : "runners"} online
+                {w.runners === 0
+                  ? "no runners yet"
+                  : `${w.runners_online} of ${w.runners} ${w.runners === 1 ? "runner" : "runners"} online`}
               </span>
               {w.require_two_factor && (
                 <span className="inline-flex items-center gap-1 text-ink-3">
@@ -1050,10 +1052,14 @@ function You({ w }: { w: G.Workspace }) {
   });
   const leave = useMutation({
     mutationFn: () => workspaces.removeMember(w.id, me?.user.id ?? ""),
-    onSuccess: () => {
-      refresh(w.id);
+    onSuccess: async () => {
+      await navigate({ to: "/" });
+      // Its pages are closed to you now: forget them rather than ask again.
+      queryClient.removeQueries({ queryKey: ["workspace", w.id] });
+      queryClient.removeQueries({ queryKey: keys.workspace(w.slug) });
+      for (const k of [keys.workspaces, keys.projects, ["sessions"], keys.runners])
+        void queryClient.invalidateQueries({ queryKey: k });
       toast(`You left ${w.name}`);
-      void navigate({ to: "/" });
     },
     onError: (e) => toast(e.message, "error"),
   });

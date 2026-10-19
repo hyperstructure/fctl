@@ -328,7 +328,7 @@ function GettingStarted({
       <ol className="mt-3 divide-y divide-line border-y border-line">
         <Step
           done={workspace}
-          title="Create a workspace"
+          title="Join or create a workspace"
           action={
             <Link to="/w/new">
               <Button size="sm" icon={<Plus className="size-3.5" />}>
