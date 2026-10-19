@@ -11,6 +11,13 @@ email and password your invite set up, or with Google if your instance has it.
 Access is by allowlist: if you cannot sign up, ask an admin to allow your
 email.
 
+Have more than one address, say a private one and your company's? An
+instance admin invites each on its own. Open the second invitation while you
+are signed in and choose **Connect it to my account**: both addresses then
+sign in to the same account, each with its own commit email (**Settings →
+Email addresses**), and the workspaces you join as one of them see only
+that one.
+
 Add a passkey in **Settings → Passkeys**, and your fingerprint, face or
 screen lock signs you in from then on, without a password: the browser
 offers it in the email field. Turn on two-factor sign-in in **Settings →
@@ -58,7 +65,18 @@ fctl login app.fctl.sh
 fctl whoami
 ```
 
-## 3. Connect your Claude subscription
+## 3. Create or join a workspace
+
+Projects, the machines that run their agents and the GitHub accounts they
+work in belong to workspaces: one for your company's repositories, one for
+your own, one for a side project with friends. An invitation to a workspace
+shows on the floor, where you join it; or choose **New workspace** in the
+sidebar (`fctl workspaces create "Side project"`) and be its primary admin.
+Each workspace has its own people, admins, runners, GitHub accounts and
+audit log, and can require two-factor sign-in of its members. You can be in
+up to five.
+
+## 4. Connect your Claude subscription
 
 Sessions you start run on your own Claude Pro or Max plan. fctl never uses API
 keys: it refuses them, checks that every session reports a subscription
@@ -89,7 +107,11 @@ each connection in Settings → Claude, under the task box on the floor (for
 the connection new sessions use), and in `fctl claude status`. Sessions
 report it as they work, so it is as recent as your latest session.
 
-## 4. Bring a machine online
+With more than one connection, say your own plan and a seat your company
+pays for, choose which one each workspace's sessions run on in **Settings
+→ Workspaces** (`fctl workspaces claude <connection> -w acme`).
+
+## 5. Bring a machine online
 
 Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
 
@@ -104,11 +126,12 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
    On older macOS, install [Lima](https://lima-vm.io) (`brew install lima`)
    instead; on Linux, Docker.
 
-2. Register the machine and start the host service (you need to be an admin;
-   otherwise ask one for a runner token and pass `--token`):
+2. Register the machine for a workspace you are an admin of, and start the
+   host service (otherwise ask one of its admins for a runner token, from
+   the workspace's **Runners** tab, and pass `--token`):
 
    ```sh
-   fctl host install
+   fctl host install --workspace acme
    ```
 
    This writes `~/.config/fctl/host.toml` and installs a launchd agent
@@ -129,14 +152,21 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
    fctl host status
    ```
 
-The machine appears under **Admin → Runners** as online. For a Mac that runs
-around the clock, keep it plugged in and turn on automatic login, so the host
-starts again after a reboot or a power cut.
+The machine appears under the workspace's **Runners** tab as online, and
+the workspace's sessions start on it. It is yours: add it to your other
+workspaces from their Runners tab (`fctl workspaces add-runner <runner> -w
+side-project`), and it takes the sessions of all of them. For a Mac that
+runs around the clock, keep it plugged in and turn on automatic login, so
+the host starts again after a reboot or a power cut.
 
-## 5. Create a project
+## 6. Create a project
 
-In the app, choose **New project**. Link an existing GitHub repository, create
-a new one, or start without a repository. Optionally add a setup script (it
+In the app, choose **New project** (or the **+** beside a workspace in the
+sidebar). Link an existing repository of a GitHub account the workspace
+works in, create a new one, or start without a repository. A workspace
+works in an account once the instance's GitHub App is installed there and
+the account is connected to the workspace: its admins do that under its
+**GitHub** tab, and an instance admin approves it. Optionally add a setup script (it
 runs in the clone before the agent starts, e.g. `npm ci`) and instructions for
 agents. When sessions need tools the default image lacks, give the project an
 image of its own, or one built from a Dockerfile or devcontainer.json in its
@@ -156,7 +186,7 @@ project's **Repositories** tab, each read only (a private dependency, say)
 or read and write, or let agents read every repository the GitHub App can
 reach. From the terminal: `fctl projects repos add my-org/my-lib --write`.
 
-## 6. Start a session
+## 7. Start a session
 
 Describe the task on the floor or the project page, or:
 
@@ -180,13 +210,14 @@ rather than the first line of your task.
 
 The agent's commits are authored by the GitHub App, with Claude as
 co-author. To be a co-author of the commits in the sessions you start, set
-a commit email in **Settings → Profile**: an address your GitHub account
-has, such as its noreply address. Anyone who can read the repository sees it.
+a commit email in **Settings → Email addresses**, for the address you are
+in the workspace as: an address your GitHub account has, such as its
+noreply address. Anyone who can read the repository sees it.
 A project's settings decide who its commits credit: **Credit people in
 commits** and **Credit Claude in commits** are both on until a maintainer
 turns them off.
 
-## 7. Follow along and steer
+## 8. Follow along and steer
 
 - **Web app** — the session page streams the transcript as the agent writes
   it: tool calls, diffs, the files changed so far. Type below to message the
@@ -219,10 +250,18 @@ left off, on the same machine, with the same conversation and branch: type
 it on the session page or send it with `fctl send`. A session that failed
 needs its owner to **Resume** it (or `fctl resume my-app#12 "…"`).
 
-## 8. Work together
+## 9. Work together
 
-Invite people under **Admin → Access** (or `fctl admin allow ada@example.com`)
-and add them to projects under **Members**. Roles:
+A workspace's admins invite people from its **People** tab (`fctl
+workspaces invite grace@example.com`), by an address they sign in with;
+they join it from the floor. Someone who isn't on the instance yet needs an
+instance admin's invitation first (**Admin → People → Invite**, or `fctl
+admin invite grace@example.com -w side-project`), which can invite them to
+the admin's workspaces at the same time.
+
+In a workspace, admins own every project, and members work in the projects
+they are members of (a project's **Members**) and in every project with the
+workspace's base role, which its admins choose in its settings:
 
 | Role | Can |
 |---|---|
@@ -231,5 +270,9 @@ and add them to projects under **Members**. Roles:
 | Maintainer | change settings and secrets, manage members |
 | Owner | everything, including deleting the project |
 
-Share a single session with someone outside the project from its **Share**
-menu. Everyone watching a session sees who else is there.
+Share a single session with someone else in the workspace from its
+**Share** menu. Everyone watching a session sees who else is there.
+
+A workspace has one primary admin, whom no other admin can demote or
+remove; they hand the role to another admin under its **Settings**, as the
+instance's primary admin does under **Admin → People**.

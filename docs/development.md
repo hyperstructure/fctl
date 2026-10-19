@@ -34,14 +34,22 @@ This starts:
 - a host using the `process` driver whose agents run **fake-claude**: a
   scripted stand-in for Claude Code that speaks the same stream-json protocol.
 
-The first run creates an owner (`dev@fctl.test` / `fctl-dev-password`), a
-Claude credential, a runner and a project called Playground, and stores a CLI
-token in `.fctl-dev/token`:
+The first run creates the primary admin (`dev@fctl.test` /
+`fctl-dev-password`), a Claude credential, a workspace called Development,
+a runner for it and a project called Playground, and stores a CLI token in
+`.fctl-dev/token`:
 
 ```sh
 export FCTL_SERVER=http://127.0.0.1:8787 FCTL_TOKEN=$(cat .fctl-dev/token)
 cargo run -p fctl -- run -p playground "write notes.md"
 ```
+
+More workspaces, and people in them, take a few commands: `cargo run -p
+fctl -- workspaces create "Side project"`, then `workspaces add-runner
+dev-host -w side-project` so that the dev runner takes its sessions too,
+and `admin invite grace@example.com -w side-project`, whose link signs Grace
+up in another browser. The dev instance has no GitHub App, so projects there
+have no repository and the GitHub tabs say so.
 
 fake-claude reacts to words in the prompt: `write <name>` creates and
 commits a file, `rename <title>` names the session with `fctl edit` (the

@@ -29,3 +29,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0021](0021-rulesets-protect-main-and-release-tags.md) | Rulesets protect main and the release tags |
 | [0022](0022-two-factor-sign-in-with-authenticator-apps.md) | Two-factor sign-in with authenticator apps, which admins can require |
 | [0023](0023-passkeys-sign-in-on-their-own.md) | Passkeys sign in on their own, and count as a second factor where it is required |
+| [0024](0024-workspaces-hold-people-projects-runners-and-github-accounts.md) | Workspaces hold people, projects, runners and GitHub accounts |

@@ -52,7 +52,7 @@ the web app and the Worker (Rust compiled to WebAssembly), renders
 and deploys to your domain. Run it again, without `--create`, for every
 upgrade.
 
-## 3. Set the secrets and create the owner
+## 3. Set the secrets and create the primary admin
 
 ```sh
 cargo xtask secrets acme
@@ -64,11 +64,15 @@ This sets, once:
   sign state. Keep it: replacing it makes every stored Claude credential and
   project secret unreadable.
 - `FCTL_SETUP_TOKEN` — a one-time token. The command prints the setup link,
-  `https://fctl.acme.dev/setup#token=…`. Open it to create the owner account;
-  after that, the link does nothing. `--new-setup-token` prints a fresh one.
+  `https://fctl.acme.dev/setup#token=…`. Open it to create the account of
+  the primary instance admin; after that, the link does nothing.
+  `--new-setup-token` prints a fresh one.
 
-Sign in, then allow your team under **Admin → Access**: exact emails (which
-also creates invite links) or whole domains (`*@acme.dev`). To require
+Sign in and create your first workspace. Then invite your team under
+**Admin → People** (each address on its own, and to your workspaces at the
+same time), or allow them under **Admin → Access**: exact emails (which
+also creates invite links) or whole domains (`*@acme.dev`), whose people
+then sign up with Google and join the workspaces that invite them. To require
 two-factor sign-in of everyone, turn it on under **Admin → Settings →
 Sign-in** (or `fctl admin set --require-two-factor on`); it seals each
 authenticator app's secret with `FCTL_MASTER_KEY`. Passkeys belong to the
@@ -79,10 +83,14 @@ leaves them behind, and people add new ones.
 
 With a GitHub App, projects link repositories, agents get short-lived tokens
 for their project's repositories only, and fctl can create new repositories.
+An instance has one app; each workspace works in the accounts it is
+installed on that are connected to the workspace.
 
 1. Create an app under your organization: **Settings → Developer settings →
-   GitHub Apps → New GitHub App**. Turn the webhook off. Repository
-   permissions:
+   GitHub Apps → New GitHub App**. Turn the webhook off. Set its **Setup
+   URL** to `https://fctl.acme.dev/api/v1/github/installed` and tick
+   **Redirect on update**, so that people who install it from a workspace
+   come back to it. Repository permissions:
 
    | Permission | Access | Why |
    |---|---|---|
@@ -96,6 +104,11 @@ for their project's repositories only, and fctl can create new repositories.
 
 2. Install it on the organization (all repositories, or the ones agents may
    touch, including those they only read, such as private dependencies).
+   To let workspaces use other accounts (someone's own, a friend's
+   organization), make the app public (**Advanced → Make public**): only
+   then can others install it. Installing it lets the instance mint tokens
+   for that account, but no workspace uses it until it is connected to the
+   workspace.
 3. Generate a private key, and fill in the instance file:
 
    ```toml
@@ -116,12 +129,25 @@ for their project's repositories only, and fctl can create new repositories.
 The key is converted to PKCS#8 and stored as the `GITHUB_APP_PRIVATE_KEY`
 secret; it never reaches a host or a sandbox.
 
+### Which workspace uses which account
+
+A workspace's admins install the app from the workspace's **GitHub** tab,
+or name an account it is installed on, and the workspace works there once
+an instance admin approves it under **Admin → GitHub** (`fctl admin github
+approve <account> <workspace>`). GitHub sends the installation's id to the
+setup URL, where anyone could send another account's, so connections take
+an instance admin; an instance admin's own connect at once. A connection
+can be narrowed to some of the account's repositories (`--repo`). New
+repositories go into `default_owner` when the workspace works in all of it,
+otherwise into an organization the workspace works in all of; the app can
+create repositories in organizations, not in people's own accounts.
+
 ### What sessions get
 
 A project has a primary repository and may list more, each read only or
 read and write, or let agents read every repository of the account that the
-app can reach (`owner/*`); they all belong to one account, whose
-installation mints the tokens. Each session gets up to two, valid for an
+app can reach (`owner/*`, within what its workspace may use); they all
+belong to one account, whose installation mints the tokens. Each session gets up to two, valid for an
 hour and refreshed through its host:
 
 | Token | Repositories | Permissions |
@@ -173,7 +199,7 @@ cargo xtask deploy acme
 ## 7. Bring hosts online
 
 On each machine that runs agents, follow
-[Getting started → Bring a machine online](getting-started.md#4-bring-a-machine-online):
+[Getting started → Bring a machine online](getting-started.md#5-bring-a-machine-online):
 
 ```sh
 curl -fsSL https://fctl.sh/install | sh

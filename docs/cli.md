@@ -101,13 +101,63 @@ at most 5 MB, up to 100 per session. The transcript shows each one, and
 people who manage the session can delete it there or with `fctl
 unpublish`.
 
+## Workspaces
+
+Projects, the runners that run their sessions and the GitHub accounts they
+work in belong to workspaces. `fctl workspaces` (or `fctl workspace`) lists
+yours and the invitations waiting for you; the commands below take the
+workspace with `-w`, else the one from `fctl workspaces use`, else your only
+one.
+
+```sh
+fctl workspaces                            # yours, and the invitations waiting for you
+fctl workspaces create "Side project" --color pink
+fctl workspaces create Acme --as ada.lovelace@acme.example   # join it as another of your addresses
+fctl workspaces show -w side-project
+fctl workspaces use side-project           # the default for the commands below
+fctl workspaces join side-project          # an invitation (or decline it)
+fctl workspaces leave side-project         # your sessions there stop
+fctl workspaces claude crd_01… -w acme     # your sessions there run on this Claude connection
+fctl workspaces claude default -w acme     # …or on your default one
+
+fctl workspaces members                    # its people, and the invitations nobody answered
+fctl workspaces invite grace@example.com --admin
+fctl workspaces uninvite grace@example.com
+fctl workspaces role grace@example.com member
+fctl workspaces remove grace@example.com   # their sessions there stop
+fctl workspaces transfer grace@example.com # the primary admin hands the role to an admin
+
+fctl workspaces set --name "Side project" --avatar logo.png   # or --avatar none
+fctl workspaces set --base-role editor     # every member starts sessions in every project
+fctl workspaces set --require-two-factor on   # closed to members without a second factor
+
+fctl workspaces runners                    # the runners its sessions start on
+fctl workspaces add-runner studio-mac      # one of yours runs its sessions too
+fctl workspaces remove-runner studio-mac   # the ones running there carry on
+
+fctl workspaces github                     # the GitHub accounts it works in
+fctl workspaces connect acme               # an account the app is installed on (an instance admin approves)
+fctl workspaces connect acme --repo web --repo design   # only these repositories of it
+fctl workspaces disconnect acme
+
+fctl workspaces audit                      # what happened in it (admins)
+fctl workspaces delete side-project        # with its projects and sessions; asks you to type its name
+```
+
+Admins invite people by an address they sign in with; someone who isn't on
+the instance yet needs an instance invitation first (`fctl admin invite`).
+Everyone in a workspace works in its projects as their project role or its
+base role says; its admins own every project. One person can be in at most
+five workspaces.
+
 ## Projects
 
 ```sh
-fctl projects list
+fctl projects list                     # all your workspaces' projects
+fctl projects list -w side-project
 fctl projects show my-app
-fctl projects create "My app" --repo my-org/my-app
-fctl projects create "New thing" --new-repo new-thing --public
+fctl projects create "My app" --repo my-org/my-app -w acme
+fctl projects create "New thing" --new-repo new-thing --owner my-org --public
 fctl projects create "Site" --repo my-org/site --no-connectors   # no claude.ai connectors in its sessions
 fctl projects set -p my-app --credit-claude off   # no Claude trailer in its commits
 fctl projects set -p my-app --credit-people off   # no trailers for the people who start sessions
@@ -179,7 +229,8 @@ fctl host install                # register this machine and start the service
 fctl host install --driver lima --capacity 2 --build-image
 fctl host install --cpus 4 --memory 8g --max-memory 12g   # sandbox sizes
 fctl host install --allow-image 'ghcr.io/acme/*' --allow-build 'acme/*'   # what projects may run and build
-fctl host install --token fctl_rt_…   # with a runner token from an admin
+fctl host install --workspace acme   # for a workspace you are an admin of (default: your only one)
+fctl host install --token fctl_rt_…   # with a runner token from a workspace's Runners tab
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host run                    # run in the foreground (what the service runs)
 fctl host status                 # with the runner's sessions, and whether it drains
@@ -296,8 +347,21 @@ has, and run `fctl host restart` after changing either.
 
 ## Admin
 
+Instance admins manage people and invitations, the GitHub App's
+connections, every runner and the instance's settings, and see what each
+workspace is and who runs it, but not inside the ones they aren't members
+of.
+
 ```sh
-fctl admin users
+fctl admin users                           # with their other addresses and workspaces
+fctl admin invite ada@private.example      # an invitation link (and an email, when set up)
+fctl admin invite grace@example.com -w side-project -w acme:admin   # and to your workspaces
+fctl admin transfer grace@example.com      # the primary admin hands the role to an admin
+fctl admin workspaces
+fctl admin delete-workspace side-project   # asks you to type its name
+fctl admin github                          # the app's installations, and the requests waiting
+fctl admin github approve acme side-project --repo web   # the workspace works in acme's web
+fctl admin github remove acme side-project               # …no longer, or decline its request
 fctl admin allowlist
 fctl admin allow ada@example.com           # also creates an invite link
 fctl admin allow '*@example.com'           # a whole domain
@@ -321,8 +385,12 @@ enable`, and their other requests fail.
 ## Your account
 
 ```sh
-fctl account set --commit-email 1234+ada@users.noreply.github.com
+fctl account emails                        # your addresses, their commit emails and workspaces
+fctl account set --commit-email 1234+ada@users.noreply.github.com      # your primary address's
+fctl account set --for ada.lovelace@acme.example --commit-email ada.lovelace@acme.example
 fctl account set --commit-email ""         # commits stop crediting you
+fctl account primary ada.lovelace@acme.example   # where fctl writes to you
+fctl account disconnect ada@private.example      # it stops signing in; you leave its workspaces
 fctl account export                        # your data as JSON: fctl-export-<date>.json
 fctl account export -o - | jq .sessions    # or print it
 fctl account delete                        # shows what goes, asks for your email address
@@ -353,6 +421,11 @@ fctl account passkeys rename "Chrome on macOS" "Studio laptop"   # by name or id
 fctl account passkeys remove pky_01…
 ```
 
+Each address is invited to the instance on its own; open an invitation
+while signed in to connect its address to your account (the web app asks).
+Every address signs in, and each has its own commit email: the commits in a
+workspace's sessions credit the one of the address you joined it as.
+
 With a commit email, the commits in the sessions you start end with a
 `Co-authored-by` trailer that has your name and that address, for everyone
 who can read the repository. Use an address your GitHub account has, such
@@ -364,12 +437,13 @@ next start or resume; `fctl whoami` shows the address.
 The export holds your account, sign-in methods and two-factor sign-in
 (without the authenticator app's secret or the recovery codes), passkeys,
 devices and tokens, Claude connections (without their secrets),
-notification settings and browsers, projects, the sessions you started
-with their transcripts, the sessions you follow, and your activity log.
-Deleting your account deletes all
-of that and the projects only you are a member of; sessions you started in
-shared projects stay there, credited to a deleted user. Settings in the web
-app has both, the deletion in its danger zone.
+notification settings and browsers, addresses, workspaces, projects, the
+sessions you started with their transcripts, the sessions you follow, and
+your activity log. Deleting your account deletes all of that and the
+workspaces only you are in; sessions you started in shared workspaces stay
+there, credited to a deleted user, and the workspaces you are the primary
+admin of pass to their longest-standing admin. Settings in the web app has
+both, the deletion in its danger zone.
 
 ## Updating
 

@@ -15,6 +15,7 @@ trusts.
 | Sessions and tokens | SHA-256 hashes in D1; the secret only with its holder | the holder |
 | Claude credentials | encrypted (AES-256-GCM) in D1 | sessions their owner starts |
 | Project secrets | encrypted in D1 | that project's sessions, as environment variables |
+| Workspace avatars | images in D1 | the workspace's members, people it invited, instance admins |
 | Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
 | Published screenshots | the project's Durable Object, found by the SHA-256 of their links' tokens in D1 | anyone with a link, until it expires |
 | GitHub App key | a Worker secret | the control plane, to mint short-lived tokens |
@@ -28,6 +29,13 @@ owner and purpose), so a value copied between rows does not decrypt.
 
 - Accounts exist only for allowlisted emails or domains. Removing an
   allowlist entry disables the accounts it admitted and revokes their tokens.
+  Each of an account's addresses was invited (or admitted) on its own, and
+  any of them signs in to the same account, with the same factors.
+- **Workspaces** keep their projects, sessions, files and secrets to their
+  members: people outside one are told its projects and sessions don't
+  exist, whatever they started there or was shared with them, and instance
+  admins see inside only the ones they are members of. A workspace sees
+  only the address each member joined as.
 - Browser sessions are `__Host-` cookies (`Secure`, `HttpOnly`,
   `SameSite=Lax`). Requests that change state must come from the app's own
   origin (`Origin` / `Sec-Fetch-Site`) and carry JSON; WebSocket upgrades are
@@ -49,7 +57,10 @@ owner and purpose), so a value copied between rows does not decrypt.
   browser or with their CLI and access tokens. An attacker who has the
   password of an account that hasn't set it up yet could set it up first;
   the email about it (when email is set up) and the audit log show that,
-  and admins reset two-factor for people who lost their phone.
+  and admins reset two-factor for people who lost their phone. A
+  workspace's admins can require it of its members in the same way: a
+  member without a second factor can't open the workspace until they set
+  one up, and their sign-ins ask for it.
 - **Passkeys** sign in without a password or code: the device checks it's
   the person (fingerprint, face, screen lock or PIN), and the signature
   works only for this instance's host name, so a fake site can't use it.
@@ -102,7 +113,8 @@ outside it except through these channels:
   dependencies and reach GitHub and Claude). Do not run hosts on networks
   where an outbound connection from an untrusted process is a problem.
 - **GitHub.** Installation tokens for the project's repositories and no
-  others, valid for an hour and refreshed on demand
+  others, within the GitHub accounts and repositories its workspace may use,
+  valid for an hour and refreshed on demand
   ([self-hosting](self-hosting.md#what-sessions-get) has the details):
   - one that can write (contents, pull requests, issues and workflows) to
     the primary repository and the others listed as read and write. git
@@ -114,9 +126,14 @@ outside it except through these channels:
 
   An agent can push to, open pull requests in, and change the workflows of
   every repository it can write to, so list as writable only the ones it
-  needs. Reading a whole account includes its private repositories.
-  Running sessions lose a repository removed from the project when their
-  tokens are next refreshed, within the hour.
+  needs. Reading a whole account includes its private repositories, as far
+  as the workspace may use them. Running sessions lose a repository removed
+  from the project, or an account taken from its workspace, when their
+  tokens are next refreshed, within the hour. Which workspaces use which
+  accounts is an instance admin's decision: anyone can install the app on
+  an account they own, but only an instance admin's approval lets a
+  workspace use it, since GitHub's setup redirect can name anyone's
+  installation.
 - **Claude.** A short-lived access token for the session's owner. Refresh
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host.
@@ -160,8 +177,9 @@ The `process` driver has no isolation at all and is for development only.
 Agents' commits are authored by the GitHub App's bot. They carry Claude's
 `Co-authored-by` trailer unless the project turns off **Credit Claude in
 commits**. They name the person who started the session only when that
-person chose a commit email (Settings → Profile, or `fctl account set
---commit-email`) and the project credits people: a trailer then carries
+person chose a commit email for the address they are in the workspace as
+(Settings → Email addresses, or `fctl account set --commit-email`) and the
+project credits people: a trailer then carries
 their name and that address. Maintainers turn that off with **Credit people
 in commits** in the project's settings (`fctl projects set --credit-people
 off`); its sessions then don't receive the address at all. Everyone who can
@@ -189,9 +207,15 @@ fctl is built so agents only ever use Claude **subscriptions**:
 
 Hosts connect outbound to the control plane over TLS (rustls with the Mozilla
 root store); they open no ports. A host authenticates with a runner token that
-admins can rotate or revoke. Hosts receive a session's credentials only while
-it runs, and keep nothing secret on disk but their runner token
-(`~/.config/fctl/host-token`, mode 0600).
+its owner and instance admins can rotate or revoke. Hosts receive a
+session's credentials only while it runs, and keep nothing secret on disk
+but their runner token (`~/.config/fctl/host-token`, mode 0600).
+
+A runner takes only the sessions of the workspaces it is added to, and so
+sees their code, secrets and the tokens of the people who start them. Its
+owner adds it only to workspaces they are an admin of, and a workspace's
+admins take any runner out of it. A Claude sign-in through a host runs only
+on a runner of the person's workspaces, or one they registered.
 
 Sessions run in their project's sandbox image or, without one, the host's:
 by default `ghcr.io/hyperstructure/sandbox`, which the Image workflow of
@@ -228,16 +252,18 @@ credentials.
   made it (signing out, revoking or expiry), or when its push service says
   it is gone. A person's notifications wait in their Durable Object for at
   most a minute and are deleted once sent.
+- Deleting a workspace deletes its projects, as deleting each would.
 - People delete their own account in Settings (Danger zone) or with
-  `fctl account delete`, and admins can delete anyone's but an owner's. Both
-  delete the account's sign-in methods, passkeys and two-factor sign-in,
-  tokens, Claude connections, memberships, shares, follows and
-  notification settings and browsers, and the projects only it is a member
-  of, with their sessions. Sessions and projects it created that others still use stay,
-  credited to "Deleted user": the account remains only as a disabled
-  placeholder, without its name, email, commit email or picture. Commits
-  already pushed keep the trailers in them. An instance's last owner
-  cannot delete their account.
+  `fctl account delete`; admins delete members' accounts, and the primary
+  admin admins' too. Both delete the account's addresses, sign-in methods, passkeys
+  and two-factor sign-in, tokens, Claude connections, memberships, shares,
+  follows and notification settings and browsers, and the workspaces only
+  it is in, with their projects and sessions. Sessions and projects it
+  created that others still use stay, credited to "Deleted user": the
+  account remains only as a disabled placeholder, without its name,
+  emails, commit emails or picture. Commits already pushed keep the
+  trailers in them. The instance's primary admin hands the role over
+  before they can delete their account.
 - Settings → Your data (or `fctl account export`) downloads everything the
   instance keeps about you, as JSON. Files you attached are listed in the
   transcripts there; each downloads from its session.
