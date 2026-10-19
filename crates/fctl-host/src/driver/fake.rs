@@ -5,6 +5,7 @@ use super::container::{ContainerDriver, Flavor};
 use super::{Driver, SandboxSpec};
 use anyhow::Result;
 use sha2::{Digest, Sha256};
+use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
 /// The CLI. Each image name on the host is a file in `have`, and each one
@@ -119,14 +120,11 @@ impl FakeCli {
 
     /// A host with no images, and nothing it can pull.
     pub fn empty() -> Result<Self> {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir()?;
         for sub in ["have", "registry", "containers"] {
             std::fs::create_dir(dir.path().join(sub))?;
         }
-        let bin = dir.path().join("cli");
-        std::fs::write(&bin, SCRIPT)?;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+        write_script(&dir.path().join("cli"), SCRIPT)?;
         Ok(Self { dir })
     }
 
@@ -228,6 +226,21 @@ impl FakeCli {
             lines.into_inner().unwrap_or_else(PoisonError::into_inner),
         ))
     }
+}
+
+/// Writes `script` to `path`, executable, for a test to run right away.
+/// A process that another test starts holds copies of this process's open
+/// files until it execs, and running a script while such a copy is open for
+/// writing fails with "Text file busy". So `sh` writes the script, and it is
+/// never open here.
+pub fn write_script(path: &Path, script: &str) -> Result<()> {
+    let status = std::process::Command::new("sh")
+        .args(["-c", r#"printf %s "$2" > "$1" && chmod 755 "$1""#, "sh"])
+        .arg(path)
+        .arg(script)
+        .status()?;
+    anyhow::ensure!(status.success(), "writing {}: {status}", path.display());
+    Ok(())
 }
 
 /// A made-up image ID.
