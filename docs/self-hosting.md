@@ -71,7 +71,9 @@ Sign in, then allow your team under **Admin → Access**: exact emails (which
 also creates invite links) or whole domains (`*@acme.dev`). To require
 two-factor sign-in of everyone, turn it on under **Admin → Settings →
 Sign-in** (or `fctl admin set --require-two-factor on`); it seals each
-authenticator app's secret with `FCTL_MASTER_KEY`.
+authenticator app's secret with `FCTL_MASTER_KEY`. Passkeys belong to the
+host name in `FCTL_PUBLIC_URL`: moving the instance to another host name
+leaves them behind, and people add new ones.
 
 ## 4. Connect GitHub (optional, recommended)
 

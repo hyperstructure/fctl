@@ -11,6 +11,7 @@ trusts.
 | Passwords | argon2id hashes in D1 | nobody can read them back |
 | Authenticator app secrets (two-factor) | encrypted (AES-256-GCM) in D1 | the control plane, to check codes |
 | Recovery codes | SHA-256 hashes in D1 | nobody can read them back |
+| Passkeys | public keys in D1; the private key never leaves the person's device or password manager | the person, with their fingerprint, face or screen lock |
 | Sessions and tokens | SHA-256 hashes in D1; the secret only with its holder | the holder |
 | Claude credentials | encrypted (AES-256-GCM) in D1 | sessions their owner starts |
 | Project secrets | encrypted in D1 | that project's sessions, as environment variables |
@@ -49,6 +50,14 @@ owner and purpose), so a value copied between rows does not decrypt.
   password of an account that hasn't set it up yet could set it up first;
   the email about it (when email is set up) and the audit log show that,
   and admins reset two-factor for people who lost their phone.
+- **Passkeys** sign in without a password or code: the device checks it's
+  the person (fingerprint, face, screen lock or PIN), and the signature
+  works only for this instance's host name, so a fake site can't use it.
+  fctl keeps the public key, each challenge works once for ten minutes, and
+  a counter that goes back (a copied passkey's would) refuses the sign-in.
+  Adding one takes the password unless the browser signed in within 15
+  minutes, so a stolen session can't add a way in, and emails the person.
+  Where two-factor is required, a passkey also counts as the second factor.
 - The CLI signs in with a device flow (you approve a code in the browser) and
   gets a revocable token; Settings lists every device and token.
 - Sign-in, signup and reset endpoints are rate limited per address and per
@@ -212,18 +221,19 @@ credentials.
   message sent are deleted after a day.
 - Expired browser sessions and tokens, password resets, sign-ins waiting
   for a second factor (ten minutes), device codes and invitations are
-  deleted within the hour, and audit log entries after a year. Turning
-  two-factor off, or an admin's reset, deletes the authenticator app's
-  secret and the recovery codes. A browser's notification subscription goes with the sign-in that
+  deleted within the hour, and audit log entries after a year, as are
+  passkey challenges (ten minutes). Turning two-factor off deletes the
+  authenticator app's secret and the recovery codes; an admin's reset
+  deletes the passkeys too. A browser's notification subscription goes with the sign-in that
   made it (signing out, revoking or expiry), or when its push service says
   it is gone. A person's notifications wait in their Durable Object for at
   most a minute and are deleted once sent.
 - People delete their own account in Settings (Danger zone) or with
   `fctl account delete`, and admins can delete anyone's but an owner's. Both
-  delete the account's sign-in methods and two-factor sign-in, tokens,
-  Claude connections, memberships, shares, follows and notification
-  settings and browsers, and the projects only it is a member of, with
-  their sessions. Sessions and projects it created that others still use stay,
+  delete the account's sign-in methods, passkeys and two-factor sign-in,
+  tokens, Claude connections, memberships, shares, follows and
+  notification settings and browsers, and the projects only it is a member
+  of, with their sessions. Sessions and projects it created that others still use stay,
   credited to "Deleted user": the account remains only as a disabled
   placeholder, without its name, email, commit email or picture. Commits
   already pushed keep the trailers in them. An instance's last owner

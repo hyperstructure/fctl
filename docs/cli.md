@@ -344,6 +344,15 @@ fctl account two-factor disable            # asks for a code (not while the inst
 the setup (the key, the `otpauth://` link and the QR code's rows), and
 `fctl account two-factor confirm --setup … --code …` finishes it.
 
+Passkeys sign you in with your fingerprint, face or screen lock. Your
+browser makes them, in Settings → Passkeys; the CLI lists and manages them:
+
+```sh
+fctl account passkeys list
+fctl account passkeys rename "Chrome on macOS" "Studio laptop"   # by name or id
+fctl account passkeys remove pky_01…
+```
+
 With a commit email, the commits in the sessions you start end with a
 `Co-authored-by` trailer that has your name and that address, for everyone
 who can read the repository. Use an address your GitHub account has, such
@@ -353,10 +362,11 @@ commits to you. A project's maintainers can turn this off for its sessions
 next start or resume; `fctl whoami` shows the address.
 
 The export holds your account, sign-in methods and two-factor sign-in
-(without the authenticator app's secret or the recovery codes), devices and
-tokens, Claude connections (without their secrets), notification settings
-and browsers, projects, the sessions you started with their transcripts,
-the sessions you follow, and your activity log. Deleting your account deletes all
+(without the authenticator app's secret or the recovery codes), passkeys,
+devices and tokens, Claude connections (without their secrets),
+notification settings and browsers, projects, the sessions you started
+with their transcripts, the sessions you follow, and your activity log.
+Deleting your account deletes all
 of that and the projects only you are a member of; sessions you started in
 shared projects stay there, credited to a deleted user. Settings in the web
 app has both, the deletion in its danger zone.
