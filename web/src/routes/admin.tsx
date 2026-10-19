@@ -645,7 +645,7 @@ function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-/** Every workspace: what it is and who runs it, not what is inside. */
+/** "1 member", "2 members". */
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** What deleting a workspace takes with it, for its confirmation. */
@@ -660,6 +660,7 @@ function deletes(w: G.AdminWorkspace): string {
   return `It goes for ${people}${projects}. This can't be undone, and its sessions must be stopped first.`;
 }
 
+/** Every workspace: what it is and who runs it, not what is inside. */
 function Workspaces() {
   const list = useQuery({ queryKey: keys.adminWorkspaces, queryFn: api.adminWorkspaces });
   const [deleting, setDeleting] = useState<G.AdminWorkspace | null>(null);
