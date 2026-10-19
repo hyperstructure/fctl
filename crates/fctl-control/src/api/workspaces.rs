@@ -42,7 +42,10 @@ async fn slug_taken(ctx: &Ctx, slug: &str, except: Option<&str>) -> AppResult<bo
 /// A free slug from a name: the name's, or with a number after it.
 async fn free_slug(ctx: &Ctx, name: &str) -> AppResult<String> {
     let base = policy::slug_from_name(name);
-    let base = validate::slug(&base).unwrap_or_else(|_| "workspace".to_owned());
+    // A name the app's paths use ("New", "Admin") gets a word more.
+    let base = validate::slug(&base)
+        .or_else(|_| validate::slug(&format!("{base}-workspace")))
+        .unwrap_or_else(|_| "workspace".to_owned());
     let mut candidate = base.clone();
     let mut i = 2;
     while slug_taken(ctx, &candidate, None).await? {

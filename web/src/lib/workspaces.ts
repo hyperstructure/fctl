@@ -128,3 +128,48 @@ export function useFactorsWatch() {
     last.current = factors;
   }, [factors]);
 }
+
+/** How a Claude connection reads in lists: its account, else its label. */
+export const claudeName = (c: G.ClaudeCredentialInfo) => c.account_email ?? c.label ?? "Claude";
+
+/**
+ * The Claude connections someone's sessions in a workspace can run on:
+ * their default, then each working one, and the one chosen there even
+ * when it stopped working, so the picker says so instead of showing an id.
+ * `prefix` goes before each label (in a row of other things).
+ */
+export function claudeOptions(
+  me: G.Me | null | undefined,
+  current: string | undefined,
+  prefix = "",
+): { value: string; label: string; description?: string }[] {
+  const fallback = me?.claude.find((c) => c.is_default);
+  const options: { value: string; label: string; description?: string }[] = [
+    {
+      value: "default",
+      label: `${prefix}${fallback ? `Your default (${claudeName(fallback)})` : "Your default"}`,
+      description: "The one Settings → Claude marks as default",
+    },
+  ];
+  for (const c of me?.claude ?? []) {
+    if (c.status === "active")
+      options.push({
+        value: c.id,
+        label: `${prefix}${claudeName(c)}`,
+        description: c.subscription_type ?? c.kind,
+      });
+    else if (c.id === current)
+      options.push({
+        value: c.id,
+        label: `${prefix}${claudeName(c)} (reconnect it)`,
+        description: "It stopped working: sessions here run on your default until you reconnect it",
+      });
+  }
+  if (current && !options.some((o) => o.value === current))
+    options.push({
+      value: current,
+      label: `${prefix}A connection you removed`,
+      description: "Sessions here run on your default",
+    });
+  return options;
+}

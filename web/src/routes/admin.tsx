@@ -20,6 +20,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useState } from "react";
+import { AuditLog } from "@/components/audit-log";
 import {
   Avatar,
   AvatarStack,
@@ -1691,19 +1692,5 @@ function SignInSettings({
 }
 
 function Audit() {
-  const list = useQuery({ queryKey: keys.audit, queryFn: () => api.audit() });
-  return (
-    <ul className="border-t border-line">
-      {list.data?.entries.map((e) => (
-        <li key={e.id} className="flex items-baseline gap-3 border-b border-line py-2.5 text-[13px]">
-          <span className="w-24 shrink-0 text-[12px] text-ink-4">{ago(e.ts)}</span>
-          <span className="w-40 shrink-0 truncate text-ink-2">{e.actor?.name ?? "system"}</span>
-          <span className="font-mono text-[12.5px] text-ink">{e.action}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink-4">{e.target}</span>
-          {e.ip && <span className="shrink-0 font-mono text-[11.5px] text-ink-4">{e.ip}</span>}
-        </li>
-      ))}
-      {list.data?.entries.length === 0 && <li className="py-6 text-[13px] text-ink-4">Nothing yet.</li>}
-    </ul>
-  );
+  return <AuditLog queryKey={keys.audit} load={(before) => api.audit(before)} ip />;
 }

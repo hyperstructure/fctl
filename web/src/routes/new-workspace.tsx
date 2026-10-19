@@ -11,18 +11,47 @@ import { workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { keys, queryClient, useMe, useWorkspaces } from "@/lib/queries";
 
-/** What the server will make of the name, for the preview (it settles clashes itself). */
-function slugOf(name: string): string {
-  return (
-    name
-      .replace(/['’]/g, "")
-      .toLowerCase()
-      .normalize("NFKD")
-      .replace(/[̀-ͯ]/g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48) || "workspace"
-  );
+/** Addresses the app's own paths use (fctl_domain::validate::RESERVED_SLUGS). */
+const RESERVED = new Set([
+  "api",
+  "admin",
+  "new",
+  "settings",
+  "login",
+  "logout",
+  "signup",
+  "setup",
+  "device",
+  "invite",
+  "s",
+  "p",
+  "projects",
+  "sessions",
+  "runners",
+  "assets",
+  "static",
+  "app",
+  "help",
+  "docs",
+]);
+
+/**
+ * What the server makes of the name, for the preview
+ * (fctl_domain::workspace::slug_from_name; it settles clashes itself).
+ */
+export function slugOf(name: string): string {
+  let s = name
+    .replace(/['’]/g, "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
+    .replace(/-+$/, "");
+  if (s.length < 2) s = s ? `workspace-${s}` : "workspace";
+  if (RESERVED.has(s)) s = `${s}-workspace`;
+  return s;
 }
 
 export function NewWorkspace() {

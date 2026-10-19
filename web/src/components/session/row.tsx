@@ -23,10 +23,11 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[12px] text-ink-4">
           {workspace && (
-            <span className="inline-flex min-w-0 shrink-0 items-center gap-1.5 text-ink-3">
+            // On a phone its avatar says which one, and the reference keeps the room.
+            <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-ink-3">
               <WorkspaceAvatar workspace={workspace} size={14} />
-              <span className="max-w-[10rem] truncate">{workspace.name}</span>
-              <span className="text-ink-4">/</span>
+              <span className="max-w-[10rem] truncate max-sm:hidden">{workspace.name}</span>
+              <span className="text-ink-4 max-sm:hidden">/</span>
             </span>
           )}
           <span className="shrink-0 font-mono">
@@ -34,12 +35,12 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
           </span>
           {statusReason(s) && <span className="truncate">· {statusReason(s)}</span>}
           {s.stats.files_changed > 0 && (
-            <span className="shrink-0">
+            <span className="shrink-0 max-sm:hidden">
               · <span className="text-accent/80">+{s.stats.additions}</span>{" "}
               <span className="text-danger/80">−{s.stats.deletions}</span>
             </span>
           )}
-          {s.pull_request && <span className="shrink-0">· PR #{s.pull_request.number}</span>}
+          {s.pull_request && <span className="shrink-0 max-sm:hidden">· PR #{s.pull_request.number}</span>}
         </div>
       </div>
       <Avatar user={s.created_by} size={20} />

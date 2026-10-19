@@ -37,6 +37,9 @@ async function me() {
 const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound, errorComponent: ErrorPage });
 
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+/** `v` when it is one of `values`: an old or mistyped link opens the default instead. */
+const oneOf = <T extends string>(v: unknown, values: readonly T[]): T | undefined =>
+  values.find((x) => x === v);
 // Search values arrive JSON-parsed (`?deleted=1` is the number 1).
 const flag = (v: unknown) => (v === undefined || v === null || v === false || v === "" ? undefined : true);
 
@@ -97,9 +100,9 @@ const workspace = createRoute({
   validateSearch: (
     s: Record<string, unknown>,
   ): { tab?: WorkspaceTab; github?: "connected" | "requested" | "asked_owner"; account?: string } => ({
-    tab: str(s.tab) as WorkspaceTab | undefined,
+    tab: oneOf(s.tab, ["projects", "people", "runners", "github", "settings", "audit"] as const),
     // Back from installing the GitHub App (api::github::installed).
-    github: str(s.github) as "connected" | "requested" | "asked_owner" | undefined,
+    github: oneOf(s.github, ["connected", "requested", "asked_owner"] as const),
     account: str(s.account),
   }),
 });
@@ -123,15 +126,11 @@ const admin = createRoute({
   path: "/admin",
   component: Admin,
   validateSearch: (s: Record<string, unknown>) => ({
-    tab: str(s.tab) as
-      | "people"
-      | "access"
-      | "workspaces"
-      | "github"
-      | "runners"
-      | "settings"
-      | "audit"
-      | undefined,
+    // "users" is what the People tab was called.
+    tab:
+      s.tab === "users"
+        ? undefined
+        : oneOf(s.tab, ["people", "access", "workspaces", "github", "runners", "settings", "audit"] as const),
   }),
 });
 

@@ -57,7 +57,7 @@ import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/
 import { keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
-import { roleLabel } from "@/lib/workspaces";
+import { claudeOptions, roleLabel } from "@/lib/workspaces";
 
 const LINK_ERRORS: Record<string, string> = {
   google_linked_elsewhere: "That Google account is already linked to another user.",
@@ -371,9 +371,6 @@ function Workspaces({ me }: { me: G.Me }) {
     },
     onError: (e) => toast(e.message, "error"),
   });
-  const creds = me.claude.filter((c) => c.status === "active");
-  const fallback = me.claude.find((c) => c.is_default);
-  const name = (c: G.ClaudeCredentialInfo) => c.account_email ?? c.label ?? "Claude";
   const data = list.data;
   return (
     <Section
@@ -416,19 +413,10 @@ function Workspaces({ me }: { me: G.Me }) {
                   size="sm"
                   aria-label={`Claude connection in ${w.name}`}
                   value={w.claude ?? "default"}
+                  // Closed to you until you set up two-factor: so is choosing for it.
+                  disabled={w.blocked}
                   onChange={(v) => claude.mutate({ id: w.id, claude: v === "default" ? "" : v })}
-                  options={[
-                    {
-                      value: "default",
-                      label: "Claude: your default",
-                      description: fallback ? name(fallback) : undefined,
-                    },
-                    ...creds.map((c) => ({
-                      value: c.id,
-                      label: `Claude: ${name(c)}`,
-                      description: c.subscription_type ?? c.kind,
-                    })),
-                  ]}
+                  options={claudeOptions(me, w.claude, "Claude: ")}
                 />
                 {w.role !== "owner" && (
                   <Button

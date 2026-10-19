@@ -5,7 +5,7 @@ import { foundry } from "@hyperstructure/design/gl/foundry";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowRight, Fingerprint } from "lucide-react";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { usePasskeySignIn } from "@/components/passkeys/sign-in";
 import { challengeCopy, SecondFactorStep } from "@/components/two-factor/challenge";
 import { Avatar, Banner, Button, Field, GLCanvas, Input, Logo, NameFields, Spinner } from "@/components/ui";
@@ -30,8 +30,27 @@ const GOOGLE_ERRORS: Record<string, string> = {
   disabled: "Your account is disabled. Ask an admin for access.",
 };
 
-function hashToken(): string {
-  return new URLSearchParams(window.location.hash.slice(1)).get("token") ?? "";
+/** sessionStorage: an invitation's token while its address signs in to connect it. */
+const PENDING_INVITE = "fctl:invite";
+
+/**
+ * The invitation's token: in the link's fragment, which never reaches a
+ * server, or kept in this tab while its address signs in to connect it.
+ */
+function inviteToken(): string {
+  const fromLink = new URLSearchParams(window.location.hash.slice(1)).get("token");
+  if (fromLink) return fromLink;
+  try {
+    return sessionStorage.getItem(PENDING_INVITE) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function forgetInvite() {
+  try {
+    sessionStorage.removeItem(PENDING_INVITE);
+  } catch {}
 }
 
 export function AuthFrame({
@@ -115,10 +134,11 @@ function finished(r: G.AuthResponse, next?: string) {
   if (r.me) signedIn(r.me, r.next ?? next);
 }
 
-function GoogleButton({ label }: { label: string }) {
+function GoogleButton({ label, next }: { label: string; next?: string }) {
+  const back = next && safeNext(next) !== "/" ? `&return_to=${encodeURIComponent(safeNext(next))}` : "";
   return (
     <a
-      href="/api/v1/auth/google/start?intent=login"
+      href={`/api/v1/auth/google/start?intent=login${back}`}
       className="flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-line-strong bg-raised/80 text-[14px] font-medium text-ink transition-colors hover:border-ink-4"
     >
       <svg viewBox="0 0 24 24" className="size-4" aria-hidden="true">
@@ -206,7 +226,7 @@ export function LoginPage() {
       {(instance?.features.google || passkey.supported) && (
         <>
           <div className="flex flex-col gap-2.5">
-            {instance?.features.google && <GoogleButton label="Continue with Google" />}
+            {instance?.features.google && <GoogleButton label="Continue with Google" next={search.next} />}
             {passkey.supported && (
               <button
                 type="button"
@@ -298,7 +318,7 @@ export function LoginPage() {
 
 export function SetupPage() {
   const navigate = useNavigate();
-  const token = hashToken();
+  const token = inviteToken();
   const [given, setGiven] = useState("");
   const [family, setFamily] = useState("");
   const [email, setEmail] = useState("");
@@ -381,7 +401,7 @@ export function SetupPage() {
 }
 
 export function InvitePage() {
-  const token = hashToken();
+  const token = inviteToken();
   const preview = useQuery({
     queryKey: ["invite", token],
     queryFn: () => api.invitePreview(token),
@@ -397,13 +417,22 @@ export function InvitePage() {
   const email = preview.data?.email ?? "";
   const { busy, error, submit, fieldError } = useSubmit(
     () => api.signup({ email, given_name: given, family_name: family, password, invite: token }),
-    (r) => r.me && signedIn(r.me),
+    (r) => {
+      forgetInvite();
+      if (r.me) signedIn(r.me);
+    },
   );
   const connect = useMutation({
     mutationFn: () => emails.connectInvite(token),
-    onSuccess: (m) => signedIn(m),
+    onSuccess: (m) => {
+      forgetInvite();
+      signedIn(m);
+    },
   });
   const { data: instance } = useInstance();
+  useEffect(() => {
+    if (preview.isError) forgetInvite();
+  }, [preview.isError]);
   if (!token || preview.isError) {
     return (
       <AuthFrame
@@ -491,7 +520,13 @@ export function InvitePage() {
           <span>
             Have an account already?{" "}
             <a
-              href={`/login?next=${encodeURIComponent(`/invite#token=${token}`)}`}
+              // The token waits in this tab, not in the sign-in page's address.
+              href={`/login?next=${encodeURIComponent("/invite")}`}
+              onClick={() => {
+                try {
+                  sessionStorage.setItem(PENDING_INVITE, token);
+                } catch {}
+              }}
               className="text-ink underline underline-offset-2"
             >
               Sign in to connect this address to it
@@ -548,7 +583,7 @@ export function InvitePage() {
 }
 
 export function ResetPage() {
-  const token = hashToken();
+  const token = inviteToken();
   const { data: instance } = useInstance();
   const [password, setPassword] = useState("");
   const [challenge, setChallenge] = useState<G.TwoFactorChallenge | null>(null);

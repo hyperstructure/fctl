@@ -18,6 +18,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
+import { AuditLog } from "@/components/audit-log";
 import { SessionRow } from "@/components/session/row";
 import {
   Avatar,
@@ -45,7 +46,7 @@ import { ApiFailure, api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort } from "@/lib/format";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspace } from "@/lib/queries";
-import { BASE_ROLES, roleLabel } from "@/lib/workspaces";
+import { BASE_ROLES, claudeOptions, roleLabel } from "@/lib/workspaces";
 
 export type WorkspaceTab = "projects" | "people" | "runners" | "github" | "settings" | "audit";
 
@@ -66,10 +67,12 @@ function refresh() {
 
 export function WorkspacePage() {
   const { slug } = useParams({ from: "/app/w/$slug" });
-  const { tab = "projects", github, account } = useSearch({ from: "/app/w/$slug" });
+  const { tab: asked = "projects", github, account } = useSearch({ from: "/app/w/$slug" });
   const ws = useWorkspace(slug);
   const w = ws.data;
   const admin = w?.role === "owner" || w?.role === "admin";
+  // Admins' tabs show members the workspace's projects instead.
+  const tab = !w || TABS.some((t) => t.tab === asked && (!t.admin || admin)) ? asked : "projects";
   if (ws.isError)
     return (
       <div className="mx-auto max-w-xl px-6 py-24">
@@ -187,6 +190,9 @@ function Projects({ w }: { w: G.Workspace }) {
   const projects = useProjects();
   const sessions = useSessions({ workspace: w.id, limit: 8 });
   const mine = (projects.data?.projects ?? []).filter((p) => p.workspace?.id === w.id);
+  // Projects its base role doesn't open to you, which you aren't a member of.
+  const hidden = projects.data ? Math.max(0, w.projects - mine.length) : 0;
+  const closed = `${hidden === 1 ? "1 project" : `${hidden} projects`} you aren't a member of`;
   return (
     <div className="flex flex-col gap-12">
       <SetUp w={w} projects={mine.length} />
@@ -204,6 +210,18 @@ function Projects({ w }: { w: G.Workspace }) {
             <Skeleton className="h-12" />
             <Skeleton className="h-12" />
           </div>
+        ) : mine.length === 0 && hidden > 0 ? (
+          <Empty
+            icon={<FolderPlus className="size-6" />}
+            title={`${w.name} has ${closed}`}
+            action={
+              <Link to="/new" search={{ workspace: w.slug }}>
+                <Button icon={<Plus className="size-3.5" />}>Create a project</Button>
+              </Link>
+            }
+          >
+            Its admins add people to its projects. You see the ones you are added to here, and on the floor.
+          </Empty>
         ) : mine.length === 0 ? (
           <Empty
             icon={<FolderPlus className="size-6" />}
@@ -260,6 +278,11 @@ function Projects({ w }: { w: G.Workspace }) {
               </li>
             ))}
           </ul>
+        )}
+        {mine.length > 0 && hidden > 0 && (
+          <p className="mt-3 px-3 text-[12.5px] text-ink-4">
+            And {closed}: its admins add people to projects.
+          </p>
         )}
       </section>
       {(sessions.data?.sessions.length ?? 0) > 0 && (
@@ -1119,9 +1142,6 @@ function You({ w }: { w: G.Workspace }) {
     },
     onError: (e) => toast(e.message, "error"),
   });
-  const creds = (me?.claude ?? []).filter((c) => c.status === "active");
-  const fallback = me?.claude.find((c) => c.is_default);
-  const name = (c: G.ClaudeCredentialInfo) => c.account_email ?? c.label ?? "Claude";
   return (
     <Section title="You" description="How this workspace knows you, and what your sessions here run on.">
       <div className="flex flex-col gap-6">
@@ -1150,18 +1170,7 @@ function You({ w }: { w: G.Workspace }) {
               id={id}
               value={w.claude ?? "default"}
               onChange={(v) => membership.mutate(v === "default" ? "" : v)}
-              options={[
-                {
-                  value: "default",
-                  label: fallback ? `Your default (${name(fallback)})` : "Your default",
-                  description: "The one Settings → Claude marks as default",
-                },
-                ...creds.map((c) => ({
-                  value: c.id,
-                  label: name(c),
-                  description: c.subscription_type ?? c.kind,
-                })),
-              ]}
+              options={claudeOptions(me, w.claude)}
             />
           )}
         </Field>
@@ -1542,39 +1551,13 @@ function Primary({ w }: { w: G.Workspace }) {
 // ───────────────────────────── audit ─────────────────────────────
 
 function Audit({ w }: { w: G.Workspace }) {
-  const [pages, setPages] = useState<G.AuditList[]>([]);
-  const first = useQuery({ queryKey: keys.workspaceAudit(w.id), queryFn: () => workspaces.audit(w.id) });
-  const more = useMutation({
-    mutationFn: (before: number) => workspaces.audit(w.id, before),
-    onSuccess: (p) => setPages((x) => [...x, p]),
-  });
-  const all = [first.data, ...pages].filter((p): p is G.AuditList => !!p);
-  const entries = all.flatMap((p) => p.entries);
-  const next = all[all.length - 1]?.next_before;
   return (
     <div>
-      <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
+      <p className="mb-6 max-w-2xl text-[14px] leading-relaxed text-ink-3">
         What happened in {w.name}: people joining and leaving, roles, runners, GitHub accounts, projects and
         sessions. Kept for a year.
       </p>
-      <ul className="mt-6 border-t border-line">
-        {entries.map((e) => (
-          <li key={e.id} className="flex items-baseline gap-3 border-b border-line py-2.5 text-[13px]">
-            <span className="w-24 shrink-0 text-[12px] text-ink-4">{ago(e.ts)}</span>
-            <span className="w-40 shrink-0 truncate text-ink-2">{e.actor?.name ?? "system"}</span>
-            <span className="font-mono text-[12.5px] text-ink">{e.action}</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink-4">{e.target}</span>
-          </li>
-        ))}
-        {first.data && entries.length === 0 && <li className="py-6 text-[13px] text-ink-4">Nothing yet.</li>}
-      </ul>
-      {next && (
-        <div className="mt-4">
-          <Button size="sm" variant="ghost" loading={more.isPending} onClick={() => more.mutate(next)}>
-            Older
-          </Button>
-        </div>
-      )}
+      <AuditLog queryKey={keys.workspaceAudit(w.id)} load={(before) => workspaces.audit(w.id, before)} />
     </div>
   );
 }
