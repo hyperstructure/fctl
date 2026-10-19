@@ -21,6 +21,8 @@ export interface SelectOption<T extends string = string> {
   value: T;
   /** Shown in the trigger and the list; typing its first letters jumps to it. */
   label: string;
+  /** Shown in the list instead of `label`, when its section already says the rest. */
+  item?: string;
   /** A quieter second line, in the list only. */
   description?: ReactNode;
   icon?: ReactNode;
@@ -135,7 +137,7 @@ export function Select<T extends string>({
     t.text = now - t.at > TYPEAHEAD_MS ? key : t.text + key;
     t.at = now;
     return typeahead(
-      options.map((o) => (o.disabled ? null : o.label)),
+      options.map((o) => (o.disabled ? null : (o.item ?? o.label))),
       t.text,
       from,
     );
@@ -395,7 +397,7 @@ export function Select<T extends string>({
                 >
                   {o.icon && <span className="mt-0.5 shrink-0 text-ink-3 [&_svg]:size-3.5">{o.icon}</span>}
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] leading-5">{o.label}</span>
+                    <span className="block truncate text-[13px] leading-5">{o.item ?? o.label}</span>
                     {o.description && (
                       <span className="block pb-0.5 text-[12px] leading-[1.45] text-ink-3">
                         {o.description}

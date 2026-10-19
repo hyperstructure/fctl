@@ -216,6 +216,7 @@ function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspace
               return {
                 value: p.slug,
                 label: several && w ? `${w.name} / ${p.name}` : p.name,
+                item: p.name,
                 icon: w ? <WorkspaceAvatar workspace={w} size={14} title={false} /> : undefined,
                 description: p.repo ? (
                   <span className="font-mono text-[11.5px]">
