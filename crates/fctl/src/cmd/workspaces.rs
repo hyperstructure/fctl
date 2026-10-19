@@ -69,7 +69,8 @@ pub enum WorkspacesCmd {
     List,
     /// Show a workspace.
     Show {
-        /// The workspace (slug or id); default from `fctl workspaces use`.
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
@@ -98,13 +99,17 @@ pub enum WorkspacesCmd {
         after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on"
     )]
     Set {
-        /// The workspace (slug or id); default from `fctl workspaces use`.
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
+        /// Its name.
         #[arg(long)]
         name: Option<String>,
+        /// Its address in URLs; links with the old one stop working.
         #[arg(long)]
         slug: Option<String>,
+        /// Its avatar's color, when it has no image.
         #[arg(long, value_enum)]
         color: Option<Color>,
         /// An image for its avatar (PNG, JPEG, GIF or WebP, square works
@@ -125,21 +130,29 @@ pub enum WorkspacesCmd {
     },
     /// The people in a workspace, and the invitations nobody answered yet.
     Members {
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
     /// Invite someone to a workspace, by an address they sign in with (admins).
     Invite {
+        /// An address they sign in with.
         email: String,
         /// Make them an admin.
         #[arg(long)]
         admin: bool,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
     /// Take back an invitation (admins).
     Uninvite {
+        /// The address the invitation is for.
         email: String,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
@@ -147,8 +160,11 @@ pub enum WorkspacesCmd {
     Role {
         /// Their address in the workspace, or their user id.
         person: String,
+        /// Admins manage the workspace and own all its projects.
         #[arg(value_enum)]
         role: Role,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
@@ -156,6 +172,8 @@ pub enum WorkspacesCmd {
     Remove {
         /// Their address in the workspace, or their user id.
         person: String,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
@@ -163,6 +181,8 @@ pub enum WorkspacesCmd {
     Transfer {
         /// Their address in the workspace, or their user id.
         person: String,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
@@ -183,6 +203,8 @@ pub enum WorkspacesCmd {
     },
     /// The runners a workspace's sessions run on.
     Runners {
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
@@ -190,6 +212,8 @@ pub enum WorkspacesCmd {
     AddRunner {
         /// The runner's name or id.
         runner: String,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
@@ -197,11 +221,15 @@ pub enum WorkspacesCmd {
     RemoveRunner {
         /// The runner's name or id.
         runner: String,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
     /// The GitHub accounts a workspace works in.
     Github {
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
@@ -218,13 +246,18 @@ pub enum WorkspacesCmd {
         /// app reaches there).
         #[arg(long = "repo", value_name = "NAME")]
         repos: Vec<String>,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
     /// Stop a workspace from working in a GitHub account, or take back a
     /// request (admins). Its sessions get no more tokens for it.
     Disconnect {
+        /// The GitHub account (organization or user).
         account: String,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
@@ -233,11 +266,15 @@ pub enum WorkspacesCmd {
         /// A connection's id from `fctl claude status`, or `default` for
         /// your default one. Without it, shows the one in use.
         credential: Option<String>,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
     /// What happened in a workspace (admins).
     Audit {
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
         /// Entries before this time (milliseconds), for the page after
