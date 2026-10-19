@@ -155,8 +155,9 @@ pub fn name(input: &str) -> Result<String> {
 }
 
 /// A slug from a workspace's name (callers check that it is free).
+/// Apostrophes go: "Ada's lab" is `adas-lab`.
 pub fn slug_from_name(name: &str) -> String {
-    let s = naming::slugify(name, 48);
+    let s = naming::slugify(&name.replace(['\'', '\u{2019}'], ""), 48);
     if s.len() < 2 {
         format!("workspace-{s}").trim_end_matches('-').to_owned()
     } else {
@@ -316,7 +317,8 @@ mod tests {
     #[test]
     fn slugs_from_names() {
         assert_eq!(slug_from_name("hyperstructure"), "hyperstructure");
-        assert_eq!(slug_from_name("Ada's side project"), "ada-s-side-project");
+        assert_eq!(slug_from_name("Ada's side project"), "adas-side-project");
+        assert_eq!(slug_from_name("Ada\u{2019}s lab"), "adas-lab");
         assert_eq!(slug_from_name("X"), "workspace-x");
         assert_eq!(slug_from_name("✨"), "workspace");
     }

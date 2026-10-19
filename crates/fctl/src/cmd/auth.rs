@@ -156,7 +156,7 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
                 "Workspaces: {}",
                 list.workspaces
                     .iter()
-                    .map(|w| format!("{} ({})", w.name, w.role.as_str()))
+                    .map(|w| format!("{} ({})", w.name, super::workspaces::role(w.role)))
                     .collect::<Vec<_>>()
                     .join(", ")
             );

@@ -832,20 +832,9 @@ async fn my_invitation(ctx: &Ctx, id: &str) -> AppResult<InvitationRow> {
 pub async fn accept(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let invitation = my_invitation(ctx, id).await?;
     let user = ctx.user()?.clone();
-    if ws::member(&ctx.db, &invitation.workspace_id, &user.id)
-        .await?
-        .is_some()
-    {
-        q(
-            &ctx.db,
-            "DELETE FROM workspace_invitations WHERE id = ?",
-            &[s(&invitation.id)],
-        )?
-        .run()
-        .await?;
+    if !ws::join(&ctx.db, &ctx.settings(), &user, &invitation, ctx.now).await? {
         return Err(conflict("You are a member of this workspace already"));
     }
-    ws::join(&ctx.db, &ctx.settings(), &user, &invitation, ctx.now).await?;
     ctx.audit_in(
         Some(&invitation.workspace_id),
         "workspace.joined",

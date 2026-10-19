@@ -1,34 +1,47 @@
-// Creating a project: link a repository, start a new one, or none at all.
+// Creating a project in a workspace: link one of its repositories, start a
+// new one in one of its organizations, or none at all.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { ArrowRight, FolderGit2, Lock, Sparkles } from "lucide-react";
-import { useMemo, useState } from "react";
-import { Banner, Button, Field, GithubIcon, Input, Switch, Textarea } from "@/components/ui";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { ArrowRight, FolderGit2, Lock, Plus, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Banner, Button, Empty, Field, GithubIcon, Input, Select, Switch, Textarea } from "@/components/ui";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago } from "@/lib/format";
-import { keys, queryClient, useInstance } from "@/lib/queries";
+import { keys, queryClient, useInstance, useWorkspaces } from "@/lib/queries";
 
 type Mode = "link" | "create" | "none";
 
 export function NewProject() {
   const navigate = useNavigate();
+  const search = useSearch({ from: "/app/new" });
   const { data: instance } = useInstance();
+  const list = useWorkspaces();
+  const open = (list.data?.workspaces ?? []).filter((w) => !w.blocked);
+  const [chosen, setChosen] = useState<string | undefined>(search.workspace);
+  // The workspace asked for, else the first one.
+  const ws = open.find((w) => w.slug === chosen || w.id === chosen) ?? open[0];
+  useEffect(() => {
+    if (search.workspace) setChosen(search.workspace);
+  }, [search.workspace]);
   const github = instance?.features.github;
+  const works = (ws?.github.length ?? 0) > 0;
   const [mode, setMode] = useState<Mode>(github ? "link" : "none");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [repo, setRepo] = useState("");
   const [filter, setFilter] = useState("");
   const [newRepo, setNewRepo] = useState("");
+  const [owner, setOwner] = useState<string>();
   const [priv, setPriv] = useState(true);
   const [setup, setSetup] = useState("");
   const [connectors, setConnectors] = useState(false);
   const repos = useQuery({
-    queryKey: keys.repos,
-    queryFn: api.githubRepos,
-    enabled: !!github && mode === "link",
+    queryKey: keys.repos(ws?.id ?? ""),
+    queryFn: () => api.githubRepos(ws?.id ?? ""),
+    enabled: !!github && !!ws && works && mode === "link",
   });
   const shown = useMemo(
     () =>
@@ -40,10 +53,19 @@ export function NewProject() {
   const create = useMutation({
     mutationFn: () =>
       api.createProject({
+        workspace: ws?.id,
         name: name.trim() || (mode === "create" ? newRepo : (repo.split("/")[1] ?? "")) || "Untitled",
         description: description || undefined,
         repo: mode === "link" ? repo : undefined,
-        create_repo: mode === "create" ? { name: newRepo || name, private: priv } : undefined,
+        create_repo:
+          mode === "create"
+            ? {
+                name: newRepo || name,
+                private: priv,
+                // The organization shown; with one, the control plane picks it.
+                owner: ws && ws.github.length > 1 ? (owner ?? ws.github[0]) : undefined,
+              }
+            : undefined,
         settings:
           setup.trim() || !connectors
             ? {
@@ -60,16 +82,64 @@ export function NewProject() {
       }),
     onSuccess: (p) => {
       void queryClient.invalidateQueries({ queryKey: keys.projects });
+      void queryClient.invalidateQueries({ queryKey: keys.workspaces });
       void navigate({ to: "/p/$slug", params: { slug: p.slug }, search: { tab: undefined } });
     },
   });
-  const ready = mode === "link" ? !!repo : mode === "create" ? !!(newRepo || name) : !!name.trim();
+  const ready = !!ws && (mode === "link" ? !!repo : mode === "create" ? !!(newRepo || name) : !!name.trim());
+  if (list.data && open.length === 0)
+    return (
+      <div className="mx-auto max-w-[680px] px-6 py-14">
+        <Empty
+          icon={<FolderGit2 className="size-6" />}
+          title="Projects belong to workspaces"
+          action={
+            <Link to="/w/new">
+              <Button variant="primary" icon={<Plus className="size-3.5" />}>
+                Create a workspace
+              </Button>
+            </Link>
+          }
+        >
+          Create a workspace for the people and GitHub accounts you work with, or join one you are invited to
+          on the floor.
+        </Empty>
+      </div>
+    );
   return (
     <div className="mx-auto max-w-[680px] px-6 py-14">
       <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">A new project</h1>
       <p className="mt-2 text-[15px] text-ink-3">
         A project is a repository plus what agents need to know to work in it.
       </p>
+      {open.length > 1 && ws && (
+        <div className="mt-8">
+          <Field label="Workspace" hint="Its people work in the project, on its runners.">
+            {(id) => (
+              <Select
+                id={id}
+                value={ws.id}
+                onChange={(v) => {
+                  setChosen(v);
+                  setRepo("");
+                  setOwner(undefined);
+                }}
+                options={open.map((w) => ({
+                  value: w.id,
+                  label: w.name,
+                  icon: <WorkspaceAvatar workspace={w} size={16} title={false} />,
+                  description: w.github.length ? `Works in ${w.github.join(", ")}` : "No GitHub account yet",
+                }))}
+              />
+            )}
+          </Field>
+        </div>
+      )}
+      {open.length === 1 && ws && (
+        <div className="mt-6 flex items-center gap-2 text-[13px] text-ink-3">
+          <WorkspaceAvatar workspace={ws} size={18} /> In {ws.name}
+        </div>
+      )}
       <div className="mt-8 grid grid-cols-3 gap-2">
         {(
           [
@@ -98,6 +168,20 @@ export function NewProject() {
       {!github && (
         <Banner tone="info" className="mt-4">
           Connect a GitHub App to this instance to link repositories (see the self-hosting guide).
+        </Banner>
+      )}
+      {github && ws && !works && mode !== "none" && (
+        <Banner tone="info" className="mt-4">
+          {ws.name} works in no GitHub account yet.{" "}
+          <Link
+            to="/w/$slug"
+            params={{ slug: ws.slug }}
+            search={{ tab: "github" }}
+            className="underline underline-offset-2"
+          >
+            Connect one
+          </Link>{" "}
+          to link its repositories.
         </Banner>
       )}
       <form
@@ -158,10 +242,22 @@ export function NewProject() {
         )}
         {mode === "create" && (
           <div className="flex items-end gap-4">
+            {ws && ws.github.length > 1 && (
+              <Field label="Organization">
+                {(id) => (
+                  <Select
+                    id={id}
+                    value={owner ?? ws.github[0]}
+                    onChange={setOwner}
+                    options={ws.github.map((a) => ({ value: a, label: a }))}
+                  />
+                )}
+              </Field>
+            )}
             <Field
               label="Repository name"
               className="flex-1"
-              hint="Created in the GitHub App's organization, with a README."
+              hint={`Created in ${owner ?? (ws?.github.length === 1 ? ws.github[0] : "the workspace's organization")}, with a README.`}
             >
               {(id) => (
                 <Input

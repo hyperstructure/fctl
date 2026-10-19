@@ -41,6 +41,7 @@ import {
   StatusPill,
   toast,
 } from "@/components/ui";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -51,6 +52,7 @@ import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink } from "@/lib/remote-control";
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
 import { statusReason } from "@/lib/status";
+import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 export function SessionPage() {
   const { id } = useParams({ from: "/app/s/$id" });
@@ -58,6 +60,7 @@ export function SessionPage() {
   const initial = useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) });
   const [s, store] = useLiveSession(id, initial.data);
   const session = s.session ?? initial.data;
+  const workspaceIndex = useWorkspaceIndex();
   const stall = useStall(session, s);
   const [rail, setRail] = useState(true);
   const [share, setShare] = useState(false);
@@ -130,6 +133,8 @@ export function SessionPage() {
   }
 
   const status = session?.status;
+  // The session's workspace as your list has it now (renames and avatars).
+  const workspace = freshest(workspaceIndex, session?.workspace ?? initial.data?.workspace);
   const rc = session?.remote_control;
   const role = s.role ?? session?.role;
   const isOwner = role === "owner";
@@ -153,14 +158,29 @@ export function SessionPage() {
                     </p>
                   )}
                   <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
-                    <Link
-                      to="/p/$slug"
-                      params={{ slug: session.project_slug }}
-                      search={{ tab: undefined }}
-                      className="font-mono text-ink-2 hover:text-ink"
-                    >
-                      {session.project_slug}#{session.number}
-                    </Link>
+                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                      {workspace && (
+                        <>
+                          <Link
+                            to="/w/$slug"
+                            params={{ slug: workspace.slug }}
+                            className="inline-flex min-w-0 items-center gap-1.5 text-ink-2 hover:text-ink"
+                          >
+                            <WorkspaceAvatar workspace={workspace} size={15} />
+                            <span className="max-w-[12rem] truncate">{workspace.name}</span>
+                          </Link>
+                          <span className="text-ink-4">/</span>
+                        </>
+                      )}
+                      <Link
+                        to="/p/$slug"
+                        params={{ slug: session.project_slug }}
+                        search={{ tab: undefined }}
+                        className="font-mono text-ink-2 hover:text-ink"
+                      >
+                        {session.project_slug}#{session.number}
+                      </Link>
+                    </span>
                     <StatusPill status={session.status} />
                     {statusReason(session) && (
                       <span className="truncate text-ink-4">{statusReason(session)}</span>

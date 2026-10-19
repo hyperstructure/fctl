@@ -419,7 +419,10 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::bold(&p.slug),
                     style::dim(&repo),
                     active,
-                    style::dim(&format!("{} sessions", p.total_sessions))
+                    style::dim(&match p.total_sessions {
+                        1 => "1 session".to_owned(),
+                        n => format!("{n} sessions"),
+                    })
                 );
             }
         }

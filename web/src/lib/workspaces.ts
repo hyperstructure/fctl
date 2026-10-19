@@ -31,7 +31,10 @@ export interface WorkspaceGroup {
 }
 
 /** Projects under their workspaces, the workspaces in your order (oldest membership first). */
-export function groupProjects(workspaces: readonly G.Workspace[], projects: readonly G.Project[]): WorkspaceGroup[] {
+export function groupProjects(
+  workspaces: readonly G.Workspace[],
+  projects: readonly G.Project[],
+): WorkspaceGroup[] {
   return workspaces.map((workspace) => ({
     workspace,
     projects: projects.filter((p) => p.workspace?.id === workspace.id),
@@ -96,7 +99,11 @@ export function roleLabel(role: G.WorkspaceRole): string {
 export const BASE_ROLES: { value: G.BaseRole; label: string; description: string }[] = [
   { value: "none", label: "No base role", description: "Members see the projects they are members of" },
   { value: "viewer", label: "Viewer", description: "Members see every project's sessions" },
-  { value: "editor", label: "Editor", description: "Members start sessions and message agents in every project" },
+  {
+    value: "editor",
+    label: "Editor",
+    description: "Members start sessions and message agents in every project",
+  },
   {
     value: "maintainer",
     label: "Maintainer",

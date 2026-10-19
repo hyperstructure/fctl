@@ -1,9 +1,24 @@
-// Admin: who gets in, who is here, the machines doing the work, what the
-// instance allows, and what happened.
+// Admin: who is here and who gets in, the workspaces, which of them work in
+// which GitHub accounts, the machines doing the work, what the instance
+// allows, and what happened. Instance admins see what workspaces are and
+// who runs them, not what is inside the ones they aren't members of.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
-import { Cpu, Fingerprint, Globe, Link2, MailPlus, Plus, ShieldCheck, ShieldOff, Trash2 } from "lucide-react";
+import {
+  Check,
+  Cpu,
+  Crown,
+  ExternalLink,
+  Fingerprint,
+  Globe,
+  Link2,
+  MailPlus,
+  Plus,
+  ShieldCheck,
+  ShieldOff,
+  Trash2,
+} from "lucide-react";
 import { useState } from "react";
 import {
   Avatar,
@@ -21,17 +36,36 @@ import {
   Switch,
   toast,
 } from "@/components/ui";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, cpus, diskBelow, lowOnDisk, memory, sandboxLimits } from "@/lib/format";
 import { buildsImages, runsImages } from "@/lib/images";
-import { keys, queryClient, useMe, useRunners } from "@/lib/queries";
+import { keys, queryClient, useMe, useRunners, useWorkspaces } from "@/lib/queries";
+import { roleLabel } from "@/lib/workspaces";
 
-type Tab = "access" | "users" | "runners" | "settings" | "audit";
+type Tab = "people" | "workspaces" | "github" | "runners" | "access" | "settings" | "audit";
+
+const TABS: { tab: Tab; label: string }[] = [
+  { tab: "people", label: "People" },
+  { tab: "workspaces", label: "Workspaces" },
+  { tab: "github", label: "GitHub" },
+  { tab: "runners", label: "Runners" },
+  { tab: "access", label: "Access" },
+  { tab: "settings", label: "Settings" },
+  { tab: "audit", label: "Audit log" },
+];
 
 export function Admin() {
-  const { tab = "access" } = useSearch({ from: "/app/admin" });
+  const { tab = "people" } = useSearch({ from: "/app/admin" });
+  const github = useQuery({ queryKey: keys.adminGithub, queryFn: api.adminGithub });
+  // Requests that wait for an instance admin, on the GitHub tab.
+  const waiting =
+    github.data?.installations.reduce(
+      (n, i) => n + i.workspaces.filter((w) => w.status === "requested").length,
+      0,
+    ) ?? 0;
   const { data: me } = useMe();
   if (me && me.user.role === "member")
     return (
@@ -42,25 +76,36 @@ export function Admin() {
   return (
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
       <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">Admin</h1>
-      <nav className="mt-8 flex gap-1 border-b border-line">
-        {(["access", "users", "runners", "settings", "audit"] as Tab[]).map((t) => (
-          <Link
-            key={t}
-            to="/admin"
-            search={{ tab: t === "access" ? undefined : t }}
-            className={cn(
-              "relative px-3 py-2.5 text-[13.5px] capitalize transition-colors",
-              tab === t ? "text-ink" : "text-ink-3 hover:text-ink",
-            )}
-          >
-            {t}
-            {tab === t && <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent" />}
-          </Link>
-        ))}
+      <nav className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
+        <div className="flex w-max min-w-full gap-1 border-b border-line">
+          {TABS.map((t) => (
+            <Link
+              key={t.tab}
+              to="/admin"
+              search={{ tab: t.tab === "people" ? undefined : t.tab }}
+              className={cn(
+                "relative shrink-0 px-3 py-2.5 text-[13.5px] transition-colors",
+                tab === t.tab ? "text-ink" : "text-ink-3 hover:text-ink",
+              )}
+            >
+              {t.label}
+              {t.tab === "github" && waiting > 0 && (
+                <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-highlight px-1 text-[10.5px] font-semibold text-highlight-ink tabular-nums">
+                  {waiting}
+                </span>
+              )}
+              {tab === t.tab && (
+                <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent" />
+              )}
+            </Link>
+          ))}
+        </div>
       </nav>
       <div className="mt-8">
+        {tab === "people" && <Users />}
+        {tab === "workspaces" && <Workspaces />}
+        {tab === "github" && <Github />}
         {tab === "access" && <Access />}
-        {tab === "users" && <Users />}
         {tab === "runners" && <Runners />}
         {tab === "settings" && <InstanceSettings />}
         {tab === "audit" && <Audit />}
@@ -188,11 +233,15 @@ function Access() {
   );
 }
 
-/** Instance roles; only owners make owners. */
+/** Instance roles: the primary admin hands their own role over instead. */
 const instanceRoles = (actor?: G.InstanceRole): SelectOption<G.InstanceRole>[] => [
-  { value: "member", label: "Member", description: "Uses the projects they belong to" },
-  { value: "admin", label: "Admin", description: "Also manages people, runners and instance settings" },
-  { value: "owner", label: "Owner", description: "Also manages admins", disabled: actor !== "owner" },
+  { value: "member", label: "Member", description: "Uses the workspaces they are members of" },
+  {
+    value: "admin",
+    label: "Admin",
+    description: "Also manages people, invitations, runners, GitHub and settings",
+    disabled: actor !== "owner",
+  },
 ];
 
 /** Whether a user has what requiring two-factor asks for: an authenticator app or a passkey. */
@@ -215,6 +264,18 @@ function lacksTwoFactor(u: G.User, s?: G.InstanceSettings) {
 function Users() {
   const { data: me } = useMe();
   const users = useQuery({ queryKey: keys.users, queryFn: api.users });
+  const [inviting, setInviting] = useState(false);
+  const [primary, setPrimary] = useState<G.User | null>(null);
+  const transfer = useMutation({
+    mutationFn: (u: G.User) => api.transferInstance(u.id),
+    onSuccess: (u) => {
+      setPrimary(null);
+      void users.refetch();
+      void queryClient.invalidateQueries({ queryKey: keys.me });
+      toast(`${u.name} is the primary admin; you stay an admin`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
   const settings = useQuery({ queryKey: keys.instanceSettings, queryFn: api.instanceSettings });
   const [reset, setReset] = useState<string | null>(null);
   const [resetTwoFactor, setResetTwoFactor] = useState<G.User | null>(null);
@@ -239,6 +300,16 @@ function Users() {
   });
   return (
     <div>
+      <div className="mb-6 flex items-start justify-between gap-6">
+        <p className="max-w-xl text-[14px] leading-relaxed text-ink-3">
+          Everyone with an account on this instance. Each address is invited on its own; people connect the
+          addresses they have to one account, and join workspaces as one of them.
+        </p>
+        <Button variant="primary" icon={<MailPlus className="size-3.5" />} onClick={() => setInviting(true)}>
+          Invite
+        </Button>
+      </div>
+      <InviteDialog open={inviting} onClose={() => setInviting(false)} />
       <ul className="border-t border-line">
         {users.data?.users.map((u) => (
           <li
@@ -272,22 +343,38 @@ function Users() {
                   {u.id === me?.user.id && <span className="text-[12px] text-ink-4">you</span>}
                 </div>
                 <div className="truncate text-[12px] text-ink-4">
-                  {u.email} · {u.last_login_at ? `active ${ago(u.last_login_at)}` : "never signed in"}
+                  {u.email}
+                  {u.emails.length > 0 && ` (also ${u.emails.join(", ")})`} ·{" "}
+                  {u.workspaces === 0
+                    ? "in no workspace"
+                    : `in ${u.workspaces} ${u.workspaces === 1 ? "workspace" : "workspaces"}`}{" "}
+                  · {u.last_login_at ? `active ${ago(u.last_login_at)}` : "never signed in"}
                   {lacksTwoFactor(u, settings.data) && (
                     <span className="text-amber"> · sets up two-factor before anything else</span>
                   )}
                 </div>
               </div>
               <div className="-ml-1 flex shrink-0 flex-wrap items-center gap-1 sm:ml-0">
-                <Select
-                  size="sm"
-                  aria-label={`Role of ${u.name}`}
-                  value={u.role}
-                  disabled={u.id === me?.user.id}
-                  onChange={(role) => update.mutate({ id: u.id, body: { role } })}
-                  options={instanceRoles(me?.user.role)}
-                />
-                {u.id !== me?.user.id && (
+                {u.role === "owner" ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 text-[12.5px] text-ink-2">
+                    <Crown className="size-3.5 text-accent" /> Primary admin
+                  </span>
+                ) : (
+                  <Select
+                    size="sm"
+                    aria-label={`Role of ${u.name}`}
+                    value={u.role}
+                    disabled={u.id === me?.user.id || (u.role === "admin" && me?.user.role !== "owner")}
+                    onChange={(role) => update.mutate({ id: u.id, body: { role } })}
+                    options={instanceRoles(me?.user.role)}
+                  />
+                )}
+                {me?.user.role === "owner" && u.role === "admin" && u.status === "active" && (
+                  <Button size="sm" variant="ghost" onClick={() => setPrimary(u)}>
+                    Make primary admin
+                  </Button>
+                )}
+                {u.id !== me?.user.id && u.role !== "owner" && (
                   <>
                     <Button
                       size="sm"
@@ -326,6 +413,25 @@ function Users() {
           </li>
         ))}
       </ul>
+      <Dialog
+        open={!!primary}
+        onClose={() => setPrimary(null)}
+        title={`Make ${primary?.name ?? ""} the primary admin?`}
+        description="The instance has one primary admin, whom no other admin can demote, disable or remove, and who manages admins. You stay an admin, and only they can hand the role back."
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setPrimary(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            loading={transfer.isPending}
+            onClick={() => primary && transfer.mutate(primary)}
+          >
+            Hand it over
+          </Button>
+        </div>
+      </Dialog>
       <Dialog
         open={!!reset}
         onClose={() => setReset(null)}
@@ -368,12 +474,526 @@ function Users() {
   );
 }
 
+/** Inviting someone to the instance, and to workspaces the inviter is an admin of. */
+function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { data: me } = useMe();
+  const mine = (useWorkspaces().data?.workspaces ?? []).filter(
+    (w) => !w.blocked && (w.role === "owner" || w.role === "admin"),
+  );
+  const [email, setEmail] = useState("");
+  const [admin, setAdmin] = useState(false);
+  const [picked, setPicked] = useState<Record<string, G.WorkspaceRole | undefined>>({});
+  const [done, setDone] = useState<G.Invite | null>(null);
+  const reset = () => {
+    setEmail("");
+    setAdmin(false);
+    setPicked({});
+    setDone(null);
+    invite.reset();
+  };
+  const invite = useMutation({
+    mutationFn: () =>
+      api.createInvite({
+        email: email.trim(),
+        role: admin ? "admin" : "member",
+        workspaces: Object.entries(picked)
+          .filter((e): e is [string, G.WorkspaceRole] => !!e[1])
+          .map(([workspace, role]) => ({ workspace, role })),
+      }),
+    onSuccess: (i) => {
+      setDone(i);
+      void queryClient.invalidateQueries({ queryKey: keys.allowlist });
+    },
+  });
+  const close = () => {
+    onClose();
+    setTimeout(reset, 200);
+  };
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title={done ? "Invitation ready" : "Invite someone"}
+      description={
+        done
+          ? done.emailed
+            ? `We emailed ${done.email}. You can also send them this link.`
+            : `Send this link to ${done.email}. It works once, for 14 days.`
+          : "They create an account with the link, or connect the address to the account they have."
+      }
+    >
+      {done ? (
+        <div className="flex flex-col gap-4">
+          {done.url && <CodeBox value={done.url} />}
+          {done.workspaces.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
+              They join
+              {done.workspaces.map((w) => (
+                <span key={w.id} className="inline-flex items-center gap-1.5 text-ink-2">
+                  <WorkspaceAvatar workspace={w} size={16} /> {w.name}
+                </span>
+              ))}
+              with it.
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={reset}>
+              Invite someone else
+            </Button>
+            <Button variant="primary" onClick={close}>
+              Done
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <form
+          className="flex flex-col gap-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (email.trim()) invite.mutate();
+          }}
+        >
+          <Field label="Email" error={invite.error?.message}>
+            {(id) => (
+              <Input
+                id={id}
+                type="email"
+                autoFocus
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="ada@example.com"
+              />
+            )}
+          </Field>
+          {me?.user.role === "owner" && (
+            <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+              <span>
+                Instance admin
+                <span className="block text-[12.5px] text-ink-4">
+                  Manages people, invitations, runners, GitHub and the instance's settings.
+                </span>
+              </span>
+              <Switch checked={admin} onChange={setAdmin} label="Instance admin" />
+            </div>
+          )}
+          {mine.length > 0 && (
+            <fieldset className="flex flex-col gap-2">
+              <legend className="text-[12.5px] font-medium text-ink-2">Also invite them to</legend>
+              <ul className="mt-1.5 flex flex-col divide-y divide-line rounded-lg border border-line">
+                {mine.map((w) => {
+                  const role = picked[w.id];
+                  return (
+                    <li key={w.id} className="flex items-center gap-3 px-3 py-2.5">
+                      <input
+                        type="checkbox"
+                        id={`invite-${w.id}`}
+                        checked={!!role}
+                        onChange={(e) =>
+                          setPicked((p) => ({ ...p, [w.id]: e.target.checked ? "member" : undefined }))
+                        }
+                        className="accent-[var(--c-accent)]"
+                      />
+                      <label htmlFor={`invite-${w.id}`} className="flex min-w-0 flex-1 items-center gap-2.5">
+                        <WorkspaceAvatar workspace={w} size={22} />
+                        <span className="truncate text-[13.5px] text-ink">{w.name}</span>
+                      </label>
+                      {role && (
+                        <Select
+                          size="sm"
+                          aria-label={`Role in ${w.name}`}
+                          value={role}
+                          onChange={(r) => setPicked((p) => ({ ...p, [w.id]: r }))}
+                          options={[
+                            { value: "member", label: "Member" },
+                            { value: "admin", label: "Admin" },
+                          ]}
+                        />
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="text-[12px] text-ink-4">
+                The workspaces you are an admin of. Without any, they start with none and create or join one.
+              </p>
+            </fieldset>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={close}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              icon={<MailPlus className="size-3.5" />}
+              loading={invite.isPending}
+              disabled={!email.trim()}
+            >
+              Invite
+            </Button>
+          </div>
+        </form>
+      )}
+    </Dialog>
+  );
+}
+
+/** Every workspace: what it is and who runs it, not what is inside. */
+function Workspaces() {
+  const list = useQuery({ queryKey: keys.adminWorkspaces, queryFn: api.adminWorkspaces });
+  const [deleting, setDeleting] = useState<G.AdminWorkspace | null>(null);
+  const [typed, setTyped] = useState("");
+  const remove = useMutation({
+    mutationFn: (w: G.AdminWorkspace) => api.adminDeleteWorkspace(w.workspace.id, typed),
+    onSuccess: (_, w) => {
+      setDeleting(null);
+      setTyped("");
+      void list.refetch();
+      void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+      toast(`${w.workspace.name} was deleted`);
+    },
+  });
+  return (
+    <div>
+      <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
+        Each workspace has its own people, admins, runners, GitHub accounts and audit log. You see inside the
+        ones you are a member of; here, what each one is and who runs it.
+      </p>
+      <ul className="mt-6 border-t border-line">
+        {list.data?.workspaces.map((w) => (
+          <li key={w.workspace.id} className="flex items-center gap-3.5 border-b border-line py-3.5">
+            <WorkspaceAvatar workspace={w.workspace} size={32} />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-[14px] text-ink">
+                <span className="truncate">{w.workspace.name}</span>
+                {w.require_two_factor && (
+                  <ShieldCheck className="size-3.5 text-accent" aria-label="Requires two-factor sign-in" />
+                )}
+                {w.role && <span className="text-[12px] text-ink-4">{roleLabel(w.role).toLowerCase()}</span>}
+              </div>
+              <div className="truncate text-[12px] text-ink-4">
+                {w.primary ? `${w.primary.name} · ` : ""}
+                {w.members} {w.members === 1 ? "member" : "members"} · {w.projects}{" "}
+                {w.projects === 1 ? "project" : "projects"} · {w.runners}{" "}
+                {w.runners === 1 ? "runner" : "runners"}
+                {w.github.length > 0 && ` · ${w.github.join(", ")}`} · since {ago(w.created_at)}
+              </div>
+            </div>
+            {w.role && (
+              <Link to="/w/$slug" params={{ slug: w.workspace.slug }}>
+                <Button size="sm" variant="ghost">
+                  Open
+                </Button>
+              </Link>
+            )}
+            <button
+              type="button"
+              aria-label={`Delete ${w.workspace.name}`}
+              className="rounded p-1.5 text-ink-4 hover:text-danger"
+              onClick={() => setDeleting(w)}
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          </li>
+        ))}
+        {list.data?.workspaces.length === 0 && (
+          <li className="py-6 text-[13px] text-ink-4">No workspaces yet.</li>
+        )}
+      </ul>
+      <Dialog
+        open={!!deleting}
+        onClose={() => setDeleting(null)}
+        title={`Delete ${deleting?.workspace.name ?? ""}?`}
+        description={`Its ${deleting?.projects ?? 0} projects, their sessions and transcripts go, for its ${deleting?.members ?? 0} members. This can't be undone, and its sessions must be stopped first.`}
+      >
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (deleting) remove.mutate(deleting);
+          }}
+        >
+          <Field label={`Type ${deleting?.workspace.name ?? ""} to confirm`} error={remove.error?.message}>
+            {(id) => (
+              <Input id={id} value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
+            )}
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="danger"
+              loading={remove.isPending}
+              disabled={typed.trim() !== deleting?.workspace.name}
+            >
+              Delete workspace
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+    </div>
+  );
+}
+
+/** The accounts the instance's GitHub App is installed on, and the workspaces that use them or ask to. */
+function Github() {
+  const list = useQuery({ queryKey: keys.adminGithub, queryFn: api.adminGithub });
+  const workspaces = useQuery({ queryKey: keys.adminWorkspaces, queryFn: api.adminWorkspaces });
+  const [connecting, setConnecting] = useState<{ account: string; workspace?: string; repos: string } | null>(
+    null,
+  );
+  const save = (g: G.GithubInstallations) => {
+    queryClient.setQueryData(keys.adminGithub, g);
+    void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+    void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+  };
+  const connect = useMutation({
+    mutationFn: (v: { account: string; workspace: string; repos?: string[] }) =>
+      api.adminConnectGithub(v.account, v.workspace, v.repos),
+    onSuccess: (g) => {
+      save(g);
+      setConnecting(null);
+    },
+  });
+  const disconnect = useMutation({
+    mutationFn: (v: { account: string; workspace: string }) =>
+      api.adminDisconnectGithub(v.account, v.workspace),
+    onSuccess: save,
+    onError: (e) => toast(e.message, "error"),
+  });
+  const g = list.data;
+  if (g && !g.configured)
+    return (
+      <Banner tone="info">
+        This instance has no GitHub App. Set one up to let workspaces' projects use repositories (see the
+        self-hosting guide).
+      </Banner>
+    );
+  const requests = (g?.installations ?? []).flatMap((i) =>
+    i.workspaces.filter((w) => w.status === "requested").map((w) => ({ account: i.account, ...w })),
+  );
+  const scopeOf = (repos?: string[]) =>
+    repos
+      ? `Only ${repos.slice(0, 4).join(", ")}${repos.length > 4 ? ` and ${repos.length - 4} more` : ""}`
+      : "Every repository";
+  return (
+    <div>
+      <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
+        The <span className="font-mono text-[13px]">{g?.app_slug}</span> app mints tokens for the accounts it
+        is installed on. A workspace's projects use an account once you connect it to the workspace, or
+        approve its admins' request: anyone could name an installation, and its tokens can write.
+      </p>
+      {requests.length > 0 && (
+        <section className="mt-6 flex flex-col gap-2">
+          <h2 className="text-[13px] font-semibold text-ink">Waiting for you</h2>
+          {requests.map((r) => (
+            <div
+              key={`${r.account}-${r.workspace.id}`}
+              className="flex flex-wrap items-center gap-3 rounded-lg border border-accent/25 bg-accent-soft px-4 py-3"
+            >
+              <WorkspaceAvatar workspace={r.workspace} size={24} />
+              <div className="min-w-0 flex-1 text-[13.5px] text-ink-2">
+                <span className="text-ink">{r.requested_by?.name ?? "An admin"}</span> asks for{" "}
+                <span className="text-ink">{r.workspace.name}</span> to work in{" "}
+                <span className="font-mono text-[13px] text-ink">{r.account}</span>
+                <span className="block text-[12px] text-ink-4">
+                  {scopeOf(r.repos)} · {ago(r.created_at)}
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => disconnect.mutate({ account: r.account, workspace: r.workspace.id })}
+              >
+                Decline
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                icon={<Check className="size-3.5" />}
+                loading={connect.isPending}
+                onClick={() =>
+                  connect.mutate({ account: r.account, workspace: r.workspace.id, repos: r.repos })
+                }
+              >
+                Approve
+              </Button>
+            </div>
+          ))}
+        </section>
+      )}
+      <ul className="mt-8 border-t border-line">
+        {g?.installations.map((i) => (
+          <li key={i.account} className="border-b border-line py-4">
+            <div className="flex items-center gap-3.5">
+              <img
+                src={`https://github.com/${encodeURIComponent(i.account)}.png?size=64`}
+                alt=""
+                className="size-8 shrink-0 rounded-md bg-raised"
+                referrerPolicy="no-referrer"
+              />
+              <div className="min-w-0 flex-1">
+                <a
+                  href={`https://github.com/${encodeURIComponent(i.account)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 text-[14px] text-ink hover:underline"
+                >
+                  {i.account} <ExternalLink className="size-3 text-ink-4" />
+                </a>
+                <div className="text-[12px] text-ink-4">
+                  {i.installation_id
+                    ? `${i.account_type === "User" ? "Personal account" : "Organization"} · ${
+                        i.repository_selection === "selected" ? "selected repositories" : "all repositories"
+                      }${i.installed_at ? ` · installed ${ago(i.installed_at)}` : ""}`
+                    : "The app isn't installed there (any more)"}
+                </div>
+              </div>
+              {i.installation_id && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<Plus className="size-3.5" />}
+                  onClick={() => setConnecting({ account: i.account, repos: "" })}
+                >
+                  Connect to a workspace
+                </Button>
+              )}
+            </div>
+            {i.workspaces.filter((w) => w.status === "active").length > 0 && (
+              <ul className="mt-3 ml-11 flex flex-col gap-1.5">
+                {i.workspaces
+                  .filter((w) => w.status === "active")
+                  .map((w) => (
+                    <li key={w.workspace.id} className="flex items-center gap-2.5 text-[13px] text-ink-2">
+                      <WorkspaceAvatar workspace={w.workspace} size={18} />
+                      <span className="truncate">{w.workspace.name}</span>
+                      <span className="truncate text-[12px] text-ink-4">{scopeOf(w.repos)}</span>
+                      <span className="flex-1" />
+                      <Button
+                        size="sm"
+                        variant="quiet"
+                        onClick={() =>
+                          setConnecting({
+                            account: i.account,
+                            workspace: w.workspace.id,
+                            repos: w.repos?.join(", ") ?? "",
+                          })
+                        }
+                      >
+                        Repositories
+                      </Button>
+                      <button
+                        type="button"
+                        aria-label={`Disconnect ${w.workspace.name} from ${i.account}`}
+                        className="rounded p-1 text-ink-4 hover:text-danger"
+                        onClick={() => disconnect.mutate({ account: i.account, workspace: w.workspace.id })}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </li>
+        ))}
+        {g?.installations.length === 0 && (
+          <li className="py-6 text-[13px] text-ink-4">The app isn't installed on any account yet.</li>
+        )}
+      </ul>
+      {g?.install_url && (
+        <a href={g.install_url} target="_blank" rel="noreferrer" className="mt-6 inline-block">
+          <Button variant="ghost" icon={<Plus className="size-3.5" />}>
+            Install it on another account
+          </Button>
+        </a>
+      )}
+      <Dialog
+        open={!!connecting}
+        onClose={() => setConnecting(null)}
+        title={`${connecting?.account ?? ""}'s repositories for a workspace`}
+        description="The workspace's projects may use these repositories, and agents get tokens only for the ones their project lists."
+      >
+        {connecting && (
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!connecting.workspace) return;
+              const repos = connecting.repos
+                .split(/[\s,]+/)
+                .map((r) => r.trim())
+                .filter(Boolean);
+              connect.mutate({
+                account: connecting.account,
+                workspace: connecting.workspace,
+                repos: repos.length ? repos : undefined,
+              });
+            }}
+          >
+            <Field label="Workspace">
+              {(id) => (
+                <Select
+                  id={id}
+                  value={connecting.workspace}
+                  placeholder="Choose one"
+                  onChange={(v) => setConnecting((c) => (c ? { ...c, workspace: v } : c))}
+                  options={(workspaces.data?.workspaces ?? []).map((w) => ({
+                    value: w.workspace.id,
+                    label: w.workspace.name,
+                    icon: <WorkspaceAvatar workspace={w.workspace} size={16} title={false} />,
+                  }))}
+                />
+              )}
+            </Field>
+            <Field
+              label="Only these repositories"
+              hint="Names, separated by commas. Empty: every repository the app reaches there."
+              error={connect.error?.message}
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  value={connecting.repos}
+                  onChange={(e) => setConnecting((c) => (c ? { ...c, repos: e.target.value } : c))}
+                  placeholder="web, design"
+                  className="font-mono text-[13px]"
+                />
+              )}
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => setConnecting(null)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="primary"
+                loading={connect.isPending}
+                disabled={!connecting.workspace}
+              >
+                Connect
+              </Button>
+            </div>
+          </form>
+        )}
+      </Dialog>
+    </div>
+  );
+}
+
 function Runners() {
   const runners = useRunners();
   const [name, setName] = useState("");
   const [reg, setReg] = useState<G.RunnerRegistration | null>(null);
+  // The workspaces you are an admin of, whose sessions a new runner may run.
+  const admined = (useWorkspaces().data?.workspaces ?? []).filter(
+    (w) => !w.blocked && (w.role === "owner" || w.role === "admin"),
+  );
+  const [workspace, setWorkspace] = useState<string>("none");
   const create = useMutation({
-    mutationFn: () => api.createRunner({ name }),
+    mutationFn: () => api.createRunner({ name, workspace: workspace === "none" ? undefined : workspace }),
     onSuccess: (r) => {
       setReg(r);
       setName("");
@@ -406,8 +1026,10 @@ function Runners() {
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
-        Runners are the machines that run agents. Each session gets its own sandbox — a lightweight VM with
-        Apple's container on macOS 26, or Docker, Lima, or plain processes elsewhere.
+        Runners are the machines that run agents, every one on the instance. Each session gets its own sandbox
+        — a lightweight VM with Apple's container on macOS 26, or Docker, Lima, or plain processes elsewhere —
+        on a runner of its workspace. A runner belongs to whoever registered it, who adds it to the workspaces
+        they run.
       </p>
       <form
         className="mt-6 flex items-end gap-2"
@@ -423,6 +1045,23 @@ function Runners() {
         >
           {(id) => (
             <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="studio mac" />
+          )}
+        </Field>
+        <Field label="For" hint=" ">
+          {(id) => (
+            <Select
+              id={id}
+              value={workspace}
+              onChange={setWorkspace}
+              options={[
+                { value: "none", label: "No workspace yet" },
+                ...admined.map((w) => ({
+                  value: w.id,
+                  label: w.name,
+                  icon: <WorkspaceAvatar workspace={w} size={14} title={false} />,
+                })),
+              ]}
+            />
           )}
         </Field>
         <Button
@@ -470,6 +1109,18 @@ function Runners() {
                     {r.version ? ` · fctl ${r.version}` : ""}
                     {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
                   </div>
+                  {r.workspaces.length > 0 ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-ink-3">
+                      {r.workspaces.map((w) => (
+                        <span key={w.id} className="inline-flex items-center gap-1.5">
+                          <WorkspaceAvatar workspace={w} size={14} /> {w.name}
+                        </span>
+                      ))}
+                      {r.created_by && <span className="text-ink-4">· {r.created_by.name}'s</span>}
+                    </div>
+                  ) : (
+                    <div className="mt-0.5 text-[12px] text-amber">Runs no workspace's sessions yet</div>
+                  )}
                   {r.drain && r.status !== "disabled" && <DrainLine runner={r} />}
                   {r.status !== "disabled" && <LowDiskLine runner={r} />}
                   <RunnerResources runner={r} />

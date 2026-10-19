@@ -2,10 +2,12 @@
 
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
+  ChevronRight,
   ChevronsUpDown,
   Cpu,
   FolderPlus,
   Home as HomeIcon,
+  Lock,
   LogOut,
   Menu as MenuIcon,
   Moon,
@@ -18,13 +20,16 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Avatar, Kbd, Logo, Menu, MenuItem, MenuSeparator, StatusDot } from "@/components/ui";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
+import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useFeed } from "@/lib/feed";
 import { useHotkey } from "@/lib/hotkeys";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
-import { queryClient, useInstance, useMe, useProjects } from "@/lib/queries";
+import { queryClient, useInstance, useMe, useProjects, useWorkspaces } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
+import { groupProjects, useFolded } from "@/lib/workspaces";
 import { CommandPalette } from "./command-palette";
 
 export function AppShell() {
@@ -134,6 +139,9 @@ function Sidebar({
   const { data: me } = useMe();
   const { data: instance } = useInstance();
   const { data: projects } = useProjects();
+  const { data: workspaces } = useWorkspaces();
+  const [folded, toggleFold] = useFolded();
+  const groups = groupProjects(workspaces?.workspaces ?? [], projects?.projects ?? []);
   const [theme, setTheme] = useTheme();
   const navigate = useNavigate();
   const isAdmin = me?.user.role === "owner" || me?.user.role === "admin";
@@ -168,52 +176,48 @@ function Sidebar({
           Floor
         </NavLink>
       </nav>
-      <div className="mt-6 flex items-center justify-between px-5 pb-1.5">
-        <span className="text-[12.5px] font-medium text-ink-3">Projects</span>
-        <Link
-          to="/new"
-          onClick={onNavigate}
-          aria-label="New project"
-          className="rounded p-0.5 text-ink-4 transition-colors hover:text-ink"
-        >
-          <Plus className="size-3.5" />
-        </Link>
-      </div>
-      <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pb-3">
-        {projects?.projects.map((p) => (
+      <nav
+        aria-label="Workspaces"
+        className="mt-5 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 pb-3"
+      >
+        {workspaces?.invitations.map((i) => (
           <Link
-            key={p.id}
-            to="/p/$slug"
-            params={{ slug: p.slug }}
-            search={{ tab: undefined }}
+            key={i.id}
+            to="/"
             onClick={onNavigate}
-            className={cn(
-              "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
-              path === `/p/${p.slug}`
-                ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
-                : "text-ink-3 hover:bg-hover/60 hover:text-ink",
-            )}
+            className="group flex items-center gap-2.5 rounded-md border border-accent/25 bg-accent-soft px-2.5 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-accent/45"
           >
-            <span className="flex size-4 items-center justify-center">
-              {p.active_sessions > 0 ? (
-                <StatusDot status="running" />
-              ) : (
-                <span className="size-1.5 rounded-full bg-ink-4/60" />
-              )}
+            <WorkspaceAvatar workspace={i.workspace} size={18} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-ink">{i.workspace.name}</span>
+              <span className="block truncate text-[11.5px] text-ink-3">Invited · join on the floor</span>
             </span>
-            <span className="min-w-0 flex-1 truncate">{p.name}</span>
-            {p.active_sessions > 0 && (
-              <span className="text-[11.5px] text-ink-4 tabular-nums">{p.active_sessions}</span>
-            )}
           </Link>
         ))}
-        {projects && projects.projects.length === 0 && (
+        {groups.map(({ workspace, projects: list }) => (
+          <WorkspaceGroup
+            key={workspace.id}
+            workspace={workspace}
+            projects={list}
+            path={path}
+            folded={folded.has(workspace.id)}
+            onFold={() => toggleFold(workspace.id)}
+            onNavigate={onNavigate}
+          />
+        ))}
+        {workspaces && workspaces.workspaces.length < workspaces.limit && (
           <Link
-            to="/new"
+            to="/w/new"
             onClick={onNavigate}
-            className="flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] text-ink-4 hover:text-ink"
+            className={cn(
+              "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors",
+              workspaces.workspaces.length === 0
+                ? "text-ink-2 hover:bg-hover hover:text-ink"
+                : "text-ink-4 hover:bg-hover/60 hover:text-ink-2",
+            )}
           >
-            <FolderPlus className="size-4" /> Create a project
+            <Plus className="size-3.5" />
+            {workspaces.workspaces.length === 0 ? "Create a workspace" : "New workspace"}
           </Link>
         )}
       </nav>
@@ -289,5 +293,140 @@ function Sidebar({
         )}
       </div>
     </div>
+  );
+}
+
+/** A workspace in the sidebar: its name (its page) and its projects, which fold away. */
+function WorkspaceGroup({
+  workspace,
+  projects,
+  path,
+  folded,
+  onFold,
+  onNavigate,
+}: {
+  workspace: G.Workspace;
+  projects: G.Project[];
+  path: string;
+  folded: boolean;
+  onFold: () => void;
+  onNavigate: () => void;
+}) {
+  const here = path === `/w/${workspace.slug}`;
+  const active = projects.reduce((n, p) => n + p.active_sessions, 0);
+  return (
+    <section aria-label={workspace.name}>
+      <div
+        className={cn(
+          "group flex h-8 items-center gap-1 rounded-md pr-1 transition-colors",
+          here ? "bg-raised shadow-[inset_0_0_0_1px_var(--c-line)]" : "hover:bg-hover/60",
+        )}
+      >
+        <button
+          type="button"
+          onClick={onFold}
+          aria-expanded={!folded}
+          aria-label={folded ? `Show ${workspace.name}'s projects` : `Hide ${workspace.name}'s projects`}
+          className="flex h-8 w-5 shrink-0 items-center justify-center rounded text-ink-4 transition-colors hover:text-ink-2"
+        >
+          <ChevronRight
+            className={cn(
+              "size-3 transition-transform duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
+              !folded && "rotate-90",
+            )}
+          />
+        </button>
+        <Link
+          to="/w/$slug"
+          params={{ slug: workspace.slug }}
+          search={{ tab: undefined }}
+          onClick={onNavigate}
+          className="flex min-w-0 flex-1 items-center gap-2 py-1"
+        >
+          <WorkspaceAvatar workspace={workspace} size={18} title={false} />
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-[13px] font-medium",
+              here ? "text-ink" : "text-ink-2 group-hover:text-ink",
+            )}
+          >
+            {workspace.name}
+          </span>
+          {workspace.blocked ? (
+            <Lock
+              className="size-3 shrink-0 text-amber"
+              aria-label="Closed until you set up two-factor sign-in"
+            />
+          ) : (
+            folded && active > 0 && <span className="text-[11.5px] text-accent tabular-nums">{active}</span>
+          )}
+        </Link>
+        {!workspace.blocked && (
+          <Link
+            to="/new"
+            search={{ workspace: workspace.slug }}
+            onClick={onNavigate}
+            aria-label={`New project in ${workspace.name}`}
+            className="rounded p-1 text-ink-4 opacity-0 transition-[opacity,color] group-hover:opacity-100 hover:text-ink focus-visible:opacity-100"
+          >
+            <Plus className="size-3.5" />
+          </Link>
+        )}
+      </div>
+      {!folded && (
+        <div className="mt-0.5 flex flex-col gap-0.5 pl-3.5">
+          {workspace.blocked ? (
+            <Link
+              to="/settings"
+              search={{ linked: undefined, error: undefined }}
+              onClick={onNavigate}
+              className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[12.5px] leading-snug text-ink-3 hover:text-ink"
+            >
+              Set up two-factor sign-in to open it
+            </Link>
+          ) : (
+            <>
+              {projects.map((p) => (
+                <Link
+                  key={p.id}
+                  to="/p/$slug"
+                  params={{ slug: p.slug }}
+                  search={{ tab: undefined }}
+                  onClick={onNavigate}
+                  className={cn(
+                    "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
+                    path === `/p/${p.slug}`
+                      ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
+                      : "text-ink-3 hover:bg-hover/60 hover:text-ink",
+                  )}
+                >
+                  <span className="flex size-4 items-center justify-center">
+                    {p.active_sessions > 0 ? (
+                      <StatusDot status="running" />
+                    ) : (
+                      <span className="size-1.5 rounded-full bg-ink-4/60" />
+                    )}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                  {p.active_sessions > 0 && (
+                    <span className="text-[11.5px] text-ink-4 tabular-nums">{p.active_sessions}</span>
+                  )}
+                </Link>
+              ))}
+              {projects.length === 0 && (
+                <Link
+                  to="/new"
+                  search={{ workspace: workspace.slug }}
+                  onClick={onNavigate}
+                  className="flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] text-ink-4 hover:text-ink"
+                >
+                  <FolderPlus className="size-4" /> Create a project
+                </Link>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

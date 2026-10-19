@@ -377,14 +377,25 @@ pub async fn invitations_for(
 /// Joins `user` to the workspace an invitation is for, as the invited
 /// address, and uses up the invitation. Fails when they are in as many
 /// workspaces as anyone may be, or it requires two-factor sign-in they
-/// haven't set up.
+/// haven't set up. Returns `false` when they were in it already (as
+/// another of their addresses), which it leaves as it is.
 pub async fn join(
     db: &D1Database,
     settings: &InstanceSettings,
     user: &UserRow,
     invitation: &InvitationRow,
     now: i64,
-) -> AppResult<()> {
+) -> AppResult<bool> {
+    if member(db, &invitation.workspace_id, &user.id).await?.is_some() {
+        q(
+            db,
+            "DELETE FROM workspace_invitations WHERE id = ?",
+            &[s(&invitation.id)],
+        )?
+        .run()
+        .await?;
+        return Ok(false);
+    }
     policy::check_limit(membership_count(db, &user.id).await?)?;
     if user.blocked_by(settings, invitation.require_two_factor) {
         return Err(AppError(ApiError::new(
@@ -414,7 +425,8 @@ pub async fn join(
             )?,
         ],
     )
-    .await
+    .await?;
+    Ok(true)
 }
 
 /// After someone signs up or connects an address: they join the
@@ -434,7 +446,8 @@ pub async fn join_invited(ctx: &Ctx, user: &UserRow, email: &str) -> AppResult<V
     let mut joined = Vec::new();
     for invitation in invitations {
         match join(&ctx.db, &settings, user, &invitation, ctx.now).await {
-            Ok(()) => {
+            Ok(false) => {}
+            Ok(true) => {
                 ctx.audit_in(
                     Some(&invitation.workspace_id),
                     "workspace.joined",

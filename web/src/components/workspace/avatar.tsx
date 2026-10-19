@@ -6,12 +6,16 @@ import { useState } from "react";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 
-/** Each color's fill and the ink on it (the darker ink reads best on all three brand colors). */
+/**
+ * Each color's fill and the ink on it: the darker ink reads best on the brand colors. Yellow is the
+ * lime on light backgrounds (the highlight token), and ink is the theme's ink, so neither fades into
+ * the canvas.
+ */
 export const WORKSPACE_COLORS: Record<G.WorkspaceColor, { fill: string; ink: string; label: string }> = {
-  yellow: { fill: palette.yellow, ink: palette.blackish, label: "Yellow" },
+  yellow: { fill: "var(--c-highlight)", ink: "var(--c-highlight-ink)", label: "Yellow" },
   pink: { fill: palette.pink, ink: palette.blackish, label: "Pink" },
   blue: { fill: palette.blue, ink: palette.blackish, label: "Blue" },
-  ink: { fill: palette.blackish, ink: palette.whiteish, label: "Ink" },
+  ink: { fill: "var(--c-ink)", ink: "var(--c-canvas)", label: "Ink" },
 };
 
 /** "hyperstructure" → "H", "Side project" → "SP". */

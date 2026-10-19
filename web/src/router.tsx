@@ -11,11 +11,13 @@ import { DevicePage } from "@/routes/device";
 import { ErrorPage } from "@/routes/error";
 import { Home } from "@/routes/home";
 import { NewProject } from "@/routes/new-project";
+import { NewWorkspace } from "@/routes/new-workspace";
 import { NotFound } from "@/routes/not-found";
 import { ProjectPage } from "@/routes/project";
 import { SessionPage } from "@/routes/session";
 import { SettingsPage } from "@/routes/settings";
 import { SignedInLayout } from "@/routes/two-factor";
+import { WorkspacePage, type WorkspaceTab } from "@/routes/workspace";
 
 async function me() {
   return queryClient.ensureQueryData({
@@ -80,7 +82,27 @@ const device = createRoute({
   component: DevicePage,
   validateSearch: (s: Record<string, unknown>) => ({ code: str(s.code) }),
 });
-const newProject = createRoute({ getParentRoute: () => app, path: "/new", component: NewProject });
+const newProject = createRoute({
+  getParentRoute: () => app,
+  path: "/new",
+  component: NewProject,
+  // Optional, so links to it need no search: the workspace to create it in.
+  validateSearch: (s: Record<string, unknown>): { workspace?: string } => ({ workspace: str(s.workspace) }),
+});
+const newWorkspace = createRoute({ getParentRoute: () => app, path: "/w/new", component: NewWorkspace });
+const workspace = createRoute({
+  getParentRoute: () => app,
+  path: "/w/$slug",
+  component: WorkspacePage,
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { tab?: WorkspaceTab; github?: "connected" | "requested" | "asked_owner"; account?: string } => ({
+    tab: str(s.tab) as WorkspaceTab | undefined,
+    // Back from installing the GitHub App (api::github::installed).
+    github: str(s.github) as "connected" | "requested" | "asked_owner" | undefined,
+    account: str(s.account),
+  }),
+});
 const project = createRoute({
   getParentRoute: () => app,
   path: "/p/$slug",
@@ -101,7 +123,15 @@ const admin = createRoute({
   path: "/admin",
   component: Admin,
   validateSearch: (s: Record<string, unknown>) => ({
-    tab: str(s.tab) as "access" | "users" | "runners" | "settings" | "audit" | undefined,
+    tab: str(s.tab) as
+      | "people"
+      | "access"
+      | "workspaces"
+      | "github"
+      | "runners"
+      | "settings"
+      | "audit"
+      | undefined,
   }),
 });
 
@@ -111,7 +141,7 @@ const tree = root.addChildren([
   invite,
   reset,
   twoFactor,
-  app.addChildren([home, device, newProject, project, session, settings, admin]),
+  app.addChildren([home, device, newProject, newWorkspace, workspace, project, session, settings, admin]),
 ]);
 
 export const router = createRouter({

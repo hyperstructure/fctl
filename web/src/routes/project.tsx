@@ -31,6 +31,7 @@ import {
   Textarea,
   toast,
 } from "@/components/ui";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
@@ -55,6 +56,7 @@ import {
   useRunners,
   useSessions,
 } from "@/lib/queries";
+import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 type Tab = "sessions" | "repositories" | "settings" | "members" | "secrets";
 
@@ -65,6 +67,7 @@ export function ProjectPage() {
   const p = project.data;
   const manage = p?.role === "owner" || p?.role === "maintainer";
   const others = (useProjectRepos(p?.id).data?.repos ?? []).filter((r) => !r.primary).length;
+  const workspace = freshest(useWorkspaceIndex(), p?.workspace);
   if (project.isError)
     return (
       <div className="mx-auto max-w-xl px-6 py-24">
@@ -75,6 +78,16 @@ export function ProjectPage() {
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
       {p ? (
         <header className="animate-rise">
+          {workspace && (
+            <Link
+              to="/w/$slug"
+              params={{ slug: workspace.slug }}
+              className="mb-3 inline-flex items-center gap-2 text-[13px] text-ink-3 transition-colors hover:text-ink"
+            >
+              <WorkspaceAvatar workspace={workspace} size={18} />
+              {workspace.name}
+            </Link>
+          )}
           <h1 className="font-display text-[38px] leading-[1.1] font-medium tracking-[-0.022em]">{p.name}</h1>
           {p.description && (
             <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ink-3">{p.description}</p>
@@ -300,10 +313,12 @@ function Repositories({ project }: { project: G.Project }) {
   const manage = project.role === "owner" || project.role === "maintainer";
   const { data: instance } = useInstance();
   const repos = useProjectRepos(project.id);
+  const workspace = project.workspace?.id ?? "";
+  // The repositories of the project's workspace.
   const github = useQuery({
-    queryKey: keys.repos,
-    queryFn: api.githubRepos,
-    enabled: manage && !!instance?.features.github,
+    queryKey: keys.repos(workspace),
+    queryFn: () => api.githubRepos(workspace),
+    enabled: manage && !!workspace && !!instance?.features.github,
   });
   const [repo, setRepo] = useState("");
   const [access, setAccess] = useState<G.RepoAccess>("read");

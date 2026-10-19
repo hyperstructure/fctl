@@ -88,8 +88,7 @@ export const useSessions = (q: {
   status?: string;
   limit?: number;
   mine?: boolean;
-}) =>
-  useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q) });
+}) => useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q) });
 export const useRunners = () =>
   useQuery({ queryKey: keys.runners, queryFn: api.runners, refetchInterval: 30_000 });
 

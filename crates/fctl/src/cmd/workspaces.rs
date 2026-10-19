@@ -288,7 +288,8 @@ async fn person(api: &Api, workspace: &Workspace, who: &str) -> Result<Workspace
         })
 }
 
-fn role(r: WorkspaceRole) -> &'static str {
+/// "primary admin", "admin", "member".
+pub fn role(r: WorkspaceRole) -> &'static str {
     match r {
         WorkspaceRole::Owner => "primary admin",
         WorkspaceRole::Admin => "admin",

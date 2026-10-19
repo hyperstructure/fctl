@@ -2,18 +2,19 @@
 // a sign-in with two-factor.
 
 import { foundry } from "@hyperstructure/design/gl/foundry";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowRight, Fingerprint } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { usePasskeySignIn } from "@/components/passkeys/sign-in";
 import { challengeCopy, SecondFactorStep } from "@/components/two-factor/challenge";
-import { Banner, Button, Field, GLCanvas, Input, Logo, NameFields, Spinner } from "@/components/ui";
+import { Avatar, Banner, Button, Field, GLCanvas, Input, Logo, NameFields, Spinner } from "@/components/ui";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
-import { ApiFailure, api } from "@/lib/api";
+import { ApiFailure, api, emails } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
-import { keys, queryClient, useInstance } from "@/lib/queries";
+import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
 import { RECOVERY_LEFT } from "@/lib/two-factor";
 
 const GOOGLE_ERRORS: Record<string, string> = {
@@ -387,6 +388,9 @@ export function InvitePage() {
     enabled: !!token,
     retry: false,
   });
+  // Signed in already: the address can join this account instead.
+  const { data: me } = useMe();
+  const [separate, setSeparate] = useState(false);
   const [given, setGiven] = useState("");
   const [family, setFamily] = useState("");
   const [password, setPassword] = useState("");
@@ -395,6 +399,10 @@ export function InvitePage() {
     () => api.signup({ email, given_name: given, family_name: family, password, invite: token }),
     (r) => r.me && signedIn(r.me),
   );
+  const connect = useMutation({
+    mutationFn: () => emails.connectInvite(token),
+    onSuccess: (m) => signedIn(m),
+  });
   const { data: instance } = useInstance();
   if (!token || preview.isError) {
     return (
@@ -413,20 +421,86 @@ export function InvitePage() {
       </AuthFrame>
     );
   }
+  const joins = preview.data?.workspaces ?? [];
+  const workspacesLine = joins.length > 0 && (
+    <div className="mb-6 flex flex-col gap-2 rounded-xl border border-line bg-sunken/40 px-4 py-3">
+      <div className="text-[12.5px] text-ink-3">
+        You join {joins.length === 1 ? "this workspace" : "these workspaces"} with it
+      </div>
+      <ul className="flex flex-col gap-2">
+        {joins.map((w) => (
+          <li key={w.id} className="flex items-center gap-2.5 text-[14px] text-ink">
+            <WorkspaceAvatar workspace={w} size={22} /> {w.name}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+  const subtitle = preview.data ? (
+    <>
+      {preview.data.invited_by ?? "An admin"} invited {email} to {preview.data.instance}, where Claude agents
+      build software.
+    </>
+  ) : (
+    "Checking your invitation…"
+  );
+  if (me && !separate) {
+    return (
+      <AuthFrame title={<>You're invited.</>} subtitle={subtitle}>
+        {workspacesLine}
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center gap-3 rounded-xl border border-line px-4 py-3">
+            <Avatar user={me.user} size={32} />
+            <div className="min-w-0 text-[13px]">
+              <div className="truncate text-ink">{me.user.name}</div>
+              <div className="truncate text-ink-4">Signed in as {me.user.email}</div>
+            </div>
+          </div>
+          <p className="text-[13.5px] leading-relaxed text-ink-3">
+            Connect <span className="text-ink">{email}</span> to this account: it signs in to it too, has its
+            own commit email, and the workspaces you join as it see only it.
+          </p>
+          {connect.error && <Banner tone="error">{connect.error.message}</Banner>}
+          <Button
+            variant="primary"
+            size="lg"
+            loading={connect.isPending}
+            disabled={!preview.data}
+            onClick={() => connect.mutate()}
+            trailing={<ArrowRight className="size-4" />}
+          >
+            Connect it to my account
+          </Button>
+          <button
+            type="button"
+            onClick={() => setSeparate(true)}
+            className="text-[13px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+          >
+            Create a separate account for it instead
+          </button>
+        </div>
+      </AuthFrame>
+    );
+  }
   return (
     <AuthFrame
       title={<>You're invited.</>}
-      subtitle={
-        preview.data ? (
-          <>
-            {preview.data.invited_by ?? "An admin"} invited you to {preview.data.instance}, where Claude
-            agents build software.
-          </>
-        ) : (
-          "Checking your invitation…"
+      subtitle={subtitle}
+      footer={
+        !me && (
+          <span>
+            Have an account already?{" "}
+            <a
+              href={`/login?next=${encodeURIComponent(`/invite#token=${token}`)}`}
+              className="text-ink underline underline-offset-2"
+            >
+              Sign in to connect this address to it
+            </a>
+          </span>
         )
       }
     >
+      {workspacesLine}
       {instance?.features.google && (
         <>
           <GoogleButton label={`Continue with Google as ${email}`} />

@@ -1,9 +1,9 @@
-// Settings: profile, Claude, notifications, sign-in methods, passkeys,
-// two-factor sign-in, devices and tokens, appearance, your data (export) and
-// the danger zone (deleting the account).
+// Settings: profile, email addresses, workspaces, Claude, notifications,
+// sign-in methods, passkeys, two-factor sign-in, devices and tokens,
+// appearance, your data (export) and the danger zone (deleting the account).
 
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useSearch } from "@tanstack/react-router";
+import { Link, useSearch } from "@tanstack/react-router";
 import {
   ArrowUpRight,
   Bell,
@@ -12,8 +12,11 @@ import {
   KeyRound,
   Laptop,
   ListOrdered,
+  LogOut,
+  Mail,
   Monitor,
   Moon,
+  Plus,
   Radio,
   Shield,
   ShieldCheck,
@@ -39,19 +42,22 @@ import {
   NameFields,
   nameParts,
   Section,
+  Select,
   Skeleton,
   Spinner,
   Switch,
   toast,
 } from "@/components/ui";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
-import { api } from "@/lib/api";
+import { api, emails, workspaces as wsApi } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, browserName } from "@/lib/format";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
-import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
+import { keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
+import { roleLabel } from "@/lib/workspaces";
 
 const LINK_ERRORS: Record<string, string> = {
   google_linked_elsewhere: "That Google account is already linked to another user.",
@@ -79,6 +85,8 @@ export function SettingsPage() {
       )}
       <div className="mt-6">
         <Profile me={me} />
+        <Addresses me={me} />
+        <Workspaces me={me} />
         <Claude me={me} />
         <Notifications me={me} />
         <SignIn me={me} />
@@ -97,18 +105,15 @@ function Profile({ me }: { me: G.Me }) {
   const [given, setGiven] = useState(() => nameParts(me.user).given);
   const [family, setFamily] = useState(() => nameParts(me.user).family);
   const [avatar, setAvatar] = useState(me.user.avatar_url ?? "");
-  const [commitEmail, setCommitEmail] = useState(me.commit_email ?? "");
   const save = useMutation({
     mutationFn: () =>
       api.updateMe({
         given_name: given,
         family_name: family,
         avatar_url: avatar,
-        commit_email: commitEmail,
       }),
     onSuccess: (m) => {
       queryClient.setQueryData(keys.me, m);
-      setCommitEmail(m.commit_email ?? "");
       toast("Profile saved");
     },
   });
@@ -128,7 +133,12 @@ function Profile({ me }: { me: G.Me }) {
           <div className="text-[13px] text-ink-3">
             {me.user.email}
             <div className="text-[12px] text-ink-4">
-              {me.user.role} · joined {ago(me.user.created_at)}
+              {me.user.role === "owner"
+                ? "The instance's primary admin · "
+                : me.user.role === "admin"
+                  ? "An instance admin · "
+                  : ""}
+              joined {ago(me.user.created_at)}
             </div>
           </div>
         </div>
@@ -147,44 +157,314 @@ function Profile({ me }: { me: G.Me }) {
             />
           )}
         </Field>
-        <Field
-          label="Commit email"
-          hint={
-            <>
-              Commits in the sessions you start credit you as a co-author with this address, which anyone who
-              can read the repository sees; a project can turn this off. Use one your GitHub account has, such
-              as your{" "}
-              <a
-                href="https://github.com/settings/emails"
-                target="_blank"
-                rel="noreferrer"
-                className="text-ink underline decoration-accent underline-offset-2"
-              >
-                noreply address
-              </a>
-              , so GitHub links the commits to you.
-            </>
-          }
-          error={err("commit_email")}
-        >
-          {(id) => (
-            <Input
-              id={id}
-              type="email"
-              value={commitEmail}
-              onChange={(e) => setCommitEmail(e.target.value)}
-              placeholder="None: commits don't credit you"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          )}
-        </Field>
         <div>
           <Button type="submit" variant="primary" loading={save.isPending}>
             Save
           </Button>
         </div>
       </form>
+    </Section>
+  );
+}
+
+/** Your addresses: each signs in, has its own commit email, and is how workspaces know you. */
+function Addresses({ me }: { me: G.Me }) {
+  const [disconnecting, setDisconnecting] = useState<G.EmailAddress | null>(null);
+  const set = (m: G.Me) => {
+    queryClient.setQueryData(keys.me, m);
+    void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+  };
+  const primary = useMutation({
+    mutationFn: (email: string) => emails.update(email, { primary: true }),
+    onSuccess: (m) => {
+      set(m);
+      toast(`${m.user.email} is your primary address`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const disconnect = useMutation({
+    mutationFn: (email: string) => emails.remove(email),
+    onSuccess: (m, email) => {
+      set(m);
+      setDisconnecting(null);
+      toast(`Disconnected ${email}`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const list = me.emails.length
+    ? me.emails
+    : [{ email: me.user.email, primary: true, commit_email: me.commit_email, workspaces: [], added_at: 0 }];
+  return (
+    <Section
+      title="Email addresses"
+      description="Each signs in to this account. A workspace knows you by the address you joined it as, and your commits in its projects credit that address's commit email."
+    >
+      <ul className="flex flex-col divide-y divide-line rounded-xl border border-line">
+        {list.map((e) => (
+          <li key={e.email} className="flex flex-col gap-3 px-4 py-4">
+            <div className="flex items-center gap-3">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-raised text-ink-3 shadow-[inset_0_0_0_1px_var(--c-line)]">
+                <Mail className="size-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-[14px] text-ink">
+                  <span className="truncate">{e.email}</span>
+                  {e.primary && (
+                    <span className="rounded-full bg-accent-soft px-1.5 py-px text-[11px] text-ink-2">
+                      Primary
+                    </span>
+                  )}
+                </div>
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-ink-4">
+                  {e.workspaces.length === 0 ? (
+                    "No workspace knows you by it"
+                  ) : (
+                    <>
+                      In
+                      {e.workspaces.map((w) => (
+                        <span key={w.id} className="inline-flex items-center gap-1 text-ink-3">
+                          <WorkspaceAvatar workspace={w} size={13} /> {w.name}
+                        </span>
+                      ))}
+                    </>
+                  )}
+                </div>
+              </div>
+              {!e.primary && (
+                <div className="flex shrink-0 gap-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    loading={primary.isPending && primary.variables === e.email}
+                    onClick={() => primary.mutate(e.email)}
+                  >
+                    Make primary
+                  </Button>
+                  <button
+                    type="button"
+                    aria-label={`Disconnect ${e.email}`}
+                    className="rounded p-1.5 text-ink-4 hover:text-danger"
+                    onClick={() => setDisconnecting(e)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+            <CommitEmail address={e} onSaved={set} />
+          </li>
+        ))}
+      </ul>
+      <p className="mt-3 text-[12.5px] leading-relaxed text-ink-4">
+        To add another address, ask an instance admin to invite it. Open the invitation while you are signed
+        in here, and connect it to this account.
+      </p>
+      <Dialog
+        open={!!disconnecting}
+        onClose={() => setDisconnecting(null)}
+        title={`Disconnect ${disconnecting?.email ?? ""}?`}
+        description={
+          disconnecting?.workspaces.length
+            ? `It no longer signs you in, and you leave ${disconnecting.workspaces.map((w) => w.name).join(", ")}, which you joined as it. Your sessions there stop.`
+            : "It no longer signs you in."
+        }
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setDisconnecting(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            loading={disconnect.isPending}
+            onClick={() => disconnecting && disconnect.mutate(disconnecting.email)}
+          >
+            Disconnect
+          </Button>
+        </div>
+      </Dialog>
+    </Section>
+  );
+}
+
+/** The commit email of one address, saved on its own. */
+function CommitEmail({ address, onSaved }: { address: G.EmailAddress; onSaved: (m: G.Me) => void }) {
+  const [value, setValue] = useState(address.commit_email ?? "");
+  useEffect(() => setValue(address.commit_email ?? ""), [address.commit_email]);
+  const save = useMutation({
+    mutationFn: () => emails.update(address.email, { commit_email: value.trim() }),
+    onSuccess: (m) => {
+      onSaved(m);
+      toast(
+        value.trim() ? `Commits credit you as ${value.trim()}` : "Those commits don't credit you any more",
+      );
+    },
+  });
+  const changed = value.trim() !== (address.commit_email ?? "");
+  return (
+    <form
+      className="flex items-start gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (changed) save.mutate();
+      }}
+    >
+      <Field
+        label="Commit email"
+        className="flex-1"
+        error={save.error?.message}
+        hint={
+          <>
+            Commits in the sessions you start
+            {address.workspaces.length ? ` in ${address.workspaces.map((w) => w.name).join(", ")}` : ""}{" "}
+            credit you as a co-author with it, which anyone who can read the repository sees. Use one your
+            GitHub account has, like your{" "}
+            <a
+              href="https://github.com/settings/emails"
+              target="_blank"
+              rel="noreferrer"
+              className="text-ink underline decoration-accent underline-offset-2"
+            >
+              noreply address
+            </a>
+            , so GitHub links the commits to you.
+          </>
+        }
+      >
+        {(id) => (
+          <Input
+            id={id}
+            type="email"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="None: commits don't credit you"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        )}
+      </Field>
+      <Button type="submit" className="mt-[22px]" disabled={!changed} loading={save.isPending}>
+        Save
+      </Button>
+    </form>
+  );
+}
+
+/** The workspaces you are in: how each knows you, and what your sessions there run on. */
+function Workspaces({ me }: { me: G.Me }) {
+  const list = useWorkspaces();
+  const [leaving, setLeaving] = useState<G.Workspace | null>(null);
+  const leave = useMutation({
+    mutationFn: (w: G.Workspace) => wsApi.removeMember(w.id, me.user.id),
+    onSuccess: (_, w) => {
+      setLeaving(null);
+      for (const k of [keys.workspaces, keys.projects, ["sessions"], keys.runners, keys.me])
+        void queryClient.invalidateQueries({ queryKey: k });
+      toast(`You left ${w.name}`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const claude = useMutation({
+    mutationFn: (v: { id: string; claude: string }) => wsApi.updateMembership(v.id, { claude: v.claude }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+      toast("Saved: sessions take it when they next start or resume");
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const creds = me.claude.filter((c) => c.status === "active");
+  const fallback = me.claude.find((c) => c.is_default);
+  const name = (c: G.ClaudeCredentialInfo) => c.account_email ?? c.label ?? "Claude";
+  const data = list.data;
+  return (
+    <Section
+      title="Workspaces"
+      description="The ones you are in, each with its own people, projects, runners and GitHub accounts."
+      actions={
+        data && data.workspaces.length < data.limit ? (
+          <Link to="/w/new">
+            <Button size="sm" icon={<Plus className="size-3.5" />}>
+              New workspace
+            </Button>
+          </Link>
+        ) : undefined
+      }
+    >
+      {!data ? (
+        <Skeleton className="h-16" />
+      ) : data.workspaces.length === 0 ? (
+        <p className="text-[13.5px] text-ink-3">You aren't in a workspace yet.</p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-line rounded-xl border border-line">
+          {data.workspaces.map((w) => (
+            <li key={w.id} className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center">
+              <Link
+                to="/w/$slug"
+                params={{ slug: w.slug }}
+                className="flex min-w-0 flex-1 items-center gap-3 rounded-md"
+              >
+                <WorkspaceAvatar workspace={w} size={32} />
+                <div className="min-w-0">
+                  <div className="truncate text-[14px] text-ink">{w.name}</div>
+                  <div className="truncate text-[12px] text-ink-4">
+                    {roleLabel(w.role)} · as {w.email}
+                    {w.blocked && <span className="text-amber"> · closed until you set up two-factor</span>}
+                  </div>
+                </div>
+              </Link>
+              <div className="flex items-center gap-2">
+                <Select
+                  size="sm"
+                  aria-label={`Claude connection in ${w.name}`}
+                  value={w.claude ?? "default"}
+                  onChange={(v) => claude.mutate({ id: w.id, claude: v === "default" ? "" : v })}
+                  options={[
+                    {
+                      value: "default",
+                      label: "Claude: your default",
+                      description: fallback ? name(fallback) : undefined,
+                    },
+                    ...creds.map((c) => ({
+                      value: c.id,
+                      label: `Claude: ${name(c)}`,
+                      description: c.subscription_type ?? c.kind,
+                    })),
+                  ]}
+                />
+                {w.role !== "owner" && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<LogOut className="size-3.5" />}
+                    onClick={() => setLeaving(w)}
+                  >
+                    Leave
+                  </Button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {data && (
+        <p className="mt-3 text-[12.5px] text-ink-4">
+          {data.workspaces.length} of the {data.limit} workspaces anyone can be in.
+        </p>
+      )}
+      <Dialog
+        open={!!leaving}
+        onClose={() => setLeaving(null)}
+        title={`Leave ${leaving?.name ?? ""}?`}
+        description="You lose access to its projects and sessions at once, and your sessions there stop. Its admins can invite you again."
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setLeaving(null)}>
+            Cancel
+          </Button>
+          <Button variant="danger" loading={leave.isPending} onClick={() => leaving && leave.mutate(leaving)}>
+            Leave
+          </Button>
+        </div>
+      </Dialog>
     </Section>
   );
 }
@@ -1128,7 +1408,7 @@ function AccountDangerZone({ me }: { me: G.Me }) {
   return (
     <DangerZone
       title="Delete your account"
-      description="Deletes your account, sign-in methods, devices, tokens and Claude connections, and the projects only you are a member of, with their sessions. This cannot be undone."
+      description="Deletes your account, addresses, sign-in methods, devices, tokens and Claude connections, and the workspaces only you are in, with their projects and sessions. This cannot be undone."
       action="Delete account…"
       onAction={() => setOpen(true)}
     >
@@ -1187,24 +1467,36 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
         >
           <ul className="flex list-disc flex-col gap-1.5 pl-5 text-[13.5px] leading-relaxed text-ink-2 marker:text-ink-4">
             <li>
-              Your account <span className="text-ink">{me.user.email}</span>, sign-in methods, devices and
-              tokens, and Claude connections are deleted.
+              Your account <span className="text-ink">{me.user.email}</span>
+              {me.emails.length > 1 && " and its other addresses"}, sign-in methods, devices and tokens, and
+              Claude connections are deleted.
             </li>
+            {p?.workspaces.map((w) => (
+              <li key={w.id}>
+                <span className="text-ink">{w.name}</span> is deleted: no one else is in it.
+              </li>
+            ))}
             {p?.projects.map((project) => (
               <li key={project.slug}>
-                <span className="text-ink">{project.name}</span> is deleted
+                Its project <span className="text-ink">{project.name}</span> goes
                 {project.sessions === 0
                   ? ""
                   : project.sessions === 1
                     ? " with its session and transcript"
                     : ` with its ${project.sessions} sessions and their transcripts`}
-                . No one else is a member.
+                .
+              </li>
+            ))}
+            {p?.handovers.map((h) => (
+              <li key={h.workspace.id}>
+                <span className="text-ink">{h.to.name}</span> becomes the primary admin of{" "}
+                <span className="text-ink">{h.workspace.name}</span>.
               </li>
             ))}
             {p && p.kept_sessions > 0 && (
               <li>
                 {p.kept_sessions === 1 ? "The session" : `The ${p.kept_sessions} sessions`} you started in
-                shared projects {p.kept_sessions === 1 ? "stays" : "stay"} there, shown as started by a
+                shared workspaces {p.kept_sessions === 1 ? "stays" : "stay"} there, shown as started by a
                 deleted user.
               </li>
             )}

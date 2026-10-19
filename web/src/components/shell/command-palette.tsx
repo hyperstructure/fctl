@@ -1,13 +1,23 @@
-// ⌘K: jump to projects and sessions, or run an action.
+// ⌘K: jump to workspaces, projects and sessions, or run an action.
 
 import { useNavigate } from "@tanstack/react-router";
-import { FolderGit2, FolderPlus, MessageSquareText, Moon, Search, Settings, Shield } from "lucide-react";
+import {
+  FolderGit2,
+  FolderPlus,
+  MessageSquareText,
+  Moon,
+  Plus,
+  Search,
+  Settings,
+  Shield,
+} from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { StatusDot } from "@/components/ui";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
-import { useMe, useProjects, useSessions } from "@/lib/queries";
+import { useMe, useProjects, useSessions, useWorkspaces } from "@/lib/queries";
 import { getTheme, setTheme } from "@/lib/theme";
 
 interface Entry {
@@ -27,6 +37,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const { data: me } = useMe();
   const { data: projects } = useProjects();
   const { data: sessions } = useSessions({ limit: 50 });
+  const { data: workspaces } = useWorkspaces();
 
   useEffect(() => {
     if (open) {
@@ -52,14 +63,25 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         run: go(() => navigate({ to: "/s/$id", params: { id: s.id } })),
       });
     }
+    const several = (workspaces?.workspaces.length ?? 0) > 1;
     for (const p of projects?.projects ?? []) {
       list.push({
         id: `p-${p.id}`,
         group: "Projects",
-        label: p.name,
+        label: several && p.workspace ? `${p.workspace.name} / ${p.name}` : p.name,
         hint: p.repo ? `${p.repo.owner}/${p.repo.name}` : undefined,
         icon: <FolderGit2 className="size-4" />,
         run: go(() => navigate({ to: "/p/$slug", params: { slug: p.slug }, search: { tab: undefined } })),
+      });
+    }
+    for (const w of workspaces?.workspaces ?? []) {
+      list.push({
+        id: `w-${w.id}`,
+        group: "Workspaces",
+        label: w.name,
+        hint: `${w.projects} ${w.projects === 1 ? "project" : "projects"}`,
+        icon: <WorkspaceAvatar workspace={w} size={16} title={false} />,
+        run: go(() => navigate({ to: "/w/$slug", params: { slug: w.slug } })),
       });
     }
     list.push(
@@ -69,6 +91,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         label: "New project",
         icon: <FolderPlus className="size-4" />,
         run: go(() => navigate({ to: "/new" })),
+      },
+      {
+        id: "a-new-workspace",
+        group: "Actions",
+        label: "New workspace",
+        icon: <Plus className="size-4" />,
+        run: go(() => navigate({ to: "/w/new" })),
       },
       {
         id: "a-settings",
@@ -102,7 +131,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       .sort((a, b) => b.score - a.score)
       .slice(0, 40)
       .map((x) => x.e);
-  }, [q, sessions, projects, me, navigate, onClose]);
+  }, [q, sessions, projects, workspaces, me, navigate, onClose]);
 
   if (!open) return null;
   let lastGroup = "";
@@ -135,7 +164,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
               }
               if (e.key === "Enter") entries[i]?.run();
             }}
-            placeholder="Search sessions, projects and actions"
+            placeholder="Search sessions, projects, workspaces and actions"
             className="h-13 flex-1 bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-4"
           />
         </div>
