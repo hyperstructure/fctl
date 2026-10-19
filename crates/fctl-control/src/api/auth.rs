@@ -263,7 +263,8 @@ pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     if two_factor::asks(
         &settings,
         Via::Password,
-        user.has_second_factor(),
+        user.has_password(),
+        user.factors(),
         user.two_factor_google,
     ) {
         let challenge = crate::api::two_factor::challenge(
@@ -478,7 +479,8 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     let phc = auth::hash_password(&body.new_password)?;
     // With two-factor, the link alone changes nothing: the new password
     // takes effect once a code checks out (`api::two_factor::verify`).
-    if user.has_second_factor() {
+    let settings = crate::instance::settings(&ctx.db).await?;
+    if two_factor::on(&settings, user.has_password(), user.factors()) {
         let challenge = crate::api::two_factor::challenge(
             ctx,
             &user,

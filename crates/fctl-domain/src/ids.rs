@@ -50,6 +50,7 @@ id_ctor!(login_job_id, LoginJobId);
 id_ctor!(identity_id, IdentityId);
 id_ctor!(attachment_id, AttachmentId);
 id_ctor!(push_device_id, PushDeviceId);
+id_ctor!(passkey_id, PasskeyId);
 
 /// A random UUID v4 (for `claude --session-id`).
 pub fn uuid_v4() -> String {

@@ -4,13 +4,15 @@
 import { foundry } from "@hyperstructure/design/gl/foundry";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Fingerprint } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
+import { usePasskeySignIn } from "@/components/passkeys/sign-in";
 import { challengeCopy, SecondFactorStep } from "@/components/two-factor/challenge";
 import { Banner, Button, Field, GLCanvas, Input, Logo, NameFields, Spinner } from "@/components/ui";
 import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { keys, queryClient, useInstance } from "@/lib/queries";
 import { RECOVERY_LEFT } from "@/lib/two-factor";
 
@@ -97,8 +99,10 @@ function safeNext(next?: string) {
   return next?.startsWith("/") && !next.startsWith("//") ? next : "/";
 }
 
-function signedIn(me: G.Me, next?: string) {
+/** Into the app. Unless a passkey did it, the app then offers to make one (`components/passkeys/offer`). */
+function signedIn(me: G.Me, next?: string, { passkey = false } = {}) {
   queryClient.setQueryData(keys.me, me);
+  if (!passkey) sessionStorage.setItem(OFFER_PASSKEY, "1");
   window.location.assign(safeNext(next));
 }
 
@@ -158,6 +162,7 @@ export function LoginPage() {
       setSent(true);
     },
   );
+  const passkey = usePasskeySignIn((r) => r.me && signedIn(r.me, search.next, { passkey: true }));
   const external = search.error
     ? (GOOGLE_ERRORS[search.error] ?? "The sign-in did not work. Try again.")
     : null;
@@ -197,9 +202,27 @@ export function LoginPage() {
           {external}
         </Banner>
       )}
-      {instance?.features.google && (
+      {(instance?.features.google || passkey.supported) && (
         <>
-          <GoogleButton label="Continue with Google" />
+          <div className="flex flex-col gap-2.5">
+            {instance?.features.google && <GoogleButton label="Continue with Google" />}
+            {passkey.supported && (
+              <button
+                type="button"
+                onClick={passkey.start}
+                disabled={!passkey.ready || passkey.busy}
+                className="flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-line-strong bg-raised/80 text-[14px] font-medium text-ink transition-colors hover:border-ink-4 disabled:opacity-60"
+              >
+                <Fingerprint className={cn("size-4", passkey.busy && "animate-pulse")} />
+                Sign in with a passkey
+              </button>
+            )}
+          </div>
+          {passkey.error && (
+            <Banner tone="error" className="mt-3">
+              {passkey.error}
+            </Banner>
+          )}
           <div className="my-5 flex items-center gap-3 text-[12px] text-ink-4">
             <div className="h-px flex-1 bg-line" /> or <div className="h-px flex-1 bg-line" />
           </div>
@@ -211,7 +234,7 @@ export function LoginPage() {
             <Input
               id={id}
               type="email"
-              autoComplete="email"
+              autoComplete="username webauthn"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}

@@ -105,6 +105,11 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["auth", "two-factor", "challenge"]) => api::two_factor::current(ctx, req).await,
         (Post, ["auth", "two-factor", "verify"]) => api::two_factor::verify(ctx, req).await,
         (Post, ["auth", "two-factor", "cancel"]) => api::two_factor::cancel(ctx, req).await,
+        (Post, ["auth", "two-factor", "passkey"]) => {
+            api::passkeys::second_factor_options(ctx, req).await
+        }
+        (Post, ["auth", "passkey", "options"]) => api::passkeys::sign_in_options(ctx).await,
+        (Post, ["auth", "passkey"]) => api::passkeys::sign_in(ctx, req).await,
         (Get, ["auth", "google", "start"]) => api::google::start(ctx, req).await,
         (Get, ["auth", "google", "callback"]) => api::google::callback(ctx, req).await,
         (Delete, ["auth", "identities", id]) => api::google::unlink(ctx, id).await,
@@ -247,6 +252,11 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["me", "two-factor", "recovery-codes"]) => {
             api::two_factor::new_recovery_codes(ctx, req).await
         }
+        // Passkeys
+        (Post, ["me", "passkeys", "options"]) => api::passkeys::creation_options(ctx, req).await,
+        (Post, ["me", "passkeys"]) => api::passkeys::add(ctx, req).await,
+        (Patch, ["me", "passkeys", id]) => api::passkeys::rename(ctx, req, id).await,
+        (Delete, ["me", "passkeys", id]) => api::passkeys::remove(ctx, id).await,
         (Get, ["me", "export"]) => api::account::export(ctx).await,
         (Get, ["me", "deletion"]) => api::account::deletion(ctx).await,
         (Post, ["me", "delete"]) => api::account::delete(ctx, req).await,

@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod allowlist;
+pub mod cbor;
 pub mod disk;
 pub mod events;
 pub mod files;
@@ -27,6 +28,7 @@ pub mod totp;
 pub mod two_factor;
 pub mod usage;
 pub mod validate;
+pub mod webauthn;
 pub mod webpush;
 
 /// Fills `buf` with cryptographically secure random bytes.

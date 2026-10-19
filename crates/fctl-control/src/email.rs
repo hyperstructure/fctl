@@ -1,7 +1,9 @@
 //! Transactional email through Resend (optional; see config.rs).
 
 use crate::config::EmailConfig;
+use crate::ctx::Ctx;
 use crate::error::{AppResult, unavailable};
+use crate::model::UserRow;
 use worker::{Fetch, Headers, Method, Request, RequestInit};
 
 pub async fn send(cfg: &EmailConfig, to: &str, subject: &str, text: &str) -> AppResult<()> {
@@ -21,4 +23,15 @@ pub async fn send(cfg: &EmailConfig, to: &str, subject: &str, text: &str) -> App
         return Err(unavailable("Email could not be sent right now"));
     }
     Ok(())
+}
+
+/// Emails `user` about a change to how they sign in, after the response,
+/// when email is set up.
+pub fn notice(ctx: &Ctx, user: &UserRow, subject: &str, text: String) {
+    let Some(mail) = ctx.cfg.email.clone() else {
+        return;
+    };
+    let to = user.email.clone();
+    let subject = subject.to_owned();
+    ctx.defer(async move { send(&mail, &to, &subject, &text).await });
 }

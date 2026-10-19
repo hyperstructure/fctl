@@ -136,6 +136,16 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
     if let Some(email) = &me.commit_email {
         println!("Commits credit you as {email}");
     }
+    if !me.passkeys.is_empty() {
+        println!(
+            "Passkeys: {}",
+            me.passkeys
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     let two_factor = super::two_factor::summary(&me.two_factor);
     println!(
         "Two-factor sign-in: {}",

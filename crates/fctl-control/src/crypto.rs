@@ -7,7 +7,8 @@
 //!   Format: `v1.<base64url(nonce ‖ ciphertext ‖ tag)>`.
 //! - Short-lived state (the OAuth cookie) is HMAC-SHA256 signed.
 //! - RS256 (GitHub App JWTs) uses WebCrypto, which is constant time and fast,
-//!   and so do the elliptic-curve parts of Web Push (`push.rs`).
+//!   and so do the elliptic-curve parts of Web Push (`push.rs`) and checking
+//!   passkeys' signatures ([`verify_passkey`]).
 
 use crate::error::{AppError, AppResult, internal};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -187,4 +188,73 @@ fn pem_to_der(pem: &str) -> AppResult<Vec<u8>> {
         .flat_map(|l| l.trim().chars())
         .collect();
     STANDARD.decode(body).map_err(internal)
+}
+
+/// Whether `signature` is a passkey's over `data`, with WebCrypto: ES256
+/// (DER signatures, made `r ‖ s`), EdDSA (Ed25519) or RS256. A key WebCrypto
+/// won't take counts as a wrong signature.
+pub async fn verify_passkey(
+    key: &fctl_domain::webauthn::PublicKey,
+    signature: &[u8],
+    data: &[u8],
+) -> AppResult<bool> {
+    use fctl_domain::webauthn::{PublicKey, b64url, der_to_raw};
+    use js_sys::{Array, Object, Reflect, Uint8Array};
+    let object = |entries: &[(&str, &str)]| -> AppResult<Object> {
+        let o = Object::new();
+        for (k, v) in entries {
+            Reflect::set(&o, &JsValue::from_str(k), &JsValue::from_str(v))?;
+        }
+        Ok(o)
+    };
+    let subtle = subtle()?;
+    let usages = Array::of1(&"verify".into());
+    let (import, algo, signature) = match key {
+        PublicKey::Ec2 { x, y } => {
+            let Some(raw) = der_to_raw(signature) else {
+                return Ok(false);
+            };
+            let jwk = object(&[
+                ("kty", "EC"),
+                ("crv", "P-256"),
+                ("x", &b64url(x)),
+                ("y", &b64url(y)),
+            ])?;
+            let params = object(&[("name", "ECDSA"), ("namedCurve", "P-256")])?;
+            (
+                subtle.import_key_with_object("jwk", &jwk, &params, false, &usages)?,
+                object(&[("name", "ECDSA"), ("hash", "SHA-256")])?,
+                raw.to_vec(),
+            )
+        }
+        PublicKey::Okp { x } => {
+            let params = object(&[("name", "Ed25519")])?;
+            let raw = Uint8Array::from(x.as_slice());
+            (
+                subtle.import_key_with_object("raw", &raw, &params, false, &usages)?,
+                params,
+                signature.to_vec(),
+            )
+        }
+        PublicKey::Rsa { n, e } => {
+            let jwk = object(&[("kty", "RSA"), ("n", &b64url(n)), ("e", &b64url(e))])?;
+            let params = object(&[("name", "RSASSA-PKCS1-v1_5"), ("hash", "SHA-256")])?;
+            (
+                subtle.import_key_with_object("jwk", &jwk, &params, false, &usages)?,
+                object(&[("name", "RSASSA-PKCS1-v1_5")])?,
+                signature.to_vec(),
+            )
+        }
+    };
+    let Ok(key) = JsFuture::from(import).await else {
+        return Ok(false);
+    };
+    let key: web_sys::CryptoKey = key.dyn_into()?;
+    let verified =
+        subtle.verify_with_object_and_u8_array_and_u8_array(&algo, &key, &signature, data)?;
+    Ok(JsFuture::from(verified)
+        .await
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }

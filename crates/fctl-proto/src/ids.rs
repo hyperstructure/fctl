@@ -115,6 +115,11 @@ id_type!(
     PushDeviceId,
     "psh"
 );
+id_type!(
+    /// A passkey someone signs in with.
+    PasskeyId,
+    "pky"
+);
 
 #[cfg(test)]
 mod tests {

@@ -241,6 +241,7 @@ pub fn summary(t: &TwoFactor) -> String {
         None if t.setup_required => {
             "required and not set up (run `fctl account two-factor enable`)".to_owned()
         }
+        None if t.on => "on (your passkeys)".to_owned(),
         None => "off".to_owned(),
     }
 }
@@ -249,6 +250,7 @@ fn print_status(t: &TwoFactor) {
     let state = match t.authenticator_since {
         Some(_) => style::accent("on"),
         None if t.setup_required => style::red("required, not set up"),
+        None if t.on => style::accent("on, with your passkeys"),
         None => style::dim("off"),
     };
     println!("Two-factor sign-in  {state}");

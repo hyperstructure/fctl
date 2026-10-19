@@ -172,6 +172,8 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "authenticator_apps",
         "recovery_codes",
         "sign_in_challenges",
+        "passkeys",
+        "passkey_challenges",
     ] {
         statements.push(q(
             db,
@@ -426,6 +428,15 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             )
             .await?,
         }),
+    );
+    doc.insert(
+        "passkeys".into(),
+        rows(
+            ctx,
+            "SELECT name, aaguid AS authenticator_model, backed_up AS synced, transports, created_at, last_used_at FROM passkeys WHERE user_id = ? ORDER BY created_at",
+            &me(),
+        )
+        .await?,
     );
     doc.insert(
         "devices_and_tokens".into(),

@@ -246,7 +246,7 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     let two_factor_setup_required = fctl_domain::two_factor::setup_required(
         &settings,
         found.user.has_password(),
-        found.user.has_second_factor(),
+        found.user.factors(),
     );
     ctx.auth = Some(Authed {
         user: found.user,
@@ -317,6 +317,7 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
             .collect(),
         commit_email: user.commit_email.clone(),
         two_factor: crate::api::two_factor::status(ctx, user).await?,
+        passkeys: crate::api::passkeys::list(ctx, &user.id).await?,
     })
 }
 

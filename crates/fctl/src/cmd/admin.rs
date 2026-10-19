@@ -44,7 +44,9 @@ pub enum AdminCmd {
         runner: String,
     },
     /// Turn off someone's two-factor sign-in, when they lost their phone
-    /// and their recovery codes. They can sign in with their password alone
+    /// and their recovery codes: removes their authenticator app and
+    /// recovery codes, and their passkeys where those are the second factor
+    /// the instance requires. They can sign in with their password alone
     /// again, or set it up again when the instance requires it.
     ResetTwoFactor {
         /// Their email address or user id.
@@ -137,10 +139,11 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     } else {
                         style::red("disabled")
                     },
-                    if u.two_factor {
-                        style::accent("2fa")
-                    } else {
-                        style::dim("no 2fa")
+                    match (u.two_factor, u.passkeys) {
+                        (false, 0) => style::dim("no 2fa"),
+                        (true, 0) => style::accent("2fa"),
+                        (false, n) => style::accent(&passkeys(n)),
+                        (true, n) => style::accent(&format!("2fa, {}", passkeys(n))),
                     }
                 );
             }
@@ -309,6 +312,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     .filter(|u| {
                         u.status == fctl_proto::api::UserStatus::Active
                             && !u.two_factor
+                            && u.passkeys == 0
                             && fctl_domain::two_factor::required(&settings, u.has_password)
                     })
                     .collect();
@@ -352,12 +356,22 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 .instance_settings()
                 .await
                 .is_ok_and(|s| fctl_domain::two_factor::required(&s, updated.has_password));
+            // Passkeys go only where they were the second factor required.
+            let gone = if target.passkeys > 0 && updated.passkeys == 0 {
+                "Their authenticator app's codes, recovery codes and passkeys no longer work"
+            } else {
+                "Their authenticator app's codes and recovery codes no longer work"
+            };
             println!(
                 "{}",
-                style::dim(if required {
-                    "Their authenticator app's codes and recovery codes no longer work. The instance requires two-factor sign-in, so they set it up again before anything else."
+                style::dim(&if required {
+                    format!(
+                        "{gone}. The instance requires two-factor sign-in, so they set it up again before anything else."
+                    )
                 } else {
-                    "Their authenticator app's codes and recovery codes no longer work, and their password alone signs them in until they set it up again."
+                    format!(
+                        "{gone}, and their password alone signs them in until they set it up again."
+                    )
                 })
             );
         }
@@ -425,6 +439,15 @@ async fn find_runner(api: &fctl_client::Api, which: &str) -> Result<Runner> {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+    }
+}
+
+/// "1 passkey", "3 passkeys".
+fn passkeys(n: u32) -> String {
+    if n == 1 {
+        "1 passkey".to_owned()
+    } else {
+        format!("{n} passkeys")
     }
 }
 

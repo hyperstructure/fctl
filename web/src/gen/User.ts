@@ -19,4 +19,8 @@ has_password: boolean,
 /**
  * Whether the account has two-factor sign-in: an authenticator app.
  */
-two_factor: boolean, created_at: number, last_login_at?: number, };
+two_factor: boolean, 
+/**
+ * How many passkeys the account signs in with.
+ */
+passkeys: number, created_at: number, last_login_at?: number, };

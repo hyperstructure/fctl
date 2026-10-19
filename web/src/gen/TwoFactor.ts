@@ -33,7 +33,14 @@ google_required: boolean,
  */
 required: boolean, 
 /**
- * Required, and not set up yet: until it is, the account can only set
- * it up (requests fail with `two_factor_setup_required`).
+ * Required, and neither an authenticator app nor a passkey is set up:
+ * until one is, the account can only set one up (requests fail with
+ * `two_factor_setup_required`).
  */
-setup_required: boolean, };
+setup_required: boolean, 
+/**
+ * Sign-ins with a password ask for a second factor: there is an
+ * authenticator app, or the instance requires one and the account's
+ * passkeys are it.
+ */
+on: boolean, };

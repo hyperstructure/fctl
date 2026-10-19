@@ -207,6 +207,51 @@ impl Api {
         .await
     }
 
+    // ── passkeys ──
+    //
+    // Making a passkey and signing in with one take an authenticator's
+    // answer (`navigator.credentials` in a browser); these carry it.
+
+    /// What an authenticator needs to make a passkey for you.
+    pub async fn passkey_options(
+        &self,
+        req: &PasskeyOptionsRequest,
+    ) -> Result<PasskeyCreationOptions> {
+        self.post("/me/passkeys/options", req).await
+    }
+
+    /// Keeps the passkey an authenticator made with [`Api::passkey_options`].
+    pub async fn add_passkey(&self, req: &AddPasskeyRequest) -> Result<Me> {
+        self.post("/me/passkeys", req).await
+    }
+
+    /// What an authenticator needs to sign in with a passkey.
+    pub async fn passkey_sign_in_options(&self) -> Result<PasskeyRequestOptions> {
+        self.post("/auth/passkey/options", &serde_json::json!({}))
+            .await
+    }
+
+    /// Signs in with a passkey's answer; the session comes as a cookie.
+    pub async fn passkey_sign_in(&self, req: &PasskeySignInRequest) -> Result<AuthResponse> {
+        self.post("/auth/passkey", req).await
+    }
+
+    /// Renames one of your passkeys.
+    pub async fn rename_passkey(&self, id: &str, name: &str) -> Result<Me> {
+        self.patch(
+            &format!("/me/passkeys/{}", enc(id)),
+            &UpdatePasskeyRequest {
+                name: name.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Removes one of your passkeys.
+    pub async fn remove_passkey(&self, id: &str) -> Result<Me> {
+        self.delete(&format!("/me/passkeys/{}", enc(id))).await
+    }
+
     // ── notifications ──
 
     /// What notifies you, and the browsers that show your notifications.
