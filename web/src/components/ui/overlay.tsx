@@ -66,15 +66,25 @@ export function Dialog({
   );
 }
 
-/** A small anchored menu. */
+/**
+ * A small anchored menu. It opens under its trigger, or over it with
+ * `side="top"` when the trigger is at the bottom of the window.
+ */
 export function Menu({
   trigger,
   children,
   align = "end",
+  side = "bottom",
+  className,
 }: {
-  trigger: (open: () => void) => ReactNode;
+  /** `open` is for the trigger's `aria-expanded`. */
+  trigger: (toggle: () => void, open: boolean) => ReactNode;
   children: (close: () => void) => ReactNode;
-  align?: "start" | "end";
+  /** The trigger's edge it lines up with; `stretch` makes it as wide as the trigger. */
+  align?: "start" | "end" | "stretch";
+  side?: "top" | "bottom";
+  /** For the box around the trigger, which the menu is placed against. */
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -92,14 +102,15 @@ export function Menu({
     };
   }, [open]);
   return (
-    <div ref={ref} className="relative">
-      {trigger(() => setOpen((o) => !o))}
+    <div ref={ref} className={cn("relative", className)}>
+      {trigger(() => setOpen((o) => !o), open)}
       {open && (
         <div
           role="menu"
           className={cn(
-            "absolute z-40 mt-1.5 min-w-48 origin-top animate-rise rounded-lg border border-line-strong bg-raised/95 p-1 shadow-[0_18px_60px_rgb(0_0_0/0.4)] backdrop-blur-xl",
-            align === "end" ? "right-0" : "left-0",
+            "absolute z-40 min-w-48 animate-rise rounded-lg border border-line-strong bg-raised/95 p-1 shadow-[0_18px_60px_rgb(0_0_0/0.4)] backdrop-blur-xl",
+            side === "top" ? "bottom-full mb-1.5 origin-bottom" : "top-full mt-1.5 origin-top",
+            align === "start" ? "left-0" : align === "end" ? "right-0" : "inset-x-0",
           )}
         >
           {children(() => setOpen(false))}
@@ -107,6 +118,11 @@ export function Menu({
       )}
     </div>
   );
+}
+
+/** A line between groups of a Menu's items. */
+export function MenuSeparator() {
+  return <hr className="-mx-1 my-1 border-line" />;
 }
 
 export function MenuItem({

@@ -2,6 +2,7 @@
 
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
+  ChevronsUpDown,
   Cpu,
   FolderPlus,
   Home as HomeIcon,
@@ -16,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Avatar, Kbd, Logo, Menu, MenuItem, StatusDot } from "@/components/ui";
+import { Avatar, Kbd, Logo, Menu, MenuItem, MenuSeparator, StatusDot } from "@/components/ui";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useFeed } from "@/lib/feed";
@@ -226,19 +227,25 @@ function Sidebar({
           Settings
         </NavLink>
         {me && (
+          // At the bottom of the window: the menu opens upward.
           <Menu
-            align="start"
-            trigger={(toggle) => (
+            side="top"
+            align="stretch"
+            className="mt-1"
+            trigger={(toggle, open) => (
               <button
                 type="button"
                 onClick={toggle}
-                className="mt-1 flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover/60"
+                aria-haspopup="menu"
+                aria-expanded={open}
+                className="group flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover/60 aria-expanded:bg-hover/60"
               >
                 <Avatar user={me.user} size={24} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] text-ink">{me.user.name}</span>
                   <span className="block truncate text-[11.5px] text-ink-4">{instance?.name ?? "fctl"}</span>
                 </span>
+                <ChevronsUpDown className="size-3.5 shrink-0 text-ink-4 transition-colors group-hover:text-ink-3 group-aria-expanded:text-ink-3" />
               </button>
             )}
           >
@@ -257,11 +264,13 @@ function Sidebar({
                   icon={<Cpu />}
                   onClick={() => {
                     close();
+                    onNavigate();
                     void navigate({ to: "/settings", search: { linked: undefined, error: undefined } });
                   }}
                 >
                   Claude and tokens
                 </MenuItem>
+                <MenuSeparator />
                 <MenuItem
                   icon={<LogOut />}
                   onClick={async () => {

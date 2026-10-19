@@ -236,8 +236,8 @@ export function SessionPage() {
                 <PanelRight className="size-4" />
               </IconButton>
               <Menu
-                trigger={(toggle) => (
-                  <IconButton label="More" onClick={toggle}>
+                trigger={(toggle, open) => (
+                  <IconButton label="More" aria-haspopup="menu" aria-expanded={open} onClick={toggle}>
                     <Ellipsis className="size-4" />
                   </IconButton>
                 )}
