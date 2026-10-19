@@ -27,6 +27,12 @@ pub fn accent(s: &str) -> String {
 pub fn blue(s: &str) -> String {
     paint("38;2;125;170;255", s)
 }
+/// `n` and the noun for it: "1 runner", "2 runners".
+pub fn count(n: impl Into<u64>, one: &str, many: &str) -> String {
+    let n = n.into();
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 pub fn amber(s: &str) -> String {
     paint("38;2;245;181;68", s)
 }

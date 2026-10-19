@@ -34,7 +34,9 @@ company's work and a private one for their own.
   one of them). Other admins can't demote, disable or remove them; they
   hand the role to another admin themselves and stay an admin. Deleting a
   primary admin's account passes a workspace's role to its longest-standing
-  admin, or member.
+  admin, or member, people with active accounts first. When a workspace's
+  primary admin's account is disabled, nobody can hand the role over, so an
+  instance admin gives it to one of its members.
 - **Instance admins run the instance, not what is inside workspaces.**
   They invite people (and, at the same time, to the workspaces they are an
   admin of), manage the allowlist, the instance's settings and its

@@ -361,7 +361,8 @@ fctl admin role grace@example.com admin    # an instance admin (or member again)
 fctl admin transfer grace@example.com      # the primary admin hands the role to an admin
 fctl admin disable grace@example.com       # can't sign in; their tokens stop working (or enable)
 fctl admin delete-user grace@example.com   # asks you to type their address
-fctl admin workspaces
+fctl admin workspaces                      # and which need a primary admin
+fctl admin set-primary side-project grace@example.com   # when its primary admin's account is disabled
 fctl admin delete-workspace side-project   # asks you to type its name
 fctl admin github                          # the app's installations, and the requests waiting
 fctl admin github approve acme side-project --repo web   # the workspace works in acme's web

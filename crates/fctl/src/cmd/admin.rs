@@ -493,8 +493,10 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     style::bold(&w.workspace.slug),
                     w.workspace.name,
                     style::dim(&format!(
-                        "{} members, {} projects, {} runners",
-                        w.members, w.projects, w.runners
+                        "{}, {}, {}",
+                        style::count(w.members, "member", "members"),
+                        style::count(w.projects, "project", "projects"),
+                        style::count(w.runners, "runner", "runners")
                     )),
                     style::dim(
                         &w.primary
