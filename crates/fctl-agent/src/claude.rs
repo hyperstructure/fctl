@@ -568,8 +568,23 @@ pub fn project_settings_are_unsafe(repo: &Path) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Writes `script` to `path`, executable, for a test to run right away.
+    /// A process that another test starts holds copies of this process's open
+    /// files until it execs, and running a script while such a copy is open for
+    /// writing fails with "Text file busy". So `sh` writes the script, and it is
+    /// never open here.
+    pub(crate) fn write_script(path: &Path, script: &str) -> Result<()> {
+        let status = std::process::Command::new("sh")
+            .args(["-c", r#"printf %s "$2" > "$1" && chmod 755 "$1""#, "sh"])
+            .arg(path)
+            .arg(script)
+            .status()?;
+        anyhow::ensure!(status.success(), "writing {}: {status}", path.display());
+        Ok(())
+    }
 
     fn project(credit_claude: bool) -> ProjectSettings {
         ProjectSettings {
@@ -801,12 +816,13 @@ mod tests {
 
     #[tokio::test]
     async fn sessions_need_a_recent_claude_code() -> anyhow::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir()?;
         let claude = |version: &str| -> anyhow::Result<String> {
             let bin = dir.path().join(format!("claude-{version}"));
-            std::fs::write(&bin, format!("#!/bin/sh\necho '{version} (Claude Code)'\n"))?;
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+            write_script(
+                &bin,
+                &format!("#!/bin/sh\necho '{version} (Claude Code)'\n"),
+            )?;
             Ok(bin.display().to_string())
         };
         assert_eq!(

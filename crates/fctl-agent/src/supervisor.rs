@@ -1951,10 +1951,8 @@ mod tests {
 
     /// A Claude Code that keeps what it is sent, in `stdin.jsonl` in `dir`.
     fn stub_claude(dir: &std::path::Path, sup: &Supervisor) -> anyhow::Result<Claude> {
-        use std::os::unix::fs::PermissionsExt;
         let bin = dir.join("claude");
-        std::fs::write(&bin, "#!/bin/sh\nexec cat > \"$HOME/stdin.jsonl\"\n")?;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+        crate::claude::tests::write_script(&bin, "#!/bin/sh\nexec cat > \"$HOME/stdin.jsonl\"\n")?;
         Claude::spawn(
             LaunchSpec {
                 bin: &bin.display().to_string(),

@@ -816,7 +816,7 @@ fn installed(bin: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::driver::fake::FakeCli;
+    use crate::driver::fake::{FakeCli, write_script};
     use std::sync::{Mutex, PoisonError};
 
     #[test]
@@ -1152,15 +1152,13 @@ mod tests {
     /// `container system status`, and `df` for a `run` of an image in
     /// `have`, logging every call in `calls`.
     fn disk_cli(dir: &Path, info: &str, have: &str) -> Result<ContainerDriver> {
-        use std::os::unix::fs::PermissionsExt;
         let df = "Filesystem 1024-blocks Used Available Capacity Mounted on\\noverlay 61202244 40000000 18066668 69%% /\\n";
         let script = format!(
             "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  info|system) echo '{info}' ;;\n  run) case \" $* \" in *\" {have} -Pk / \"*) printf '{df}' ;; *) echo 'Unable to find image' >&2; exit 125 ;; esac ;;\n  *) exit 2 ;;\nesac\n",
             calls = dir.join("calls").display(),
         );
         let bin = dir.join("cli");
-        std::fs::write(&bin, script)?;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+        write_script(&bin, &script)?;
         Ok(ContainerDriver::with_bin(
             Flavor::Docker,
             bin.display().to_string(),
