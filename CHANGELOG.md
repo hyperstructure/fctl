@@ -2,6 +2,22 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.8.0 (2026-10-19)
+
+### Features
+
+- Add two-factor sign-in with authenticator apps (#103) and sign in with passkeys ([#104](https://github.com/hyperstructure/fctl/pull/104))
+
+### Documentation
+
+- Tell agents that only people with write access instruct them ([#98](https://github.com/hyperstructure/fctl/pull/98))
+- List hyperstructure/sandbox among the other repositories ([#99](https://github.com/hyperstructure/fctl/pull/99))
+- List Homebrew as an alternative way to install the CLI ([#101](https://github.com/hyperstructure/fctl/pull/101))
+
+### Other changes
+
+- Check agent skills against the Agent Skills specification ([#102](https://github.com/hyperstructure/fctl/pull/102))
+
 ## 0.7.0 (2026-10-18)
 
 ### Fixes
