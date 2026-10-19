@@ -147,7 +147,8 @@ export function claudeOptions(
   const options: { value: string; label: string; description?: string }[] = [
     {
       value: "default",
-      label: `${prefix}${fallback ? `Your default (${claudeName(fallback)})` : "Your default"}`,
+      // Sentence case after a prefix: "Claude: your default".
+      label: `${prefix}${prefix ? "your default" : "Your default"}${fallback ? ` (${claudeName(fallback)})` : ""}`,
       description: "The one Settings → Claude marks as default",
     },
   ];

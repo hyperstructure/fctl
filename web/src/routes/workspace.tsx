@@ -135,18 +135,21 @@ export function WorkspacePage() {
         </div>
       )}
       {w?.blocked ? (
-        <Banner tone="warn" className="mt-8">
-          {w.name} requires two-factor sign-in of its members, and you haven't set it up. Until you do, its
-          projects and sessions are closed to you.{" "}
-          <Link
-            to="/settings"
-            search={{ linked: undefined, error: undefined }}
-            className="underline underline-offset-2"
-          >
-            Set it up in Settings
-          </Link>
-          .
-        </Banner>
+        <div className="mt-8 flex flex-col items-start gap-4">
+          <Banner tone="warn" className="self-stretch">
+            {w.name} requires two-factor sign-in of its members, and you haven't set it up. Until you do, its
+            projects and sessions are closed to you.{" "}
+            <Link
+              to="/settings"
+              search={{ linked: undefined, error: undefined }}
+              className="underline underline-offset-2"
+            >
+              Set it up in Settings
+            </Link>
+            .
+          </Banner>
+          <Leave w={w} />
+        </div>
       ) : (
         <>
           <nav className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
@@ -1115,20 +1118,11 @@ function WorkspaceSettings({ w }: { w: G.Workspace }) {
   );
 }
 
-/** Your own place in the workspace: the address, the Claude connection, leaving. */
-function You({ w }: { w: G.Workspace }) {
+/** Leaving a workspace, asked first; it works while the workspace is closed to you too. */
+function Leave({ w }: { w: G.Workspace }) {
   const { data: me } = useMe();
   const navigate = useNavigate();
   const [leaving, setLeaving] = useState(false);
-  const membership = useMutation({
-    mutationFn: (claude: string) => workspaces.updateMembership(w.id, { claude }),
-    onSuccess: (x) => {
-      queryClient.setQueryData(keys.workspace(w.slug), x);
-      refresh();
-      toast("Saved: sessions take it when they next start or resume");
-    },
-    onError: (e) => toast(e.message, "error"),
-  });
   const leave = useMutation({
     mutationFn: () => workspaces.removeMember(w.id, me?.user.id ?? ""),
     onSuccess: async () => {
@@ -1139,6 +1133,43 @@ function You({ w }: { w: G.Workspace }) {
       for (const k of [keys.workspaces, keys.projects, ["sessions"], keys.runners])
         void queryClient.invalidateQueries({ queryKey: k });
       toast(`You left ${w.name}`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  if (w.role === "owner") return null;
+  return (
+    <>
+      <Button variant="ghost" icon={<LogOut className="size-3.5" />} onClick={() => setLeaving(true)}>
+        Leave {w.name}
+      </Button>
+      <Dialog
+        open={leaving}
+        onClose={() => setLeaving(false)}
+        title={`Leave ${w.name}?`}
+        description="You lose access to its projects and sessions at once. Your sessions there stop, and so do its sessions on your runners, which leave it. Its admins can invite you again."
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setLeaving(false)}>
+            Cancel
+          </Button>
+          <Button variant="danger" loading={leave.isPending} onClick={() => leave.mutate()}>
+            Leave
+          </Button>
+        </div>
+      </Dialog>
+    </>
+  );
+}
+
+/** Your own place in the workspace: the address, the Claude connection, leaving. */
+function You({ w }: { w: G.Workspace }) {
+  const { data: me } = useMe();
+  const membership = useMutation({
+    mutationFn: (claude: string) => workspaces.updateMembership(w.id, { claude }),
+    onSuccess: (x) => {
+      queryClient.setQueryData(keys.workspace(w.slug), x);
+      refresh();
+      toast("Saved: sessions take it when they next start or resume");
     },
     onError: (e) => toast(e.message, "error"),
   });
@@ -1174,29 +1205,10 @@ function You({ w }: { w: G.Workspace }) {
             />
           )}
         </Field>
-        {w.role !== "owner" && (
-          <div>
-            <Button variant="ghost" icon={<LogOut className="size-3.5" />} onClick={() => setLeaving(true)}>
-              Leave {w.name}
-            </Button>
-          </div>
-        )}
-      </div>
-      <Dialog
-        open={leaving}
-        onClose={() => setLeaving(false)}
-        title={`Leave ${w.name}?`}
-        description="You lose access to its projects and sessions at once. Your sessions there stop, and so do its sessions on your runners, which leave it. Its admins can invite you again."
-      >
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setLeaving(false)}>
-            Cancel
-          </Button>
-          <Button variant="danger" loading={leave.isPending} onClick={() => leave.mutate()}>
-            Leave
-          </Button>
+        <div>
+          <Leave w={w} />
         </div>
-      </Dialog>
+      </div>
     </Section>
   );
 }
