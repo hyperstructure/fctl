@@ -60,10 +60,11 @@ owner and purpose), so a value copied between rows does not decrypt.
   browser or with their CLI and access tokens. An attacker who has the
   password of an account that hasn't set it up yet could set it up first;
   the email about it (when email is set up) and the audit log show that,
-  and admins reset two-factor for people who lost their phone. A
-  workspace's admins can require it of its members in the same way: a
-  member without a second factor can't open the workspace until they set
-  one up, and their sign-ins ask for it.
+  and admins reset two-factor for people who lost their phone (the
+  primary admin for admins; the primary admin's own takes a recovery
+  code). A workspace's admins can require it of its members in the same
+  way: a member without a second factor can't open the workspace until
+  they set one up, and their sign-ins ask for it.
 - **Passkeys** sign in without a password or code: the device checks it's
   the person (fingerprint, face, screen lock or PIN), and the signature
   works only for this instance's host name, so a fake site can't use it.

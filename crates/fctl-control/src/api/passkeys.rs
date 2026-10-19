@@ -444,6 +444,8 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         Some(&user.id),
         Some(serde_json::json!({ "name": name, "synced": made.backed_up })),
     );
+    // A passkey is a second factor: workspaces that require one open now.
+    crate::workspaces::changed(ctx, vec![user.id.clone()]);
     let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     crate::email::notice(
         ctx,
@@ -553,6 +555,7 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         Some(&user.id),
         Some(serde_json::json!({ "name": passkey.name })),
     );
+    crate::workspaces::changed(ctx, vec![user.id.clone()]);
     me(ctx, &user.id).await
 }
 

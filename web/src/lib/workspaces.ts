@@ -2,9 +2,9 @@
 // person's list has it now (names and avatars change), and grouping projects
 // under their workspaces in the order the person joined them.
 
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type * as G from "@/gen";
-import { useWorkspaces } from "./queries";
+import { keys, queryClient, useMe, useWorkspaces } from "./queries";
 
 /** Your workspaces by id, with the reference something carries as a fallback. */
 export function useWorkspaceIndex() {
@@ -110,3 +110,21 @@ export const BASE_ROLES: { value: G.BaseRole; label: string; description: string
     description: "Members also change every project's settings, secrets and members",
   },
 ];
+
+/**
+ * Workspaces that require two-factor sign-in open or close as your second
+ * factors change: fetch them again then (the feed says so too, when it is
+ * connected).
+ */
+export function useFactorsWatch() {
+  const { data: me } = useMe();
+  const factors = me ? `${me.user.two_factor}:${me.user.passkeys}` : undefined;
+  const last = useRef(factors);
+  useEffect(() => {
+    if (last.current !== undefined && factors !== undefined && last.current !== factors) {
+      void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+      void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+    }
+    last.current = factors;
+  }, [factors]);
+}

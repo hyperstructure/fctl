@@ -377,40 +377,43 @@ function Users() {
                     Make primary admin
                   </Button>
                 )}
-                {u.id !== me?.user.id && u.role !== "owner" && (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      icon={<Link2 className="size-3.5" />}
-                      onClick={() => link.mutate(u.id)}
-                    >
-                      Reset link
-                    </Button>
-                    {(u.two_factor || resetsPasskeys(u, settings.data)) && (
+                {u.id !== me?.user.id &&
+                  u.role !== "owner" &&
+                  // Admins' accounts are the primary admin's to manage.
+                  (u.role !== "admin" || me?.user.role === "owner") && (
+                    <>
                       <Button
                         size="sm"
                         variant="ghost"
-                        icon={<ShieldOff className="size-3.5" />}
-                        onClick={() => setResetTwoFactor(u)}
+                        icon={<Link2 className="size-3.5" />}
+                        onClick={() => link.mutate(u.id)}
                       >
-                        Reset two-factor
+                        Reset link
                       </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant={u.status === "active" ? "ghost" : "secondary"}
-                      onClick={() =>
-                        update.mutate({
-                          id: u.id,
-                          body: { status: u.status === "active" ? "disabled" : "active" },
-                        })
-                      }
-                    >
-                      {u.status === "active" ? "Disable" : "Enable"}
-                    </Button>
-                  </>
-                )}
+                      {(u.two_factor || resetsPasskeys(u, settings.data)) && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<ShieldOff className="size-3.5" />}
+                          onClick={() => setResetTwoFactor(u)}
+                        >
+                          Reset two-factor
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant={u.status === "active" ? "ghost" : "secondary"}
+                        onClick={() =>
+                          update.mutate({
+                            id: u.id,
+                            body: { status: u.status === "active" ? "disabled" : "active" },
+                          })
+                        }
+                      >
+                        {u.status === "active" ? "Disable" : "Enable"}
+                      </Button>
+                    </>
+                  )}
               </div>
             </div>
           </li>
@@ -1097,7 +1100,9 @@ function Runners() {
   const admined = (useWorkspaces().data?.workspaces ?? []).filter(
     (w) => !w.blocked && (w.role === "owner" || w.role === "admin"),
   );
-  const [workspace, setWorkspace] = useState<string>("none");
+  // One of them, until you choose; without any, the runner waits for a workspace.
+  const [chosen, setWorkspace] = useState<string>();
+  const workspace = chosen ?? admined[0]?.id ?? "none";
   const create = useMutation({
     mutationFn: () => api.createRunner({ name, workspace: workspace === "none" ? undefined : workspace }),
     onSuccess: (r) => {
@@ -1148,6 +1153,7 @@ function Runners() {
           label="Register a machine"
           className="flex-1"
           hint="A name you'll recognize, like “studio mac”."
+          error={create.error?.message}
         >
           {(id) => (
             <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="studio mac" />
@@ -1159,14 +1165,15 @@ function Runners() {
               id={id}
               value={workspace}
               onChange={setWorkspace}
-              options={[
-                { value: "none", label: "No workspace yet" },
-                ...admined.map((w) => ({
-                  value: w.id,
-                  label: w.name,
-                  icon: <WorkspaceAvatar workspace={w} size={14} title={false} />,
-                })),
-              ]}
+              options={
+                admined.length > 0
+                  ? admined.map((w) => ({
+                      value: w.id,
+                      label: w.name,
+                      icon: <WorkspaceAvatar workspace={w} size={14} title={false} />,
+                    }))
+                  : [{ value: "none", label: "No workspace yet" }]
+              }
             />
           )}
         </Field>

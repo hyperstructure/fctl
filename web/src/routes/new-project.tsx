@@ -7,7 +7,7 @@ import { ArrowRight, FolderGit2, Lock, Plus, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Banner, Button, Empty, Field, GithubIcon, Input, Select, Switch, Textarea } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
-import { api } from "@/lib/api";
+import { api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago } from "@/lib/format";
 import { keys, queryClient, useInstance, useWorkspaces } from "@/lib/queries";
@@ -28,7 +28,9 @@ export function NewProject() {
   }, [search.workspace]);
   const github = instance?.features.github;
   const works = (ws?.github.length ?? 0) > 0;
-  const [mode, setMode] = useState<Mode>(github ? "link" : "none");
+  const [picked, setMode] = useState<Mode>("link");
+  // Without a GitHub account to work in, a project has no repository.
+  const mode: Mode = github && works ? picked : "none";
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [repo, setRepo] = useState("");
@@ -41,8 +43,18 @@ export function NewProject() {
   const repos = useQuery({
     queryKey: keys.repos(ws?.id ?? ""),
     queryFn: () => api.githubRepos(ws?.id ?? ""),
-    enabled: !!github && !!ws && works && mode === "link",
+    enabled: !!ws && mode === "link",
   });
+  // New repositories go in accounts the workspace works in every repository of.
+  const connections = useQuery({
+    queryKey: keys.workspaceGithub(ws?.id ?? ""),
+    queryFn: () => workspaces.github(ws?.id ?? ""),
+    enabled: !!ws && mode === "create",
+  });
+  const owners = (connections.data?.connections ?? [])
+    .filter((c) => c.status === "active" && !c.repos)
+    .map((c) => c.account);
+  const into = owner && owners.includes(owner) ? owner : owners[0];
   const shown = useMemo(
     () =>
       (repos.data?.repos ?? [])
@@ -62,8 +74,8 @@ export function NewProject() {
             ? {
                 name: newRepo || name,
                 private: priv,
-                // The organization shown; with one, the control plane picks it.
-                owner: ws && ws.github.length > 1 ? (owner ?? ws.github[0]) : undefined,
+                // The account shown; until they load, the control plane picks one.
+                owner: into,
               }
             : undefined,
         settings:
@@ -86,7 +98,14 @@ export function NewProject() {
       void navigate({ to: "/p/$slug", params: { slug: p.slug }, search: { tab: undefined } });
     },
   });
-  const ready = !!ws && (mode === "link" ? !!repo : mode === "create" ? !!(newRepo || name) : !!name.trim());
+  const ready =
+    !!ws &&
+    (mode === "link"
+      ? !!repo
+      : mode === "create"
+        ? !!(newRepo || name) && (connections.isPending || owners.length > 0)
+        : !!name.trim());
+  const field = (create.error as { field?: string } | null)?.field;
   if (list.data && open.length === 0)
     return (
       <div className="mx-auto max-w-[680px] px-6 py-14">
@@ -151,7 +170,7 @@ export function NewProject() {
           <button
             key={m}
             type="button"
-            disabled={disabled}
+            disabled={disabled || (m !== "none" && !works)}
             onClick={() => setMode(m)}
             className={cn(
               "flex flex-col items-start gap-2 rounded-lg border px-3.5 py-3 text-left text-[13px] transition-all duration-150 disabled:opacity-40",
@@ -170,7 +189,7 @@ export function NewProject() {
           Connect a GitHub App to this instance to link repositories (see the self-hosting guide).
         </Banner>
       )}
-      {github && ws && !works && mode !== "none" && (
+      {github && ws && !works && (
         <Banner tone="info" className="mt-4">
           {ws.name} works in no GitHub account yet.{" "}
           <Link
@@ -203,8 +222,13 @@ export function NewProject() {
                   className="h-9.5 w-full border-b border-line bg-sunken/60 px-3 text-[14px] outline-none placeholder:text-ink-4"
                 />
                 <div className="max-h-64 overflow-y-auto">
-                  {repos.isPending && (
+                  {repos.isLoading && (
                     <div className="px-3 py-3 text-[13px] text-ink-4">Loading repositories…</div>
+                  )}
+                  {repos.data && repos.data.repos.length === 0 && (
+                    <div className="px-3 py-3 text-[13px] text-ink-4">
+                      The app reaches no repository in {ws?.name}'s GitHub accounts yet.
+                    </div>
                   )}
                   {repos.isError && (
                     <div className="px-3 py-3 text-[13px] text-danger">{repos.error.message}</div>
@@ -240,16 +264,22 @@ export function NewProject() {
             )}
           </Field>
         )}
+        {mode === "create" && connections.data && owners.length === 0 && (
+          <Banner tone="info">
+            {ws?.name} works in only some repositories of its GitHub accounts, so fctl can't create new ones
+            there. Link an existing repository instead, or connect an account with all its repositories.
+          </Banner>
+        )}
         {mode === "create" && (
           <div className="flex items-end gap-4">
-            {ws && ws.github.length > 1 && (
-              <Field label="Organization">
+            {owners.length > 1 && (
+              <Field label="Account">
                 {(id) => (
                   <Select
                     id={id}
-                    value={owner ?? ws.github[0]}
+                    value={into}
                     onChange={setOwner}
-                    options={ws.github.map((a) => ({ value: a, label: a }))}
+                    options={owners.map((a) => ({ value: a, label: a }))}
                   />
                 )}
               </Field>
@@ -257,7 +287,8 @@ export function NewProject() {
             <Field
               label="Repository name"
               className="flex-1"
-              hint={`Created in ${owner ?? (ws?.github.length === 1 ? ws.github[0] : "the workspace's organization")}, with a README.`}
+              hint={into ? `Created in ${into}, with a README.` : "Created with a README."}
+              error={field?.startsWith("create_repo") ? create.error?.message : undefined}
             >
               {(id) => (
                 <Input
@@ -273,14 +304,7 @@ export function NewProject() {
             </div>
           </div>
         )}
-        <Field
-          label="Name"
-          error={
-            create.error && (create.error as { field?: string }).field === "name"
-              ? create.error.message
-              : undefined
-          }
-        >
+        <Field label="Name" error={field === "name" ? create.error?.message : undefined}>
           {(id) => (
             <Input
               id={id}
@@ -318,7 +342,7 @@ export function NewProject() {
           </span>
           <Switch checked={connectors} onChange={setConnectors} label="claude.ai connectors" />
         </div>
-        {create.error && !(create.error as { field?: string }).field && (
+        {create.error && field !== "name" && !field?.startsWith("create_repo") && (
           <Banner tone="error">{create.error.message}</Banner>
         )}
         <div className="flex justify-end">

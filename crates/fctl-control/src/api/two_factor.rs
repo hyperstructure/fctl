@@ -840,6 +840,8 @@ pub async fn confirm_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResul
         Some(&user.id),
         None,
     );
+    // Workspaces that require it open to them now.
+    crate::workspaces::changed(ctx, vec![user.id.clone()]);
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     if replacing {
         crate::email::notice(
@@ -895,6 +897,7 @@ pub async fn remove_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult
     confirm_code(ctx, &user, &body.code).await?;
     batch(&ctx.db, forget_statements(ctx, &user.id)?).await?;
     ctx.audit("two_factor.disabled", Some(&user.id), None);
+    crate::workspaces::changed(ctx, vec![user.id.clone()]);
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     crate::email::notice(
         ctx,
@@ -955,9 +958,14 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             "Turn your own two-factor sign-in off in Settings, with a code",
         ));
     }
-    if target.role() == InstanceRole::Owner && actor.role() != InstanceRole::Owner {
+    if target.role() == InstanceRole::Owner {
         return Err(forbidden(
-            "Only owners can reset an owner's two-factor sign-in",
+            "Nobody can reset the primary admin's two-factor sign-in: they sign in with a recovery code",
+        ));
+    }
+    if target.role() == InstanceRole::Admin && actor.role() != InstanceRole::Owner {
+        return Err(forbidden(
+            "Only the primary admin can reset an admin's two-factor sign-in",
         ));
     }
     let settings = crate::instance::settings(&ctx.db).await?;
@@ -997,6 +1005,8 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         Some(&target.id),
         Some(serde_json::json!({ "passkeys_removed": remove_passkeys })),
     );
+    // Workspaces that require it close to them.
+    crate::workspaces::changed(ctx, vec![target.id.clone()]);
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     let again = if required {
         format!("{name} requires two-factor sign-in, so you set it up again when you next sign in.")

@@ -162,7 +162,8 @@ answers its other requests, from browser sessions and CLI and access tokens
 alike, with `two_factor_setup_required` (`api::two_factor::open_while_required`),
 and the web app shows the page that sets it up instead of the app. Admins
 reset it for someone who lost their phone and recovery codes (`fctl admin
-reset-two-factor`), which removes their authenticator app and recovery
+reset-two-factor`; only the primary admin resets an admin's, and nobody the
+primary admin's), which removes their authenticator app and recovery
 codes, and their passkeys where those are the second factor required
 (unless a passkey is their only way in). Turning it on, replacing the app, turning it off, an
 admin's reset and a sign-in with a recovery code go in the audit log, and

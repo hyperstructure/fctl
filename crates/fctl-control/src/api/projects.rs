@@ -766,7 +766,7 @@ fn new_repo_owner(
             return Err(validation(
                 "create_repo.owner",
                 &format!(
-                    "This workspace can't create repositories in {owner}: it works in every repository of the organizations it creates them in"
+                    "This workspace works in only some of {owner}'s repositories, so it can't create new ones there"
                 ),
             ));
         }
@@ -782,7 +782,7 @@ fn new_repo_owner(
         .ok_or_else(|| {
             validation(
                 "create_repo",
-                "Connect a GitHub organization to this workspace to create repositories in it",
+                "To create repositories, this workspace needs a GitHub account it works in every repository of",
             )
         })
 }

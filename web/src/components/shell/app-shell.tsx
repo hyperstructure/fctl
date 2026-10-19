@@ -29,7 +29,7 @@ import { useHotkey } from "@/lib/hotkeys";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
 import { queryClient, useInstance, useMe, useProjects, useWorkspaces } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
-import { groupProjects, useFolded } from "@/lib/workspaces";
+import { groupProjects, useFactorsWatch, useFolded } from "@/lib/workspaces";
 import { CommandPalette } from "./command-palette";
 
 export function AppShell() {
@@ -39,6 +39,7 @@ export function AppShell() {
   useHotkey("mod+k", openPalette, { inInputs: true });
   useFeed(); // live updates for every page
   usePush();
+  useFactorsWatch();
   const path = useRouterState({ select: (s) => s.location.pathname });
   return (
     <div className="flex min-h-dvh bg-canvas">

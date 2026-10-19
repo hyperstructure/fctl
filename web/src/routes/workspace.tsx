@@ -58,9 +58,9 @@ const TABS: { tab: WorkspaceTab; label: string; admin?: boolean }[] = [
   { tab: "audit", label: "Audit log", admin: true },
 ];
 
-/** Refetches what a change to a workspace touches. */
-function refresh(id: string) {
-  for (const k of [keys.workspaces, keys.workspace(id), ["workspace", id], keys.projects, keys.runners])
+/** Refetches what a change to a workspace touches: the page caches it by its slug, its parts by its id. */
+function refresh() {
+  for (const k of [keys.workspaces, ["workspace"], keys.projects, keys.runners])
     void queryClient.invalidateQueries({ queryKey: k });
 }
 
@@ -391,7 +391,7 @@ function People({ w }: { w: G.Workspace }) {
   const [removing, setRemoving] = useState<G.WorkspaceMember | null>(null);
   const done = () => {
     void list.refetch();
-    refresh(w.id);
+    refresh();
   };
   const invite = useMutation({
     mutationFn: () => workspaces.invite(w.id, { email: email.trim(), role }),
@@ -664,7 +664,7 @@ function Runners({ w }: { w: G.Workspace }) {
   const [adding, setAdding] = useState<string>();
   const done = () => {
     void list.refetch();
-    refresh(w.id);
+    refresh();
   };
   const create = useMutation({
     mutationFn: () => workspaces.createRunner(w.id, name.trim()),
@@ -867,7 +867,7 @@ function Github({
     },
     onSuccess: (g) => {
       queryClient.setQueryData(keys.workspaceGithub(w.id), g);
-      refresh(w.id);
+      refresh();
       const c = g.connections.find((x) => x.account.toLowerCase() === name.trim().toLowerCase());
       toast(
         c?.status === "active"
@@ -882,7 +882,7 @@ function Github({
     mutationFn: (a: string) => workspaces.disconnectGithub(w.id, a),
     onSuccess: (g) => {
       queryClient.setQueryData(keys.workspaceGithub(w.id), g);
-      refresh(w.id);
+      refresh();
     },
     onError: (e) => toast(e.message, "error"),
   });
@@ -1054,7 +1054,7 @@ function You({ w }: { w: G.Workspace }) {
     mutationFn: (claude: string) => workspaces.updateMembership(w.id, { claude }),
     onSuccess: (x) => {
       queryClient.setQueryData(keys.workspace(w.slug), x);
-      refresh(w.id);
+      refresh();
       toast("Saved: sessions take it when they next start or resume");
     },
     onError: (e) => toast(e.message, "error"),
@@ -1154,7 +1154,7 @@ function General({ w }: { w: G.Workspace }) {
   const save = useMutation({
     mutationFn: (b: G.UpdateWorkspaceRequest) => workspaces.update(w.id, b),
     onSuccess: (x) => {
-      refresh(w.id);
+      refresh();
       toast("Saved");
       if (x.slug !== w.slug)
         void navigate({
@@ -1168,14 +1168,14 @@ function General({ w }: { w: G.Workspace }) {
   const upload = useMutation({
     mutationFn: async (f: File) => workspaces.setAvatar(w.id, await avatarImage(f)),
     onSuccess: () => {
-      refresh(w.id);
+      refresh();
       toast("New avatar saved");
     },
     onError: (e) => toast(e.message, "error"),
   });
   const removeImage = useMutation({
     mutationFn: () => workspaces.removeAvatar(w.id),
-    onSuccess: () => refresh(w.id),
+    onSuccess: () => refresh(),
     onError: (e) => toast(e.message, "error"),
   });
   const field = (save.error as { field?: string } | null)?.field;
@@ -1296,7 +1296,7 @@ function Access({ w }: { w: G.Workspace }) {
   const save = useMutation({
     mutationFn: (b: G.UpdateWorkspaceRequest) => workspaces.update(w.id, b),
     onSuccess: (_, b) => {
-      refresh(w.id);
+      refresh();
       setConfirm(false);
       toast(
         b.require_two_factor === undefined
@@ -1402,7 +1402,7 @@ function Primary({ w }: { w: G.Workspace }) {
   const transfer = useMutation({
     mutationFn: (user: string) => workspaces.transfer(w.id, user),
     onSuccess: () => {
-      refresh(w.id);
+      refresh();
       toast("You handed the primary admin role over; you stay an admin");
     },
     onError: (e) => toast(e.message, "error"),
@@ -1410,7 +1410,7 @@ function Primary({ w }: { w: G.Workspace }) {
   const remove = useMutation({
     mutationFn: () => workspaces.remove(w.id, typed),
     onSuccess: () => {
-      refresh(w.id);
+      refresh();
       toast(`${w.name} was deleted`);
       void navigate({ to: "/" });
     },
