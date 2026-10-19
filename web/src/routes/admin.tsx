@@ -43,7 +43,6 @@ import { cn } from "@/lib/cn";
 import { ago, cpus, diskBelow, lowOnDisk, memory, sandboxLimits } from "@/lib/format";
 import { buildsImages, runsImages } from "@/lib/images";
 import { keys, queryClient, useMe, useRunners, useWorkspaces } from "@/lib/queries";
-import { roleLabel } from "@/lib/workspaces";
 
 type Tab = "people" | "workspaces" | "github" | "runners" | "access" | "settings" | "audit";
 
@@ -669,10 +668,18 @@ function Workspaces() {
                 {w.require_two_factor && (
                   <ShieldCheck className="size-3.5 text-accent" aria-label="Requires two-factor sign-in" />
                 )}
-                {w.role && <span className="text-[12px] text-ink-4">{roleLabel(w.role).toLowerCase()}</span>}
+                {w.role && (
+                  <span className="text-[12px] text-ink-4">
+                    {w.role === "owner"
+                      ? "you are its primary admin"
+                      : w.role === "admin"
+                        ? "you are an admin"
+                        : "you are a member"}
+                  </span>
+                )}
               </div>
               <div className="truncate text-[12px] text-ink-4">
-                {w.primary ? `${w.primary.name} · ` : ""}
+                {w.primary ? `Run by ${w.primary.name} · ` : ""}
                 {w.members} {w.members === 1 ? "member" : "members"} · {w.projects}{" "}
                 {w.projects === 1 ? "project" : "projects"} · {w.runners}{" "}
                 {w.runners === 1 ? "runner" : "runners"}
