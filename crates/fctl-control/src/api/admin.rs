@@ -253,7 +253,10 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     q(&ctx.db, "DELETE FROM allowlist WHERE id = ?", &[s(id)])?
         .run()
         .await?;
-    // Every non-owner user no longer matching any entry is disabled.
+    // An account none of whose addresses an entry admits any more is
+    // disabled (never the primary admin's, which may predate the
+    // allowlist). Of the others, the addresses no entry admits are
+    // disconnected, and the primary address moves to one that still is.
     let remaining: Vec<AllowRow> = q(
         &ctx.db,
         &format!("{ALLOW_SELECT} ORDER BY a.created_at"),
@@ -271,12 +274,36 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     )?
     .all()
     .await?;
+    #[derive(serde::Deserialize)]
+    struct Address {
+        user_id: String,
+        email: String,
+    }
+    let addresses: Vec<Address> = q(
+        &ctx.db,
+        "SELECT e.user_id, e.email FROM user_emails e JOIN users u ON u.id = e.user_id \
+         WHERE u.status = 'active' AND u.role != 'owner' ORDER BY e.created_at",
+        &[],
+    )?
+    .all()
+    .await?;
+    let admitted = |email: &str| {
+        fctl_domain::allowlist::best_match(&remaining, email, |r| r.pattern.as_str()).is_some()
+    };
     let mut disabled = Vec::new();
+    let mut disconnected = Vec::new();
+    let mut changed = Vec::new();
     for u in users {
-        let still =
-            fctl_domain::allowlist::best_match(&remaining, &u.email, |r| r.pattern.as_str())
-                .is_some();
-        if !still {
+        let mut theirs: Vec<&str> = addresses
+            .iter()
+            .filter(|a| a.user_id == u.id)
+            .map(|a| a.email.as_str())
+            .collect();
+        if !theirs.contains(&u.email.as_str()) {
+            theirs.insert(0, &u.email);
+        }
+        let (kept, gone): (Vec<&str>, Vec<&str>) = theirs.into_iter().partition(|e| admitted(e));
+        let Some(first) = kept.first().copied() else {
             q(
                 &ctx.db,
                 "UPDATE users SET status = 'disabled', updated_at = ? WHERE id = ?",
@@ -285,15 +312,36 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             .run()
             .await?;
             auth::revoke_tokens(ctx, &u.id, None).await?;
-            disabled.push(u.email);
+            disabled.push(u.email.clone());
+            continue;
+        };
+        if gone.is_empty() {
+            continue;
+        }
+        let primary = if gone.contains(&u.email.as_str()) {
+            q(
+                &ctx.db,
+                "UPDATE users SET email = ?, updated_at = ? WHERE id = ?",
+                &[s(first), n(ctx.now), s(&u.id)],
+            )?
+            .run()
+            .await?;
+            first
+        } else {
+            u.email.as_str()
+        };
+        for email in gone {
+            changed.extend(crate::api::emails::disallow(ctx, &u.id, email, primary).await?);
+            disconnected.push(email.to_owned());
         }
     }
     ctx.audit(
         "allowlist.removed",
         Some(&row.pattern),
-        Some(serde_json::json!({ "disabled": disabled })),
+        Some(serde_json::json!({ "disabled": disabled, "disconnected": disconnected })),
     );
-    http::ok(&serde_json::json!({ "ok": true, "disabled": disabled }))
+    crate::workspaces::changed(ctx, changed);
+    http::ok(&serde_json::json!({ "ok": true, "disabled": disabled, "disconnected": disconnected }))
 }
 
 async fn create_invite_for(

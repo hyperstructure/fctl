@@ -369,7 +369,7 @@ fctl admin allowlist
 fctl admin allow ada@example.com           # also creates an invite link
 fctl admin allow '*@example.com'           # a whole domain
 fctl admin allow grace@example.com --admin
-fctl admin disallow '*@example.com'        # its users lose access
+fctl admin disallow '*@example.com'        # its addresses lose access (and accounts with no other)
 fctl admin runners                         # with their images; draining ones say who drained them
 fctl admin drain studio-mac                # no new sessions start on it (name or id)
 fctl admin undrain studio-mac

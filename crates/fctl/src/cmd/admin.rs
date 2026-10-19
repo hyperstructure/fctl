@@ -641,18 +641,23 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 return style::print_json(&out);
             }
             println!("Removed {}", entry.pattern);
-            if let Some(d) = out
-                .get("disabled")
-                .and_then(|v| v.as_array())
-                .filter(|a| !a.is_empty())
-            {
-                println!(
-                    "Disabled: {}",
-                    d.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+            for (key, what) in [
+                ("disabled", "Disabled"),
+                ("disconnected", "Disconnected from their accounts"),
+            ] {
+                if let Some(d) = out
+                    .get(key)
+                    .and_then(|v| v.as_array())
+                    .filter(|a| !a.is_empty())
+                {
+                    println!(
+                        "{what}: {}",
+                        d.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
             }
         }
         AdminCmd::Runners => {

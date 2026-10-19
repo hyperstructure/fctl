@@ -179,6 +179,19 @@ INSERT OR IGNORE INTO workspace_github (workspace_id, account, installation_id, 
     UNION SELECT owner FROM project_repos
   ) o, (SELECT id FROM workspaces ORDER BY created_at LIMIT 1) w;
 
+-- People invited to the instance who haven't signed up yet join it when
+-- they do, as they would have been in it: the instance's admins as its
+-- admins.
+INSERT OR IGNORE INTO workspace_invitations (id, workspace_id, email, role, invited_by, created_at, expires_at)
+  SELECT 'wiv_' || upper(hex(randomblob(13))), w.id, lower(i.email),
+    CASE i.role WHEN 'admin' THEN 'admin' ELSE 'member' END,
+    i.created_by, i.created_at,
+    max(i.expires_at, CAST(strftime('%s', 'now') AS INTEGER) * 1000 + 30 * 86400000)
+  FROM invites i, (SELECT id FROM workspaces ORDER BY created_at LIMIT 1) w
+  WHERE i.accepted_at IS NULL
+    AND i.expires_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000
+    AND NOT EXISTS (SELECT 1 FROM user_emails e WHERE e.email = lower(i.email));
+
 -- What happened to its projects and sessions goes in its audit log.
 UPDATE audit_log SET workspace_id = (SELECT id FROM workspaces ORDER BY created_at LIMIT 1)
   WHERE workspace_id IS NULL AND (action LIKE 'project.%' OR action LIKE 'session.%');

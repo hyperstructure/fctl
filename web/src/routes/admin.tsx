@@ -133,7 +133,11 @@ function Access() {
     onSuccess: (r) => {
       void list.refetch();
       void queryClient.invalidateQueries({ queryKey: keys.users });
-      toast(r.disabled.length ? `Removed. Disabled: ${r.disabled.join(", ")}` : "Removed");
+      const what = [
+        r.disabled.length > 0 && `disabled ${r.disabled.join(", ")}`,
+        r.disconnected?.length && `disconnected ${r.disconnected.join(", ")} from their accounts`,
+      ].filter(Boolean);
+      toast(what.length ? `Removed, and ${what.join("; ")}` : "Removed");
     },
     onError: (e) => toast(e.message, "error"),
   });

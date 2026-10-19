@@ -246,7 +246,10 @@ export const api = {
   allowlist: () => request<G.AllowList>("GET", "/admin/allowlist"),
   allow: (b: G.CreateAllowRequest) => request<G.CreatedAllow>("POST", "/admin/allowlist", b),
   disallow: (id: string) =>
-    request<{ ok: boolean; disabled: string[] }>("DELETE", `/admin/allowlist/${enc(id)}`),
+    request<{ ok: boolean; disabled: string[]; disconnected?: string[] }>(
+      "DELETE",
+      `/admin/allowlist/${enc(id)}`,
+    ),
   createInvite: (b: G.CreateInviteRequest) => request<G.Invite>("POST", "/admin/invites", b),
   revokeInvite: (id: string) => request<G.Ok>("DELETE", `/admin/invites/${enc(id)}`),
   transferInstance: (userId: string) => request<G.User>("POST", "/admin/transfer", { user_id: userId }),

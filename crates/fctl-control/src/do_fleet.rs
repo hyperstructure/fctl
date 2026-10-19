@@ -2062,7 +2062,11 @@ impl FleetObject {
         }
         let rows: Vec<R> = match crate::db::q(
             db,
-            "SELECT runner_id, workspace_id FROM runner_workspaces",
+            concat!(
+                "SELECT rw.runner_id, rw.workspace_id FROM runner_workspaces rw \
+                 JOIN runners r ON r.id = rw.runner_id WHERE ",
+                crate::serves!()
+            ),
             &[],
         ) {
             Ok(q) => match q.all().await {

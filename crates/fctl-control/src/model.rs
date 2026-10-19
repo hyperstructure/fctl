@@ -760,13 +760,28 @@ impl RunnerRow {
     }
 }
 
-pub const RUNNER_SELECT: &str = "SELECT r.id, r.name, r.enabled, r.info, r.last_seen_at, r.created_by, \
+/// Whether runner `r` serves the workspace of `runner_workspaces` row `rw`:
+/// while its owner is an active member there (a runner whose owner's
+/// account is gone serves where it was put before workspaces had owners).
+#[macro_export]
+macro_rules! serves {
+    () => {
+        "(r.created_by IS NULL OR EXISTS (SELECT 1 FROM workspace_members sm JOIN users su ON su.id = sm.user_id \
+         WHERE sm.workspace_id = rw.workspace_id AND sm.user_id = r.created_by AND su.status = 'active'))"
+    };
+}
+
+pub const RUNNER_SELECT: &str = concat!(
+    "SELECT r.id, r.name, r.enabled, r.info, r.last_seen_at, r.created_by, \
     u.name AS creator_name, r.created_at, \
     (SELECT COUNT(*) FROM sessions s WHERE s.runner_id = r.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping')) AS active_sessions, \
     (SELECT json_group_array(json_object('id', w.id, 'slug', w.slug, 'name', w.name, 'color', w.color, \
       'avatar_at', w.avatar_updated_at)) FROM runner_workspaces rw JOIN workspaces w ON w.id = rw.workspace_id \
-      WHERE rw.runner_id = r.id) AS workspaces \
-    FROM runners r LEFT JOIN users u ON u.id = r.created_by";
+      WHERE rw.runner_id = r.id AND ",
+    serves!(),
+    ") AS workspaces \
+    FROM runners r LEFT JOIN users u ON u.id = r.created_by"
+);
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct CredentialRow {

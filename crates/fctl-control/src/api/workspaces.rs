@@ -146,13 +146,16 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 })
         }
     };
-    batch(
+    let created = batch(
         &ctx.db,
         vec![
+            // Within the limit when it runs (two at once can't both take the
+            // last place); the membership follows it.
             q(
                 &ctx.db,
                 "INSERT INTO workspaces (id, slug, name, color, base_role, require_two_factor, created_by, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, 'editor', 0, ?, ?, ?)",
+                 SELECT ?1, ?2, ?3, ?4, 'editor', 0, ?5, ?6, ?6 \
+                 WHERE (SELECT COUNT(*) FROM workspace_members WHERE user_id = ?5) < ?7",
                 &[
                     s(id.as_str()),
                     s(&slug),
@@ -160,7 +163,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                     s(color.as_str()),
                     s(&user.id),
                     n(ctx.now),
-                    n(ctx.now),
+                    n(policy::MAX_WORKSPACES as i64),
                 ],
             )?,
             ws::add_member(
@@ -174,7 +177,21 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             )?,
         ],
     )
-    .await?;
+    .await;
+    if let Err(e) = created {
+        // Its address went to another workspace a moment ago.
+        if slug_taken(ctx, &slug, None).await? {
+            return Err(validation(
+                "slug",
+                "Another workspace took this address a moment ago. Try again.",
+            ));
+        }
+        return Err(e);
+    }
+    if ws::member(&ctx.db, id.as_str(), &user.id).await?.is_none() {
+        policy::check_limit(ws::membership_count(&ctx.db, &user.id).await?)?;
+        return Err(not_found("Workspace"));
+    }
     let data = serde_json::json!({ "name": name, "slug": slug });
     ctx.audit("workspace.created", Some(id.as_str()), Some(data.clone()));
     ctx.audit_in(
@@ -218,7 +235,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             "Set up two-factor sign-in yourself first (Settings → Security): the workspace would close to you too.",
         )));
     }
-    q(
+    let updated = q(
         &ctx.db,
         "UPDATE workspaces SET name = COALESCE(?, name), slug = COALESCE(?, slug), color = COALESCE(?, color), \
          base_role = COALESCE(?, base_role), require_two_factor = COALESCE(?, require_two_factor), updated_at = ? WHERE id = ?",
@@ -233,7 +250,18 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         ],
     )?
     .run()
-    .await?;
+    .await;
+    if let Err(e) = updated {
+        if let Some(sl) = &slug
+            && slug_taken(ctx, sl, Some(a.id())).await?
+        {
+            return Err(validation(
+                "slug",
+                "Another workspace took this address a moment ago",
+            ));
+        }
+        return Err(e);
+    }
     ctx.audit_in(
         Some(a.id()),
         "workspace.updated",
@@ -495,13 +523,25 @@ pub async fn set_member_role(
         .ok_or_else(|| not_found("Member"))?;
     let from = WorkspaceRole::parse(&target.role).unwrap_or(WorkspaceRole::Member);
     policy::check_role_change(Some(actor), from, body.role)?;
-    q(
+    // Only from the role it was checked against: a handover in between
+    // could have made them the primary admin.
+    let changed = q(
         &ctx.db,
-        "UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?",
-        &[s(body.role.as_str()), s(a.id()), s(user_id)],
+        "UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ? AND role = ?",
+        &[
+            s(body.role.as_str()),
+            s(a.id()),
+            s(user_id),
+            s(from.as_str()),
+        ],
     )?
     .run()
     .await?;
+    if changed == 0 {
+        return Err(conflict(
+            "Their role changed in the meantime. Reload to see it, then try again.",
+        ));
+    }
     ctx.audit_in(
         Some(a.id()),
         "workspace.member_role",
@@ -519,11 +559,14 @@ async fn stop_sessions_of(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRe
     struct S {
         id: String,
     }
+    // Theirs, and the workspace's on their machines, which it no longer
+    // trusts with its code and tokens.
     let running: Vec<S> = q(
         &ctx.db,
         &format!(
             "SELECT s.id FROM sessions s JOIN projects p ON p.id = s.project_id \
-             WHERE p.workspace_id = ? AND s.created_by = ? AND s.status IN {ACTIVE}"
+             WHERE p.workspace_id = ?1 AND s.status IN {ACTIVE} \
+             AND (s.created_by = ?2 OR s.runner_id IN (SELECT id FROM runners WHERE created_by = ?2))"
         ),
         &[s(workspace_id), s(user_id)],
     )?
@@ -546,12 +589,40 @@ async fn stop_sessions_of(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRe
 }
 
 /// Takes someone out of a workspace, with their project memberships and
-/// shares there; their sessions in it stop.
+/// shares there, their runners and the invitations of their other
+/// addresses; their sessions in it stop, and its sessions on their runners.
 pub async fn remove_from(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppResult<()> {
     stop_sessions_of(ctx, workspace_id, user_id).await?;
+    #[derive(Deserialize)]
+    struct R {
+        runner_id: String,
+    }
+    let runners: Vec<R> = q(
+        &ctx.db,
+        "SELECT rw.runner_id FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id \
+         WHERE rw.workspace_id = ? AND r.created_by = ?",
+        &[s(workspace_id), s(user_id)],
+    )?
+    .all()
+    .await?;
     batch(
         &ctx.db,
         vec![
+            // Their runners leave with them.
+            q(
+                &ctx.db,
+                "DELETE FROM runner_workspaces WHERE workspace_id = ? AND runner_id IN \
+                 (SELECT id FROM runners WHERE created_by = ?)",
+                &[s(workspace_id), s(user_id)],
+            )?,
+            // So do the invitations of their other addresses, which would
+            // let them back in.
+            q(
+                &ctx.db,
+                "DELETE FROM workspace_invitations WHERE workspace_id = ? AND email IN \
+                 (SELECT email FROM user_emails WHERE user_id = ?)",
+                &[s(workspace_id), s(user_id)],
+            )?,
             q(
                 &ctx.db,
                 "DELETE FROM project_members WHERE user_id = ? AND project_id IN (SELECT id FROM projects WHERE workspace_id = ?)",
@@ -570,7 +641,11 @@ pub async fn remove_from(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRes
             )?,
         ],
     )
-    .await
+    .await?;
+    for r in &runners {
+        runner_changed(ctx, &r.runner_id);
+    }
+    Ok(())
 }
 
 /// `DELETE /api/v1/workspaces/{id}/members/{user}`: an admin removes
@@ -902,7 +977,9 @@ pub async fn runners(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let rows: Vec<RunnerRow> = q(
         &ctx.db,
         &format!(
-            "{RUNNER_SELECT} WHERE r.id IN (SELECT runner_id FROM runner_workspaces WHERE workspace_id = ?) ORDER BY r.created_at"
+            "{RUNNER_SELECT} WHERE EXISTS (SELECT 1 FROM runner_workspaces rw WHERE rw.runner_id = r.id \
+             AND rw.workspace_id = ? AND {}) ORDER BY r.created_at",
+            crate::serves!()
         ),
         &[s(a.id())],
     )?

@@ -178,12 +178,13 @@ pub async fn plan(ctx: &Ctx, user: &UserRow) -> AppResult<Plan> {
     .await?;
     let successors: Vec<Successor> = q(
         &ctx.db,
-        "SELECT w.id, w.slug, w.name, w.color, w.avatar_updated_at, su.id AS successor_id, \
-         su.name AS successor_name, su.avatar_url AS successor_avatar FROM workspaces w \
-         JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = ?1 AND m.role = 'owner' \
-         JOIN users su ON su.id = (SELECT o.user_id FROM workspace_members o WHERE o.workspace_id = w.id \
-           AND o.user_id != ?1 ORDER BY o.role = 'admin' DESC, o.created_at LIMIT 1) \
-         ORDER BY w.name",
+        &format!(
+            "SELECT w.id, w.slug, w.name, w.color, w.avatar_updated_at, su.id AS successor_id, \
+             su.name AS successor_name, su.avatar_url AS successor_avatar FROM workspaces w \
+             JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = ?1 AND m.role = 'owner' \
+             JOIN users su ON su.id = {} ORDER BY w.name",
+            crate::workspaces::SUCCESSOR
+        ),
         &[s(&user.id)],
     )?
     .all()
@@ -250,6 +251,25 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
     ] {
         statements.push(q(db, sql, &[s(id), s(&user.email)])?);
     }
+    // Their runners leave every workspace and their tokens stop working:
+    // nobody answers for those machines any more.
+    #[derive(Deserialize)]
+    struct Runner {
+        id: String,
+    }
+    let runners: Vec<Runner> = q(db, "SELECT id FROM runners WHERE created_by = ?", &[s(id)])?
+        .all()
+        .await?;
+    statements.push(q(
+        db,
+        "DELETE FROM runner_workspaces WHERE runner_id IN (SELECT id FROM runners WHERE created_by = ?)",
+        &[s(id)],
+    )?);
+    statements.push(q(
+        db,
+        "UPDATE runners SET enabled = 0 WHERE created_by = ?",
+        &[s(id)],
+    )?);
     for table in [
         "identities",
         "tokens",
@@ -312,6 +332,17 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         .map(|w| w.successor_id.clone())
         .collect();
     batch(db, statements).await?;
+    if !runners.is_empty() {
+        let fleet = crate::internal::fleet_stub(&ctx.env)?;
+        for r in &runners {
+            let _: serde_json::Value = crate::internal::post(
+                &fleet,
+                "/runner-disabled",
+                &serde_json::json!({ "runner_id": r.id }),
+            )
+            .await?;
+        }
+    }
     if !plan.sole.is_empty() {
         let env = ctx.env.clone();
         let db = crate::db::handle(&ctx.db);

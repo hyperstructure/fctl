@@ -245,9 +245,13 @@ async fn login_runners(ctx: &Ctx, user_id: &str) -> AppResult<Vec<String>> {
     }
     let rows: Vec<R> = q(
         &ctx.db,
-        "SELECT DISTINCT r.id FROM runners r LEFT JOIN runner_workspaces rw ON rw.runner_id = r.id \
-         LEFT JOIN workspace_members m ON m.workspace_id = rw.workspace_id AND m.user_id = ?1 \
-         WHERE r.enabled = 1 AND (m.user_id IS NOT NULL OR r.created_by = ?1)",
+        concat!(
+            "SELECT DISTINCT r.id FROM runners r LEFT JOIN runner_workspaces rw ON rw.runner_id = r.id \
+             LEFT JOIN workspace_members m ON m.workspace_id = rw.workspace_id AND m.user_id = ?1 \
+             WHERE r.enabled = 1 AND ((m.user_id IS NOT NULL AND ",
+            crate::serves!(),
+            ") OR r.created_by = ?1)"
+        ),
         &[s(user_id)],
     )?
     .all()

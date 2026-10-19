@@ -18,20 +18,31 @@ use fctl_proto::{ApiError, CredentialId, ErrorCode, UserId, WorkspaceInviteId};
 use serde::Deserialize;
 use worker::D1Database;
 
+/// Who becomes the primary admin of workspace `w` when theirs, `?1`,
+/// goes: its longest-standing admin, else member, people whose accounts
+/// are active first.
+pub const SUCCESSOR: &str = "(SELECT o.user_id FROM workspace_members o JOIN users ou ON ou.id = o.user_id \
+    WHERE o.workspace_id = w.id AND o.user_id != ?1 \
+    ORDER BY ou.status = 'active' DESC, o.role = 'admin' DESC, o.created_at LIMIT 1)";
+
 /// SELECT for workspaces with the caller's membership (`wm`) and what lists
 /// show of them. Bind: `?1` = caller user id.
-pub const WORKSPACE_SELECT: &str = "SELECT w.id, w.slug, w.name, w.color, w.avatar_updated_at, w.base_role, \
+pub const WORKSPACE_SELECT: &str = concat!(
+    "SELECT w.id, w.slug, w.name, w.color, w.avatar_updated_at, w.base_role, \
     w.require_two_factor, w.created_at, wm.role AS role, wm.email AS email, wm.credential_id AS credential_id, \
     (SELECT COUNT(*) FROM workspace_members x WHERE x.workspace_id = w.id) AS members, \
     (SELECT COUNT(*) FROM projects p WHERE p.workspace_id = w.id AND p.archived_at IS NULL) AS projects, \
     (SELECT json_group_array(rw.runner_id) FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id \
-      WHERE rw.workspace_id = w.id AND r.enabled = 1) AS runner_ids, \
+      WHERE rw.workspace_id = w.id AND r.enabled = 1 AND ",
+    crate::serves!(),
+    ") AS runner_ids, \
     (SELECT json_group_array(g.account) FROM workspace_github g WHERE g.workspace_id = w.id AND g.status = 'active') AS github, \
     pu.id AS primary_id, pu.name AS primary_name, pu.avatar_url AS primary_avatar \
     FROM workspaces w \
     LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?1 \
     LEFT JOIN workspace_members po ON po.workspace_id = w.id AND po.role = 'owner' \
-    LEFT JOIN users pu ON pu.id = po.user_id";
+    LEFT JOIN users pu ON pu.id = po.user_id"
+);
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct WorkspaceRow {
@@ -271,9 +282,14 @@ pub fn add_member(
     added_by: Option<&str>,
     now: i64,
 ) -> AppResult<Query> {
+    // Within the limit when it runs, not only when it was checked: two
+    // joins at once can't both take the last place.
     q(
         db,
-        "INSERT INTO workspace_members (workspace_id, user_id, email, role, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?) \
+        "INSERT INTO workspace_members (workspace_id, user_id, email, role, added_by, created_at) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6 \
+         WHERE (SELECT COUNT(*) FROM workspace_members WHERE user_id = ?2) < ?7 \
+         AND EXISTS (SELECT 1 FROM workspaces WHERE id = ?1) \
          ON CONFLICT (workspace_id, user_id) DO NOTHING",
         &[
             s(workspace_id),
@@ -282,6 +298,7 @@ pub fn add_member(
             s(role.as_str()),
             os(added_by),
             n(now),
+            n(policy::MAX_WORKSPACES as i64),
         ],
     )
 }
@@ -421,14 +438,26 @@ pub async fn join(
                 invitation.invited_by.as_deref(),
                 now,
             )?,
+            // Once they are in: this invitation, and those of their other
+            // addresses, which would let them back in after they leave.
             q(
                 db,
-                "DELETE FROM workspace_invitations WHERE id = ?",
-                &[s(&invitation.id)],
+                "DELETE FROM workspace_invitations WHERE workspace_id = ?1 \
+                 AND (id = ?3 OR email IN (SELECT email FROM user_emails WHERE user_id = ?2)) \
+                 AND EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = ?1 AND user_id = ?2)",
+                &[s(&invitation.workspace_id), s(&user.id), s(&invitation.id)],
             )?,
         ],
     )
     .await?;
+    if member(db, &invitation.workspace_id, &user.id)
+        .await?
+        .is_none()
+    {
+        // They joined another one in the meantime, or it was deleted.
+        policy::check_limit(membership_count(db, &user.id).await?)?;
+        return Err(not_found("Workspace"));
+    }
     Ok(true)
 }
 
@@ -551,30 +580,30 @@ pub fn scope(connections: &[ConnectionRow], owner: &str) -> Option<Scope> {
         .map(|c| Scope::of(c.repos()))
 }
 
-/// The installation of the GitHub App on `account`, as a workspace
-/// connection remembers it, or found and remembered now.
+/// The installation of the GitHub App on `account`, as GitHub says now
+/// (the app may have been installed again since), remembered with the
+/// workspaces' connections to it.
 pub async fn installation(
     db: &D1Database,
     gh: &crate::github::Github<'_>,
     connections: &[ConnectionRow],
     account: &str,
 ) -> AppResult<u64> {
+    let id = gh.installation_id(account).await?;
     let known = connections
         .iter()
         .find(|c| c.account.eq_ignore_ascii_case(account))
         .and_then(|c| c.installation_id)
         .and_then(|id| u64::try_from(id).ok());
-    if let Some(id) = known {
-        return Ok(id);
+    if known != Some(id) {
+        q(
+            db,
+            "UPDATE workspace_github SET installation_id = ? WHERE account = ?",
+            &[n(id as i64), s(account)],
+        )?
+        .run()
+        .await?;
     }
-    let id = gh.installation_id(account).await?;
-    q(
-        db,
-        "UPDATE workspace_github SET installation_id = ? WHERE account = ? AND installation_id IS NULL",
-        &[n(id as i64), s(account)],
-    )?
-    .run()
-    .await?;
     Ok(id)
 }
 

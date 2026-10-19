@@ -232,6 +232,106 @@ pub async fn remove(ctx: &mut Ctx, email: &str) -> AppResult<Response> {
     me(ctx, &user.id).await
 }
 
+/// Disconnects `email` from someone's account because no allowlist entry
+/// admits it any more: as when they disconnect it, they leave the
+/// workspaces they are in as it, but a primary admin's role there passes
+/// to the workspace's longest-standing admin, or member, and a workspace
+/// only they are in keeps them, as `instead`. Returns whose workspaces
+/// changed.
+pub async fn disallow(
+    ctx: &Ctx,
+    user_id: &str,
+    email: &str,
+    instead: &str,
+) -> AppResult<Vec<String>> {
+    #[derive(Deserialize)]
+    struct M {
+        workspace_id: String,
+        role: String,
+        successor: Option<String>,
+    }
+    let memberships: Vec<M> = q(
+        &ctx.db,
+        &format!(
+            "SELECT w.id AS workspace_id, m.role, {} AS successor FROM workspace_members m \
+             JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ?1 AND m.email = ?2",
+            crate::workspaces::SUCCESSOR
+        ),
+        &[s(user_id), s(email)],
+    )?
+    .all()
+    .await?;
+    let mut changed = vec![user_id.to_owned()];
+    for m in memberships {
+        if m.role == "owner" {
+            let Some(next) = m.successor else {
+                q(
+                    &ctx.db,
+                    "UPDATE workspace_members SET email = ? WHERE workspace_id = ? AND user_id = ?",
+                    &[s(instead), s(&m.workspace_id), s(user_id)],
+                )?
+                .run()
+                .await?;
+                continue;
+            };
+            batch(
+                &ctx.db,
+                vec![
+                    q(
+                        &ctx.db,
+                        "UPDATE workspace_members SET role = 'admin' WHERE workspace_id = ?1 AND user_id = ?2 \
+                         AND role = 'owner' AND EXISTS (SELECT 1 FROM workspace_members t WHERE t.workspace_id = ?1 AND t.user_id = ?3)",
+                        &[s(&m.workspace_id), s(user_id), s(&next)],
+                    )?,
+                    q(
+                        &ctx.db,
+                        "UPDATE workspace_members SET role = 'owner' WHERE workspace_id = ?1 AND user_id = ?2 \
+                         AND NOT EXISTS (SELECT 1 FROM workspace_members o WHERE o.workspace_id = ?1 AND o.role = 'owner')",
+                        &[s(&m.workspace_id), s(&next)],
+                    )?,
+                ],
+            )
+            .await?;
+            ctx.audit_in(
+                Some(&m.workspace_id),
+                "workspace.transferred",
+                Some(&next),
+                Some(serde_json::json!({ "from": user_id, "disallowed": true })),
+            );
+            changed.push(next);
+        }
+        crate::api::workspaces::remove_from(ctx, &m.workspace_id, user_id).await?;
+        ctx.audit_in(
+            Some(&m.workspace_id),
+            "workspace.left",
+            Some(user_id),
+            Some(serde_json::json!({ "email": email, "disallowed": true })),
+        );
+    }
+    batch(
+        &ctx.db,
+        vec![
+            q(
+                &ctx.db,
+                "DELETE FROM workspace_invitations WHERE email = ?",
+                &[s(email)],
+            )?,
+            q(
+                &ctx.db,
+                "DELETE FROM user_emails WHERE email = ? AND user_id = ?",
+                &[s(email), s(user_id)],
+            )?,
+        ],
+    )
+    .await?;
+    ctx.audit(
+        "user.email_disconnected",
+        Some(user_id),
+        Some(serde_json::json!({ "email": email, "disallowed": true })),
+    );
+    Ok(changed)
+}
+
 /// Connects `email` to `user`: it signs in to their account from now on,
 /// and they join the workspaces it was invited to.
 pub async fn connect(ctx: &Ctx, user: &UserRow, email: &str) -> AppResult<Vec<WorkspaceRef>> {
@@ -240,13 +340,23 @@ pub async fn connect(ctx: &Ctx, user: &UserRow, email: &str) -> AppResult<Vec<Wo
             "This address belongs to an account already. Sign in with it instead.",
         ));
     }
-    q(
+    let inserted = q(
         &ctx.db,
         "INSERT INTO user_emails (email, user_id, created_at) VALUES (?, ?, ?)",
         &[s(email), s(&user.id), n(ctx.now)],
     )?
     .run()
-    .await?;
+    .await;
+    if let Err(e) = inserted {
+        // Connected, or signed up with, a moment ago.
+        return match auth::user_by_email(ctx, email).await? {
+            Some(u) if u.id == user.id => Ok(Vec::new()),
+            Some(_) => Err(conflict(
+                "This address belongs to an account already. Sign in with it instead.",
+            )),
+            None => Err(e),
+        };
+    }
     ctx.audit(
         "user.email_connected",
         Some(&user.id),

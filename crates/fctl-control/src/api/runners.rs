@@ -72,7 +72,13 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 .map(|w| w.id)
                 .collect();
             match admin_of.as_slice() {
-                [only] => Some(only.clone()),
+                // The same checks as when it is named: open to them (its
+                // two-factor requirement), and theirs to administer.
+                [only] => {
+                    let a = crate::workspaces::load(ctx, only).await?;
+                    a.require_admin()?;
+                    Some(a.row.id)
+                }
                 [] if user.is_admin() => None,
                 [] => {
                     return Err(forbidden(

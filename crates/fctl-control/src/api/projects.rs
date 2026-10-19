@@ -840,9 +840,16 @@ pub async fn github_repos(ctx: &Ctx, req: &Request) -> AppResult<Response> {
             }
         };
         let scope = fctl_domain::repos::Scope::of(c.repos());
+        // One account GitHub won't list doesn't hide the others'.
+        let theirs = match gh.repos_of(inst).await {
+            Ok(r) => r,
+            Err(e) => {
+                worker::console_log!("listing {}'s repositories: {}", c.account, e.0.message);
+                continue;
+            }
+        };
         repos.extend(
-            gh.repos_of(inst)
-                .await?
+            theirs
                 .into_iter()
                 .filter(|r| r.owner.eq_ignore_ascii_case(&c.account) && scope.allows(&r.name)),
         );

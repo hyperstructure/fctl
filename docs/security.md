@@ -27,10 +27,13 @@ owner and purpose), so a value copied between rows does not decrypt.
 
 ## Access
 
-- Accounts exist only for allowlisted emails or domains. Removing an
-  allowlist entry disables the accounts it admitted and revokes their tokens.
-  Each of an account's addresses was invited (or admitted) on its own, and
-  any of them signs in to the same account, with the same factors.
+- Accounts exist only for allowlisted emails or domains. Each of an
+  account's addresses was invited (or admitted) on its own, and any of them
+  signs in to the same account, with the same factors. Removing an
+  allowlist entry disconnects the addresses it admitted from their
+  accounts, which leave the workspaces they are in as them, and disables
+  the accounts none of whose addresses is admitted any more, revoking their
+  tokens.
 - **Workspaces** keep their projects, sessions, files and secrets to their
   members: people outside one are told its projects and sessions don't
   exist, whatever they started there or was shared with them, and instance
