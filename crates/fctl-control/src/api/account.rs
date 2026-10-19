@@ -234,6 +234,11 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
             "INSERT OR IGNORE INTO file_purges (project_id, queued_at) SELECT id, ? FROM projects WHERE workspace_id = ?",
             &[n(ctx.now), s(&w.id)],
         )?);
+        statements.push(q(
+            db,
+            "DELETE FROM audit_log WHERE workspace_id = ?",
+            &[s(&w.id)],
+        )?);
         statements.push(q(db, "DELETE FROM workspaces WHERE id = ?", &[s(&w.id)])?);
     }
     // Their addresses' invitations and allowlist entries go before the

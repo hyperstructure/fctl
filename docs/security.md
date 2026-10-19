@@ -252,7 +252,8 @@ credentials.
   made it (signing out, revoking or expiry), or when its push service says
   it is gone. A person's notifications wait in their Durable Object for at
   most a minute and are deleted once sent.
-- Deleting a workspace deletes its projects, as deleting each would.
+- Deleting a workspace deletes its projects, as deleting each would, and
+  its audit log; the instance's audit log records who deleted it.
 - People delete their own account in Settings (Danger zone) or with
   `fctl account delete`; admins delete members' accounts, and the primary
   admin admins' too. Both delete the account's addresses, sign-in methods, passkeys

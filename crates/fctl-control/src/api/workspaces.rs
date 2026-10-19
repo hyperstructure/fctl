@@ -265,9 +265,9 @@ pub async fn erase(ctx: &mut Ctx, row: &WorkspaceRow, typed: &str) -> AppResult<
         return Err(conflict("Stop the workspace's sessions before deleting it"));
     }
     let members = ws::member_ids(&ctx.db, &row.id).await?;
-    // Rows cascade from the workspace; the sessions' event logs and the
-    // projects' files live in Durable Objects, so they are queued for
-    // purging in the same batch.
+    // Rows cascade from the workspace, and its audit log goes with it; the
+    // sessions' event logs and the projects' files live in Durable
+    // Objects, so they are queued for purging in the same batch.
     batch(
         &ctx.db,
         vec![
@@ -282,6 +282,7 @@ pub async fn erase(ctx: &mut Ctx, row: &WorkspaceRow, typed: &str) -> AppResult<
                 "INSERT OR IGNORE INTO file_purges (project_id, queued_at) SELECT id, ? FROM projects WHERE workspace_id = ?",
                 &[n(ctx.now), s(&row.id)],
             )?,
+            q(&ctx.db, "DELETE FROM audit_log WHERE workspace_id = ?", &[s(&row.id)])?,
             q(&ctx.db, "DELETE FROM workspaces WHERE id = ?", &[s(&row.id)])?,
         ],
     )
