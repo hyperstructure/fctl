@@ -642,20 +642,58 @@ function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void })
 }
 
 /** Every workspace: what it is and who runs it, not what is inside. */
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** What deleting a workspace takes with it, for its confirmation. */
+function deletes(w: G.AdminWorkspace): string {
+  const people = w.members === 1 ? "its one member" : `its ${w.members} members`;
+  const projects =
+    w.projects === 0
+      ? ""
+      : w.projects === 1
+        ? ", with its project and that project's sessions and transcripts"
+        : `, with its ${w.projects} projects and their sessions and transcripts`;
+  return `It goes for ${people}${projects}. This can't be undone, and its sessions must be stopped first.`;
+}
+
 function Workspaces() {
   const list = useQuery({ queryKey: keys.adminWorkspaces, queryFn: api.adminWorkspaces });
   const [deleting, setDeleting] = useState<G.AdminWorkspace | null>(null);
   const [typed, setTyped] = useState("");
+  const [choosing, setChoosing] = useState<G.AdminWorkspace | null>(null);
+  const [primary, setPrimary] = useState<string>();
   const remove = useMutation({
     mutationFn: (w: G.AdminWorkspace) => api.adminDeleteWorkspace(w.workspace.id, typed),
     onSuccess: (_, w) => {
-      setDeleting(null);
-      setTyped("");
+      closeDelete();
       void list.refetch();
       void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+      // Its requests to use GitHub accounts went with it.
+      void queryClient.invalidateQueries({ queryKey: keys.adminGithub });
       toast(`${w.workspace.name} was deleted`);
     },
   });
+  const assign = useMutation({
+    mutationFn: (v: { workspace: G.AdminWorkspace; user: string }) =>
+      api.adminWorkspacePrimary(v.workspace.workspace.id, v.user),
+    onSuccess: (_, v) => {
+      const who = v.workspace.candidates.find((c) => c.id === v.user)?.name ?? "They";
+      setChoosing(null);
+      void list.refetch();
+      void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+      toast(`${who} runs ${v.workspace.workspace.name} now`);
+    },
+  });
+  const closeDelete = () => {
+    setDeleting(null);
+    setTyped("");
+    remove.reset();
+  };
+  const choose = (w: G.AdminWorkspace) => {
+    assign.reset();
+    setPrimary(w.candidates[0]?.id);
+    setChoosing(w);
+  };
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
@@ -684,12 +722,23 @@ function Workspaces() {
               </div>
               <div className="truncate text-[12px] text-ink-4">
                 {w.primary ? `Run by ${w.primary.name} · ` : ""}
-                {w.members} {w.members === 1 ? "member" : "members"} · {w.projects}{" "}
-                {w.projects === 1 ? "project" : "projects"} · {w.runners}{" "}
-                {w.runners === 1 ? "runner" : "runners"}
+                {count(w.members, "member", "members")} · {count(w.projects, "project", "projects")} ·{" "}
+                {count(w.runners, "runner", "runners")}
                 {w.github.length > 0 && ` · ${w.github.join(", ")}`} · since {ago(w.created_at)}
               </div>
+              {w.needs_primary && (
+                <div className="mt-1 text-[12px] text-amber">
+                  {w.primary
+                    ? `${w.primary.name}'s account is disabled, so nobody can hand its primary admin role over.`
+                    : "It has no primary admin."}
+                </div>
+              )}
             </div>
+            {w.needs_primary && (
+              <Button size="sm" icon={<Crown className="size-3.5" />} onClick={() => choose(w)}>
+                Choose a primary admin
+              </Button>
+            )}
             {w.role && (
               <Link to="/w/$slug" params={{ slug: w.workspace.slug }}>
                 <Button size="sm" variant="ghost">
@@ -712,10 +761,56 @@ function Workspaces() {
         )}
       </ul>
       <Dialog
+        open={!!choosing}
+        onClose={() => setChoosing(null)}
+        title={`Who runs ${choosing?.workspace.name ?? ""} now?`}
+        description="They become its primary admin: they manage its admins, can hand the role on, and can delete it. Its other admins stay admins."
+      >
+        {choosing && choosing.candidates.length === 0 ? (
+          <div className="flex flex-col gap-4">
+            <Banner tone="warn">
+              None of its members has an active account. Enable one of them first, or delete the workspace.
+            </Banner>
+            <div className="flex justify-end">
+              <Button variant="ghost" onClick={() => setChoosing(null)}>
+                Close
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (choosing && primary) assign.mutate({ workspace: choosing, user: primary });
+            }}
+          >
+            <Field label="Its new primary admin" error={assign.error?.message}>
+              {(id) => (
+                <Select
+                  id={id}
+                  value={primary}
+                  onChange={setPrimary}
+                  options={(choosing?.candidates ?? []).map((c) => ({ value: c.id, label: c.name }))}
+                />
+              )}
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => setChoosing(null)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" loading={assign.isPending} disabled={!primary}>
+                Make them primary admin
+              </Button>
+            </div>
+          </form>
+        )}
+      </Dialog>
+      <Dialog
         open={!!deleting}
-        onClose={() => setDeleting(null)}
+        onClose={closeDelete}
         title={`Delete ${deleting?.workspace.name ?? ""}?`}
-        description={`Its ${deleting?.projects ?? 0} projects, their sessions and transcripts go, for its ${deleting?.members ?? 0} members. This can't be undone, and its sessions must be stopped first.`}
+        description={deleting ? deletes(deleting) : undefined}
       >
         <form
           className="flex flex-col gap-4"
@@ -730,7 +825,7 @@ function Workspaces() {
             )}
           </Field>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setDeleting(null)}>
+            <Button type="button" variant="ghost" onClick={closeDelete}>
               Cancel
             </Button>
             <Button

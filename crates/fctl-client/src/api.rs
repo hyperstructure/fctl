@@ -797,6 +797,18 @@ impl Api {
         self.get("/admin/workspaces").await
     }
 
+    /// Gives the primary admin role of a workspace whose primary admin's
+    /// account is disabled or gone to one of its members.
+    pub async fn admin_workspace_primary(&self, workspace: &str, user_id: &str) -> Result<Ok> {
+        self.post(
+            &format!("/admin/workspaces/{}/primary", enc(workspace)),
+            &TransferRequest {
+                user_id: fctl_proto::UserId(user_id.to_owned()),
+            },
+        )
+        .await
+    }
+
     /// Deletes a workspace and everything in it.
     pub async fn admin_delete_workspace(&self, workspace: &str, name: &str) -> Result<Ok> {
         self.post(

@@ -144,8 +144,9 @@ fctl workspaces audit                      # what happened in it (admins)
 fctl workspaces delete side-project        # with its projects and sessions; asks you to type its name
 ```
 
-Admins invite people by an address they sign in with; someone who isn't on
-the instance yet needs an instance invitation first (`fctl admin invite`).
+Admins invite people by an address they sign in with, or one the allowlist
+admits (they join when they sign up); any other address needs an instance
+invitation first (`fctl admin invite`).
 Everyone in a workspace works in its projects as their project role or its
 base role says; its admins own every project. One person can be in at most
 five workspaces.

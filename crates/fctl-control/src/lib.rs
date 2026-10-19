@@ -147,6 +147,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["admin", "workspaces", id, "delete"]) => {
             api::admin::delete_workspace(ctx, req, id).await
         }
+        (Post, ["admin", "workspaces", id, "primary"]) => {
+            api::admin::workspace_primary(ctx, req, id).await
+        }
         (Get, ["admin", "github"]) => api::github::admin_list(ctx).await,
         (Put, ["admin", "github", account, "workspaces", workspace]) => {
             api::github::admin_connect(ctx, req, &http::decode(account), workspace).await

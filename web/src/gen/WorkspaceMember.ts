@@ -12,5 +12,6 @@ export type WorkspaceMember = { user: UserRef,
 email: string, role: WorkspaceRole, 
 /**
  * They have two-factor sign-in: an authenticator app or a passkey.
+ * For the workspace's admins only.
  */
-two_factor: boolean, added_by?: UserRef, joined_at: number, };
+two_factor?: boolean, added_by?: UserRef, joined_at: number, };

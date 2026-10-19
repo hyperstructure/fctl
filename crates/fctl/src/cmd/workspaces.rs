@@ -561,10 +561,10 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                     style::bold(&m.user.name),
                     m.email,
                     role(m.role),
-                    if m.two_factor {
-                        style::accent("2fa")
-                    } else {
-                        style::dim("no 2fa")
+                    match m.two_factor {
+                        Some(true) => style::accent("2fa"),
+                        Some(false) => style::dim("no 2fa"),
+                        None => String::new(),
                     }
                 );
             }

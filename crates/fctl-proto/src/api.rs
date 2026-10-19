@@ -1166,7 +1166,8 @@ pub struct WorkspaceMember {
     pub email: String,
     pub role: WorkspaceRole,
     /// They have two-factor sign-in: an authenticator app or a passkey.
-    pub two_factor: bool,
+    /// For the workspace's admins only.
+    pub two_factor: Option<bool>,
     pub added_by: Option<UserRef>,
     pub joined_at: Millis,
 }
@@ -1392,6 +1393,14 @@ pub struct AdminWorkspace {
     pub created_at: Millis,
     /// Your role in it, when you are a member.
     pub role: Option<WorkspaceRole>,
+    /// Its primary admin's account is disabled or gone, so nobody can hand
+    /// the role over: an instance admin gives it to one of `candidates`.
+    #[serde(default)]
+    pub needs_primary: bool,
+    /// Its members with active accounts, admins first, when it needs a
+    /// primary admin.
+    #[serde(default)]
+    pub candidates: Vec<UserRef>,
 }
 
 /// `GET /api/v1/admin/workspaces`.

@@ -667,22 +667,115 @@ pub async fn workspaces(ctx: &Ctx) -> AppResult<Response> {
     )?
     .all()
     .await?;
-    http::ok(&AdminWorkspaceList {
-        workspaces: rows
-            .iter()
-            .map(|r| AdminWorkspace {
-                workspace: r.to_ref(),
-                primary: r.primary(),
-                members: r.members.max(0) as u32,
-                projects: r.projects.max(0) as u32,
-                runners: r.runner_ids().len() as u32,
-                github: crate::workspaces::strings(r.github.as_deref()),
-                require_two_factor: r.require_two_factor,
-                created_at: r.created_at,
-                role: r.role(),
-            })
-            .collect(),
-    })
+    let mut workspaces = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let needs_primary = r.needs_primary();
+        workspaces.push(AdminWorkspace {
+            workspace: r.to_ref(),
+            primary: r.primary(),
+            members: r.members.max(0) as u32,
+            projects: r.projects.max(0) as u32,
+            runners: r.runner_ids().len() as u32,
+            github: crate::workspaces::strings(r.github.as_deref()),
+            require_two_factor: r.require_two_factor,
+            created_at: r.created_at,
+            role: r.role(),
+            needs_primary,
+            // Who it could go to, only for the workspaces that need one.
+            candidates: if needs_primary {
+                primary_candidates(ctx, &r.id).await?
+            } else {
+                Vec::new()
+            },
+        });
+    }
+    http::ok(&AdminWorkspaceList { workspaces })
+}
+
+/// A workspace's members with active accounts, admins first: who may
+/// become its primary admin when nobody can hand the role over.
+async fn primary_candidates(ctx: &Ctx, workspace_id: &str) -> AppResult<Vec<UserRef>> {
+    #[derive(serde::Deserialize)]
+    struct C {
+        id: String,
+        name: String,
+        avatar_url: Option<String>,
+    }
+    let rows: Vec<C> = q(
+        &ctx.db,
+        "SELECT u.id, u.name, u.avatar_url FROM workspace_members m JOIN users u ON u.id = m.user_id \
+         WHERE m.workspace_id = ? AND u.status = 'active' ORDER BY m.role = 'admin' DESC, m.created_at",
+        &[s(workspace_id)],
+    )?
+    .all()
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|c| UserRef {
+            id: UserId(c.id),
+            name: c.name,
+            avatar_url: c.avatar_url,
+        })
+        .collect())
+}
+
+/// `POST /api/v1/admin/workspaces/{id}/primary` (instance admins): gives
+/// the primary admin role of a workspace whose primary admin's account is
+/// disabled or gone to one of its members. Otherwise its primary admin
+/// hands it over: instance admins don't run workspaces.
+pub async fn workspace_primary(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
+    let body: TransferRequest = http::body(req).await?;
+    let admin = ctx.admin()?.clone();
+    let row = crate::workspaces::find(&ctx.db, &admin.id, id)
+        .await?
+        .ok_or_else(|| not_found("Workspace"))?;
+    if !row.needs_primary() {
+        return Err(conflict(
+            "Its primary admin can hand the role over themselves",
+        ));
+    }
+    let to = body.user_id.as_str();
+    if !primary_candidates(ctx, &row.id)
+        .await?
+        .iter()
+        .any(|c| c.id.as_str() == to)
+    {
+        return Err(validation(
+            "user_id",
+            "Choose one of its members whose account is active",
+        ));
+    }
+    let from = row.primary_id.clone();
+    crate::db::batch(
+        &ctx.db,
+        vec![
+            q(
+                &ctx.db,
+                "UPDATE workspace_members SET role = 'admin' WHERE workspace_id = ?1 AND role = 'owner' AND user_id != ?2",
+                &[s(&row.id), s(to)],
+            )?,
+            q(
+                &ctx.db,
+                "UPDATE workspace_members SET role = 'owner' WHERE workspace_id = ?1 AND user_id = ?2 \
+                 AND NOT EXISTS (SELECT 1 FROM workspace_members o WHERE o.workspace_id = ?1 AND o.role = 'owner')",
+                &[s(&row.id), s(to)],
+            )?,
+        ],
+    )
+    .await?;
+    let data = serde_json::json!({ "from": from, "by": admin.id });
+    ctx.audit_in(
+        Some(&row.id),
+        "workspace.transferred",
+        Some(to),
+        Some(data.clone()),
+    );
+    ctx.audit("workspace.primary_assigned", Some(&row.id), Some(data));
+    crate::workspaces::changed(
+        ctx,
+        [Some(to.to_owned()), from].into_iter().flatten().collect(),
+    );
+    http::ok(&Ok { ok: true })
 }
 
 /// `POST /api/v1/admin/workspaces/{id}/delete` (instance admins): deletes a

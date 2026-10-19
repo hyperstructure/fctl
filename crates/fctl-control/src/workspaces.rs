@@ -37,7 +37,7 @@ pub const WORKSPACE_SELECT: &str = concat!(
     crate::serves!(),
     ") AS runner_ids, \
     (SELECT json_group_array(g.account) FROM workspace_github g WHERE g.workspace_id = w.id AND g.status = 'active') AS github, \
-    pu.id AS primary_id, pu.name AS primary_name, pu.avatar_url AS primary_avatar \
+    pu.id AS primary_id, pu.name AS primary_name, pu.avatar_url AS primary_avatar, pu.status AS primary_status \
     FROM workspaces w \
     LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?1 \
     LEFT JOIN workspace_members po ON po.workspace_id = w.id AND po.role = 'owner' \
@@ -72,6 +72,8 @@ pub struct WorkspaceRow {
     pub primary_id: Option<String>,
     pub primary_name: Option<String>,
     pub primary_avatar: Option<String>,
+    #[serde(default)]
+    pub primary_status: Option<String>,
 }
 
 /// A JSON array of strings from `json_group_array` (nulls left out).
@@ -103,6 +105,12 @@ impl WorkspaceRow {
 
     pub fn runner_ids(&self) -> Vec<String> {
         strings(self.runner_ids.as_deref())
+    }
+
+    /// Nobody can hand its primary admin role over: theirs is disabled, or
+    /// there is none.
+    pub fn needs_primary(&self) -> bool {
+        self.primary_status.as_deref() != Some("active")
     }
 
     pub fn primary(&self) -> Option<UserRef> {

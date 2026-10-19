@@ -80,6 +80,15 @@ pub enum AdminCmd {
     },
     /// List every workspace: what it is and who runs it.
     Workspaces,
+    /// Give the primary admin role of a workspace whose primary admin's
+    /// account is disabled or gone to one of its members. Otherwise its
+    /// primary admin hands it over.
+    SetPrimary {
+        /// The workspace (slug or id).
+        workspace: String,
+        /// Any of their email addresses, or their user id.
+        user: String,
+    },
     /// Delete a workspace with its projects, sessions and transcripts.
     /// This cannot be undone.
     DeleteWorkspace {
@@ -494,7 +503,56 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                             .unwrap_or_default()
                     )
                 );
+                if w.needs_primary {
+                    println!(
+                        "  {}",
+                        style::amber(&format!(
+                            "needs a primary admin: `fctl admin set-primary {} <person>`",
+                            w.workspace.slug
+                        ))
+                    );
+                }
             }
+        }
+        AdminCmd::SetPrimary { workspace, user } => {
+            let list = api.admin_workspaces().await?;
+            let w = list
+                .workspaces
+                .iter()
+                .find(|w| w.workspace.slug == workspace || w.workspace.id.as_str() == workspace)
+                .with_context(|| format!("No workspace is {workspace}"))?;
+            if !w.needs_primary {
+                bail!(
+                    "{} has a primary admin, who hands the role over themselves",
+                    w.workspace.name
+                );
+            }
+            let users = api.users().await?.users;
+            let target = find_user(&users, &user)?;
+            if !w.candidates.iter().any(|c| c.id == target.id) {
+                bail!(
+                    "{} isn't one of {}'s members with an active account: {}",
+                    target.name,
+                    w.workspace.name,
+                    w.candidates
+                        .iter()
+                        .map(|c| c.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            let ok = api
+                .admin_workspace_primary(w.workspace.id.as_str(), target.id.as_str())
+                .await?;
+            if json {
+                return style::print_json(&ok);
+            }
+            println!(
+                "{} {} is {}'s primary admin",
+                style::accent("✓"),
+                target.name,
+                w.workspace.name
+            );
         }
         AdminCmd::DeleteWorkspace { workspace, confirm } => {
             let list = api.admin_workspaces().await?;

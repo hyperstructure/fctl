@@ -254,10 +254,12 @@ needs its owner to **Resume** it (or `fctl resume my-app#12 "…"`).
 
 A workspace's admins invite people from its **People** tab (`fctl
 workspaces invite grace@example.com`), by an address they sign in with;
-they join it from the floor. Someone who isn't on the instance yet needs an
-instance admin's invitation first (**Admin → People → Invite**, or `fctl
-admin invite grace@example.com -w side-project`), which can invite them to
-the admin's workspaces at the same time.
+they join it from the floor. An address the instance doesn't admit yet
+needs an instance admin's invitation first (**Admin → People → Invite**, or
+`fctl admin invite grace@example.com -w side-project`), which can invite it
+to the admin's workspaces at the same time. One the allowlist admits but
+nobody signed up with yet can be invited right away: its owner joins when
+they sign up.
 
 In a workspace, admins own every project, and members work in the projects
 they are members of (a project's **Members**) and in every project with the

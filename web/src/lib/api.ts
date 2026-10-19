@@ -256,6 +256,8 @@ export const api = {
   adminWorkspaces: () => request<G.AdminWorkspaceList>("GET", "/admin/workspaces"),
   adminDeleteWorkspace: (id: string, name: string) =>
     request<G.Ok>("POST", `/admin/workspaces/${enc(id)}/delete`, { name }),
+  adminWorkspacePrimary: (id: string, userId: string) =>
+    request<G.Ok>("POST", `/admin/workspaces/${enc(id)}/primary`, { user_id: userId }),
   adminGithub: () => request<G.GithubInstallations>("GET", "/admin/github"),
   adminConnectGithub: (account: string, workspace: string, repos?: string[]) =>
     request<G.GithubInstallations>(

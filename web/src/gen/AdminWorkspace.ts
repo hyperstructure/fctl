@@ -11,4 +11,14 @@ export type AdminWorkspace = { workspace: WorkspaceRef, primary?: UserRef, membe
 /**
  * Your role in it, when you are a member.
  */
-role?: WorkspaceRole, };
+role?: WorkspaceRole, 
+/**
+ * Its primary admin's account is disabled or gone, so nobody can hand
+ * the role over: an instance admin gives it to one of `candidates`.
+ */
+needs_primary: boolean, 
+/**
+ * Its members with active accounts, admins first, when it needs a
+ * primary admin.
+ */
+candidates: Array<UserRef>, };

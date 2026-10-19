@@ -492,7 +492,8 @@ pub async fn members(ctx: &Ctx, id: &str) -> AppResult<Response> {
                 },
                 email: r.email,
                 role: WorkspaceRole::parse(&r.role).unwrap_or(WorkspaceRole::Member),
-                two_factor: r.two_factor,
+                // Who lacks a second factor is for its admins to know.
+                two_factor: role.is_admin().then_some(r.two_factor),
                 added_by: match (r.added_by, r.adder_name) {
                     (Some(id), Some(name)) => Some(fctl_proto::session::UserRef {
                         id: UserId(id),
@@ -541,6 +542,35 @@ pub async fn set_member_role(
         return Err(conflict(
             "Their role changed in the meantime. Reload to see it, then try again.",
         ));
+    }
+    if from.is_admin() && !body.role.is_admin() {
+        // Adding runners takes being an admin: theirs stop taking its
+        // sessions (the ones running there carry on).
+        #[derive(Deserialize)]
+        struct R {
+            runner_id: String,
+        }
+        let runners: Vec<R> = q(
+            &ctx.db,
+            "SELECT rw.runner_id FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id \
+             WHERE rw.workspace_id = ? AND r.created_by = ?",
+            &[s(a.id()), s(user_id)],
+        )?
+        .all()
+        .await?;
+        if !runners.is_empty() {
+            q(
+                &ctx.db,
+                "DELETE FROM runner_workspaces WHERE workspace_id = ? AND runner_id IN \
+                 (SELECT id FROM runners WHERE created_by = ?)",
+                &[s(a.id()), s(user_id)],
+            )?
+            .run()
+            .await?;
+            for r in &runners {
+                runner_changed(ctx, &r.runner_id);
+            }
+        }
     }
     ctx.audit_in(
         Some(a.id()),
