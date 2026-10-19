@@ -1,0 +1,37 @@
+# Validates the agent skills in .claude/skills against the Agent Skills
+# specification (https://agentskills.io/specification), its recommendations
+# included, on pull requests that change them. One job validates them all,
+# rather than a job per skill that each installs the validator. It doesn't
+# run on other pull requests, so it isn't a required check
+# (.github/rulesets/).
+name: Skills
+
+on:
+  pull_request:
+    paths:
+      - .claude/skills/**
+      - .github/workflows/skills.yml
+
+concurrency:
+  group: skills-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Agent Skills specification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned to a commit, the action can't tell which release it is and
+      # installs the newest validator unless `version` names one: change the
+      # two together.
+      - uses: coolapso/agent-skills-validator@92cb02f7838e7d76e9f79f0558802d72927db6a9 # v0.2.0
+        with:
+          version: v0.2.0
+          matrix: false
+          path: .claude/skills/*/
+          strict: true

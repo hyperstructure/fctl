@@ -117,6 +117,11 @@ checkout, so its migrations, Worker, bootstrap, host and agent all run
 before a change can deploy. Locally it uses your `.fctl-dev/` state and
 ports 8787 and 5173: stop `cargo xtask dev` first.
 
+Pull requests that change the agent skills in `.claude/skills` also run
+the Skills workflow, which validates them all in one job against the
+[Agent Skills specification](https://agentskills.io/specification), with
+[agent-skills-validator](https://github.com/coolapso/agent-skills-validator).
+
 ## Repository map
 
 | Path | What |
