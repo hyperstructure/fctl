@@ -44,9 +44,10 @@ pub enum AdminCmd {
         runner: String,
     },
     /// Turn off someone's two-factor sign-in, when they lost their phone
-    /// and their recovery codes: removes their authenticator app, recovery
-    /// codes and passkeys. They can sign in with their password alone again,
-    /// or set it up again when the instance requires it.
+    /// and their recovery codes: removes their authenticator app and
+    /// recovery codes, and their passkeys where those are the second factor
+    /// the instance requires. They can sign in with their password alone
+    /// again, or set it up again when the instance requires it.
     ResetTwoFactor {
         /// Their email address or user id.
         user: String,
@@ -355,12 +356,22 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 .instance_settings()
                 .await
                 .is_ok_and(|s| fctl_domain::two_factor::required(&s, updated.has_password));
+            // Passkeys go only where they were the second factor required.
+            let gone = if target.passkeys > 0 && updated.passkeys == 0 {
+                "Their authenticator app's codes, recovery codes and passkeys no longer work"
+            } else {
+                "Their authenticator app's codes and recovery codes no longer work"
+            };
             println!(
                 "{}",
-                style::dim(if required {
-                    "Their authenticator app's codes, recovery codes and passkeys no longer work. The instance requires two-factor sign-in, so they set it up again before anything else."
+                style::dim(&if required {
+                    format!(
+                        "{gone}. The instance requires two-factor sign-in, so they set it up again before anything else."
+                    )
                 } else {
-                    "Their authenticator app's codes, recovery codes and passkeys no longer work, and their password alone signs them in until they set it up again."
+                    format!(
+                        "{gone}, and their password alone signs them in until they set it up again."
+                    )
                 })
             );
         }

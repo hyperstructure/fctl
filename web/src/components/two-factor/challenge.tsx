@@ -112,7 +112,6 @@ export function SecondFactorStep({
       else if (e.field === "passkey" || e.status === 404) {
         if (e.status === 404 && answered.current) signalUnknown(rpId(), answered.current);
         setPasskeyFailure(e.message);
-        void passkeyOptions.refetch();
       } else if (e.field === "code") {
         setErrors((n) => n + 1);
         setCode("");
@@ -143,9 +142,8 @@ export function SecondFactorStep({
     getPasskey(options)
       .then((passkey) => {
         answered.current = passkey.id;
-        verify.mutate({ passkey });
-        // Each challenge works once.
-        void passkeyOptions.refetch();
+        // Each challenge works once: another try takes a new one.
+        verify.mutate({ passkey }, { onError: () => void passkeyOptions.refetch() });
       })
       .catch((e) => {
         if (!cancelled(e)) setPasskeyFailure(passkeyError(e));

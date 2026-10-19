@@ -75,6 +75,7 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
         google_required: settings.two_factor_google,
         required: policy::required(&settings, has_password),
         setup_required: policy::setup_required(&settings, has_password, factors),
+        on: policy::on(&settings, has_password, factors),
     })
 }
 
@@ -644,7 +645,7 @@ async fn count_wrong(ctx: &Ctx, user: &UserRow) -> AppResult<AppError> {
             .as_deref()
             .map(|l| format!(" from near {l}"))
             .unwrap_or_default();
-        notice(
+        crate::email::notice(
             ctx,
             user,
             "Wrong two-factor codes for your account",
@@ -838,7 +839,7 @@ pub async fn confirm_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResul
     );
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     if replacing {
-        notice(
+        crate::email::notice(
             ctx,
             &user,
             "Your authenticator app was replaced",
@@ -848,7 +849,7 @@ pub async fn confirm_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResul
             ),
         );
     } else {
-        notice(
+        crate::email::notice(
             ctx,
             &user,
             "Two-factor sign-in is on",
@@ -883,7 +884,7 @@ pub async fn remove_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult
     batch(&ctx.db, forget_statements(ctx, &user.id)?).await?;
     ctx.audit("two_factor.disabled", Some(&user.id), None);
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
-    notice(
+    crate::email::notice(
         ctx,
         &user,
         "Two-factor sign-in is off",
@@ -947,23 +948,45 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             "Only owners can reset an owner's two-factor sign-in",
         ));
     }
-    let factors = target.factors();
-    if !(factors.authenticator || factors.passkeys) {
-        return Err(conflict("They have no authenticator app or passkeys"));
-    }
-    // Everything beyond the password: a passkey on the lost phone must not
-    // stay the second factor nobody has.
-    let mut statements = forget_statements(ctx, &target.id)?;
-    statements.push(q(
-        &ctx.db,
-        "DELETE FROM passkeys WHERE user_id = ?",
-        &[s(&target.id)],
-    )?);
-    batch(&ctx.db, statements).await?;
-    ctx.audit("two_factor.reset", Some(&target.id), None);
-    let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     let settings = crate::instance::settings(&ctx.db).await?;
-    let again = if policy::required(&settings, target.has_password()) {
+    let required = policy::required(&settings, target.has_password());
+    // Passkeys go too where they are the second factor the instance
+    // requires: one on the lost phone must not stay the factor nobody has.
+    // Not when they are the person's only way in, though.
+    let identities: Option<Count> = q(
+        &ctx.db,
+        "SELECT COUNT(*) AS n FROM identities WHERE user_id = ?",
+        &[s(&target.id)],
+    )?
+    .first()
+    .await?;
+    let other_way_in = target.has_password() || identities.is_some_and(|c| c.n > 0);
+    let passkeys = required && target.passkeys > 0;
+    if passkeys && !other_way_in && !target.has_second_factor() {
+        return Err(conflict(
+            "Their passkeys are their only way in. Send them a reset link to set a password first.",
+        ));
+    }
+    let remove_passkeys = passkeys && other_way_in;
+    if !target.has_second_factor() && !remove_passkeys {
+        return Err(conflict("They have no two-factor sign-in to reset"));
+    }
+    let mut statements = forget_statements(ctx, &target.id)?;
+    if remove_passkeys {
+        statements.push(q(
+            &ctx.db,
+            "DELETE FROM passkeys WHERE user_id = ?",
+            &[s(&target.id)],
+        )?);
+    }
+    batch(&ctx.db, statements).await?;
+    ctx.audit(
+        "two_factor.reset",
+        Some(&target.id),
+        Some(serde_json::json!({ "passkeys_removed": remove_passkeys })),
+    );
+    let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+    let again = if required {
         format!("{name} requires two-factor sign-in, so you set it up again when you next sign in.")
     } else {
         format!(
@@ -971,12 +994,17 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             ctx.cfg.url("/settings")
         )
     };
-    notice(
+    let gone = if remove_passkeys {
+        "your authenticator app's codes, your recovery codes and your passkeys no longer work"
+    } else {
+        "your authenticator app's codes and your recovery codes no longer work"
+    };
+    crate::email::notice(
         ctx,
         &target,
         "Two-factor sign-in was reset",
         format!(
-            "{} turned off two-factor sign-in for your {name} account ({}): your authenticator app's codes, your recovery codes and your passkeys no longer work. {again}\n\nIf you didn't ask for this, tell them, and change your password.",
+            "{} turned off two-factor sign-in for your {name} account ({}): {gone}. {again}\n\nIf you didn't ask for this, tell them, and change your password.",
             actor.name, target.email
         ),
     );
@@ -987,16 +1015,6 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 }
 
 // ───────────────────────────── notices ─────────────────────────────
-
-/// Emails `user` about a change to their sign-in, when email is set up.
-fn notice(ctx: &Ctx, user: &UserRow, subject: &str, text: String) {
-    let Some(mail) = ctx.cfg.email.clone() else {
-        return;
-    };
-    let to = user.email.clone();
-    let subject = subject.to_owned();
-    ctx.defer(async move { crate::email::send(&mail, &to, &subject, &text).await });
-}
 
 fn recovery_code_notice(ctx: &Ctx, user: &UserRow, instance: &str, left: u32) {
     let place = ctx
@@ -1009,7 +1027,7 @@ fn recovery_code_notice(ctx: &Ctx, user: &UserRow, instance: &str, left: u32) {
         1 => "1 is left.".to_owned(),
         n => format!("{n} are left."),
     };
-    notice(
+    crate::email::notice(
         ctx,
         user,
         "A recovery code was used to sign in",

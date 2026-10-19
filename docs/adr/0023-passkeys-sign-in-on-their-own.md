@@ -34,10 +34,14 @@ email field.
   decoder and the WebAuthn checks are pure Rust with tests; WebCrypto in the
   Worker checks the signatures, as it does for Web Push, so the Worker
   gains no crypto code.
-- **One-time challenges, found by what the browser signs.** Each ceremony's
-  challenge (256 random bits) is kept by its SHA-256 for ten minutes and
-  deleted when it's used; `clientDataJSON` names it, so no cookie or token
-  travels with it. A counter that goes back refuses the sign-in.
+- **One-time challenges, found by what the browser signs.** Each
+  ceremony's challenge works once, for ten minutes, and `clientDataJSON`
+  names it, so no cookie or token travels with it. Making a passkey, and
+  one as a second factor, keep theirs (256 random bits) by its SHA-256.
+  Signing in signs its with the master key instead, so that the sign-in
+  page, which asks for one on every load, writes nothing and costs no rate
+  limit; it is recorded once used, until it expires. A counter that goes
+  back refuses the sign-in.
 - **Adding one takes proof.** A passkey is a way in that skips the password
   and the code, so adding one takes the password unless the browser signed
   in within 15 minutes (or, without a password, a code from the
@@ -51,9 +55,11 @@ email field.
 - Passkeys belong to the host name of `FCTL_PUBLIC_URL`; an instance that
   moves to another host name loses them, and people add new ones.
 - Where a passkey is someone's only second factor, losing it (and every
-  synced copy) means an admin's reset, which removes the authenticator app,
-  the recovery codes and the passkeys. Recovery codes stay with the
-  authenticator app; Settings suggests a second passkey on another device.
+  synced copy) means an admin's reset, which there removes the passkeys
+  with the authenticator app and the recovery codes, unless a passkey is the
+  person's only way in (then a reset link sets a password first). Recovery
+  codes stay with the authenticator app; Settings suggests a second passkey
+  on another device.
 - The last passkey can't be removed while it is the account's only way in,
   or the second factor the instance requires.
 - Signals keep providers' lists current in browsers that have them; in

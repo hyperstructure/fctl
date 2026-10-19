@@ -291,6 +291,10 @@ pub struct TwoFactor {
     /// until one is, the account can only set one up (requests fail with
     /// `two_factor_setup_required`).
     pub setup_required: bool,
+    /// Sign-ins with a password ask for a second factor: there is an
+    /// authenticator app, or the instance requires one and the account's
+    /// passkeys are it.
+    pub on: bool,
 }
 
 /// What can finish a sign-in that waits for its second factor.

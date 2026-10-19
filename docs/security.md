@@ -223,8 +223,8 @@ credentials.
   for a second factor (ten minutes), device codes and invitations are
   deleted within the hour, and audit log entries after a year, as are
   passkey challenges (ten minutes). Turning two-factor off deletes the
-  authenticator app's secret and the recovery codes; an admin's reset
-  deletes the passkeys too. A browser's notification subscription goes with the sign-in that
+  authenticator app's secret and the recovery codes; an admin's reset also
+  deletes passkeys where they are the second factor required. A browser's notification subscription goes with the sign-in that
   made it (signing out, revoking or expiry), or when its push service says
   it is gone. A person's notifications wait in their Durable Object for at
   most a minute and are deleted once sent.

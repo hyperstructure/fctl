@@ -1,9 +1,12 @@
 //! Passkeys (docs/architecture.md#passkeys): WebAuthn credentials people
 //! sign in with, by fingerprint, face or screen lock.
 //!
-//! Every ceremony signs a challenge of 256 random bits that works once, for
-//! ten minutes (`passkey_challenges`, by its SHA-256). The browser's answer
-//! names it in `clientDataJSON`, so nothing else has to travel with it.
+//! Every ceremony signs a challenge that works once, for ten minutes. The
+//! browser's answer names it in `clientDataJSON`, so nothing else has to
+//! travel with it. Making a passkey, and one as a second factor, store
+//! theirs (`passkey_challenges`, by SHA-256); signing in signs its with the
+//! master key instead, so that the sign-in page asks for one on every load
+//! for free, and records it only once it's used.
 //! `fctl_domain::webauthn` checks the answers; WebCrypto the signatures.
 
 use crate::auth;
@@ -193,6 +196,53 @@ struct ChallengeRow {
     sign_in_hash: Option<String>,
 }
 
+/// A sign-in challenge: random bits and when they run out, signed, so that
+/// nothing is stored until it's used.
+#[derive(serde::Serialize, Deserialize)]
+struct SignedChallenge {
+    exp: i64,
+    nonce: String,
+}
+
+fn sign_in_challenge(ctx: &Ctx) -> AppResult<String> {
+    let signed = ctx.keys()?.sign(&serde_json::to_vec(&SignedChallenge {
+        exp: ctx.now + CHALLENGE_TTL_MS,
+        nonce: b64url(&random_bytes::<16>()),
+    })?);
+    Ok(b64url(signed.as_bytes()))
+}
+
+/// Uses up a signed sign-in challenge: it must be ours and current, and it
+/// is recorded until it expires, so that it works once.
+async fn spend(ctx: &Ctx, challenge: &[u8]) -> AppResult<ChallengeRow> {
+    let signed = std::str::from_utf8(challenge)
+        .ok()
+        .and_then(|text| ctx.keys().ok()?.verify(text))
+        .and_then(|payload| serde_json::from_slice::<SignedChallenge>(&payload).ok())
+        .filter(|st| st.exp > ctx.now)
+        .ok_or_else(stale)?;
+    let recorded = q(
+        &ctx.db,
+        "INSERT INTO passkey_challenges (hash, purpose, created_at, expires_at) VALUES (?, 'sign_in', ?, ?) \
+         ON CONFLICT (hash) DO NOTHING",
+        &[
+            s(&hex::encode(crypto::sha256(challenge))),
+            n(ctx.now),
+            n(signed.exp),
+        ],
+    )?
+    .run()
+    .await?;
+    if recorded == 0 {
+        return Err(stale());
+    }
+    Ok(ChallengeRow {
+        purpose: Purpose::SignIn.as_str().to_owned(),
+        user_id: None,
+        sign_in_hash: None,
+    })
+}
+
 fn stale() -> AppError {
     validation(
         "passkey",
@@ -337,16 +387,6 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         return Err(refused(webauthn::Error::Malformed));
     }
     let credential_id = b64url(&made.credential_id);
-    let taken: Option<Count> = q(
-        &ctx.db,
-        "SELECT COUNT(*) AS n FROM passkeys WHERE credential_id = ?",
-        &[s(&credential_id)],
-    )?
-    .first()
-    .await?;
-    if taken.is_some_and(|c| c.n > 0) {
-        return Err(conflict("This passkey is already added."));
-    }
     let aaguid = webauthn::uuid(&made.aaguid);
     let name = webauthn::provider(&aaguid)
         .map(str::to_owned)
@@ -370,10 +410,13 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         })
         .transpose()?;
     let id = fctl_domain::ids::passkey_id(ctx.now);
-    q(
+    // In one statement: at most MAX_PASSKEYS, and each passkey once.
+    let inserted = q(
         &ctx.db,
         "INSERT INTO passkeys (id, user_id, credential_id, public_key, algorithm, sign_count, transports, aaguid, backed_up, name, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11 \
+         WHERE (SELECT COUNT(*) FROM passkeys WHERE user_id = ?2) < ?12 \
+         ON CONFLICT (credential_id) DO NOTHING",
         &[
             s(id.as_str()),
             s(&user.id),
@@ -386,17 +429,23 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             crate::db::b(made.backed_up),
             s(&name),
             n(ctx.now),
+            n(MAX_PASSKEYS),
         ],
     )?
     .run()
     .await?;
+    if inserted == 0 {
+        return Err(conflict(
+            "This passkey is added already, or you have as many as an account can have.",
+        ));
+    }
     ctx.audit(
         "passkey.added",
         Some(&user.id),
         Some(serde_json::json!({ "name": name, "synced": made.backed_up })),
     );
     let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
-    notice(
+    crate::email::notice(
         ctx,
         &user,
         "A passkey was added to your account",
@@ -463,13 +512,28 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             "This instance requires two-factor sign-in, and this passkey is yours. Set up an authenticator app first, or add another passkey.",
         ));
     }
-    q(
+    // The checks again, in the statement, for removals that race.
+    let removed = q(
         &ctx.db,
-        "DELETE FROM passkeys WHERE id = ?",
-        &[s(&passkey.id)],
+        "DELETE FROM passkeys WHERE id = ?1 AND user_id = ?2 \
+         AND (EXISTS (SELECT 1 FROM passkeys o WHERE o.user_id = ?2 AND o.id != ?1) \
+              OR EXISTS (SELECT 1 FROM users u WHERE u.id = ?2 AND u.password_hash IS NOT NULL) \
+              OR EXISTS (SELECT 1 FROM identities i WHERE i.user_id = ?2)) \
+         AND (?3 = 0 OR EXISTS (SELECT 1 FROM passkeys o WHERE o.user_id = ?2 AND o.id != ?1) \
+              OR EXISTS (SELECT 1 FROM authenticator_apps a WHERE a.user_id = ?2))",
+        &[
+            s(&passkey.id),
+            s(&user.id),
+            crate::db::b(policy::required(&settings, user.has_password())),
+        ],
     )?
     .run()
     .await?;
+    if removed == 0 {
+        return Err(conflict(
+            "Your sign-in methods changed meanwhile. Reload the page and try again.",
+        ));
+    }
     ctx.audit(
         "passkey.removed",
         Some(&user.id),
@@ -499,10 +563,8 @@ fn request_options(
 /// with a passkey; the sign-in page asks on load, so that the browser can
 /// offer passkeys in the email field.
 pub async fn sign_in_options(ctx: &mut Ctx) -> AppResult<Response> {
-    ctx.rate_limit(&format!("passkey:{}", ctx.ip_key())).await?;
-    let challenge = challenge(ctx, Purpose::SignIn, None, None).await?;
     http::ok(&request_options(
-        challenge,
+        sign_in_challenge(ctx)?,
         rp_id(ctx)?,
         Vec::new(),
         "required",
@@ -526,7 +588,10 @@ async fn check(
     let malformed = || refused(webauthn::Error::Malformed);
     let client_data_json = from_b64url(&answer.response.client_data_json).ok_or_else(malformed)?;
     let client = webauthn::client_data(&client_data_json).map_err(refused)?;
-    let challenge = claim(ctx, &client.challenge, purpose).await?;
+    let challenge = match purpose {
+        Purpose::SignIn => spend(ctx, &client.challenge).await?,
+        _ => claim(ctx, &client.challenge, purpose).await?,
+    };
     let credential_id = b64url(&from_b64url(&answer.raw_id).ok_or_else(malformed)?);
     let passkey: Option<PasskeyRow> = q(
         &ctx.db,
@@ -657,14 +722,4 @@ pub async fn second_factor(
         return Err(stale());
     }
     Ok(signed.passkey.name)
-}
-
-/// Emails `user` about a change to their sign-in, when email is set up.
-fn notice(ctx: &Ctx, user: &UserRow, subject: &str, text: String) {
-    let Some(mail) = ctx.cfg.email.clone() else {
-        return;
-    };
-    let to = user.email.clone();
-    let subject = subject.to_owned();
-    ctx.defer(async move { crate::email::send(&mail, &to, &subject, &text).await });
 }

@@ -28,12 +28,15 @@ function useOptions(enabled: boolean) {
     queryFn: () => api.passkeyOptions(),
     enabled,
     retry: false,
-    // A challenge works for ten minutes.
+    // A challenge works for ten minutes: a new one comes before that.
     staleTime: 8 * 60_000,
     gcTime: 9 * 60_000,
-    refetchOnWindowFocus: false,
+    refetchInterval: 8 * 60_000,
   });
 }
+
+/** Options fetched this long ago may have run out by the time the browser answers. */
+const STALE_MS = 9 * 60_000;
 
 export function useAddPasskey({
   enabled = true,
@@ -50,7 +53,8 @@ export function useAddPasskey({
   const failure = options.error instanceof ApiFailure ? options.error : null;
   const needs = failure?.field && PROOFS.includes(failure.field as Proof) ? (failure.field as Proof) : null;
 
-  const make = async (o: G.PasskeyCreationOptions) => {
+  /** Makes the passkey and keeps it; whether that worked. */
+  const make = async (o: G.PasskeyCreationOptions): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
@@ -59,8 +63,10 @@ export function useAddPasskey({
       queryClient.setQueryData(keys.me, me);
       setProof(null);
       onAdded(me);
+      return true;
     } catch (e) {
       if (!cancelled(e)) setError(e instanceof ApiFailure ? e.message : passkeyError(e));
+      return false;
     } finally {
       setBusy(false);
       // Each challenge works once.
@@ -71,8 +77,11 @@ export function useAddPasskey({
   /** The button's click: the passkey sheet at once, or the dialog that asks for proof. */
   const start = () => {
     setError(null);
-    if (options.data) void make(options.data);
+    if (options.data && Date.now() - options.dataUpdatedAt < STALE_MS) void make(options.data);
     else if (needs) setProof(needs);
+    else if (options.data)
+      // Too old to use: a new challenge, then the passkey.
+      void options.refetch().then((r) => r.data && make(r.data));
     else if (options.error) setError(options.error.message);
   };
 
@@ -123,7 +132,7 @@ export function AddPasskey({
         busy={add.busy}
         error={add.error}
         onClose={add.closeProof}
-        onReady={(o) => void add.make(o)}
+        onReady={add.make}
       />
     </>
   );
@@ -141,7 +150,8 @@ export function ProveIt({
   busy: boolean;
   error: string | null;
   onClose: () => void;
-  onReady: (o: G.PasskeyCreationOptions) => void;
+  /** Makes the passkey with options that proof unlocked; whether that worked. */
+  onReady: (o: G.PasskeyCreationOptions) => Promise<boolean>;
 }) {
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -191,7 +201,13 @@ export function ProveIt({
               variant="primary"
               icon={<Fingerprint className="size-4" />}
               loading={busy}
-              onClick={() => onReady(ready)}
+              onClick={async () => {
+                // Its challenge works once: another try takes new options,
+                // with the password again, or a new code.
+                if (await onReady(ready)) return;
+                setReady(null);
+                if (proof === "password" && password) void check();
+              }}
               autoFocus
             >
               Add the passkey
@@ -270,7 +286,7 @@ export function AddPasskeyProof({ add }: { add: ReturnType<typeof useAddPasskey>
       busy={add.busy}
       error={add.error}
       onClose={add.closeProof}
-      onReady={(o) => void add.make(o)}
+      onReady={add.make}
     />
   );
 }

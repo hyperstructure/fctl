@@ -198,6 +198,13 @@ const instanceRoles = (actor?: G.InstanceRole): SelectOption<G.InstanceRole>[] =
 /** Whether a user has what requiring two-factor asks for: an authenticator app or a passkey. */
 const secured = (u: G.User) => u.two_factor || u.passkeys > 0;
 
+/** Whether the instance requires two-factor of a user. */
+const requiredOf = (u: G.User, s?: G.InstanceSettings) =>
+  !!s?.require_two_factor && (u.has_password || s.two_factor_google);
+
+/** Whether an admin's reset removes a user's passkeys too: where they are the required second factor. */
+const resetsPasskeys = (u: G.User, s?: G.InstanceSettings) => requiredOf(u, s) && u.passkeys > 0;
+
 /** Whether the instance's settings require two-factor of a user who doesn't have it. */
 function lacksTwoFactor(u: G.User, s?: G.InstanceSettings) {
   return (
@@ -290,7 +297,7 @@ function Users() {
                     >
                       Reset link
                     </Button>
-                    {secured(u) && (
+                    {(u.two_factor || resetsPasskeys(u, settings.data)) && (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -335,8 +342,10 @@ function Users() {
       >
         <div className="flex flex-col gap-5">
           <p className="text-[13.5px] leading-relaxed text-ink-2">
-            Their authenticator app's codes, recovery codes and passkeys stop working, and they are emailed
-            about it when email is set up.{" "}
+            {resetTwoFactor && resetsPasskeys(resetTwoFactor, settings.data)
+              ? "Their authenticator app's codes, recovery codes and passkeys stop working"
+              : "Their authenticator app's codes and recovery codes stop working"}
+            , and they are emailed about it when email is set up.{" "}
             {settings.data?.require_two_factor
               ? "This instance requires two-factor, so they set it up again before they can do anything else."
               : "Their password alone signs them in until they set it up again."}

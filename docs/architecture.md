@@ -149,8 +149,9 @@ answers its other requests, from browser sessions and CLI and access tokens
 alike, with `two_factor_setup_required` (`api::two_factor::open_while_required`),
 and the web app shows the page that sets it up instead of the app. Admins
 reset it for someone who lost their phone and recovery codes (`fctl admin
-reset-two-factor`), which removes their authenticator app, recovery codes
-and passkeys. Turning it on, replacing the app, turning it off, an
+reset-two-factor`), which removes their authenticator app and recovery
+codes, and their passkeys where those are the second factor required
+(unless a passkey is their only way in). Turning it on, replacing the app, turning it off, an
 admin's reset and a sign-in with a recovery code go in the audit log, and
 email the person when email is set up.
 
@@ -177,7 +178,10 @@ decoder, `fctl_domain::cbor`), and WebCrypto checks the signatures
   key (`passkeys`). The authenticator's model (AAGUID) names it: "1Password",
   "Apple Passwords"; otherwise the browser's suggestion, "Chrome on macOS".
 - **Signing in.** The sign-in page asks for options on load
-  (`POST /api/v1/auth/passkey/options`), and again before they run out. The
+  (`POST /api/v1/auth/passkey/options`), and again before they run out.
+  Their challenge is signed with the master key rather than stored, so
+  that page loads write nothing; it is recorded once used, so it works
+  once. The
   browser offers the person's passkeys in the email field's suggestions
   (conditional mediation, `autocomplete="username webauthn"`), and **Sign in
   with a passkey** opens its passkey sheet with the same options.

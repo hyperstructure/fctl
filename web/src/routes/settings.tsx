@@ -813,7 +813,9 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
                         ? `last used ${ago(t.authenticator_used_at)}`
                         : "not used to sign in yet"
                     }`
-                  : "Off: your password alone signs you in"}
+                  : t.on
+                    ? "Not set up: your passkeys are your second factor"
+                    : "Off: your password alone signs you in"}
               </div>
             </div>
             {on ? (
