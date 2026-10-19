@@ -8,8 +8,9 @@
 //! fctl-agent attach`.
 
 use super::{
-    AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, SLOW_COMMAND_TIMEOUT, Sandbox,
-    SandboxInfo, SandboxSpec, TimedOut, attach_script, run_cmd_within, serve_script, timed_out,
+    AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, NotStarted, SLOW_COMMAND_TIMEOUT,
+    Sandbox, SandboxInfo, SandboxSpec, TimedOut, attach_script, run_cmd_within, serve_script,
+    timed_out, unanswered,
 };
 use anyhow::{Context, Result};
 use fctl_proto::runner::{DriverInfo, SandboxSize};
@@ -253,7 +254,7 @@ impl ContainerDriver {
         };
         let out = match self.run(inspect).await {
             Ok(out) => out,
-            Err(e) if e.is::<TimedOut>() => return Err(e),
+            Err(e) if unanswered(&e) => return Err(e),
             Err(_) => return Ok(None),
         };
         Ok(match self.flavor {
@@ -346,7 +347,7 @@ impl ContainerDriver {
             return Ok(());
         };
         // A runtime that doesn't answer isn't missing the image.
-        if e.is::<TimedOut>() || self.has_image(image).await {
+        if unanswered(&e) || self.has_image(image).await {
             return Err(failed(e));
         }
         log(format!("Pulling {image}"));
@@ -506,7 +507,8 @@ impl ContainerDriver {
         let Some(fallback) = fallback else {
             return Err(error);
         };
-        if self.has_image(image).await {
+        // A CLI that couldn't start won't pull the fallback either.
+        if error.is::<NotStarted>() || self.has_image(image).await {
             return Err(error);
         }
         log(format!(
@@ -526,7 +528,7 @@ impl ContainerDriver {
     pub async fn image(&self, image: &str) -> Result<Option<ImageInfo>> {
         match self.run(&["image", "inspect", image]).await {
             Ok(out) => Ok(Some(image_info(&out).unwrap_or_default())),
-            Err(e) if e.is::<TimedOut>() => Err(e),
+            Err(e) if unanswered(&e) => Err(e),
             Err(_) => Ok(None),
         }
     }
@@ -1144,6 +1146,55 @@ mod tests {
             !cli.calls().iter().any(|c| c.contains("pull")),
             "{:?}",
             cli.calls()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nothing_is_missing_when_the_cli_cannot_start() -> Result<()> {
+        // The image is here and published, but the system won't run the CLI.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[VERSION_IMAGE, LATEST_IMAGE])?;
+        cli.wont_start()?;
+        let refused = format!(
+            "running {}: Permission denied (os error 13)",
+            cli.dir.path().join("cli").display()
+        );
+        let docker = cli.driver(Flavor::Docker);
+        let not_started = |e: anyhow::Error| e.is::<NotStarted>();
+        assert!(docker.image(VERSION_IMAGE).await.is_err_and(not_started));
+        // A sandbox it can't stop or remove isn't gone.
+        let sb = Sandbox {
+            name: "fctl-ses-1".into(),
+            root: None,
+        };
+        assert!(docker.exists(&sb.name).await.is_err_and(not_started));
+        assert!(docker.stop(&sb).await.is_err_and(not_started));
+        assert!(docker.remove(&sb).await.is_err_and(not_started));
+
+        // The host pulls neither the image nor `latest` in its place.
+        let default = spec(VERSION_IMAGE, Some(LATEST_IMAGE));
+        assert_eq!(
+            error_of(cli.ensure(Flavor::Docker, &default).await),
+            refused
+        );
+        let lines = Mutex::new(Vec::new());
+        let log = |line: String| {
+            lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line)
+        };
+        let created = docker.create(&default, VERSION_IMAGE, &log).await;
+        assert!(matches!(&created, Err(Create::Failed(e)) if e.is::<NotStarted>()));
+        let pulled = docker
+            .pull_or_fallback(VERSION_IMAGE, Some(LATEST_IMAGE), false, &log)
+            .await;
+        assert_eq!(error_of(pulled), refused);
+        assert!(
+            lines
+                .into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
         );
         Ok(())
     }

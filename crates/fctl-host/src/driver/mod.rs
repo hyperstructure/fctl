@@ -541,6 +541,37 @@ pub fn timed_out<T>(r: &Result<T>) -> bool {
     r.as_ref().is_err_and(|e| e.is::<TimedOut>())
 }
 
+/// A driver command that couldn't be started: its program is missing, or
+/// the system wouldn't run it.
+#[derive(Debug)]
+pub struct NotStarted {
+    pub program: String,
+    pub error: std::io::Error,
+}
+
+impl std::fmt::Display for NotStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.error.kind() == std::io::ErrorKind::NotFound {
+            write!(
+                f,
+                "`{}` is not installed (not found on the PATH)",
+                self.program
+            )
+        } else {
+            write!(f, "running {}: {}", self.program, self.error)
+        }
+    }
+}
+
+impl std::error::Error for NotStarted {}
+
+/// Whether `e` leaves what its command asked unanswered: the command
+/// couldn't be started, or ran out of time. Any other failure is the
+/// runtime's answer, like "No such image".
+pub fn unanswered(e: &anyhow::Error) -> bool {
+    e.is::<NotStarted>() || e.is::<TimedOut>()
+}
+
 /// A command as the log shows it: arguments with spaces quoted, and long
 /// ones (scripts) cut short.
 pub(crate) fn command_line(program: &str, args: &[&str]) -> String {
@@ -561,11 +592,11 @@ pub(crate) fn command_line(program: &str, args: &[&str]) -> String {
 
 /// Why `program` could not be started, naming a missing program plainly.
 pub fn spawn_error(program: &str, e: std::io::Error) -> anyhow::Error {
-    if e.kind() == std::io::ErrorKind::NotFound {
-        anyhow::anyhow!("`{program}` is not installed (not found on the PATH)")
-    } else {
-        anyhow::anyhow!("running {program}: {e}")
+    NotStarted {
+        program: program.to_owned(),
+        error: e,
     }
+    .into()
 }
 
 #[cfg(test)]
@@ -576,10 +607,10 @@ mod tests {
     async fn a_missing_program_is_named() {
         let e = run_cmd("fctl-test-missing-program", &["--version"])
             .await
-            .err()
-            .map(|e| e.to_string());
+            .err();
+        assert!(e.as_ref().is_some_and(unanswered));
         assert_eq!(
-            e.as_deref(),
+            e.map(|e| e.to_string()).as_deref(),
             Some("`fctl-test-missing-program` is not installed (not found on the PATH)")
         );
     }
@@ -593,6 +624,7 @@ mod tests {
         let r = run_cmd_within("sh", &["-c", &script], Duration::from_millis(500)).await;
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(timed_out(&r));
+        assert!(r.as_ref().is_err_and(unanswered));
         let e = r.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
             e.starts_with(&format!("`sh -c 'echo $$ > '{}'", pid.display())),
@@ -623,7 +655,7 @@ mod tests {
         let ok = run_cmd("sh", &["-c", "echo hi"]).await.ok();
         assert_eq!(ok.as_deref(), Some("hi\n"));
         let failed = run_cmd("sh", &["-c", "echo nope >&2; exit 3"]).await;
-        assert!(!timed_out(&failed));
+        assert!(failed.as_ref().is_err_and(|e| !unanswered(e)));
         let e = failed.err().map(|e| e.to_string());
         assert_eq!(e.as_deref(), Some("sh -c failed: nope"));
     }

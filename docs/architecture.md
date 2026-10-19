@@ -801,7 +801,10 @@ when the host last probed them (at start and every five minutes), and
 sweeps and cleanups of sandboxes run in tasks of their own, so heartbeats
 keep flowing. A host that starts while its driver doesn't answer waits to
 connect until it can list its sandboxes, rather than report sessions as
-gone that may still run.
+gone that may still run. A driver command that can't start says as little
+as one that hangs about the image or sandbox it asked about: the host
+reports the error instead of pulling the image, falling back to `latest`,
+or taking a sandbox it couldn't stop or remove for gone.
 
 A second socket beside
 it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
