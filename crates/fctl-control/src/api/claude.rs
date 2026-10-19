@@ -177,12 +177,13 @@ pub async fn start_login(ctx: &mut Ctx) -> AppResult<Response> {
         &LoginStart {
             job_id: id.clone(),
             user: user.to_ref(),
+            runners: Some(login_runners(ctx, &user.id).await?),
         },
     )
     .await?;
     if started.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         return Err(unavailable(
-            "No runner is online to run the Claude sign-in. Start a host first.",
+            "None of your workspaces' runners is online to run the Claude sign-in. Start one, or connect a long-lived token instead.",
         ));
     }
     job(ctx, id.as_str()).await
@@ -233,4 +234,23 @@ pub async fn submit_code(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
 
 pub fn _kind_name(k: ClaudeCredentialKind) -> &'static str {
     k.as_str()
+}
+
+/// The runners that may run someone's Claude sign-in, which passes their
+/// tokens through the host: their workspaces' runners and their own.
+async fn login_runners(ctx: &Ctx, user_id: &str) -> AppResult<Vec<String>> {
+    #[derive(serde::Deserialize)]
+    struct R {
+        id: String,
+    }
+    let rows: Vec<R> = q(
+        &ctx.db,
+        "SELECT DISTINCT r.id FROM runners r LEFT JOIN runner_workspaces rw ON rw.runner_id = r.id \
+         LEFT JOIN workspace_members m ON m.workspace_id = rw.workspace_id AND m.user_id = ?1 \
+         WHERE r.enabled = 1 AND (m.user_id IS NOT NULL OR r.created_by = ?1)",
+        &[s(user_id)],
+    )?
+    .all()
+    .await?;
+    Ok(rows.into_iter().map(|r| r.id).collect())
 }

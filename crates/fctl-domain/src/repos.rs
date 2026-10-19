@@ -207,6 +207,183 @@ pub fn parse_remote(url: &str) -> Option<RepoRef> {
     RepoRef::parse(path.trim_end_matches('/'))
 }
 
+/// A GitHub account's login, as people type it (`@hyperstructure`, or its
+/// github.com URL): letters, digits and single dashes, at most 39.
+pub fn account(input: &str) -> Result<String> {
+    let mut s = input.trim().trim_start_matches('@');
+    for prefix in ["https://github.com/", "http://github.com/", "github.com/"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+            break;
+        }
+    }
+    let s = s.trim_end_matches('/');
+    let ok = !s.is_empty()
+        && s.len() <= 39
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && !s.contains("--");
+    if ok {
+        Ok(s.to_owned())
+    } else {
+        Err(ApiError::validation(
+            "account",
+            "Use a GitHub account's name, like hyperstructure",
+        ))
+    }
+}
+
+/// The repositories of `account` a workspace's connection is narrowed to,
+/// by name (`owner/name` works too, for `account`): without repeats, at
+/// least one and at most [`MAX_REPOS`].
+pub fn scope_names(account: &str, names: &[String]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in names {
+        let raw = raw.trim();
+        let full = if raw.contains('/') {
+            raw.to_owned()
+        } else {
+            format!("{account}/{raw}")
+        };
+        let r = RepoRef::parse(&full).ok_or_else(|| {
+            ApiError::validation("repos", format!("{raw} isn't a repository name"))
+        })?;
+        if !r.owner.eq_ignore_ascii_case(account) {
+            return Err(ApiError::validation(
+                "repos",
+                format!("{} isn't a repository of {account}", r.full_name()),
+            ));
+        }
+        if !out.iter().any(|n| n.eq_ignore_ascii_case(&r.name)) {
+            out.push(r.name);
+        }
+    }
+    if out.is_empty() {
+        return Err(ApiError::validation(
+            "repos",
+            "Name at least one repository, or allow every repository of the account",
+        ));
+    }
+    if out.len() > MAX_REPOS {
+        return Err(ApiError::validation(
+            "repos",
+            format!("Name at most {MAX_REPOS} repositories"),
+        ));
+    }
+    Ok(out)
+}
+
+/// The repositories of a GitHub account that a workspace's projects may
+/// use: every one the GitHub App reaches there, or these.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    All,
+    /// By name, without the owner.
+    Repos(Vec<String>),
+}
+
+impl Scope {
+    /// From a connection's stored list (`None`: every repository).
+    pub fn of(repos: Option<Vec<String>>) -> Self {
+        repos.map_or(Self::All, Self::Repos)
+    }
+
+    /// Whether `name` is one of its repositories.
+    pub fn allows(&self, name: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Repos(names) => names.iter().any(|n| n.eq_ignore_ascii_case(name)),
+        }
+    }
+}
+
+/// Checks that a workspace may use `owner/name` (`name`: `None` for every
+/// repository of `owner`, which a scope narrows rather than refuses).
+/// `scope` is what the workspace may use on `owner`; `None` when it doesn't
+/// work in that account.
+pub fn check_scope(scope: Option<&Scope>, owner: &str, name: Option<&str>) -> Result<()> {
+    let Some(scope) = scope else {
+        return Err(ApiError::validation(
+            "repo",
+            format!(
+                "This workspace doesn't work in {owner} on GitHub. Its admins connect the account in the workspace's settings."
+            ),
+        ));
+    };
+    match name {
+        Some(name) if !scope.allows(name) => Err(ApiError::validation(
+            "repo",
+            format!(
+                "{owner}/{name} isn't one of the repositories this workspace may use. An instance admin can add it to the workspace's connection to {owner}."
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// A session's token plan within what its workspace may use on the account
+/// (`scope`; `None`: nothing, the workspace doesn't work there). Listed
+/// repositories outside it are left out and returned (`*` for an
+/// owner-wide grant), and an owner-wide grant reads only the scope's
+/// repositories.
+pub fn narrow(plan: TokenPlan, scope: Option<&Scope>) -> (TokenPlan, Vec<String>) {
+    let mut refused = Vec::new();
+    let Some(scope) = scope else {
+        refused.extend(plan.write);
+        match plan.read {
+            ReadScope::None => {}
+            ReadScope::Repos(names) => refused.extend(names),
+            ReadScope::All => refused.push("*".to_owned()),
+        }
+        let none = TokenPlan {
+            owner: plan.owner,
+            write: Vec::new(),
+            read: ReadScope::None,
+        };
+        return (none, refused);
+    };
+    let mut keep = |names: Vec<String>| -> Vec<String> {
+        let (ok, out): (Vec<String>, Vec<String>) =
+            names.into_iter().partition(|n| scope.allows(n));
+        refused.extend(out);
+        ok
+    };
+    let write = keep(plan.write);
+    let read = match (plan.read, scope) {
+        (ReadScope::None, _) => ReadScope::None,
+        (ReadScope::All, Scope::All) => ReadScope::All,
+        (ReadScope::All, Scope::Repos(names)) => {
+            let rest: Vec<String> = names
+                .iter()
+                .filter(|n| !write.iter().any(|w| w.eq_ignore_ascii_case(n)))
+                .cloned()
+                .collect();
+            if rest.is_empty() {
+                ReadScope::None
+            } else {
+                ReadScope::Repos(rest)
+            }
+        }
+        (ReadScope::Repos(names), _) => {
+            let names = keep(names);
+            if names.is_empty() {
+                ReadScope::None
+            } else {
+                ReadScope::Repos(names)
+            }
+        }
+    };
+    (
+        TokenPlan {
+            owner: plan.owner,
+            write,
+            read,
+        },
+        refused,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +553,83 @@ mod tests {
         );
         assert_eq!(p("https://gitlab.com/acme/lib.git"), None);
         assert_eq!(p("/srv/git/lib"), None);
+    }
+
+    #[test]
+    fn workspaces_use_the_repositories_of_their_scope() {
+        let all = Scope::All;
+        let some = Scope::Repos(vec!["web".into(), "Design".into()]);
+        assert!(check_scope(Some(&all), "acme", Some("anything")).is_ok());
+        assert!(check_scope(Some(&some), "acme", Some("design")).is_ok());
+        assert!(check_scope(Some(&some), "acme", Some("secret")).is_err());
+        // An owner-wide grant is narrowed to the scope, not refused.
+        assert!(check_scope(Some(&some), "acme", None).is_ok());
+        assert!(check_scope(None, "acme", Some("web")).is_err());
+    }
+
+    #[test]
+    fn tokens_stay_within_the_workspaces_scope() {
+        let plan = TokenPlan {
+            owner: "acme".into(),
+            write: vec!["web".into(), "secret".into()],
+            read: ReadScope::All,
+        };
+        // Every repository: nothing changes.
+        assert_eq!(
+            narrow(plan.clone(), Some(&Scope::All)),
+            (plan.clone(), vec![])
+        );
+        // Some: the others go, and reading every repository reads the
+        // scope's other ones.
+        let some = Scope::Repos(vec!["web".into(), "design".into()]);
+        assert_eq!(
+            narrow(plan.clone(), Some(&some)),
+            (
+                TokenPlan {
+                    owner: "acme".into(),
+                    write: vec!["web".into()],
+                    read: ReadScope::Repos(vec!["design".into()]),
+                },
+                vec!["secret".to_owned()]
+            )
+        );
+        let listed = TokenPlan {
+            read: ReadScope::Repos(vec!["design".into(), "infra".into()]),
+            ..plan.clone()
+        };
+        assert_eq!(
+            narrow(listed, Some(&some)).0.read,
+            ReadScope::Repos(vec!["design".into()])
+        );
+        // The workspace doesn't work in the account: no token at all.
+        let (none, refused) = narrow(plan, None);
+        assert!(none.write.is_empty());
+        assert_eq!(none.read, ReadScope::None);
+        assert_eq!(refused, ["web", "secret", "*"]);
+    }
+
+    #[test]
+    fn accounts_and_scopes_as_people_type_them() {
+        assert_eq!(
+            account("hyperstructure").ok(),
+            Some("hyperstructure".into())
+        );
+        assert_eq!(account(" @ada-lovelace ").ok(), Some("ada-lovelace".into()));
+        assert_eq!(
+            account("https://github.com/side-project/").ok(),
+            Some("side-project".into())
+        );
+        assert!(account("-ada").is_err());
+        assert!(account("ada--x").is_err());
+        assert!(account("a/b").is_err());
+        assert!(account("").is_err());
+        let names = |v: &[&str]| -> Vec<String> { v.iter().map(|s| (*s).to_owned()).collect() };
+        assert_eq!(
+            scope_names("acme", &names(&["web", "acme/Design", "WEB"])).ok(),
+            Some(names(&["web", "Design"]))
+        );
+        assert!(scope_names("acme", &names(&["other/web"])).is_err());
+        assert!(scope_names("acme", &names(&[])).is_err());
+        assert!(scope_names("acme", &names(&["../x"])).is_err());
     }
 }

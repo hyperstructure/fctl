@@ -4,14 +4,21 @@ import type { ProjectRole } from "./ProjectRole";
 import type { ProjectSettings } from "./ProjectSettings";
 import type { RepoRef } from "./RepoRef";
 import type { UserRef } from "./UserRef";
+import type { WorkspaceRef } from "./WorkspaceRef";
 
 export type Project = { id: ProjectId, 
+/**
+ * The workspace it belongs to (absent from control planes before
+ * workspaces).
+ */
+workspace?: WorkspaceRef, 
 /**
  * URL-safe, unique per instance.
  */
 slug: string, name: string, description?: string, repo?: RepoRef, default_branch: string, settings: ProjectSettings, 
 /**
- * The caller's role (absent for instance admins without membership).
+ * The caller's role: their membership, their workspace's base role, or
+ * owner for the workspace's admins.
  */
 role?: ProjectRole, created_by: UserRef, created_at: number, updated_at: number, archived_at?: number, 
 /**

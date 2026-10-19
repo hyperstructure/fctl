@@ -30,6 +30,7 @@ pub mod usage;
 pub mod validate;
 pub mod webauthn;
 pub mod webpush;
+pub mod workspace;
 
 /// Fills `buf` with cryptographically secure random bytes.
 ///

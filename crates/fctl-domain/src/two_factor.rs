@@ -53,10 +53,41 @@ pub struct Factors {
     pub passkeys: bool,
 }
 
+impl Factors {
+    /// An authenticator app or a passkey.
+    pub fn any(self) -> bool {
+        self.authenticator || self.passkeys
+    }
+}
+
 /// Whether the instance requires two-factor of an account: when it signs in
 /// with a password, or at all once Google sign-ins ask for it too.
 pub fn required(settings: &InstanceSettings, has_password: bool) -> bool {
     settings.require_two_factor && (has_password || settings.two_factor_google)
+}
+
+/// The instance's settings as they apply to an account that is a member of
+/// a workspace requiring two-factor sign-in (`in_workspace`): as if the
+/// instance required it. Its sign-ins then ask for the second factor, a
+/// passkey included, and its last factor can't go; only the instance's own
+/// requirement closes the whole account ([`setup_required`]).
+pub fn with_workspaces(settings: &InstanceSettings, in_workspace: bool) -> InstanceSettings {
+    InstanceSettings {
+        require_two_factor: settings.require_two_factor || in_workspace,
+        ..settings.clone()
+    }
+}
+
+/// Whether a workspace that requires two-factor sign-in is closed to an
+/// account: the requirement applies to it as the instance's would (it signs
+/// in with a password, or Google sign-ins ask for codes), and it has
+/// neither an authenticator app nor a passkey.
+pub fn workspace_blocked(
+    settings: &InstanceSettings,
+    has_password: bool,
+    factors: Factors,
+) -> bool {
+    (has_password || settings.two_factor_google) && !factors.any()
 }
 
 /// Whether an account the instance requires two-factor of has neither an
@@ -193,6 +224,34 @@ mod tests {
         authenticator: false,
         passkeys: false,
     };
+
+    #[test]
+    fn workspaces_that_require_it_close_to_accounts_without_a_factor() {
+        let instance = settings(false, false);
+        // A password and nothing else: closed until there is a factor.
+        assert!(workspace_blocked(&instance, true, NONE));
+        assert!(!workspace_blocked(&instance, true, APP));
+        assert!(!workspace_blocked(&instance, true, PASSKEY));
+        // Google-only accounts, as for the instance's own requirement: only
+        // once Google sign-ins ask for codes.
+        assert!(!workspace_blocked(&instance, false, NONE));
+        assert!(workspace_blocked(&settings(false, true), false, NONE));
+    }
+
+    #[test]
+    fn a_workspace_requirement_applies_like_the_instances() {
+        let instance = settings(false, false);
+        let member = with_workspaces(&instance, true);
+        // A passkey becomes the second factor of password sign-ins, and the
+        // last factor can't go.
+        assert!(on(&member, true, PASSKEY));
+        assert!(!on(&instance, true, PASSKEY));
+        assert!(!can_turn_off(&member, true, APP));
+        assert!(!can_remove_last_passkey(&member, true, PASSKEY));
+        assert!(asks(&member, Via::Password, true, PASSKEY, false));
+        // Nothing changes for people outside such workspaces.
+        assert_eq!(with_workspaces(&instance, false), instance);
+    }
 
     #[test]
     fn requiring_it_covers_password_sign_ins_and_google_when_it_asks() {

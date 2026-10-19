@@ -10,6 +10,8 @@ pub struct Slot<'a> {
     pub id: &'a str,
     pub online: bool,
     pub enabled: bool,
+    /// It runs the sessions of the session's workspace.
+    pub serves: bool,
     pub capacity: u32,
     pub active: u32,
     pub labels: &'a [String],
@@ -43,6 +45,8 @@ pub struct Home<'a> {
 pub enum Wait {
     /// No runner with the labels it needs is online.
     NoRunner,
+    /// Runners are online, but none of them runs its workspace's sessions.
+    Workspace,
     /// The runners that could take it run as many sessions as they may.
     Busy,
     /// The runner that keeps its sandbox runs as many sessions as it may.
@@ -73,6 +77,9 @@ impl Wait {
     pub fn reason(&self) -> String {
         match self {
             Self::NoRunner | Self::Busy => "Waiting for a runner".into(),
+            Self::Workspace => {
+                "Waiting for a runner: none of this workspace's runners is online".into()
+            }
             Self::Home { name } => format!("Waiting for {name}, which has this session's sandbox"),
             Self::Draining => "Waiting for a runner: the ones online are draining".into(),
             Self::LowDisk { draining: false } => {
@@ -155,6 +162,10 @@ pub fn pick<'a>(
         .collect();
     if online.is_empty() {
         return Err(Wait::NoRunner);
+    }
+    let online: Vec<&Slot> = online.into_iter().filter(|s| s.serves).collect();
+    if online.is_empty() {
+        return Err(Wait::Workspace);
     }
     let online: Vec<&Slot> = online
         .into_iter()
@@ -239,6 +250,7 @@ mod tests {
             id,
             online: true,
             enabled: true,
+            serves: true,
             capacity,
             active,
             labels,
@@ -298,6 +310,43 @@ mod tests {
         assert_eq!(
             pick(&slots[3..], &[], any, &ImageWant::Default, None).map(|s| s.id),
             Err(Wait::Busy)
+        );
+    }
+
+    #[test]
+    fn picks_only_runners_of_the_sessions_workspace() {
+        let none: Vec<String> = vec![];
+        let any = Want::default();
+        let slots = vec![
+            Slot {
+                serves: false,
+                ..slot("theirs", 8, 0, &none)
+            },
+            slot("ours", 4, 3, &none),
+        ];
+        // The busier runner, since the idle one serves another workspace.
+        assert_eq!(
+            pick(&slots, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            Ok("ours")
+        );
+        assert_eq!(
+            pick(&slots[..1], &[], any, &ImageWant::Default, None).map(|s| s.id),
+            Err(Wait::Workspace)
+        );
+        // Even the runner that has the session's sandbox, once it no longer
+        // serves the workspace.
+        let home = Home {
+            id: "theirs",
+            name: "theirs",
+            wait: true,
+        };
+        assert_eq!(
+            pick(&slots, &[], any, &ImageWant::Default, Some(home)).map(|s| s.id),
+            Ok("ours")
+        );
+        assert_eq!(
+            Wait::Workspace.reason(),
+            "Waiting for a runner: none of this workspace's runners is online"
         );
     }
 

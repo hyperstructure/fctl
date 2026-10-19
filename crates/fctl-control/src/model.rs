@@ -10,9 +10,11 @@ use fctl_proto::runner::{ClaudeAccount, ClaudeCredentialKind, HostHello};
 use fctl_proto::session::{
     InstanceRole, Project, ProjectRole, ProjectSettings, PullRequestRef, RemoteControlState,
     RepoAccess, RepoGrant, RepoRef, RunnerRef, Session, SessionRole, SessionStats, SessionStatus,
-    UserRef,
+    UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
-use fctl_proto::{AllowId, CredentialId, IdentityId, ProjectId, RunnerId, SessionId, UserId};
+use fctl_proto::{
+    AllowId, CredentialId, IdentityId, ProjectId, RunnerId, SessionId, UserId, WorkspaceId,
+};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -25,10 +27,6 @@ pub struct UserRow {
     #[serde(default)]
     pub family_name: Option<String>,
     pub avatar_url: Option<String>,
-    /// Commits of the sessions they start credit them with it. Only for them
-    /// (`Me`), not in [`User`], which admins see.
-    #[serde(default)]
-    pub commit_email: Option<String>,
     pub password_hash: Option<String>,
     pub role: String,
     pub status: String,
@@ -46,6 +44,15 @@ pub struct UserRow {
     /// How many passkeys they have.
     #[serde(deserialize_with = "int", default)]
     pub passkeys: i64,
+    /// How many of their workspaces require two-factor sign-in.
+    #[serde(deserialize_with = "int", default)]
+    pub two_factor_workspaces: i64,
+    /// Their other email addresses (JSON array).
+    #[serde(default)]
+    pub other_emails: Option<String>,
+    /// How many workspaces they are a member of.
+    #[serde(deserialize_with = "int", default)]
+    pub workspace_count: i64,
 }
 
 impl UserRow {
@@ -78,6 +85,40 @@ impl UserRow {
         }
     }
 
+    /// The instance's settings as two-factor sign-in applies them to this
+    /// account: as if the instance required it, when one of their
+    /// workspaces does.
+    pub fn two_factor_settings(
+        &self,
+        settings: &fctl_proto::api::InstanceSettings,
+    ) -> fctl_proto::api::InstanceSettings {
+        fctl_domain::two_factor::with_workspaces(settings, self.two_factor_workspaces > 0)
+    }
+
+    /// Whether a workspace that requires two-factor sign-in is closed to
+    /// them (they haven't set it up).
+    pub fn blocked_by(
+        &self,
+        settings: &fctl_proto::api::InstanceSettings,
+        require_two_factor: bool,
+    ) -> bool {
+        require_two_factor
+            && fctl_domain::two_factor::workspace_blocked(
+                settings,
+                self.has_password(),
+                self.factors(),
+            )
+    }
+
+    /// Their other email addresses.
+    pub fn other_emails(&self) -> Vec<String> {
+        self.other_emails
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<Vec<Option<String>>>(j).ok())
+            .map(|v| v.into_iter().flatten().collect())
+            .unwrap_or_default()
+    }
+
     pub fn user_id(&self) -> UserId {
         UserId(self.id.clone())
     }
@@ -97,6 +138,8 @@ impl UserRow {
             passkeys: self.passkeys.max(0) as u32,
             created_at: self.created_at,
             last_login_at: self.last_login_at,
+            emails: self.other_emails(),
+            workspaces: self.workspace_count.max(0) as u32,
         }
     }
 
@@ -118,7 +161,6 @@ pub fn user_columns(alias: &str) -> String {
         "given_name",
         "family_name",
         "avatar_url",
-        "commit_email",
         "password_hash",
         "role",
         "status",
@@ -135,6 +177,17 @@ pub fn user_columns(alias: &str) -> String {
     ));
     columns.push(format!(
         "(SELECT COUNT(*) FROM passkeys p WHERE p.user_id = {alias}.id) AS passkeys"
+    ));
+    columns.push(format!(
+        "(SELECT COUNT(*) FROM workspace_members wm JOIN workspaces w ON w.id = wm.workspace_id \
+         WHERE wm.user_id = {alias}.id AND w.require_two_factor = 1) AS two_factor_workspaces"
+    ));
+    columns.push(format!(
+        "(SELECT json_group_array(e.email) FROM user_emails e WHERE e.user_id = {alias}.id \
+         AND e.email != {alias}.email) AS other_emails"
+    ));
+    columns.push(format!(
+        "(SELECT COUNT(*) FROM workspace_members wm WHERE wm.user_id = {alias}.id) AS workspace_count"
     ));
     columns.join(", ")
 }
@@ -197,6 +250,79 @@ impl AllowRow {
     }
 }
 
+/// The workspace of a project or session row, and the caller's membership.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct WorkspaceCols {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub workspace_slug: Option<String>,
+    #[serde(default)]
+    pub workspace_name: Option<String>,
+    #[serde(default)]
+    pub workspace_color: Option<String>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub workspace_avatar_at: Option<i64>,
+    #[serde(default)]
+    pub workspace_base_role: Option<String>,
+    #[serde(deserialize_with = "int_bool", default)]
+    pub workspace_two_factor: bool,
+    /// The caller's role in it.
+    #[serde(default)]
+    pub workspace_role: Option<String>,
+}
+
+impl WorkspaceCols {
+    pub fn to_ref(&self) -> Option<WorkspaceRef> {
+        Some(workspace_ref(
+            self.workspace_id.as_deref()?,
+            self.workspace_slug.as_deref()?,
+            self.workspace_name.as_deref()?,
+            self.workspace_color.as_deref(),
+            self.workspace_avatar_at,
+        ))
+    }
+
+    /// The caller's membership, `user` being the caller.
+    pub fn membership(
+        &self,
+        user: &UserRow,
+        settings: &fctl_proto::api::InstanceSettings,
+    ) -> Option<fctl_domain::workspace::Membership> {
+        let role = WorkspaceRole::parse(self.workspace_role.as_deref()?)?;
+        Some(fctl_domain::workspace::Membership {
+            role,
+            base_role: self
+                .workspace_base_role
+                .as_deref()
+                .and_then(fctl_proto::api::BaseRole::parse)
+                .unwrap_or_default(),
+            blocked: user.blocked_by(settings, self.workspace_two_factor),
+        })
+    }
+}
+
+/// The path of a workspace's uploaded avatar, which changes with it.
+pub fn avatar_url(id: &str, updated_at: Option<i64>) -> Option<String> {
+    updated_at.map(|v| format!("/api/v1/workspaces/{id}/avatar?v={v}"))
+}
+
+pub fn workspace_ref(
+    id: &str,
+    slug: &str,
+    name: &str,
+    color: Option<&str>,
+    avatar_at: Option<i64>,
+) -> WorkspaceRef {
+    WorkspaceRef {
+        id: WorkspaceId(id.to_owned()),
+        slug: slug.to_owned(),
+        name: name.to_owned(),
+        color: color.and_then(WorkspaceColor::parse).unwrap_or_default(),
+        avatar_url: avatar_url(id, avatar_at),
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ProjectRow {
     pub id: String,
@@ -224,9 +350,17 @@ pub struct ProjectRow {
     pub total_sessions: i64,
     #[serde(deserialize_with = "opt_int", default)]
     pub last_activity_at: Option<i64>,
+    #[serde(flatten)]
+    pub workspace: WorkspaceCols,
 }
 
 impl ProjectRow {
+    /// The workspace's id ("" for a project from before workspaces, which
+    /// the migration gives one).
+    pub fn workspace_id(&self) -> &str {
+        self.workspace.workspace_id.as_deref().unwrap_or_default()
+    }
+
     pub fn settings(&self) -> ProjectSettings {
         serde_json::from_str(&self.settings).unwrap_or_default()
     }
@@ -248,6 +382,7 @@ impl ProjectRow {
     pub fn to_project(&self, effective_role: Option<ProjectRole>) -> Project {
         Project {
             id: ProjectId(self.id.clone()),
+            workspace: self.workspace.to_ref(),
             slug: self.slug.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
@@ -321,17 +456,28 @@ impl RepoRow {
     }
 }
 
-/// SELECT for projects with the caller's role and session counts.
-/// Bind: `?1` = caller user id.
+/// SELECT for projects with their workspace, the caller's roles and
+/// session counts. Bind: `?1` = caller user id.
 pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.repo_owner, p.repo_name, \
     p.default_branch, p.settings, p.session_counter, p.created_by, cu.name AS creator_name, \
     cu.avatar_url AS creator_avatar, p.created_at, p.updated_at, p.archived_at, m.role AS member_role, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping')) AS active_sessions, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) AS total_sessions, \
-    (SELECT MAX(COALESCE(s.last_activity_at, s.created_at)) FROM sessions s WHERE s.project_id = p.id) AS last_activity_at \
+    (SELECT MAX(COALESCE(s.last_activity_at, s.created_at)) FROM sessions s WHERE s.project_id = p.id) AS last_activity_at, \
+    w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
+    w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
+    w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \
     FROM projects p \
     LEFT JOIN users cu ON cu.id = p.created_by \
+    LEFT JOIN workspaces w ON w.id = p.workspace_id \
+    LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
     LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1";
+
+/// What lets the caller see a project, for `WHERE` clauses with
+/// [`PROJECT_SELECT`] (or [`SESSION_SELECT`]): they are in its workspace,
+/// and an admin there, or its base role or their membership gives them a
+/// role. Workspaces closed to them (two-factor) are left out in Rust.
+pub const PROJECT_VISIBLE: &str = "wm.user_id IS NOT NULL AND (wm.role IN ('owner', 'admin') OR w.base_role != 'none' OR m.role IS NOT NULL)";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SessionRow {
@@ -386,6 +532,8 @@ pub struct SessionRow {
     /// Whether the caller follows it (a LEFT JOIN).
     #[serde(deserialize_with = "int_bool", default)]
     pub following: bool,
+    #[serde(flatten)]
+    pub workspace: WorkspaceCols,
 }
 
 impl SessionRow {
@@ -410,6 +558,7 @@ impl SessionRow {
             id: self.session_id(),
             project_id: ProjectId(self.project_id.clone()),
             project_slug: self.project_slug.clone(),
+            workspace: self.workspace.to_ref(),
             number: self.number.max(0) as u32,
             title: self.title.clone(),
             description: self.description.clone(),
@@ -453,16 +602,22 @@ impl SessionRow {
     }
 }
 
-/// SELECT for sessions with the caller's project and share roles, and
-/// whether they follow it. Bind: `?1` = caller user id.
+/// SELECT for sessions with their workspace, the caller's workspace,
+/// project and share roles, and whether they follow it. Bind: `?1` =
+/// caller user id.
 pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
     s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.remote_control, s.stats, s.archived, \
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
-    m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following \
+    m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
+    w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
+    w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
+    w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \
     FROM sessions s \
     JOIN projects p ON p.id = s.project_id \
+    LEFT JOIN workspaces w ON w.id = p.workspace_id \
+    LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
     LEFT JOIN users cu ON cu.id = s.created_by \
     LEFT JOIN runners r ON r.id = s.runner_id \
     LEFT JOIN project_members m ON m.project_id = s.project_id AND m.user_id = ?1 \
@@ -484,17 +639,77 @@ pub struct RunnerRow {
     pub created_at: i64,
     #[serde(deserialize_with = "int", default)]
     pub active_sessions: i64,
+    /// The workspaces it serves (JSON, from [`RUNNER_SELECT`]).
+    #[serde(default)]
+    pub workspaces: Option<String>,
+}
+
+/// Who looks at runners: what of a runner they see.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RunnerView<'a> {
+    pub user_id: Option<&'a str>,
+    /// The workspaces they are a member of; `None` for instance admins, who
+    /// see every workspace a runner serves.
+    pub workspaces: Option<&'a [String]>,
+}
+
+#[derive(Deserialize)]
+struct RunnerWorkspace {
+    id: String,
+    slug: String,
+    name: String,
+    color: Option<String>,
+    #[serde(default)]
+    avatar_at: Option<f64>,
 }
 
 impl RunnerRow {
+    /// The ids of the workspaces it serves.
+    pub fn workspace_ids(&self) -> Vec<String> {
+        self.workspace_list().into_iter().map(|w| w.id).collect()
+    }
+
+    fn workspace_list(&self) -> Vec<RunnerWorkspace> {
+        self.workspaces
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<Vec<RunnerWorkspace>>(j).ok())
+            .unwrap_or_default()
+    }
+
+    /// Whether `view` may see it: it serves one of their workspaces, they
+    /// registered it, or they are an instance admin.
+    pub fn visible_to(&self, view: &RunnerView) -> bool {
+        match view.workspaces {
+            None => true,
+            Some(mine) => {
+                view.user_id.is_some() && self.created_by.as_deref() == view.user_id
+                    || self.workspace_ids().iter().any(|w| mine.contains(w))
+            }
+        }
+    }
+
     pub fn hello(&self) -> Option<HostHello> {
         self.info
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
     }
 
-    pub fn to_runner(&self, live: &LiveRunners) -> Runner {
+    pub fn to_runner(&self, live: &LiveRunners, view: &RunnerView) -> Runner {
         let hello = self.hello();
+        let workspaces = self
+            .workspace_list()
+            .into_iter()
+            .filter(|w| view.workspaces.is_none_or(|mine| mine.contains(&w.id)))
+            .map(|w| {
+                workspace_ref(
+                    &w.id,
+                    &w.slug,
+                    &w.name,
+                    w.color.as_deref(),
+                    w.avatar_at.map(|t| t as i64),
+                )
+            })
+            .collect();
         let online = live.online.contains(&self.id);
         let free = live.free.get(&self.id).copied().unwrap_or_default();
         Runner {
@@ -539,13 +754,18 @@ impl RunnerRow {
                 }),
                 _ => None,
             },
+            workspaces,
+            yours: view.user_id.is_some() && self.created_by.as_deref() == view.user_id,
         }
     }
 }
 
 pub const RUNNER_SELECT: &str = "SELECT r.id, r.name, r.enabled, r.info, r.last_seen_at, r.created_by, \
     u.name AS creator_name, r.created_at, \
-    (SELECT COUNT(*) FROM sessions s WHERE s.runner_id = r.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping')) AS active_sessions \
+    (SELECT COUNT(*) FROM sessions s WHERE s.runner_id = r.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping')) AS active_sessions, \
+    (SELECT json_group_array(json_object('id', w.id, 'slug', w.slug, 'name', w.name, 'color', w.color, \
+      'avatar_at', w.avatar_updated_at)) FROM runner_workspaces rw JOIN workspaces w ON w.id = rw.workspace_id \
+      WHERE rw.runner_id = r.id) AS workspaces \
     FROM runners r LEFT JOIN users u ON u.id = r.created_by";
 
 #[derive(Clone, Debug, Deserialize)]

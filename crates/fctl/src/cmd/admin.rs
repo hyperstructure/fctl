@@ -1,4 +1,5 @@
-//! `fctl admin …`: access, runners and the instance's settings.
+//! `fctl admin …`: people and invitations, workspaces, GitHub, runners and
+//! the instance's settings (instance admins).
 
 use crate::config;
 use crate::style;
@@ -7,14 +8,52 @@ use clap::builder::BoolishValueParser;
 use clap::{ArgGroup, Subcommand};
 use fctl_domain::size;
 use fctl_proto::api::{
-    InstanceSettings, Runner, RunnerSession, UpdateInstanceSettingsRequest, UpdateRunnerRequest,
+    CreateInviteRequest, GithubConnectionStatus, InstanceSettings, InviteWorkspace, Runner,
+    RunnerSession, UpdateInstanceSettingsRequest, UpdateRunnerRequest,
 };
-use fctl_proto::session::InstanceRole;
+use fctl_proto::session::{InstanceRole, WorkspaceRole};
 
 #[derive(Subcommand)]
 pub enum AdminCmd {
     /// List users.
     Users,
+    /// Invite someone to the instance by email, and to workspaces you are
+    /// an admin of. They create an account with the link, or connect the
+    /// address to the account they have.
+    #[command(
+        after_help = "Examples:\n  fctl admin invite ada@private.example\n  fctl admin invite grace@example.com -w side-project -w hyperstructure:admin"
+    )]
+    Invite {
+        email: String,
+        /// Make them an instance admin.
+        #[arg(long)]
+        admin: bool,
+        /// A workspace to invite them to as well, `slug` or `slug:admin`
+        /// (repeatable).
+        #[arg(short, long = "workspace", value_name = "WORKSPACE[:admin]")]
+        workspaces: Vec<String>,
+    },
+    /// Hand the primary admin role to another admin (the primary admin).
+    /// You stay an admin.
+    Transfer {
+        /// Their email address or user id.
+        user: String,
+    },
+    /// List every workspace: what it is and who runs it.
+    Workspaces,
+    /// Delete a workspace with its projects, sessions and transcripts.
+    /// This cannot be undone.
+    DeleteWorkspace {
+        /// The workspace (slug or id).
+        workspace: String,
+        /// The workspace's name, to confirm without being asked.
+        #[arg(long, value_name = "NAME")]
+        confirm: Option<String>,
+    },
+    /// The accounts the instance's GitHub App is installed on, and the
+    /// workspaces that use them or ask to.
+    #[command(subcommand)]
+    Github(GithubCmd),
     /// Show who may sign up.
     Allowlist,
     /// Allow an email (invites them) or a domain (`*@example.com`).
@@ -78,6 +117,78 @@ pub enum AdminCmd {
     },
 }
 
+#[derive(Subcommand)]
+pub enum GithubCmd {
+    /// List them, with the requests waiting for approval.
+    List,
+    /// Let a workspace work in an account (approving its request).
+    Approve {
+        /// The GitHub account.
+        account: String,
+        /// The workspace (slug or id).
+        workspace: String,
+        /// Only this repository of it (repeatable; default: every one).
+        #[arg(long = "repo", value_name = "NAME")]
+        repos: Vec<String>,
+    },
+    /// Stop a workspace from working in an account, or decline its request.
+    Remove { account: String, workspace: String },
+}
+
+fn print_github(list: &fctl_proto::api::GithubInstallations) {
+    if !list.configured {
+        println!("This instance has no GitHub App.");
+        return;
+    }
+    if list.installations.is_empty() {
+        println!(
+            "The {} app isn't installed anywhere yet.",
+            list.app_slug.as_deref().unwrap_or("GitHub")
+        );
+    }
+    for i in &list.installations {
+        let state = match (i.installation_id, i.repository_selection.as_deref()) {
+            (None, _) => style::red("not installed"),
+            (_, Some("selected")) => style::dim("selected repositories"),
+            _ => style::dim("all repositories"),
+        };
+        println!("{} {state}", style::bold(&i.account));
+        if i.workspaces.is_empty() {
+            println!("  {}", style::dim("no workspace uses it"));
+        }
+        for w in &i.workspaces {
+            let repos = w
+                .repos
+                .as_ref()
+                .map(|r| r.join(", "))
+                .unwrap_or_else(|| "every repository".into());
+            let status = match w.status {
+                GithubConnectionStatus::Active => style::accent("connected"),
+                GithubConnectionStatus::Requested => style::amber(&format!(
+                    "asked{} — `fctl admin github approve {} {}`",
+                    w.requested_by
+                        .as_ref()
+                        .map(|u| format!(" by {}", u.name))
+                        .unwrap_or_default(),
+                    i.account,
+                    w.workspace.slug
+                )),
+            };
+            println!(
+                "  {:<24} {:<32} {status}",
+                w.workspace.slug,
+                style::dim(&repos)
+            );
+        }
+    }
+    if let Some(url) = &list.install_url {
+        println!(
+            "{}",
+            style::dim(&format!("Install it on another account: {url}"))
+        );
+    }
+}
+
 fn print_settings(s: &InstanceSettings) {
     println!(
         "Published screenshots  {}",
@@ -123,17 +234,174 @@ fn print_settings(s: &InstanceSettings) {
 pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> {
     let api = config::api(server)?;
     match cmd {
+        AdminCmd::Invite {
+            email,
+            admin,
+            workspaces,
+        } => {
+            let workspaces: Vec<InviteWorkspace> = workspaces
+                .iter()
+                .map(|w| match w.split_once(':') {
+                    Some((slug, "admin")) => InviteWorkspace {
+                        workspace: slug.to_owned(),
+                        role: Some(WorkspaceRole::Admin),
+                    },
+                    _ => InviteWorkspace {
+                        workspace: w.clone(),
+                        role: None,
+                    },
+                })
+                .collect();
+            let invite = api
+                .invite(&CreateInviteRequest {
+                    email,
+                    role: admin.then_some(InstanceRole::Admin),
+                    workspaces: (!workspaces.is_empty()).then_some(workspaces),
+                })
+                .await?;
+            if json {
+                return style::print_json(&invite);
+            }
+            println!(
+                "{} Invited {}{}",
+                style::accent("✓"),
+                invite.email,
+                if invite.workspaces.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " to {}",
+                        invite
+                            .workspaces
+                            .iter()
+                            .map(|w| w.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            );
+            if let Some(url) = invite.url {
+                println!(
+                    "Invitation link (valid 14 days{}):\n  {url}",
+                    if invite.emailed { ", also emailed" } else { "" }
+                );
+            }
+        }
+        AdminCmd::Transfer { user } => {
+            let users = api.users().await?.users;
+            let target = users
+                .iter()
+                .find(|u| u.id.as_str() == user || u.email.eq_ignore_ascii_case(&user))
+                .with_context(|| format!("No user is {user}. `fctl admin users` lists them."))?;
+            let updated = api.transfer_instance(target.id.as_str()).await?;
+            if json {
+                return style::print_json(&updated);
+            }
+            println!(
+                "{} {} is the instance's primary admin; you stay an admin",
+                style::accent("✓"),
+                updated.name
+            );
+        }
+        AdminCmd::Workspaces => {
+            let list = api.admin_workspaces().await?;
+            if json {
+                return style::print_json(&list);
+            }
+            for w in &list.workspaces {
+                println!(
+                    "{:<24} {:<28} {} {}",
+                    style::bold(&w.workspace.slug),
+                    w.workspace.name,
+                    style::dim(&format!(
+                        "{} members, {} projects, {} runners",
+                        w.members, w.projects, w.runners
+                    )),
+                    style::dim(
+                        &w.primary
+                            .as_ref()
+                            .map(|p| format!("· {}", p.name))
+                            .unwrap_or_default()
+                    )
+                );
+            }
+        }
+        AdminCmd::DeleteWorkspace { workspace, confirm } => {
+            let list = api.admin_workspaces().await?;
+            let w = list
+                .workspaces
+                .iter()
+                .find(|w| w.workspace.slug == workspace || w.workspace.id.as_str() == workspace)
+                .with_context(|| format!("No workspace is {workspace}"))?;
+            let name = w.workspace.name.clone();
+            let typed = match confirm {
+                Some(c) => c,
+                None => {
+                    use std::io::{BufRead, IsTerminal, Write};
+                    if !std::io::stdin().is_terminal() {
+                        bail!("Pass --confirm \"{name}\" to delete it without being asked");
+                    }
+                    println!(
+                        "{}",
+                        style::red(&format!(
+                            "This deletes {name}: its {} projects, their sessions and transcripts, for its {} members.",
+                            w.projects, w.members
+                        ))
+                    );
+                    print!("Type its name to confirm: ");
+                    std::io::stdout().flush()?;
+                    let mut line = String::new();
+                    std::io::stdin().lock().read_line(&mut line)?;
+                    line.trim().to_owned()
+                }
+            };
+            let out = api
+                .admin_delete_workspace(w.workspace.id.as_str(), &typed)
+                .await?;
+            if json {
+                return style::print_json(&out);
+            }
+            println!("{} Deleted {name}", style::accent("✓"));
+        }
+        AdminCmd::Github(c) => {
+            let list = match c {
+                GithubCmd::List => api.admin_github().await?,
+                GithubCmd::Approve {
+                    account,
+                    workspace,
+                    repos,
+                } => {
+                    api.admin_connect_github(
+                        &account,
+                        &workspace,
+                        (!repos.is_empty()).then_some(repos),
+                    )
+                    .await?
+                }
+                GithubCmd::Remove { account, workspace } => {
+                    api.admin_disconnect_github(&account, &workspace).await?
+                }
+            };
+            if json {
+                return style::print_json(&list);
+            }
+            print_github(&list);
+        }
         AdminCmd::Users => {
             let list = api.users().await?;
             if json {
                 return style::print_json(&list);
             }
             for u in list.users {
+                let role = match u.role {
+                    InstanceRole::Owner => "primary",
+                    r => r.as_str(),
+                };
                 println!(
                     "{:<28} {:<32} {:<7} {:<8} {}",
                     style::bold(&u.name),
                     u.email,
-                    u.role.as_str(),
+                    role,
                     if u.status == fctl_proto::api::UserStatus::Active {
                         style::accent("active")
                     } else {
@@ -146,6 +414,16 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                         (true, n) => style::accent(&format!("2fa, {}", passkeys(n))),
                     }
                 );
+                let mut more = Vec::new();
+                if !u.emails.is_empty() {
+                    more.push(format!("also {}", u.emails.join(", ")));
+                }
+                more.push(match u.workspaces {
+                    0 => "in no workspace".to_owned(),
+                    1 => "in 1 workspace".to_owned(),
+                    n => format!("in {n} workspaces"),
+                });
+                println!("  {}", style::dim(&more.join(" · ")));
             }
         }
         AdminCmd::Allowlist => {
@@ -213,13 +491,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 return style::print_json(&list);
             }
             for r in list.runners {
-                let state = match (r.status, &r.drain) {
-                    (fctl_proto::api::RunnerStatus::Disabled, _) => style::red("disabled"),
-                    (_, Some(_)) if r.active_sessions > 0 => style::amber("draining"),
-                    (_, Some(_)) => style::amber("drained"),
-                    (fctl_proto::api::RunnerStatus::Online, None) => style::accent("online"),
-                    (fctl_proto::api::RunnerStatus::Offline, None) => style::dim("offline"),
-                };
+                let state = style::runner_status(&r);
                 println!(
                     "{:<24} {:<8} {:<8} {}/{} sessions  {}",
                     style::bold(&r.name),
@@ -421,7 +693,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
 }
 
 /// A runner by its id or name.
-async fn find_runner(api: &fctl_client::Api, which: &str) -> Result<Runner> {
+pub(crate) async fn find_runner(api: &fctl_client::Api, which: &str) -> Result<Runner> {
     let all = api.runners().await?.runners;
     if let Some(r) = all.iter().find(|r| r.id.as_str() == which) {
         return Ok(r.clone());

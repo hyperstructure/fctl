@@ -1758,6 +1758,7 @@ impl SessionObject {
         let activity = internal::Activity {
             session_id: s.id,
             project_id: s.project_id,
+            workspace_id: s.workspace.map(|w| w.id.0),
             kind: kind.to_owned(),
             weight,
         };

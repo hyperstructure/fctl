@@ -4,4 +4,8 @@ export type GithubInfo = { configured: boolean, app_slug?: string,
 /**
  * Where to install the app on more accounts.
  */
-install_url?: string, accounts: Array<string>, };
+install_url?: string, 
+/**
+ * The accounts your workspaces work in.
+ */
+accounts: Array<string>, };

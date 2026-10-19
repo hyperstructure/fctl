@@ -2,6 +2,12 @@
 
 export type CreateRepoRequest = { 
 /**
- * Repository name in the GitHub App's organization.
+ * Repository name.
  */
-name: string, private: boolean, description?: string, };
+name: string, private: boolean, description?: string, 
+/**
+ * The organization to create it in, one the workspace works in.
+ * Absent: the instance's default organization when the workspace works
+ * in it, else the workspace's first organization.
+ */
+owner?: string, };

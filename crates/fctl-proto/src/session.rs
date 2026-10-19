@@ -1,7 +1,7 @@
 //! Summaries of the main resources (users, projects, sessions, runners) as
 //! they appear in API responses and live updates.
 
-use crate::{Millis, ProjectId, RunnerId, SessionId, UserId};
+use crate::{Millis, ProjectId, RunnerId, SessionId, UserId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -20,11 +20,16 @@ pub struct UserRef {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceRole {
-    /// Created the instance; can do everything, including managing admins.
+    /// The primary instance administrator, one per instance: everything
+    /// admins do, and managing admins. Nobody else can demote, disable or
+    /// remove them; they hand the role to another admin
+    /// (`POST /api/v1/admin/transfer`).
     Owner,
-    /// Manages access (allowlist, users), runners and instance settings.
+    /// Manages people and invitations, runners, which workspaces use which
+    /// GitHub accounts, and the instance's settings. Sees inside only the
+    /// workspaces they are members of.
     Admin,
-    /// Uses projects they are a member of.
+    /// Uses the workspaces they are members of.
     Member,
 }
 
@@ -99,6 +104,100 @@ impl ProjectRole {
             _ => None,
         }
     }
+}
+
+/// Role within a workspace, from most to least privileged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceRole {
+    /// The primary admin, one per workspace: everything admins do, and
+    /// deleting the workspace. No other admin can demote or remove them;
+    /// they hand the role to another admin.
+    Owner,
+    /// Manages members, invitations, runners, GitHub accounts, settings
+    /// and every project of the workspace.
+    Admin,
+    /// Works in the projects they are members of, and in every project with
+    /// the workspace's base role.
+    Member,
+}
+
+impl WorkspaceRole {
+    /// Higher is more privileged.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Owner => 3,
+            Self::Admin => 2,
+            Self::Member => 1,
+        }
+    }
+
+    /// The primary admin or an admin.
+    pub fn is_admin(self) -> bool {
+        matches!(self, Self::Owner | Self::Admin)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Admin => "admin",
+            Self::Member => "member",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "owner" => Some(Self::Owner),
+            "admin" => Some(Self::Admin),
+            "member" => Some(Self::Member),
+            _ => None,
+        }
+    }
+}
+
+/// A workspace's color, from the brand palette: its avatar is its initial
+/// on this color, until an admin uploads an image.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceColor {
+    #[default]
+    Yellow,
+    Pink,
+    Blue,
+    Ink,
+}
+
+impl WorkspaceColor {
+    pub const ALL: [Self; 4] = [Self::Yellow, Self::Pink, Self::Blue, Self::Ink];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Yellow => "yellow",
+            Self::Pink => "pink",
+            Self::Blue => "blue",
+            Self::Ink => "ink",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.as_str() == s)
+    }
+}
+
+/// A workspace as projects, sessions and runners name it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct WorkspaceRef {
+    pub id: WorkspaceId,
+    /// URL-safe, unique per instance.
+    pub slug: String,
+    pub name: String,
+    pub color: WorkspaceColor,
+    /// Its avatar image, a path in the app; absent: its initial on `color`.
+    pub avatar_url: Option<String>,
 }
 
 /// What a person may do with a session.
@@ -457,6 +556,9 @@ impl Default for ProjectSettings {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct Project {
     pub id: ProjectId,
+    /// The workspace it belongs to (absent from control planes before
+    /// workspaces).
+    pub workspace: Option<WorkspaceRef>,
     /// URL-safe, unique per instance.
     pub slug: String,
     pub name: String,
@@ -464,7 +566,8 @@ pub struct Project {
     pub repo: Option<RepoRef>,
     pub default_branch: String,
     pub settings: ProjectSettings,
-    /// The caller's role (absent for instance admins without membership).
+    /// The caller's role: their membership, their workspace's base role, or
+    /// owner for the workspace's admins.
     pub role: Option<ProjectRole>,
     pub created_by: UserRef,
     pub created_at: Millis,
@@ -531,6 +634,9 @@ pub struct Session {
     pub id: SessionId,
     pub project_id: ProjectId,
     pub project_slug: String,
+    /// The workspace of its project (absent from control planes before
+    /// workspaces).
+    pub workspace: Option<WorkspaceRef>,
     /// Sequential per project (`#12`).
     pub number: u32,
     /// Starts as the first line of the task; the agent renames it to what it

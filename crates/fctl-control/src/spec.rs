@@ -65,6 +65,8 @@ pub struct SessionWants {
     pub size: Want,
     /// The image it starts from.
     pub image: ImageWant,
+    /// Its workspace: only the workspace's runners take it.
+    pub workspace_id: String,
 }
 
 /// The CPUs, memory and image each of these sessions asks for (its
@@ -79,11 +81,12 @@ pub async fn session_wants(
         settings: String,
         repo_owner: Option<String>,
         repo_name: Option<String>,
+        workspace_id: Option<String>,
     }
     let rows: Vec<Row> = q(
         db,
-        "SELECT s.id AS id, p.settings AS settings, p.repo_owner AS repo_owner, p.repo_name AS repo_name \
-         FROM sessions s JOIN projects p ON p.id = s.project_id \
+        "SELECT s.id AS id, p.settings AS settings, p.repo_owner AS repo_owner, p.repo_name AS repo_name, \
+         p.workspace_id AS workspace_id FROM sessions s JOIN projects p ON p.id = s.project_id \
          WHERE s.id IN (SELECT value FROM json_each(?))",
         &[s(&serde_json::to_string(ids)?)],
     )?
@@ -100,6 +103,7 @@ pub async fn session_wants(
             let wants = SessionWants {
                 size: Want::of(&settings),
                 image: ImageWant::of(&settings, repo.as_ref()),
+                workspace_id: r.workspace_id.unwrap_or_default(),
             };
             (r.id, wants)
         })
@@ -128,19 +132,30 @@ pub async fn build(
     let claude = claude_credential(db, keys, &cred_id, now).await?;
     let repo = project.repo();
     let grants = grants(db, &project.id).await?;
-    let tokens = github_tokens(cfg, repo.as_ref(), &grants, now).await?;
+    let workspace_id = project.workspace_id().to_owned();
+    let tokens = github_tokens(cfg, db, &workspace_id, repo.as_ref(), &grants, now).await?;
     let repos = (!grants.is_empty()).then(|| {
         grants
             .iter()
-            .map(|g| SessionRepo {
-                owner: g.owner.clone(),
-                name: g.name.clone(),
-                access: g.access,
-                unavailable: g
+            .map(|g| {
+                let label = g.name.as_deref().unwrap_or("*");
+                let refused = tokens.refused.iter().any(|r| r.eq_ignore_ascii_case(label));
+                let unreachable = g
                     .name
                     .as_ref()
-                    .filter(|n| tokens.unreachable.iter().any(|u| u.eq_ignore_ascii_case(n)))
-                    .map(|_| unreachable_notice(cfg, g)),
+                    .is_some_and(|n| tokens.unreachable.iter().any(|u| u.eq_ignore_ascii_case(n)));
+                SessionRepo {
+                    owner: g.owner.clone(),
+                    name: g.name.clone(),
+                    access: g.access,
+                    unavailable: if refused {
+                        Some(refused_notice(g))
+                    } else if unreachable {
+                        Some(unreachable_notice(cfg, g))
+                    } else {
+                        None
+                    },
+                }
             })
             .collect()
     });
@@ -149,7 +164,7 @@ pub async fn build(
     let mut settings = project.settings();
     // A project that credits nobody never sends a commit email to a sandbox.
     let author = if settings.credit_people {
-        creator(db, &row.created_by).await?
+        creator(db, &workspace_id, &row.created_by).await?
     } else {
         None
     };
@@ -215,9 +230,14 @@ pub async fn build(
 }
 
 /// The person who started the session, as its commits credit them: with
-/// the commit email they chose, never their sign-in email. `None` without
-/// one, and then commits don't name them.
-async fn creator(db: &D1Database, user_id: &str) -> AppResult<Option<GitIdentity>> {
+/// the commit email they chose for the address they are a member of the
+/// workspace as, never a sign-in email. `None` without one, and then
+/// commits don't name them.
+async fn creator(
+    db: &D1Database,
+    workspace_id: &str,
+    user_id: &str,
+) -> AppResult<Option<GitIdentity>> {
     #[derive(serde::Deserialize)]
     struct U {
         name: String,
@@ -225,8 +245,10 @@ async fn creator(db: &D1Database, user_id: &str) -> AppResult<Option<GitIdentity
     }
     let u: Option<U> = q(
         db,
-        "SELECT name, commit_email FROM users WHERE id = ?",
-        &[s(user_id)],
+        "SELECT u.name AS name, e.commit_email AS commit_email FROM users u \
+         JOIN workspace_members m ON m.user_id = u.id AND m.workspace_id = ? \
+         LEFT JOIN user_emails e ON e.email = m.email AND e.user_id = u.id WHERE u.id = ?",
+        &[s(workspace_id), s(user_id)],
     )?
     .first()
     .await?;
@@ -270,11 +292,14 @@ async fn bot_identity(cfg: &Config, _now: i64) -> GitIdentity {
     GitIdentity { name: login, email }
 }
 
-/// A session's GitHub tokens (none without a GitHub App or repositories).
-/// Listed repositories the GitHub App cannot reach are left out; without the
+/// A session's GitHub tokens (none without a GitHub App or repositories),
+/// within what its workspace may use. Listed repositories the workspace may
+/// not use, or the GitHub App cannot reach, are left out; without the
 /// primary repository the session cannot start.
 pub async fn github_tokens(
     cfg: &Config,
+    db: &D1Database,
+    workspace_id: &str,
     primary: Option<&RepoRef>,
     grants: &[RepoGrant],
     now: i64,
@@ -285,7 +310,27 @@ pub async fn github_tokens(
     ) else {
         return Ok(github::SessionTokens::default());
     };
-    let tokens = github::from_config(cfg, now)?.session_tokens(&plan).await?;
+    let connections = crate::workspaces::connections(db, workspace_id).await?;
+    let scope = crate::workspaces::scope(&connections, &plan.owner);
+    let (plan, refused) = fctl_domain::repos::narrow(plan, scope.as_ref());
+    if let Some(p) = primary
+        && refused.iter().any(|n| n.eq_ignore_ascii_case(&p.name))
+    {
+        return Err(AppError(ApiError::new(
+            ErrorCode::NotConfigured,
+            format!(
+                "This project's workspace may not use {}. Its admins connect {} in the workspace's settings, or an instance admin adds the repository to the connection.",
+                p.full_name(),
+                p.owner
+            ),
+        )));
+    }
+    let mut tokens = if plan.write.is_empty() && plan.read == fctl_domain::repos::ReadScope::None {
+        github::SessionTokens::default()
+    } else {
+        github::from_config(cfg, now)?.session_tokens(&plan).await?
+    };
+    tokens.refused = refused;
     if let Some(p) = primary
         && tokens
             .unreachable
@@ -303,6 +348,16 @@ pub async fn github_tokens(
         )));
     }
     Ok(tokens)
+}
+
+/// What the agent tells people about a listed repository its workspace may
+/// not use.
+fn refused_notice(g: &RepoGrant) -> String {
+    format!(
+        "This project's workspace may not use {}, so this session works without it. Its admins connect {} in the workspace's settings, or remove the repository from the project.",
+        g.label(),
+        g.owner
+    )
 }
 
 /// What the agent tells people about a listed repository it has no token for.

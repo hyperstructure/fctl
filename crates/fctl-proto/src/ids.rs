@@ -120,6 +120,17 @@ id_type!(
     PasskeyId,
     "pky"
 );
+id_type!(
+    /// A workspace: people, their projects, the runners that serve them and
+    /// the GitHub accounts they work in.
+    WorkspaceId,
+    "wsp"
+);
+id_type!(
+    /// An invitation to join a workspace.
+    WorkspaceInviteId,
+    "wiv"
+);
 
 #[cfg(test)]
 mod tests {

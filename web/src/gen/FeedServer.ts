@@ -18,4 +18,4 @@ kind: string,
 /**
  * Rough size, for the visual weight of the pulse.
  */
-weight: number, } | { "type": "claude_login", job: ClaudeLoginJob, } | { "type": "claude_usage", credential_id: CredentialId, usage: Array<PlanLimit>, } | { "type": "pong" };
+weight: number, } | { "type": "claude_login", job: ClaudeLoginJob, } | { "type": "claude_usage", credential_id: CredentialId, usage: Array<PlanLimit>, } | { "type": "workspaces" } | { "type": "pong" };

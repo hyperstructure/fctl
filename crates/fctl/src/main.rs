@@ -47,6 +47,12 @@ enum Command {
     Logout,
     /// Show who you are signed in as.
     Whoami,
+    /// Your workspaces: their people, runners, GitHub accounts and rules.
+    #[command(visible_alias = "workspace")]
+    Workspaces {
+        #[command(subcommand)]
+        cmd: Option<cmd::workspaces::WorkspacesCmd>,
+    },
     /// List, create and inspect projects.
     #[command(subcommand)]
     Projects(cmd::projects::ProjectsCmd),
@@ -161,7 +167,8 @@ enum Command {
     /// Run this machine as a host for agent sandboxes.
     #[command(subcommand)]
     Host(cmd::host::HostCmd),
-    /// Manage access, users and runners (admins).
+    /// Manage people, invitations, workspaces, GitHub and runners
+    /// (instance admins).
     #[command(subcommand)]
     Admin(cmd::admin::AdminCmd),
     /// Set the address commits credit you with, set up two-factor sign-in,
@@ -241,6 +248,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Logout => cmd::auth::logout(server).await,
         Command::Whoami => cmd::auth::whoami(server, json).await,
+        Command::Workspaces { cmd: c } => {
+            let c = c.unwrap_or(cmd::workspaces::WorkspacesCmd::List);
+            cmd::workspaces::run(server, c, json).await
+        }
         Command::Projects(c) => cmd::projects::run(server, c, json).await,
         Command::Run(args) => cmd::sessions::start(server, args, json).await,
         Command::Sessions(args) => cmd::sessions::list(server, args, json).await,

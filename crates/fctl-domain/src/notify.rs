@@ -3,8 +3,9 @@
 //! arrive close together go out as one digest.
 
 use crate::perm::{self, SessionAccess};
+use crate::workspace::Membership;
 use fctl_proto::api::{NotificationSettings, PushMessage};
-use fctl_proto::session::{InstanceRole, ProjectRole, SessionRole, SessionStatus};
+use fctl_proto::session::{ProjectRole, SessionRole, SessionStatus};
 use fctl_proto::{Millis, SessionId};
 use serde::{Deserialize, Serialize};
 
@@ -86,7 +87,8 @@ pub struct Event {
 #[derive(Clone, Debug)]
 pub struct Follower {
     pub user_id: String,
-    pub instance_role: InstanceRole,
+    /// Their membership of the session's workspace.
+    pub membership: Option<Membership>,
     pub project_role: Option<ProjectRole>,
     pub share_role: Option<SessionRole>,
     pub is_creator: bool,
@@ -100,7 +102,7 @@ pub fn recipients<'a>(followers: &'a [Follower], kind: Kind, except: &[String]) 
         .iter()
         .filter(|f| {
             perm::session_role(SessionAccess {
-                instance_role: f.instance_role,
+                membership: f.membership,
                 project_role: f.project_role,
                 share_role: f.share_role,
                 is_creator: f.is_creator,
@@ -262,6 +264,8 @@ pub fn test_message(now: Millis) -> PushMessage {
 mod tests {
     use super::*;
     use SessionStatus::*;
+    use fctl_proto::api::BaseRole;
+    use fctl_proto::session::WorkspaceRole;
 
     fn event(n: u32, kind: Kind, detail: Option<&str>) -> Event {
         Event {
@@ -299,7 +303,11 @@ mod tests {
     fn followers_who_can_see_it_and_want_it() {
         let follower = |id: &str, project_role, settings| Follower {
             user_id: id.into(),
-            instance_role: InstanceRole::Member,
+            membership: Some(Membership {
+                role: WorkspaceRole::Member,
+                base_role: BaseRole::None,
+                blocked: false,
+            }),
             project_role,
             share_role: None,
             is_creator: false,
@@ -315,6 +323,11 @@ mod tests {
             // Left the project: no access, no notifications.
             follower("usr_cy", None, Default::default()),
             follower("usr_dee", Some(ProjectRole::Owner), Default::default()),
+            // Left the workspace: neither, whatever their project role was.
+            Follower {
+                membership: None,
+                ..follower("usr_eve", Some(ProjectRole::Owner), Default::default())
+            },
         ];
         let watching = vec!["usr_dee".to_owned()];
         assert_eq!(

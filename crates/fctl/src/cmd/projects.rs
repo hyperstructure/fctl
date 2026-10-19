@@ -14,20 +14,34 @@ use std::io::{BufRead, IsTerminal, Write};
 
 #[derive(Subcommand)]
 pub enum ProjectsCmd {
-    /// List your projects.
-    List,
+    /// List your projects, in all your workspaces or one.
+    List {
+        /// Only this workspace's projects (slug or id).
+        #[arg(short, long)]
+        workspace: Option<String>,
+    },
     /// Show one project.
     Show { project: String },
-    /// Create a project.
+    /// Create a project in a workspace.
     Create {
         /// The project's name.
         name: String,
-        /// Link an existing GitHub repository (owner/name).
+        /// The workspace it belongs to (default from `fctl workspaces use`,
+        /// or your only one).
+        #[arg(short, long)]
+        workspace: Option<String>,
+        /// Link an existing GitHub repository (owner/name) of an account the
+        /// workspace works in.
         #[arg(long)]
         repo: Option<String>,
-        /// Create a new repository with this name in the app's organization.
+        /// Create a new repository with this name, in an organization the
+        /// workspace works in.
         #[arg(long, conflicts_with = "repo")]
         new_repo: Option<String>,
+        /// The organization to create the new repository in (default: the
+        /// instance's, or the workspace's first).
+        #[arg(long, requires = "new_repo")]
+        owner: Option<String>,
         /// Make the new repository public.
         #[arg(long, requires = "new_repo")]
         public: bool,
@@ -344,8 +358,11 @@ async fn repos(api: &fctl_client::Api, cmd: ReposCmd, json: bool) -> Result<()> 
 pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<()> {
     let api = config::api(server)?;
     match cmd {
-        ProjectsCmd::List => {
-            let list = api.projects().await?;
+        ProjectsCmd::List { workspace } => {
+            let list = match &workspace {
+                Some(w) => api.workspace_projects(w).await?,
+                None => api.projects().await?,
+            };
             if json {
                 return style::print_json(&list);
             }
@@ -354,7 +371,39 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     "No projects yet. Create one with `fctl projects create <name> --repo owner/name`."
                 );
             }
-            for p in list.projects {
+            // Grouped by workspace when there are several.
+            let several = list
+                .projects
+                .iter()
+                .filter_map(|p| p.workspace.as_ref().map(|w| w.id.clone()))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                > 1;
+            let mut projects = list.projects;
+            if several {
+                projects.sort_by_key(|p| {
+                    p.workspace
+                        .as_ref()
+                        .map(|w| w.name.to_lowercase())
+                        .unwrap_or_default()
+                });
+            }
+            let mut last: Option<String> = None;
+            for p in projects {
+                if several {
+                    let w = p
+                        .workspace
+                        .as_ref()
+                        .map(|w| w.name.clone())
+                        .unwrap_or_default();
+                    if last.as_deref() != Some(w.as_str()) {
+                        if last.is_some() {
+                            println!();
+                        }
+                        println!("{}", style::dim(&w));
+                        last = Some(w);
+                    }
+                }
                 let repo = p
                     .repo
                     .as_ref()
@@ -386,6 +435,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             );
             if let Some(d) = &p.description {
                 println!("{d}");
+            }
+            if let Some(w) = &p.workspace {
+                println!("in:      {} ({})", w.name, w.slug);
             }
             println!(
                 "repo:    {}",
@@ -433,14 +485,17 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
         }
         ProjectsCmd::Create {
             name,
+            workspace,
             repo,
             new_repo,
+            owner,
             public,
             slug,
             description,
             no_connectors,
         } => {
             let req = CreateProjectRequest {
+                workspace: workspace.or_else(|| config::CliConfig::load().workspace),
                 name,
                 slug,
                 description,
@@ -449,6 +504,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     name: n,
                     private: !public,
                     description: None,
+                    owner,
                 }),
                 default_branch: None,
                 settings: no_connectors.then(|| ProjectSettings {

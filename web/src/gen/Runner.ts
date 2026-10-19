@@ -5,6 +5,7 @@ import type { RunnerId } from "./RunnerId";
 import type { RunnerStatus } from "./RunnerStatus";
 import type { SandboxLimits } from "./SandboxLimits";
 import type { UserRef } from "./UserRef";
+import type { WorkspaceRef } from "./WorkspaceRef";
 
 export type Runner = { id: RunnerId, name: string, status: RunnerStatus, version?: string, hostname?: string, os?: string, arch?: string, driver?: string, drivers: Array<DriverInfo>, capacity: number, active_sessions: number, 
 /**
@@ -45,4 +46,14 @@ allowed_builds?: Array<string>, labels: Array<string>, last_seen_at?: number, cr
  * sessions it has carry on there. Absent otherwise, and from control
  * planes that can't drain runners.
  */
-drain?: RunnerDrain, };
+drain?: RunnerDrain, 
+/**
+ * The workspaces whose sessions it runs, of the ones you can see.
+ * Sessions start only on runners of their workspace.
+ */
+workspaces: Array<WorkspaceRef>, 
+/**
+ * Whether you may add it to your workspaces and remove it from any:
+ * you registered it.
+ */
+yours: boolean, };

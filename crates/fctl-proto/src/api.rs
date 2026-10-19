@@ -8,11 +8,12 @@ use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, SandboxLimits};
 use crate::session::{
     InstanceRole, Project, ProjectRole, ProjectSettings, RepoAccess, Session, SessionRole,
-    SessionStatus, UserRef,
+    SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use crate::{
     AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId, LoginJobId, Millis,
-    PasskeyId, ProjectId, PushDeviceId, RunnerId, SessionId, TokenId, UserId,
+    PasskeyId, ProjectId, PushDeviceId, RunnerId, SessionId, TokenId, UserId, WorkspaceId,
+    WorkspaceInviteId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -109,6 +110,13 @@ pub struct User {
     pub passkeys: u32,
     pub created_at: Millis,
     pub last_login_at: Option<Millis>,
+    /// Its other email addresses, which also sign in to it (for instance
+    /// admins; empty elsewhere).
+    #[serde(default)]
+    pub emails: Vec<String>,
+    /// How many workspaces it is a member of (for instance admins).
+    #[serde(default)]
+    pub workspaces: u32,
 }
 
 impl User {
@@ -154,6 +162,40 @@ pub struct Me {
     /// The passkeys you sign in with.
     #[serde(default)]
     pub passkeys: Vec<Passkey>,
+    /// Your email addresses, the primary one first. You sign in with any of
+    /// them, and each workspace knows you by one.
+    #[serde(default)]
+    pub emails: Vec<EmailAddress>,
+}
+
+/// One of your email addresses. Each was invited to the instance on its
+/// own; accepting an invitation while signed in connects it to your account.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct EmailAddress {
+    pub email: String,
+    /// The account's address: where fctl writes to you (password resets,
+    /// sign-in alerts), and what instance admins see first.
+    pub primary: bool,
+    /// The address the commits of sessions you start in the workspaces you
+    /// are a member as this address credit you with (`Co-authored-by`).
+    /// Absent: those commits don't name you.
+    pub commit_email: Option<String>,
+    /// The workspaces you are a member as this address: the ones that see it.
+    pub workspaces: Vec<WorkspaceRef>,
+    pub added_at: Millis,
+}
+
+/// `PATCH /api/v1/me/emails/{email}`: absent fields stay as they are.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateEmailRequest {
+    /// The commit email for this address; an empty one removes it.
+    pub commit_email: Option<String>,
+    /// `true` makes it the account's primary address.
+    pub primary: Option<bool>,
 }
 
 #[skip_serializing_none]
@@ -227,11 +269,27 @@ pub struct ChangePasswordRequest {
 pub struct AccountDeletion {
     /// Why the account cannot be deleted now; absent when it can.
     pub blocked: Option<String>,
-    /// Projects only you are a member of: deleted, with their sessions.
+    /// The projects of the workspaces only you are a member of: deleted,
+    /// with their sessions.
     pub projects: Vec<DeletedProject>,
-    /// Sessions you started in projects others are members of: they stay
-    /// with those projects, attributed to a deleted user.
+    /// Sessions you started in workspaces others are members of: they stay
+    /// with their projects, attributed to a deleted user.
     pub kept_sessions: u32,
+    /// Workspaces only you are a member of: deleted.
+    #[serde(default)]
+    pub workspaces: Vec<WorkspaceRef>,
+    /// Workspaces you are the primary admin of, with others in them: the
+    /// role passes to their longest-standing admin, or member.
+    #[serde(default)]
+    pub handovers: Vec<Handover>,
+}
+
+/// Who becomes a workspace's primary admin.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Handover {
+    pub workspace: WorkspaceRef,
+    pub to: UserRef,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -870,6 +928,9 @@ pub struct Invite {
     pub expires_at: Millis,
     /// Whether it was emailed.
     pub emailed: bool,
+    /// The workspaces it invites to as well.
+    #[serde(default)]
+    pub workspaces: Vec<WorkspaceRef>,
 }
 
 #[skip_serializing_none]
@@ -878,16 +939,35 @@ pub struct Invite {
 pub struct CreateInviteRequest {
     pub email: String,
     pub role: Option<InstanceRole>,
+    /// Workspaces to invite them to as well, ones you are an admin of: they
+    /// join them with the account they create, or with the one they connect
+    /// this address to.
+    pub workspaces: Option<Vec<InviteWorkspace>>,
+}
+
+/// A workspace an instance invitation also invites to.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct InviteWorkspace {
+    /// Its id or slug.
+    pub workspace: String,
+    /// `member` when absent.
+    pub role: Option<WorkspaceRole>,
 }
 
 /// `GET /api/v1/invites/{token}` (public): who an invitation is for.
+#[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct InvitePreview {
     pub email: String,
     pub instance: String,
     pub invited_by: Option<String>,
     pub expires_at: Millis,
+    /// The workspaces it invites to as well.
+    #[serde(default)]
+    pub workspaces: Vec<WorkspaceRef>,
 }
 
 #[skip_serializing_none]
@@ -942,6 +1022,383 @@ pub struct UpdateInstanceSettingsRequest {
     pub publish_screenshots: Option<bool>,
     pub require_two_factor: Option<bool>,
     pub two_factor_google: Option<bool>,
+}
+
+// ───────────────────────────── workspaces ─────────────────────────────
+
+/// The role every member of a workspace has in each of its projects, on top
+/// of the role they have as the project's member.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum BaseRole {
+    /// Members see the projects they are members of.
+    #[default]
+    None,
+    /// Members see every project's sessions.
+    Viewer,
+    /// Members start sessions and message agents in every project.
+    Editor,
+    /// Members also change every project's settings, secrets and members.
+    Maintainer,
+}
+
+impl BaseRole {
+    pub const ALL: [Self; 4] = [Self::None, Self::Viewer, Self::Editor, Self::Maintainer];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Viewer => "viewer",
+            Self::Editor => "editor",
+            Self::Maintainer => "maintainer",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.as_str() == s)
+    }
+
+    /// The project role it gives.
+    pub fn project_role(self) -> Option<ProjectRole> {
+        match self {
+            Self::None => None,
+            Self::Viewer => Some(ProjectRole::Viewer),
+            Self::Editor => Some(ProjectRole::Editor),
+            Self::Maintainer => Some(ProjectRole::Maintainer),
+        }
+    }
+}
+
+/// A workspace, as its members see it (`GET /api/v1/workspaces`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct Workspace {
+    pub id: WorkspaceId,
+    /// URL-safe, unique per instance.
+    pub slug: String,
+    pub name: String,
+    pub color: WorkspaceColor,
+    /// Its avatar image, a path in the app; absent: its initial on `color`.
+    pub avatar_url: Option<String>,
+    /// Your role in it.
+    pub role: WorkspaceRole,
+    /// The address you are a member as: the one its people see, and whose
+    /// commit email credits you in its projects' commits.
+    pub email: String,
+    /// The role every member has in every project.
+    pub base_role: BaseRole,
+    /// Members need two-factor sign-in: an authenticator app or a passkey.
+    pub require_two_factor: bool,
+    /// It requires two-factor sign-in, which you haven't set up: until you
+    /// do, its projects and sessions are closed to you.
+    pub blocked: bool,
+    /// The Claude connection your sessions in it run on. Absent: your
+    /// default one.
+    pub claude: Option<CredentialId>,
+    /// The primary admin.
+    pub primary: Option<UserRef>,
+    pub members: u32,
+    pub projects: u32,
+    pub runners: u32,
+    /// Its runners that are online now.
+    pub runners_online: u32,
+    /// The GitHub accounts it works in.
+    pub github: Vec<String>,
+    pub created_at: Millis,
+}
+
+impl Workspace {
+    pub fn to_ref(&self) -> WorkspaceRef {
+        WorkspaceRef {
+            id: self.id.clone(),
+            slug: self.slug.clone(),
+            name: self.name.clone(),
+            color: self.color,
+            avatar_url: self.avatar_url.clone(),
+        }
+    }
+}
+
+/// `GET /api/v1/workspaces`: yours, and the invitations waiting for you.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WorkspaceList {
+    pub workspaces: Vec<Workspace>,
+    pub invitations: Vec<WorkspaceInvitation>,
+    /// The most workspaces one person can be a member of.
+    pub limit: u32,
+}
+
+/// `POST /api/v1/workspaces`: you become its primary admin.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct CreateWorkspaceRequest {
+    pub name: String,
+    /// Absent: made from the name.
+    pub slug: Option<String>,
+    pub color: Option<WorkspaceColor>,
+    /// The address to be a member as, one of yours. Absent: your primary one.
+    pub email: Option<String>,
+}
+
+/// `PATCH /api/v1/workspaces/{id}` (admins): absent fields stay as they are.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateWorkspaceRequest {
+    pub name: Option<String>,
+    pub slug: Option<String>,
+    pub color: Option<WorkspaceColor>,
+    pub base_role: Option<BaseRole>,
+    pub require_two_factor: Option<bool>,
+}
+
+/// Someone in a workspace.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct WorkspaceMember {
+    pub user: UserRef,
+    /// The address they are a member as.
+    pub email: String,
+    pub role: WorkspaceRole,
+    /// They have two-factor sign-in: an authenticator app or a passkey.
+    pub two_factor: bool,
+    pub added_by: Option<UserRef>,
+    pub joined_at: Millis,
+}
+
+/// `GET /api/v1/workspaces/{id}/members`: its members, and the invitations
+/// nobody has answered yet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WorkspaceMemberList {
+    pub members: Vec<WorkspaceMember>,
+    pub invitations: Vec<WorkspaceInvitation>,
+}
+
+/// An invitation to join a workspace, for an email address.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct WorkspaceInvitation {
+    pub id: WorkspaceInviteId,
+    pub workspace: WorkspaceRef,
+    pub email: String,
+    pub role: WorkspaceRole,
+    pub invited_by: Option<UserRef>,
+    pub created_at: Millis,
+    pub expires_at: Millis,
+    /// The workspace requires two-factor sign-in, which the invited person
+    /// hasn't set up: joining waits for it.
+    pub needs_two_factor: bool,
+    /// Whether it was emailed (when it was just made).
+    pub emailed: Option<bool>,
+}
+
+/// `POST /api/v1/workspaces/{id}/invitations` (admins).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct InviteToWorkspaceRequest {
+    /// An address on the instance: one an account has, or one its
+    /// allowlist admits.
+    pub email: String,
+    /// `member` when absent; `admin` makes them an admin.
+    pub role: Option<WorkspaceRole>,
+}
+
+/// `PATCH /api/v1/workspaces/{id}/members/{user}` (admins): `admin` or
+/// `member`. The primary admin hands their role over instead.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct UpdateWorkspaceMemberRequest {
+    pub role: WorkspaceRole,
+}
+
+/// Hands the primary admin role over, of a workspace
+/// (`POST /api/v1/workspaces/{id}/transfer`) or of the instance
+/// (`POST /api/v1/admin/transfer`): to someone who is an admin already. The
+/// one who hands it over stays an admin.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TransferRequest {
+    pub user_id: UserId,
+}
+
+/// `PATCH /api/v1/workspaces/{id}/membership`: your own preferences there.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateMembershipRequest {
+    /// The Claude connection your sessions there run on; an empty string
+    /// goes back to your default one.
+    pub claude: Option<String>,
+}
+
+/// `DELETE /api/v1/workspaces/{id}` (its primary admin) and
+/// `DELETE /api/v1/admin/workspaces/{id}` (instance admins): the name,
+/// typed to confirm.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DeleteWorkspaceRequest {
+    pub name: String,
+}
+
+/// Whether a workspace may use a GitHub account yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum GithubConnectionStatus {
+    /// Its projects use the account's repositories.
+    Active,
+    /// One of its admins asked; an instance admin hasn't approved it yet.
+    Requested,
+}
+
+impl GithubConnectionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Requested => "requested",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(Self::Active),
+            "requested" => Some(Self::Requested),
+            _ => None,
+        }
+    }
+}
+
+/// A GitHub account a workspace works in: one the instance's GitHub App is
+/// installed on.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct GithubConnection {
+    /// The account's login.
+    pub account: String,
+    /// The repositories of it the workspace's projects may use. Absent:
+    /// every one the app reaches there.
+    pub repos: Option<Vec<String>>,
+    pub status: GithubConnectionStatus,
+    pub requested_by: Option<UserRef>,
+    pub approved_by: Option<UserRef>,
+    pub created_at: Millis,
+}
+
+/// `GET /api/v1/workspaces/{id}/github`.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct WorkspaceGithub {
+    /// The instance has a GitHub App.
+    pub configured: bool,
+    pub app_slug: Option<String>,
+    /// Installs the app on another account and comes back here, for the
+    /// workspace's admins.
+    pub install_url: Option<String>,
+    pub connections: Vec<GithubConnection>,
+    /// Connecting an account takes an instance admin's approval: you are
+    /// not one.
+    pub approval_required: bool,
+}
+
+/// `POST /api/v1/workspaces/{id}/github` (admins): use an account the
+/// instance's GitHub App is installed on, or ask an instance admin to.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ConnectGithubRequest {
+    /// The account's login.
+    pub account: String,
+    /// Only these repositories of it. Absent: every one the app reaches.
+    pub repos: Option<Vec<String>>,
+}
+
+/// `GET /api/v1/admin/github` (instance admins): the accounts the
+/// instance's GitHub App is installed on, and the workspaces that use each
+/// or ask to.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct GithubInstallations {
+    pub configured: bool,
+    pub app_slug: Option<String>,
+    /// Where to install the app on more accounts.
+    pub install_url: Option<String>,
+    pub installations: Vec<GithubInstallation>,
+}
+
+/// An account the instance's GitHub App is installed on, or that a
+/// workspace names although the app isn't installed there (any more).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct GithubInstallation {
+    pub account: String,
+    /// `Organization` or `User`.
+    pub account_type: Option<String>,
+    /// Absent: the app isn't installed there.
+    pub installation_id: Option<u64>,
+    /// `all` or `selected`: the repositories the account gave the app.
+    pub repository_selection: Option<String>,
+    pub installed_at: Option<Millis>,
+    pub workspaces: Vec<GithubWorkspaceConnection>,
+}
+
+/// A workspace that uses an account, or asks to.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct GithubWorkspaceConnection {
+    pub workspace: WorkspaceRef,
+    pub repos: Option<Vec<String>>,
+    pub status: GithubConnectionStatus,
+    pub requested_by: Option<UserRef>,
+    pub created_at: Millis,
+}
+
+/// `PUT /api/v1/admin/github/{account}/workspaces/{workspace}` (instance
+/// admins): the workspace uses the account (approving a request), with
+/// these repositories.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SetGithubConnectionRequest {
+    /// Absent: every repository the app reaches there.
+    pub repos: Option<Vec<String>>,
+}
+
+/// A workspace, as instance admins see it: what it is and who runs it,
+/// not what is in it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AdminWorkspace {
+    pub workspace: WorkspaceRef,
+    pub primary: Option<UserRef>,
+    pub members: u32,
+    pub projects: u32,
+    pub runners: u32,
+    pub github: Vec<String>,
+    pub require_two_factor: bool,
+    pub created_at: Millis,
+    /// Your role in it, when you are a member.
+    pub role: Option<WorkspaceRole>,
+}
+
+/// `GET /api/v1/admin/workspaces`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AdminWorkspaceList {
+    pub workspaces: Vec<AdminWorkspace>,
 }
 
 // ───────────────────────────── runners ─────────────────────────────
@@ -999,6 +1456,14 @@ pub struct Runner {
     /// sessions it has carry on there. Absent otherwise, and from control
     /// planes that can't drain runners.
     pub drain: Option<RunnerDrain>,
+    /// The workspaces whose sessions it runs, of the ones you can see.
+    /// Sessions start only on runners of their workspace.
+    #[serde(default)]
+    pub workspaces: Vec<WorkspaceRef>,
+    /// Whether you may add it to your workspaces and remove it from any:
+    /// you registered it.
+    #[serde(default)]
+    pub yours: bool,
 }
 
 /// A runner that drains.
@@ -1018,10 +1483,14 @@ pub struct RunnerList {
     pub runners: Vec<Runner>,
 }
 
+#[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct CreateRunnerRequest {
     pub name: String,
+    /// The workspace (id or slug) whose sessions it runs; you must be one of
+    /// its admins. Absent: the one workspace you are an admin of.
+    pub workspace: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1091,16 +1560,22 @@ pub struct ProjectList {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct CreateRepoRequest {
-    /// Repository name in the GitHub App's organization.
+    /// Repository name.
     pub name: String,
     pub private: bool,
     pub description: Option<String>,
+    /// The organization to create it in, one the workspace works in.
+    /// Absent: the instance's default organization when the workspace works
+    /// in it, else the workspace's first organization.
+    pub owner: Option<String>,
 }
 
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct CreateProjectRequest {
+    /// The workspace (id or slug). Absent: your only workspace.
+    pub workspace: Option<String>,
     pub name: String,
     pub slug: Option<String>,
     pub description: Option<String>,
@@ -1327,6 +1802,7 @@ pub struct GithubInfo {
     pub app_slug: Option<String>,
     /// Where to install the app on more accounts.
     pub install_url: Option<String>,
+    /// The accounts your workspaces work in.
     pub accounts: Vec<String>,
 }
 
@@ -1649,6 +2125,9 @@ pub enum FeedServer {
         credential_id: CredentialId,
         usage: Vec<PlanLimit>,
     },
+    /// The person's workspaces or invitations changed (they joined or left
+    /// one, were invited, or an admin changed one): fetch them again.
+    Workspaces,
     Pong,
 }
 

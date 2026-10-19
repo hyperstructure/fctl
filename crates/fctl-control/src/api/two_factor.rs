@@ -61,7 +61,10 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
     .first()
     .await?;
     let row = row.ok_or_else(|| internal("two-factor status: no row"))?;
-    let settings = crate::instance::parse(row.settings.as_deref());
+    let instance = crate::instance::parse(row.settings.as_deref());
+    // Workspaces that require it require it of their members as the
+    // instance would; only the instance's requirement closes the account.
+    let settings = user.two_factor_settings(&instance);
     let has_password = user.has_password();
     let factors = Factors {
         authenticator: row.since.is_some(),
@@ -74,7 +77,7 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
         google: user.two_factor_google,
         google_required: settings.two_factor_google,
         required: policy::required(&settings, has_password),
-        setup_required: policy::setup_required(&settings, has_password, factors),
+        setup_required: policy::setup_required(&instance, has_password, factors),
         on: policy::on(&settings, has_password, factors),
     })
 }
@@ -874,10 +877,19 @@ pub async fn remove_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult
     let body: TwoFactorCodeRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     ctx.rate_limit(&format!("2fa-user:{}", user.id)).await?;
-    let settings = crate::instance::settings(&ctx.db).await?;
-    if !policy::can_turn_off(&settings, user.has_password(), user.factors()) {
+    let instance = crate::instance::settings(&ctx.db).await?;
+    if !policy::can_turn_off(&instance, user.has_password(), user.factors()) {
         return Err(conflict(
             "This instance requires two-factor sign-in, so it stays on. To move it to a new phone, replace the authenticator app instead.",
+        ));
+    }
+    if !policy::can_turn_off(
+        &user.two_factor_settings(&instance),
+        user.has_password(),
+        user.factors(),
+    ) {
+        return Err(conflict(
+            "A workspace you are in requires two-factor sign-in, so it stays on. Add a passkey first, or leave the workspace. To move it to a new phone, replace the authenticator app instead.",
         ));
     }
     confirm_code(ctx, &user, &body.code).await?;

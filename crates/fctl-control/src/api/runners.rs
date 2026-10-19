@@ -1,11 +1,11 @@
 //! `/api/v1/runners/*` (admin) and `/api/v1/runner/*` (hosts).
 
 use crate::ctx::Ctx;
-use crate::db::{n, q, s};
+use crate::db::{q, s};
 use crate::error::{AppError, AppResult, forbidden, not_found};
 use crate::http;
 use crate::internal::{self, FeedIdentity, LiveRunners};
-use crate::model::{RUNNER_SELECT, RunnerRow};
+use crate::model::{RUNNER_SELECT, RunnerRow, RunnerView};
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
 use fctl_proto::ApiError;
@@ -19,8 +19,19 @@ async fn live(ctx: &Ctx) -> LiveRunners {
     }
 }
 
+/// What the caller sees of runners: instance admins all of them; others
+/// those of their workspaces, and their own.
+async fn view(ctx: &Ctx) -> AppResult<(Option<Vec<String>>, String)> {
+    crate::api::workspaces::runner_view_for(ctx).await
+}
+
+/// `GET /api/v1/runners`: the runners the caller sees.
 pub async fn list(ctx: &Ctx) -> AppResult<Response> {
-    ctx.user()?;
+    let (workspaces, user_id) = view(ctx).await?;
+    let view = RunnerView {
+        user_id: Some(&user_id),
+        workspaces: workspaces.as_deref(),
+    };
     let rows: Vec<RunnerRow> = q(
         &ctx.db,
         &format!("{RUNNER_SELECT} ORDER BY r.created_at"),
@@ -30,44 +41,108 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
     .await?;
     let live = live(ctx).await;
     http::ok(&RunnerList {
-        runners: rows.iter().map(|r| r.to_runner(&live)).collect(),
+        runners: rows
+            .iter()
+            .filter(|r| r.visible_to(&view))
+            .map(|r| r.to_runner(&live, &view))
+            .collect(),
     })
 }
 
+/// `POST /api/v1/runners`: registers a runner for a workspace the caller
+/// is an admin of (the one, without `workspace`). Instance admins may
+/// register one for no workspace yet.
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: CreateRunnerRequest = http::body(req).await?;
-    let actor = ctx.admin()?.clone();
-    let name = validate::name("name", &body.name)?;
-    let token = new_secret(SecretKind::Runner);
-    let id = fctl_domain::ids::runner_id(ctx.now);
-    q(
+    let user = ctx.user()?.clone();
+    let workspace = match body.workspace.as_deref().filter(|w| !w.trim().is_empty()) {
+        Some(w) => {
+            let a = crate::workspaces::load(ctx, w.trim()).await?;
+            a.require_admin()?;
+            Some(a.row.id)
+        }
+        None => {
+            let admin_of: Vec<String> = crate::workspaces::mine(&ctx.db, &user.id)
+                .await?
+                .into_iter()
+                .filter(|w| {
+                    w.role()
+                        .is_some_and(fctl_proto::session::WorkspaceRole::is_admin)
+                })
+                .map(|w| w.id)
+                .collect();
+            match admin_of.as_slice() {
+                [only] => Some(only.clone()),
+                [] if user.is_admin() => None,
+                [] => {
+                    return Err(forbidden(
+                        "Only workspace admins register runners, for their workspaces",
+                    ));
+                }
+                _ => {
+                    return Err(crate::error::validation(
+                        "workspace",
+                        "Choose the workspace whose sessions it runs (--workspace)",
+                    ));
+                }
+            }
+        }
+    };
+    let reg =
+        crate::api::workspaces::register_runner(ctx, &body.name, workspace.as_deref()).await?;
+    http::created(&reg)
+}
+
+/// The caller may manage a runner as a machine (rename, disable, drain,
+/// remove, new token): its owner, or an instance admin.
+async fn require_manager(ctx: &Ctx, id: &str) -> AppResult<()> {
+    let user = ctx.user()?;
+    if user.is_admin() {
+        return Ok(());
+    }
+    #[derive(serde::Deserialize)]
+    struct Owner {
+        created_by: Option<String>,
+    }
+    let owner: Option<Owner> = q(
         &ctx.db,
-        "INSERT INTO runners (id, name, token_hash, enabled, created_by, created_at) VALUES (?, ?, ?, 1, ?, ?)",
-        &[s(id.as_str()), s(&name), s(&hash_secret(&token)), s(&actor.id), n(ctx.now)],
-    )?
-    .run()
-    .await?;
-    ctx.audit(
-        "runner.created",
-        Some(id.as_str()),
-        Some(serde_json::json!({ "name": name })),
-    );
-    let row: Option<RunnerRow> = q(
-        &ctx.db,
-        &format!("{RUNNER_SELECT} WHERE r.id = ?"),
-        &[s(id.as_str())],
+        "SELECT created_by FROM runners WHERE id = ?",
+        &[s(id)],
     )?
     .first()
     .await?;
-    let runner = row
+    match owner {
+        Some(o) if o.created_by.as_deref() == Some(user.id.as_str()) => Ok(()),
+        Some(_) => Err(forbidden(
+            "Only the runner's owner and instance admins can do this",
+        )),
+        None => Err(not_found("Runner")),
+    }
+}
+
+/// One runner as the caller sees it.
+async fn one(ctx: &Ctx, id: &str, live: &LiveRunners) -> AppResult<Runner> {
+    let (workspaces, user_id) = view(ctx).await?;
+    let view = RunnerView {
+        user_id: Some(&user_id),
+        workspaces: workspaces.as_deref(),
+    };
+    let rows: Vec<RunnerRow> = q(
+        &ctx.db,
+        &format!("{RUNNER_SELECT} WHERE r.id = ?"),
+        &[s(id)],
+    )?
+    .all()
+    .await?;
+    Ok(rows
+        .first()
         .ok_or_else(|| not_found("Runner"))?
-        .to_runner(&LiveRunners::default());
-    http::created(&RunnerRegistration { runner, token })
+        .to_runner(live, &view))
 }
 
 pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: UpdateRunnerRequest = http::body(req).await?;
-    ctx.admin()?;
+    require_manager(ctx, id).await?;
     let name = body
         .name
         .as_deref()
@@ -112,20 +187,12 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         .await?;
     }
     ctx.audit("runner.updated", Some(id), None);
-    let rows: Vec<RunnerRow> = q(
-        &ctx.db,
-        &format!("{RUNNER_SELECT} WHERE r.id = ?"),
-        &[s(id)],
-    )?
-    .all()
-    .await?;
     let live = live(ctx).await;
-    let r = rows.first().ok_or_else(|| not_found("Runner"))?;
-    http::ok(&r.to_runner(&live))
+    http::ok(&one(ctx, id, &live).await?)
 }
 
 pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
-    ctx.admin()?;
+    require_manager(ctx, id).await?;
     let stub = internal::fleet_stub(&ctx.env)?;
     let _: serde_json::Value = internal::post(
         &stub,
@@ -144,7 +211,7 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 }
 
 pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
-    ctx.admin()?;
+    require_manager(ctx, id).await?;
     let token = new_secret(SecretKind::Runner);
     let changed = q(
         &ctx.db,
@@ -164,17 +231,7 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     )
     .await?;
     ctx.audit("runner.token_rotated", Some(id), None);
-    let rows: Vec<RunnerRow> = q(
-        &ctx.db,
-        &format!("{RUNNER_SELECT} WHERE r.id = ?"),
-        &[s(id)],
-    )?
-    .all()
-    .await?;
-    let runner = rows
-        .first()
-        .ok_or_else(|| not_found("Runner"))?
-        .to_runner(&LiveRunners::default());
+    let runner = one(ctx, id, &LiveRunners::default()).await?;
     http::ok(&RunnerRegistration { runner, token })
 }
 
@@ -243,10 +300,11 @@ async fn detail(ctx: &Ctx, id: &str) -> AppResult<RunnerDetail> {
     .all()
     .await?;
     let live = live(ctx).await;
+    // Its host sees every workspace it serves.
     let runner = rows
         .first()
         .ok_or_else(|| not_found("Runner"))?
-        .to_runner(&live);
+        .to_runner(&live, &RunnerView::default());
     let sessions: Vec<Row> = q(
         &ctx.db,
         "SELECT s.id, p.slug AS project_slug, s.number, s.title, s.status, s.resume_at FROM sessions s \
@@ -368,22 +426,8 @@ pub async fn feed(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         http::check_same_origin(req, ctx.cfg.origin(), ctx.cfg.dev)?;
     }
     let user = ctx.user()?;
-    #[derive(serde::Deserialize)]
-    struct P {
-        project_id: String,
-    }
-    let projects: Vec<P> = q(
-        &ctx.db,
-        "SELECT project_id FROM project_members WHERE user_id = ?",
-        &[s(&user.id)],
-    )?
-    .all()
-    .await?;
-    let ident = FeedIdentity {
-        user_id: user.id.clone(),
-        admin: user.is_admin(),
-        projects: projects.into_iter().map(|p| p.project_id).collect(),
-    };
+    let ident: FeedIdentity =
+        crate::workspaces::feed_identity(&ctx.db, user, &ctx.settings()).await?;
     let stub = internal::fleet_stub(&ctx.env)?;
     let json = serde_json::to_string(&ident)?;
     internal::upgrade(&stub, "/feed", &[(internal::HDR_VIEWER, &json)]).await

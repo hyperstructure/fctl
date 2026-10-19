@@ -86,6 +86,31 @@ pub async fn body<T: DeserializeOwned>(req: &mut Request) -> AppResult<T> {
         .map_err(|e| AppError(ApiError::bad_request(format!("Invalid request body: {e}"))))
 }
 
+/// A path segment as it was before percent-encoding (`ada%40example.com`
+/// is `ada@example.com`). Bytes that aren't valid UTF-8 are replaced.
+pub fn decode(segment: &str) -> String {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while let Some(&b) = bytes.get(i) {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (b, hex) {
+            (b'%', Some(v)) => {
+                out.push(v);
+                i += 3;
+            }
+            _ => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// A query parameter.
 pub fn query(req: &Request, name: &str) -> Option<String> {
     let url = req.url().ok()?;

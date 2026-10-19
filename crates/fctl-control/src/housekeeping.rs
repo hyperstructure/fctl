@@ -1,8 +1,8 @@
 //! Deleting what is no longer needed: the event logs of deleted sessions,
-//! the files of deleted projects, expired sign-in records, the links of
-//! expired published screenshots and old audit entries. Runs from the
-//! Worker's hourly cron trigger; deleting a project also purges its
-//! sessions and files right away.
+//! the files of deleted projects, expired sign-in records and invitations,
+//! the links of expired published screenshots and old audit entries. Runs
+//! from the Worker's hourly cron trigger; deleting a project or a workspace
+//! also purges its sessions and files right away.
 
 use crate::db::{n, q, s};
 use crate::error::AppResult;
@@ -132,6 +132,10 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
         ("DELETE FROM passkey_challenges WHERE expires_at < ?", now),
         ("DELETE FROM device_codes WHERE expires_at < ?", now),
         ("DELETE FROM invites WHERE expires_at < ?", now),
+        (
+            "DELETE FROM workspace_invitations WHERE expires_at < ?",
+            now,
+        ),
         // Their links stopped working at expiry; their FilesObject deletes
         // the bytes on its own alarm.
         ("DELETE FROM published_files WHERE expires_at < ?", now),
@@ -146,10 +150,33 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     ] {
         deleted += q(&db, sql, &[n(cutoff)])?.run().await?;
     }
+    deleted += settle(&db).await?;
     if purged > 0 || purged_files > 0 || deleted > 0 {
         worker::console_log!(
             "housekeeping: purged {purged} sessions and the files of {purged_files} projects, deleted {deleted} rows"
         );
     }
     Ok(())
+}
+
+/// What a Worker from before workspaces left while a deploy's migration had
+/// already run: accounts without their address row, and projects without a
+/// workspace, which go to the first one (as the migration put the others).
+async fn settle(db: &D1Database) -> AppResult<usize> {
+    let mut changed = q(
+        db,
+        "INSERT OR IGNORE INTO user_emails (email, user_id, created_at) SELECT u.email, u.id, u.created_at FROM users u \
+         WHERE u.email NOT LIKE 'deleted-%@deleted.invalid' AND NOT EXISTS (SELECT 1 FROM user_emails e WHERE e.email = u.email)",
+        &[],
+    )?
+    .run()
+    .await?;
+    changed += q(
+        db,
+        "UPDATE projects SET workspace_id = (SELECT id FROM workspaces ORDER BY created_at LIMIT 1) WHERE workspace_id IS NULL",
+        &[],
+    )?
+    .run()
+    .await?;
+    Ok(changed)
 }

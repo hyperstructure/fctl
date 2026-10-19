@@ -24,6 +24,7 @@ mod notify;
 mod push;
 mod spec;
 mod usage;
+mod workspaces;
 
 use ctx::Ctx;
 pub use do_files::FilesObject;
@@ -94,6 +95,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["instance"]) => api::auth::instance(ctx).await,
         (Post, ["setup"]) => api::auth::setup(ctx, req).await,
         (Get, ["invites", token]) => api::auth::invite_preview(ctx, token).await,
+        (Post, ["invites", token, "connect"]) => api::emails::connect_invite(ctx, token).await,
         (Post, ["auth", "signup"]) => api::auth::signup(ctx, req).await,
         (Post, ["auth", "login"]) => api::auth::login(ctx, req).await,
         (Post, ["auth", "logout"]) => api::auth::logout(ctx).await,
@@ -140,6 +142,62 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["admin", "audit"]) => api::admin::audit(ctx, req).await,
         (Get, ["admin", "settings"]) => api::admin::settings(ctx).await,
         (Patch, ["admin", "settings"]) => api::admin::update_settings(ctx, req).await,
+        (Post, ["admin", "transfer"]) => api::admin::transfer(ctx, req).await,
+        (Get, ["admin", "workspaces"]) => api::admin::workspaces(ctx).await,
+        (Post, ["admin", "workspaces", id, "delete"]) => {
+            api::admin::delete_workspace(ctx, req, id).await
+        }
+        (Get, ["admin", "github"]) => api::github::admin_list(ctx).await,
+        (Put, ["admin", "github", account, "workspaces", workspace]) => {
+            api::github::admin_connect(ctx, req, &http::decode(account), workspace).await
+        }
+        (Delete, ["admin", "github", account, "workspaces", workspace]) => {
+            api::github::admin_disconnect(ctx, &http::decode(account), workspace).await
+        }
+
+        // Workspaces
+        (Get, ["workspaces"]) => api::workspaces::list(ctx).await,
+        (Post, ["workspaces"]) => api::workspaces::create(ctx, req).await,
+        (Get, ["workspaces", id]) => api::workspaces::get(ctx, id).await,
+        (Patch, ["workspaces", id]) => api::workspaces::update(ctx, req, id).await,
+        (Post, ["workspaces", id, "delete"]) => api::workspaces::delete(ctx, req, id).await,
+        (Get, ["workspaces", id, "avatar"]) => api::workspaces::avatar(ctx, id).await,
+        (Put, ["workspaces", id, "avatar"]) => api::workspaces::set_avatar(ctx, req, id).await,
+        (Delete, ["workspaces", id, "avatar"]) => api::workspaces::remove_avatar(ctx, id).await,
+        (Get, ["workspaces", id, "members"]) => api::workspaces::members(ctx, id).await,
+        (Patch, ["workspaces", id, "members", user]) => {
+            api::workspaces::set_member_role(ctx, req, id, user).await
+        }
+        (Delete, ["workspaces", id, "members", user]) => {
+            api::workspaces::remove_member(ctx, id, user).await
+        }
+        (Post, ["workspaces", id, "invitations"]) => {
+            api::workspaces::create_invitation(ctx, req, id).await
+        }
+        (Delete, ["workspaces", id, "invitations", invitation]) => {
+            api::workspaces::revoke_invitation(ctx, id, invitation).await
+        }
+        (Post, ["workspaces", id, "transfer"]) => api::workspaces::transfer(ctx, req, id).await,
+        (Patch, ["workspaces", id, "membership"]) => {
+            api::workspaces::update_membership(ctx, req, id).await
+        }
+        (Get, ["workspaces", id, "audit"]) => api::workspaces::audit(ctx, req, id).await,
+        (Get, ["workspaces", id, "runners"]) => api::workspaces::runners(ctx, id).await,
+        (Post, ["workspaces", id, "runners"]) => api::workspaces::create_runner(ctx, req, id).await,
+        (Put, ["workspaces", id, "runners", runner]) => {
+            api::workspaces::add_runner(ctx, id, runner).await
+        }
+        (Delete, ["workspaces", id, "runners", runner]) => {
+            api::workspaces::remove_runner(ctx, id, runner).await
+        }
+        (Get, ["workspaces", id, "github"]) => api::github::workspace(ctx, id).await,
+        (Post, ["workspaces", id, "github"]) => api::github::connect(ctx, req, id).await,
+        (Delete, ["workspaces", id, "github", account]) => {
+            api::github::disconnect(ctx, id, &http::decode(account)).await
+        }
+        (Post, ["invitations", id, "accept"]) => api::workspaces::accept(ctx, id).await,
+        (Post, ["invitations", id, "decline"]) => api::workspaces::decline(ctx, id).await,
+        (Get, ["github", "installed"]) => api::github::installed(ctx, req).await,
 
         // Runners (admin) and hosts
         (Get, ["runners"]) => api::runners::list(ctx).await,
@@ -188,7 +246,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["projects", id, "sessions"]) => api::sessions::create(ctx, req, id).await,
         (Post, ["projects", id, "attachments"]) => api::attachments::upload(ctx, req, id).await,
         (Get, ["github"]) => api::projects::github_info(ctx).await,
-        (Get, ["github", "repos"]) => api::projects::github_repos(ctx).await,
+        (Get, ["github", "repos"]) => api::projects::github_repos(ctx, req).await,
 
         // Sessions
         (Get, ["sessions"]) => api::sessions::list(ctx, req).await,
@@ -257,6 +315,10 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["me", "passkeys"]) => api::passkeys::add(ctx, req).await,
         (Patch, ["me", "passkeys", id]) => api::passkeys::rename(ctx, req, id).await,
         (Delete, ["me", "passkeys", id]) => api::passkeys::remove(ctx, id).await,
+        (Patch, ["me", "emails", email]) => {
+            api::emails::update(ctx, req, &http::decode(email)).await
+        }
+        (Delete, ["me", "emails", email]) => api::emails::remove(ctx, &http::decode(email)).await,
         (Get, ["me", "export"]) => api::account::export(ctx).await,
         (Get, ["me", "deletion"]) => api::account::deletion(ctx).await,
         (Post, ["me", "delete"]) => api::account::delete(ctx, req).await,

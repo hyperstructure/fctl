@@ -1,5 +1,6 @@
-//! `/api/v1/admin/*`: users, the allowlist, invitations, the audit log, and
-//! the instance's settings.
+//! `/api/v1/admin/*`: people, the allowlist, invitations, workspaces, the
+//! primary admin role, the audit log, and the instance's settings. GitHub
+//! connections are in `api::github`.
 
 use crate::auth;
 use crate::ctx::Ctx;
@@ -12,7 +13,7 @@ use fctl_domain::perm;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
 use fctl_proto::api::*;
-use fctl_proto::session::{InstanceRole, UserRef};
+use fctl_proto::session::{InstanceRole, UserRef, WorkspaceRef};
 use fctl_proto::{InviteId, UserId};
 use worker::{Request, Response};
 
@@ -44,28 +45,30 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
     if let Some(role) = body.role
         && role != target.role()
     {
+        if target.role() == InstanceRole::Owner {
+            return Err(forbidden(
+                "Nobody can change the primary admin's role. They can hand it to another admin.",
+            ));
+        }
+        if role == InstanceRole::Owner {
+            return Err(validation(
+                "role",
+                "The instance has one primary admin, who hands the role over",
+            ));
+        }
         if !perm::can_assign_instance_role(actor.role(), target.role(), role) {
             return Err(forbidden("You cannot give this role"));
-        }
-        if target.role() == InstanceRole::Owner && role != InstanceRole::Owner {
-            let owners: Vec<crate::db::Count> = q(
-                &ctx.db,
-                "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND status = 'active'",
-                &[],
-            )?
-            .all()
-            .await?;
-            if owners.first().map_or(0, |c| c.n) <= 1 {
-                return Err(conflict("The instance needs at least one owner"));
-            }
         }
     }
     if let Some(status) = body.status {
         if target.id == actor.id && status == UserStatus::Disabled {
             return Err(conflict("You cannot disable yourself"));
         }
-        if target.role() == InstanceRole::Owner && actor.role() != InstanceRole::Owner {
-            return Err(forbidden("Only owners can disable owners"));
+        if target.role() == InstanceRole::Owner {
+            return Err(forbidden("Nobody can disable the primary admin"));
+        }
+        if target.role() == InstanceRole::Admin && actor.role() != InstanceRole::Owner {
+            return Err(forbidden("Only the primary admin can disable admins"));
         }
     }
     let name = body
@@ -110,8 +113,11 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     }
     if target.role() == InstanceRole::Owner {
         return Err(forbidden(
-            "Owners cannot be deleted; make them a member first",
+            "The primary admin can't be deleted. They can hand the role to another admin first.",
         ));
+    }
+    if target.role() == InstanceRole::Admin && actor.role() != InstanceRole::Owner {
+        return Err(forbidden("Only the primary admin can delete admins"));
     }
     // The same as deleting your own account (api::account): their projects
     // with no other members go, what others use stays, without their name.
@@ -134,8 +140,10 @@ pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let target = auth::user_by_id(ctx, id)
         .await?
         .ok_or_else(|| not_found("User"))?;
-    if target.role() == InstanceRole::Owner && actor.role() != InstanceRole::Owner {
-        return Err(forbidden("Only owners can reset an owner's password"));
+    if target.role() != InstanceRole::Member && actor.role() != InstanceRole::Owner {
+        return Err(forbidden(
+            "Only the primary admin can reset an admin's password",
+        ));
     }
     let url = crate::api::auth::create_reset_link(ctx, &target.id, Some(&actor.id)).await?;
     ctx.audit("user.reset_link", Some(&target.id), None);
@@ -168,10 +176,13 @@ pub async fn add_allow(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     let pattern = AllowPattern::parse(&body.pattern)?;
     let role = match body.role.unwrap_or(InstanceRole::Member) {
         InstanceRole::Owner => {
-            return Err(validation("role", "Owners are made from existing members"));
+            return Err(validation(
+                "role",
+                "The primary admin hands their role over to an admin",
+            ));
         }
         InstanceRole::Admin if actor.role() != InstanceRole::Owner => {
-            return Err(forbidden("Only owners can allow new admins"));
+            return Err(forbidden("Only the primary admin can allow new admins"));
         }
         r => r,
     };
@@ -201,7 +212,7 @@ pub async fn add_allow(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     }
     let invite = match (&pattern, body.invite.unwrap_or(true)) {
         (AllowPattern::Email(email), true) if auth::user_by_email(ctx, email).await?.is_none() => {
-            Some(create_invite_for(ctx, email, role).await?)
+            Some(create_invite_for(ctx, email, role, Vec::new()).await?)
         }
         _ => None,
     };
@@ -277,7 +288,12 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     http::ok(&serde_json::json!({ "ok": true, "disabled": disabled }))
 }
 
-async fn create_invite_for(ctx: &Ctx, email: &str, role: InstanceRole) -> AppResult<Invite> {
+async fn create_invite_for(
+    ctx: &Ctx,
+    email: &str,
+    role: InstanceRole,
+    workspaces: Vec<WorkspaceRef>,
+) -> AppResult<Invite> {
     let secret = new_secret(SecretKind::Invite);
     let id = fctl_domain::ids::invite_id(ctx.now);
     let expires_at = ctx.now + INVITE_TTL_MS;
@@ -304,14 +320,26 @@ async fn create_invite_for(ctx: &Ctx, email: &str, role: InstanceRole) -> AppRes
             .as_ref()
             .map(|a| a.user.name.clone())
             .unwrap_or_else(|| "An admin".into());
+        let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+        let joins = match workspaces.as_slice() {
+            [] => String::new(),
+            [w] => format!(" You join {} with it.", w.name),
+            more => format!(
+                " You join {} with it.",
+                more.iter()
+                    .map(|w| w.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
         let text = format!(
-            "{inviter} invited you to {}, a software factory where Claude agents build software.\n\nCreate your account: {url}\n\nThe link works for 14 days.",
-            ctx.cfg.instance_name
+            "{inviter} invited you to {instance}, a software factory where Claude agents build software.{joins}\n\n\
+             Create your account, or connect this address to the account you have: {url}\n\nThe link works for 14 days."
         );
         emailed = crate::email::send(
             &mail,
             email,
-            &format!("You're invited to {}", ctx.cfg.instance_name),
+            &format!("You're invited to {instance}"),
             &text,
         )
         .await
@@ -324,6 +352,7 @@ async fn create_invite_for(ctx: &Ctx, email: &str, role: InstanceRole) -> AppRes
         role,
         expires_at,
         emailed,
+        workspaces,
     })
 }
 
@@ -338,7 +367,22 @@ pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respon
         return Err(forbidden("You cannot invite with this role"));
     }
     if auth::user_by_email(ctx, &email).await?.is_some() {
-        return Err(conflict("This person already has an account"));
+        return Err(conflict(
+            "This address belongs to an account already. Invite it to workspaces from their settings.",
+        ));
+    }
+    // The workspaces to invite them to as well: ones the inviter is an
+    // admin of.
+    let mut workspaces = Vec::new();
+    for w in body.workspaces.unwrap_or_default() {
+        let a = crate::workspaces::load(ctx, &w.workspace).await?;
+        a.require_admin().map_err(|_| {
+            forbidden(&format!(
+                "You can invite people to workspaces you are an admin of; you aren't one of {}",
+                a.row.name
+            ))
+        })?;
+        workspaces.push((a.row, fctl_domain::workspace::invitation_role(w.role)?));
     }
     // Inviting someone also allows them.
     q(
@@ -348,8 +392,20 @@ pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respon
     )?
     .run()
     .await?;
-    let invite = create_invite_for(ctx, &email, role).await?;
-    ctx.audit("invite.created", Some(&email), None);
+    let mut refs = Vec::new();
+    for (row, role) in &workspaces {
+        // The instance invitation's email says it.
+        crate::api::workspaces::invite(ctx, row, &email, *role, false).await?;
+        refs.push(row.to_ref());
+    }
+    let invite = create_invite_for(ctx, &email, role, refs).await?;
+    ctx.audit(
+        "invite.created",
+        Some(&email),
+        Some(serde_json::json!({
+            "workspaces": workspaces.iter().map(|(w, _)| w.id.as_str()).collect::<Vec<_>>(),
+        })),
+    );
     http::created(&invite)
 }
 
@@ -368,17 +424,34 @@ struct AuditRow {
     ip: Option<String>,
 }
 
+/// `GET /api/v1/admin/audit`: the instance's audit log (what happened in
+/// workspaces is in theirs).
 pub async fn audit(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     ctx.admin()?;
+    audit_page(ctx, req, None).await
+}
+
+/// A page of the audit log of a workspace, or of the instance (`None`).
+pub async fn audit_page(ctx: &Ctx, req: &Request, workspace: Option<&str>) -> AppResult<Response> {
     let before = http::query(req, "before")
         .and_then(|b| b.parse::<i64>().ok())
         .unwrap_or(i64::MAX / 2);
-    let rows: Vec<AuditRow> = q(
-        &ctx.db,
-        "SELECT a.id, a.ts, a.actor_id, u.name AS actor_name, a.action, a.target, a.data, a.ip FROM audit_log a \
-         LEFT JOIN users u ON u.id = a.actor_id WHERE a.ts < ? ORDER BY a.ts DESC LIMIT 101",
-        &[n(before)],
-    )?
+    let select = "SELECT a.id, a.ts, a.actor_id, u.name AS actor_name, a.action, a.target, a.data, a.ip \
+        FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id";
+    let rows: Vec<AuditRow> = match workspace {
+        Some(w) => q(
+            &ctx.db,
+            &format!("{select} WHERE a.workspace_id = ? AND a.ts < ? ORDER BY a.ts DESC LIMIT 101"),
+            &[s(w), n(before)],
+        )?,
+        None => q(
+            &ctx.db,
+            &format!(
+                "{select} WHERE a.ts < ? AND a.workspace_id IS NULL ORDER BY a.ts DESC LIMIT 101"
+            ),
+            &[n(before)],
+        )?,
+    }
     .all()
     .await?;
     let more = rows.len() > 100;
@@ -462,4 +535,99 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
         Some(serde_json::to_value(&body)?),
     );
     http::ok(&settings)
+}
+
+// ───────────────────────────── the primary admin ─────────────────────────────
+
+/// `POST /api/v1/admin/transfer` (the primary admin): hands the role to
+/// another admin, and stays an admin.
+pub async fn transfer(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
+    let body: TransferRequest = http::body(req).await?;
+    let actor = ctx.admin()?.clone();
+    if actor.role() != InstanceRole::Owner {
+        return Err(forbidden("Only the primary admin can hand the role over"));
+    }
+    let target = auth::user_by_id(ctx, body.user_id.as_str())
+        .await?
+        .ok_or_else(|| not_found("User"))?;
+    if target.id == actor.id {
+        return Err(conflict("You are the primary admin already"));
+    }
+    if target.role() != InstanceRole::Admin || !target.is_active() {
+        return Err(validation(
+            "user_id",
+            "Make them an admin first: the primary admin role goes to an admin",
+        ));
+    }
+    crate::db::batch(
+        &ctx.db,
+        vec![
+            q(
+                &ctx.db,
+                "UPDATE users SET role = 'admin', updated_at = ? WHERE id = ? AND role = 'owner'",
+                &[n(ctx.now), s(&actor.id)],
+            )?,
+            q(
+                &ctx.db,
+                "UPDATE users SET role = 'owner', updated_at = ? WHERE id = ? AND role = 'admin'",
+                &[n(ctx.now), s(&target.id)],
+            )?,
+        ],
+    )
+    .await?;
+    ctx.audit(
+        "instance.transferred",
+        Some(&target.id),
+        Some(serde_json::json!({ "from": actor.id })),
+    );
+    let updated = auth::user_by_id(ctx, &target.id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
+    http::ok(&updated.to_user())
+}
+
+// ───────────────────────────── workspaces ─────────────────────────────
+
+/// `GET /api/v1/admin/workspaces`: every workspace, as instance admins see
+/// them (what it is and who runs it, not what's inside).
+pub async fn workspaces(ctx: &Ctx) -> AppResult<Response> {
+    let admin = ctx.admin()?;
+    let rows: Vec<crate::workspaces::WorkspaceRow> = q(
+        &ctx.db,
+        &format!(
+            "{} ORDER BY lower(w.name)",
+            crate::workspaces::WORKSPACE_SELECT
+        ),
+        &[s(&admin.id)],
+    )?
+    .all()
+    .await?;
+    http::ok(&AdminWorkspaceList {
+        workspaces: rows
+            .iter()
+            .map(|r| AdminWorkspace {
+                workspace: r.to_ref(),
+                primary: r.primary(),
+                members: r.members.max(0) as u32,
+                projects: r.projects.max(0) as u32,
+                runners: r.runner_ids().len() as u32,
+                github: crate::workspaces::strings(r.github.as_deref()),
+                require_two_factor: r.require_two_factor,
+                created_at: r.created_at,
+                role: r.role(),
+            })
+            .collect(),
+    })
+}
+
+/// `POST /api/v1/admin/workspaces/{id}/delete` (instance admins): deletes a
+/// workspace and everything in it, its name typed to confirm.
+pub async fn delete_workspace(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
+    let body: DeleteWorkspaceRequest = http::body(req).await?;
+    let admin = ctx.admin()?.clone();
+    let row = crate::workspaces::find(&ctx.db, &admin.id, id)
+        .await?
+        .ok_or_else(|| not_found("Workspace"))?;
+    crate::api::workspaces::erase(ctx, &row, &body.name).await?;
+    http::ok(&Ok { ok: true })
 }

@@ -113,7 +113,8 @@ pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow) -> AppResult<()> {
     )?
     .run()
     .await?;
-    ctx.auth = Some(Authed::signed_in(user, token_id, ctx.now));
+    let settings = crate::instance::settings(&ctx.db).await?;
+    ctx.auth = Some(Authed::signed_in(user, token_id, ctx.now, settings));
     Ok(())
 }
 
@@ -255,17 +256,20 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         via_cookie,
         signed_in_at: found.token_created_at,
         two_factor_setup_required,
+        settings,
     });
     Ok(())
 }
 
 // ───────────────────────────── users ─────────────────────────────
 
+/// The account an address belongs to: its primary one, or one connected
+/// to it.
 pub async fn user_by_email(ctx: &Ctx, email: &str) -> AppResult<Option<UserRow>> {
     q(
         &ctx.db,
         &format!(
-            "SELECT {} FROM users u WHERE u.email = ?",
+            "SELECT {} FROM users u WHERE u.email = ?1 OR u.id = (SELECT user_id FROM user_emails WHERE email = ?1)",
             user_columns("u")
         ),
         &[s(email)],
@@ -315,9 +319,10 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
             .iter()
             .map(|c| c.to_info(default_id.as_deref()))
             .collect(),
-        commit_email: user.commit_email.clone(),
+        commit_email: crate::api::emails::primary_commit_email(ctx, user).await?,
         two_factor: crate::api::two_factor::status(ctx, user).await?,
         passkeys: crate::api::passkeys::list(ctx, &user.id).await?,
+        emails: crate::api::emails::list(ctx, user).await?,
     })
 }
 

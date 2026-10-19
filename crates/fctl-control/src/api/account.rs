@@ -1,12 +1,14 @@
 //! Your own data: export it, or delete your account (Settings → Danger zone).
 //!
-//! Deleting an account deletes its sign-in methods, tokens, Claude
-//! connections, memberships, shares, follows and notification settings and
-//! browsers, and the projects only it is a member of, with their sessions and
-//! transcripts. Sessions and projects it created
-//! that others still use stay; the account then remains as a nameless,
-//! disabled placeholder (`fctl_domain::account`). Admins deleting a user go
-//! through the same `erase`.
+//! Deleting an account deletes its sign-in methods, addresses, tokens,
+//! Claude connections, memberships, shares, follows and notification
+//! settings and browsers, and the workspaces only it is a member of, with
+//! their projects, sessions and transcripts. In the workspaces it was the
+//! primary admin of with other people in them, the role passes to the
+//! longest-standing admin, or member. Sessions and projects it created that
+//! others still use stay; the account then remains as a nameless, disabled
+//! placeholder (`fctl_domain::account`). Admins deleting a user go through
+//! the same `erase`.
 
 use crate::auth;
 use crate::ctx::Ctx;
@@ -14,10 +16,12 @@ use crate::db::{Count, Val, batch, n, q, s};
 use crate::error::{AppResult, conflict, internal, validation};
 use crate::http;
 use crate::internal as dobj;
-use crate::model::UserRow;
+use crate::model::{UserRow, workspace_ref};
 use fctl_domain::account::{self as acct, iso8601};
-use fctl_proto::api::{AccountDeletion, DeleteAccountRequest, DeletedProject, Ok as Done};
-use fctl_proto::session::InstanceRole;
+use fctl_proto::api::{
+    AccountDeletion, DeleteAccountRequest, DeletedProject, Handover, Ok as Done,
+};
+use fctl_proto::session::{InstanceRole, UserRef};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
@@ -26,35 +30,60 @@ use worker::{Env, Request, Response};
 
 const ACTIVE: &str = "('queued','provisioning','preparing','running','idle','paused','stopping')";
 
-/// Projects where `?1` is the only member.
-const SOLE_PROJECTS: &str = "SELECT m.project_id FROM project_members m WHERE m.user_id = ?1 \
-     AND NOT EXISTS (SELECT 1 FROM project_members o WHERE o.project_id = m.project_id AND o.user_id != ?1)";
+/// Workspaces where `?1` is the only member.
+const SOLE_WORKSPACES: &str = "SELECT m.workspace_id FROM workspace_members m WHERE m.user_id = ?1 \
+     AND NOT EXISTS (SELECT 1 FROM workspace_members o WHERE o.workspace_id = m.workspace_id AND o.user_id != ?1)";
 
 // ───────────────────────────── deletion ─────────────────────────────
 
 #[derive(Deserialize)]
-struct SoleProject {
+struct SoleWorkspace {
     id: String,
+    slug: String,
+    name: String,
+    color: Option<String>,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    avatar_updated_at: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct SoleProject {
     slug: String,
     name: String,
     sessions: i64,
 }
 
+/// A workspace whose primary admin role passes to someone else.
+#[derive(Deserialize)]
+struct Successor {
+    id: String,
+    slug: String,
+    name: String,
+    color: Option<String>,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    avatar_updated_at: Option<i64>,
+    successor_id: String,
+    successor_name: String,
+    successor_avatar: Option<String>,
+}
+
 /// What deleting an account involves.
 pub struct Plan {
-    sole: Vec<SoleProject>,
+    sole: Vec<SoleWorkspace>,
+    projects: Vec<SoleProject>,
+    successors: Vec<Successor>,
     kept_sessions: i64,
-    /// Sessions that must be stopped first: theirs, or in projects that go.
+    /// Sessions that must be stopped first: theirs, or in workspaces that go.
     running: i64,
-    /// The account is the instance's last active owner.
-    last_owner: bool,
+    /// The account is the instance's primary admin.
+    primary: bool,
 }
 
 impl Plan {
     fn self_blocker(&self) -> Option<String> {
-        if self.last_owner {
+        if self.primary {
             return Some(
-                "You are this instance's only owner. Make someone else an owner before you delete your account."
+                "You are this instance's primary admin. Hand the role to another admin (Admin → People) before you delete your account."
                     .into(),
             );
         }
@@ -76,7 +105,7 @@ impl Plan {
         AccountDeletion {
             blocked: self.self_blocker(),
             projects: self
-                .sole
+                .projects
                 .iter()
                 .map(|p| DeletedProject {
                     slug: p.slug.clone(),
@@ -85,6 +114,37 @@ impl Plan {
                 })
                 .collect(),
             kept_sessions: self.kept_sessions.max(0) as u32,
+            workspaces: self
+                .sole
+                .iter()
+                .map(|w| {
+                    workspace_ref(
+                        &w.id,
+                        &w.slug,
+                        &w.name,
+                        w.color.as_deref(),
+                        w.avatar_updated_at,
+                    )
+                })
+                .collect(),
+            handovers: self
+                .successors
+                .iter()
+                .map(|w| Handover {
+                    workspace: workspace_ref(
+                        &w.id,
+                        &w.slug,
+                        &w.name,
+                        w.color.as_deref(),
+                        w.avatar_updated_at,
+                    ),
+                    to: UserRef {
+                        id: fctl_proto::UserId(w.successor_id.clone()),
+                        name: w.successor_name.clone(),
+                        avatar_url: w.successor_avatar.clone(),
+                    },
+                })
+                .collect(),
         }
     }
 }
@@ -95,13 +155,35 @@ async fn count(ctx: &Ctx, sql: &str, params: &[Val]) -> AppResult<i64> {
 }
 
 pub async fn plan(ctx: &Ctx, user: &UserRow) -> AppResult<Plan> {
-    let sole: Vec<SoleProject> = q(
+    let sole: Vec<SoleWorkspace> = q(
         &ctx.db,
         &format!(
-            "SELECT p.id AS id, p.slug AS slug, p.name AS name, \
-             (SELECT COUNT(*) FROM sessions x WHERE x.project_id = p.id) AS sessions \
-             FROM projects p WHERE p.id IN ({SOLE_PROJECTS}) ORDER BY p.name"
+            "SELECT w.id, w.slug, w.name, w.color, w.avatar_updated_at FROM workspaces w \
+             WHERE w.id IN ({SOLE_WORKSPACES}) ORDER BY w.name"
         ),
+        &[s(&user.id)],
+    )?
+    .all()
+    .await?;
+    let projects: Vec<SoleProject> = q(
+        &ctx.db,
+        &format!(
+            "SELECT p.slug AS slug, p.name AS name, \
+             (SELECT COUNT(*) FROM sessions x WHERE x.project_id = p.id) AS sessions \
+             FROM projects p WHERE p.workspace_id IN ({SOLE_WORKSPACES}) ORDER BY p.name"
+        ),
+        &[s(&user.id)],
+    )?
+    .all()
+    .await?;
+    let successors: Vec<Successor> = q(
+        &ctx.db,
+        "SELECT w.id, w.slug, w.name, w.color, w.avatar_updated_at, su.id AS successor_id, \
+         su.name AS successor_name, su.avatar_url AS successor_avatar FROM workspaces w \
+         JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = ?1 AND m.role = 'owner' \
+         JOIN users su ON su.id = (SELECT o.user_id FROM workspace_members o WHERE o.workspace_id = w.id \
+           AND o.user_id != ?1 ORDER BY o.role = 'admin' DESC, o.created_at LIMIT 1) \
+         ORDER BY w.name",
         &[s(&user.id)],
     )?
     .all()
@@ -109,7 +191,8 @@ pub async fn plan(ctx: &Ctx, user: &UserRow) -> AppResult<Plan> {
     let kept_sessions = count(
         ctx,
         &format!(
-            "SELECT COUNT(*) AS n FROM sessions WHERE created_by = ?1 AND project_id NOT IN ({SOLE_PROJECTS})"
+            "SELECT COUNT(*) AS n FROM sessions s JOIN projects p ON p.id = s.project_id \
+             WHERE s.created_by = ?1 AND (p.workspace_id IS NULL OR p.workspace_id NOT IN ({SOLE_WORKSPACES}))"
         ),
         &[s(&user.id)],
     )
@@ -117,24 +200,19 @@ pub async fn plan(ctx: &Ctx, user: &UserRow) -> AppResult<Plan> {
     let running = count(
         ctx,
         &format!(
-            "SELECT COUNT(*) AS n FROM sessions WHERE (created_by = ?1 OR project_id IN ({SOLE_PROJECTS})) AND status IN {ACTIVE}"
+            "SELECT COUNT(*) AS n FROM sessions s JOIN projects p ON p.id = s.project_id \
+             WHERE (s.created_by = ?1 OR p.workspace_id IN ({SOLE_WORKSPACES})) AND s.status IN {ACTIVE}"
         ),
         &[s(&user.id)],
     )
     .await?;
-    let last_owner = user.role() == InstanceRole::Owner
-        && count(
-            ctx,
-            "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND status = 'active' AND id != ?",
-            &[s(&user.id)],
-        )
-        .await?
-            == 0;
     Ok(Plan {
         sole,
+        projects,
+        successors,
         kept_sessions,
         running,
-        last_owner,
+        primary: user.role() == InstanceRole::Owner,
     })
 }
 
@@ -144,18 +222,28 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
     let db = &ctx.db;
     let id = user.id.as_str();
     let mut statements = Vec::new();
-    for p in &plan.sole {
+    for w in &plan.sole {
         statements.push(q(
             db,
-            "INSERT OR IGNORE INTO session_purges (session_id, queued_at) SELECT id, ? FROM sessions WHERE project_id = ?",
-            &[n(ctx.now), s(&p.id)],
+            "INSERT OR IGNORE INTO session_purges (session_id, queued_at) \
+             SELECT s.id, ? FROM sessions s JOIN projects p ON p.id = s.project_id WHERE p.workspace_id = ?",
+            &[n(ctx.now), s(&w.id)],
         )?);
         statements.push(q(
             db,
-            "INSERT OR IGNORE INTO file_purges (project_id, queued_at) VALUES (?, ?)",
-            &[s(&p.id), n(ctx.now)],
+            "INSERT OR IGNORE INTO file_purges (project_id, queued_at) SELECT id, ? FROM projects WHERE workspace_id = ?",
+            &[n(ctx.now), s(&w.id)],
         )?);
-        statements.push(q(db, "DELETE FROM projects WHERE id = ?", &[s(&p.id)])?);
+        statements.push(q(db, "DELETE FROM workspaces WHERE id = ?", &[s(&w.id)])?);
+    }
+    // Their addresses' invitations and allowlist entries go before the
+    // addresses do.
+    for sql in [
+        "DELETE FROM workspace_invitations WHERE email IN (SELECT email FROM user_emails WHERE user_id = ?1) OR email = ?2",
+        "DELETE FROM allowlist WHERE pattern IN (SELECT email FROM user_emails WHERE user_id = ?1) OR pattern = ?2",
+        "DELETE FROM invites WHERE email IN (SELECT email FROM user_emails WHERE user_id = ?1) OR email = ?2",
+    ] {
+        statements.push(q(db, sql, &[s(id), s(&user.email)])?);
     }
     for table in [
         "identities",
@@ -174,6 +262,8 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "sign_in_challenges",
         "passkeys",
         "passkey_challenges",
+        "workspace_members",
+        "user_emails",
     ] {
         statements.push(q(
             db,
@@ -181,16 +271,15 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
             &[s(id)],
         )?);
     }
-    statements.push(q(
-        db,
-        "DELETE FROM allowlist WHERE pattern = ?",
-        &[s(&user.email)],
-    )?);
-    statements.push(q(
-        db,
-        "DELETE FROM invites WHERE email = ?",
-        &[s(&user.email)],
-    )?);
+    // The primary admin role of their other workspaces passes on, once
+    // their membership is gone (one per workspace).
+    for w in &plan.successors {
+        statements.push(q(
+            db,
+            "UPDATE workspace_members SET role = 'owner' WHERE workspace_id = ? AND user_id = ?",
+            &[s(&w.id), s(&w.successor_id)],
+        )?);
+    }
     // A placeholder if what they created stays, otherwise nothing at all.
     statements.push(q(
         db,
@@ -212,12 +301,26 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
          AND NOT EXISTS (SELECT 1 FROM projects WHERE created_by = ?)",
         &[s(id), s(id), s(id)],
     )?);
+    let members: Vec<String> = plan
+        .successors
+        .iter()
+        .map(|w| w.successor_id.clone())
+        .collect();
     batch(db, statements).await?;
     if !plan.sole.is_empty() {
         let env = ctx.env.clone();
         let db = crate::db::handle(&ctx.db);
         ctx.defer(async move { crate::housekeeping::purge_deleted(&env, &db).await });
     }
+    for w in &plan.successors {
+        ctx.audit_in(
+            Some(&w.id),
+            "workspace.transferred",
+            Some(&w.successor_id),
+            Some(json!({ "from": id, "deleted": true })),
+        );
+    }
+    crate::workspaces::changed(ctx, members);
     Ok(())
 }
 
@@ -246,7 +349,7 @@ pub async fn delete(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     ctx.audit(
         "user.deleted",
         Some(&user.id),
-        Some(json!({ "self": true, "projects_deleted": plan.sole.len() })),
+        Some(json!({ "self": true, "workspaces_deleted": plan.sole.len(), "projects_deleted": plan.projects.len() })),
     );
     http::ok(&Done { ok: true })
 }
@@ -386,7 +489,6 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             "given_name": user.given_name,
             "family_name": user.family_name,
             "avatar_url": user.avatar_url,
-            "commit_email": user.commit_email,
             "role": user.role,
             "status": user.status,
             "has_password": user.password_hash.is_some(),
@@ -492,14 +594,32 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "followed_sessions".into(),
         rows(
             ctx,
-            // Only the ones they can still see, like the session list.
+            // Only the ones in their workspaces.
             "SELECT p.slug AS project, s.number, s.title, f.created_at AS followed_at FROM session_followers f \
              JOIN sessions s ON s.id = f.session_id JOIN projects p ON p.id = s.project_id \
-             LEFT JOIN project_members m ON m.project_id = s.project_id AND m.user_id = ?1 \
-             LEFT JOIN session_shares sh ON sh.session_id = s.id AND sh.user_id = ?1 \
-             WHERE f.user_id = ?1 AND (?2 OR m.role IS NOT NULL OR sh.role IS NOT NULL OR s.created_by = ?1) \
-             ORDER BY f.created_at",
-            &[s(&user.id), crate::db::b(user.is_admin())],
+             JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
+             WHERE f.user_id = ?1 ORDER BY f.created_at",
+            &[s(&user.id)],
+        )
+        .await?,
+    );
+    doc.insert(
+        "email_addresses".into(),
+        rows(
+            ctx,
+            "SELECT email, email = (SELECT email FROM users WHERE id = ?1) AS \"primary\", commit_email, created_at AS added_at \
+             FROM user_emails WHERE user_id = ?1 ORDER BY created_at",
+            &me(),
+        )
+        .await?,
+    );
+    doc.insert(
+        "workspaces".into(),
+        rows(
+            ctx,
+            "SELECT w.slug, w.name, m.role, m.email AS as_address, m.created_at AS joined_at \
+             FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ? ORDER BY m.created_at",
+            &me(),
         )
         .await?,
     );

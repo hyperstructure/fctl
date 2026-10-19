@@ -18,10 +18,12 @@ use fctl_proto::uplink::{Delivery, DeliveryKind};
 use fctl_proto::{ApiError, ErrorCode, UserId};
 use worker::{Request, Response};
 
-/// The credential a new session of `user` runs on.
+/// The credential a session `user` starts or resumes in `workspace_id`
+/// runs on: the one they chose for the workspace, else their default one.
 pub async fn default_credential(
     ctx: &Ctx,
     user: &crate::model::UserRow,
+    workspace_id: &str,
 ) -> AppResult<CredentialRow> {
     let creds: Vec<CredentialRow> = q(
         &ctx.db,
@@ -30,10 +32,17 @@ pub async fn default_credential(
     )?
     .all()
     .await?;
-    let chosen = user
-        .default_credential_id
+    let for_workspace = crate::workspaces::member(&ctx.db, workspace_id, &user.id)
+        .await?
+        .and_then(|m| m.credential_id);
+    let chosen = for_workspace
         .as_deref()
         .and_then(|id| creds.iter().find(|c| c.id == id))
+        .or_else(|| {
+            user.default_credential_id
+                .as_deref()
+                .and_then(|id| creds.iter().find(|c| c.id == id))
+        })
         .or_else(|| creds.first())
         .cloned();
     chosen.ok_or_else(|| {
@@ -88,7 +97,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         .map(|b| validate::branch("base_branch", b))
         .transpose()?
         .unwrap_or_else(|| p.row.default_branch.clone());
-    let credential = default_credential(ctx, &user).await?;
+    let credential = default_credential(ctx, &user, p.workspace_id()).await?;
     let id = fctl_domain::ids::session_id(ctx.now);
     // The task's files belong to the new session from here on.
     let attachments = internal::claim_files(&ctx.env, &p.row.id, &id, &user.id, &files).await?;
@@ -176,7 +185,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         },
     )
     .await?;
-    ctx.audit(
+    ctx.audit_in(
+        Some(p.workspace_id()),
         "session.created",
         Some(id.as_str()),
         Some(serde_json::json!({ "project": p.row.slug, "number": number })),
@@ -192,17 +202,27 @@ fn source_of(ctx: &Ctx) -> MessageSource {
     }
 }
 
+/// `GET /api/v1/sessions`: the sessions the caller sees, in all their
+/// workspaces (`?workspace=` one), newest first.
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let user = ctx.user()?;
+    let settings = ctx.settings();
     let limit = http::query(req, "limit")
         .and_then(|l| l.parse::<i64>().ok())
         .unwrap_or(50)
         .clamp(1, 200);
     let before = http::query(req, "before").and_then(|b| b.parse::<i64>().ok());
-    let mut sql = format!("{SESSION_SELECT} WHERE 1 = 1");
+    let mut sql = format!(
+        "{SESSION_SELECT} WHERE wm.user_id IS NOT NULL AND (wm.role IN ('owner', 'admin') OR w.base_role != 'none' \
+         OR m.role IS NOT NULL OR sh.role IS NOT NULL OR s.created_by = ?1)"
+    );
     let mut params = vec![s(&user.id)];
-    if !user.is_admin() {
-        sql.push_str(" AND (m.role IS NOT NULL OR sh.role IS NOT NULL OR s.created_by = ?1)");
+    if let Some(w) = http::query(req, "workspace") {
+        params.push(s(&w));
+        sql.push_str(&format!(
+            " AND (w.id = ?{n} OR w.slug = ?{n})",
+            n = params.len()
+        ));
     }
     if let Some(project) = http::query(req, "project") {
         let p = access::project(ctx, &project).await?;
@@ -246,7 +266,9 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     http::ok(&SessionList {
         sessions: rows
             .iter()
-            .map(|r| r.to_session(access::session_role(user, r)))
+            .filter_map(|r| {
+                access::session_role(user, &settings, r).map(|role| r.to_session(Some(role)))
+            })
             .collect(),
         next_before,
     })
@@ -421,7 +443,7 @@ pub async fn stop(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         },
     )
     .await?;
-    ctx.audit("session.stopped", Some(id), None);
+    ctx.audit_in(Some(a.workspace_id()), "session.stopped", Some(id), None);
     get(ctx, id).await
 }
 
@@ -448,7 +470,7 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         Some(validate::message_with_files("prompt", prompt, files.len())?)
     };
     // Resumed sessions run on the resumer's subscription.
-    let credential = default_credential(ctx, &user).await?;
+    let credential = default_credential(ctx, &user, a.workspace_id()).await?;
     let attachments = internal::claim_files(
         &ctx.env,
         &a.row.project_id,
@@ -500,7 +522,7 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         },
     )
     .await?;
-    ctx.audit("session.resumed", Some(id), None);
+    ctx.audit_in(Some(a.workspace_id()), "session.resumed", Some(id), None);
     get(ctx, id).await
 }
 
@@ -574,8 +596,11 @@ pub async fn shares(ctx: &Ctx, id: &str) -> AppResult<Response> {
     access::session(ctx, id).await?;
     let rows: Vec<ShareRow> = q(
         &ctx.db,
-        "SELECT sh.user_id, u.name, u.email, u.avatar_url, sh.role, sh.created_at FROM session_shares sh \
-         JOIN users u ON u.id = sh.user_id WHERE sh.session_id = ? ORDER BY sh.created_at",
+        "SELECT sh.user_id, u.name, COALESCE(wm.email, u.email) AS email, u.avatar_url, sh.role, sh.created_at \
+         FROM session_shares sh JOIN users u ON u.id = sh.user_id JOIN sessions x ON x.id = sh.session_id \
+         JOIN projects p ON p.id = x.project_id \
+         LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = sh.user_id \
+         WHERE sh.session_id = ? ORDER BY sh.created_at",
         &[s(id)],
     )?
     .all()
@@ -601,17 +626,26 @@ pub async fn add_share(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<
     let body: CreateShareRequest = http::body(req).await?;
     let a = access::session(ctx, id).await?;
     a.require_owner()?;
-    if body.role == SessionRole::Owner
-        && a.row.created_by != ctx.user()?.id
-        && !ctx.user()?.is_admin()
-    {
+    let workspace_admin = a
+        .row
+        .workspace
+        .workspace_role
+        .as_deref()
+        .and_then(fctl_proto::session::WorkspaceRole::parse)
+        .is_some_and(fctl_proto::session::WorkspaceRole::is_admin);
+    if body.role == SessionRole::Owner && a.row.created_by != ctx.user()?.id && !workspace_admin {
         return Err(forbidden(
             "Only the person who started the session can share ownership",
         ));
     }
-    let target = crate::api::auth::lookup_user_by_email(ctx, &body.email)
+    let target = crate::api::auth::member_by_email(ctx, a.workspace_id(), &body.email)
         .await?
-        .ok_or_else(|| validation("email", "No one with this email has an account yet"))?;
+        .ok_or_else(|| {
+            validation(
+                "email",
+                "No one in this workspace has this address. Sessions are shared with its people.",
+            )
+        })?;
     q(
         &ctx.db,
         "INSERT INTO session_shares (session_id, user_id, role, created_by, created_at) VALUES (?, ?, ?, ?, ?) \
@@ -620,7 +654,8 @@ pub async fn add_share(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<
     )?
     .run()
     .await?;
-    ctx.audit(
+    ctx.audit_in(
+        Some(a.workspace_id()),
         "session.shared",
         Some(id),
         Some(serde_json::json!({ "user": target.id, "role": body.role.as_str() })),
