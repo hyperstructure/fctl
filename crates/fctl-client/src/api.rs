@@ -207,6 +207,24 @@ impl Api {
         .await
     }
 
+    // ── passkeys ──
+
+    /// Renames one of your passkeys.
+    pub async fn rename_passkey(&self, id: &str, name: &str) -> Result<Me> {
+        self.patch(
+            &format!("/me/passkeys/{}", enc(id)),
+            &UpdatePasskeyRequest {
+                name: name.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Removes one of your passkeys.
+    pub async fn remove_passkey(&self, id: &str) -> Result<Me> {
+        self.delete(&format!("/me/passkeys/{}", enc(id))).await
+    }
+
     // ── notifications ──
 
     /// What notifies you, and the browsers that show your notifications.

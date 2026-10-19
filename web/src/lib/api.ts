@@ -121,6 +121,16 @@ export const api = {
     request<G.Me>("POST", "/me/two-factor/authenticator/remove", b),
   newRecoveryCodes: (b: G.TwoFactorCodeRequest) =>
     request<G.RecoveryCodes>("POST", "/me/two-factor/recovery-codes", b),
+  /** What the browser needs to make a passkey; takes the password unless this browser just signed in. */
+  passkeyOptions: (b: G.PasskeyOptionsRequest = {}) =>
+    request<G.PasskeyCreationOptions>("POST", "/me/passkeys/options", b),
+  addPasskey: (b: G.AddPasskeyRequest) => request<G.Me>("POST", "/me/passkeys", b),
+  renamePasskey: (id: string, name: string) => request<G.Me>("PATCH", `/me/passkeys/${enc(id)}`, { name }),
+  removePasskey: (id: string) => request<G.Me>("DELETE", `/me/passkeys/${enc(id)}`),
+  passkeySignInOptions: () => request<G.PasskeyRequestOptions>("POST", "/auth/passkey/options", {}),
+  passkeySignIn: (b: G.PasskeySignInRequest) => request<G.AuthResponse>("POST", "/auth/passkey", b),
+  /** Options to finish the waiting sign-in with a passkey instead of a code. */
+  twoFactorPasskeyOptions: () => request<G.PasskeyRequestOptions>("POST", "/auth/two-factor/passkey", {}),
   accountDeletion: () => request<G.AccountDeletion>("GET", "/me/deletion"),
   deleteAccount: (b: G.DeleteAccountRequest) => request<G.Ok>("POST", "/me/delete", b),
   device: (code: string) => request<G.DeviceInfo>("GET", `/auth/device/${enc(code)}`),

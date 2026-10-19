@@ -1,6 +1,6 @@
-// Settings: profile, Claude, notifications, sign-in methods, two-factor
-// sign-in, devices and tokens, appearance, your data (export) and the danger
-// zone (deleting the account).
+// Settings: profile, Claude, notifications, sign-in methods, passkeys,
+// two-factor sign-in, devices and tokens, appearance, your data (export) and
+// the danger zone (deleting the account).
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
@@ -22,6 +22,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
 import { ConfirmWithCode } from "@/components/two-factor/confirm-code";
 import { RecoveryCodes } from "@/components/two-factor/recovery-codes";
@@ -81,6 +82,7 @@ export function SettingsPage() {
         <Claude me={me} />
         <Notifications me={me} />
         <SignIn me={me} />
+        <PasskeySettings me={me} />
         <TwoFactorSettings me={me} />
         <Tokens />
         <Appearance />
@@ -780,7 +782,7 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
       description={
         <>
           A code from an app on your phone after your password, so that a password alone can't sign anyone in.
-          {t.required && " This instance requires it."}
+          {t.required && " This instance requires it, or a passkey."}
         </>
       }
     >
@@ -819,7 +821,7 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
                 <Button size="sm" variant="ghost" onClick={() => setDialog("replace")}>
                   Replace
                 </Button>
-                {!t.required && (
+                {(!t.required || me.passkeys.length > 0) && (
                   <Button size="sm" variant="ghost" onClick={() => setDialog("off")}>
                     Turn off
                   </Button>
@@ -913,8 +915,12 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
       <Dialog
         open={dialog === "off"}
         onClose={close}
-        title="Turn off two-factor sign-in?"
-        description="Signing in will take your password alone, and your recovery codes stop working. Enter a code to confirm it's you."
+        title={t.required ? "Remove your authenticator app?" : "Turn off two-factor sign-in?"}
+        description={
+          t.required
+            ? "Your passkeys stay your second factor, and your recovery codes stop working. Enter a code to confirm it's you."
+            : "Signing in will take your password alone, and your recovery codes stop working. Enter a code to confirm it's you."
+        }
       >
         {dialog === "off" && (
           <ConfirmWithCode
@@ -1098,9 +1104,9 @@ function YourData() {
     >
       <div className="flex flex-col items-start gap-4">
         <p className="max-w-xl text-[13.5px] leading-relaxed text-ink-3">
-          Your account, sign-in methods and two-factor sign-in, devices and tokens, Claude connections
-          (without their secrets), notification settings and browsers, projects, the sessions you started with
-          their full transcripts, the sessions you follow, and your activity log.
+          Your account, sign-in methods, passkeys and two-factor sign-in, devices and tokens, Claude
+          connections (without their secrets), notification settings and browsers, projects, the sessions you
+          started with their full transcripts, the sessions you follow, and your activity log.
         </p>
         <a
           href="/api/v1/me/export"

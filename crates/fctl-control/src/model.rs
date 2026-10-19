@@ -43,6 +43,9 @@ pub struct UserRow {
     /// When their authenticator app was set up, if it was.
     #[serde(deserialize_with = "opt_int", default)]
     pub totp_at: Option<i64>,
+    /// How many passkeys they have.
+    #[serde(deserialize_with = "int", default)]
+    pub passkeys: i64,
 }
 
 impl UserRow {
@@ -62,9 +65,17 @@ impl UserRow {
         self.password_hash.is_some()
     }
 
-    /// Whether they have a second factor for sign-ins to ask for.
+    /// Whether they have an authenticator app: two-factor sign-in is on.
     pub fn has_second_factor(&self) -> bool {
         self.totp_at.is_some()
+    }
+
+    /// What they have beyond a password or Google.
+    pub fn factors(&self) -> fctl_domain::two_factor::Factors {
+        fctl_domain::two_factor::Factors {
+            authenticator: self.totp_at.is_some(),
+            passkeys: self.passkeys > 0,
+        }
     }
 
     pub fn user_id(&self) -> UserId {
@@ -83,6 +94,7 @@ impl UserRow {
             status: UserStatus::parse(&self.status).unwrap_or(UserStatus::Disabled),
             has_password: self.has_password(),
             two_factor: self.has_second_factor(),
+            passkeys: self.passkeys.max(0) as u32,
             created_at: self.created_at,
             last_login_at: self.last_login_at,
         }
@@ -120,6 +132,9 @@ pub fn user_columns(alias: &str) -> String {
     .collect();
     columns.push(format!(
         "(SELECT a.created_at FROM authenticator_apps a WHERE a.user_id = {alias}.id) AS totp_at"
+    ));
+    columns.push(format!(
+        "(SELECT COUNT(*) FROM passkeys p WHERE p.user_id = {alias}.id) AS passkeys"
     ));
     columns.join(", ")
 }

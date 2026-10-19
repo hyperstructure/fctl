@@ -19,7 +19,9 @@ use crate::http::{self, CHALLENGE_COOKIE};
 use crate::model::UserRow;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::totp;
-use fctl_domain::two_factor::{self as policy, CHALLENGE_TTL_MS, FRESH_SIGN_IN_MS, SETUP_TTL_MS};
+use fctl_domain::two_factor::{
+    self as policy, CHALLENGE_TTL_MS, FRESH_SIGN_IN_MS, Factors, SETUP_TTL_MS,
+};
 use fctl_proto::api::*;
 use fctl_proto::session::InstanceRole;
 use fctl_proto::{ApiError, ErrorCode};
@@ -32,6 +34,8 @@ use worker::{Method, Request, Response};
 struct StatusRow {
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     since: Option<i64>,
+    #[serde(deserialize_with = "crate::db::int", default)]
+    passkeys: i64,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     used_at: Option<i64>,
     #[serde(deserialize_with = "crate::db::int", default)]
@@ -48,6 +52,7 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
             "SELECT (SELECT created_at FROM authenticator_apps WHERE user_id = ?1) AS since, \
              (SELECT last_used_at FROM authenticator_apps WHERE user_id = ?1) AS used_at, \
              (SELECT COUNT(*) FROM recovery_codes WHERE user_id = ?1 AND used_at IS NULL) AS codes, \
+             (SELECT COUNT(*) FROM passkeys WHERE user_id = ?1) AS passkeys, \
              (SELECT value FROM settings WHERE key = '{}') AS settings",
             crate::instance::KEY
         ),
@@ -58,6 +63,10 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
     let row = row.ok_or_else(|| internal("two-factor status: no row"))?;
     let settings = crate::instance::parse(row.settings.as_deref());
     let has_password = user.has_password();
+    let factors = Factors {
+        authenticator: row.since.is_some(),
+        passkeys: row.passkeys > 0,
+    };
     Ok(TwoFactor {
         authenticator_since: row.since,
         authenticator_used_at: row.used_at,
@@ -65,7 +74,7 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
         google: user.two_factor_google,
         google_required: settings.two_factor_google,
         required: policy::required(&settings, has_password),
-        setup_required: policy::setup_required(&settings, has_password, row.since.is_some()),
+        setup_required: policy::setup_required(&settings, has_password, factors),
     })
 }
 
@@ -108,7 +117,7 @@ async fn me(ctx: &Ctx, user_id: &str) -> AppResult<Response> {
 
 /// While the instance requires two-factor of an account that has none, the
 /// requests it may still make: everything that needs no sign-in, who it is,
-/// signing out, and setting up an authenticator app.
+/// signing out, and setting up an authenticator app or a passkey.
 pub fn open_while_required(method: &Method, segs: &[&str]) -> bool {
     use Method::*;
     matches!(
@@ -126,6 +135,8 @@ pub fn open_while_required(method: &Method, segs: &[&str]) -> bool {
             | (Get | Patch, ["me", "two-factor"])
             | (Post, ["me", "two-factor", "authenticator"])
             | (Post, ["me", "two-factor", "authenticator", "confirm"])
+            | (Post, ["auth", "passkey"] | ["auth", "passkey", "options"])
+            | (Post, ["me", "passkeys"] | ["me", "passkeys", "options"])
     )
 }
 
@@ -194,18 +205,26 @@ async fn describe(
     reason: ChallengeReason,
     expires_at: i64,
 ) -> AppResult<TwoFactorChallenge> {
-    let locked_until = app(ctx, &user.id)
-        .await?
-        .and_then(|a| a.locked_until)
-        .filter(|t| *t > ctx.now);
+    let app = app(ctx, &user.id).await?;
+    let codes = unused_codes(ctx, &user.id).await?;
+    let mut methods = Vec::new();
+    if app.is_some() {
+        methods.push(SecondFactor::Totp);
+    }
+    if user.passkeys > 0 {
+        methods.push(SecondFactor::Passkey);
+    }
+    if codes > 0 {
+        methods.push(SecondFactor::RecoveryCode);
+    }
     Ok(TwoFactorChallenge {
         name: user.name.clone(),
         email: user.email.clone(),
         avatar_url: user.avatar_url.clone(),
         reason,
-        methods: vec![SecondFactor::Totp, SecondFactor::RecoveryCode],
+        methods,
         expires_at,
-        locked_until,
+        locked_until: app.and_then(|a| a.locked_until).filter(|t| *t > ctx.now),
     })
 }
 
@@ -242,6 +261,12 @@ async fn waiting(ctx: &Ctx, req: &Request) -> AppResult<(String, ChallengeRow)> 
     .await?;
     let row = row.filter(|r| r.expires_at > ctx.now).ok_or_else(expired)?;
     Ok((hash, row))
+}
+
+/// The request's waiting sign-in: its hash and whose it is.
+pub async fn waiting_sign_in(ctx: &Ctx, req: &Request) -> AppResult<(String, String)> {
+    let (hash, row) = waiting(ctx, req).await?;
+    Ok((hash, row.user_id))
 }
 
 async fn active_user(ctx: &Ctx, id: &str) -> AppResult<UserRow> {
@@ -301,7 +326,15 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     ctx.rate_limit(&format!("2fa-user:{}", row.user_id)).await?;
     let user = active_user(ctx, &row.user_id).await?;
     let reason = ChallengeReason::parse(&row.reason).ok_or_else(expired)?;
-    let valid = check_code(ctx, &user, &body.code).await?;
+    // A passkey is checked and used up here; a code only checked, and used
+    // up once the challenge is claimed.
+    let valid = match (&body.passkey, body.code.as_deref()) {
+        (Some(passkey), _) => Valid::Passkey {
+            name: crate::api::passkeys::second_factor(ctx, &user, &hash, passkey).await?,
+        },
+        (None, Some(code)) => check_code(ctx, &user, code).await?,
+        (None, None) => return Err(validation("code", "Enter a code")),
+    };
     // One sign-in per challenge, however many requests race for it; the
     // code is used up only by the request that got the challenge.
     let spent = q(
@@ -320,9 +353,10 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         apply_reset(ctx, &user, &row).await?;
     }
     auth::start_web_session(ctx, &user).await?;
-    let factor = match used {
-        CodeUse::Totp => "totp",
-        CodeUse::Recovery { .. } => "recovery_code",
+    let (factor, passkey) = match &used {
+        CodeUse::Totp => ("totp", None),
+        CodeUse::Recovery { .. } => ("recovery_code", None),
+        CodeUse::Passkey { name } => ("passkey", Some(name.clone())),
     };
     ctx.audit(
         if reason == ChallengeReason::PasswordReset {
@@ -331,7 +365,9 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "user.login"
         },
         Some(&user.id),
-        Some(serde_json::json!({ "via": reason.as_str(), "two_factor": factor })),
+        Some(
+            serde_json::json!({ "via": reason.as_str(), "two_factor": factor, "passkey": passkey }),
+        ),
     );
     let recovery_codes_left = match used {
         CodeUse::Recovery { left } => {
@@ -339,7 +375,7 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             recovery_code_notice(ctx, &user, &name, left);
             Some(left)
         }
-        CodeUse::Totp => None,
+        CodeUse::Totp | CodeUse::Passkey { .. } => None,
     };
     http::ok(&AuthResponse {
         me: Some(auth::me(ctx, &user).await?),
@@ -432,16 +468,25 @@ fn totp_aad(user_id: &str) -> String {
     format!("totp:{user_id}")
 }
 
-/// A code that checked out, not used up yet ([`use_code`]).
+/// A second factor that checked out, not used up yet ([`use_code`]).
 enum Valid {
-    Totp { step: i64 },
-    Recovery { hash: String },
+    Totp {
+        step: i64,
+    },
+    Recovery {
+        hash: String,
+    },
+    /// A passkey, by name: its challenge is used up already.
+    Passkey {
+        name: String,
+    },
 }
 
-/// Which second factor a code was, once used.
-enum CodeUse {
+/// Which second factor it was, once used.
+pub enum CodeUse {
     Totp,
     Recovery { left: u32 },
+    Passkey { name: String },
 }
 
 fn locked(until: i64, now: i64) -> AppError {
@@ -531,11 +576,12 @@ async fn use_code(ctx: &Ctx, user: &UserRow, valid: Valid) -> AppResult<CodeUse>
                 left: unused_codes(ctx, &user.id).await?,
             })
         }
+        Valid::Passkey { name } => Ok(CodeUse::Passkey { name }),
     }
 }
 
 /// Checks a code and uses it up, to confirm a change to two-factor sign-in.
-async fn confirm_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<CodeUse> {
+pub async fn confirm_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<CodeUse> {
     let valid = check_code(ctx, user, typed).await?;
     use_code(ctx, user, valid).await
 }
@@ -659,15 +705,19 @@ fn setup_aad(user_id: &str) -> String {
     format!("totp-setup:{user_id}")
 }
 
-/// Setting up an app takes the password, unless this browser signed in
-/// within the last 15 minutes. A CLI or access token always takes it: either
-/// can be made from a browser session that signed in long ago.
-fn password_required(ctx: &Ctx, user: &UserRow) -> bool {
-    let fresh = ctx
-        .auth
+/// Whether this browser signed in within the last 15 minutes. A CLI or
+/// access token never counts: either can be made from a browser session
+/// that signed in long ago.
+pub fn fresh_sign_in(ctx: &Ctx) -> bool {
+    ctx.auth
         .as_ref()
-        .is_some_and(|a| a.kind == TokenKind::Web && a.signed_in_at >= ctx.now - FRESH_SIGN_IN_MS);
-    user.has_password() && !fresh
+        .is_some_and(|a| a.kind == TokenKind::Web && a.signed_in_at >= ctx.now - FRESH_SIGN_IN_MS)
+}
+
+/// Setting up an app takes the password, unless this browser signed in
+/// within the last 15 minutes.
+fn password_required(ctx: &Ctx, user: &UserRow) -> bool {
+    user.has_password() && !fresh_sign_in(ctx)
 }
 
 /// `POST /api/v1/me/two-factor/authenticator`: a new secret, its link and
@@ -824,7 +874,7 @@ pub async fn remove_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult
     let user = ctx.user()?.clone();
     ctx.rate_limit(&format!("2fa-user:{}", user.id)).await?;
     let settings = crate::instance::settings(&ctx.db).await?;
-    if !policy::can_turn_off(&settings, user.has_password()) {
+    if !policy::can_turn_off(&settings, user.has_password(), user.factors()) {
         return Err(conflict(
             "This instance requires two-factor sign-in, so it stays on. To move it to a new phone, replace the authenticator app instead.",
         ));
@@ -897,10 +947,19 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             "Only owners can reset an owner's two-factor sign-in",
         ));
     }
-    if !target.has_second_factor() {
-        return Err(conflict("They don't have two-factor sign-in"));
+    let factors = target.factors();
+    if !(factors.authenticator || factors.passkeys) {
+        return Err(conflict("They have no authenticator app or passkeys"));
     }
-    batch(&ctx.db, forget_statements(ctx, &target.id)?).await?;
+    // Everything beyond the password: a passkey on the lost phone must not
+    // stay the second factor nobody has.
+    let mut statements = forget_statements(ctx, &target.id)?;
+    statements.push(q(
+        &ctx.db,
+        "DELETE FROM passkeys WHERE user_id = ?",
+        &[s(&target.id)],
+    )?);
+    batch(&ctx.db, statements).await?;
     ctx.audit("two_factor.reset", Some(&target.id), None);
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     let settings = crate::instance::settings(&ctx.db).await?;
@@ -917,7 +976,7 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         &target,
         "Two-factor sign-in was reset",
         format!(
-            "{} turned off two-factor sign-in for your {name} account ({}): your authenticator app's codes and your recovery codes no longer work. {again}\n\nIf you didn't ask for this, tell them, and change your password.",
+            "{} turned off two-factor sign-in for your {name} account ({}): your authenticator app's codes, your recovery codes and your passkeys no longer work. {again}\n\nIf you didn't ask for this, tell them, and change your password.",
             actor.name, target.email
         ),
     );

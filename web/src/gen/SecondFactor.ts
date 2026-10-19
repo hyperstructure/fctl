@@ -3,4 +3,4 @@
 /**
  * What can finish a sign-in that waits for its second factor.
  */
-export type SecondFactor = "totp" | "recovery_code";
+export type SecondFactor = "totp" | "recovery_code" | "passkey";

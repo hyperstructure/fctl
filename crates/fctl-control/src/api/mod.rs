@@ -5,6 +5,7 @@ pub mod auth;
 pub mod claude;
 pub mod google;
 pub mod notifications;
+pub mod passkeys;
 pub mod projects;
 pub mod published;
 pub mod repos;

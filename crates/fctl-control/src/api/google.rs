@@ -252,7 +252,8 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         if fctl_domain::two_factor::asks(
             &settings,
             fctl_domain::two_factor::Via::Google,
-            user.has_second_factor(),
+            user.has_password(),
+            user.factors(),
             user.two_factor_google,
         ) {
             // The page that asks for the code finishes it, then goes on to
@@ -370,10 +371,10 @@ pub async fn unlink(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     )?
     .first()
     .await?;
-    if user.password_hash.is_none() && others.map_or(0, |c| c.n) == 0 {
+    if user.password_hash.is_none() && user.passkeys == 0 && others.map_or(0, |c| c.n) == 0 {
         return Err(AppError(ApiError::new(
             ErrorCode::Conflict,
-            "Set a password first, or you would have no way to sign in",
+            "Set a password or add a passkey first, or you would have no way to sign in",
         )));
     }
     let changed = q(

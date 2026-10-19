@@ -1,18 +1,38 @@
-// The second step of a sign-in: a code from the authenticator app, or a
-// recovery code. The login and reset pages show it in place of their form,
-// and /two-factor shows it after Google.
+// The second step of a sign-in: a code from the authenticator app, a
+// passkey, or a recovery code. The login and reset pages show it in place of
+// their form, and /two-factor shows it after Google.
 
-import { useMutation } from "@tanstack/react-query";
-import { ArrowRight, Clock } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { ArrowRight, Clock, Fingerprint } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { usePasskeySupport } from "@/components/passkeys/settings";
 import { Avatar, Banner, Button, CodeInput, Input } from "@/components/ui";
 import type * as G from "@/gen";
 import { type ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { cancelled, getPasskey, passkeyError, rpId, signalUnknown } from "@/lib/passkeys";
 import { clock, formatRecoveryCode, isRecoveryCode } from "@/lib/two-factor";
 
-/** The page's title and subtitle while a sign-in waits for its code. */
+type Mode = "app" | "passkey" | "recovery";
+
+/** The page's title and subtitle while a sign-in waits for its second factor. */
 export function challengeCopy(c: G.TwoFactorChallenge | null | undefined, instance?: string) {
+  if (c && !c.methods.includes("totp") && c.methods.includes("passkey")) {
+    switch (c.reason) {
+      case "password_reset":
+        return {
+          title: "Confirm it's you.",
+          subtitle: "Your new password takes effect once you confirm it's you with your passkey.",
+        };
+      case "google":
+        return {
+          title: "One more step.",
+          subtitle: "Google signed you in. Now confirm it's you with your passkey.",
+        };
+      default:
+        return { title: "One more step.", subtitle: "Confirm it's you with your passkey." };
+    }
+  }
   const it = instance ? `the code it shows for ${instance}` : "the code it shows";
   switch (c?.reason) {
     case "password_reset":
@@ -54,7 +74,22 @@ export function SecondFactorStep({
   /** Back to the first step: the sign-in is forgotten. */
   onRestart: () => void;
 }) {
-  const [mode, setMode] = useState<"app" | "recovery">("app");
+  const has = (m: G.SecondFactor) => challenge.methods.includes(m);
+  const [mode, setMode] = useState<Mode>(has("totp") ? "app" : has("passkey") ? "passkey" : "recovery");
+  const support = usePasskeySupport();
+  const passkeys = has("passkey") && !!support?.supported;
+  // Fetched ahead, so that the click opens the browser's passkey sheet at once.
+  const passkeyOptions = useQuery({
+    queryKey: ["two-factor-passkey", challenge.expires_at],
+    queryFn: api.twoFactorPasskeyOptions,
+    enabled: passkeys,
+    retry: false,
+    staleTime: 8 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const [passkeyFailure, setPasskeyFailure] = useState<string | null>(null);
+  // The passkey that answered last, for its provider to forget if fctl doesn't know it.
+  const answered = useRef<string | null>(null);
   const [code, setCode] = useState("");
   const [recovery, setRecovery] = useState("");
   const [errors, setErrors] = useState(0);
@@ -66,7 +101,7 @@ export function SecondFactorStep({
   const recoveryRef = useRef<HTMLInputElement>(null);
   const hintId = useId();
   const verify = useMutation({
-    mutationFn: (c: string) => api.verifyTwoFactor({ code: c }),
+    mutationFn: (b: G.VerifyTwoFactorRequest) => api.verifyTwoFactor(b),
     onSuccess: (r) => setTimeout(() => onSignedIn(r), 420),
     onError: (e: ApiFailure) => {
       if (e.code === "rate_limited" && e.retryAfter) {
@@ -74,7 +109,11 @@ export function SecondFactorStep({
         setCode("");
         setRecovery("");
       } else if (e.code === "unauthorized") setExpired(true);
-      else if (e.field === "code") {
+      else if (e.field === "passkey" || e.status === 404) {
+        if (e.status === 404 && answered.current) signalUnknown(rpId(), answered.current);
+        setPasskeyFailure(e.message);
+        void passkeyOptions.refetch();
+      } else if (e.field === "code") {
         setErrors((n) => n + 1);
         setCode("");
         setRecovery("");
@@ -88,13 +127,35 @@ export function SecondFactorStep({
   }, [challenge.expires_at]);
   // Back from a wait: the field takes codes again.
   useEffect(() => {
-    if (!locked) (mode === "app" ? codeRef : recoveryRef).current?.focus();
+    if (!locked) (mode === "app" ? codeRef : mode === "recovery" ? recoveryRef : null)?.current?.focus();
   }, [locked, mode]);
   const error = verify.error as ApiFailure | null;
   const cancel = useMutation({ mutationFn: api.cancelTwoFactor, onSettled: onRestart });
   // The wait holds back codes from the app; recovery codes still work.
   const send = (c: string) => {
-    if (!verify.isPending && !verify.isSuccess && !(locked && mode === "app")) verify.mutate(c);
+    if (!verify.isPending && !verify.isSuccess && !(locked && mode === "app")) verify.mutate({ code: c });
+  };
+  const usePasskey = () => {
+    const options = passkeyOptions.data;
+    if (!options || verify.isPending) return;
+    setPasskeyFailure(null);
+    verify.reset();
+    getPasskey(options)
+      .then((passkey) => {
+        answered.current = passkey.id;
+        verify.mutate({ passkey });
+        // Each challenge works once.
+        void passkeyOptions.refetch();
+      })
+      .catch((e) => {
+        if (!cancelled(e)) setPasskeyFailure(passkeyError(e));
+        void passkeyOptions.refetch();
+      });
+  };
+  const switchTo = (m: Mode) => {
+    setMode(m);
+    setPasskeyFailure(null);
+    verify.reset();
   };
 
   if (expired)
@@ -104,6 +165,18 @@ export function SecondFactorStep({
           This sign-in took too long. Start again: it takes your password, then a new code.
         </Banner>
         <Button variant="primary" size="lg" onClick={() => cancel.mutate()} loading={cancel.isPending}>
+          Start again
+        </Button>
+      </div>
+    );
+  if (!has("totp") && !has("recovery_code") && support && !support.supported)
+    return (
+      <div className="flex flex-col gap-4">
+        <Banner tone="warn">
+          Your account's second factor is a passkey, and this browser can't use passkeys. Sign in in another
+          browser, or ask an admin to reset your two-factor sign-in.
+        </Banner>
+        <Button variant="secondary" size="lg" onClick={() => cancel.mutate()} loading={cancel.isPending}>
           Start again
         </Button>
       </div>
@@ -136,7 +209,38 @@ export function SecondFactorStep({
         </button>
       </div>
 
-      {mode === "app" ? (
+      {mode === "passkey" ? (
+        <div className="flex flex-col items-center gap-3 py-1">
+          <span
+            className={cn(
+              "flex size-14 items-center justify-center rounded-full bg-accent-soft text-accent transition-transform duration-300",
+              verify.isPending && "animate-pulse",
+              verify.isSuccess && "scale-110",
+            )}
+          >
+            <Fingerprint className="size-7" />
+          </span>
+          <Button
+            variant="primary"
+            size="lg"
+            className="w-full"
+            onClick={usePasskey}
+            loading={verify.isPending}
+            disabled={!passkeyOptions.data || verify.isSuccess}
+            icon={verify.isPending ? undefined : <Fingerprint className="size-4" />}
+          >
+            Use your passkey
+          </Button>
+          <p
+            className={cn("text-center text-[12.5px]", passkeyFailure ? "text-danger" : "text-ink-4")}
+            role={passkeyFailure ? "alert" : undefined}
+          >
+            {passkeyFailure ??
+              passkeyOptions.error?.message ??
+              "Your browser asks for your fingerprint, face or screen lock."}
+          </p>
+        </div>
+      ) : mode === "app" ? (
         <form
           className="flex flex-col items-center gap-3"
           onSubmit={(e) => {
@@ -163,10 +267,7 @@ export function SecondFactorStep({
             locked={locked}
             lockedUntil={lockedUntil}
             now={now}
-            onRecovery={() => {
-              setMode("recovery");
-              verify.reset();
-            }}
+            onRecovery={has("recovery_code") ? () => switchTo("recovery") : undefined}
           />
           <button type="submit" className="sr-only">
             Sign in
@@ -223,30 +324,29 @@ export function SecondFactorStep({
         <Banner tone="error">{error.message}</Banner>
       )}
 
-      <div className="text-center text-[12.5px] text-ink-3">
-        {mode === "app" ? (
+      <div className="flex flex-col items-center gap-1.5 text-center text-[12.5px] text-ink-3">
+        {mode !== "passkey" && passkeys && (
           <button
             type="button"
-            className="hover:text-ink"
-            onClick={() => {
-              setMode("recovery");
-              verify.reset();
-            }}
+            className="group inline-flex items-center gap-1.5 hover:text-ink"
+            onClick={() => switchTo("passkey")}
           >
-            Lost your phone?{" "}
-            <span className="text-ink-2 underline underline-offset-2">Use a recovery code</span>
+            <Fingerprint className="size-3.5" />
+            <span className="text-ink-2 underline underline-offset-2 group-hover:text-ink">
+              Use a passkey instead
+            </span>
           </button>
-        ) : (
-          <button
-            type="button"
-            className="hover:text-ink"
-            onClick={() => {
-              setMode("app");
-              verify.reset();
-            }}
-          >
+        )}
+        {mode !== "app" && has("totp") && (
+          <button type="button" className="hover:text-ink" onClick={() => switchTo("app")}>
             <span className="text-ink-2 underline underline-offset-2">Use your authenticator app</span>{" "}
             instead
+          </button>
+        )}
+        {mode !== "recovery" && has("recovery_code") && (
+          <button type="button" className="hover:text-ink" onClick={() => switchTo("recovery")}>
+            {mode === "app" ? "Lost your phone? " : ""}
+            <span className="text-ink-2 underline underline-offset-2">Use a recovery code</span>
           </button>
         )}
       </div>

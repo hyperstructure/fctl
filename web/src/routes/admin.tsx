@@ -3,7 +3,7 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
-import { Cpu, Globe, Link2, MailPlus, Plus, ShieldCheck, ShieldOff, Trash2 } from "lucide-react";
+import { Cpu, Fingerprint, Globe, Link2, MailPlus, Plus, ShieldCheck, ShieldOff, Trash2 } from "lucide-react";
 import { useState } from "react";
 import {
   Avatar,
@@ -195,13 +195,13 @@ const instanceRoles = (actor?: G.InstanceRole): SelectOption<G.InstanceRole>[] =
   { value: "owner", label: "Owner", description: "Also manages admins", disabled: actor !== "owner" },
 ];
 
+/** Whether a user has what requiring two-factor asks for: an authenticator app or a passkey. */
+const secured = (u: G.User) => u.two_factor || u.passkeys > 0;
+
 /** Whether the instance's settings require two-factor of a user who doesn't have it. */
 function lacksTwoFactor(u: G.User, s?: G.InstanceSettings) {
   return (
-    !!s?.require_two_factor &&
-    !u.two_factor &&
-    u.status === "active" &&
-    (u.has_password || s.two_factor_google)
+    !!s?.require_two_factor && !secured(u) && u.status === "active" && (u.has_password || s.two_factor_google)
   );
 }
 
@@ -252,6 +252,16 @@ function Users() {
                       <ShieldCheck className="size-3.5" aria-label="Two-factor sign-in is on" />
                     </span>
                   )}
+                  {u.passkeys > 0 && (
+                    <span
+                      title={
+                        u.passkeys === 1 ? "Signs in with a passkey" : `Signs in with ${u.passkeys} passkeys`
+                      }
+                      className="text-accent"
+                    >
+                      <Fingerprint className="size-3.5" aria-label={`${u.passkeys} passkeys`} />
+                    </span>
+                  )}
                   {u.id === me?.user.id && <span className="text-[12px] text-ink-4">you</span>}
                 </div>
                 <div className="truncate text-[12px] text-ink-4">
@@ -280,7 +290,7 @@ function Users() {
                     >
                       Reset link
                     </Button>
-                    {u.two_factor && (
+                    {secured(u) && (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -325,8 +335,8 @@ function Users() {
       >
         <div className="flex flex-col gap-5">
           <p className="text-[13.5px] leading-relaxed text-ink-2">
-            Their authenticator app's codes and their recovery codes stop working, and they are emailed about
-            it when email is set up.{" "}
+            Their authenticator app's codes, recovery codes and passkeys stop working, and they are emailed
+            about it when email is set up.{" "}
             {settings.data?.require_two_factor
               ? "This instance requires two-factor, so they set it up again before they can do anything else."
               : "Their password alone signs them in until they set it up again."}
@@ -723,7 +733,7 @@ function SignInSettings({
     two_factor_google: false,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
-  const using = active.filter((u) => u.two_factor);
+  const using = active.filter(secured);
   const missingWith = (next: G.InstanceSettings) => active.filter((u) => lacksTwoFactor(u, next));
   const missingNow = missingWith(current);
   // Who requiring it would stop until they set it up.
@@ -764,7 +774,7 @@ function SignInSettings({
             <div className="flex items-baseline justify-between gap-3 text-[12.5px]">
               <span className="text-ink-2">
                 <span className="font-medium text-ink tabular-nums">{using.length}</span> of {active.length}{" "}
-                {active.length === 1 ? "person uses" : "people use"} two-factor sign-in
+                {active.length === 1 ? "person has" : "people have"} an authenticator app or a passkey
               </span>
               <span className="font-mono text-[11.5px] text-ink-4 tabular-nums">
                 {Math.round(share * 100)}%
