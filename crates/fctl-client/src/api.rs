@@ -771,6 +771,16 @@ impl Api {
         .await
     }
 
+    /// A page of the instance's audit log (what happened in workspaces is
+    /// in theirs), newest first.
+    pub async fn admin_audit(&self, before: Option<i64>) -> Result<AuditList> {
+        let mut path = "/admin/audit".to_owned();
+        if let Some(b) = before {
+            path.push_str(&format!("?before={b}"));
+        }
+        self.get(&path).await
+    }
+
     /// Every workspace on the instance.
     pub async fn admin_workspaces(&self) -> Result<AdminWorkspaceList> {
         self.get("/admin/workspaces").await

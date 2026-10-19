@@ -91,6 +91,15 @@ pub enum AdminCmd {
         /// Their email address or user id.
         user: String,
     },
+    /// What happened on the instance, newest first: sign-ins, invitations,
+    /// people, workspaces, runners and settings (what happened in a
+    /// workspace is in `fctl workspaces audit`).
+    Audit {
+        /// Entries before this time (milliseconds), for the page after
+        /// one's `next_before`.
+        #[arg(long, value_name = "MS")]
+        before: Option<i64>,
+    },
     /// Show the instance's settings.
     Settings,
     /// Change the instance's settings.
@@ -133,6 +142,22 @@ pub enum GithubCmd {
     },
     /// Stop a workspace from working in an account, or decline its request.
     Remove { account: String, workspace: String },
+}
+
+/// An audit log page, one entry a line.
+pub(crate) fn print_audit(list: &fctl_proto::api::AuditList) {
+    for e in &list.entries {
+        println!(
+            "{}  {:<22} {:<28} {}",
+            style::dim(&format!("{:<9}", style::ago(e.ts))),
+            e.actor.as_ref().map(|a| a.name.as_str()).unwrap_or("—"),
+            e.action,
+            style::dim(e.target.as_deref().unwrap_or_default())
+        );
+    }
+    if let Some(b) = list.next_before {
+        println!("{}", style::dim(&format!("Older: --before {b}")));
+    }
 }
 
 fn print_github(list: &fctl_proto::api::GithubInstallations) {
@@ -536,6 +561,13 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     println!("  {}", style::dim(&format!("free: {}", free.join(", "))));
                 }
             }
+        }
+        AdminCmd::Audit { before } => {
+            let list = api.admin_audit(before).await?;
+            if json {
+                return style::print_json(&list);
+            }
+            print_audit(&list);
         }
         AdminCmd::Settings => {
             let settings = api.instance_settings().await?;

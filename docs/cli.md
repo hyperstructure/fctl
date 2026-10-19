@@ -353,7 +353,7 @@ workspace is and who runs it, but not inside the ones they aren't members
 of.
 
 ```sh
-fctl admin users                           # with their other addresses and workspaces
+fctl admin users                           # with their other addresses and how many workspaces
 fctl admin invite ada@private.example      # an invitation link (and an email, when set up)
 fctl admin invite grace@example.com -w side-project -w acme:admin   # and to your workspaces
 fctl admin transfer grace@example.com      # the primary admin hands the role to an admin
@@ -370,6 +370,7 @@ fctl admin disallow '*@example.com'        # its users lose access
 fctl admin runners                         # with their images; draining ones say who drained them
 fctl admin drain studio-mac                # no new sessions start on it (name or id)
 fctl admin undrain studio-mac
+fctl admin audit                           # what happened on the instance, newest first
 fctl admin settings                        # what the instance allows and requires
 fctl admin set --publish-screenshots on    # projects may publish screenshots
 fctl admin set --require-two-factor on     # everyone who signs in with a password needs it
@@ -381,6 +382,10 @@ fctl admin reset-two-factor grace@example.com   # they lost their phone and reco
 command that requires it lists who hasn't set it up yet: until they do,
 they can only set it up, in the browser or with `fctl account two-factor
 enable`, and their other requests fail.
+
+`fctl admin audit` and `fctl workspaces audit` show 100 entries at a time;
+`--before` with the time after "Older:" (`next_before` in `--json`) shows
+the ones before them.
 
 ## Your account
 

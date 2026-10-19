@@ -240,6 +240,10 @@ pub enum WorkspacesCmd {
     Audit {
         #[arg(short, long)]
         workspace: Option<String>,
+        /// Entries before this time (milliseconds), for the page after
+        /// one's `next_before`.
+        #[arg(long, value_name = "MS")]
+        before: Option<i64>,
     },
     /// Delete a workspace with its projects, sessions and transcripts (its
     /// primary admin). This cannot be undone.
@@ -897,21 +901,13 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 ),
             }
         }
-        WorkspacesCmd::Audit { workspace } => {
+        WorkspacesCmd::Audit { workspace, before } => {
             let w = resolve(&api, workspace).await?;
-            let list = api.workspace_audit(w.id.as_str(), None).await?;
+            let list = api.workspace_audit(w.id.as_str(), before).await?;
             if json {
                 return style::print_json(&list);
             }
-            for e in &list.entries {
-                println!(
-                    "{}  {:<22} {:<28} {}",
-                    style::dim(&style::ago(e.ts)),
-                    e.actor.as_ref().map(|a| a.name.as_str()).unwrap_or("—"),
-                    e.action,
-                    style::dim(e.target.as_deref().unwrap_or_default())
-                );
-            }
+            super::admin::print_audit(&list);
         }
         WorkspacesCmd::Delete { workspace, confirm } => {
             let w = api.workspace(&workspace).await?;
