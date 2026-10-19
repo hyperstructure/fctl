@@ -165,6 +165,14 @@ impl FakeCli {
         Ok(())
     }
 
+    /// Takes away the CLI's execute permission, so that it can't be started.
+    pub fn wont_start(&self) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = self.dir.path().join("cli");
+        std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o644))?;
+        Ok(())
+    }
+
     /// The images on the host: each name with its build's ID, by name.
     pub fn images(&self) -> Result<Vec<(String, String)>> {
         let mut images = Vec::new();
