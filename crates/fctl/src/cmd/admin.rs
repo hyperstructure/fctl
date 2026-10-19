@@ -9,9 +9,19 @@ use clap::{ArgGroup, Subcommand};
 use fctl_domain::size;
 use fctl_proto::api::{
     CreateInviteRequest, GithubConnectionStatus, InstanceSettings, InviteWorkspace, Runner,
-    RunnerSession, UpdateInstanceSettingsRequest, UpdateRunnerRequest,
+    RunnerSession, UpdateInstanceSettingsRequest, UpdateRunnerRequest, UpdateUserRequest, User,
+    UserStatus,
 };
 use fctl_proto::session::{InstanceRole, WorkspaceRole};
+use std::io::{BufRead, IsTerminal, Write};
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum Role {
+    /// Runs the instance: people, workspaces, GitHub, runners, settings.
+    Admin,
+    /// Uses the instance.
+    Member,
+}
 
 #[derive(Subcommand)]
 pub enum AdminCmd {
@@ -33,11 +43,40 @@ pub enum AdminCmd {
         #[arg(short, long = "workspace", value_name = "WORKSPACE[:admin]")]
         workspaces: Vec<String>,
     },
+    /// Make someone an instance admin, or a member again. Only the primary
+    /// admin takes the role from other admins.
+    Role {
+        /// Any of their email addresses, or their user id.
+        user: String,
+        #[arg(value_enum)]
+        role: Role,
+    },
     /// Hand the primary admin role to another admin (the primary admin).
     /// You stay an admin.
     Transfer {
-        /// Their email address or user id.
+        /// Any of their email addresses, or their user id.
         user: String,
+    },
+    /// Disable someone's account: they can't sign in, and their tokens stop
+    /// working. Only the primary admin disables admins.
+    Disable {
+        /// Any of their email addresses, or their user id.
+        user: String,
+    },
+    /// Let a disabled account sign in again.
+    Enable {
+        /// Any of their email addresses, or their user id.
+        user: String,
+    },
+    /// Delete someone's account, as deleting their own would: the
+    /// workspaces only they are in go with it. Only the primary admin
+    /// deletes admins. This cannot be undone.
+    DeleteUser {
+        /// Any of their email addresses, or their user id.
+        user: String,
+        /// Their primary email address, to confirm without being asked.
+        #[arg(long, value_name = "EMAIL")]
+        confirm: Option<String>,
     },
     /// List every workspace: what it is and who runs it.
     Workspaces,
@@ -88,7 +127,7 @@ pub enum AdminCmd {
     /// the instance requires. They can sign in with their password alone
     /// again, or set it up again when the instance requires it.
     ResetTwoFactor {
-        /// Their email address or user id.
+        /// Any of their email addresses, or their user id.
         user: String,
     },
     /// What happened on the instance, newest first: sign-ins, invitations,
@@ -142,6 +181,46 @@ pub enum GithubCmd {
     },
     /// Stop a workspace from working in an account, or decline its request.
     Remove { account: String, workspace: String },
+}
+
+/// Someone on the instance, by their user id or any of their addresses.
+fn find_user<'a>(users: &'a [User], who: &str) -> Result<&'a User> {
+    users
+        .iter()
+        .find(|u| {
+            u.id.as_str() == who
+                || u.email.eq_ignore_ascii_case(who)
+                || u.emails.iter().any(|e| e.eq_ignore_ascii_case(who))
+        })
+        .with_context(|| format!("No user is {who}. `fctl admin users` lists them."))
+}
+
+async fn set_status(
+    api: &fctl_client::Api,
+    who: &str,
+    status: UserStatus,
+    json: bool,
+) -> Result<()> {
+    let users = api.users().await?.users;
+    let target = find_user(&users, who)?;
+    let req = UpdateUserRequest {
+        role: None,
+        status: Some(status),
+        name: None,
+    };
+    let updated = api.update_user(target.id.as_str(), &req).await?;
+    if json {
+        return style::print_json(&updated);
+    }
+    match status {
+        UserStatus::Disabled => println!(
+            "{} {} can't sign in any more, and their tokens stopped working",
+            style::accent("✓"),
+            updated.name
+        ),
+        _ => println!("{} {} can sign in again", style::accent("✓"), updated.name),
+    }
+    Ok(())
 }
 
 /// An audit log page, one entry a line.
@@ -314,10 +393,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
         }
         AdminCmd::Transfer { user } => {
             let users = api.users().await?.users;
-            let target = users
-                .iter()
-                .find(|u| u.id.as_str() == user || u.email.eq_ignore_ascii_case(&user))
-                .with_context(|| format!("No user is {user}. `fctl admin users` lists them."))?;
+            let target = find_user(&users, &user)?;
             let updated = api.transfer_instance(target.id.as_str()).await?;
             if json {
                 return style::print_json(&updated);
@@ -326,6 +402,75 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 "{} {} is the instance's primary admin; you stay an admin",
                 style::accent("✓"),
                 updated.name
+            );
+        }
+        AdminCmd::Role { user, role } => {
+            let users = api.users().await?.users;
+            let target = find_user(&users, &user)?;
+            let role = match role {
+                Role::Admin => InstanceRole::Admin,
+                Role::Member => InstanceRole::Member,
+            };
+            let req = UpdateUserRequest {
+                role: Some(role),
+                status: None,
+                name: None,
+            };
+            let updated = api.update_user(target.id.as_str(), &req).await?;
+            if json {
+                return style::print_json(&updated);
+            }
+            println!(
+                "{} {} is {}",
+                style::accent("✓"),
+                updated.name,
+                if role == InstanceRole::Admin {
+                    "an instance admin"
+                } else {
+                    "a member of the instance"
+                }
+            );
+        }
+        AdminCmd::Disable { user } => set_status(&api, &user, UserStatus::Disabled, json).await?,
+        AdminCmd::Enable { user } => set_status(&api, &user, UserStatus::Active, json).await?,
+        AdminCmd::DeleteUser { user, confirm } => {
+            let users = api.users().await?.users;
+            let target = find_user(&users, &user)?;
+            match confirm {
+                Some(c) if c.eq_ignore_ascii_case(&target.email) => {}
+                Some(_) => bail!(
+                    "Not deleted: --confirm must be their primary address, {}",
+                    target.email
+                ),
+                None => {
+                    let stdin = std::io::stdin();
+                    if !stdin.is_terminal() {
+                        bail!(
+                            "Pass --confirm {} to delete the account without being asked",
+                            target.email
+                        );
+                    }
+                    print!(
+                        "Type their address ({}) to delete {}'s account: ",
+                        target.email, target.name
+                    );
+                    std::io::stdout().flush()?;
+                    let mut line = String::new();
+                    stdin.lock().read_line(&mut line)?;
+                    if !line.trim().eq_ignore_ascii_case(&target.email) {
+                        bail!("Not deleted: the address didn't match");
+                    }
+                }
+            }
+            let ok = api.delete_user(target.id.as_str()).await?;
+            if json {
+                return style::print_json(&ok);
+            }
+            println!(
+                "{} Deleted {} <{}>",
+                style::accent("✓"),
+                target.name,
+                target.email
             );
         }
         AdminCmd::Workspaces => {
@@ -642,10 +787,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
         }
         AdminCmd::ResetTwoFactor { user } => {
             let users = api.users().await?.users;
-            let target = users
-                .iter()
-                .find(|u| u.id.as_str() == user || u.email.eq_ignore_ascii_case(&user))
-                .with_context(|| format!("No user is {user}. `fctl admin users` lists them."))?;
+            let target = find_user(&users, &user)?;
             let updated = api.reset_two_factor(target.id.as_str()).await?;
             if json {
                 return style::print_json(&updated);

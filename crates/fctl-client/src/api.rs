@@ -745,6 +745,17 @@ impl Api {
     }
 
     /// Turns off a user's two-factor sign-in (they lost their phone).
+    /// Changes someone's instance role or status (admins).
+    pub async fn update_user(&self, user_id: &str, req: &UpdateUserRequest) -> Result<User> {
+        self.patch(&format!("/admin/users/{}", enc(user_id)), req)
+            .await
+    }
+
+    /// Deletes someone's account (admins), as deleting their own would.
+    pub async fn delete_user(&self, user_id: &str) -> Result<Ok> {
+        self.delete(&format!("/admin/users/{}", enc(user_id))).await
+    }
+
     pub async fn reset_two_factor(&self, user_id: &str) -> Result<User> {
         self.delete(&format!("/admin/users/{}/two-factor", enc(user_id)))
             .await

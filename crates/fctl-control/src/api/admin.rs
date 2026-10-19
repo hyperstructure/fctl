@@ -76,9 +76,11 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
         .as_deref()
         .map(|v| validate::name("name", v))
         .transpose()?;
-    q(
+    // Not if they became the primary admin in the meantime.
+    let changed = q(
         &ctx.db,
-        "UPDATE users SET role = COALESCE(?, role), status = COALESCE(?, status), name = COALESCE(?, name), updated_at = ? WHERE id = ?",
+        "UPDATE users SET role = COALESCE(?1, role), status = COALESCE(?2, status), name = COALESCE(?3, name), updated_at = ?4 \
+         WHERE id = ?5 AND (role != 'owner' OR (?1 IS NULL AND ?2 IS NULL))",
         &[
             os(body.role.map(|r| r.as_str())),
             os(body.status.map(|st| st.as_str())),
@@ -89,6 +91,11 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
     )?
     .run()
     .await?;
+    if changed == 0 {
+        return Err(forbidden(
+            "Nobody can change the primary admin's role. They can hand it to another admin.",
+        ));
+    }
     if body.status == Some(UserStatus::Disabled) {
         auth::revoke_tokens(ctx, &target.id, None).await?;
     }
@@ -119,8 +126,9 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if target.role() == InstanceRole::Admin && actor.role() != InstanceRole::Owner {
         return Err(forbidden("Only the primary admin can delete admins"));
     }
-    // The same as deleting your own account (api::account): their projects
-    // with no other members go, what others use stays, without their name.
+    // The same as deleting your own account (api::account): their
+    // workspaces with no other members go, what others use stays, without
+    // their name.
     let plan = crate::api::account::plan(ctx, &target).await?;
     if plan.running() > 0 {
         return Err(conflict("Stop their running sessions first"));
