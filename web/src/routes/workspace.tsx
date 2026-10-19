@@ -598,7 +598,7 @@ function People({ w }: { w: G.Workspace }) {
         open={!!removing}
         onClose={() => setRemoving(null)}
         title={`Remove ${removing?.user.name ?? ""} from ${w.name}?`}
-        description="They lose access to its projects and sessions at once. Their sessions here stop, and their project memberships and shares here go."
+        description="They lose access to its projects and sessions at once. Their sessions here stop, and so do its sessions on their runners, which leave it. Their project memberships and shares here go."
       >
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setRemoving(null)}>
@@ -682,9 +682,13 @@ function Runners({ w }: { w: G.Workspace }) {
     },
     onError: (e) => toast(e.message, "error"),
   });
+  const [takingOut, setTakingOut] = useState<G.Runner | null>(null);
   const remove = useMutation({
     mutationFn: (runner: string) => workspaces.removeRunner(w.id, runner),
-    onSuccess: done,
+    onSuccess: () => {
+      setTakingOut(null);
+      done();
+    },
     onError: (e) => toast(e.message, "error"),
   });
   const here = new Set(list.data?.runners.map((r) => r.id));
@@ -801,12 +805,7 @@ function Runners({ w }: { w: G.Workspace }) {
                   )}
                 </div>
                 {(admin || r.yours) && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    loading={remove.isPending && remove.variables === r.id}
-                    onClick={() => remove.mutate(r.id)}
-                  >
+                  <Button size="sm" variant="ghost" onClick={() => setTakingOut(r)}>
                     Take out
                   </Button>
                 )}
@@ -815,6 +814,29 @@ function Runners({ w }: { w: G.Workspace }) {
           })}
         </ul>
       )}
+      <Dialog
+        open={!!takingOut}
+        onClose={() => setTakingOut(null)}
+        title={`Take ${takingOut?.name ?? ""} out of ${w.name}?`}
+        description={
+          takingOut?.yours
+            ? `It stops taking ${w.name}'s sessions; the ones running there carry on. You can add it again.`
+            : `It stops taking ${w.name}'s sessions; the ones running there carry on. Only its owner can add it again.`
+        }
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setTakingOut(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            loading={remove.isPending}
+            onClick={() => takingOut && remove.mutate(takingOut.id)}
+          >
+            Take it out
+          </Button>
+        </div>
+      </Dialog>
       <Dialog
         open={!!reg}
         onClose={() => setReg(null)}
@@ -878,10 +900,12 @@ function Github({
       setScope("");
     },
   });
+  const [dropping, setDropping] = useState<G.GithubConnection | null>(null);
   const disconnect = useMutation({
     mutationFn: (a: string) => workspaces.disconnectGithub(w.id, a),
     onSuccess: (g) => {
       queryClient.setQueryData(keys.workspaceGithub(w.id), g);
+      setDropping(null);
       refresh();
     },
     onError: (e) => toast(e.message, "error"),
@@ -961,9 +985,11 @@ function Github({
             {admin && (
               <button
                 type="button"
-                aria-label={`Disconnect ${c.account}`}
+                aria-label={
+                  c.status === "active" ? `Disconnect ${c.account}` : `Take back the request for ${c.account}`
+                }
                 className="rounded p-1.5 text-ink-4 hover:text-danger"
-                onClick={() => disconnect.mutate(c.account)}
+                onClick={() => (c.status === "active" ? setDropping(c) : disconnect.mutate(c.account))}
               >
                 <Trash2 className="size-3.5" />
               </button>
@@ -1027,6 +1053,27 @@ function Github({
           </form>
         </div>
       )}
+      <Dialog
+        open={!!dropping}
+        onClose={() => setDropping(null)}
+        title={`Stop working in ${dropping?.account ?? ""}?`}
+        description={`${w.name}'s projects can't use its repositories any more, and running sessions lose their tokens for it within the hour.${
+          g?.approval_required ? " Connecting it again takes an instance admin's approval." : ""
+        }`}
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setDropping(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            loading={disconnect.isPending}
+            onClick={() => dropping && disconnect.mutate(dropping.account)}
+          >
+            Disconnect
+          </Button>
+        </div>
+      </Dialog>
     </div>
   );
 }
@@ -1130,7 +1177,7 @@ function You({ w }: { w: G.Workspace }) {
         open={leaving}
         onClose={() => setLeaving(false)}
         title={`Leave ${w.name}?`}
-        description="You lose access to its projects and sessions at once, and your sessions there stop. Its admins can invite you again."
+        description="You lose access to its projects and sessions at once. Your sessions there stop, and so do its sessions on your runners, which leave it. Its admins can invite you again."
       >
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setLeaving(false)}>

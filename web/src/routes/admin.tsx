@@ -866,12 +866,39 @@ function Github() {
       setConnecting(null);
     },
   });
+  // Approving a request, from its row (the dialog has its own).
+  const approve = useMutation({
+    mutationFn: (v: { account: string; workspace: G.WorkspaceRef; repos?: string[] }) =>
+      api.adminConnectGithub(v.account, v.workspace.id, v.repos),
+    onSuccess: (g, v) => {
+      save(g);
+      toast(`${v.workspace.name} works in ${v.account} now`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const [dropping, setDropping] = useState<{ account: string; workspace: G.WorkspaceRef } | null>(null);
   const disconnect = useMutation({
     mutationFn: (v: { account: string; workspace: string }) =>
       api.adminDisconnectGithub(v.account, v.workspace),
-    onSuccess: save,
+    onSuccess: (g) => {
+      save(g);
+      setDropping(null);
+    },
     onError: (e) => toast(e.message, "error"),
   });
+  // A dialog opens without the last one's error.
+  const openConnect = (v: { account: string; workspace?: string; repos: string }) => {
+    connect.reset();
+    setConnecting(v);
+  };
+  const approving = (account: string, workspace: string) =>
+    approve.isPending &&
+    approve.variables?.account === account &&
+    approve.variables.workspace.id === workspace;
+  const declining = (account: string, workspace: string) =>
+    disconnect.isPending &&
+    disconnect.variables?.account === account &&
+    disconnect.variables.workspace === workspace;
   const g = list.data;
   if (g && !g.configured)
     return (
@@ -914,6 +941,7 @@ function Github() {
               <Button
                 size="sm"
                 variant="ghost"
+                loading={declining(r.account, r.workspace.id)}
                 onClick={() => disconnect.mutate({ account: r.account, workspace: r.workspace.id })}
               >
                 Decline
@@ -922,10 +950,8 @@ function Github() {
                 size="sm"
                 variant="primary"
                 icon={<Check className="size-3.5" />}
-                loading={connect.isPending}
-                onClick={() =>
-                  connect.mutate({ account: r.account, workspace: r.workspace.id, repos: r.repos })
-                }
+                loading={approving(r.account, r.workspace.id)}
+                onClick={() => approve.mutate({ account: r.account, workspace: r.workspace, repos: r.repos })}
               >
                 Approve
               </Button>
@@ -965,7 +991,7 @@ function Github() {
                   size="sm"
                   variant="ghost"
                   icon={<Plus className="size-3.5" />}
-                  onClick={() => setConnecting({ account: i.account, repos: "" })}
+                  onClick={() => openConnect({ account: i.account, repos: "" })}
                 >
                   Connect to a workspace
                 </Button>
@@ -985,7 +1011,7 @@ function Github() {
                         size="sm"
                         variant="quiet"
                         onClick={() =>
-                          setConnecting({
+                          openConnect({
                             account: i.account,
                             workspace: w.workspace.id,
                             repos: w.repos?.join(", ") ?? "",
@@ -998,7 +1024,7 @@ function Github() {
                         type="button"
                         aria-label={`Disconnect ${w.workspace.name} from ${i.account}`}
                         className="rounded p-1 text-ink-4 hover:text-danger"
-                        onClick={() => disconnect.mutate({ account: i.account, workspace: w.workspace.id })}
+                        onClick={() => setDropping({ account: i.account, workspace: w.workspace })}
                       >
                         <Trash2 className="size-3.5" />
                       </button>
@@ -1019,6 +1045,27 @@ function Github() {
           </Button>
         </a>
       )}
+      <Dialog
+        open={!!dropping}
+        onClose={() => setDropping(null)}
+        title={`Disconnect ${dropping?.workspace.name ?? ""} from ${dropping?.account ?? ""}?`}
+        description={`Its projects can't use ${dropping?.account ?? "the account"}'s repositories any more, and its running sessions lose their tokens for it within the hour. Its admins can ask for it again.`}
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setDropping(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            loading={disconnect.isPending}
+            onClick={() =>
+              dropping && disconnect.mutate({ account: dropping.account, workspace: dropping.workspace.id })
+            }
+          >
+            Disconnect
+          </Button>
+        </div>
+      </Dialog>
       <Dialog
         open={!!connecting}
         onClose={() => setConnecting(null)}

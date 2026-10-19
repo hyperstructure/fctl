@@ -454,7 +454,7 @@ function Workspaces({ me }: { me: G.Me }) {
         open={!!leaving}
         onClose={() => setLeaving(null)}
         title={`Leave ${leaving?.name ?? ""}?`}
-        description="You lose access to its projects and sessions at once, and your sessions there stop. Its admins can invite you again."
+        description="You lose access to its projects and sessions at once. Your sessions there stop, and so do its sessions on your runners, which leave it. Its admins can invite you again."
       >
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setLeaving(null)}>
