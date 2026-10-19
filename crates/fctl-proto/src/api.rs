@@ -12,7 +12,7 @@ use crate::session::{
 };
 use crate::{
     AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId, LoginJobId, Millis,
-    ProjectId, PushDeviceId, RunnerId, SessionId, TokenId, UserId,
+    PasskeyId, ProjectId, PushDeviceId, RunnerId, SessionId, TokenId, UserId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -101,6 +101,12 @@ pub struct User {
     pub status: UserStatus,
     /// Whether the account can sign in with a password.
     pub has_password: bool,
+    /// Whether the account has two-factor sign-in: an authenticator app.
+    #[serde(default)]
+    pub two_factor: bool,
+    /// How many passkeys the account signs in with.
+    #[serde(default)]
+    pub passkeys: u32,
     pub created_at: Millis,
     pub last_login_at: Option<Millis>,
 }
@@ -141,6 +147,13 @@ pub struct Me {
     /// `Co-authored-by` trailer. Only you see it here; absent when you have
     /// none, and then commits don't name you.
     pub commit_email: Option<String>,
+    /// Two-factor sign-in: what you have set up, and what the instance
+    /// requires.
+    #[serde(default)]
+    pub two_factor: TwoFactor,
+    /// The passkeys you sign in with.
+    #[serde(default)]
+    pub passkeys: Vec<Passkey>,
 }
 
 #[skip_serializing_none]
@@ -164,14 +177,23 @@ pub struct LoginRequest {
     pub password: String,
 }
 
-/// Returned by setup, signup, login and password reset. The web session is
-/// set as a cookie; `token` is only present for non-browser clients
-/// (requested with `"token": true`).
+/// Returned by setup, signup, login, password reset and the second factor
+/// (`POST /auth/two-factor/verify`). The web session is set as a cookie.
+/// When the account has two-factor sign-in, login and password reset
+/// answer with `two_factor` instead of `me`: the sign-in waits for a code,
+/// and its challenge is set as a cookie.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct AuthResponse {
-    pub me: Me,
+    /// Who signed in; absent while the sign-in waits for its second factor.
+    pub me: Option<Me>,
+    /// The sign-in waits for a code: who it is for and what finishes it.
+    pub two_factor: Option<TwoFactorChallenge>,
+    /// Where to go next: the page a Google sign-in started from.
+    pub next: Option<String>,
+    /// Signed in with a recovery code: how many are left.
+    pub recovery_codes_left: Option<u32>,
 }
 
 #[skip_serializing_none]
@@ -239,6 +261,410 @@ pub struct ForgotPasswordRequest {
 pub struct ResetPasswordRequest {
     pub token: String,
     pub new_password: String,
+}
+
+// ───────────────────────────── two-factor sign-in ─────────────────────────────
+
+/// Two-factor sign-in, as `Me.two_factor` reports it: a code from an
+/// authenticator app after the password, and after Google when the person
+/// or the instance asks for that. Recovery codes stand in for the app.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct TwoFactor {
+    /// When the authenticator app was set up; absent without one.
+    pub authenticator_since: Option<Millis>,
+    /// When a code from it last signed you in.
+    pub authenticator_used_at: Option<Millis>,
+    /// Recovery codes not used yet.
+    pub recovery_codes: u32,
+    /// Google sign-ins ask for a code too, because you chose that.
+    pub google: bool,
+    /// Google sign-ins ask everyone with two-factor for a code
+    /// ([`InstanceSettings::two_factor_google`]).
+    pub google_required: bool,
+    /// The instance requires two-factor of this account: it signs in with
+    /// a password, or with Google once Google sign-ins ask for codes.
+    pub required: bool,
+    /// Required, and neither an authenticator app nor a passkey is set up:
+    /// until one is, the account can only set one up (requests fail with
+    /// `two_factor_setup_required`).
+    pub setup_required: bool,
+    /// Sign-ins with a password ask for a second factor: there is an
+    /// authenticator app, or the instance requires one and the account's
+    /// passkeys are it.
+    pub on: bool,
+}
+
+/// What can finish a sign-in that waits for its second factor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum SecondFactor {
+    /// A code from the authenticator app.
+    Totp,
+    /// One of the account's recovery codes.
+    RecoveryCode,
+    /// One of the account's passkeys.
+    Passkey,
+}
+
+/// Why a sign-in waits for its second factor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ChallengeReason {
+    /// The password was right.
+    Password,
+    /// Google signed the person in.
+    Google,
+    /// A reset link chose a new password, which takes effect with the code.
+    PasswordReset,
+}
+
+impl ChallengeReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Google => "google",
+            Self::PasswordReset => "password_reset",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::Password, Self::Google, Self::PasswordReset]
+            .into_iter()
+            .find(|r| r.as_str() == s)
+    }
+}
+
+/// A sign-in that waits for its second factor (`AuthResponse.two_factor`,
+/// `GET /api/v1/auth/two-factor/challenge`). The browser holds it in the
+/// `__Host-fctl-2fa` cookie for ten minutes.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct TwoFactorChallenge {
+    /// Who is signing in.
+    pub name: String,
+    pub email: String,
+    pub avatar_url: Option<String>,
+    pub reason: ChallengeReason,
+    /// What can finish it.
+    pub methods: Vec<SecondFactor>,
+    pub expires_at: Millis,
+    /// After too many wrong codes: codes are taken again from then on.
+    pub locked_until: Option<Millis>,
+}
+
+/// `POST /api/v1/auth/two-factor/verify`: finishes the waiting sign-in, with
+/// a code or a passkey.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct VerifyTwoFactorRequest {
+    /// A code from the authenticator app (six digits) or a recovery code.
+    pub code: Option<String>,
+    /// A passkey's answer to `POST /api/v1/auth/two-factor/passkey`'s
+    /// options.
+    pub passkey: Option<PasskeyAssertion>,
+}
+
+/// `POST /api/v1/me/two-factor/authenticator`: starts setting up an
+/// authenticator app.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct StartAuthenticatorRequest {
+    /// Replacing the app you have takes a code from it, or a recovery code.
+    pub code: Option<String>,
+}
+
+/// A new secret for an authenticator app. Nothing changes until a code from
+/// the app confirms it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AuthenticatorSetup {
+    /// The secret in base32, for apps that can't scan.
+    pub secret: String,
+    /// The `otpauth://totp/…` link, which the QR code holds and phones open
+    /// in their authenticator app.
+    pub uri: String,
+    /// The link as a QR code: one string per row, `1` for a dark module
+    /// and `0` for a light one, without the quiet zone around it.
+    pub qr: Vec<String>,
+    /// Sent back with the first code; holds the secret, sealed for you.
+    pub setup: String,
+    pub expires_at: Millis,
+    /// Confirming takes your password: this browser signed in more than 15
+    /// minutes ago, or the request came with a CLI or access token.
+    pub password_required: bool,
+}
+
+/// `POST /api/v1/me/two-factor/authenticator/confirm`: turns the new
+/// authenticator app on, in place of the old one if there was one.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ConfirmAuthenticatorRequest {
+    /// `AuthenticatorSetup.setup`.
+    pub setup: String,
+    /// The code the app shows now.
+    pub code: String,
+    /// When `AuthenticatorSetup.password_required`.
+    pub password: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AuthenticatorAdded {
+    pub me: Me,
+    /// New recovery codes, shown once: when there were none. Replacing the
+    /// app keeps the ones you have.
+    pub recovery_codes: Option<Vec<String>>,
+}
+
+/// Turning two-factor off (`POST /api/v1/me/two-factor/authenticator/remove`)
+/// and new recovery codes (`POST /api/v1/me/two-factor/recovery-codes`)
+/// take a current code.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TwoFactorCodeRequest {
+    /// A code from the authenticator app, or a recovery code.
+    pub code: String,
+}
+
+/// New recovery codes, shown once; the old ones stop working.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RecoveryCodes {
+    pub codes: Vec<String>,
+    pub me: Me,
+}
+
+/// `PATCH /api/v1/me/two-factor`.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateTwoFactorRequest {
+    /// Google sign-ins ask for a code too.
+    pub google: Option<bool>,
+}
+
+// ───────────────────────────── passkeys ─────────────────────────────
+
+/// A passkey: signs its person in with their fingerprint, face or screen
+/// lock, without a password or code. Where two-factor is required, it is
+/// also a second factor.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct Passkey {
+    pub id: PasskeyId,
+    pub name: String,
+    /// Who keeps it, by the authenticator's model, when that is known:
+    /// "1Password", "Apple Passwords", "Windows Hello".
+    pub provider: Option<String>,
+    /// It syncs between its person's devices through its provider.
+    pub synced: bool,
+    /// The WebAuthn credential id (base64url), for the browser's signals
+    /// that keep providers' lists current.
+    pub credential_id: String,
+    pub created_at: Millis,
+    pub last_used_at: Option<Millis>,
+}
+
+/// How a passkey's options name a credential (`PublicKeyCredentialDescriptor`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PasskeyDescriptor {
+    /// `public-key`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The credential id, base64url.
+    pub id: String,
+    pub transports: Option<Vec<String>>,
+}
+
+/// The site a passkey belongs to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PasskeyRp {
+    /// The app's host name.
+    pub id: String,
+    pub name: String,
+}
+
+/// Whom a passkey signs in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyUser {
+    /// The user handle, base64url: the account's id, never their email.
+    pub id: String,
+    /// The email address, which passkey providers list it by.
+    pub name: String,
+    pub display_name: String,
+}
+
+/// An algorithm a new passkey may use (`PublicKeyCredentialParameters`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PasskeyAlgorithm {
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// COSE: -7 ES256, -8 EdDSA, -257 RS256.
+    pub alg: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAuthenticatorSelection {
+    /// `required`: a passkey, which the authenticator finds by itself.
+    pub resident_key: String,
+    pub require_resident_key: bool,
+    /// `required`: the device checks who it is.
+    pub user_verification: String,
+}
+
+/// `POST /api/v1/me/passkeys/options`: what `navigator.credentials.create`
+/// takes to make a passkey, in WebAuthn's JSON form
+/// (`PublicKeyCredential.parseCreationOptionsFromJSON`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyCreationOptions {
+    pub rp: PasskeyRp,
+    pub user: PasskeyUser,
+    /// base64url; works once, for ten minutes.
+    pub challenge: String,
+    pub pub_key_cred_params: Vec<PasskeyAlgorithm>,
+    /// Milliseconds.
+    pub timeout: u32,
+    /// The passkeys the account has, so that an authenticator doesn't make
+    /// a second.
+    pub exclude_credentials: Vec<PasskeyDescriptor>,
+    pub authenticator_selection: PasskeyAuthenticatorSelection,
+    /// `none`: fctl asks nobody which authenticator this is.
+    pub attestation: String,
+}
+
+/// What `navigator.credentials.get` takes to sign in with a passkey, in
+/// WebAuthn's JSON form (`PublicKeyCredential.parseRequestOptionsFromJSON`):
+/// `POST /api/v1/auth/passkey/options`, and as a second factor
+/// `POST /api/v1/auth/two-factor/passkey`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyRequestOptions {
+    /// base64url; works once, for ten minutes.
+    pub challenge: String,
+    pub rp_id: String,
+    pub timeout: u32,
+    /// Empty when signing in: any of the person's passkeys for this site.
+    pub allow_credentials: Vec<PasskeyDescriptor>,
+    pub user_verification: String,
+}
+
+/// A new passkey's answer (`AuthenticatorAttestationResponseJSON`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAttestationResponse {
+    #[serde(rename = "clientDataJSON")]
+    pub client_data_json: String,
+    pub attestation_object: String,
+    /// How the browser reaches the authenticator: `internal`, `hybrid`,
+    /// `usb`…
+    pub transports: Option<Vec<String>>,
+}
+
+/// What `navigator.credentials.create` returned, in its JSON form
+/// (`RegistrationResponseJSON`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyRegistration {
+    pub id: String,
+    pub raw_id: String,
+    pub response: PasskeyAttestationResponse,
+    pub authenticator_attachment: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// A passkey's signature (`AuthenticatorAssertionResponseJSON`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAssertionResponse {
+    #[serde(rename = "clientDataJSON")]
+    pub client_data_json: String,
+    pub authenticator_data: String,
+    pub signature: String,
+    /// The account the passkey belongs to (`PasskeyUser.id`).
+    pub user_handle: Option<String>,
+}
+
+/// What `navigator.credentials.get` returned, in its JSON form
+/// (`AuthenticationResponseJSON`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyAssertion {
+    pub id: String,
+    pub raw_id: String,
+    pub response: PasskeyAssertionResponse,
+    pub authenticator_attachment: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// `POST /api/v1/me/passkeys/options`. Making a passkey takes the password
+/// unless this browser signed in within the last 15 minutes; without a
+/// password, a code from the authenticator app.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct PasskeyOptionsRequest {
+    pub password: Option<String>,
+    pub code: Option<String>,
+}
+
+/// `POST /api/v1/me/passkeys`: keeps the passkey just made.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AddPasskeyRequest {
+    pub credential: PasskeyRegistration,
+    /// Its name when its provider doesn't say: the device, such as "Chrome
+    /// on macOS".
+    pub name: Option<String>,
+}
+
+/// `PATCH /api/v1/me/passkeys/{id}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct UpdatePasskeyRequest {
+    pub name: String,
+}
+
+/// `POST /api/v1/auth/passkey`: signs in with a passkey.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PasskeySignInRequest {
+    pub credential: PasskeyAssertion,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +923,15 @@ pub struct InstanceSettings {
     /// it off takes the published ones offline too; they are back if it is
     /// turned on again before they expire.
     pub publish_screenshots: bool,
+    /// Everyone who signs in with a password needs a second factor too.
+    /// People who haven't set one up can do nothing else until they have,
+    /// in the browser or with their CLI and access tokens. People who sign
+    /// in only with Google don't need one, unless `two_factor_google`.
+    pub require_two_factor: bool,
+    /// Google sign-ins ask for the second factor too, of everyone who has
+    /// one (each person can also choose this for themselves). With
+    /// `require_two_factor`, everyone needs one.
+    pub two_factor_google: bool,
 }
 
 /// `PATCH /api/v1/admin/settings`: absent fields stay as they are.
@@ -505,6 +940,8 @@ pub struct InstanceSettings {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct UpdateInstanceSettingsRequest {
     pub publish_screenshots: Option<bool>,
+    pub require_two_factor: Option<bool>,
+    pub two_factor_google: Option<bool>,
 }
 
 // ───────────────────────────── runners ─────────────────────────────
@@ -1279,5 +1716,24 @@ mod tests {
         assert!(!json.contains("replaces"));
         assert_eq!(serde_json::from_str::<PushMessage>(&json)?, m);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod two_factor_tests {
+    use super::ChallengeReason;
+
+    #[test]
+    fn challenge_reasons_round_trip_as_serde_names_them() {
+        for r in [
+            ChallengeReason::Password,
+            ChallengeReason::Google,
+            ChallengeReason::PasswordReset,
+        ] {
+            let json = serde_json::to_string(&r).unwrap_or_default();
+            assert_eq!(json, format!("\"{}\"", r.as_str()));
+            assert_eq!(ChallengeReason::parse(r.as_str()), Some(r));
+        }
+        assert_eq!(ChallengeReason::parse("phone"), None);
     }
 }

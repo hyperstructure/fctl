@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod allowlist;
+pub mod cbor;
 pub mod disk;
 pub mod events;
 pub mod files;
@@ -15,6 +16,7 @@ pub mod naming;
 pub mod notify;
 pub mod perm;
 pub mod published;
+pub mod qr;
 pub mod reconcile;
 pub mod remote_control;
 pub mod repos;
@@ -22,8 +24,11 @@ pub mod schedule;
 pub mod settings;
 pub mod size;
 pub mod tokens;
+pub mod totp;
+pub mod two_factor;
 pub mod usage;
 pub mod validate;
+pub mod webauthn;
 pub mod webpush;
 
 /// Fills `buf` with cryptographically secure random bytes.

@@ -33,9 +33,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   const data = text ? JSON.parse(text) : undefined;
-  if (!res.ok) throw new ApiFailure(res.status, data ?? {});
+  if (!res.ok) {
+    const failure = new ApiFailure(res.status, data ?? {});
+    // The instance now requires two-factor sign-in of this account: the app
+    // shows the page that sets it up (router.tsx).
+    if (failure.code === "two_factor_setup_required") window.dispatchEvent(new Event(TWO_FACTOR_REQUIRED));
+    throw failure;
+  }
   return data as T;
 }
+
+/** Dispatched on `window` when a request was refused until two-factor sign-in is set up. */
+export const TWO_FACTOR_REQUIRED = "fctl:two-factor-required";
 
 const enc = encodeURIComponent;
 
@@ -97,6 +106,31 @@ export const api = {
   createToken: (b: G.CreateTokenRequest) => request<G.CreatedToken>("POST", "/auth/tokens", b),
   deleteToken: (id: string) => request<G.Ok>("DELETE", `/auth/tokens/${enc(id)}`),
   unlinkIdentity: (id: string) => request<G.Me>("DELETE", `/auth/identities/${enc(id)}`),
+  /** The sign-in this browser waits to finish with a second factor. */
+  twoFactorChallenge: () => request<G.TwoFactorChallenge>("GET", "/auth/two-factor/challenge"),
+  verifyTwoFactor: (b: G.VerifyTwoFactorRequest) =>
+    request<G.AuthResponse>("POST", "/auth/two-factor/verify", b),
+  cancelTwoFactor: () => request<G.Ok>("POST", "/auth/two-factor/cancel", {}),
+  updateTwoFactor: (b: G.UpdateTwoFactorRequest) => request<G.Me>("PATCH", "/me/two-factor", b),
+  /** Replacing the app you have takes `code`, from it or a recovery code. */
+  startAuthenticator: (b: G.StartAuthenticatorRequest = {}) =>
+    request<G.AuthenticatorSetup>("POST", "/me/two-factor/authenticator", b),
+  confirmAuthenticator: (b: G.ConfirmAuthenticatorRequest) =>
+    request<G.AuthenticatorAdded>("POST", "/me/two-factor/authenticator/confirm", b),
+  removeAuthenticator: (b: G.TwoFactorCodeRequest) =>
+    request<G.Me>("POST", "/me/two-factor/authenticator/remove", b),
+  newRecoveryCodes: (b: G.TwoFactorCodeRequest) =>
+    request<G.RecoveryCodes>("POST", "/me/two-factor/recovery-codes", b),
+  /** What the browser needs to make a passkey; takes the password unless this browser just signed in. */
+  passkeyOptions: (b: G.PasskeyOptionsRequest = {}) =>
+    request<G.PasskeyCreationOptions>("POST", "/me/passkeys/options", b),
+  addPasskey: (b: G.AddPasskeyRequest) => request<G.Me>("POST", "/me/passkeys", b),
+  renamePasskey: (id: string, name: string) => request<G.Me>("PATCH", `/me/passkeys/${enc(id)}`, { name }),
+  removePasskey: (id: string) => request<G.Me>("DELETE", `/me/passkeys/${enc(id)}`),
+  passkeySignInOptions: () => request<G.PasskeyRequestOptions>("POST", "/auth/passkey/options", {}),
+  passkeySignIn: (b: G.PasskeySignInRequest) => request<G.AuthResponse>("POST", "/auth/passkey", b),
+  /** Options to finish the waiting sign-in with a passkey instead of a code. */
+  twoFactorPasskeyOptions: () => request<G.PasskeyRequestOptions>("POST", "/auth/two-factor/passkey", {}),
   accountDeletion: () => request<G.AccountDeletion>("GET", "/me/deletion"),
   deleteAccount: (b: G.DeleteAccountRequest) => request<G.Ok>("POST", "/me/delete", b),
   device: (code: string) => request<G.DeviceInfo>("GET", `/auth/device/${enc(code)}`),
@@ -198,6 +232,7 @@ export const api = {
   deleteUser: (id: string) => request<G.Ok>("DELETE", `/admin/users/${enc(id)}`),
   resetLink: (id: string) =>
     request<{ url: string; expires_in: number }>("POST", `/admin/users/${enc(id)}/reset-link`, {}),
+  resetTwoFactor: (id: string) => request<G.User>("DELETE", `/admin/users/${enc(id)}/two-factor`),
   allowlist: () => request<G.AllowList>("GET", "/admin/allowlist"),
   allow: (b: G.CreateAllowRequest) => request<G.CreatedAllow>("POST", "/admin/allowlist", b),
   disallow: (id: string) =>

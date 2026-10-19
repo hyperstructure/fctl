@@ -154,6 +154,104 @@ impl Api {
         .await
     }
 
+    // ── two-factor sign-in ──
+
+    /// Your two-factor sign-in, and what the instance requires.
+    pub async fn two_factor(&self) -> Result<TwoFactor> {
+        self.get("/me/two-factor").await
+    }
+
+    pub async fn update_two_factor(&self, req: &UpdateTwoFactorRequest) -> Result<Me> {
+        self.patch("/me/two-factor", req).await
+    }
+
+    /// A new authenticator app's secret, link and QR code, to confirm with
+    /// [`Api::confirm_authenticator`]. Replacing the app you have takes
+    /// `code`, from it or a recovery code.
+    pub async fn start_authenticator(&self, code: Option<&str>) -> Result<AuthenticatorSetup> {
+        self.post(
+            "/me/two-factor/authenticator",
+            &StartAuthenticatorRequest {
+                code: code.map(str::to_owned),
+            },
+        )
+        .await
+    }
+
+    pub async fn confirm_authenticator(
+        &self,
+        req: &ConfirmAuthenticatorRequest,
+    ) -> Result<AuthenticatorAdded> {
+        self.post("/me/two-factor/authenticator/confirm", req).await
+    }
+
+    /// Turns two-factor sign-in off; `code` is a current code.
+    pub async fn remove_authenticator(&self, code: &str) -> Result<Me> {
+        self.post(
+            "/me/two-factor/authenticator/remove",
+            &TwoFactorCodeRequest {
+                code: code.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// New recovery codes in place of the old ones; `code` is a current code.
+    pub async fn new_recovery_codes(&self, code: &str) -> Result<RecoveryCodes> {
+        self.post(
+            "/me/two-factor/recovery-codes",
+            &TwoFactorCodeRequest {
+                code: code.to_owned(),
+            },
+        )
+        .await
+    }
+
+    // ── passkeys ──
+    //
+    // Making a passkey and signing in with one take an authenticator's
+    // answer (`navigator.credentials` in a browser); these carry it.
+
+    /// What an authenticator needs to make a passkey for you.
+    pub async fn passkey_options(
+        &self,
+        req: &PasskeyOptionsRequest,
+    ) -> Result<PasskeyCreationOptions> {
+        self.post("/me/passkeys/options", req).await
+    }
+
+    /// Keeps the passkey an authenticator made with [`Api::passkey_options`].
+    pub async fn add_passkey(&self, req: &AddPasskeyRequest) -> Result<Me> {
+        self.post("/me/passkeys", req).await
+    }
+
+    /// What an authenticator needs to sign in with a passkey.
+    pub async fn passkey_sign_in_options(&self) -> Result<PasskeyRequestOptions> {
+        self.post("/auth/passkey/options", &serde_json::json!({}))
+            .await
+    }
+
+    /// Signs in with a passkey's answer; the session comes as a cookie.
+    pub async fn passkey_sign_in(&self, req: &PasskeySignInRequest) -> Result<AuthResponse> {
+        self.post("/auth/passkey", req).await
+    }
+
+    /// Renames one of your passkeys.
+    pub async fn rename_passkey(&self, id: &str, name: &str) -> Result<Me> {
+        self.patch(
+            &format!("/me/passkeys/{}", enc(id)),
+            &UpdatePasskeyRequest {
+                name: name.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Removes one of your passkeys.
+    pub async fn remove_passkey(&self, id: &str) -> Result<Me> {
+        self.delete(&format!("/me/passkeys/{}", enc(id))).await
+    }
+
     // ── notifications ──
 
     /// What notifies you, and the browsers that show your notifications.
@@ -609,6 +707,12 @@ impl Api {
 
     pub async fn disallow(&self, id: &str) -> Result<serde_json::Value> {
         self.delete(&format!("/admin/allowlist/{}", enc(id))).await
+    }
+
+    /// Turns off a user's two-factor sign-in (they lost their phone).
+    pub async fn reset_two_factor(&self, user_id: &str) -> Result<User> {
+        self.delete(&format!("/admin/users/{}/two-factor", enc(user_id)))
+            .await
     }
 
     pub async fn instance_settings(&self) -> Result<InstanceSettings> {

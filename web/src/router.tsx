@@ -1,12 +1,12 @@
-// Routes. Signed-in pages live under the `app` layout (the shell); the
-// guard sends everyone else to /login (or /setup on a fresh instance).
+// Routes. Signed-in pages live under the `app` layout (the shell, or the page
+// that sets up two-factor sign-in when the instance requires it); the guard
+// sends everyone else to /login (or /setup on a fresh instance).
 
 import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@tanstack/react-router";
-import { AppShell } from "@/components/shell/app-shell";
 import { ApiFailure, api } from "@/lib/api";
 import { keys, queryClient } from "@/lib/queries";
 import { Admin } from "@/routes/admin";
-import { InvitePage, LoginPage, ResetPage, SetupPage } from "@/routes/auth";
+import { InvitePage, LoginPage, ResetPage, SetupPage, TwoFactorPage } from "@/routes/auth";
 import { DevicePage } from "@/routes/device";
 import { ErrorPage } from "@/routes/error";
 import { Home } from "@/routes/home";
@@ -15,6 +15,7 @@ import { NotFound } from "@/routes/not-found";
 import { ProjectPage } from "@/routes/project";
 import { SessionPage } from "@/routes/session";
 import { SettingsPage } from "@/routes/settings";
+import { SignedInLayout } from "@/routes/two-factor";
 
 async function me() {
   return queryClient.ensureQueryData({
@@ -55,11 +56,13 @@ const login = createRoute({
 const setup = createRoute({ getParentRoute: () => root, path: "/setup", component: SetupPage });
 const invite = createRoute({ getParentRoute: () => root, path: "/invite", component: InvitePage });
 const reset = createRoute({ getParentRoute: () => root, path: "/reset", component: ResetPage });
+// After Google, when the account's Google sign-ins ask for a code.
+const twoFactor = createRoute({ getParentRoute: () => root, path: "/two-factor", component: TwoFactorPage });
 
 const app = createRoute({
   getParentRoute: () => root,
   id: "app",
-  component: AppShell,
+  component: SignedInLayout,
   beforeLoad: async ({ location }) => {
     const user = await me();
     if (!user) {
@@ -107,6 +110,7 @@ const tree = root.addChildren([
   setup,
   invite,
   reset,
+  twoFactor,
   app.addChildren([home, device, newProject, project, session, settings, admin]),
 ]);
 

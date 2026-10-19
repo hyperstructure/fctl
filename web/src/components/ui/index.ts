@@ -1,4 +1,5 @@
 export * from "./button";
+export * from "./code-input";
 export * from "./danger-zone";
 export * from "./feedback";
 export * from "./form";

@@ -1,5 +1,5 @@
-//! `fctl account …`: the address commits credit you with, export your
-//! data, delete your account.
+//! `fctl account …`: the address commits credit you with, two-factor
+//! sign-in, passkeys, export your data, delete your account.
 
 use crate::config::{self, Credentials};
 use crate::style;
@@ -23,10 +23,19 @@ pub enum AccountCmd {
         #[arg(long, value_name = "EMAIL")]
         commit_email: String,
     },
-    /// Download your personal data as JSON: your account, sign-in methods,
-    /// devices and tokens, Claude connections (without secrets), notification
-    /// settings and browsers, projects, the sessions you started with their
-    /// transcripts, the sessions you follow, and your activity.
+    /// Two-factor sign-in: codes from an authenticator app after your
+    /// password, and recovery codes.
+    #[command(subcommand, visible_alias = "2fa")]
+    TwoFactor(super::two_factor::TwoFactorCmd),
+    /// The passkeys you sign in with: list, rename and remove them (your
+    /// browser adds them, in Settings).
+    #[command(subcommand)]
+    Passkeys(super::passkeys::PasskeysCmd),
+    /// Download your personal data as JSON: your account, sign-in methods
+    /// and two-factor sign-in, devices and tokens, Claude connections
+    /// (without secrets), notification settings and browsers, projects, the
+    /// sessions you started with their transcripts, the sessions you follow,
+    /// and your activity.
     Export {
         /// Where to write it (default: fctl-export-<date>.json here; `-` prints it).
         #[arg(short, long)]
@@ -44,6 +53,8 @@ pub enum AccountCmd {
 pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()> {
     let api = config::api(server)?;
     match cmd {
+        AccountCmd::TwoFactor(cmd) => super::two_factor::run(&api, cmd, json).await,
+        AccountCmd::Passkeys(cmd) => super::passkeys::run(&api, cmd, json).await,
         AccountCmd::Set { commit_email } => {
             let me = api
                 .update_me(&UpdateMeRequest {

@@ -14,6 +14,9 @@ fctl whoami
 fctl logout
 ```
 
+You approve the device in the browser, signed in there, so two-factor
+sign-in happens in the browser too.
+
 For scripts and CI, create a personal access token and pass it as
 `FCTL_TOKEN`:
 
@@ -303,9 +306,17 @@ fctl admin disallow '*@example.com'        # its users lose access
 fctl admin runners                         # with their images; draining ones say who drained them
 fctl admin drain studio-mac                # no new sessions start on it (name or id)
 fctl admin undrain studio-mac
-fctl admin settings                        # what the instance allows
+fctl admin settings                        # what the instance allows and requires
 fctl admin set --publish-screenshots on    # projects may publish screenshots
+fctl admin set --require-two-factor on     # everyone who signs in with a password needs it
+fctl admin set --two-factor-google on      # Google sign-ins ask for codes too
+fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 ```
+
+`fctl admin users` says who has two-factor sign-in. With it required, the
+command that requires it lists who hasn't set it up yet: until they do,
+they can only set it up, in the browser or with `fctl account two-factor
+enable`, and their other requests fail.
 
 ## Your account
 
@@ -317,6 +328,31 @@ fctl account export -o - | jq .sessions    # or print it
 fctl account delete                        # shows what goes, asks for your email address
 ```
 
+Two-factor sign-in takes a code from an authenticator app after your
+password, and after Google if you choose:
+
+```sh
+fctl account two-factor                    # what you have, and what the instance requires
+fctl account two-factor enable             # prints a QR code, asks for the app's code, shows recovery codes
+fctl account two-factor enable --code 123456   # replace your app: a code from it, or a recovery code
+fctl account two-factor recovery-codes     # ten new ones; the old ones stop working
+fctl account two-factor google on          # Google sign-ins ask you for a code too
+fctl account two-factor disable            # asks for a code (not while the instance requires it)
+```
+
+`2fa` is short for `two-factor`. Without a terminal, `enable --json` prints
+the setup (the key, the `otpauth://` link and the QR code's rows), and
+`fctl account two-factor confirm --setup … --code …` finishes it.
+
+Passkeys sign you in with your fingerprint, face or screen lock. Your
+browser makes them, in Settings → Passkeys; the CLI lists and manages them:
+
+```sh
+fctl account passkeys list
+fctl account passkeys rename "Chrome on macOS" "Studio laptop"   # by name or id
+fctl account passkeys remove pky_01…
+```
+
 With a commit email, the commits in the sessions you start end with a
 `Co-authored-by` trailer that has your name and that address, for everyone
 who can read the repository. Use an address your GitHub account has, such
@@ -325,10 +361,12 @@ commits to you. A project's maintainers can turn this off for its sessions
 (`fctl projects set --credit-people off`). Sessions take a change when they
 next start or resume; `fctl whoami` shows the address.
 
-The export holds your account, sign-in methods, devices and tokens, Claude
-connections (without their secrets), notification settings and browsers,
-projects, the sessions you started with their transcripts, the sessions you
-follow, and your activity log. Deleting your account deletes all
+The export holds your account, sign-in methods and two-factor sign-in
+(without the authenticator app's secret or the recovery codes), passkeys,
+devices and tokens, Claude connections (without their secrets),
+notification settings and browsers, projects, the sessions you started
+with their transcripts, the sessions you follow, and your activity log.
+Deleting your account deletes all
 of that and the projects only you are a member of; sessions you started in
 shared projects stay there, credited to a deleted user. Settings in the web
 app has both, the deletion in its danger zone.

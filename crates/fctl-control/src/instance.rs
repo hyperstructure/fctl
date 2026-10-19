@@ -1,13 +1,15 @@
 //! What admins decide for the whole instance ([`InstanceSettings`]), kept
 //! as JSON in D1's `settings` table.
 
+use crate::config::Config;
 use crate::db::{q, s};
 use crate::error::AppResult;
 use fctl_proto::api::InstanceSettings;
 use serde::Deserialize;
 use worker::D1Database;
 
-const KEY: &str = "instance_settings";
+/// Their key in the `settings` table.
+pub const KEY: &str = "instance_settings";
 
 #[derive(Deserialize)]
 struct Row {
@@ -19,9 +21,13 @@ pub async fn settings(db: &D1Database) -> AppResult<InstanceSettings> {
     let row: Option<Row> = q(db, "SELECT value FROM settings WHERE key = ?", &[s(KEY)])?
         .first()
         .await?;
-    Ok(row
-        .and_then(|r| serde_json::from_str(&r.value).ok())
-        .unwrap_or_default())
+    Ok(parse(row.as_ref().map(|r| r.value.as_str())))
+}
+
+/// The settings stored as `json`, or their defaults.
+pub fn parse(json: Option<&str>) -> InstanceSettings {
+    json.and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default()
 }
 
 pub async fn save(db: &D1Database, settings: &InstanceSettings) -> AppResult<()> {
@@ -33,4 +39,16 @@ pub async fn save(db: &D1Database, settings: &InstanceSettings) -> AppResult<()>
     .run()
     .await?;
     Ok(())
+}
+
+/// The instance's name: what admins named it, or `FCTL_INSTANCE_NAME`.
+pub async fn name(db: &D1Database, cfg: &Config) -> AppResult<String> {
+    let row: Option<Row> = q(
+        db,
+        "SELECT value FROM settings WHERE key = 'instance_name'",
+        &[],
+    )?
+    .first()
+    .await?;
+    Ok(row.map_or_else(|| cfg.instance_name.clone(), |r| r.value))
 }

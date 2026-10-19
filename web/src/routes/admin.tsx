@@ -3,10 +3,11 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
-import { Cpu, Globe, Link2, MailPlus, Plus, Trash2 } from "lucide-react";
+import { Cpu, Fingerprint, Globe, Link2, MailPlus, Plus, ShieldCheck, ShieldOff, Trash2 } from "lucide-react";
 import { useState } from "react";
 import {
   Avatar,
+  AvatarStack,
   Banner,
   Button,
   CodeBox,
@@ -194,10 +195,38 @@ const instanceRoles = (actor?: G.InstanceRole): SelectOption<G.InstanceRole>[] =
   { value: "owner", label: "Owner", description: "Also manages admins", disabled: actor !== "owner" },
 ];
 
+/** Whether a user has what requiring two-factor asks for: an authenticator app or a passkey. */
+const secured = (u: G.User) => u.two_factor || u.passkeys > 0;
+
+/** Whether the instance requires two-factor of a user. */
+const requiredOf = (u: G.User, s?: G.InstanceSettings) =>
+  !!s?.require_two_factor && (u.has_password || s.two_factor_google);
+
+/** Whether an admin's reset removes a user's passkeys too: where they are the required second factor. */
+const resetsPasskeys = (u: G.User, s?: G.InstanceSettings) => requiredOf(u, s) && u.passkeys > 0;
+
+/** Whether the instance's settings require two-factor of a user who doesn't have it. */
+function lacksTwoFactor(u: G.User, s?: G.InstanceSettings) {
+  return (
+    !!s?.require_two_factor && !secured(u) && u.status === "active" && (u.has_password || s.two_factor_google)
+  );
+}
+
 function Users() {
   const { data: me } = useMe();
   const users = useQuery({ queryKey: keys.users, queryFn: api.users });
+  const settings = useQuery({ queryKey: keys.instanceSettings, queryFn: api.instanceSettings });
   const [reset, setReset] = useState<string | null>(null);
+  const [resetTwoFactor, setResetTwoFactor] = useState<G.User | null>(null);
+  const forget = useMutation({
+    mutationFn: (id: string) => api.resetTwoFactor(id),
+    onSuccess: (u) => {
+      setResetTwoFactor(null);
+      void users.refetch();
+      toast(`${u.name}'s two-factor sign-in is off`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
   const update = useMutation({
     mutationFn: (v: { id: string; body: G.UpdateUserRequest }) => api.updateUser(v.id, v.body),
     onSuccess: () => users.refetch(),
@@ -220,46 +249,80 @@ function Users() {
             )}
           >
             <Avatar user={u} size={30} />
-            <div className="min-w-0 flex-1">
-              <div className="text-[14px] text-ink">
-                {u.name} {u.id === me?.user.id && <span className="text-[12px] text-ink-4">you</span>}
+            {/* On a phone the actions go under the person's details. */}
+            <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-[14px] text-ink">
+                  <span className="truncate">{u.name}</span>
+                  {u.two_factor && (
+                    <span title="Two-factor sign-in is on" className="text-accent">
+                      <ShieldCheck className="size-3.5" aria-label="Two-factor sign-in is on" />
+                    </span>
+                  )}
+                  {u.passkeys > 0 && (
+                    <span
+                      title={
+                        u.passkeys === 1 ? "Signs in with a passkey" : `Signs in with ${u.passkeys} passkeys`
+                      }
+                      className="text-accent"
+                    >
+                      <Fingerprint className="size-3.5" aria-label={`${u.passkeys} passkeys`} />
+                    </span>
+                  )}
+                  {u.id === me?.user.id && <span className="text-[12px] text-ink-4">you</span>}
+                </div>
+                <div className="truncate text-[12px] text-ink-4">
+                  {u.email} · {u.last_login_at ? `active ${ago(u.last_login_at)}` : "never signed in"}
+                  {lacksTwoFactor(u, settings.data) && (
+                    <span className="text-amber"> · sets up two-factor before anything else</span>
+                  )}
+                </div>
               </div>
-              <div className="text-[12px] text-ink-4">
-                {u.email} · {u.last_login_at ? `active ${ago(u.last_login_at)}` : "never signed in"}
+              <div className="-ml-1 flex shrink-0 flex-wrap items-center gap-1 sm:ml-0">
+                <Select
+                  size="sm"
+                  aria-label={`Role of ${u.name}`}
+                  value={u.role}
+                  disabled={u.id === me?.user.id}
+                  onChange={(role) => update.mutate({ id: u.id, body: { role } })}
+                  options={instanceRoles(me?.user.role)}
+                />
+                {u.id !== me?.user.id && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={<Link2 className="size-3.5" />}
+                      onClick={() => link.mutate(u.id)}
+                    >
+                      Reset link
+                    </Button>
+                    {(u.two_factor || resetsPasskeys(u, settings.data)) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<ShieldOff className="size-3.5" />}
+                        onClick={() => setResetTwoFactor(u)}
+                      >
+                        Reset two-factor
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant={u.status === "active" ? "ghost" : "secondary"}
+                      onClick={() =>
+                        update.mutate({
+                          id: u.id,
+                          body: { status: u.status === "active" ? "disabled" : "active" },
+                        })
+                      }
+                    >
+                      {u.status === "active" ? "Disable" : "Enable"}
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
-            <Select
-              size="sm"
-              aria-label={`Role of ${u.name}`}
-              value={u.role}
-              disabled={u.id === me?.user.id}
-              onChange={(role) => update.mutate({ id: u.id, body: { role } })}
-              options={instanceRoles(me?.user.role)}
-            />
-            {u.id !== me?.user.id && (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  icon={<Link2 className="size-3.5" />}
-                  onClick={() => link.mutate(u.id)}
-                >
-                  Reset link
-                </Button>
-                <Button
-                  size="sm"
-                  variant={u.status === "active" ? "ghost" : "secondary"}
-                  onClick={() =>
-                    update.mutate({
-                      id: u.id,
-                      body: { status: u.status === "active" ? "disabled" : "active" },
-                    })
-                  }
-                >
-                  {u.status === "active" ? "Disable" : "Enable"}
-                </Button>
-              </>
-            )}
           </li>
         ))}
       </ul>
@@ -270,6 +333,36 @@ function Users() {
         description="Valid for one hour. Whoever opens it can set a new password, so send it privately."
       >
         {reset && <CodeBox value={reset} />}
+      </Dialog>
+      <Dialog
+        open={!!resetTwoFactor}
+        onClose={() => setResetTwoFactor(null)}
+        title={`Reset ${resetTwoFactor?.name ?? "their"} two-factor sign-in?`}
+        description="For when they lost their phone and their recovery codes. Make sure it's them asking: this undoes what protects their account if their password leaks."
+      >
+        <div className="flex flex-col gap-5">
+          <p className="text-[13.5px] leading-relaxed text-ink-2">
+            {resetTwoFactor && resetsPasskeys(resetTwoFactor, settings.data)
+              ? "Their authenticator app's codes, recovery codes and passkeys stop working"
+              : "Their authenticator app's codes and recovery codes stop working"}
+            , and they are emailed about it when email is set up.{" "}
+            {settings.data?.require_two_factor
+              ? "This instance requires two-factor, so they set it up again before they can do anything else."
+              : "Their password alone signs them in until they set it up again."}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setResetTwoFactor(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              loading={forget.isPending}
+              onClick={() => resetTwoFactor && forget.mutate(resetTwoFactor.id)}
+            >
+              Reset two-factor
+            </Button>
+          </div>
+        </div>
       </Dialog>
     </div>
   );
@@ -577,36 +670,211 @@ function InstanceSettings() {
   const settings = useQuery({ queryKey: keys.instanceSettings, queryFn: api.instanceSettings });
   const save = useMutation({
     mutationFn: (b: G.UpdateInstanceSettingsRequest) => api.updateInstanceSettings(b),
-    onSuccess: (s) => {
+    onSuccess: (s, b) => {
       queryClient.setQueryData(keys.instanceSettings, s);
       void queryClient.invalidateQueries({ queryKey: keys.instance });
-      toast(
-        s.publish_screenshots
-          ? "Projects can now publish screenshots"
-          : "Published screenshots are off and offline",
-      );
+      void queryClient.invalidateQueries({ queryKey: keys.me });
+      void queryClient.invalidateQueries({ queryKey: keys.users });
+      toast(settingsSaved(s, b));
     },
     onError: (e) => toast(e.message, "error"),
   });
   const s = settings.data;
   return (
-    <Section title="Agents" description="What projects may let their agents do on this instance.">
-      <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
-        <span>
-          Published screenshots
-          <span className="block text-[12.5px] text-ink-4">
-            Projects that turn this on let their agents publish screenshots here, at links anyone who has one
-            can open, so that pull requests show them: GitHub takes no uploads from a session. Links work for
-            as long as each project chooses, 24 hours to 60 days. Off takes every published screenshot
-            offline.
+    <>
+      <SignInSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
+      <Section title="Agents" description="What projects may let their agents do on this instance.">
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Published screenshots
+            <span className="block text-[12.5px] text-ink-4">
+              Projects that turn this on let their agents publish screenshots here, at links anyone who has
+              one can open, so that pull requests show them: GitHub takes no uploads from a session. Links
+              work for as long as each project chooses, 24 hours to 60 days. Off takes every published
+              screenshot offline.
+            </span>
           </span>
-        </span>
-        <Switch
-          checked={s?.publish_screenshots ?? false}
-          onChange={(v) => save.mutate({ publish_screenshots: v })}
-          label="Published screenshots"
-        />
+          <Switch
+            checked={s?.publish_screenshots ?? false}
+            onChange={(v) => save.mutate({ publish_screenshots: v })}
+            label="Published screenshots"
+          />
+        </div>
+      </Section>
+    </>
+  );
+}
+
+/** What changed, for the toast. */
+function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest): string {
+  if (b.require_two_factor !== undefined)
+    return s.require_two_factor
+      ? "Two-factor sign-in is required"
+      : "Two-factor sign-in is optional: people choose";
+  if (b.two_factor_google !== undefined)
+    return s.two_factor_google
+      ? "Google sign-ins ask for a code too"
+      : "Google sign-ins ask only those who chose that";
+  return s.publish_screenshots
+    ? "Projects can now publish screenshots"
+    : "Published screenshots are off and offline";
+}
+
+/** Two-factor sign-in for the whole instance: who needs it, and whether Google sign-ins ask for it. */
+function SignInSettings({
+  settings: s,
+  save,
+  saving,
+}: {
+  settings?: G.InstanceSettings;
+  save: (b: G.UpdateInstanceSettingsRequest) => void;
+  saving: boolean;
+}) {
+  const { data: me } = useMe();
+  const users = useQuery({ queryKey: keys.users, queryFn: api.users });
+  // A change that would stop people until they set two-factor up asks first, naming them.
+  const [confirm, setConfirm] = useState<{ body: G.UpdateInstanceSettingsRequest; missing: G.User[] } | null>(
+    null,
+  );
+  const current: G.InstanceSettings = s ?? {
+    publish_screenshots: false,
+    require_two_factor: false,
+    two_factor_google: false,
+  };
+  const active = users.data?.users.filter((u) => u.status === "active") ?? [];
+  const using = active.filter(secured);
+  const missingWith = (next: G.InstanceSettings) => active.filter((u) => lacksTwoFactor(u, next));
+  const missingNow = missingWith(current);
+  // Who requiring it would stop until they set it up.
+  const missing = missingWith({ ...current, require_two_factor: true });
+  const share = active.length ? using.length / active.length : 0;
+  const change = (body: G.UpdateInstanceSettingsRequest) => {
+    const next = { ...current, ...body } as G.InstanceSettings;
+    const newly = missingWith(next).filter((u) => !missingNow.some((m) => m.id === u.id));
+    if (newly.length > 0) setConfirm({ body, missing: newly });
+    else save(body);
+  };
+  const google = confirm?.body.two_factor_google !== undefined;
+  return (
+    <Section
+      title="Sign-in"
+      description="How people prove it's them. Everyone can turn on two-factor sign-in for themselves in Settings."
+    >
+      <div className="flex flex-col gap-6">
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Require two-factor sign-in
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              Everyone who signs in with a password also needs a code from an authenticator app. People who
+              haven't set one up can do nothing else until they have, in the browser and with their CLI and
+              access tokens. People who sign in only with Google don't need one, unless Google sign-ins ask
+              for codes too.
+            </span>
+          </span>
+          <Switch
+            checked={current.require_two_factor}
+            disabled={!s || saving}
+            onChange={(v) => change({ require_two_factor: v })}
+            label="Require two-factor sign-in"
+          />
+        </div>
+        {active.length > 0 && (
+          <div className="flex flex-col gap-2.5 rounded-lg border border-line bg-sunken/40 px-4 py-3.5">
+            <div className="flex items-baseline justify-between gap-3 text-[12.5px]">
+              <span className="text-ink-2">
+                <span className="font-medium text-ink tabular-nums">{using.length}</span> of {active.length}{" "}
+                {active.length === 1 ? "person has" : "people have"} an authenticator app or a passkey
+              </span>
+              <span className="font-mono text-[11.5px] text-ink-4 tabular-nums">
+                {Math.round(share * 100)}%
+              </span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-line" aria-hidden="true">
+              <div
+                className="h-full rounded-full bg-highlight transition-[width] duration-700 ease-[var(--ease-out)]"
+                style={{ width: `${share * 100}%` }}
+              />
+            </div>
+            {missing.length > 0 && (
+              <div className="flex items-center gap-2.5 text-[12px] text-ink-4">
+                <AvatarStack users={missing} max={6} size={20} />
+                <span className="min-w-0">
+                  {current.require_two_factor
+                    ? `${missing.length === 1 ? "1 person sets" : `${missing.length} people set`} it up before anything else`
+                    : `${missing.length === 1 ? "1 person" : `${missing.length} people`} would set it up first if you required it`}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Ask for codes on Google sign-in too
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              Google sign-ins then ask everyone who has two-factor for a code; otherwise only those who chose
+              that in Settings. With two-factor required, people who sign in only with Google need it too.
+            </span>
+          </span>
+          <Switch
+            checked={current.two_factor_google}
+            disabled={!s || saving}
+            onChange={(v) => change({ two_factor_google: v })}
+            label="Ask for codes on Google sign-in too"
+          />
+        </div>
       </div>
+      <Dialog
+        open={!!confirm}
+        onClose={() => setConfirm(null)}
+        title={google ? "Ask for codes on Google sign-in too?" : "Require two-factor sign-in?"}
+        description={
+          google
+            ? "Google sign-ins will take a code too, and people who sign in only with Google will need two-factor."
+            : "Everyone who signs in with a password will need a code from an authenticator app."
+        }
+      >
+        {confirm && (
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-2.5">
+              <p className="text-[13.5px] leading-relaxed text-ink-2">
+                {confirm.missing.length === 1
+                  ? `${confirm.missing[0]?.name} hasn't`
+                  : `These ${confirm.missing.length} people haven't`}{" "}
+                set it up yet. Until they do, fctl asks them to before anything else, and their CLI and access
+                tokens stop working.
+              </p>
+              <ul className="flex max-h-48 flex-col gap-1.5 overflow-y-auto">
+                {confirm.missing.map((u) => (
+                  <li key={u.id} className="flex items-center gap-2.5 text-[13px] text-ink">
+                    <Avatar user={u} size={22} />
+                    <span className="truncate">{u.name}</span>
+                    <span className="truncate text-[12px] text-ink-4">{u.email}</span>
+                  </li>
+                ))}
+              </ul>
+              {confirm.missing.some((u) => u.id === me?.user.id) && (
+                <Banner tone="info">
+                  You haven't set it up either: you'll set yours up right after this.
+                </Banner>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfirm(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  save(confirm.body);
+                  setConfirm(null);
+                }}
+              >
+                {google ? "Ask for codes" : "Require it"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
     </Section>
   );
 }

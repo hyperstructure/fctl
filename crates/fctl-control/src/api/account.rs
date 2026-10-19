@@ -169,6 +169,11 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "session_followers",
         "notification_settings",
         "push_subscriptions",
+        "authenticator_apps",
+        "recovery_codes",
+        "sign_in_challenges",
+        "passkeys",
+        "passkey_challenges",
     ] {
         statements.push(q(
             db,
@@ -190,7 +195,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
     statements.push(q(
         db,
         "UPDATE users SET email = ?, name = ?, given_name = NULL, family_name = NULL, avatar_url = NULL, commit_email = NULL, password_hash = NULL, role = 'member', \
-         status = 'disabled', default_credential_id = NULL, last_login_at = NULL, updated_at = ? \
+         status = 'disabled', default_credential_id = NULL, last_login_at = NULL, two_factor_google = 0, updated_at = ? \
          WHERE id = ? AND (EXISTS (SELECT 1 FROM sessions WHERE created_by = ?) OR EXISTS (SELECT 1 FROM projects WHERE created_by = ?))",
         &[
             s(&acct::tombstone_email(id)),
@@ -394,6 +399,41 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         rows(
             ctx,
             "SELECT provider, email, name, avatar_url, created_at FROM identities WHERE user_id = ? ORDER BY created_at",
+            &me(),
+        )
+        .await?,
+    );
+    doc.insert(
+        "two_factor".into(),
+        json!({
+            "ask_on_google_sign_in": user.two_factor_google,
+            "authenticator_app": rows(
+                ctx,
+                "SELECT created_at, last_used_at, failures AS wrong_codes_in_a_row, locked_until FROM authenticator_apps WHERE user_id = ?",
+                &me(),
+            )
+            .await?
+            .as_array()
+            .and_then(|a| a.first().cloned()),
+            "recovery_codes": rows(
+                ctx,
+                "SELECT created_at, used_at FROM recovery_codes WHERE user_id = ? ORDER BY created_at, used_at",
+                &me(),
+            )
+            .await?,
+            "waiting_sign_ins": rows(
+                ctx,
+                "SELECT reason, created_at, expires_at FROM sign_in_challenges WHERE user_id = ? ORDER BY created_at",
+                &me(),
+            )
+            .await?,
+        }),
+    );
+    doc.insert(
+        "passkeys".into(),
+        rows(
+            ctx,
+            "SELECT name, aaguid AS authenticator_model, backed_up AS synced, transports, created_at, last_used_at FROM passkeys WHERE user_id = ? ORDER BY created_at",
             &me(),
         )
         .await?,

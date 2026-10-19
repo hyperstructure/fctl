@@ -465,6 +465,11 @@ fn bootstrap(state: &Path) -> Result<String> {
         "signing in as the dev owner (delete .fctl-dev and crates/fctl-control/.wrangler to start over)",
         &res,
     )?;
+    if res.1.get("two_factor").is_some() {
+        bail!(
+            "the dev owner has two-factor sign-in, so a password alone can't sign it in: turn it off in Settings (or with `fctl account two-factor disable`), or delete .fctl-dev and crates/fctl-control/.wrangler to start over"
+        );
+    }
     let cookie = res.2.context("no session cookie in the sign-in response")?;
     let created = call(
         "POST",

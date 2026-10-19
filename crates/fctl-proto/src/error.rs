@@ -29,6 +29,9 @@ pub enum ErrorCode {
     Unavailable,
     /// The feature is not configured on this instance.
     NotConfigured,
+    /// The instance requires two-factor sign-in, and this account hasn't
+    /// set it up: nothing else works until it has.
+    TwoFactorSetupRequired,
     Internal,
 }
 
@@ -37,7 +40,7 @@ impl ErrorCode {
         match self {
             Self::BadRequest | Self::Validation => 400,
             Self::Unauthorized | Self::InvalidCredentials => 401,
-            Self::Forbidden | Self::AccessDenied => 403,
+            Self::Forbidden | Self::AccessDenied | Self::TwoFactorSetupRequired => 403,
             Self::NotFound => 404,
             Self::Conflict => 409,
             Self::SetupRequired => 409,

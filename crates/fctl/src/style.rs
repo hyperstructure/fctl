@@ -8,6 +8,11 @@ fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
 }
 
+/// Whether output goes to a terminal that takes colors.
+pub fn colors() -> bool {
+    enabled()
+}
+
 fn paint(code: &str, s: &str) -> String {
     if enabled() {
         format!("\x1b[{code}m{s}\x1b[0m")

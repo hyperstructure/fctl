@@ -3,7 +3,8 @@
 //! Every secret has a type prefix so leaks are easy to spot and route
 //! (`fctl_ws_…` web session, `fctl_cli_…`, `fctl_pat_…`, `fctl_rt_…` runner,
 //! `fctl_inv_…` invitation, `fctl_rst_…` password reset, `fctl_dc_…` device
-//! code). Only the SHA-256 of a secret is stored.
+//! code, `fctl_2fa_…` a sign-in that waits for its second factor). Only the
+//! SHA-256 of a secret is stored.
 
 use crate::random_bytes;
 use sha2::{Digest, Sha256};
@@ -19,6 +20,9 @@ pub enum SecretKind {
     Invite,
     PasswordReset,
     DeviceCode,
+    /// A sign-in that waits for its second factor (the `__Host-fctl-2fa`
+    /// cookie).
+    SignInChallenge,
     /// OAuth `state` and similar short-lived nonces.
     Nonce,
 }
@@ -33,6 +37,7 @@ impl SecretKind {
             Self::Invite => "fctl_inv_",
             Self::PasswordReset => "fctl_rst_",
             Self::DeviceCode => "fctl_dc_",
+            Self::SignInChallenge => "fctl_2fa_",
             Self::Nonce => "fctl_n_",
         }
     }
@@ -46,6 +51,7 @@ impl SecretKind {
             Self::Invite,
             Self::PasswordReset,
             Self::DeviceCode,
+            Self::SignInChallenge,
             Self::Nonce,
         ]
         .into_iter()
@@ -97,7 +103,7 @@ pub fn looks_like(secret: &str, kind: SecretKind) -> bool {
 
 /// Characters for codes people type: no vowels (no accidental words), no
 /// look-alikes (0/O, 1/I/L).
-const USER_CODE_ALPHABET: &[u8; 20] = b"BCDFGHJKMNPQRSTVWXZ2";
+pub(crate) const USER_CODE_ALPHABET: &[u8; 20] = b"BCDFGHJKMNPQRSTVWXZ2";
 
 /// A device-flow user code like `KFTW-QXPL` (about 34 bits).
 pub fn new_user_code() -> String {

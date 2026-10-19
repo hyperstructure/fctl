@@ -15,4 +15,12 @@ given_name?: string, family_name?: string, avatar_url?: string, role: InstanceRo
 /**
  * Whether the account can sign in with a password.
  */
-has_password: boolean, created_at: number, last_login_at?: number, };
+has_password: boolean, 
+/**
+ * Whether the account has two-factor sign-in: an authenticator app.
+ */
+two_factor: boolean, 
+/**
+ * How many passkeys the account signs in with.
+ */
+passkeys: number, created_at: number, last_login_at?: number, };
