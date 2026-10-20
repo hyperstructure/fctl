@@ -14,9 +14,9 @@ session_url?: string,
  */
 unavailable_reason?: string, 
 /**
- * The person on whose Claude subscription the run that reported it
- * ran: who started the session, or who resumed it. Only they can open
- * it in the Claude apps. The control plane adds it; agents, and
- * control planes before it, leave it out.
+ * The person on whose Claude subscription the session ran when its
+ * agent reported this: who started the session, or who resumed it.
+ * Only they can open it in the Claude apps. The control plane adds it;
+ * agents, and control planes before it, leave it out.
  */
 user?: UserRef, };

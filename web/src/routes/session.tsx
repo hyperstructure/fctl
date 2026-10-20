@@ -604,7 +604,7 @@ function Rail({
   const claudeUrl = remoteControlUrl(rc, session.created_by, me);
   const rcUser = remoteControlUser(rc, session.created_by);
   // The Claude apps show it only to the person on whose subscription it runs.
-  const claude = claudeUrl ? (
+  const claudeApps = claudeUrl ? (
     <>
       <a
         {...claudeAppLink(claudeUrl)}
@@ -701,8 +701,8 @@ function Rail({
         <Row k="Billing" v="Claude subscription" />
       </RailSection>
       <RailSection title="Follow along">
-        {claude}
-        <div className={cn("flex items-center justify-between", claude && "mt-3")}>
+        {claudeApps}
+        <div className={cn("flex items-center justify-between", claudeApps && "mt-3")}>
           <span className="text-[12.5px] text-ink-4">CLI</span>
           <CopyButton text={`fctl attach ${session.id}`} label="fctl attach" />
         </div>

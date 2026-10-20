@@ -250,12 +250,12 @@ turns them off.
 - **Terminal** — `fctl attach my-app#12` streams the session and lets you
   type messages; `fctl send my-app#12 "Use the existing Button component"`
   sends one from a script.
-- **Claude apps** — sessions started with a full Claude login join Remote
-  Control, in the Claude apps of the person whose subscription they run on:
-  who started the session, or who resumed it. Only they can open it there,
-  so only they see **Open in Claude** on the session page, which opens the
-  session in Claude's desktop or mobile app, and **Open on claude.ai** in
-  its menu, which opens it in a browser. From a terminal,
+- **Claude apps** — a session started with a full Claude login joins Remote
+  Control, in the Claude apps of the person whose subscription it runs on:
+  who started it, or who resumed it. Only they can open it there, so only
+  they see **Open in Claude** on the session page, which opens it in
+  Claude's desktop or mobile app, and **Open on claude.ai** in its menu,
+  which opens it in a browser. From a terminal,
   `fctl open my-app#12 --claude` opens the desktop app, or claude.ai when it
   is not installed.
 
