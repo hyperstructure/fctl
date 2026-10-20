@@ -30,6 +30,10 @@
 //! Plan usage comes as Claude Code reports it after a response
 //! (`unifiedWindows` in a `rate_limit_event`): the five-hour and weekly
 //! windows follow the clock, so every session reports the same numbers.
+//! Each API call's tokens come as Claude Code's do: its input as its
+//! response starts (`message_start`, when it streams) and with each of its
+//! assistant messages, its output in the `message_delta` that ends it, and
+//! the process's totals with each `result` (`modelUsage`).
 //!
 //! Environment: `FAKE_CLAUDE_API_KEY_SOURCE` overrides the reported
 //! `apiKeySource` (default `none`); `FAKE_CLAUDE_DELAY_MS` sets the delay
@@ -71,12 +75,27 @@ fn uuid() -> String {
     )
 }
 
+/// A short id for a message, tool use, task or request, as Claude's have:
+/// the end of a [`uuid`], which is what changes from one to the next, and a
+/// count, so that no two are the same.
+fn short_id(len: usize) -> String {
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    let u = uuid();
+    format!(
+        "{}{:x}",
+        &u[u.len() - len..],
+        COUNT.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
 struct Session {
     id: String,
     model: String,
     turns: u64,
+    /// What its API calls used, for `modelUsage`.
     input_tokens: u64,
     output_tokens: u64,
+    cache_read_tokens: u64,
     delay: Duration,
     /// Shell commands running in the background, in the order they end.
     background: Vec<Background>,
@@ -113,12 +132,15 @@ impl Session {
     /// Starts a shell command in the background that ends after `secs`, as
     /// Claude Code's Bash tool does with `run_in_background`.
     fn start_background(&mut self, secs: u64) {
-        let id = format!("b{}", &uuid()[..8]);
-        let tool_use_id = format!("toolu_{}", &uuid()[..12]);
+        let id = format!("b{}", short_id(8));
+        let tool_use_id = format!("toolu_{}", short_id(12));
         let description = format!("Wait {secs} seconds in the background");
+        let msg_id = format!("msg_{}", short_id(8));
+        let usage = self.call_started();
         out(
-            &json!({"type": "assistant", "message": {"id": format!("msg_{}", &uuid()[..8]), "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": format!("sleep {secs}"), "description": description, "run_in_background": true}}], "stop_reason": "tool_use", "usage": {"input_tokens": 20, "output_tokens": 30}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": format!("sleep {secs}"), "description": description, "run_in_background": true}}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
+        self.call_ended(&msg_id, "tool_use", 30);
         out(
             &json!({"type": "system", "subtype": "task_started", "task_id": id, "tool_use_id": tool_use_id, "description": description, "task_type": "local_bash", "is_backgrounded": true, "session_id": self.id, "uuid": uuid()}),
         );
@@ -170,10 +192,34 @@ impl Session {
         }
     }
 
-    fn stream_text(&self, text: &str) -> String {
-        let msg_id = format!("msg_{}", &uuid()[..8]);
+    /// An API call's usage as its response starts: Claude Code repeats it
+    /// in each of the call's assistant messages, with the output only
+    /// begun.
+    fn call_started(&mut self) -> Value {
+        self.input_tokens += 12;
+        self.cache_read_tokens += 1000;
+        self.output_tokens += 1;
+        json!({"input_tokens": 12, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0, "output_tokens": 1})
+    }
+
+    /// The end of an API call's response: its output tokens in all
+    /// (`message_delta`), then `message_stop`.
+    fn call_ended(&mut self, msg_id: &str, stop_reason: &str, output: u64) {
+        let output = output.max(1);
+        self.output_tokens += output - 1;
         out(
-            &json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": msg_id, "role": "assistant", "model": self.model, "content": []}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            &json!({"type": "stream_event", "event": {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": null}, "usage": {"input_tokens": 12, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0, "output_tokens": output}}, "api_message_id": msg_id, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        out(
+            &json!({"type": "stream_event", "event": {"type": "message_stop"}, "api_message_id": msg_id, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+    }
+
+    fn stream_text(&mut self, text: &str) -> String {
+        let msg_id = format!("msg_{}", short_id(8));
+        let usage = self.call_started();
+        out(
+            &json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": msg_id, "role": "assistant", "model": self.model, "content": [], "usage": usage}}, "api_message_id": msg_id, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
         out(
             &json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
@@ -193,16 +239,20 @@ impl Session {
             &json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
         out(
-            &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "text", "text": written}], "stop_reason": null, "usage": {"input_tokens": 12, "output_tokens": written.len() / 4}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "text", "text": written}], "stop_reason": null, "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
+        self.call_ended(&msg_id, "end_turn", written.len() as u64 / 4);
         msg_id
     }
 
-    fn tool(&self, name: &str, input: Value, output: &str, is_error: bool) {
-        let tool_id = format!("toolu_{}", &uuid()[..12]);
+    fn tool(&mut self, name: &str, input: Value, output: &str, is_error: bool) {
+        let tool_id = format!("toolu_{}", short_id(12));
+        let msg_id = format!("msg_{}", short_id(8));
+        let usage = self.call_started();
         out(
-            &json!({"type": "assistant", "message": {"id": format!("msg_{}", &uuid()[..8]), "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": input}], "stop_reason": "tool_use", "usage": {"input_tokens": 20, "output_tokens": 30}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": input}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
+        self.call_ended(&msg_id, "tool_use", 30);
         for i in 0..2 {
             out(
                 &json!({"type": "tool_progress", "tool_use_id": tool_id, "tool_name": name, "parent_tool_use_id": null, "elapsed_time_seconds": i, "session_id": self.id, "uuid": uuid()}),
@@ -216,14 +266,12 @@ impl Session {
 
     fn result(&mut self, started: Instant, text: &str, subtype: &str) {
         self.turns += 1;
-        self.input_tokens += 120;
-        self.output_tokens += 80 + text.len() as u64 / 4;
         let ms = started.elapsed().as_millis() as u64;
         out(&json!({
             "type": "result", "subtype": subtype, "is_error": subtype != "success", "duration_ms": ms, "duration_api_ms": ms,
             "num_turns": 3, "result": text, "stop_reason": "end_turn", "total_cost_usd": 0.0, "session_id": self.id, "uuid": uuid(),
             "usage": {"input_tokens": 120, "output_tokens": 80, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0},
-            "modelUsage": {self.model.clone(): {"inputTokens": self.input_tokens, "outputTokens": self.output_tokens, "cacheReadInputTokens": self.turns * 1000, "cacheCreationInputTokens": 0, "webSearchRequests": 0, "costUSD": 0.0, "contextWindow": 200000, "maxOutputTokens": 32000}},
+            "modelUsage": {self.model.clone(): {"inputTokens": self.input_tokens, "outputTokens": self.output_tokens, "cacheReadInputTokens": self.cache_read_tokens, "cacheCreationInputTokens": 0, "webSearchRequests": 0, "costUSD": 0.0, "contextWindow": 200000, "maxOutputTokens": 32000}},
             "permission_denials": [], "queued_turn_count": QUEUED_TURNS.load(Ordering::SeqCst)
         }));
     }
@@ -280,7 +328,7 @@ impl Session {
             );
         }
         if lower.contains("refresh") {
-            let req_id = format!("req_{}", &uuid()[..8]);
+            let req_id = format!("req_{}", short_id(8));
             out(
                 &json!({"type": "control_request", "request_id": req_id, "request": {"subtype": "oauth_token_refresh"}}),
             );
@@ -596,6 +644,7 @@ fn main() {
         turns: 0,
         input_tokens: 0,
         output_tokens: 0,
+        cache_read_tokens: 0,
         delay: Duration::from_millis(
             std::env::var("FAKE_CLAUDE_DELAY_MS")
                 .ok()
@@ -737,7 +786,15 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{adler32, asks_for_limit, background_for, crc32, rename_to, screenshot_png};
+    use super::{
+        adler32, asks_for_limit, background_for, crc32, rename_to, screenshot_png, short_id,
+    };
+
+    #[test]
+    fn short_ids_differ() {
+        let ids: std::collections::HashSet<String> = (0..1000).map(|_| short_id(8)).collect();
+        assert_eq!(ids.len(), 1000);
+    }
 
     #[test]
     fn draws_a_png() {

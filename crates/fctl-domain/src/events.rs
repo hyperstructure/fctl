@@ -1,8 +1,11 @@
 //! Understanding Claude Code's stream-json messages: what to store, what to
 //! count, and what must stop a session to keep it on the subscription.
 
+use fctl_proto::Millis;
 use fctl_proto::session::SessionStats;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::VecDeque;
 
 /// Strings longer than this are truncated before an event is stored.
 pub const MAX_STORED_STRING_BYTES: usize = 128 * 1024;
@@ -112,8 +115,101 @@ pub fn billing_guard(v: &Value) -> Option<BillingGuard> {
     }
 }
 
-/// Updates session counters from a Claude message.
-pub fn apply_stats(stats: &mut SessionStats, v: &Value) {
+/// How many API calls [`Counted`] remembers: more than run at once (a
+/// session's main thread and its subagents).
+const COUNTED_CALLS: usize = 32;
+
+/// The API calls whose tokens the session's counters hold so far. Claude
+/// reports a call's usage several times: as its response starts
+/// (`message_start`, a stream event) and again in each of its stored content
+/// blocks, with its input in full and its output only begun, and as it ends
+/// (`message_delta`, a stream event), with its output. Stream events can
+/// overtake stored messages or go missing, and the blocks of subagents that
+/// run at once interleave.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Counted {
+    calls: VecDeque<Call>,
+    /// The call whose response streams now (the latest `message_start`),
+    /// for a `message_delta` that doesn't say which call it ends.
+    #[serde(default)]
+    streaming: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Call {
+    /// The API message id.
+    id: String,
+    /// Whether its input and cache reads are counted.
+    input: bool,
+    /// Its output tokens counted.
+    output: u64,
+}
+
+impl Counted {
+    /// The call with this id, remembered from now on if it is new.
+    fn call(&mut self, id: &str) -> &mut Call {
+        let i = match self.calls.iter().position(|c| c.id == id) {
+            Some(i) => i,
+            None => {
+                if self.calls.len() >= COUNTED_CALLS {
+                    self.calls.pop_front();
+                }
+                self.calls.push_back(Call {
+                    id: id.to_owned(),
+                    input: false,
+                    output: 0,
+                });
+                self.calls.len() - 1
+            }
+        };
+        &mut self.calls[i]
+    }
+}
+
+/// Counts what Claude reports of an API call's `usage`: its input and
+/// cache reads once (`input`), its output as the running total it is. A
+/// call without an id counts each time.
+fn count_call(
+    stats: &mut SessionStats,
+    counted: &mut Counted,
+    id: Option<&str>,
+    usage: &Value,
+    input: bool,
+) {
+    let n = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let mut call = id.map(|id| counted.call(id));
+    if input && !call.as_ref().is_some_and(|c| c.input) {
+        stats.input_tokens = stats.input_tokens.saturating_add(n("input_tokens"));
+        stats.cache_read_tokens = stats
+            .cache_read_tokens
+            .saturating_add(n("cache_read_input_tokens"));
+        if let Some(c) = call.as_mut() {
+            c.input = true;
+        }
+    }
+    let so_far = n("output_tokens");
+    let before = call.as_ref().map_or(0, |c| c.output);
+    if so_far > before {
+        stats.output_tokens = stats.output_tokens.saturating_add(so_far - before);
+        if let Some(c) = call {
+            c.output = so_far;
+        }
+    }
+}
+
+/// Updates session counters from a stored Claude message sent at `ts`:
+/// tool calls and each API call's tokens as they come, and a turn's time
+/// and Claude's own token totals when it ends. While the session runs
+/// (`running`) a turn is under way: one that no status change started
+/// starts at `ts`, as does the next when Claude goes on with a message that
+/// came during the last.
+pub fn apply_stats(
+    stats: &mut SessionStats,
+    counted: &mut Counted,
+    v: &Value,
+    ts: Millis,
+    running: bool,
+) {
     match classify(v) {
         ClaudeKind::Assistant => {
             let tools = v
@@ -127,13 +223,22 @@ pub fn apply_stats(stats: &mut SessionStats, v: &Value) {
                 })
                 .unwrap_or(0);
             stats.tool_calls = stats.tool_calls.saturating_add(tools as u32);
+            if let Some(usage) = v.pointer("/message/usage") {
+                let id = v.pointer("/message/id").and_then(Value::as_str);
+                count_call(stats, counted, id, usage, true);
+            }
+            if running && stats.turn_started_at.is_none() {
+                stats.turn_started_at = Some(ts);
+            }
         }
         ClaudeKind::Result => {
             stats.turns = stats.turns.saturating_add(1);
             if let Some(ms) = v.get("duration_ms").and_then(Value::as_u64) {
                 stats.busy_ms = stats.busy_ms.saturating_add(ms);
             }
-            // modelUsage is cumulative for the process: the latest result wins.
+            // modelUsage is cumulative for the process, and has the calls
+            // that stream nothing too (compaction, small models). A resumed
+            // session's process knows only part of it: the larger count wins.
             if let Some(models) = v.get("modelUsage").and_then(Value::as_object) {
                 let sum = |key: &str| -> u64 {
                     models
@@ -145,8 +250,64 @@ pub fn apply_stats(stats: &mut SessionStats, v: &Value) {
                 stats.output_tokens = stats.output_tokens.max(sum("outputTokens"));
                 stats.cache_read_tokens = stats.cache_read_tokens.max(sum("cacheReadInputTokens"));
             }
+            // Claude goes on with a message that came during the turn.
+            let queued = v
+                .get("queued_turn_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 0;
+            stats.turn_started_at = (running && queued).then_some(ts);
         }
         _ => {}
+    }
+}
+
+/// Whether a stream event reports an API call's tokens: the one that starts
+/// its response and the one that ends it. The others come by the dozen a
+/// second and count nothing.
+pub fn reports_usage(v: &Value) -> bool {
+    matches!(
+        v.pointer("/event/type").and_then(Value::as_str),
+        Some("message_start" | "message_delta")
+    )
+}
+
+/// Updates session counters from a stream event ([`reports_usage`]): an API
+/// call's input as its response starts, before any of it is stored, and its
+/// output, which only the end has. Returns whether they changed.
+pub fn apply_stream_stats(stats: &mut SessionStats, counted: &mut Counted, v: &Value) -> bool {
+    let before = stats.clone();
+    match v.pointer("/event/type").and_then(Value::as_str) {
+        Some("message_start") => {
+            let id = v.pointer("/event/message/id").and_then(Value::as_str);
+            counted.streaming = id.map(str::to_owned);
+            if let Some(usage) = v.pointer("/event/message/usage") {
+                count_call(stats, counted, id, usage, true);
+            }
+        }
+        // It repeats the input, which the call's start or its stored blocks
+        // count. Without the call's id, it ends the call that streams.
+        Some("message_delta") => {
+            let id = v
+                .get("api_message_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| counted.streaming.clone());
+            if let (Some(id), Some(usage)) = (id, v.pointer("/event/usage")) {
+                count_call(stats, counted, Some(&id), usage, false);
+            }
+        }
+        _ => {}
+    }
+    *stats != before
+}
+
+/// Follows the session's status: a turn is under way while it runs.
+pub fn apply_status(stats: &mut SessionStats, running: bool, now: Millis) {
+    if !running {
+        stats.turn_started_at = None;
+    } else if stats.turn_started_at.is_none() {
+        stats.turn_started_at = Some(now);
     }
 }
 
@@ -312,23 +473,189 @@ mod tests {
     #[test]
     fn stats() {
         let mut s = SessionStats::default();
+        let mut c = Counted::default();
         apply_stats(
             &mut s,
+            &mut c,
             &json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "x"}, {"type": "tool_use", "id": "1"}, {"type": "tool_use", "id": "2"}]}}),
+            1,
+            true,
         );
         apply_stats(
             &mut s,
+            &mut c,
             &json!({"type": "result", "duration_ms": 1500, "modelUsage": {"a": {"inputTokens": 10, "outputTokens": 5, "cacheReadInputTokens": 100}, "b": {"inputTokens": 1, "outputTokens": 1, "cacheReadInputTokens": 0}}}),
+            2,
+            true,
         );
         apply_stats(
             &mut s,
+            &mut c,
             &json!({"type": "result", "duration_ms": 500, "modelUsage": {"a": {"inputTokens": 20, "outputTokens": 9, "cacheReadInputTokens": 150}}}),
+            3,
+            true,
         );
         assert_eq!((s.tool_calls, s.turns, s.busy_ms), (2, 2, 2000));
         assert_eq!(
             (s.input_tokens, s.output_tokens, s.cache_read_tokens),
             (20, 9, 150)
         );
+    }
+
+    /// One content block of an API call, with the usage Claude Code puts in
+    /// each: the call's input, and the output when the response started.
+    fn block(id: &str, parent: Option<&str>, input: u64, cache_read: u64) -> Value {
+        json!({"type": "assistant", "parent_tool_use_id": parent, "message": {"id": id, "content": [{"type": "tool_use", "id": "t"}],
+            "usage": {"input_tokens": input, "cache_read_input_tokens": cache_read, "cache_creation_input_tokens": 500, "output_tokens": 8}}})
+    }
+
+    fn delta(id: Option<&str>, output: u64) -> Value {
+        let mut v = json!({"type": "stream_event", "parent_tool_use_id": null, "event": {"type": "message_delta",
+            "delta": {"stop_reason": "tool_use"}, "usage": {"input_tokens": 2, "cache_read_input_tokens": 10_000, "output_tokens": output}}});
+        if let Some(id) = id {
+            v["api_message_id"] = json!(id);
+        }
+        v
+    }
+
+    #[test]
+    fn tokens_count_as_calls_come() {
+        let mut s = SessionStats::default();
+        let mut c = Counted::default();
+        // Each block of a call repeats its usage; tool results come between.
+        apply_stats(&mut s, &mut c, &block("a", None, 2, 10_000), 1, true);
+        apply_stats(&mut s, &mut c, &json!({"type": "user"}), 2, true);
+        apply_stats(&mut s, &mut c, &block("a", None, 2, 10_000), 3, true);
+        assert_eq!(
+            (s.input_tokens, s.output_tokens, s.cache_read_tokens),
+            (2, 8, 10_000)
+        );
+        assert_eq!(s.tool_calls, 2);
+        // The output so far comes with `message_delta`, once or more.
+        assert!(apply_stream_stats(&mut s, &mut c, &delta(Some("a"), 300)));
+        assert!(!apply_stream_stats(&mut s, &mut c, &delta(Some("a"), 300)));
+        assert_eq!(s.output_tokens, 300);
+        // A call's `message_delta` can overtake its stored messages.
+        assert!(apply_stream_stats(&mut s, &mut c, &delta(Some("b"), 40)));
+        apply_stats(&mut s, &mut c, &block("b", None, 3, 12_000), 4, true);
+        assert_eq!(
+            (s.input_tokens, s.output_tokens, s.cache_read_tokens),
+            (5, 340, 22_000)
+        );
+        // A call's input counts as its response starts, before any of it is
+        // stored...
+        let start = json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "c",
+            "usage": {"input_tokens": 1, "cache_read_input_tokens": 3_000, "output_tokens": 1}}}});
+        assert!(reports_usage(&start));
+        assert!(apply_stream_stats(&mut s, &mut c, &start));
+        assert_eq!(
+            (s.input_tokens, s.output_tokens, s.cache_read_tokens),
+            (6, 341, 25_000)
+        );
+        // ...and once: its stored blocks repeat it.
+        apply_stats(&mut s, &mut c, &block("c", None, 1, 3_000), 5, true);
+        assert_eq!(
+            (s.input_tokens, s.output_tokens, s.cache_read_tokens),
+            (6, 348, 25_000)
+        );
+        // A `message_delta` that doesn't name its call (older Claude Code)
+        // ends the one that streams.
+        assert!(apply_stream_stats(&mut s, &mut c, &delta(None, 50)));
+        assert_eq!(s.output_tokens, 390);
+        // The other stream events count nothing.
+        let text = json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}}});
+        assert!(!reports_usage(&text));
+        assert!(!apply_stream_stats(&mut s, &mut c, &text));
+        // Claude's totals settle the counts at the end of the turn...
+        let result = |input: u64, output: u64, cache: u64| json!({"type": "result", "duration_ms": 9000, "modelUsage": {"m": {"inputTokens": input, "outputTokens": output, "cacheReadInputTokens": cache}}});
+        apply_stats(&mut s, &mut c, &result(7, 420, 30_000), 6, true);
+        assert_eq!(
+            (s.input_tokens, s.output_tokens, s.cache_read_tokens),
+            (7, 420, 30_000)
+        );
+        // ...unless a resumed session's process knows less than was counted.
+        apply_stats(&mut s, &mut c, &block("d", None, 2, 5_000), 7, true);
+        apply_stats(&mut s, &mut c, &result(2, 8, 5_000), 8, true);
+        assert_eq!(
+            (s.input_tokens, s.output_tokens, s.cache_read_tokens),
+            (9, 428, 35_000)
+        );
+    }
+
+    #[test]
+    fn subagents_running_at_once_count_once_each() {
+        let mut s = SessionStats::default();
+        let mut c = Counted::default();
+        for v in [
+            block("x", Some("t1"), 1, 100),
+            block("y", Some("t2"), 1, 200),
+            block("x", Some("t1"), 1, 100),
+            block("y", Some("t2"), 1, 200),
+        ] {
+            apply_stats(&mut s, &mut c, &v, 1, true);
+        }
+        assert_eq!((s.input_tokens, s.cache_read_tokens), (2, 300));
+        // It remembers the latest calls only.
+        for i in 0..40 {
+            apply_stats(
+                &mut s,
+                &mut c,
+                &block(&format!("m{i}"), None, 1, 0),
+                2,
+                true,
+            );
+        }
+        assert_eq!(c.calls.len(), COUNTED_CALLS);
+        assert_eq!(s.input_tokens, 42);
+    }
+
+    #[test]
+    fn turns_under_way() {
+        let mut s = SessionStats::default();
+        let mut c = Counted::default();
+        // The session runs: a turn starts.
+        apply_status(&mut s, true, 1000);
+        assert_eq!((s.turn_started_at, s.turns_taken()), (Some(1000), 1));
+        // Its messages and status reports while it runs keep its start.
+        apply_stats(&mut s, &mut c, &block("a", None, 1, 0), 2000, true);
+        apply_status(&mut s, true, 2500);
+        assert_eq!(s.turn_started_at, Some(1000));
+        // Its result ends it.
+        let result = |queued: u64| json!({"type": "result", "duration_ms": 1800, "queued_turn_count": queued});
+        apply_stats(&mut s, &mut c, &result(0), 3000, true);
+        assert_eq!((s.turn_started_at, s.turns, s.busy_ms), (None, 1, 1800));
+        // Claude goes on with a message that came meanwhile.
+        apply_status(&mut s, true, 4000);
+        apply_stats(&mut s, &mut c, &result(1), 5000, true);
+        assert_eq!((s.turn_started_at, s.turns_taken()), (Some(5000), 3));
+        // A session that stops running has no turn under way...
+        apply_status(&mut s, false, 6000);
+        assert_eq!((s.turn_started_at, s.turns_taken()), (None, 2));
+        // ...even when what it sent before comes after (a host that
+        // reconnects reports its state first).
+        apply_stats(&mut s, &mut c, &block("b", None, 1, 0), 5500, false);
+        apply_stats(&mut s, &mut c, &result(0), 5900, false);
+        assert_eq!((s.turn_started_at, s.turns, s.busy_ms), (None, 3, 5400));
+        // A turn that was under way when no status change said so (a
+        // control plane that didn't follow turns yet) starts with its next
+        // message.
+        apply_stats(&mut s, &mut c, &block("c", None, 1, 0), 7000, true);
+        assert_eq!(s.turn_started_at, Some(7000));
+    }
+
+    #[test]
+    fn stats_without_a_turn_under_way_serialize_as_before() {
+        let s = SessionStats {
+            turns: 2,
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&s).unwrap_or_default();
+        assert!(v.get("turn_started_at").is_none());
+        assert_eq!(v["turns"], 2);
+        // What older control planes stored reads as no turn under way.
+        let old: SessionStats =
+            serde_json::from_value(json!({"turns": 1, "busy_ms": 5})).unwrap_or_default();
+        assert_eq!((old.turns, old.busy_ms, old.turn_started_at), (1, 5, None));
     }
 
     #[test]
