@@ -14,9 +14,11 @@ pub fn check(root: &Path, quick: bool) -> Result<()> {
     if !root.join("node_modules").exists() {
         util::npm_install(root)?;
     }
-    run(Command::new("npm")
-        .args(["run", "check", "--workspace", "web"])
-        .current_dir(root))?;
+    for workspace in ["web", "deploy/standalone"] {
+        run(Command::new("npm")
+            .args(["run", "check", "--workspace", workspace])
+            .current_dir(root))?;
+    }
     run(Command::new("cargo")
         .args([
             "clippy",
@@ -44,9 +46,11 @@ pub fn check(root: &Path, quick: bool) -> Result<()> {
     run(Command::new("cargo")
         .args(["test", "--workspace", "--locked"])
         .current_dir(root))?;
-    run(Command::new("npm")
-        .args(["test", "--workspace", "web"])
-        .current_dir(root))?;
+    for workspace in ["web", "deploy/standalone"] {
+        run(Command::new("npm")
+            .args(["test", "--workspace", workspace])
+            .current_dir(root))?;
+    }
     if !quick {
         util::build_web(root)?;
     }
