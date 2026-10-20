@@ -14,7 +14,6 @@ use crate::internal::{
 use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_domain::journal::{self, Take};
 use fctl_domain::notify;
-use fctl_domain::remote_control;
 use fctl_domain::usage as plan;
 use fctl_proto::api::{EventPage, PlanLimit};
 use fctl_proto::event::{EventBody, GitState, StatusChange, UserMessage};
@@ -355,7 +354,8 @@ impl SessionObject {
     }
 
     /// On whose Claude subscription the session runs: who started it, until
-    /// someone else resumes it (`ControlState::claude_user`).
+    /// someone else resumes it (`ControlState::claude_user`). The Remote
+    /// Control state its agent reports is theirs.
     fn claude_user(&self, s: &Session) -> UserRef {
         self.meta("claude_user")
             .and_then(|u| serde_json::from_str(&u).ok())
@@ -1290,8 +1290,7 @@ impl SessionObject {
                         summary_changed = true;
                     }
                     if let (EventBody::RemoteControl(rc), Some(s)) = (&mut body, summary.as_mut()) {
-                        let user = self.claude_user(s);
-                        remote_control::attribute(rc, s.remote_control.as_ref(), &user);
+                        rc.user = Some(self.claude_user(s));
                         s.remote_control = Some(rc.clone());
                         summary_changed = true;
                     }
@@ -1594,8 +1593,7 @@ impl SessionObject {
             s.effort = fctl_domain::validate::effort(&e).ok();
         }
         if let Some(mut rc) = state.remote_control {
-            let user = self.claude_user(&s);
-            remote_control::attribute(&mut rc, s.remote_control.as_ref(), &user);
+            rc.user = Some(self.claude_user(&s));
             s.remote_control = Some(rc);
         }
         if let Some(st) = state.stats {
