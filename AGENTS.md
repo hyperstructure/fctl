@@ -13,6 +13,7 @@ cargo xtask dev            # the whole system locally; agents run fake-claude
 cargo xtask check          # what CI checks; run it before you push
 cargo xtask check --quick  # the same without production builds
 cargo xtask dev --smoke    # CI's other check: one session through the local stack
+cargo xtask serve          # the control plane without Cloudflare, as its container runs it
 cargo xtask gen            # regenerate web/src/gen after changing crates/fctl-proto
 cargo test -p fctl-domain  # one crate's tests
 cd web && npm run check    # Biome + TypeScript for the web app
@@ -94,6 +95,12 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
 - End to end: `cargo xtask dev`, then drive it with the CLI (`fctl run`,
   `fctl attach`, `fctl logs --json`) or the browser. fake-claude makes runs
   deterministic and free.
+- The control plane also runs without Cloudflare (`deploy/standalone`,
+  [ADR 0026](docs/adr/0026-the-control-plane-runs-without-cloudflare-on-workerd.md)):
+  the same Worker on workerd, with the bindings in `wrangler.toml`.
+  `FCTL_SETUP_TOKEN=dev-setup-token cargo xtask serve`, then
+  `cargo xtask dev --smoke --server http://localhost:8787`, runs a session
+  through it; CI does the same with its container image.
 - UI: look at it in both themes (Settings → Appearance) and at a phone width.
 
 ## Other repositories
