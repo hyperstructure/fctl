@@ -12,9 +12,17 @@ export type RepoChanges = {
   ahead: number;
   pushed: boolean;
   pr?: G.PullRequestRef;
+  /** Once `pr` is merged: the commits after it. */
+  unmerged?: number;
 };
 
-type State = { files: G.FileChange[]; ahead: number; pushed: boolean; pull_request?: G.PullRequestRef };
+type State = {
+  files: G.FileChange[];
+  ahead: number;
+  pushed: boolean;
+  pull_request?: G.PullRequestRef;
+  unmerged?: number;
+};
 
 function changes(name: string | undefined, readOnly: boolean, s: State): RepoChanges {
   return {
@@ -26,6 +34,7 @@ function changes(name: string | undefined, readOnly: boolean, s: State): RepoCha
     ahead: s.ahead,
     pushed: s.pushed,
     pr: s.pull_request,
+    unmerged: s.unmerged,
   };
 }
 
@@ -40,6 +49,24 @@ export function repoChanges(git: G.GitState): RepoChanges[] {
 /** Whether a repository has changes or commits to show. The session lists its
  * pull requests on their own (lib/pulls). */
 export const hasChanges = (r: RepoChanges) => r.files.length > 0 || r.ahead > 0;
+
+/**
+ * Where a repository's commits are: "pushed", "not pushed yet", or "kept in
+ * the sandbox" for a read-only one. Once its branch's pull request is merged,
+ * "#12 merged", and the commits after it: fctl-agent doesn't push a merged
+ * branch.
+ */
+export function whereCommits(r: RepoChanges): string[] {
+  if (r.pr?.state === "merged") {
+    const merged = `#${r.pr.number} merged`;
+    const n = r.unmerged ?? 0;
+    if (n === 0) return [merged];
+    return [merged, `${n} ${n === 1 ? "commit" : "commits"} since, ${r.pushed ? "pushed" : "not pushed"}`];
+  }
+  if (r.pushed) return ["pushed"];
+  if (r.ahead === 0) return [];
+  return [r.readOnly ? "kept in the sandbox" : "not pushed yet"];
+}
 
 /** What a git state says of one repository's branch. */
 type Branch = { head?: string; ahead: number; pushed: boolean; pr?: string };
