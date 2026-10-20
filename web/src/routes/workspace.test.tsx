@@ -71,9 +71,13 @@ describe("a workspace without runners", () => {
     expect(text).toContain(
       "install Apple's container on macOS 26 or later, Lima on older macOS, or Docker on Linux",
     );
-    expect(text).toContain("Give it a name above and choose Register.");
-    expect(text).toContain("Run the two commands you get on it");
+    expect(text).toContain("Install fctl on it");
+    expect(text).toContain("curl -fsSL https://fctl.sh/install | sh");
+    expect(text).toContain("brew install hyperstructure/tap/fctl");
+    expect(text).toContain("Register it for Side project");
+    expect(text).toContain(`fctl login ${location.origin}`);
     expect(text).toContain("fctl host install --workspace side-project");
+    expect(text).toContain("Name it above and choose Register for a command with a token.");
   });
 
   it("tells members whom to ask for one", () => {

@@ -46,6 +46,7 @@ import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort } from "@/lib/format";
+import { BREW_INSTALL, installCommand } from "@/lib/install";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspace } from "@/lib/queries";
 import { repoSummary } from "@/lib/repos";
 import { BASE_ROLES, claudeOptions, roleLabel } from "@/lib/workspaces";
@@ -727,9 +728,6 @@ function Runners({ w }: { w: G.Workspace }) {
   });
   const here = new Set(list.data?.runners.map((r) => r.id));
   const yours = (all.data?.runners ?? []).filter((r) => r.yours && !here.has(r.id));
-  const site = location.hostname.startsWith("app.")
-    ? `https://${location.hostname.slice(4)}`
-    : location.origin;
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
@@ -887,7 +885,7 @@ function Runners({ w }: { w: G.Workspace }) {
         {reg && (
           <div className="flex flex-col gap-3">
             <div className="text-[12.5px] text-ink-3">1. Install fctl</div>
-            <CodeBox value={`curl -fsSL ${site}/install | sh`} />
+            <CodeBox value={installCommand()} />
             <div className="text-[12.5px] text-ink-3">2. Register it as a runner and start the service</div>
             <CodeBox value={`FCTL_SERVER=${location.origin} fctl host install --token ${reg.token}`} />
             <p className="text-[12.5px] leading-relaxed text-ink-4">
@@ -903,15 +901,38 @@ function Runners({ w }: { w: G.Workspace }) {
 
 /** For admins of a workspace without runners: what bringing a machine online takes, under the form. */
 function FirstRunner({ w, yours }: { w: G.Workspace; yours: boolean }) {
-  const steps: { title: string; body: string }[] = [
+  const steps: { title: string; body: ReactNode }[] = [
     {
       title: "Choose a machine that stays on",
       body: "A Mac with Apple silicon or a Linux machine. Agents work there in sandboxes: install Apple's container on macOS 26 or later, Lima on older macOS, or Docker on Linux.",
     },
-    { title: "Register it", body: "Give it a name above and choose Register." },
     {
-      title: "Run the two commands you get on it",
-      body: "They install fctl and start the runner, which shows up here as online within seconds.",
+      title: "Install fctl on it",
+      body: (
+        <>
+          <CodeBox value={installCommand()} />
+          <p>
+            Or with Homebrew:{" "}
+            <code className="rounded bg-raised px-1 font-mono text-[12px] text-ink-2">{BREW_INSTALL}</code>
+          </p>
+        </>
+      ),
+    },
+    {
+      title: `Register it for ${w.name}`,
+      body: (
+        <>
+          <p>
+            Sign in, then register it as a runner and start its service. It shows up here as online within
+            seconds.
+          </p>
+          <CodeBox value={`fctl login ${location.origin}`} />
+          <CodeBox value={`fctl host install --workspace ${w.slug}`} />
+          <p className="text-[12.5px] text-ink-4">
+            Rather not sign in there? Name it above and choose Register for a command with a token.
+          </p>
+        </>
+      ),
     },
   ];
   return (
@@ -929,16 +950,13 @@ function FirstRunner({ w, yours }: { w: G.Workspace; yours: boolean }) {
             </span>
             <div className="min-w-0 flex-1">
               <div className="text-[14.5px] font-medium text-ink">{s.title}</div>
-              <div className="mt-1 max-w-2xl text-[13.5px] leading-relaxed text-ink-3">{s.body}</div>
+              <div className="mt-1 flex max-w-2xl flex-col gap-2 text-[13.5px] leading-relaxed text-ink-3">
+                {s.body}
+              </div>
             </div>
           </li>
         ))}
       </ol>
-      <p className="mt-4 text-[12.5px] leading-relaxed text-ink-4">
-        Signed in to fctl on the machine already?{" "}
-        <code className="font-mono text-[12px] text-ink-3">fctl host install --workspace {w.slug}</code>{" "}
-        registers it and starts the runner.
-      </p>
     </section>
   );
 }
