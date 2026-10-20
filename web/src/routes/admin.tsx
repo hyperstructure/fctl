@@ -1270,7 +1270,8 @@ function Runners() {
                     {r.version ? ` · fctl ${r.version}` : ""}
                     {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
                   </div>
-                  {r.workspaces.length > 0 ? (
+                  {/* Control planes before workspaces don't say which ones it runs. */}
+                  {r.workspaces?.length ? (
                     <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-ink-3">
                       {r.workspaces.map((w) => (
                         <span key={w.id} className="inline-flex items-center gap-1.5">
@@ -1279,9 +1280,9 @@ function Runners() {
                       ))}
                       {r.created_by && <span className="text-ink-4">· {r.created_by.name}'s</span>}
                     </div>
-                  ) : (
+                  ) : r.workspaces ? (
                     <div className="mt-0.5 text-[12px] text-amber">Runs no workspace's sessions yet</div>
-                  )}
+                  ) : null}
                   {r.drain && r.status !== "disabled" && <DrainLine runner={r} />}
                   {r.status !== "disabled" && <LowDiskLine runner={r} />}
                   <RunnerResources runner={r} />
