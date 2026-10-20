@@ -2,7 +2,8 @@
 //!
 //! It speaks the same protocol as `claude -p --input-format stream-json
 //! --output-format stream-json --include-partial-messages`: control requests
-//! (`initialize`, `interrupt`, `remote_control`), user turns on stdin, and
+//! (`initialize`, `interrupt`, `remote_control`, `get_settings`), user turns
+//! on stdin, and
 //! `system`, `stream_event`, `assistant`, `user`, `result` and
 //! `rate_limit_event` messages on stdout. A user turn that arrives during
 //! another waits for it, and each `result` says how many turns still wait
@@ -25,6 +26,7 @@
 //! | `overage` | reports paid extra usage starting |
 //! | `refresh` | asks its host for a fresh OAuth token |
 //! | `crash` | exits with status 3 |
+//! | `effort <level>` | works at that effort level from then on (`low` … `max`, or `none` as a model that takes none), as when someone changes it in the Claude apps over Remote Control; `get_settings` says so |
 //! | (attached files) | says how many images the message holds and checks that each listed file is on disk |
 //!
 //! Plan usage comes as Claude Code reports it after a response
@@ -40,6 +42,8 @@
 //! between streamed chunks (default 25). `system/init` lists a claude.ai
 //! connector (`claude.ai Fake Docs`), as Claude Code does on a full login,
 //! unless `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, `0`, `no` or `off`.
+//! `get_settings` answers with the model and the effort level it works at
+//! (`applied`): `--effort`, else `medium`.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -91,6 +95,8 @@ fn short_id(len: usize) -> String {
 struct Session {
     id: String,
     model: String,
+    /// The effort level it works at; `None` as a model that takes none.
+    effort: Option<String>,
     turns: u64,
     /// What its API calls used, for `modelUsage`.
     input_tokens: u64,
@@ -301,6 +307,9 @@ impl Session {
         if lower.contains("crash") {
             eprintln!("fake-claude: crashing as asked");
             std::process::exit(3);
+        }
+        if let Some(effort) = effort_in(&lower) {
+            self.effort = effort;
         }
         if asks_for_limit(text) {
             let resets = SystemTime::now()
@@ -609,6 +618,28 @@ fn adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
+/// The effort level after `effort` in a lowercased turn: `Some(None)` for
+/// `none`.
+fn effort_in(lower: &str) -> Option<Option<String>> {
+    let mut words = lower.split_whitespace();
+    while let Some(word) = words.next() {
+        if word != "effort" {
+            continue;
+        }
+        match words
+            .next()
+            .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+        {
+            Some(level @ ("low" | "medium" | "high" | "xhigh" | "max")) => {
+                return Some(Some(level.to_owned()));
+            }
+            Some("none") => return Some(None),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The title after `rename` (any case), to the end of its line.
 fn rename_to(text: &str) -> Option<String> {
     let at = text.char_indices().find_map(|(i, _)| {
@@ -641,6 +672,7 @@ fn main() {
             .or_else(|| arg("--resume"))
             .unwrap_or_else(uuid),
         model: arg("--model").unwrap_or_else(|| "claude-fake-1".into()),
+        effort: Some(arg("--effort").unwrap_or_else(|| "medium".into())),
         turns: 0,
         input_tokens: 0,
         output_tokens: 0,
@@ -731,6 +763,9 @@ fn main() {
                         json!({"subtype": "success", "request_id": id, "response": {"commands": [], "agents": [], "output_style": "default", "available_output_styles": ["default"], "models": [], "account": {"email": "fake@example.com"}}})
                     }
                     "interrupt" => json!({"subtype": "success", "request_id": id, "response": {}}),
+                    "get_settings" => {
+                        json!({"subtype": "success", "request_id": id, "response": {"effective": {}, "sources": [], "applied": {"model": session.model, "effort": session.effort}}})
+                    }
                     "remote_control" => {
                         let scopes = std::env::var("CLAUDE_CODE_OAUTH_SCOPES").unwrap_or_default();
                         if scopes.contains("user:profile") {
@@ -787,7 +822,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        adler32, asks_for_limit, background_for, crc32, rename_to, screenshot_png, short_id,
+        adler32, asks_for_limit, background_for, crc32, effort_in, rename_to, screenshot_png,
+        short_id,
     };
 
     #[test]
@@ -843,5 +879,18 @@ mod tests {
             Some("Renamed by fake-claude")
         );
         assert_eq!(rename_to("write notes.md"), None);
+    }
+
+    #[test]
+    fn effort_takes_the_level_after_it() {
+        assert_eq!(
+            effort_in("work at effort high, please"),
+            Some(Some("high".into()))
+        );
+        assert_eq!(effort_in("effort xhigh."), Some(Some("xhigh".into())));
+        assert_eq!(effort_in("effort none"), Some(None));
+        // Other words after it change nothing.
+        assert_eq!(effort_in("put some effort into it"), None);
+        assert_eq!(effort_in("write notes.md"), None);
     }
 }

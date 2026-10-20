@@ -74,6 +74,10 @@ pub struct SessionState {
     pub resume_at: Option<Millis>,
     pub branch: Option<String>,
     pub model: Option<String>,
+    /// The effort level Claude works at, as it says (`get_settings`):
+    /// `low` … `max`, or empty when its model takes none. Absent until
+    /// Claude has said, and from older agents.
+    pub effort: Option<String>,
     pub claude_session_id: Option<String>,
     pub remote_control: Option<RemoteControlState>,
     pub stats: Option<SessionStats>,
@@ -194,6 +198,21 @@ mod tests {
             serde_json::from_str::<UplinkUp>(r#"{"type":"agent_link"}"#)?,
             up
         );
+        Ok(())
+    }
+
+    #[test]
+    fn agents_report_the_effort_claude_works_at() -> serde_json::Result<()> {
+        // An older agent says nothing about it.
+        let old: SessionState = serde_json::from_str(r#"{"status":"running","model":"opus"}"#)?;
+        assert_eq!(old.effort, None);
+        let state = SessionState {
+            effort: Some("high".into()),
+            ..old
+        };
+        let json = serde_json::to_value(&state)?;
+        assert_eq!(json["effort"], "high");
+        assert_eq!(serde_json::from_value::<SessionState>(json)?, state);
         Ok(())
     }
 }

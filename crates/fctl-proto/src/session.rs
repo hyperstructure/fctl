@@ -695,6 +695,10 @@ pub struct Session {
     pub pull_requests: Vec<PullRequestRef>,
     pub runner: Option<RunnerRef>,
     pub model: Option<String>,
+    /// The effort level Claude works at (`low` … `max`), as its agent last
+    /// reported it. Absent until Claude starts, when its model takes no
+    /// effort level, and from agents and control planes before it.
+    pub effort: Option<String>,
     pub remote_control: Option<RemoteControlState>,
     pub stats: SessionStats,
     /// The caller's role.

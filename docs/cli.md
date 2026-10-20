@@ -42,7 +42,7 @@ fctl run -p my-app -a screenshot.png "Make the header match this"   # attach fil
 
 fctl sessions                    # recent sessions
 fctl sessions --active -p my-app
-fctl show my-app#12              # status, branch, pull requests, usage
+fctl show my-app#12              # status, branch, pull requests, model and effort, usage
 fctl edit my-app#12 --title "Fix the flaky login test"
 fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" clears it
 fctl logs my-app#12              # the transcript

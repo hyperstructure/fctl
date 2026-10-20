@@ -220,7 +220,8 @@ fn wrangler_dev(root: &Path, no_vite: bool, children: &mut Children) -> Result<(
 /// `--smoke`: starts a session with the CLI as a person would, and fails
 /// unless the agent commits a file and finishes its turn, the session waits
 /// for the command the agent left running in the background and the agent
-/// takes its result in a turn of its own, and the session stops when asked.
+/// takes its result in a turn of its own, the session stops when asked, and
+/// it says which effort level Claude worked at.
 fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
     let fctl = || {
         let mut cmd = Command::new(util::target_dir(root).join("debug/fctl"));
@@ -289,11 +290,22 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
     seen.until(id, &auth, children, Duration::from_secs(60), "stop", |s| {
         Ok(s.status() == Some(SessionStatus::Stopped))
     })?;
+    // The project sets no effort level, so fake-claude works at `medium`.
+    let read = call("GET", &format!("/sessions/{id}"), Some(&auth), None)?;
+    ok("reading the session", &read)?;
+    let session: Session = serde_json::from_value(read.1).context("reading the session")?;
+    if session.effort.as_deref() != Some("medium") {
+        bail!(
+            "the session says Claude worked at effort {:?}, not fake-claude's medium",
+            session.effort
+        );
+    }
     let subject = seen.commit.map(|c| c.subject).unwrap_or_default();
     eprintln!(
         "\n\x1b[1msmoke test passed\x1b[0m: the agent committed \"{subject}\", \
          finished its turn, the session waited for its background task and \
-         the agent took its result in a turn of its own, and the session stopped\n"
+         the agent took its result in a turn of its own, the session stopped, \
+         and it said Claude worked at medium effort\n"
     );
     Ok(())
 }

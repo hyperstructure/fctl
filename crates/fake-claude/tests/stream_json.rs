@@ -99,3 +99,50 @@ fn background_work_ends_in_a_turn_of_its_own() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn get_settings_says_the_effort_it_works_at() -> Result<(), Box<dyn Error>> {
+    let mut claude = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+        .args(["--effort", "high"])
+        .env("FAKE_CLAUDE_DELAY_MS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
+        return Err("fake-claude's stdin and stdout aren't piped".into());
+    };
+    let mut lines = BufReader::new(stdout).lines();
+    let mut until = |done: &dyn Fn(&Value) -> bool| -> Result<Value, Box<dyn Error>> {
+        loop {
+            let v: Value = serde_json::from_str(&lines.next().ok_or("fake-claude exited")??)?;
+            if done(&v) {
+                return Ok(v);
+            }
+        }
+    };
+    // What it answers before any turn, then after turns that change it as
+    // the Claude apps can.
+    let mut efforts = Vec::new();
+    for (n, turn) in [None, Some("effort max"), Some("effort none")]
+        .into_iter()
+        .enumerate()
+    {
+        if let Some(text) = turn {
+            let turn = json!({"type": "user", "message": {"role": "user", "content": text}});
+            stdin.write_all(format!("{turn}\n").as_bytes())?;
+            until(&|v| v["type"] == "result")?;
+        }
+        let id = format!("req_{n}");
+        let ask = json!({"type": "control_request", "request_id": id, "request": {"subtype": "get_settings"}});
+        stdin.write_all(format!("{ask}\n").as_bytes())?;
+        let answer =
+            until(&|v| v["type"] == "control_response" && v["response"]["request_id"] == id)?;
+        let applied = &answer["response"]["response"]["applied"];
+        assert_eq!(applied["model"], "claude-fake-1");
+        efforts.push(applied["effort"].clone());
+    }
+    drop(stdin);
+    claude.wait()?;
+    assert_eq!(efforts, [json!("high"), json!("max"), Value::Null]);
+    Ok(())
+}

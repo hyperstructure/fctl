@@ -1572,6 +1572,10 @@ impl SessionObject {
         if let Some(m) = state.model {
             s.model = Some(m);
         }
+        // Empty when Claude's model takes no effort level.
+        if let Some(e) = state.effort {
+            s.effort = fctl_domain::validate::effort(&e).ok();
+        }
         if let Some(rc) = state.remote_control {
             s.remote_control = Some(rc);
         }
@@ -1759,7 +1763,7 @@ impl SessionObject {
         let res = crate::db::q(
             &db,
             "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
-             branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
+             claude_effort = ?, branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
              pull_requests = ?, updated_at = ?, last_activity_at = ?, started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
             &[
                 crate::db::s(&s.title),
@@ -1768,6 +1772,7 @@ impl SessionObject {
                 crate::db::os(s.status_reason.as_deref()),
                 crate::db::on(s.resume_at),
                 crate::db::os(s.model.as_deref()),
+                crate::db::os(s.effort.as_deref()),
                 crate::db::os(s.branch.as_deref()),
                 crate::db::os(rc.as_deref()),
                 crate::db::s(&stats),

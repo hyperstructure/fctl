@@ -64,8 +64,12 @@ ends after that many seconds and takes its result in a turn of its own
 pauses and continues half a minute after the reset; a message that also
 says `reset`, like the one fctl-agent continues it with, doesn't count),
 `overage` reports paid usage (the session must pause), `refresh` asks
-the host for a new OAuth token, and `crash` exits mid-turn. Anything
-else gets a short answer with a tool call. A message sent during a turn
+the host for a new OAuth token, `effort <level>` changes the effort level
+it works at (`low` … `max`, or `none` as a model that takes none), as
+someone can in the Claude apps, and `crash` exits mid-turn. Anything
+else gets a short answer with a tool call. It answers `get_settings` with
+its model and effort level (`--effort`, else `medium`), which the session
+page and `fctl show` show. A message sent during a turn
 waits for it and gets a turn of its own; each `result` says how many
 messages still wait (`queued_turn_count`), as Claude Code's does, so the
 session stays running until fake-claude has answered the last one. Like

@@ -649,6 +649,7 @@ function Rail({
         <Row k="Created" v={ago(session.created_at)} />
         {session.base_branch && <Row k="From" v={<span className="font-mono">{session.base_branch}</span>} />}
         {(model ?? session.model) && <Row k="Model" v={model ?? session.model} />}
+        {session.effort && <Row k="Effort" v={session.effort} />}
         {session.runner && (
           <Row
             k="Runner"

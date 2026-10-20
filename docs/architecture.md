@@ -598,6 +598,23 @@ in `~/AGENTS.md`, which Claude's user memory (`~/.claude/CLAUDE.md`)
 imports so it loads in every repository
 ([ADR 0007](adr/0007-agents-name-their-sessions-through-fctl-agent.md)).
 
+### Model and effort
+
+The session page and `fctl show` show the model and the effort level
+Claude works at. The model comes in Claude's `system/init` message, which
+in `-p` mode has no effort level, so fctl-agent asks Claude with the
+`get_settings` control request once it has started and after each turn
+(someone following the session in the Claude apps can change it there).
+Its answer's `applied.effort` is what Claude sends the API, after the
+session's `--effort`, Claude's settings and environment, the
+organization's limits and the model's default: `low` … `max`, or none for
+a model that takes no effort level. fctl-agent reports it in the session
+state, and SessionDO writes it through to D1's `claude_effort`. `effort`
+stays the level the session asked for, which its runs pass to Claude, so
+a resumed session still follows its project's setting. Claude Code
+before `get_settings`, and agents before this, report none, and the
+session shows no effort level.
+
 ### Event flow and reliability
 
 - fctl-agent assigns `agent_seq` to every event and appends it to a journal in

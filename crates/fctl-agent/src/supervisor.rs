@@ -72,6 +72,8 @@ pub(crate) enum Work {
     Prepared(Result<(), String>),
     Git(GitState),
     Log(LogLevel, String, LogSource),
+    /// The effort level Claude works at ([`claude::applied_effort`]).
+    Effort(String),
 }
 
 /// Why we asked the host for a credential.
@@ -168,6 +170,7 @@ impl Supervisor {
                     resume_at: None,
                     branch: None,
                     model: None,
+                    effort: None,
                     claude_session_id: None,
                     remote_control: None,
                     stats: None,
@@ -772,6 +775,15 @@ impl Supervisor {
                 self.last_git = Some(state.clone());
                 self.emit(EventBody::Git(state));
             }
+            Work::Effort(effort) => {
+                if self.state.effort.as_ref() != Some(&effort) {
+                    self.state.effort = Some(effort);
+                    self.flush();
+                    self.send(&AgentToHost::State {
+                        state: self.state.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -948,6 +960,7 @@ impl Supervisor {
             c.kill().await;
             anyhow::bail!("Claude did not initialize: {e}");
         }
+        read_effort(&mut c, &self.work_tx);
         self.persisted.claude_started = true;
         self.persist();
         // Remote Control: follow the session in claude.ai/code and the apps.
@@ -1201,6 +1214,11 @@ impl Supervisor {
         let tasks_changed = self.tasks.observe(&v);
         self.emit(EventBody::Claude(v));
         if is_result {
+            // Someone following the session in the Claude apps can change
+            // the effort level there.
+            if let Some(c) = self.claude.as_mut() {
+                read_effort(c, &self.work_tx);
+            }
             self.turn_active = more_queued;
             self.claude_turn = false;
             if !more_queued
@@ -1629,6 +1647,26 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
     }
 }
 
+/// Asks Claude which effort level it works at; the answer comes back as
+/// [`Work::Effort`]. Claude Code before `get_settings` says nothing.
+fn read_effort(claude: &mut Claude, work: &mpsc::UnboundedSender<Work>) {
+    let answer = claude.ask(
+        json!({ "subtype": "get_settings" }),
+        Duration::from_secs(30),
+    );
+    let work = work.clone();
+    tokio::spawn(async move {
+        match answer.await {
+            Ok(settings) => {
+                if let Some(effort) = claude::applied_effort(&settings) {
+                    let _ = work.send(Work::Effort(effort));
+                }
+            }
+            Err(e) => tracing::debug!("get_settings: {e}"),
+        }
+    });
+}
+
 fn stop_text(r: StopReason) -> &'static str {
     match r {
         StopReason::User => "Stopped",
@@ -1951,8 +1989,17 @@ mod tests {
 
     /// A Claude Code that keeps what it is sent, in `stdin.jsonl` in `dir`.
     fn stub_claude(dir: &std::path::Path, sup: &Supervisor) -> anyhow::Result<Claude> {
+        script_claude(dir, sup, "#!/bin/sh\nexec cat > \"$HOME/stdin.jsonl\"\n")
+    }
+
+    /// A Claude Code that runs `script`, in `dir`.
+    fn script_claude(
+        dir: &std::path::Path,
+        sup: &Supervisor,
+        script: &str,
+    ) -> anyhow::Result<Claude> {
         let bin = dir.join("claude");
-        crate::claude::tests::write_script(&bin, "#!/bin/sh\nexec cat > \"$HOME/stdin.jsonl\"\n")?;
+        crate::claude::tests::write_script(&bin, script)?;
         Claude::spawn(
             LaunchSpec {
                 bin: &bin.display().to_string(),
@@ -2011,6 +2058,17 @@ mod tests {
         (sup.state.status, sup.state.reason.as_deref())
     }
 
+    /// The session states the host has been sent since last asked.
+    fn states_sent(host: &mut mpsc::UnboundedReceiver<String>) -> Vec<SessionState> {
+        let mut out = vec![];
+        while let Ok(text) = host.try_recv() {
+            if let Ok(AgentToHost::State { state }) = serde_json::from_str(&text) {
+                out.push(state);
+            }
+        }
+        out
+    }
+
     /// The events the host has been sent since last asked.
     fn events_sent(host: &mut mpsc::UnboundedReceiver<String>) -> Vec<EventBody> {
         let mut out = vec![];
@@ -2020,6 +2078,48 @@ mod tests {
             }
         }
         out
+    }
+
+    #[tokio::test]
+    async fn the_session_says_which_effort_claude_works_at() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, mut work) = Supervisor::new(dir.path().join("state"), None)?;
+        sup.config = Some(config(dir.path(), false)?);
+        let (host_tx, mut host) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        sup.turn_active = true;
+        sup.set_status(SessionStatus::Running, None);
+        // A Claude Code that answers `get_settings` as 2.1.304 does.
+        let script = r##"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in *'"get_settings"'*)
+    id=$(printf '%s' "$line" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
+    printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"effective":{},"sources":[],"applied":{"model":"claude-opus-5-5","effort":"xhigh","advisor":null}}}}\n' "$id" ;;
+  esac
+done
+"##;
+        sup.claude = Some(script_claude(dir.path(), &sup, script)?);
+
+        // Claude says at the end of each turn.
+        sup.on_claude_message(result()).await;
+        let said = tokio::time::timeout(Duration::from_secs(10), work.recv()).await?;
+        let Some(Work::Effort(effort)) = said else {
+            panic!("expected Claude's effort level");
+        };
+        assert_eq!(effort, "xhigh");
+        states_sent(&mut host);
+        sup.on_work(Work::Effort(effort)).await;
+        let states = states_sent(&mut host);
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].effort.as_deref(), Some("xhigh"));
+        assert_eq!(states[0].status, SessionStatus::Idle);
+        // The same level again changes nothing.
+        sup.on_work(Work::Effort("xhigh".into())).await;
+        assert!(states_sent(&mut host).is_empty());
+        // A model that takes none.
+        sup.on_work(Work::Effort(String::new())).await;
+        assert_eq!(states_sent(&mut host)[0].effort.as_deref(), Some(""));
+        Ok(())
     }
 
     #[tokio::test]
@@ -2239,8 +2339,10 @@ mod tests {
         );
         sup.on_claude_message(turn_state("running")).await;
         assert_eq!(waiting(&sup).0, SessionStatus::Paused);
-        let sent = sent_to_claude(dir.path(), 1).await?;
-        assert_eq!(sent[0]["request"]["subtype"], "interrupt");
+        let sent = sent_to_claude(dir.path(), 2).await?;
+        // Each turn's end asks which effort level Claude works at.
+        assert_eq!(sent[0]["request"]["subtype"], "get_settings");
+        assert_eq!(sent[1]["request"]["subtype"], "interrupt");
         sup.on_claude_message(result()).await;
         assert_eq!(waiting(&sup).0, SessionStatus::Paused);
 
@@ -2251,9 +2353,9 @@ mod tests {
         sup.begin_stop("Stopped".into(), 30_000).await;
         sup.on_claude_message(result()).await;
         sup.on_claude_message(turn_state("running")).await;
-        let sent = sent_to_claude(dir.path(), 3).await?;
-        assert_eq!(sent[1]["request"]["subtype"], "interrupt");
-        assert_eq!(sent[2]["request"]["subtype"], "interrupt");
+        let sent = sent_to_claude(dir.path(), 6).await?;
+        assert_eq!(sent[3]["request"]["subtype"], "interrupt");
+        assert_eq!(sent[5]["request"]["subtype"], "interrupt");
         assert_eq!(waiting(&sup).0, SessionStatus::Stopping);
         Ok(())
     }
