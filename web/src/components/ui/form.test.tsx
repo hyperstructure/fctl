@@ -1,7 +1,8 @@
 import { act, createRef, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SecretInput, Textarea, TextareaControls } from "./form";
+import { Select } from "./select";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -106,5 +107,39 @@ describe("TextareaControls", () => {
     expect(s.press(s.button).defaultPrevented).toBe(false);
     expect(s.press(s.hint, 2).defaultPrevented).toBe(false);
     expect(document.activeElement).not.toBe(s.textarea);
+  });
+
+  it("leaves presses in a Select's list alone, so they pick", () => {
+    const ref = createRef<HTMLTextAreaElement>();
+    const onChange = vi.fn();
+    const { container } = render(
+      <>
+        <Textarea ref={ref} bare aria-label="Task" />
+        <TextareaControls textarea={ref}>
+          <Select
+            aria-label="Project"
+            value="fctl"
+            options={[
+              { value: "fctl", label: "fctl" },
+              { value: "design", label: "design" },
+            ]}
+            onChange={onChange}
+          />
+        </TextareaControls>
+      </>,
+    );
+    const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]');
+    act(() => trigger?.click());
+    const option = container.querySelectorAll('[role="option"]')[1];
+    if (!trigger || !option) throw new Error("no list");
+    act(() => {
+      option.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    act(() => {
+      option.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    });
+    expect(onChange).toHaveBeenCalledWith("design");
   });
 });
