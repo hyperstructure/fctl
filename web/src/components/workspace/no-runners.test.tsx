@@ -83,7 +83,7 @@ describe("the note under a start form", () => {
   it("sends a workspace's admins to add its first runner", () => {
     const text = note(side, [elsewhere]);
     expect(text.textContent).toBe(
-      "Side project has no runners yet: sessions you start in it wait until one is online. Add a runner",
+      "Side project has no runners yet: sessions you start here wait until one is online. Add a runner",
     );
     expect(text.querySelector("a")?.getAttribute("href")).toBe("/w/side-project?tab=runners");
   });
@@ -91,7 +91,7 @@ describe("the note under a start form", () => {
   it("tells members whom to ask", () => {
     const text = note(member, []);
     expect(text.textContent).toBe(
-      "Side project has no runners yet: sessions you start in it wait until its admins add one. Ask Ada Lovelace, its primary admin.",
+      "Side project has no runners yet: sessions you start here wait until its admins add one. Ask Ada Lovelace, its primary admin.",
     );
     expect(text.querySelector("a")).toBeNull();
   });
@@ -99,14 +99,14 @@ describe("the note under a start form", () => {
   it("says when none of its runners is online", () => {
     const one = note(member, [runner({ id: "mini", status: "offline" }), elsewhere]);
     expect(one.textContent).toBe(
-      "Side project's runner isn't online: sessions you start in it wait until it is. See its runner",
+      "Side project's runner isn't online: sessions you start here wait until it is. See its runner",
     );
     const two = note(side, [
       runner({ id: "mini", status: "offline" }),
       runner({ id: "old", status: "disabled" }),
     ]);
     expect(two.textContent).toBe(
-      "None of Side project's runners is online: sessions you start in it wait until one is. See its runners",
+      "None of Side project's runners is online: sessions you start here wait until one is. See its runners",
     );
   });
 

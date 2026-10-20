@@ -30,22 +30,21 @@ export function NoRunnerNote({ workspace: w, className }: { workspace?: G.Worksp
       <span>
         {count.total === 1 ? (
           <>
-            {w.name}'s runner isn't online: sessions you start in it wait until it is.{" "}
-            {link("See its runner")}
+            {w.name}'s runner isn't online: sessions you start here wait until it is. {link("See its runner")}
           </>
         ) : count.total > 1 ? (
           <>
-            None of {w.name}'s runners is online: sessions you start in it wait until one is.{" "}
+            None of {w.name}'s runners is online: sessions you start here wait until one is.{" "}
             {link("See its runners")}
           </>
         ) : admin ? (
           <>
-            {w.name} has no runners yet: sessions you start in it wait until one is online.{" "}
+            {w.name} has no runners yet: sessions you start here wait until one is online.{" "}
             {link("Add a runner")}
           </>
         ) : (
           <>
-            {w.name} has no runners yet: sessions you start in it wait until its admins add one.
+            {w.name} has no runners yet: sessions you start here wait until its admins add one.
             {w.primary && ` Ask ${w.primary.name}, its primary admin.`}
           </>
         )}
