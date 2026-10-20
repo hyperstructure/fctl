@@ -131,4 +131,11 @@ describe("⌘K", () => {
       expect.arrayContaining(["pointer-coarse:animate-fade", "pointer-coarse:backdrop-filter-none"]),
     );
   });
+
+  it("draws its search field in a layer of its own on touch screens", () => {
+    const { input } = palette();
+    // Safari on iPhones and iPads puts the caret's views in the layer that draws the field:
+    // in the palette's, which holds the list, they send a swipe over the list to the page.
+    expect(input.className.split(" ")).toContain("pointer-coarse:will-change-transform");
+  });
 });

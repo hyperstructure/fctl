@@ -167,6 +167,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       <div className="w-full max-w-xl animate-rise overflow-hidden rounded-xl border border-line-strong bg-surface/95 shadow-[0_30px_120px_rgb(0_0_0/0.55)] backdrop-blur-2xl pointer-coarse:animate-none pointer-coarse:overflow-visible pointer-coarse:bg-surface pointer-coarse:backdrop-filter-none">
         <div className="flex items-center gap-3 border-b border-line px-4">
           <Search className="size-4 text-ink-4" />
+          {/* On touch screens the field is drawn in a layer of its own. Safari on iPhones and
+              iPads puts the views of the field's caret in the layer that draws the field, and
+              while that layer also holds the list, as the palette's does, a swipe over the list
+              scrolls the page instead (as in WebKit bug 283804). */}
           <input
             ref={input}
             value={q}
@@ -191,7 +195,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
               }
             }}
             placeholder="Search sessions, projects, workspaces and actions"
-            className="h-13 flex-1 bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-4"
+            className="h-13 flex-1 bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-4 pointer-coarse:will-change-transform"
           />
         </div>
         {/* A swipe past either end stays in the list rather than scrolling the page. Its
