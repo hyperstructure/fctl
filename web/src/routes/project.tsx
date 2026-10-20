@@ -36,7 +36,7 @@ import {
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import { NoRunnerNote } from "@/components/workspace/no-runners";
 import type * as G from "@/gen";
-import { api } from "@/lib/api";
+import { ApiFailure, api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
@@ -48,6 +48,7 @@ import {
   type Typed,
   withSource,
 } from "@/lib/images";
+import { chosenModel, type ModelChoice, modelChoice } from "@/lib/models";
 import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
 import {
   keys,
@@ -596,6 +597,15 @@ function BuildFields({
   );
 }
 
+/** The models a project can choose; the empty value leaves it to Claude. */
+const MODELS: SelectOption<ModelChoice>[] = [
+  { value: "", label: "Claude's default" },
+  { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet" },
+  { value: "fable", label: "Fable" },
+  { value: "id", label: "Model ID" },
+];
+
 /** Claude's effort levels; the empty value leaves it to Claude. */
 const EFFORTS: SelectOption[] = [
   { value: "", label: "Claude's default" },
@@ -622,12 +632,22 @@ function Settings({ project }: { project: G.Project }) {
   );
   const [source, setSource] = useState<ImageSource>(imageSource(project.settings));
   const typed = useRef<Typed>({});
+  const [model, setModel] = useState<ModelChoice>(modelChoice(project.settings.model));
+  /** The model ID typed last, so that choosing Model ID again brings it back. */
+  const typedModel = useRef<string>(undefined);
   useEffect(() => {
     setS(project.settings);
     setSource(imageSource(project.settings));
+    setModel(modelChoice(project.settings.model));
   }, [project.settings]);
   const save = useMutation({
     mutationFn: () => {
+      if (model === "id" && !s.model?.trim())
+        throw new ApiFailure(400, {
+          code: "validation",
+          field: "model",
+          message: "Type a model ID, or choose another model",
+        });
       const env: Record<string, string> = {};
       for (const line of envText.split("\n")) {
         const t = line.trim();
@@ -701,13 +721,18 @@ function Settings({ project }: { project: G.Project }) {
             )}
           </Field>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Model" hint="opus, sonnet, fable, or a model id." error={err("model")}>
+            <Field label="Model">
               {(id) => (
-                <Input
+                <Select
                   id={id}
-                  value={s.model ?? ""}
-                  onChange={(e) => set("model", e.target.value || undefined)}
-                  placeholder="Claude's default"
+                  value={model}
+                  onChange={(v) => {
+                    if (model === "id") typedModel.current = s.model;
+                    setModel(v);
+                    set("model", chosenModel(v, typedModel.current));
+                  }}
+                  options={MODELS}
+                  className="w-full"
                 />
               )}
             </Field>
@@ -723,6 +748,23 @@ function Settings({ project }: { project: G.Project }) {
               )}
             </Field>
           </div>
+          {model === "id" && (
+            <Field label="Model ID" hint="Passed to Claude Code as --model." error={err("model")}>
+              {(id) => (
+                <Input
+                  id={id}
+                  value={s.model ?? ""}
+                  onChange={(e) => set("model", e.target.value || undefined)}
+                  className="font-mono"
+                  placeholder="claude-opus-5-5"
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+          )}
           <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
             <span>
               Open a pull request when done
