@@ -11,6 +11,7 @@ import {
   useAttachments,
   useFileDrop,
 } from "@/components/session/attachments";
+import { PullRequestsLabel } from "@/components/session/row";
 import { StartButton, useStartSession } from "@/components/session/start";
 import {
   Avatar,
@@ -290,7 +291,7 @@ function Sessions({ project }: { project: G.Project }) {
                   <div className="truncate text-[14.5px] text-ink">{s.title}</div>
                   <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
                     {s.branch && <span className="truncate font-mono">{s.branch}</span>}
-                    {s.pull_request && <span>· PR #{s.pull_request.number}</span>}
+                    <PullRequestsLabel s={s} />
                   </div>
                 </div>
                 <Avatar user={s.created_by} size={20} />

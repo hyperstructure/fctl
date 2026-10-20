@@ -662,6 +662,7 @@ pub async fn pull_request(dir: &Path, home: &Path, branch: &str) -> Option<PullR
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned),
         state,
+        repo: None,
     })
 }
 
@@ -1065,6 +1066,7 @@ pub(crate) mod tests {
             url: format!("https://github.com/acme/x/pull/{n}"),
             title: None,
             state: None,
+            repo: None,
         };
         let repo = |name: &str, branch: &str, pr: Option<PullRequestRef>| RepoGitState {
             owner: "acme".into(),

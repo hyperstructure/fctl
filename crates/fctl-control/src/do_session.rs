@@ -340,7 +340,8 @@ impl SessionObject {
         if let Some(s) = self.mem.borrow().summary.clone() {
             return Some(s);
         }
-        let s: Session = serde_json::from_str(&self.meta("summary")?).ok()?;
+        let mut s: Session = serde_json::from_str(&self.meta("summary")?).ok()?;
+        fctl_domain::pulls::backfill(&mut s);
         self.mem.borrow_mut().summary = Some(s.clone());
         Some(s)
     }
@@ -1231,6 +1232,7 @@ impl SessionObject {
                 let mut out = Vec::new();
                 let mut summary = self.summary();
                 let mut summary_changed = false;
+                let mut lists_changed = false;
                 let mut turn_ended = false;
                 let mut usage = Vec::new();
                 let counted_before = self.counted();
@@ -1270,7 +1272,7 @@ impl SessionObject {
                         ev::shape_for_storage(v);
                     }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
-                        Self::apply_git(s, g);
+                        lists_changed |= Self::apply_git(s, g);
                         summary_changed = true;
                     }
                     if let (EventBody::RemoteControl(rc), Some(s)) = (&body, summary.as_mut()) {
@@ -1298,6 +1300,11 @@ impl SessionObject {
                     self.save_summary(&s);
                     if summary_changed {
                         self.broadcast_summary(&s);
+                    }
+                    // The dashboards hear of each status change; a turn's
+                    // changes and pull requests come after it ends.
+                    if lists_changed {
+                        self.notify_fleet(&s);
                     }
                     // A host that reconnects reports its state before it
                     // replays the events it kept: a turn that ended meanwhile
@@ -1487,18 +1494,33 @@ impl SessionObject {
         }
     }
 
-    /// Counts changes in every repository; the session's pull request is the
-    /// primary repository's, or another repository's when it has none.
-    fn apply_git(s: &mut Session, g: &GitState) {
+    /// Counts changes in every repository, and keeps every pull request the
+    /// agent found (`fctl_domain::pulls`). The session's pull request, for
+    /// older clients, is the primary repository's, or another repository's
+    /// when it has none. Returns whether what session lists show changed:
+    /// the counts or the pull requests.
+    fn apply_git(s: &mut Session, g: &GitState) -> bool {
+        let listed = |s: &Session| {
+            (
+                s.stats.files_changed,
+                s.stats.additions,
+                s.stats.deletions,
+                s.pull_request.as_ref().map(|p| p.url.clone()),
+            )
+        };
+        let before = listed(s);
         if let Some(b) = &g.branch {
             s.branch = Some(b.clone());
         }
         s.stats.files_changed = g.all_files().count() as u32;
         s.stats.additions = g.all_files().filter_map(|f| f.additions).sum();
         s.stats.deletions = g.all_files().filter_map(|f| f.deletions).sum();
-        if let Some(pr) = g.pull_requests().next() {
+        let found = fctl_domain::pulls::found(g);
+        if let Some(pr) = found.first() {
             s.pull_request = Some(pr.clone());
         }
+        let merged = fctl_domain::pulls::merge(&mut s.pull_requests, &found);
+        merged || listed(s) != before
     }
 
     fn track_live(&self, event: &serde_json::Value, text: &str) {
@@ -1731,11 +1753,14 @@ impl SessionObject {
             .as_ref()
             .and_then(|r| serde_json::to_string(r).ok());
         let pr = s.pull_request.clone();
+        let prs = (!s.pull_requests.is_empty())
+            .then(|| serde_json::to_string(&s.pull_requests).ok())
+            .flatten();
         let res = crate::db::q(
             &db,
             "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
              branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
-             updated_at = ?, last_activity_at = ?, started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
+             pull_requests = ?, updated_at = ?, last_activity_at = ?, started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
             &[
                 crate::db::s(&s.title),
                 crate::db::os(s.description.as_deref()),
@@ -1750,6 +1775,7 @@ impl SessionObject {
                 crate::db::os(pr.as_ref().map(|p| p.url.as_str())),
                 crate::db::os(pr.as_ref().and_then(|p| p.title.as_deref())),
                 crate::db::os(pr.as_ref().and_then(|p| p.state.as_deref())),
+                crate::db::os(prs.as_deref()),
                 crate::db::n(s.updated_at),
                 crate::db::on(s.last_activity_at),
                 crate::db::on(s.started_at),

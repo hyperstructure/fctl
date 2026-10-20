@@ -17,6 +17,7 @@ pub mod naming;
 pub mod notify;
 pub mod perm;
 pub mod published;
+pub mod pulls;
 pub mod qr;
 pub mod reconcile;
 pub mod remote_control;

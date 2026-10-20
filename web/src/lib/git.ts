@@ -37,5 +37,6 @@ export function repoChanges(git: G.GitState): RepoChanges[] {
   ];
 }
 
-/** Whether a repository has anything to show: changes, commits or a pull request. */
-export const hasChanges = (r: RepoChanges) => r.files.length > 0 || r.ahead > 0 || !!r.pr;
+/** Whether a repository has changes or commits to show. The session lists its
+ * pull requests on their own (lib/pulls). */
+export const hasChanges = (r: RepoChanges) => r.files.length > 0 || r.ahead > 0;

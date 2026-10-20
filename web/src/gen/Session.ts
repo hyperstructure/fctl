@@ -33,7 +33,19 @@ description?: string, status: SessionStatus, status_reason?: string,
 /**
  * When a paused session resumes on its own.
  */
-resume_at?: number, created_by: UserRef, created_at: number, updated_at: number, started_at?: number, ended_at?: number, last_activity_at?: number, branch?: string, base_branch?: string, pull_request?: PullRequestRef, runner?: RunnerRef, model?: string, remote_control?: RemoteControlState, stats: SessionStats, 
+resume_at?: number, created_by: UserRef, created_at: number, updated_at: number, started_at?: number, ended_at?: number, last_activity_at?: number, branch?: string, base_branch?: string, 
+/**
+ * The pull request of its branch in the primary repository, or in
+ * another repository when that has none: the last one its agent found.
+ */
+pull_request?: PullRequestRef, 
+/**
+ * Every pull request its agent found for the branches it worked on, in
+ * all of the project's repositories, in the order it found them
+ * (`fctl_domain::pulls`). Absent while it has none, and from control
+ * planes before it, which have `pull_request` only.
+ */
+pull_requests?: Array<PullRequestRef>, runner?: RunnerRef, model?: string, remote_control?: RemoteControlState, stats: SessionStats, 
 /**
  * The caller's role.
  */

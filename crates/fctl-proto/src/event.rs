@@ -221,16 +221,6 @@ impl GitState {
             .iter()
             .chain(self.repos.iter().flatten().flat_map(|r| r.files.iter()))
     }
-
-    /// The pull requests of the session branch, the primary repository's first.
-    pub fn pull_requests(&self) -> impl Iterator<Item = &PullRequestRef> {
-        self.pull_request.iter().chain(
-            self.repos
-                .iter()
-                .flatten()
-                .filter_map(|r| r.pull_request.as_ref()),
-        )
-    }
 }
 
 /// Another repository's state (see [`GitState::repos`]): the same facts,
@@ -402,12 +392,11 @@ mod tests {
                 url: "https://github.com/acme/lib/pull/7".into(),
                 title: None,
                 state: None,
+                repo: None,
             }),
             ..Default::default()
         }]);
         assert_eq!(st.all_files().count(), 2);
-        let prs: Vec<u64> = st.pull_requests().map(|p| p.number).collect();
-        assert_eq!(prs, [7]);
         let json = serde_json::to_value(&st)?;
         assert_eq!(json["repos"][0]["access"], "write");
         assert_eq!(serde_json::from_value::<GitState>(json)?, st);

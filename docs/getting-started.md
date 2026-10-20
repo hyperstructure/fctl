@@ -218,9 +218,11 @@ agent keeps working. The agent works on a branch named
 `fctl/<number>-<title>`, commits as it goes, pushes, and opens a pull request
 when it is done (projects can turn that off). In the project's other
 repositories it changes, it uses the same branch and opens a pull request in
-each. Once it understands the task it renames the session to what it is
-working on and describes it in a sentence or two, so the floor shows the work
-rather than the first line of your task.
+each. The session page and the session lists name every pull request the
+session opens, with its repository (`fctl#120`, `design#14`), as does
+`fctl show`. Once it understands the task it renames the session to what it
+is working on and describes it in a sentence or two, so the floor shows the
+work rather than the first line of your task.
 
 The agent's commits are authored by the GitHub App, with Claude as
 co-author. To be a co-author of the commits in the sessions you start, set
