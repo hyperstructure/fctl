@@ -2,9 +2,11 @@
 //! stdin, messages on its stdout.
 
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[test]
 fn results_count_the_turns_still_waiting() -> Result<(), Box<dyn Error>> {
@@ -144,5 +146,88 @@ fn get_settings_says_the_effort_it_works_at() -> Result<(), Box<dyn Error>> {
     drop(stdin);
     claude.wait()?;
     assert_eq!(efforts, [json!("high"), json!("max"), Value::Null]);
+    Ok(())
+}
+
+#[test]
+fn commits_pushes_and_watches_the_checks_in_one_turn() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let (home, repo) = (dir.path().join("home"), dir.path().join("widgets"));
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&repo)?;
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("HOME", &home)
+            .status()
+    };
+    for args in [
+        &["init", "-q", "-b", "fctl/1-test"][..],
+        &["config", "user.name", "Ada"],
+        &["config", "user.email", "ada@example.com"],
+    ] {
+        assert!(git(args)?.success());
+    }
+    let mut claude = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+        .current_dir(&repo)
+        .env("HOME", &home)
+        .env("FAKE_CLAUDE_DELAY_MS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
+        return Err("fake-claude's stdin and stdout aren't piped".into());
+    };
+    let turn = json!({"type": "user", "message": {"role": "user", "content": "write notes.md, push it and watch 2"}});
+    stdin.write_all(format!("{turn}\n").as_bytes())?;
+    // Each tool call's command (or name), and when its result came.
+    let mut calls = HashMap::new();
+    let mut results = Vec::new();
+    for line in BufReader::new(stdout).lines() {
+        let v: Value = serde_json::from_str(&line?)?;
+        let blocks = v["message"]["content"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        match v["type"].as_str() {
+            Some("assistant") => {
+                for b in blocks.iter().filter(|b| b["type"] == "tool_use") {
+                    let what = b["input"]["command"].as_str().or(b["name"].as_str());
+                    calls.insert(b["id"].clone(), what.unwrap_or_default().to_owned());
+                }
+            }
+            Some("user") => {
+                for b in blocks.iter().filter(|b| b["type"] == "tool_result") {
+                    let call = calls.get(&b["tool_use_id"]).cloned().unwrap_or_default();
+                    assert_eq!(b["is_error"], false, "{call}: {}", b["content"]);
+                    results.push((call, Instant::now()));
+                }
+            }
+            Some("result") => break,
+            _ => {}
+        }
+    }
+    drop(stdin);
+    claude.wait()?;
+    let calls: Vec<&str> = results.iter().map(|(c, _)| c.as_str()).collect();
+    assert_eq!(calls.len(), 5, "{calls:?}");
+    assert_eq!(calls[0], "ls -la");
+    assert_eq!(calls[1], "Write");
+    assert!(calls[2].starts_with("git add notes.md && git commit"));
+    assert_eq!(
+        calls[3..],
+        ["git push -u origin HEAD", "gh pr checks --watch"]
+    );
+    // The checks take their time after the push.
+    assert!(results[4].1 - results[3].1 >= Duration::from_secs(2));
+    // A bare repository stood in for GitHub, and has the branch.
+    let remote = home.join(".fake-github/widgets.git");
+    let has_branch = Command::new("git")
+        .args(["--git-dir"])
+        .arg(&remote)
+        .args(["rev-parse", "--verify", "--quiet", "refs/heads/fctl/1-test"])
+        .status()?;
+    assert!(has_branch.success());
     Ok(())
 }

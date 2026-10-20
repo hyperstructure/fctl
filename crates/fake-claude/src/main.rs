@@ -17,6 +17,8 @@
 //! |---|---|
 //! | (anything) | reports plan usage, streams a short answer, runs a fake `Bash` tool, answers again |
 //! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message as Claude Code does: with `attribution.commit` from `~/.claude/settings.json`, or Claude's trailer when that is unset |
+//! | `push` | pushes the branch to `origin` with `git push`; a repository without one (the dev instance's projects have no repository) gets a bare one in `~/.fake-github` to stand in for GitHub |
+//! | `watch <seconds>` | watches the pull request's checks in one tool call that lasts that many seconds (at most ten minutes), as agents wait for CI before they end their turn |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `screenshot` | draws a small PNG and publishes it with `fctl publish`, as agents do for pull requests |
 //! | `slow` | streams for about ten seconds (try interrupting) |
@@ -269,6 +271,75 @@ impl Session {
         );
     }
 
+    /// Pushes the branch, as agents do before they open a pull request:
+    /// without an `origin`, a bare repository in `~/.fake-github` stands in
+    /// for GitHub.
+    fn push(&mut self) {
+        let script = r#"git remote get-url origin >/dev/null 2>&1 || {
+  remote="$HOME/.fake-github/$(basename "$PWD").git"
+  git init -q --bare "$remote" && git remote add origin "$remote"
+} && git push -u origin HEAD"#;
+        let (output, failed) = match std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .output()
+        {
+            Ok(o) => (
+                String::from_utf8_lossy(&o.stdout).into_owned()
+                    + &String::from_utf8_lossy(&o.stderr),
+                !o.status.success(),
+            ),
+            Err(e) => (format!("sh: {e}"), true),
+        };
+        self.tool(
+            "Bash",
+            json!({"command": "git push -u origin HEAD", "description": "Push the branch"}),
+            &output,
+            failed,
+        );
+    }
+
+    /// Watches the pull request's checks for `secs` seconds in one tool
+    /// call, as agents do before they end their turn. Returns whether it
+    /// was interrupted.
+    fn watch(&mut self, secs: u64) -> bool {
+        let tool_id = format!("toolu_{}", short_id(12));
+        let msg_id = format!("msg_{}", short_id(8));
+        let usage = self.call_started();
+        out(
+            &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": "gh pr checks --watch", "description": "Watch the checks"}}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        self.call_ended(&msg_id, "tool_use", 30);
+        let started = Instant::now();
+        let length = Duration::from_secs(secs);
+        let mut reported = 0;
+        let interrupted = loop {
+            if INTERRUPTED.load(Ordering::SeqCst) {
+                break true;
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= length {
+                break false;
+            }
+            if elapsed.as_secs() >= reported {
+                out(
+                    &json!({"type": "tool_progress", "tool_use_id": tool_id, "tool_name": "Bash", "parent_tool_use_id": null, "elapsed_time_seconds": elapsed.as_secs(), "session_id": self.id, "uuid": uuid()}),
+                );
+                reported = elapsed.as_secs() + 1;
+            }
+            std::thread::sleep((length - elapsed).min(Duration::from_millis(200)));
+        };
+        let output = if interrupted {
+            "Interrupted"
+        } else {
+            "All checks were successful"
+        };
+        out(
+            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": output, "is_error": interrupted}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        interrupted
+    }
+
     fn result(&mut self, started: Instant, text: &str, subtype: &str) {
         self.turns += 1;
         let ms = started.elapsed().as_millis() as u64;
@@ -424,6 +495,9 @@ impl Session {
                 );
             }
         }
+        if says(&lower, "push") {
+            self.push();
+        }
         if let Some(title) = rename_to(text) {
             let description = "Renamed by fake-claude with fctl edit.";
             let out = std::process::Command::new("fctl")
@@ -469,6 +543,12 @@ impl Session {
                 failed,
             );
         }
+        if let Some(secs) = watch_for(text)
+            && self.watch(secs)
+        {
+            self.result(started, "Interrupted", "error_during_execution");
+            return;
+        }
         if let Some(secs) = background_for(text) {
             self.start_background(secs);
             self.stream_text("It runs in the background: I'll pick it up when it finishes.");
@@ -482,14 +562,33 @@ impl Session {
 /// How long a turn's background command runs: the seconds after
 /// `background` (any case), at most an hour.
 fn background_for(text: &str) -> Option<u64> {
+    seconds_after(text, "background").map(|s| s.min(3600))
+}
+
+/// How long a turn watches checks: the seconds after `watch` (any case), at
+/// most ten minutes.
+fn watch_for(text: &str) -> Option<u64> {
+    seconds_after(text, "watch").map(|s| s.min(600))
+}
+
+/// The number right after `word` and a space, in any case.
+fn seconds_after(text: &str, word: &str) -> Option<u64> {
     let lower = text.to_lowercase();
-    lower.match_indices("background ").find_map(|(i, word)| {
+    let word = format!("{word} ");
+    lower.match_indices(&word).find_map(|(i, word)| {
         let digits: String = lower[i + word.len()..]
             .chars()
             .take_while(char::is_ascii_digit)
             .collect();
-        digits.parse::<u64>().ok().map(|s| s.min(3600))
+        digits.parse::<u64>().ok()
     })
+}
+
+/// Whether a lowercased turn has `word` as a word of its own.
+fn says(lower: &str, word: &str) -> bool {
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w == word)
 }
 
 /// Whether a turn asks for the usage limit: it says `limit` but not
@@ -821,8 +920,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        adler32, asks_for_limit, background_for, crc32, effort_in, rename_to, screenshot_png,
-        short_id,
+        adler32, asks_for_limit, background_for, crc32, effort_in, rename_to, says, screenshot_png,
+        short_id, watch_for,
     };
 
     #[test]
@@ -865,6 +964,19 @@ mod tests {
             None
         );
         assert_eq!(background_for("write notes.md"), None);
+    }
+
+    #[test]
+    fn watch_takes_the_seconds_after_it_and_push_is_a_word() {
+        assert_eq!(
+            watch_for("push it and WATCH 12 seconds of checks"),
+            Some(12)
+        );
+        assert_eq!(watch_for("watch 9999"), Some(600));
+        assert_eq!(watch_for("watch the checks"), None);
+        assert!(says("push it, then watch 12", "push"));
+        // fctl-agent's words when a session resumes in a new sandbox.
+        assert!(!says("everything that was pushed to it", "push"));
     }
 
     #[test]
