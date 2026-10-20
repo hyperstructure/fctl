@@ -6,6 +6,7 @@
 pub mod account;
 pub mod allowlist;
 pub mod cbor;
+pub mod cookies;
 pub mod disk;
 pub mod events;
 pub mod files;

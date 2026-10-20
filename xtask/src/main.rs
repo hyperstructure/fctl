@@ -6,6 +6,7 @@ mod dev;
 mod dist;
 mod macho;
 mod release;
+mod serve;
 mod util;
 
 use anyhow::{Context, Result, bail};
@@ -15,13 +16,19 @@ const HELP: &str = "\
 cargo xtask <command>
 
 Develop
-  dev [--no-host] [--no-vite] [--smoke]
+  dev [--no-host] [--no-vite] [--smoke] [--server <url>]
                                 Run everything locally: control plane, web app (hot reload)
                                 and a host whose agents run fake-claude; --smoke runs one
-                                session to the end and stops (CI)
+                                session to the end and stops (CI); --server uses the control
+                                plane running there (started with FCTL_SETUP_TOKEN=dev-setup-token)
   check [--quick]               What CI checks (fmt, types, lint, tests, builds); CI also
                                 runs dev --smoke
   gen                           Regenerate web/src/gen from crates/fctl-proto
+
+Self-host without Cloudflare (deploy/standalone)
+  serve [--public-url <url>] [--port <n>] [--listen <addr>] [--data <dir>] [--skip-build]
+                                Build and run the standalone control plane as its container
+                                image does, with its state in .fctl-serve/ (or --data)
 
 Deploy (deploy/instances/<name>.toml)
   deploy <name> [--create] [--dry-run] [--skip-build]
@@ -72,9 +79,21 @@ fn main() -> Result<()> {
                 no_host: a.flag("--no-host"),
                 no_vite: a.flag("--no-vite"),
                 smoke: a.flag("--smoke"),
+                server: a.value("--server")?,
             };
             a.done()?;
             dev::dev(&root, opts)
+        }
+        "serve" => {
+            let opts = serve::ServeOpts {
+                public_url: a.value("--public-url")?,
+                port: a.value("--port")?,
+                listen: a.value("--listen")?,
+                data: a.value("--data")?.map(PathBuf::from),
+                skip_build: a.flag("--skip-build"),
+            };
+            a.done()?;
+            serve::serve(&root, opts)
         }
         "deploy" => {
             let opts = deploy::DeployOpts {

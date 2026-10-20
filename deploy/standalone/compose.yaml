@@ -1,0 +1,24 @@
+# The fctl control plane on one machine, without Cloudflare
+# (docs/self-hosting.md). In this directory:
+#
+#   FCTL_PUBLIC_URL=http://192.168.1.20:8787 docker compose up -d
+#   docker compose logs fctl    # the link that creates the first account
+#
+# FCTL_PUBLIC_URL is the address people and hosts reach it at.
+services:
+  fctl:
+    image: ghcr.io/hyperstructure/fctl-control:latest
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      FCTL_PUBLIC_URL: ${FCTL_PUBLIC_URL:-http://localhost:8787}
+      FCTL_INSTANCE_NAME: ${FCTL_INSTANCE_NAME:-fctl}
+    volumes:
+      # The database, the sessions' event logs, attachments and the master key.
+      - fctl-data:/data
+    # Its servers stop within 10 seconds of SIGTERM.
+    stop_grace_period: 15s
+
+volumes:
+  fctl-data:

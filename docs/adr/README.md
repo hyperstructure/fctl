@@ -31,3 +31,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0023](0023-passkeys-sign-in-on-their-own.md) | Passkeys sign in on their own, and count as a second factor where it is required |
 | [0024](0024-workspaces-hold-people-projects-runners-and-github-accounts.md) | Workspaces hold people, projects, runners and GitHub accounts |
 | [0025](0025-hosts-trim-apple-sandboxes-as-they-stop-them.md) | Hosts trim Apple sandboxes as they stop them |
+| [0026](0026-the-control-plane-runs-without-cloudflare-on-workerd.md) | The control plane also runs without Cloudflare, on workerd |

@@ -12,8 +12,9 @@ use crate::crypto;
 use crate::ctx::Ctx;
 use crate::db::{Count, n, os, q, s};
 use crate::error::{AppError, AppResult, not_configured, not_found};
-use crate::http::{self, OAUTH_COOKIE};
+use crate::http;
 use crate::model::{UserRow, user_columns};
+use fctl_domain::cookies::Cookie;
 use fctl_proto::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use worker::{Fetch, Headers, Method, Request, RequestInit, Response};
@@ -90,7 +91,7 @@ pub async fn start(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     };
     let signed = ctx.keys()?.sign(&serde_json::to_vec(&st)?);
     ctx.cookies.push(http::set_cookie(
-        OAUTH_COOKIE,
+        Cookie::GoogleSignIn,
         &signed,
         (STATE_TTL_MS / 1000) as u64,
         ctx.cfg.secure_cookies(),
@@ -113,7 +114,7 @@ pub async fn start(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
 /// Redirects back into the app with an error the page can show.
 fn fail(ctx: &mut Ctx, return_to: &str, code: &str) -> AppResult<Response> {
     ctx.cookies.push(http::set_cookie(
-        OAUTH_COOKIE,
+        Cookie::GoogleSignIn,
         "",
         0,
         ctx.cfg.secure_cookies(),
@@ -128,7 +129,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         .google
         .clone()
         .ok_or_else(|| not_configured("Google sign-in is not configured"))?;
-    let cookie = http::cookie(req, OAUTH_COOKIE);
+    let cookie = http::cookie(req, Cookie::GoogleSignIn, ctx.cfg.secure_cookies());
     let st: Option<OAuthState> = cookie
         .and_then(|c| ctx.keys().ok()?.verify(&c))
         .and_then(|b| serde_json::from_slice(&b).ok());
@@ -195,7 +196,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let email = claims.email.as_deref().map(str::to_lowercase);
     let verified = claims.email_verified.unwrap_or(false);
     ctx.cookies.push(http::set_cookie(
-        OAUTH_COOKIE,
+        Cookie::GoogleSignIn,
         "",
         0,
         ctx.cfg.secure_cookies(),

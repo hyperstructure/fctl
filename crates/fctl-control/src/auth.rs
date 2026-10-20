@@ -3,10 +3,11 @@
 use crate::ctx::{Authed, Ctx};
 use crate::db::{n, on, os, q, s};
 use crate::error::{AppError, AppResult};
-use crate::http::{self, SESSION_COOKIE};
+use crate::http;
 use crate::model::{CredentialRow, IdentityRow, USAGE_JSON, UserRow, user_columns};
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
+use fctl_domain::cookies::Cookie;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_proto::ApiError;
 use fctl_proto::api::{Me, TokenKind};
@@ -93,7 +94,7 @@ pub async fn issue_token(
     if kind == TokenKind::Web {
         let max_age = (WEB_SESSION_TTL_MS / 1000) as u64;
         ctx.cookies.push(http::set_cookie(
-            SESSION_COOKIE,
+            Cookie::Session,
             &secret,
             max_age,
             ctx.cfg.secure_cookies(),
@@ -120,7 +121,7 @@ pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow) -> AppResult<()> {
 
 pub fn clear_session_cookie(ctx: &mut Ctx) {
     ctx.cookies.push(http::set_cookie(
-        SESSION_COOKIE,
+        Cookie::Session,
         "",
         0,
         ctx.cfg.secure_cookies(),
@@ -144,21 +145,22 @@ struct TokenLookup {
     user: UserRow,
 }
 
-/// The bearer token or session cookie of a request, if any.
-pub fn presented_secret(req: &Request) -> Option<(String, bool)> {
+/// The bearer token or session cookie of a request, if any (`secure`:
+/// `Config::secure_cookies`).
+pub fn presented_secret(req: &Request, secure: bool) -> Option<(String, bool)> {
     if let Some(h) = http::header(req, "Authorization") {
         let token = h
             .strip_prefix("Bearer ")
             .or_else(|| h.strip_prefix("bearer "))?;
         return Some((token.trim().to_owned(), false));
     }
-    http::cookie(req, SESSION_COOKIE).map(|c| (c, true))
+    http::cookie(req, Cookie::Session, secure).map(|c| (c, true))
 }
 
 /// Resolves the caller from the bearer token or the session cookie. Invalid
 /// or expired credentials are treated as signed out (and the cookie cleared).
 pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
-    let Some((secret, via_cookie)) = presented_secret(req) else {
+    let Some((secret, via_cookie)) = presented_secret(req, ctx.cfg.secure_cookies()) else {
         return Ok(());
     };
     let Some(kind) = SecretKind::of(&secret) else {
@@ -236,7 +238,7 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         if kind == TokenKind::Web && via_cookie {
             let max_age = (WEB_SESSION_TTL_MS / 1000) as u64;
             ctx.cookies.push(http::set_cookie(
-                SESSION_COOKIE,
+                Cookie::Session,
                 &secret,
                 max_age,
                 ctx.cfg.secure_cookies(),

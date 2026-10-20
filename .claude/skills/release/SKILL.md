@@ -1,6 +1,6 @@
 ---
 name: release
-description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases, updates the CHANGELOG and redeploys app.fctl.sh; hyperstructure/sandbox then publishes the release's sandbox image to GHCR. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
+description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases and the standalone control plane's image to GHCR, updates the CHANGELOG and redeploys app.fctl.sh; hyperstructure/sandbox then publishes the release's sandbox image to GHCR. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
 ---
 
 # Releasing fctl
@@ -46,7 +46,7 @@ or GitHub → Actions → Release → Run workflow. With the GitHub App API:
 `POST /repos/hyperstructure/fctl/actions/workflows/release.yml/dispatches`
 with `{"ref": "main", "inputs": {"bump": "auto"}}`.
 
-It runs in three steps:
+It runs in three steps, and a fourth beside them:
 
 1. **Version and notes**: `cargo xtask release` sets the version in
    `Cargo.toml` and `Cargo.lock`, adds the notes to `CHANGELOG.md`, commits
@@ -62,6 +62,10 @@ It runs in three steps:
    package`), creates the GitHub release with the notes, publishes the
    files to https://fctl.sh/releases (moving `latest`), and installs it
    with the installer as a check.
+4. **Standalone image**, beside Build and Publish: the control plane
+   without Cloudflare (`deploy/standalone`),
+   `ghcr.io/hyperstructure/fctl-control:X.Y.Z` for arm64 and amd64, moving
+   `X.Y` and `latest` when the release is the newest they cover.
 
 Within the hour, the Image workflow of
 [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox) finds
@@ -80,6 +84,8 @@ minutes.
   `fctl self update --check` sees it.
 - The GitHub release and `CHANGELOG.md` on `main` have the notes.
 - `https://app.fctl.sh/api/v1/health` reports the version once CI is done.
+- `docker buildx imagetools inspect ghcr.io/hyperstructure/fctl-control:X.Y.Z`
+  lists linux/amd64 and linux/arm64.
 - Within the hour, `docker buildx imagetools inspect
   ghcr.io/hyperstructure/sandbox:X.Y.Z` lists linux/amd64 and linux/arm64
   (`gh run list -R hyperstructure/sandbox --workflow image.yml` shows the
@@ -97,7 +103,8 @@ minutes.
   binaries the Build jobs made, which are kept for 7 days. Or rebuild the
   tag from the start with
   `gh workflow run release.yml --ref main -f tag=vX.Y.Z`. If the code is
-  broken, fix it and release a patch.
+  broken, fix it and release a patch. The same goes for the standalone
+  image, which a rebuild publishes again under the same tags.
 - **The image** (hyperstructure/sandbox's Image workflow failed, or the
   release has no image after an hour): its `publish` skill says what to do.
   Start it for the release with
