@@ -2,6 +2,28 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.13.0 (2026-10-20)
+
+### Breaking changes
+
+- **control:** Workspaces connect GitHub accounts with a GitHub sign-in ([#156](https://github.com/hyperstructure/fctl/pull/156))
+
+### Features
+
+- **web:** Fit the session header on phones, with its details in a sheet ([#153](https://github.com/hyperstructure/fctl/pull/153))
+
+### Fixes
+
+- **web:** Keep composer text above its controls and center select icons ([#146](https://github.com/hyperstructure/fctl/pull/146))
+- **web:** Stop the session page jumping as you scroll up ([#148](https://github.com/hyperstructure/fctl/pull/148))
+- **web:** Stop Apple's passkey notification on every visit to Settings ([#147](https://github.com/hyperstructure/fctl/pull/147))
+- **web:** Show the sidebar properly every time it opens on a phone ([#149](https://github.com/hyperstructure/fctl/pull/149))
+- **web:** Hide Claude app links from people who can't open them ([#150](https://github.com/hyperstructure/fctl/pull/150))
+- **web:** Close a dropdown when you tap it again on iPhone and iPad ([#151](https://github.com/hyperstructure/fctl/pull/151))
+- **web:** Stop Home's composer taking presses in its project list ([#152](https://github.com/hyperstructure/fctl/pull/152))
+- **web:** Let the search palette's list scroll on phones and tablets ([#154](https://github.com/hyperstructure/fctl/pull/154))
+- **agent:** List every pull request and diff changes from the merge base ([#157](https://github.com/hyperstructure/fctl/pull/157))
+
 ## 0.12.0 (2026-10-20)
 
 ### Features
