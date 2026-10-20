@@ -513,9 +513,11 @@ function People({ w }: { w: G.Workspace }) {
   const instanceAdmin = me?.user.role === "owner" || me?.user.role === "admin";
   return (
     <div>
+      {/* The fields line up by their labels, so the hint or error under the address moves nothing.
+          On a phone, the role goes under the address. */}
       {admin && (
         <form
-          className="flex flex-col gap-2 sm:flex-row sm:items-end"
+          className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             if (email.trim()) invite.mutate();
@@ -523,7 +525,7 @@ function People({ w }: { w: G.Workspace }) {
         >
           <Field
             label="Invite someone"
-            className="flex-1"
+            className="sm:flex-1"
             hint="An address they sign in with. They join from their home page; Settings shows which of their addresses they joined as."
             error={invite.error && !notOnInstance ? invite.error.message : undefined}
           >
@@ -540,8 +542,13 @@ function People({ w }: { w: G.Workspace }) {
               />
             )}
           </Field>
-          <div className="flex gap-2 sm:mb-[26px]">
-            <Select aria-label="Role" value={role} onChange={setRole} options={inviteRoles} />
+          <div className="flex items-end gap-2">
+            <Field label="Role" className="flex-1 sm:flex-none">
+              {/* The label names only the trigger; the aria-label names its list too. */}
+              {(id) => (
+                <Select id={id} aria-label="Role" value={role} onChange={setRole} options={inviteRoles} />
+              )}
+            </Field>
             <Button
               type="submit"
               variant="primary"
