@@ -19,7 +19,7 @@ import {
   Terminal,
   Users,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/session/composer";
 import { AgentOrb } from "@/components/session/orb";
 import { Transcript } from "@/components/session/transcript";
@@ -53,6 +53,7 @@ import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink } from "@/lib/remote-control";
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
 import { statusReason } from "@/lib/status";
+import { useStickToBottom } from "@/lib/stick-to-bottom";
 import { agentTime, turnsTaken } from "@/lib/work";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
@@ -67,26 +68,9 @@ export function SessionPage() {
   const stall = useStall(session, s);
   const [rail, setRail] = useState(true);
   const [share, setShare] = useState(false);
-  const scroller = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-
-  // Follow the bottom while the reader is there; let them scroll back freely.
-  useEffect(() => {
-    const el = scroller.current?.closest("main")?.parentElement ?? document.scrollingElement;
-    const onScroll = () => {
-      const doc = document.scrollingElement;
-      if (!doc) return;
-      stick.current = doc.scrollHeight - doc.scrollTop - window.innerHeight < 160;
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    void el;
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: follow new content as it arrives
-  useLayoutEffect(() => {
-    if (stick.current)
-      window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" as ScrollBehavior });
-  }, [s.items.length, s.live]);
+  const transcript = useRef<HTMLDivElement>(null);
+  // The newest work stays in view while the reader is at the bottom.
+  useStickToBottom(transcript, id);
 
   useEffect(() => {
     if (session) document.title = `${session.title} · ${session.project_slug}#${session.number}`;
@@ -356,7 +340,7 @@ export function SessionPage() {
         </header>
 
         {/* Transcript */}
-        <div ref={scroller} className="mx-auto w-full max-w-[760px] flex-1 px-6 pt-6 pb-4">
+        <div ref={transcript} className="mx-auto w-full max-w-[760px] flex-1 px-6 pt-6 pb-4">
           {s.error && (
             <Banner tone="error" className="mb-4">
               {s.error}
