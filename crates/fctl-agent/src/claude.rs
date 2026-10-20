@@ -470,6 +470,16 @@ impl Claude {
         request: Value,
         timeout: Duration,
     ) -> std::result::Result<Value, String> {
+        self.ask(request, timeout).await
+    }
+
+    /// Sends a control request. The answer comes from the future, which
+    /// doesn't hold on to the process, so another task can wait for it.
+    pub fn ask(
+        &mut self,
+        request: Value,
+        timeout: Duration,
+    ) -> impl Future<Output = std::result::Result<Value, String>> + Send + use<> {
         self.next_id += 1;
         let id = format!("fctl_{}", self.next_id);
         let (tx, rx) = oneshot::channel();
@@ -477,14 +487,17 @@ impl Claude {
             p.insert(id.clone(), tx);
         }
         self.write(&json!({ "type": "control_request", "request_id": id, "request": request }));
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(r)) => r,
-            Ok(Err(_)) => Err("Claude exited".into()),
-            Err(_) => {
-                if let Ok(mut p) = self.pending.lock() {
-                    p.remove(&id);
+        let pending = self.pending.clone();
+        async move {
+            match tokio::time::timeout(timeout, rx).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(_)) => Err("Claude exited".into()),
+                Err(_) => {
+                    if let Ok(mut p) = pending.lock() {
+                        p.remove(&id);
+                    }
+                    Err("Claude did not answer in time".into())
                 }
-                Err("Claude did not answer in time".into())
             }
         }
     }
@@ -528,6 +541,20 @@ impl Claude {
     pub async fn kill(&mut self) {
         let _ = self.child.start_kill();
         let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+    }
+}
+
+/// The effort level Claude works at, from its answer to `get_settings`:
+/// `applied` holds what it sends the API, after the session's choice
+/// (`--effort`, or a change from the Claude apps over Remote Control),
+/// settings, environment and the model's default. Empty when the model
+/// takes no effort level; `None` when the answer doesn't say (a Claude Code
+/// from before `applied`).
+pub fn applied_effort(settings: &Value) -> Option<String> {
+    match settings.get("applied")?.get("effort")? {
+        Value::String(level) => Some(level.clone()),
+        Value::Null => Some(String::new()),
+        _ => None,
     }
 }
 
@@ -591,6 +618,32 @@ pub(crate) mod tests {
             credit_claude,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn claude_says_which_effort_it_works_at() {
+        // As Claude Code 2.1.304 answers `get_settings`, without `--effort`.
+        let answer = json!({
+            "effective": { "permissions": { "defaultMode": "bypassPermissions" } },
+            "sources": [],
+            "applied": {
+                "model": "claude-opus-5-5", "effort": "medium", "advisor": null,
+                "ultracode": false, "ultracodeRequested": false, "ultracodeAvailable": true
+            }
+        });
+        assert_eq!(applied_effort(&answer).as_deref(), Some("medium"));
+        // A model that takes no effort level.
+        let none = json!({ "applied": { "model": "claude-haiku-4-5", "effort": null } });
+        assert_eq!(applied_effort(&none).as_deref(), Some(""));
+        // Older Claude Code doesn't say.
+        assert_eq!(
+            applied_effort(&json!({ "effective": {}, "sources": [] })),
+            None
+        );
+        assert_eq!(
+            applied_effort(&json!({ "applied": { "model": "x" } })),
+            None
+        );
     }
 
     #[test]

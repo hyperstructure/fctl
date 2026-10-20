@@ -515,7 +515,13 @@ pub struct SessionRow {
     pub branch: Option<String>,
     pub base_branch: Option<String>,
     pub model: Option<String>,
+    /// The effort level the session asked for (`fctl run --effort`), which
+    /// its runs pass to Claude.
     pub effort: Option<String>,
+    /// The effort level Claude reported it works at (NULL until it did, and
+    /// when its model takes none).
+    #[serde(default)]
+    pub claude_effort: Option<String>,
     pub claude_session_id: String,
     #[serde(deserialize_with = "opt_int", default)]
     pub pr_number: Option<i64>,
@@ -610,6 +616,7 @@ impl SessionRow {
                 _ => None,
             },
             model: self.model.clone(),
+            effort: self.claude_effort.clone(),
             remote_control: self
                 .remote_control
                 .as_deref()
@@ -630,7 +637,7 @@ impl SessionRow {
 pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
-    s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.pull_requests, s.remote_control, s.stats, s.archived, \
+    s.claude_effort, s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.pull_requests, s.remote_control, s.stats, s.archived, \
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \

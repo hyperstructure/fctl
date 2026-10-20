@@ -45,7 +45,13 @@ pull_request?: PullRequestRef,
  * (`fctl_domain::pulls`). Absent while it has none, and from control
  * planes before it, which have `pull_request` only.
  */
-pull_requests?: Array<PullRequestRef>, runner?: RunnerRef, model?: string, remote_control?: RemoteControlState, stats: SessionStats, 
+pull_requests?: Array<PullRequestRef>, runner?: RunnerRef, model?: string, 
+/**
+ * The effort level Claude works at (`low` … `max`), as its agent last
+ * reported it. Absent until Claude starts, when its model takes no
+ * effort level, and from agents and control planes before it.
+ */
+effort?: string, remote_control?: RemoteControlState, stats: SessionStats, 
 /**
  * The caller's role.
  */

@@ -327,6 +327,7 @@ fn state(status: SessionStatus, reason: &str) -> SessionState {
         resume_at: None,
         branch: None,
         model: None,
+        effort: None,
         claude_session_id: None,
         remote_control: None,
         stats: None,

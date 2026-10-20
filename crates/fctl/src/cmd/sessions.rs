@@ -314,6 +314,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     if let Some(m) = &s.model {
         println!("model:    {m}");
     }
+    if let Some(e) = &s.effort {
+        println!("effort:   {e}");
+    }
     if let Some(following) = s.following {
         println!("follow:   {}", if following { "yes" } else { "no" });
     }
