@@ -9,8 +9,10 @@
 # redeploys app.fctl.sh. The "Build" jobs then cross-compile the release
 # binaries, all at once (`cargo xtask dist build`), and "Publish" makes the
 # archives from them, makes the GitHub release with the notes and publishes to
-# https://fctl.sh/releases. Within the hour, hyperstructure/sandbox publishes
-# the release's sandbox image, ghcr.io/hyperstructure/sandbox:<version>.
+# https://fctl.sh/releases. "Standalone image" publishes the control plane
+# without Cloudflare, ghcr.io/hyperstructure/fctl-control:<version>. Within
+# the hour, hyperstructure/sandbox publishes the release's sandbox image,
+# ghcr.io/hyperstructure/sandbox:<version>.
 # `tag` rebuilds an existing release tag from main; `dry_run` only shows what
 # would ship. Every run starts from main, a dry run too: its jobs use the
 # production environment, which only main may use. Tags pushed by hand
@@ -160,6 +162,65 @@ jobs:
           retention-days: 7
           # A job run again replaces what it built the first time.
           overwrite: true
+
+  # The control plane without Cloudflare (deploy/standalone), for amd64 and
+  # arm64: ghcr.io/hyperstructure/fctl-control:<version>, and :<major>.<minor>
+  # and :latest when this release is the newest they cover. The Worker and the
+  # web app build once, natively; QEMU runs the last stage for arm64.
+  image:
+    name: Standalone image
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      IMAGE: ghcr.io/hyperstructure/fctl-control
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Tags and labels
+        id: meta
+        run: |
+          version=${TAG#v}
+          IFS=. read -r major minor _ <<<"$version"
+          tags="$IMAGE:$version"
+          if [ "$(git tag --list "v$major.$minor.*" --sort=-v:refname | head -1)" = "$TAG" ]; then
+            tags="$tags,$IMAGE:$major.$minor"
+          fi
+          if [ "$(git tag --list 'v*' --sort=-v:refname | head -1)" = "$TAG" ]; then
+            tags="$tags,$IMAGE:latest"
+          fi
+          {
+            echo "tags=$tags"
+            echo "labels<<EOF"
+            echo "org.opencontainers.image.version=$version"
+            echo "org.opencontainers.image.revision=$(git rev-parse HEAD)"
+            echo "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Publishing \`${tags//,/\`, \`}\`." >> "$GITHUB_STEP_SUMMARY"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Sign in to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/standalone/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
   publish:
     name: Publish
