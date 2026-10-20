@@ -2,6 +2,26 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.12.0 (2026-10-20)
+
+### Features
+
+- Open screenshots and videos in a lightbox on the session page ([#140](https://github.com/hyperstructure/fctl/pull/140))
+- Show changes and pull requests while a session's turn runs ([#143](https://github.com/hyperstructure/fctl/pull/143))
+- Let people ask for early access on app.fctl.sh, and invite them ([#145](https://github.com/hyperstructure/fctl/pull/145))
+
+### Fixes
+
+- **web:** Make the top bar and its menu button larger on phones ([#137](https://github.com/hyperstructure/fctl/pull/137))
+- **web:** Fit every page to a phone's screen and turn off zooming ([#139](https://github.com/hyperstructure/fctl/pull/139))
+- **web:** Make the sidebar's logo as large as the top bar's on phones ([#141](https://github.com/hyperstructure/fctl/pull/141))
+- **web:** Put the menu button in a session's header on phones ([#142](https://github.com/hyperstructure/fctl/pull/142))
+- **web:** Drop the lightbox's focus ring and download button on phones ([#144](https://github.com/hyperstructure/fctl/pull/144))
+
+### Other changes
+
+- Stop the standalone image rejecting new releases as not on main ([#138](https://github.com/hyperstructure/fctl/pull/138))
+
 ## 0.11.0 (2026-10-20)
 
 ### Features
