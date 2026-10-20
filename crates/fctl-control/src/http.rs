@@ -1,6 +1,7 @@
 //! Request and response helpers: JSON bodies, cookies, security headers.
 
 use crate::error::{AppError, AppResult};
+use fctl_domain::cookies::Cookie;
 use fctl_proto::{ApiError, ErrorCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -8,11 +9,6 @@ use worker::{Headers, Method, Request, Response};
 
 /// Largest JSON body accepted.
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
-
-pub const SESSION_COOKIE: &str = "__Host-fctl";
-pub const OAUTH_COOKIE: &str = "__Host-fctl-oauth";
-/// A sign-in that waits for its second factor (`api::two_factor`).
-pub const CHALLENGE_COOKIE: &str = "__Host-fctl-2fa";
 
 /// Headers on every API response.
 pub fn api_headers() -> Headers {
@@ -128,8 +124,10 @@ pub fn header(req: &Request, name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Reads a cookie by name.
-pub fn cookie(req: &Request, name: &str) -> Option<String> {
+/// Reads one of our cookies, by its name where cookies are `secure` or not
+/// (`Config::secure_cookies`).
+pub fn cookie(req: &Request, cookie: Cookie, secure: bool) -> Option<String> {
+    let name = cookie.name(secure);
     let raw = header(req, "Cookie")?;
     raw.split(';')
         .filter_map(|part| part.trim().split_once('='))
@@ -138,8 +136,11 @@ pub fn cookie(req: &Request, name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// A `Set-Cookie` value. `max_age` of 0 deletes the cookie.
-pub fn set_cookie(name: &str, value: &str, max_age_secs: u64, secure: bool) -> String {
+/// A `Set-Cookie` value. `max_age` of 0 deletes the cookie. Without `secure`
+/// (plain http outside localhost) its name goes without the `__Host-` prefix,
+/// which browsers take only on `Secure` cookies (`fctl_domain::cookies`).
+pub fn set_cookie(cookie: Cookie, value: &str, max_age_secs: u64, secure: bool) -> String {
+    let name = cookie.name(secure);
     let mut c = format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}");
     if secure {
         c.push_str("; Secure");
