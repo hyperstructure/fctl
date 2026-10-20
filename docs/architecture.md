@@ -243,8 +243,8 @@ the instance creates one, as its primary admin.
   else can demote or remove the primary admin, who leaves only after
   handing the role over (`fctl_domain::workspace::check_*`).
 - **Invitations** (`workspace_invitations`) are for an address and last 30
-  days. Whoever has it (an account's, or connected to one) sees it on the
-  floor and in `fctl workspaces`, and joins as that address; one the
+  days. Whoever has it (an account's, or connected to one) sees it on their
+  home page and in `fctl workspaces`, and joins as that address; one the
   instance doesn't admit yet needs an instance invitation first, which
   instance admins send together with their workspaces' invitations. People
   invited before they had an account join when they make it, or connect the
@@ -802,7 +802,7 @@ until the limit resets.
 
 ### Plan usage
 
-Settings shows how much of each connection's plan is used, and the floor
+Settings shows how much of each connection's plan is used, and the home page
 shows it for the connection new sessions run on, so people see what is left
 before they start work. Sessions report it; fctl asks Anthropic for nothing.
 Claude Code writes a `rate_limit_event` when a limit's status changes and,
@@ -820,7 +820,7 @@ message.
    per credential and limit, which a later reading replaces.
 3. `/auth/me` returns them on each credential (`ClaudeCredentialInfo.usage`,
    `fctl claude status`), and FleetDO sends the credential's owner a
-   `claude_usage` feed message, so Settings and the floor change while
+   `claude_usage` feed message, so Settings and the home page change while
    sessions run.
 
 Readings change only while sessions run, so the apps say when a session last
