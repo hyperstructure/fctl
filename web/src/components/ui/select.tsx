@@ -308,6 +308,9 @@ export function Select<T extends string>({
           if (open) hide();
           else show(-1);
         }}
+        // Taps keep focus here too: Safari would take it away on their mousedown, and the list
+        // would close on the blur just before the click opened it again.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => {
           if (pressed.current) return;
           e.currentTarget.focus({ preventScroll: true, focusVisible: e.detail === 0 });

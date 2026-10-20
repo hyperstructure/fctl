@@ -116,6 +116,25 @@ function setup(initial = "low") {
   return { onChange, trigger, press, list, options, active, shown, wait };
 }
 
+/**
+ * A tap as Safari on iOS delivers it. Safari doesn't focus buttons on click, so the
+ * tap's mousedown, unless cancelled, takes focus away from the button.
+ */
+function tap(el: HTMLElement) {
+  const mouse = (type: string) => new MouseEvent(type, { bubbles: true, cancelable: true, detail: 1 });
+  act(() => {
+    el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));
+    el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "touch" }));
+  });
+  act(() => {
+    if (el.dispatchEvent(mouse("mousedown"))) (document.activeElement as HTMLElement | null)?.blur();
+  });
+  act(() => {
+    el.dispatchEvent(mouse("mouseup"));
+    el.dispatchEvent(mouse("click"));
+  });
+}
+
 describe("Select", () => {
   it("shows the label of its value", () => {
     const s = setup("medium");
@@ -174,6 +193,18 @@ describe("Select", () => {
     });
     expect(s.trigger.getAttribute("aria-expanded")).toBe("false");
     expect(s.onChange).not.toHaveBeenCalled();
+  });
+
+  it("opens on a tap and closes on another, keeping focus", () => {
+    const s = setup("low");
+    tap(s.trigger);
+    expect(s.trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(s.trigger);
+    tap(s.trigger);
+    expect(s.trigger.getAttribute("aria-expanded")).toBe("false");
+    s.wait(1000);
+    expect(s.list()).toBeNull();
+    expect(document.activeElement).toBe(s.trigger);
   });
 
   it("jumps to what people type", () => {
