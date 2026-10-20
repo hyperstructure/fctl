@@ -2,6 +2,21 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.9.0 (2026-10-20)
+
+### Features
+
+- Add workspaces with their own people, runners and GitHub accounts ([#109](https://github.com/hyperstructure/fctl/pull/109))
+
+### Fixes
+
+- **host:** Treat a container CLI that can't start as an error ([#107](https://github.com/hyperstructure/fctl/pull/107))
+- **web:** Open the account menu above your name so you can sign out ([#108](https://github.com/hyperstructure/fctl/pull/108))
+
+### Other changes
+
+- Fix flaky tests that run a script right after writing it ([#106](https://github.com/hyperstructure/fctl/pull/106))
+
 ## 0.8.0 (2026-10-19)
 
 ### Features
