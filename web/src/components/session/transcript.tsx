@@ -314,36 +314,35 @@ function Logs({ lines }: { lines: G.LogLine[] }) {
 
 /** One line per repository whose branch changed: the primary one, then the others by name. */
 function GitItem({ git, repos }: { git: G.GitState; repos: (string | undefined)[] }) {
-  return repoChanges(git)
-    .filter((r) => repos.includes(r.name))
-    .map((r) => (
-      <Milestone key={r.name ?? ""} icon={<GitBranch />}>
-        {r.name && <span className="font-mono text-ink-3">{r.name}: </span>}
-        {r.files.length} {r.files.length === 1 ? "file" : "files"} changed{" "}
-        <span className="text-accent/80">+{r.additions}</span>{" "}
-        <span className="text-danger/80">−{r.deletions}</span>
-        {r.ahead > 0 && (
-          <>
-            {" "}
-            · {r.ahead} {r.ahead === 1 ? "commit" : "commits"}
-          </>
-        )}
-        {r.pushed && <> · pushed</>}
-        {r.pr && (
-          <>
-            {" · "}
-            <a
-              href={r.pr.url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-ink-2 underline decoration-line-strong underline-offset-2 hover:text-ink"
-            >
-              PR #{r.pr.number}
-            </a>
-          </>
-        )}
-      </Milestone>
-    ));
+  const changed = repoChanges(git).filter((r) => repos.includes(r.name));
+  return changed.map((r) => (
+    <Milestone key={r.name ?? ""} icon={<GitBranch />}>
+      {r.name && <span className="font-mono text-ink-3">{r.name}: </span>}
+      {r.files.length} {r.files.length === 1 ? "file" : "files"} changed{" "}
+      <span className="text-accent/80">+{r.additions}</span>{" "}
+      <span className="text-danger/80">−{r.deletions}</span>
+      {r.ahead > 0 && (
+        <>
+          {" "}
+          · {r.ahead} {r.ahead === 1 ? "commit" : "commits"}
+        </>
+      )}
+      {r.pushed && <> · pushed</>}
+      {r.pr && (
+        <>
+          {" · "}
+          <a
+            href={r.pr.url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-ink-2 underline decoration-line-strong underline-offset-2 hover:text-ink"
+          >
+            PR #{r.pr.number}
+          </a>
+        </>
+      )}
+    </Milestone>
+  ));
 }
 
 const ItemView = memo(function ItemView({
