@@ -17,14 +17,15 @@ import {
   TriangleAlert,
   Unplug,
 } from "lucide-react";
-import { type MouseEvent, memo, type ReactNode, useState } from "react";
-import { Markdown } from "@/components/markdown";
+import { type MouseEvent, memo, type ReactNode, useMemo, useRef, useState } from "react";
+import { ImageSizes, Markdown } from "@/components/markdown";
 import { Avatar, Button, CopyButton, Dialog, Lightbox, plainClick, Spinner, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { bytes, clock, day, duration, until } from "@/lib/format";
 import { repoChanges } from "@/lib/git";
+import { useKeepPlace } from "@/lib/keep-place";
 import { linkToken, markdown } from "@/lib/published";
 import { claudeAppLink } from "@/lib/remote-control";
 import { type Stall, stallText } from "@/lib/stall";
@@ -575,38 +576,48 @@ export const Transcript = memo(function Transcript({
   // a stop or a failure) never gets one.
   const running = status === "running" && !stall;
   const turnStart = items.findLastIndex((it) => it.kind === "turn" || it.kind === "status");
+  const list = useRef<HTMLDivElement>(null);
+  // Earlier activity goes in above the reader, who stays where they are.
+  const keepPlace = useKeepPlace(list, loadingOlder);
+  // The screenshots the agent published, which its answers show: they take
+  // their room before they load. A new map only when it publishes another.
+  const shots = items.flatMap((it) =>
+    it.kind === "notice" && it.notice.published ? [it.notice.published] : [],
+  );
+  const shotUrls = shots.map((f) => f.url).join(" ");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: shotUrls stands for shots
+  const sizes = useMemo(() => new Map(shots.map((f) => [f.url, f])), [shotUrls]);
   // Tool rows sit in a quiet column; everything else spans the reading width.
   return (
-    <div className="flex flex-col">
-      {hasMoreBefore && (
-        <button
-          type="button"
-          onClick={onLoadOlder}
-          className="mx-auto mb-4 flex items-center gap-2 rounded-full border border-line px-3 py-1 text-[12px] text-ink-3 hover:text-ink"
-        >
-          {loadingOlder && <Spinner className="size-3" />}
-          Show earlier activity
-        </button>
-      )}
-      {items.map((it, i) => (
-        <div
-          key={it.key}
-          className={cn(
-            it.kind !== "user" && it.kind !== "prose" && "cv-auto",
-            it.kind === "tool" && "[contain-intrinsic-size:auto_34px]",
-          )}
-        >
-          <ItemView
-            item={it}
-            live={it.kind === "tool" ? live : undefined}
-            sessionId={sessionId}
-            running={it.kind === "tool" ? running && i > turnStart : undefined}
-            stalled={it.kind === "setup" ? !!stall : undefined}
-            canManage={canManage}
-          />
-        </div>
-      ))}
-      <LiveTurnView live={live} status={status} stall={stall} />
-    </div>
+    <ImageSizes value={sizes}>
+      <div ref={list} className="flex flex-col">
+        {hasMoreBefore && (
+          <button
+            type="button"
+            onClick={() => {
+              keepPlace();
+              onLoadOlder();
+            }}
+            className="mx-auto mb-4 flex items-center gap-2 rounded-full border border-line px-3 py-1 text-[12px] text-ink-3 hover:text-ink"
+          >
+            {loadingOlder && <Spinner className="size-3" />}
+            Show earlier activity
+          </button>
+        )}
+        {items.map((it, i) => (
+          <div key={it.key} data-item>
+            <ItemView
+              item={it}
+              live={it.kind === "tool" ? live : undefined}
+              sessionId={sessionId}
+              running={it.kind === "tool" ? running && i > turnStart : undefined}
+              stalled={it.kind === "setup" ? !!stall : undefined}
+              canManage={canManage}
+            />
+          </div>
+        ))}
+        <LiveTurnView live={live} status={status} stall={stall} />
+      </div>
+    </ImageSizes>
   );
 });

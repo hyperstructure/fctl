@@ -2,10 +2,28 @@
 // Code blocks are highlighted lazily.
 
 import { lexer, type Token, type Tokens } from "marked";
-import { memo, type ReactNode, useEffect, useState } from "react";
+import { createContext, memo, type ReactNode, useContext, useEffect, useState } from "react";
 import { CopyButton, Lightbox } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { highlight } from "@/lib/highlight";
+
+/**
+ * The pixel sizes of images the page knows before they load, by address:
+ * the screenshots a session's agent published, which its answers show.
+ */
+export const ImageSizes = createContext<ReadonlyMap<string, { width?: number; height?: number }>>(new Map());
+
+/**
+ * An image in the agent's answer. One of a known size takes its room at once
+ * and loads as the reader nears it; any other loads with the page, so that it
+ * doesn't push the page when it arrives as the reader scrolls up to it.
+ */
+function Picture({ src, alt }: { src: string; alt: string }) {
+  const size = useContext(ImageSizes).get(src);
+  const room =
+    size?.width && size.height ? { width: size.width, height: size.height, loading: "lazy" as const } : {};
+  return <img src={src} alt={alt} {...room} decoding="async" className="max-w-full rounded-md" />;
+}
 
 /** An image in the agent's answer, which a click shows at full size. */
 function ZoomImage({ src, alt }: { src: string; alt: string }) {
@@ -18,7 +36,7 @@ function ZoomImage({ src, alt }: { src: string; alt: string }) {
         aria-label={`View ${alt || "image"}`}
         className="max-w-full cursor-zoom-in"
       >
-        <img src={src} alt={alt} className="max-w-full rounded-md" loading="lazy" />
+        <Picture src={src} alt={alt} />
       </button>
       {open && <Lightbox file={{ name: alt || "Image" }} src={src} onClose={() => setOpen(false)} />}
     </>
@@ -61,7 +79,7 @@ function inline(tokens: Token[] | undefined, key = "i", linked = false): ReactNo
         const im = t as Tokens.Image;
         if (!/^https:/i.test(im.href)) return <span key={k}>{im.text}</span>;
         return linked ? (
-          <img key={k} src={im.href} alt={im.text} className="max-w-full rounded-md" loading="lazy" />
+          <Picture key={k} src={im.href} alt={im.text} />
         ) : (
           <ZoomImage key={k} src={im.href} alt={im.text} />
         );

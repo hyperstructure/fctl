@@ -118,12 +118,6 @@
   color: var(--shiki-light);
 }
 
-/* Offscreen transcript items skip layout and paint. */
-.cv-auto {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
-}
-
 /* Words of a headline in the brand's yellow, as on fctl.sh, with a pink full
    stop (routes/early-access.tsx). On light backgrounds the yellow becomes a
    highlighter stroke under the words, on each line they wrap to. */
