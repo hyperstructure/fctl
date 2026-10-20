@@ -1,4 +1,4 @@
-// The task being written on the floor, kept in this browser until a session
+// The task being written on the home page, kept in this browser until a session
 // starts with it: leaving the page, reloading it or closing the tab loses
 // none of it. The words, the project and the caret are in localStorage,
 // which the page reads as it opens. The files are in IndexedDB, which keeps

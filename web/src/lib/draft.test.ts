@@ -9,7 +9,7 @@ const shot = () => ({
 
 afterEach(() => localStorage.clear());
 
-describe("the floor's draft", () => {
+describe("the home page's draft", () => {
   it("keeps each person's text", () => {
     saveText("usr_a", { prompt: "Fix the flaky test", project: "web", selection: [3, 8] });
     saveText("usr_b", { prompt: "Write the docs" });

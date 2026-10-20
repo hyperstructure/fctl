@@ -50,7 +50,7 @@ interface Upload {
 }
 
 /**
- * The uploads of kept drafts (the floor's), by draft key. Finished ones
+ * The uploads of kept drafts (the home page's), by draft key. Finished ones
  * outlive the composer, so its files come back ready when the page does.
  */
 const keptUploads = new Map<string, Upload>();
@@ -59,7 +59,7 @@ const preview = (file: File) => (previewable(file.type) ? URL.createObjectURL(fi
 
 /**
  * The files of the message being written. Uploads go to `scope` (and again
- * if it changes, like the floor's project picker); `take` waits for them and
+ * if it changes, like the home page's project picker); `take` waits for them and
  * empties the composer. With `keep` (the person's id), the files are kept in
  * this browser (`@/lib/draft`) and come back when the composer opens again.
  */
@@ -105,7 +105,7 @@ export function useAttachments(scope: UploadScope | undefined, { keep }: { keep?
   );
 
   // Files upload to the composer's scope: kept ones that come back, and
-  // copies for another project (the floor's picker).
+  // copies for another project (the home page's picker).
   useEffect(() => {
     if (!to) return;
     for (const d of drafts) {

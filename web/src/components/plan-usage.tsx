@@ -1,6 +1,6 @@
 // Claude plan usage as meters: how much of each limit sessions last saw
 // used, and when it starts over. Settings lists every limit of each
-// credential; the floor shows the default credential's in one line.
+// credential; the home page shows the default credential's in one line.
 
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -92,7 +92,7 @@ export function PlanUsageList({ usage }: { usage: G.PlanLimit[] }) {
   );
 }
 
-/** The default credential's limits in one line, under the floor's task box. Phones get
+/** The default credential's limits in one line, under the home page's task box. Phones get
  * shorter meters and gaps, so two limits fit on the line from 390 px. */
 export function PlanUsageStrip({ usage, className }: { usage: G.PlanLimit[]; className?: string }) {
   const now = useNow();

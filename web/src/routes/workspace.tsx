@@ -238,7 +238,8 @@ function Projects({ w }: { w: G.Workspace }) {
               </Link>
             }
           >
-            Its admins add people to its projects. You see the ones you are added to here, and on the floor.
+            Its admins add people to its projects. You see the ones you are added to here, and on the home
+            page.
           </Empty>
         ) : mine.length === 0 ? (
           <Empty
@@ -491,7 +492,7 @@ function People({ w }: { w: G.Workspace }) {
           <Field
             label="Invite someone"
             className="flex-1"
-            hint="An address they sign in with. They join from the floor; Settings shows which of their addresses they joined as."
+            hint="An address they sign in with. They join from their home page; Settings shows which of their addresses they joined as."
             error={invite.error && !notOnInstance ? invite.error.message : undefined}
           >
             {(id) => (
@@ -1318,7 +1319,7 @@ function General({ w }: { w: G.Workspace }) {
   const field = (save.error as { field?: string } | null)?.field;
   const changed = name.trim() !== w.name || slug.trim() !== w.slug;
   return (
-    <Section title="General" description="What everyone sees: in the sidebar, on the floor and in lists.">
+    <Section title="General" description="What everyone sees: in the sidebar, on the home page and in lists.">
       <div className="flex flex-col gap-6">
         <div className="flex items-center gap-5">
           <WorkspaceAvatar workspace={w} size={64} />

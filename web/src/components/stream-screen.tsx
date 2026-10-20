@@ -94,7 +94,7 @@ export function StreamScreen({
       <a
         href="/"
         className="absolute top-5 left-5 z-10 rounded-md sm:top-6 sm:left-7"
-        aria-label="fctl, the floor"
+        aria-label="fctl, home"
       >
         <Logo />
       </a>

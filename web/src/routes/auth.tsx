@@ -114,7 +114,7 @@ function useSubmit<T>(fn: () => Promise<T>, done: (r: T) => void) {
   return { busy, error, submit, fieldError: (f: string) => (error?.field === f ? error.message : undefined) };
 }
 
-/** Where a sign-in goes: `next` when it is a path of the app, else the floor. */
+/** Where a sign-in goes: `next` when it is a path of the app, else the home page. */
 function safeNext(next?: string) {
   return next?.startsWith("/") && !next.startsWith("//") ? next : "/";
 }

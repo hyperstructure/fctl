@@ -1,4 +1,5 @@
-// ⌘K: jump to workspaces, projects and sessions, or run an action.
+// ⌘K: jump to workspaces, projects and sessions, or run an action. Home comes
+// first, so that ⌘K and Enter open the task box for a new session from anywhere.
 
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -13,12 +14,13 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { StatusDot } from "@/components/ui";
+import { HomeIcon, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { useMe, useProjects, useSessions, useWorkspaces } from "@/lib/queries";
 import { repoLabel } from "@/lib/repos";
+import { focusTaskBox } from "@/lib/task-box";
 import { getTheme, setTheme } from "@/lib/theme";
 
 interface Entry {
@@ -53,7 +55,19 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       onClose();
       fn();
     };
-    const list: Entry[] = [];
+    const list: Entry[] = [
+      {
+        id: "home",
+        group: "Go to",
+        label: "Home",
+        hint: "new session",
+        icon: <HomeIcon className="size-4" />,
+        run: go(() => {
+          void navigate({ to: "/" });
+          focusTaskBox();
+        }),
+      },
+    ];
     for (const s of sessions?.sessions ?? []) {
       list.push({
         id: `s-${s.id}`,
@@ -163,7 +177,11 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                 e.preventDefault();
                 setI((x) => Math.max(0, x - 1));
               }
-              if (e.key === "Enter") entries[i]?.run();
+              if (e.key === "Enter") {
+                // Or the key would go on to the field that has the focus next, like the task box.
+                e.preventDefault();
+                entries[i]?.run();
+              }
             }}
             placeholder="Search sessions, projects, workspaces and actions"
             className="h-13 flex-1 bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-4"

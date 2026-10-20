@@ -34,7 +34,7 @@ export function NotFound() {
       <div className="mt-8 flex justify-center">
         <Link to="/">
           <Button variant="primary" size="lg">
-            Back to the floor
+            Back home
           </Button>
         </Link>
       </div>
