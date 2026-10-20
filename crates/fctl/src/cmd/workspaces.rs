@@ -93,10 +93,10 @@ pub enum WorkspacesCmd {
         #[arg(long = "as", value_name = "EMAIL")]
         email: Option<String>,
     },
-    /// Change a workspace's name, address, avatar or rules (admins).
+    /// Change a workspace's name, address, avatar, rules or setup (admins).
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor"])),
-        after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "skip_invites"])),
+        after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on\n  fctl workspaces set -w side-project --skip-invites on"
     )]
     Set {
         /// The workspace (slug or id); default from `fctl workspaces use`,
@@ -122,6 +122,10 @@ pub enum WorkspacesCmd {
         /// Members need two-factor sign-in: it is closed to those without.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         require_two_factor: Option<bool>,
+        /// Leave inviting people out of the app's setup checklist, as in a
+        /// workspace for one; `off` asks for it again.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        skip_invites: Option<bool>,
     },
     /// Use this workspace by default.
     Use {
@@ -512,6 +516,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             avatar,
             base_role,
             require_two_factor,
+            skip_invites,
         } => {
             let w = resolve(&api, workspace).await?;
             let mut out = w.clone();
@@ -520,6 +525,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 || color.is_some()
                 || base_role.is_some()
                 || require_two_factor.is_some()
+                || skip_invites.is_some()
             {
                 out = api
                     .update_workspace(
@@ -530,6 +536,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                             color: color.map(Into::into),
                             base_role: base_role.map(Into::into),
                             require_two_factor,
+                            skip_invites,
                         },
                     )
                     .await?;

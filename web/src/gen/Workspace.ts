@@ -56,4 +56,9 @@ runners_online: number,
 /**
  * The GitHub accounts it works in.
  */
-github: Array<string>, created_at: number, };
+github: Array<string>, 
+/**
+ * Its admins skipped inviting people while setting it up, as in a
+ * workspace for one: the app's setup checklist leaves that step out.
+ */
+skip_invites: boolean, created_at: number, };
