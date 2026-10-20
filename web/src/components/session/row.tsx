@@ -24,7 +24,8 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
         <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[12px] text-ink-4">
           {workspace && (
             // On a phone its avatar says which one, and the reference keeps the room.
-            <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-ink-3">
+            // There the avatar keeps its width, so that a long status can't push it into the reference.
+            <span className="inline-flex min-w-0 shrink items-center gap-1.5 text-ink-3 max-sm:shrink-0">
               <WorkspaceAvatar workspace={workspace} size={14} />
               <span className="max-w-[10rem] truncate max-sm:hidden">{workspace.name}</span>
               <span className="text-ink-4 max-sm:hidden">/</span>
@@ -51,7 +52,8 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
       >
         {agoShort(s.last_activity_at ?? s.created_at)}
       </time>
-      <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100" />
+      {/* It appears on hover; on a phone its room goes to the title. */}
+      <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100 max-sm:hidden" />
     </Link>
   );
 }
