@@ -8,4 +8,10 @@ export type UpdateMembershipRequest = {
  * The Claude connection your sessions there run on; an empty string
  * goes back to your default one.
  */
-claude?: string, };
+claude?: string, 
+/**
+ * Its projects in the order you want them (ids or slugs), in lists
+ * and the app's sidebar: the ones named first, then the others as
+ * they were.
+ */
+project_order?: Array<string>, };

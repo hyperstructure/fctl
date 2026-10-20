@@ -15,6 +15,7 @@ pub mod image;
 pub mod journal;
 pub mod naming;
 pub mod notify;
+pub mod order;
 pub mod perm;
 pub mod published;
 pub mod pulls;

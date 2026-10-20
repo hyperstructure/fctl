@@ -118,6 +118,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::UpdateWorkspaceMemberRequest,
         api::TransferRequest,
         api::UpdateMembershipRequest,
+        api::WorkspaceOrderRequest,
         api::DeleteWorkspaceRequest,
         api::GithubConnectionStatus,
         api::GithubConnection,

@@ -322,6 +322,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::emails::update(ctx, req, &http::decode(email)).await
         }
         (Delete, ["me", "emails", email]) => api::emails::remove(ctx, &http::decode(email)).await,
+        (Put, ["me", "workspace-order"]) => api::workspaces::order(ctx, req).await,
         (Get, ["me", "export"]) => api::account::export(ctx).await,
         (Get, ["me", "deletion"]) => api::account::deletion(ctx).await,
         (Post, ["me", "delete"]) => api::account::delete(ctx, req).await,

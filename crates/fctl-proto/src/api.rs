@@ -1245,6 +1245,19 @@ pub struct UpdateMembershipRequest {
     /// The Claude connection your sessions there run on; an empty string
     /// goes back to your default one.
     pub claude: Option<String>,
+    /// Its projects in the order you want them (ids or slugs), in lists
+    /// and the app's sidebar: the ones named first, then the others as
+    /// they were.
+    pub project_order: Option<Vec<String>>,
+}
+
+/// `PUT /api/v1/me/workspace-order`: your workspaces in the order you want
+/// them (ids or slugs), in lists and the app's sidebar: the ones named
+/// first, then the others as they were. Returns them in their new order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WorkspaceOrderRequest {
+    pub workspaces: Vec<String>,
 }
 
 /// `DELETE /api/v1/workspaces/{id}` (its primary admin) and

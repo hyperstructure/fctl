@@ -7,9 +7,9 @@ use clap::builder::BoolishValueParser;
 use clap::{ArgGroup, Subcommand};
 use fctl_proto::api::{
     AddProjectRepoRequest, CreateProjectRequest, CreateRepoRequest, ProjectRepoList,
-    UpdateProjectRequest,
+    UpdateMembershipRequest, UpdateProjectRequest,
 };
-use fctl_proto::session::{ImageBuild, ProjectSettings, RepoAccess};
+use fctl_proto::session::{ImageBuild, Project, ProjectSettings, RepoAccess};
 use std::io::{BufRead, IsTerminal, Write};
 
 #[derive(Subcommand)]
@@ -127,6 +127,20 @@ pub enum ProjectsCmd {
     Use {
         /// The project (slug or id).
         project: String,
+    },
+    /// Put a workspace's projects in the order you want them, in lists and
+    /// the app's sidebar: the ones you name first, the others after them as
+    /// they were.
+    #[command(
+        after_help = "Examples:\n  fctl projects order web api       # these two first in their workspace\n  fctl projects order -w acme docs  # docs first in acme"
+    )]
+    Order {
+        /// Projects of one workspace (slugs or ids), in order.
+        #[arg(required = true, value_name = "PROJECT")]
+        projects: Vec<String>,
+        /// Their workspace (slug or id); default: the first project's.
+        #[arg(short, long)]
+        workspace: Option<String>,
     },
     /// The repositories the project's agents may use besides its primary one.
     #[command(subcommand)]
@@ -355,6 +369,68 @@ async fn repos(api: &fctl_client::Api, cmd: ReposCmd, json: bool) -> Result<()> 
     Ok(())
 }
 
+/// Projects, one a line, under their workspaces when there are several, in
+/// the order they come (yours, from the control plane).
+fn print_projects(projects: Vec<Project>) {
+    let mut workspaces: Vec<String> = Vec::new();
+    for p in &projects {
+        let id = p
+            .workspace
+            .as_ref()
+            .map(|w| w.id.to_string())
+            .unwrap_or_default();
+        if !workspaces.contains(&id) {
+            workspaces.push(id);
+        }
+    }
+    let several = workspaces.len() > 1;
+    let mut projects = projects;
+    // Together under each, should a control plane send them mixed.
+    projects.sort_by_key(|p| {
+        let id = p
+            .workspace
+            .as_ref()
+            .map(|w| w.id.to_string())
+            .unwrap_or_default();
+        workspaces.iter().position(|w| *w == id)
+    });
+    let mut last: Option<String> = None;
+    for p in projects {
+        if several {
+            let w = p
+                .workspace
+                .as_ref()
+                .map(|w| w.name.clone())
+                .unwrap_or_default();
+            if last.as_deref() != Some(w.as_str()) {
+                if last.is_some() {
+                    println!();
+                }
+                println!("{}", style::dim(&w));
+                last = Some(w);
+            }
+        }
+        let repo =
+            fctl_domain::repos::summary(p.repo.as_ref(), p.other_repos, p.all_repos_of.as_deref())
+                .unwrap_or_else(|| "no repository".into());
+        let active = if p.active_sessions > 0 {
+            style::accent(&format!("{} active", p.active_sessions))
+        } else {
+            style::dim("idle")
+        };
+        println!(
+            "{:<24} {:<40} {}  {}",
+            style::bold(&p.slug),
+            style::dim(&repo),
+            active,
+            style::dim(&match p.total_sessions {
+                1 => "1 session".to_owned(),
+                n => format!("{n} sessions"),
+            })
+        );
+    }
+}
+
 pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<()> {
     let api = config::api(server)?;
     match cmd {
@@ -371,61 +447,36 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     "No projects yet. Create one with `fctl projects create <name> --repo owner/name`."
                 );
             }
-            // Grouped by workspace when there are several.
-            let several = list
-                .projects
-                .iter()
-                .filter_map(|p| p.workspace.as_ref().map(|w| w.id.clone()))
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                > 1;
-            let mut projects = list.projects;
-            if several {
-                projects.sort_by_key(|p| {
-                    p.workspace
-                        .as_ref()
-                        .map(|w| w.name.to_lowercase())
-                        .unwrap_or_default()
-                });
-            }
-            let mut last: Option<String> = None;
-            for p in projects {
-                if several {
-                    let w = p
+            print_projects(list.projects);
+        }
+        ProjectsCmd::Order {
+            projects,
+            workspace,
+        } => {
+            let workspace = match workspace {
+                Some(w) => w,
+                None => {
+                    let first = projects.first().map(String::as_str).unwrap_or_default();
+                    api.project(first)
+                        .await?
                         .workspace
-                        .as_ref()
-                        .map(|w| w.name.clone())
-                        .unwrap_or_default();
-                    if last.as_deref() != Some(w.as_str()) {
-                        if last.is_some() {
-                            println!();
-                        }
-                        println!("{}", style::dim(&w));
-                        last = Some(w);
-                    }
+                        .map(|w| w.id.to_string())
+                        .context("That project has no workspace: pass --workspace")?
                 }
-                let repo = fctl_domain::repos::summary(
-                    p.repo.as_ref(),
-                    p.other_repos,
-                    p.all_repos_of.as_deref(),
-                )
-                .unwrap_or_else(|| "no repository".into());
-                let active = if p.active_sessions > 0 {
-                    style::accent(&format!("{} active", p.active_sessions))
-                } else {
-                    style::dim("idle")
-                };
-                println!(
-                    "{:<24} {:<40} {}  {}",
-                    style::bold(&p.slug),
-                    style::dim(&repo),
-                    active,
-                    style::dim(&match p.total_sessions {
-                        1 => "1 session".to_owned(),
-                        n => format!("{n} sessions"),
-                    })
-                );
+            };
+            api.update_membership(
+                &workspace,
+                &UpdateMembershipRequest {
+                    project_order: Some(projects),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let list = api.workspace_projects(&workspace).await?;
+            if json {
+                return style::print_json(&list);
             }
+            print_projects(list.projects);
         }
         ProjectsCmd::Show { project } => {
             let p = api.project(&project).await?;

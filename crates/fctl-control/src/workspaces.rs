@@ -6,7 +6,7 @@ use crate::ctx::Ctx;
 use crate::db::{Count, Query, int, int_bool, n, opt_int, os, q, s};
 use crate::error::{AppError, AppResult, forbidden, not_found};
 use crate::internal::{self, FeedIdentity};
-use crate::model::{UserRow, workspace_ref};
+use crate::model::{UserRow, WORKSPACE_ORDER, workspace_ref};
 use fctl_domain::repos::Scope;
 use fctl_domain::workspace as policy;
 use fctl_proto::api::{
@@ -238,11 +238,12 @@ pub async fn find(
     .await
 }
 
-/// The workspaces `user_id` is a member of, the oldest membership first.
+/// The workspaces `user_id` is a member of, in their order
+/// ([`WORKSPACE_ORDER`]).
 pub async fn mine(db: &D1Database, user_id: &str) -> AppResult<Vec<WorkspaceRow>> {
     q(
         db,
-        &format!("{WORKSPACE_SELECT} WHERE wm.user_id = ?1 ORDER BY wm.created_at, w.name"),
+        &format!("{WORKSPACE_SELECT} WHERE wm.user_id = ?1 ORDER BY {WORKSPACE_ORDER}"),
         &[s(user_id)],
     )?
     .all()

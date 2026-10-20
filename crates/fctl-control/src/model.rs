@@ -489,6 +489,29 @@ pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.
 /// role. Workspaces closed to them (two-factor) are left out in Rust.
 pub const PROJECT_VISIBLE: &str = "wm.user_id IS NOT NULL AND (wm.role IN ('owner', 'admin') OR w.base_role != 'none' OR m.role IS NOT NULL)";
 
+/// The order the caller puts their workspaces in (`w`, with their
+/// membership `wm`), for `ORDER BY`: theirs (`wm.position`), then the ones
+/// they haven't placed, in the order they joined them.
+#[macro_export]
+macro_rules! workspace_order {
+    () => {
+        "wm.position IS NULL, wm.position, wm.created_at, w.name, w.id"
+    };
+}
+
+/// [`workspace_order!`], for queries with [`crate::workspaces::WORKSPACE_SELECT`].
+pub const WORKSPACE_ORDER: &str = workspace_order!();
+
+/// The order the caller puts projects in, for `ORDER BY` with
+/// [`PROJECT_SELECT`]: by workspace ([`WORKSPACE_ORDER`]), then as they put
+/// each one's projects (`wm.project_order`), the ones they haven't placed
+/// last, oldest first.
+pub const PROJECT_ORDER: &str = concat!(
+    workspace_order!(),
+    ", COALESCE((SELECT o.key FROM json_each(wm.project_order) o WHERE o.value = p.id), \
+    json_array_length(wm.project_order), 0), p.created_at, p.id"
+);
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct SessionRow {
     pub id: String,
