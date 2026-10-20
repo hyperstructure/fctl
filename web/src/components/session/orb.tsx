@@ -3,6 +3,7 @@ import { type OrbState, orb } from "@hyperstructure/design/gl/orb";
 import { useRef } from "react";
 import { GLCanvas } from "@/components/ui";
 import type * as G from "@/gen";
+import { cn } from "@/lib/cn";
 
 const PALETTE: Record<G.SessionStatus, [string, string, number]> = {
   queued: ["--c-ink-3", "--c-blue", 0.45],
@@ -16,15 +17,18 @@ const PALETTE: Record<G.SessionStatus, [string, string, number]> = {
   failed: ["--c-danger", "--c-ink-4", 0.4],
 };
 
-/** The agent's orb: its color is the session's state, its motion the agent's activity. */
+/**
+ * The agent's orb: its color is the session's state, its motion the agent's
+ * activity. `className` sizes it; it is 44 px without.
+ */
 export function AgentOrb({
   status,
   activity,
-  size = 44,
+  className,
 }: {
   status?: G.SessionStatus;
   activity: number;
-  size?: number;
+  className?: string;
 }) {
   const state = useRef<OrbState>({ a: [0.3, 0.9, 0.8], b: [0.5, 0.7, 1], energy: 0, dim: 0 });
   const [a, b, dim] = PALETTE[status ?? "queued"];
@@ -41,7 +45,7 @@ export function AgentOrb({
     dim,
   };
   return (
-    <div className="relative shrink-0" style={{ width: size, height: size }}>
+    <div className={cn("relative shrink-0", className ?? "size-11")}>
       <GLCanvas scene={() => orb(() => state.current)} options={{ pixel: 2, fps: 30 }} />
     </div>
   );

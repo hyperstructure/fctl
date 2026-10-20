@@ -237,6 +237,49 @@
   }
 }
 
+/* Sheets (components/ui/sheet.tsx): on phones a sheet slides up from the
+   bottom and follows a finger that pulls it back down; from 768 px it slides
+   in from the right. The page dims behind it, and brightens as it is pulled
+   away. */
+.sheet {
+  transition: translate 420ms var(--ease-out);
+}
+.sheet::backdrop {
+  background: rgb(0 0 0 / 0.45);
+  opacity: calc(1 - var(--sheet-pulled, 0));
+  transition: opacity 300ms var(--ease-out);
+}
+.sheet[data-pulling]::backdrop {
+  transition: none;
+}
+.sheet[data-closing] {
+  translate: 0 100%;
+  transition-duration: 260ms;
+  transition-timing-function: var(--ease-in-out);
+}
+.sheet[data-closing]::backdrop {
+  opacity: 0;
+  transition-duration: 260ms;
+}
+@starting-style {
+  .sheet[open] {
+    translate: 0 100%;
+  }
+  .sheet[open]::backdrop {
+    opacity: 0;
+  }
+}
+@media (min-width: 48rem) {
+  .sheet[data-closing] {
+    translate: 100% 0;
+  }
+  @starting-style {
+    .sheet[open] {
+      translate: 100% 0;
+    }
+  }
+}
+
 /* Two-factor sign-in: wrong codes shake their boxes, digits pop in, and a
    QR code appears from its middle out. */
 @theme {

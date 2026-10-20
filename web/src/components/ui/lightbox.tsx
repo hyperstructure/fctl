@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { playable } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { bytes } from "@/lib/format";
+import { useHoldPage } from "@/lib/hold-page";
 
 /** What a lightbox shows. Attachments and published screenshots are these. */
 export interface LightboxFile {
@@ -63,18 +64,7 @@ export function Lightbox({
     ref.current?.setAttribute("autofocus", "");
     ref.current?.showModal();
   }, []);
-  // The page behind holds still. A scrollbar that takes room (not an overlay
-  // one) leaves its room behind, so that the page doesn't shift.
-  useEffect(() => {
-    const html = document.documentElement;
-    const { overflow, scrollbarGutter } = html.style;
-    if (window.innerWidth > html.clientWidth) html.style.scrollbarGutter = "stable";
-    html.style.overflow = "hidden";
-    return () => {
-      html.style.overflow = overflow;
-      html.style.scrollbarGutter = scrollbarGutter;
-    };
-  }, []);
+  useHoldPage();
   // Through the dialog, which hands focus back; its `close` event tells the owner.
   const close = () => ref.current?.close();
   const outside = (target: EventTarget) => target === ref.current || target === stage.current;
