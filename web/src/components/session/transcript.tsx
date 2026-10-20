@@ -27,7 +27,7 @@ import { bytes, clock, day, duration, until } from "@/lib/format";
 import { repoChanges } from "@/lib/git";
 import { useKeepPlace } from "@/lib/keep-place";
 import { linkToken, markdown } from "@/lib/published";
-import { claudeAppLink } from "@/lib/remote-control";
+import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
@@ -353,6 +353,7 @@ const ItemView = memo(function ItemView({
   running,
   stalled,
   canManage,
+  claudeUrl,
 }: {
   item: Item;
   live?: LiveTurn;
@@ -363,6 +364,8 @@ const ItemView = memo(function ItemView({
   stalled?: boolean;
   /** The viewer manages the session (deletes its published screenshots). */
   canManage?: boolean;
+  /** For Remote Control: its link, when it is the viewer's to open. */
+  claudeUrl?: string;
 }) {
   switch (item.kind) {
     case "user":
@@ -434,10 +437,10 @@ const ItemView = memo(function ItemView({
     case "git":
       return <GitItem git={item.git} repos={item.repos} />;
     case "remote":
-      return item.rc.session_url ? (
+      return claudeUrl ? (
         <Milestone icon={<Radio />} tone="ok">
           Followable in the Claude apps ·{" "}
-          <a {...claudeAppLink(item.rc.session_url)} className="underline underline-offset-2">
+          <a {...claudeAppLink(claudeUrl)} className="underline underline-offset-2">
             open
           </a>
         </Milestone>
@@ -556,6 +559,8 @@ export const Transcript = memo(function Transcript({
   status,
   stall,
   canManage,
+  startedBy,
+  me,
   onLoadOlder,
   hasMoreBefore,
   loadingOlder,
@@ -567,6 +572,9 @@ export const Transcript = memo(function Transcript({
   /** Why the agent's work isn't coming through right now. */
   stall?: Stall;
   canManage?: boolean;
+  /** Who started the session, and who is signed in: a Remote Control link is only for its person. */
+  startedBy: G.UserRef;
+  me?: G.UserId;
   onLoadOlder: () => void;
   hasMoreBefore: boolean;
   loadingOlder: boolean;
@@ -613,6 +621,7 @@ export const Transcript = memo(function Transcript({
               running={it.kind === "tool" ? running && i > turnStart : undefined}
               stalled={it.kind === "setup" ? !!stall : undefined}
               canManage={canManage}
+              claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}
             />
           </div>
         ))}

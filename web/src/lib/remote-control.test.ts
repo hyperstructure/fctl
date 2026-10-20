@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { claudeAppLink, claudeAppUrl } from "./remote-control";
+import type * as G from "@/gen";
+import { claudeAppLink, claudeAppUrl, remoteControlUrl, remoteControlUser } from "./remote-control";
 
 describe("claudeAppUrl", () => {
   it("links a claude.ai/code session to the Claude apps", () => {
@@ -39,5 +40,38 @@ describe("claudeAppLink", () => {
       target: "_blank",
       rel: "noreferrer",
     });
+  });
+});
+
+describe("remoteControlUrl", () => {
+  const ada: G.UserRef = { id: "usr_ada", name: "Ada" };
+  const bo: G.UserRef = { id: "usr_bo", name: "Bo" };
+  const url = "https://claude.ai/code/session_01AbC";
+  const link = { enabled: true, session_url: url };
+
+  it("is only for the person on whose subscription it came about", () => {
+    // Bo resumed Ada's session.
+    const rc = { ...link, user: bo };
+    expect(remoteControlUser(rc, ada)).toBe(bo);
+    expect(remoteControlUrl(rc, ada, "usr_bo")).toBe(url);
+    expect(remoteControlUrl(rc, ada, "usr_ada")).toBeUndefined();
+  });
+
+  it("is for the person who started the session when the state doesn't say", () => {
+    expect(remoteControlUser(link, ada)).toBe(ada);
+    expect(remoteControlUser(undefined, ada)).toBe(ada);
+    expect(remoteControlUrl(link, ada, "usr_ada")).toBe(url);
+    expect(remoteControlUrl(link, ada, "usr_bo")).toBeUndefined();
+  });
+
+  it("is for nobody before it is known who is signed in", () => {
+    expect(remoteControlUrl({ ...link, user: ada }, ada, undefined)).toBeUndefined();
+  });
+
+  it("is absent without a link", () => {
+    expect(
+      remoteControlUrl({ enabled: false, unavailable_reason: "No login", user: ada }, ada, "usr_ada"),
+    ).toBeUndefined();
+    expect(remoteControlUrl(undefined, ada, "usr_ada")).toBeUndefined();
   });
 });

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode, useContext } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type * as G from "@/gen";
 import type { Stall } from "@/lib/stall";
 import { emptyLive, type Item } from "@/lib/transcript";
 import { Transcript } from "./transcript";
@@ -88,6 +89,16 @@ const published = (): Item => ({
   },
 });
 
+const ada: G.UserRef = { id: "usr_ada", name: "Ada" };
+const bo: G.UserRef = { id: "usr_bo", name: "Bo" };
+const remote = (user?: G.UserRef): Item => ({
+  kind: "remote",
+  key: `r-${++seq}`,
+  seq,
+  ts: 0,
+  rc: { enabled: true, session_url: "https://claude.ai/code/session_01AbC", user },
+});
+
 const stall: Stall = {
   kind: "away",
   runner: "now",
@@ -105,6 +116,7 @@ function transcript(
   return render(
     <Transcript
       sessionId="ses_1"
+      startedBy={ada}
       items={items}
       live={emptyLive()}
       status={status}
@@ -151,6 +163,39 @@ describe("earlier activity", () => {
     const button = [...c.querySelectorAll("button")].find((b) => b.textContent === "Show earlier activity");
     act(() => button?.click());
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Remote Control", () => {
+  /** A transcript of a session Ada started, as `me` sees it. */
+  const seenBy = (me: G.UserId, items: Item[]) =>
+    render(
+      <Transcript
+        sessionId="ses_1"
+        startedBy={ada}
+        me={me}
+        items={items}
+        live={emptyLive()}
+        status="idle"
+        onLoadOlder={() => {}}
+        hasMoreBefore={false}
+        loadingOlder={false}
+      />,
+    );
+  const followable = (c: HTMLElement) => c.textContent?.includes("Followable in the Claude apps");
+
+  it("is offered only to the person on whose Claude subscription the session ran", () => {
+    expect(followable(seenBy(ada.id, [remote(ada)]))).toBe(true);
+    expect(followable(seenBy(bo.id, [remote(ada)]))).toBe(false);
+    // Bo resumed Ada's session, on Bo's subscription.
+    expect(followable(seenBy(bo.id, [remote(bo)]))).toBe(true);
+    expect(followable(seenBy(ada.id, [remote(bo)]))).toBe(false);
+  });
+
+  it("is the starter's where the control plane doesn't say whose it is", () => {
+    const c = seenBy(ada.id, [remote()]);
+    expect(c.querySelector("a")?.getAttribute("href")).toBe("claude://code/session_01AbC");
+    expect(followable(seenBy(bo.id, [remote()]))).toBe(false);
   });
 });
 

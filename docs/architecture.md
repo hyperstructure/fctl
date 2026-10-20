@@ -873,7 +873,13 @@ granted scopes in `CLAUDE_CODE_OAUTH_SCOPES`). When it expires, Claude asks its
 host with the `oauth_token_refresh` control request; fctl-agent forwards it to
 the control plane, which refreshes once per user and answers. With a full
 login, fctl-agent enables Remote Control with the `remote_control` control
-request, so the session also appears in claude.ai/code and the Claude apps.
+request, so the session also appears in claude.ai/code and the Claude apps
+of the person it runs for, and nobody else can open it there. SessionDO
+names that person in each Remote Control state the agent reports
+(`RemoteControlState.user`): who started the session, or who resumed it
+last, which the resume tells it (`ControlState.claude_user`). The web app
+shows the links, and the transcript's note, to that person alone; states
+from before it named anyone count as the starter's.
 
 A full login also brings the person's claude.ai connectors (Claude Code
 fetches them with the `user:mcp_servers` scope). A project can turn them off
