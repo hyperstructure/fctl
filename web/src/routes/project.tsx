@@ -1306,9 +1306,10 @@ function Secrets({ project }: { project: G.Project }) {
         Secrets are encrypted at rest and handed to sandboxes as environment variables. They are never shown
         again — not even to you. Names that would change how Claude bills (ANTHROPIC_*) are refused.
       </Banner>
-      {/* The fields line up by their labels, so an error under the name moves nothing. */}
+      {/* The fields line up by their labels, so an error under the name moves nothing.
+          On a phone, the value goes under the name. */}
       <form
-        className="mb-6 grid grid-cols-[1fr_1.4fr] items-start gap-2"
+        className="mb-6 grid gap-3 sm:grid-cols-[1fr_1.4fr] sm:items-start sm:gap-2"
         onSubmit={(e) => {
           e.preventDefault();
           set.mutate();
