@@ -6,8 +6,12 @@
 //! repositories: once the result of a tool call that can change them
 //! comes (`Bash`, `Write`, `Edit`, `NotebookEdit`, a subagent's too), or a
 //! background task ends. A burst of them costs one refresh, [`QUIET`]
-//! after the last, and refreshes come at most every [`EVERY`].
+//! after the last, and refreshes come at most every [`EVERY`]. The pull
+//! requests `gh pr create` prints go to the next one, which follows them
+//! whichever branch they came from.
 
+use fctl_domain::pulls;
+use fctl_proto::session::PullRequestRef;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -35,10 +39,19 @@ pub struct Refresh {
     /// When the first tool result since the last refresh came, and the
     /// latest.
     changed: Option<(Instant, Instant)>,
-    /// `gh pr create` ran since the last refresh.
-    opened_pr: bool,
+    /// What `gh pr create` did since the last refresh.
+    opened: Opened,
     /// When the last refresh started.
     last: Option<Instant>,
+}
+
+/// What `gh pr create` did since the last refresh.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Opened {
+    /// It ran.
+    pub ran: bool,
+    /// The pull requests it printed, as their URLs name them.
+    pub pull_requests: Vec<PullRequestRef>,
 }
 
 impl Refresh {
@@ -63,12 +76,20 @@ impl Refresh {
             }
             Some("user") => {
                 for block in blocks(v, "tool_result") {
-                    if let Some(opens_pr) =
+                    let Some(opens_pr) =
                         text(block, "tool_use_id").and_then(|id| self.calls.remove(id))
-                    {
-                        self.opened_pr |= opens_pr;
-                        self.touch(now);
+                    else {
+                        continue;
+                    };
+                    if opens_pr {
+                        self.opened.ran = true;
+                        for pr in pulls::named_in(&result_text(block)) {
+                            if !self.opened.pull_requests.iter().any(|o| o.url == pr.url) {
+                                self.opened.pull_requests.push(pr);
+                            }
+                        }
                     }
+                    self.touch(now);
                 }
             }
             Some("system") if text(v, "subtype") == Some("task_notification") => self.touch(now),
@@ -91,11 +112,11 @@ impl Refresh {
     }
 
     /// A refresh starts at `now`, while Claude works or once a turn has
-    /// ended: returns whether `gh pr create` ran since the last one.
-    pub fn start(&mut self, now: Instant) -> bool {
+    /// ended: returns what `gh pr create` did since the last one.
+    pub fn start(&mut self, now: Instant) -> Opened {
         self.changed = None;
         self.last = Some(now);
-        std::mem::take(&mut self.opened_pr)
+        std::mem::take(&mut self.opened)
     }
 
     /// As if `by` had passed since what it remembers.
@@ -120,6 +141,19 @@ fn blocks<'a>(v: &'a Value, kind: &'a str) -> impl Iterator<Item = &'a Value> {
 
 fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
+}
+
+/// What a tool result says: its content, a string or text blocks.
+fn result_text(block: &Value) -> String {
+    match block.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| text(p, "text"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
 }
 
 /// Whether a shell command opens a pull request: runs `gh pr create`, or
@@ -169,7 +203,7 @@ mod tests {
         r.observe(&result("t3"), t0);
         assert!(!r.due(t0 + secs(1)));
         assert!(r.due(t0 + QUIET));
-        assert!(!r.start(t0 + QUIET));
+        assert!(!r.start(t0 + QUIET).ran);
         assert!(!r.due(t0 + secs(60)));
 
         // A subagent's, a background command's end, and the others.
@@ -236,13 +270,71 @@ mod tests {
         let create = json!({"command": "git push -u origin HEAD && gh pr create --fill"});
         r.observe(&call("t1", "Bash", create), t0);
         // Not before it ran.
-        assert!(!r.start(t0));
+        assert!(!r.start(t0).ran);
         r.observe(&result("t1"), t0);
-        assert!(r.start(t0 + secs(10)));
-        assert!(!r.start(t0 + secs(20)));
+        assert!(r.start(t0 + secs(10)).ran);
+        assert_eq!(r.start(t0 + secs(20)), Opened::default());
         // Results that come twice, or for calls never seen, count once.
         r.observe(&result("t1"), t0 + secs(30));
         assert!(!r.due(t0 + secs(60)));
+    }
+
+    #[test]
+    fn the_next_refresh_follows_the_pull_requests_gh_pr_create_printed() {
+        let t0 = Instant::now();
+        let mut r = Refresh::default();
+        let printed = |id: &str, content: Value| {
+            json!({"type": "user", "parent_tool_use_id": null, "message": {"role": "user",
+                   "content": [{"type": "tool_result", "tool_use_id": id, "content": content, "is_error": false}]}})
+        };
+        // One from a worktree, and one in another repository, whose
+        // output comes as text blocks.
+        let worktree =
+            "cd ~/second && git push -u origin fctl/1-second && gh pr create --head fctl/1-second";
+        r.observe(&call("t1", "Bash", json!({"command": worktree})), t0);
+        r.observe(
+            &printed("t1", json!("https://github.com/acme/widgets/pull/2\n")),
+            t0,
+        );
+        r.observe(
+            &call(
+                "t2",
+                "Bash",
+                json!({"command": "cd ~/repos/acme/lib && gh pr create --fill"}),
+            ),
+            t0,
+        );
+        r.observe(
+            &printed(
+                "t2",
+                json!([{"type": "text", "text": "https://github.com/acme/lib/pull/3"}]),
+            ),
+            t0,
+        );
+        // Other commands' output names pull requests too: not theirs.
+        r.observe(
+            &call("t3", "Bash", json!({"command": "gh pr view 1 --json url"})),
+            t0,
+        );
+        r.observe(
+            &printed("t3", json!("https://github.com/acme/widgets/pull/1")),
+            t0,
+        );
+        let opened = r.start(t0 + QUIET);
+        let urls: Vec<&str> = opened
+            .pull_requests
+            .iter()
+            .map(|p| p.url.as_str())
+            .collect();
+        assert!(opened.ran);
+        assert_eq!(
+            urls,
+            [
+                "https://github.com/acme/widgets/pull/2",
+                "https://github.com/acme/lib/pull/3"
+            ]
+        );
+        assert!(r.start(t0 + secs(20)).pull_requests.is_empty());
     }
 
     #[test]

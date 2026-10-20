@@ -182,7 +182,8 @@ fctl projects delete my-app            # with its sessions; asks you to type the
 Agents start in the project's repository and can use more of the same GitHub
 account. They clone them when they need them, into `~/repos/<owner>/<name>`;
 in each one they change, they work on the session's branch, which fctl
-pushes after every turn, and open a pull request.
+pushes after every turn until its pull request is merged, and open a pull
+request.
 
 ```sh
 fctl projects repos list -p my-app

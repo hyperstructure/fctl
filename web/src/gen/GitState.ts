@@ -18,7 +18,9 @@ ahead: number,
  */
 behind: number, 
 /**
- * Changed files relative to the base, including uncommitted work.
+ * What the branch changed since it left the base (since their merge
+ * base), uncommitted and untracked work included. Older agents
+ * compared the work with the base's tip.
  */
 files: Array<FileChange>, uncommitted: number, last_commit?: CommitInfo, 
 /**
@@ -30,7 +32,22 @@ pushed: boolean,
  */
 pull_request?: PullRequestRef, 
 /**
+ * Once the branch's pull request is merged: the commits on the branch
+ * after the head it merged, which the base doesn't have. fctl-agent
+ * doesn't push a merged branch, so they stay in the sandbox unless the
+ * agent pushes them. Absent before, and from older agents.
+ */
+unmerged?: number, 
+/**
  * The project's other repositories the agent cloned. Absent from agents
  * that work in the primary repository only.
  */
-repos?: Array<RepoGitState>, };
+repos?: Array<RepoGitState>, 
+/**
+ * Every pull request fctl-agent follows for the session, the branches'
+ * above included, in the order it found them: those of the branches
+ * the repositories had checked out, and those `gh pr create` printed,
+ * whichever branch, worktree or clone they came from, with their state
+ * as last looked up. Absent from older agents.
+ */
+pull_requests?: Array<PullRequestRef>, };

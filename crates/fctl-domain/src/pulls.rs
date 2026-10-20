@@ -1,13 +1,14 @@
-//! The pull requests of a session: every one its agent found for the
-//! branches it worked on, in all of its project's repositories, each with
-//! the repository it was opened in.
+//! The pull requests of a session: every one its agent found, in all of its
+//! project's repositories, each with the repository it was opened in.
 //!
-//! fctl-agent looks up the pull request of the branch each repository has
-//! checked out (`GitState`) after each turn, and while Claude works once the
-//! branch is pushed or `gh pr create` ran, so it reports only the latest one
-//! per repository. The control plane keeps the others: a session that
-//! opened one in each of three repositories, or a second one after the
-//! first was merged, lists them all.
+//! fctl-agent follows the pull requests of the branches its repositories
+//! have checked out (`GitState::pull_request`), and those `gh pr create`
+//! printed, whichever branch, worktree or clone they came from. It reports
+//! them all (`GitState::pull_requests`) and looks them up again after each
+//! turn until they merge. Older agents report only the checked-out
+//! branches' latest one per repository. The control plane keeps the
+//! others: a session that opened one in each of three repositories, or a
+//! second one after the first was merged, lists them all.
 
 use fctl_proto::event::GitState;
 use fctl_proto::session::{PullRequestRef, RepoRef, Session};
@@ -26,6 +27,42 @@ pub fn repo_of(url: &str) -> Option<RepoRef> {
     RepoRef::parse(&format!("{owner}/{name}"))
 }
 
+/// The pull request a URL names (`https://github.com/<owner>/<name>/pull/<number>`,
+/// with or without more after the number), as a session lists it before
+/// anyone looked it up: its number and repository, and the URL without
+/// the rest.
+pub fn named_by(url: &str) -> Option<PullRequestRef> {
+    let repo = repo_of(url)?;
+    let number = url.trim().splitn(7, '/').nth(6)?;
+    let digits = number.split(|c: char| !c.is_ascii_digit()).next()?;
+    let number = digits.parse::<u64>().ok().filter(|n| *n > 0)?;
+    Some(PullRequestRef {
+        number,
+        url: format!("{}/pull/{number}", repo.html_url()),
+        title: None,
+        state: None,
+        repo: Some(repo),
+    })
+}
+
+/// The pull requests a command's output names, each once, in order: the
+/// URL `gh pr create` prints, or the one it says already exists.
+pub fn named_in(text: &str) -> Vec<PullRequestRef> {
+    let mut out: Vec<PullRequestRef> = Vec::new();
+    for (start, _) in text.match_indices("https://github.com/") {
+        let rest = &text[start..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || "\"'`<>()[]{},;".contains(c))
+            .unwrap_or(rest.len());
+        if let Some(pr) = named_by(&rest[..end])
+            && !out.iter().any(|o| o.url.eq_ignore_ascii_case(&pr.url))
+        {
+            out.push(pr);
+        }
+    }
+    out
+}
+
 /// The pull request with its repository: the one its URL names, or else
 /// `repo`, the repository whose state it came in.
 fn with_repo(pr: &PullRequestRef, repo: Option<RepoRef>) -> PullRequestRef {
@@ -36,8 +73,9 @@ fn with_repo(pr: &PullRequestRef, repo: Option<RepoRef>) -> PullRequestRef {
     pr
 }
 
-/// The pull requests in a git state, the primary repository's first, each
-/// with its repository.
+/// The pull requests in a git state, each once and with its repository:
+/// the checked-out branches', the primary repository's first, then the
+/// others the agent follows.
 pub fn found(git: &GitState) -> Vec<PullRequestRef> {
     let primary = git.pull_request.iter().map(|pr| with_repo(pr, None));
     let others = git.repos.iter().flatten().filter_map(|r| {
@@ -47,7 +85,17 @@ pub fn found(git: &GitState) -> Vec<PullRequestRef> {
         };
         r.pull_request.as_ref().map(|pr| with_repo(pr, Some(repo)))
     });
-    primary.chain(others).collect()
+    let followed = git.pull_requests.iter().flatten();
+    let mut out: Vec<PullRequestRef> = Vec::new();
+    for pr in primary
+        .chain(others)
+        .chain(followed.map(|pr| with_repo(pr, None)))
+    {
+        if !out.iter().any(|o| o.url == pr.url) {
+            out.push(pr);
+        }
+    }
+    out
 }
 
 /// Adds the pull requests an agent found to those its session lists, after
@@ -126,6 +174,44 @@ mod tests {
     }
 
     #[test]
+    fn commands_name_the_pull_requests_they_open() {
+        let stub = |repo: &str, number: u64| PullRequestRef {
+            title: None,
+            state: None,
+            repo: super::repo_of(&format!("https://github.com/{repo}/pull/{number}")),
+            ..pr(repo, number)
+        };
+        assert_eq!(
+            named_by("https://github.com/hyperstructure/fctl/pull/152"),
+            Some(stub("hyperstructure/fctl", 152))
+        );
+        assert_eq!(
+            named_by("https://github.com/acme/app/pull/7/files#diff-1"),
+            Some(stub("acme/app", 7))
+        );
+        for other in [
+            "https://github.com/acme/app/pull/",
+            "https://github.com/acme/app/pull/0",
+            "https://github.com/acme/app/issues/7",
+            "https://example.com/acme/app/pull/7",
+        ] {
+            assert_eq!(named_by(other), None, "{other}");
+        }
+        // What `gh pr create` prints, in a command that also pushed, and
+        // what it says when the branch has one already.
+        let printed = "To https://github.com/acme/app.git\n * [new branch] fctl/1-x -> fctl/1-x\n\
+            https://github.com/acme/app/pull/12\n";
+        assert_eq!(named_in(printed), [stub("acme/app", 12)]);
+        let exists = "a pull request for branch \"fctl/1-x\" into branch \"main\" already exists:\n\
+            https://github.com/acme/app/pull/12.";
+        assert_eq!(named_in(exists), [stub("acme/app", 12)]);
+        let two = "(https://github.com/acme/app/pull/12) and \"https://github.com/acme/lib/pull/3\", \
+            again https://github.com/acme/app/pull/12, see https://github.com/acme/app/issues/1";
+        assert_eq!(named_in(two), [stub("acme/app", 12), stub("acme/lib", 3)]);
+        assert!(named_in("Created a pull request").is_empty());
+    }
+
+    #[test]
     fn a_git_state_names_the_repository_of_each() {
         let git = GitState {
             pull_request: Some(pr("acme/app", 12)),
@@ -171,6 +257,36 @@ mod tests {
             ]
         );
         assert!(super::found(&GitState::default()).is_empty());
+    }
+
+    #[test]
+    fn a_git_state_lists_the_pull_requests_of_other_branches_too() {
+        let mut merged = pr("acme/app", 12);
+        merged.state = Some("merged".into());
+        let git = GitState {
+            pull_request: Some(pr("acme/app", 13)),
+            // Every one the agent follows, the checked-out branch's too.
+            pull_requests: Some(vec![merged.clone(), pr("acme/app", 13), pr("acme/lib", 4)]),
+            ..Default::default()
+        };
+        let found: Vec<_> = found(&git)
+            .into_iter()
+            .map(|p| (p.number, p.state, p.repo.map(|r| r.full_name())))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (13, Some("open".into()), Some("acme/app".into())),
+                (12, Some("merged".into()), Some("acme/app".into())),
+                (4, Some("open".into()), Some("acme/lib".into())),
+            ]
+        );
+        // The session keeps the merged one's state current, and lists the
+        // one from another branch.
+        let mut known = vec![pr("acme/app", 12)];
+        assert!(merge(&mut known, &super::found(&git)));
+        assert_eq!(known[0].state.as_deref(), Some("merged"));
+        assert_eq!(known.len(), 3);
     }
 
     #[test]

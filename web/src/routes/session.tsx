@@ -49,7 +49,7 @@ import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, duration, num, until } from "@/lib/format";
-import { hasChanges, type RepoChanges, repoChanges } from "@/lib/git";
+import { hasChanges, type RepoChanges, repoChanges, whereCommits } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
 import { prFullRef, prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
@@ -625,15 +625,9 @@ function Changes({
               {ahead} {ahead === 1 ? "commit" : "commits"}
             </span>
           )}
-          <span>
-            {repo.pushed
-              ? "pushed"
-              : ahead > 0
-                ? repo.readOnly
-                  ? "kept in the sandbox"
-                  : "not pushed yet"
-                : ""}
-          </span>
+          {whereCommits(repo).map((where) => (
+            <span key={where}>{where}</span>
+          ))}
         </div>
       )}
     </div>

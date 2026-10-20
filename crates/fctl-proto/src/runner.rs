@@ -8,7 +8,8 @@
 
 use crate::event::Attachment;
 use crate::session::{
-    ProjectSettings, RepoAccess, RepoGrant, RepoRef, RunnerRef, SessionStatus, UserRef,
+    ProjectSettings, PullRequestRef, RepoAccess, RepoGrant, RepoRef, RunnerRef, SessionStatus,
+    UserRef,
 };
 use crate::{CredentialId, LoginJobId, Millis, ProjectId, SessionId};
 use serde::{Deserialize, Serialize};
@@ -312,6 +313,12 @@ pub struct SessionSpec {
     /// Identifies this run of the session; echoed in `SessionEnded` so a late
     /// report from an earlier run cannot end a newer one.
     pub run_id: Option<String>,
+    /// The pull requests the session lists. Its agent follows them with the
+    /// ones it finds, so their state stays current in a new sandbox too.
+    /// Older agents ignore them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<PullRequestRef>>", optional))]
+    pub pull_requests: Vec<PullRequestRef>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

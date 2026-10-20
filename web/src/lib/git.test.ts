@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { branchChanges, hasChanges, repoChanges } from "./git";
+import { branchChanges, hasChanges, type RepoChanges, repoChanges, whereCommits } from "./git";
 
 const file = (path: string, additions?: number, deletions?: number): G.FileChange => ({
   path,
@@ -63,6 +63,46 @@ describe("repoChanges", () => {
     expect(docs && hasChanges({ ...docs, pr })).toBe(false);
     expect(repos[1]).toMatchObject({ readOnly: false, additions: 2, pr });
     expect(repos[2]?.readOnly).toBe(true);
+  });
+});
+
+describe("whereCommits", () => {
+  const repo = (r: Partial<RepoChanges>): RepoChanges => ({
+    readOnly: false,
+    files: [file("a", 1, 0)],
+    additions: 1,
+    deletions: 0,
+    ahead: 1,
+    pushed: false,
+    ...r,
+  });
+  const pr = (state: string): G.PullRequestRef => ({
+    number: 12,
+    url: "https://github.com/acme/widgets/pull/12",
+    state,
+  });
+
+  it("says whether the commits are pushed", () => {
+    expect(whereCommits(repo({ pushed: true }))).toEqual(["pushed"]);
+    expect(whereCommits(repo({}))).toEqual(["not pushed yet"]);
+    expect(whereCommits(repo({ readOnly: true }))).toEqual(["kept in the sandbox"]);
+    expect(whereCommits(repo({ ahead: 0 }))).toEqual([]);
+    expect(whereCommits(repo({ pushed: true, pr: pr("open") }))).toEqual(["pushed"]);
+  });
+
+  it("says a merged branch is merged, and what came after", () => {
+    // Its branch deleted, and the squashed commit still ahead of the base.
+    expect(whereCommits(repo({ pr: pr("merged"), unmerged: 0 }))).toEqual(["#12 merged"]);
+    // From an agent that couldn't count them.
+    expect(whereCommits(repo({ pr: pr("merged") }))).toEqual(["#12 merged"]);
+    expect(whereCommits(repo({ ahead: 2, pr: pr("merged"), unmerged: 1 }))).toEqual([
+      "#12 merged",
+      "1 commit since, not pushed",
+    ]);
+    expect(whereCommits(repo({ ahead: 3, pushed: true, pr: pr("merged"), unmerged: 2 }))).toEqual([
+      "#12 merged",
+      "2 commits since, pushed",
+    ]);
   });
 });
 

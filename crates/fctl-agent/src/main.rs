@@ -7,6 +7,7 @@
 
 mod attachments;
 mod claude;
+mod followed;
 mod journal;
 mod link;
 mod local;

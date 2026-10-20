@@ -226,6 +226,7 @@ pub async fn build(
         web_url: cfg.url(&format!("/s/{}", row.id)),
         idle_timeout_secs: fctl_domain::settings::idle_timeout_secs(&project.settings()),
         run_id: None,
+        pull_requests: row.to_session(None).pull_requests,
     })
 }
 
