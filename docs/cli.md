@@ -323,11 +323,10 @@ stopped for `keep_stopped_hours`, or until the disk runs low. With Apple's
 `container`, a sandbox's disk image keeps the space of the files its
 session deleted (a build of fctl leaves about 5.5 GB) until the host
 stops the sandbox: then the host gives that space back to the Mac with
-`container clean`, and the stopped sandbox takes what its files take.
-That needs Apple's `container` 1.4 or later. With an older one, a stopped
-sandbox keeps the most its session ever stored, and `fctl host logs` says
-so each time a sandbox stops. `df` in the sandbox shows its 512 GiB disk
-image rather than what the Mac has free.
+`container clean`. That needs Apple's `container` 1.4 or later. With an
+older one, a stopped sandbox keeps the most its session ever stored, and
+`fctl host logs` says so each time a sandbox stops. `df` in the sandbox
+shows its 512 GiB disk image rather than what the Mac has free.
 
 The host keeps `min_free_disk_gb` free (20 GiB unless `host.toml` says
 otherwise) on the disk where its sandboxes are: Apple's `container` app

@@ -68,8 +68,11 @@ Since then:
 
 ## Consequences
 
-- Stopped Apple sandboxes take what their files take, so a host low on
-  disk removes fewer of them, and fewer resumes lose their conversation.
+- Stopped Apple sandboxes no longer hold the space of the files their
+  sessions deleted, so a host low on disk removes fewer of them, and
+  fewer resumes lose their conversation. What a trim can't free stays:
+  the files, and the filesystem's own blocks, like its journal (1 GiB at
+  most).
 - Stopping an Apple sandbox takes a `sync` and a trim longer. Each may run
   for a minute at most, like any driver command.
 - Running sandboxes still hold the space of what their sessions deleted,

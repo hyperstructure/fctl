@@ -893,8 +893,8 @@ discards blocks: the guest mounts it without `discard`, and the container
 can't run `fstrim` without `CAP_SYS_ADMIN`, which it doesn't have. So as
 the host stops a sandbox, it runs `sync` in it, then `container clean`
 (Apple's `container` 1.4 and later), which has the VM's init trim the
-root filesystem: the Mac gets back the space of the files the session
-deleted, and a stopped sandbox takes what its files take
+root filesystem, and the Mac gets back the space of the files the
+session deleted
 ([ADR 0025](adr/0025-hosts-trim-apple-sandboxes-as-they-stop-them.md)).
 While a sandbox runs, it holds the space of the files deleted in it; with
 an older `container`, until the host removes the sandbox.
