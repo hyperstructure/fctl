@@ -334,17 +334,35 @@ project members, shares and invitations look people up by it
 ### GitHub accounts
 
 The instance has one GitHub App. A workspace uses an account the app is
-installed on once it is connected to it (`workspace_github`), with every
-repository the app reaches there or only some. A workspace's admins ask:
-they install the app from the workspace (its setup URL,
-`GET /api/v1/github/installed`, brings them back with the installation and a
-signed state naming the workspace) or name an account it is installed on.
-An instance admin approves the request, or connects accounts directly
-(Admin → GitHub, `fctl admin github`): GitHub's setup URL can be called
-with anyone's installation id, and the app's tokens can write. Project
-repositories must be within the workspace's connections
-(`fctl_domain::repos::check_scope`), and every token a session gets is
-minted within them (`repos::narrow`), so that disconnecting an account takes
+installed on once one of its admins connects it (`workspace_github`), with
+every repository the app reaches there or only some
+([ADR 0029](adr/0029-workspaces-connect-github-accounts-with-a-github-sign-in.md)).
+Connecting takes a GitHub sign-in: the admin is sent to GitHub to sign in
+with the app's OAuth client (PKCE), and the user access token that comes
+back decides what the workspace gets, because the app's tokens can write
+and GitHub's setup redirect can name anyone's installation. fctl reads
+which of the installation's repositories the person can see and administers
+(`GET /user/installations/{id}/repositories`), and `fctl_domain::github::grant`
+turns that into the connection: every repository of their own account, or
+of an organization whose every repository the app reaches and they
+administer all of (as its owners do); otherwise the repositories they
+administer, by name. The installation is found among those the token can
+see (`GET /user/installations`), never by id alone, so connecting reveals
+nothing about where else the app is installed. fctl uses the token once and
+revokes it; a connection records who connected it and the account they
+signed in as (`api::github`). The sign-in's details ride in a signed cookie
+(`__Host-fctl-github`), its PKCE state checked on the way back.
+
+Signing in to GitHub needs the app's client ID and secret
+(`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`) and the callback URL
+`…/api/v1/github/authorized`; without them a workspace keeps the accounts
+it has but connects no new one (`can_connect` is false). Instance admins
+connect and approve nothing: Admin → GitHub lists the installations and the
+workspaces that use each (`fctl admin github`), and an instance admin can
+take an account from a workspace, not give one. Project repositories must
+be within the workspace's connections (`fctl_domain::repos::check_scope`),
+and every token a session gets is minted within them (`repos::narrow`), for
+the runner the session runs on only, so that disconnecting an account takes
 it from running sessions at their next refresh, within the hour. New
 repositories are created in an organization the workspace uses all of.
 

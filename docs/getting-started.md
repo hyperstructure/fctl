@@ -178,8 +178,9 @@ In the app, choose **New project** (or the **+** beside a workspace in the
 sidebar). Link an existing repository of a GitHub account the workspace
 works in, create a new one, or start without a repository. A workspace
 works in an account once the instance's GitHub App is installed there and
-the account is connected to the workspace: its admins do that under its
-**GitHub** tab, and an instance admin approves it. Optionally add a setup script (it
+one of its admins connects it under the workspace's **GitHub** tab, by
+signing in to GitHub, which connects what that person may give the
+workspace. Optionally add a setup script (it
 runs in the clone before the agent starts, e.g. `npm ci`) and instructions for
 agents. When sessions need tools the default image lacks, give the project an
 image of its own, or one built from a Dockerfile or devcontainer.json in its
