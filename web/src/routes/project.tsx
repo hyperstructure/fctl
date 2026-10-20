@@ -22,6 +22,7 @@ import {
   Field,
   GithubIcon,
   Input,
+  SecretInput,
   Section,
   Select,
   type SelectOption,
@@ -1249,19 +1250,14 @@ function Secrets({ project }: { project: G.Project }) {
               onChange={(e) => setName(e.target.value)}
               className="font-mono uppercase"
               placeholder="STRIPE_KEY"
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
             />
           )}
         </Field>
         <Field label="Value">
-          {(id) => (
-            <Input
-              id={id}
-              type="password"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              autoComplete="off"
-            />
-          )}
+          {(id) => <SecretInput id={id} value={value} onChange={(e) => setValue(e.target.value)} />}
         </Field>
         <Button
           type="submit"

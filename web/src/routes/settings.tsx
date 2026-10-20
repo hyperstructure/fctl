@@ -41,6 +41,7 @@ import {
   Input,
   NameFields,
   nameParts,
+  SecretInput,
   Section,
   Select,
   Skeleton,
@@ -669,12 +670,10 @@ function Claude({ me }: { me: G.Me }) {
             any machine with Claude Code. Valid for a year; no Remote Control.
           </p>
           <div className="mt-3 flex gap-2">
-            <Input
+            <SecretInput
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              type="password"
               placeholder="sk-ant-oat01-…"
-              autoComplete="off"
               className="font-mono"
             />
             <Button type="submit" variant="secondary" loading={add.isPending} disabled={!token}>
