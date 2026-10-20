@@ -17,6 +17,7 @@ import { SessionRow } from "@/components/session/row";
 import { StartButton, useStartSession } from "@/components/session/start";
 import { Button, firstNames, GithubIcon, GLCanvas, Select, Skeleton, Textarea, toast } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
+import { NoRunnerNote } from "@/components/workspace/no-runners";
 import type * as G from "@/gen";
 import { workspaces as wsApi } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
@@ -215,97 +216,105 @@ function QuickStart({
   const ws = target?.workspace ? freshest(index, target.workspace) : undefined;
   const several = workspaces.length > 1;
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        start(project, prompt, files);
-      }}
-      className={cn(
-        "group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]",
-        dragging && "border-accent/50",
-      )}
-    >
-      <DraftTray drafts={files.drafts} onRemove={files.remove} onRetry={files.retry} className="px-4 pt-4" />
-      <Textarea
-        ref={ref}
-        bare
-        minRows={2}
-        maxRows={10}
-        value={prompt}
-        readOnly={starting}
-        onChange={(e) => setPrompt(e.target.value)}
-        onBlur={() => save.current()}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            start(project, prompt, files);
-          }
-        }}
-        onPaste={(e) => {
-          const pasted = filesFromPaste(e.clipboardData);
-          if (!pasted.length || starting) return;
+    <>
+      <form
+        onSubmit={(e) => {
           e.preventDefault();
-          attach(pasted, true);
+          start(project, prompt, files);
         }}
-        placeholder="What should an agent build next?"
-        className="block px-5 pt-4 pb-16 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
-        aria-label="Task for a new session"
-      />
-      <div className="absolute right-3 bottom-3 left-2.5 flex items-center gap-2">
-        <AttachButton onFiles={(f) => attach(f)} />
-        <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
-          <span className="hidden text-ink-4 sm:inline">in</span>
-          <Select
-            size="sm"
-            aria-label="Workspace and project"
-            value={project}
-            disabled={starting}
-            onChange={pick}
-            options={editable.map((p) => {
-              const w = p.workspace ? freshest(index, p.workspace) : undefined;
-              return {
-                value: p.slug,
-                label: several && w ? `${w.name} / ${p.name}` : p.name,
-                item: p.name,
-                icon: w ? <WorkspaceAvatar workspace={w} size={14} title={false} /> : undefined,
-                description: <RepoText project={p} />,
-                section:
-                  several && w
-                    ? {
-                        key: w.id,
-                        label: (
-                          <>
-                            <WorkspaceAvatar workspace={w} size={14} title={false} />
-                            {w.name}
-                          </>
-                        ),
-                      }
-                    : undefined,
-              };
-            })}
-          />
-          {target && repoSummary(target) && (
-            <span
-              className="hidden shrink-[100] items-center gap-1.5 font-mono text-[11.5px] text-ink-4 md:inline-flex"
-              title={repoTitle(target, ws?.name)}
-            >
-              <GithubIcon className="size-3 shrink-0" />
-              <RepoText project={target} />
-            </span>
-          )}
+        className={cn(
+          "group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]",
+          dragging && "border-accent/50",
+        )}
+      >
+        <DraftTray
+          drafts={files.drafts}
+          onRemove={files.remove}
+          onRetry={files.retry}
+          className="px-4 pt-4"
+        />
+        <Textarea
+          ref={ref}
+          bare
+          minRows={2}
+          maxRows={10}
+          value={prompt}
+          readOnly={starting}
+          onChange={(e) => setPrompt(e.target.value)}
+          onBlur={() => save.current()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              start(project, prompt, files);
+            }
+          }}
+          onPaste={(e) => {
+            const pasted = filesFromPaste(e.clipboardData);
+            if (!pasted.length || starting) return;
+            e.preventDefault();
+            attach(pasted, true);
+          }}
+          placeholder="What should an agent build next?"
+          className="block px-5 pt-4 pb-16 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
+          aria-label="Task for a new session"
+        />
+        <div className="absolute right-3 bottom-3 left-2.5 flex items-center gap-2">
+          <AttachButton onFiles={(f) => attach(f)} />
+          <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
+            <span className="hidden text-ink-4 sm:inline">in</span>
+            <Select
+              size="sm"
+              aria-label="Workspace and project"
+              value={project}
+              disabled={starting}
+              onChange={pick}
+              options={editable.map((p) => {
+                const w = p.workspace ? freshest(index, p.workspace) : undefined;
+                return {
+                  value: p.slug,
+                  label: several && w ? `${w.name} / ${p.name}` : p.name,
+                  item: p.name,
+                  icon: w ? <WorkspaceAvatar workspace={w} size={14} title={false} /> : undefined,
+                  description: <RepoText project={p} />,
+                  section:
+                    several && w
+                      ? {
+                          key: w.id,
+                          label: (
+                            <>
+                              <WorkspaceAvatar workspace={w} size={14} title={false} />
+                              {w.name}
+                            </>
+                          ),
+                        }
+                      : undefined,
+                };
+              })}
+            />
+            {target && repoSummary(target) && (
+              <span
+                className="hidden shrink-[100] items-center gap-1.5 font-mono text-[11.5px] text-ink-4 md:inline-flex"
+                title={repoTitle(target, ws?.name)}
+              >
+                <GithubIcon className="size-3 shrink-0" />
+                <RepoText project={target} />
+              </span>
+            )}
+          </div>
+          <span className="flex-1" />
+          <span className="hidden text-[11.5px] text-ink-4 sm:inline">⌘↵ to start</span>
+          <StartButton
+            starting={starting}
+            disabled={!prompt.trim() && !files.drafts.length}
+            className="enabled:hover:scale-[1.03]"
+          >
+            Start
+          </StartButton>
         </div>
-        <span className="flex-1" />
-        <span className="hidden text-[11.5px] text-ink-4 sm:inline">⌘↵ to start</span>
-        <StartButton
-          starting={starting}
-          disabled={!prompt.trim() && !files.drafts.length}
-          className="enabled:hover:scale-[1.03]"
-        >
-          Start
-        </StartButton>
-      </div>
-      <DropHint show={dragging} />
-    </form>
+        <DropHint show={dragging} />
+      </form>
+      <NoRunnerNote workspace={target?.workspace && index.get(target.workspace.id)} className="mt-3" />
+    </>
   );
 }
 

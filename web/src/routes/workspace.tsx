@@ -46,6 +46,7 @@ import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort } from "@/lib/format";
+import { BREW_INSTALL, installCommand } from "@/lib/install";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspace } from "@/lib/queries";
 import { repoSummary } from "@/lib/repos";
 import { BASE_ROLES, claudeOptions, roleLabel } from "@/lib/workspaces";
@@ -332,7 +333,7 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
     {
       done: w.runners > 0,
       title: "Bring a machine online",
-      body: "Sessions here run only on the workspace's runners: register one, or add one of yours.",
+      body: "Its sessions wait until one of its runners is online: register a Mac or Linux machine, or add one of yours.",
       action: (
         <Link to="/w/$slug" params={{ slug: w.slug }} search={{ tab: "runners" }}>
           <Button size="sm" icon={<Cpu className="size-3.5" />}>
@@ -727,9 +728,6 @@ function Runners({ w }: { w: G.Workspace }) {
   });
   const here = new Set(list.data?.runners.map((r) => r.id));
   const yours = (all.data?.runners ?? []).filter((r) => r.yours && !here.has(r.id));
-  const site = location.hostname.startsWith("app.")
-    ? `https://${location.hostname.slice(4)}`
-    : location.origin;
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
@@ -792,11 +790,17 @@ function Runners({ w }: { w: G.Workspace }) {
         </div>
       )}
       {list.data?.runners.length === 0 ? (
-        <Empty icon={<Cpu className="size-6" />} title="No runners yet">
-          {admin
-            ? "Register a machine above, then run two commands on it."
-            : "Its admins add the machines its sessions run on."}
-        </Empty>
+        admin ? (
+          <FirstRunner w={w} yours={yours.length > 0} />
+        ) : (
+          <Empty icon={<Cpu className="size-6" />} title="No runners yet">
+            {w.name}'s sessions wait until an admin adds a runner: a machine that runs its agents in
+            sandboxes.{" "}
+            {w.primary
+              ? `Ask ${w.primary.name}, its primary admin, to add one.`
+              : "Ask one of its admins to add one."}
+          </Empty>
+        )
       ) : (
         <ul className="mt-6 border-t border-line">
           {list.data?.runners.map((r) => {
@@ -881,7 +885,7 @@ function Runners({ w }: { w: G.Workspace }) {
         {reg && (
           <div className="flex flex-col gap-3">
             <div className="text-[12.5px] text-ink-3">1. Install fctl</div>
-            <CodeBox value={`curl -fsSL ${site}/install | sh`} />
+            <CodeBox value={installCommand()} />
             <div className="text-[12.5px] text-ink-3">2. Register it as a runner and start the service</div>
             <CodeBox value={`FCTL_SERVER=${location.origin} fctl host install --token ${reg.token}`} />
             <p className="text-[12.5px] leading-relaxed text-ink-4">
@@ -892,6 +896,68 @@ function Runners({ w }: { w: G.Workspace }) {
         )}
       </Dialog>
     </div>
+  );
+}
+
+/** For admins of a workspace without runners: what bringing a machine online takes, under the form. */
+function FirstRunner({ w, yours }: { w: G.Workspace; yours: boolean }) {
+  const steps: { title: string; body: ReactNode }[] = [
+    {
+      title: "Choose a machine that stays on",
+      body: "A Mac with Apple silicon or a Linux machine. Agents work there in sandboxes: install Apple's container on macOS 26 or later, Lima on older macOS, or Docker on Linux.",
+    },
+    {
+      title: "Install fctl on it",
+      body: (
+        <>
+          <CodeBox value={installCommand()} />
+          <p>
+            Or with Homebrew:{" "}
+            <code className="rounded bg-raised px-1 font-mono text-[12px] text-ink-2">{BREW_INSTALL}</code>
+          </p>
+        </>
+      ),
+    },
+    {
+      title: `Register it for ${w.name}`,
+      body: (
+        <>
+          <p>
+            Sign in, then register it as a runner and start its service. It shows up here as online within
+            seconds.
+          </p>
+          <CodeBox value={`fctl login ${location.origin}`} />
+          <CodeBox value={`fctl host install --workspace ${w.slug}`} />
+          <p className="text-[12.5px] text-ink-4">
+            Rather not sign in there? Name it above and choose Register for a command with a token.
+          </p>
+        </>
+      ),
+    },
+  ];
+  return (
+    <section className="mt-10 animate-rise">
+      <h3 className="font-display text-xl text-ink">No runners yet</h3>
+      <p className="mt-1 max-w-2xl text-[14px] leading-relaxed text-ink-3">
+        {w.name}'s sessions wait until one of its runners is online.{" "}
+        {yours ? "Add one of yours above, or bring another machine online:" : "To bring a machine online:"}
+      </p>
+      <ol className="mt-4 divide-y divide-line border-y border-line">
+        {steps.map((s, i) => (
+          <li key={s.title} className="flex gap-4 py-4">
+            <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border border-line-strong font-mono text-[11.5px] text-ink-3">
+              {i + 1}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[14.5px] font-medium text-ink">{s.title}</div>
+              <div className="mt-1 flex max-w-2xl flex-col gap-2 text-[13.5px] leading-relaxed text-ink-3">
+                {s.body}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
