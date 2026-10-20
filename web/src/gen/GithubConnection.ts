@@ -15,4 +15,19 @@ account: string,
  * The repositories of it the workspace's projects may use. Absent:
  * every one the app reaches there.
  */
-repos?: Array<string>, status: GithubConnectionStatus, requested_by?: UserRef, approved_by?: UserRef, created_at: number, };
+repos?: Array<string>, status: GithubConnectionStatus, 
+/**
+ * The workspace's admin who connected it (or asked an instance admin
+ * to, before workspaces connected accounts themselves).
+ */
+requested_by?: UserRef, 
+/**
+ * The instance admin who approved it, for connections from before
+ * workspaces connected accounts themselves.
+ */
+approved_by?: UserRef, 
+/**
+ * The GitHub account its admin signed in to GitHub as, which showed
+ * fctl what they may connect. Absent for connections from before that.
+ */
+github_user?: string, created_at: number, };

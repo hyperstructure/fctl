@@ -860,25 +860,7 @@ impl Api {
         self.get("/admin/github").await
     }
 
-    /// Lets a workspace use a GitHub account (approves its request).
-    pub async fn admin_connect_github(
-        &self,
-        account: &str,
-        workspace: &str,
-        repos: Option<Vec<String>>,
-    ) -> Result<GithubInstallations> {
-        self.put(
-            &format!(
-                "/admin/github/{}/workspaces/{}",
-                enc(account),
-                enc(workspace)
-            ),
-            &SetGithubConnectionRequest { repos },
-        )
-        .await
-    }
-
-    /// Takes a GitHub account from a workspace (declines its request).
+    /// Takes a GitHub account from a workspace.
     pub async fn admin_disconnect_github(
         &self,
         account: &str,
@@ -1056,14 +1038,14 @@ impl Api {
         self.get(&format!("/workspaces/{}/github", enc(id))).await
     }
 
-    /// Lets a workspace use a GitHub account the app is installed on, or
-    /// asks an instance admin to.
+    /// The link to the GitHub sign-in that connects an account the app is
+    /// installed on to a workspace, with what GitHub says you may.
     pub async fn connect_github(
         &self,
         id: &str,
         req: &ConnectGithubRequest,
-    ) -> Result<WorkspaceGithub> {
-        self.post(&format!("/workspaces/{}/github", enc(id)), req)
+    ) -> Result<ConnectGithubLink> {
+        self.post(&format!("/workspaces/{}/github/connect", enc(id)), req)
             .await
     }
 

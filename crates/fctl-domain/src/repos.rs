@@ -307,7 +307,7 @@ pub fn check_scope(scope: Option<&Scope>, owner: &str, name: Option<&str>) -> Re
         return Err(ApiError::validation(
             "repo",
             format!(
-                "This workspace doesn't work in {owner} on GitHub. Its admins connect the account in the workspace's settings."
+                "This workspace doesn't work in {owner} on GitHub. Its admins connect the account under the workspace's GitHub tab."
             ),
         ));
     };
@@ -315,7 +315,7 @@ pub fn check_scope(scope: Option<&Scope>, owner: &str, name: Option<&str>) -> Re
         Some(name) if !scope.allows(name) => Err(ApiError::validation(
             "repo",
             format!(
-                "{owner}/{name} isn't one of the repositories this workspace may use. An instance admin can add it to the workspace's connection to {owner}."
+                "{owner}/{name} isn't one of the repositories this workspace may use. Its admins add it by connecting {owner} again, under the workspace's GitHub tab."
             ),
         )),
         _ => Ok(()),

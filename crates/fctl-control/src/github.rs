@@ -1,4 +1,5 @@
-//! GitHub App client: app JWTs, installation tokens, repositories.
+//! GitHub App client: app JWTs, installation tokens, repositories, and
+//! the GitHub sign-in that shows what someone may connect of an account.
 //!
 //! Sessions get installation tokens for their project's repositories, valid
 //! for an hour: one that can write (the primary repository and the other
@@ -8,6 +9,8 @@
 use crate::config::GithubConfig;
 use crate::crypto;
 use crate::error::{AppError, AppResult, internal, not_configured, unavailable};
+use base64::Engine;
+use fctl_domain::github::Seen;
 use fctl_domain::repos::{ReadScope, TokenPlan};
 use fctl_proto::api::GithubRepo;
 use fctl_proto::runner::GithubCredential;
@@ -20,6 +23,8 @@ use std::collections::{HashMap, HashSet};
 use worker::{Fetch, Headers, Method, Request, RequestInit};
 
 const API: &str = "https://api.github.com";
+/// Where people sign in to GitHub.
+const WEB: &str = "https://github.com";
 
 thread_local! {
     /// owner (lowercase) → installation id, per isolate.
@@ -52,6 +57,8 @@ struct Account {
     login: String,
     #[serde(default, rename = "type")]
     kind: Option<String>,
+    #[serde(default)]
+    id: Option<u64>,
 }
 
 /// An installation of the GitHub App: on which account, and how much of it.
@@ -60,6 +67,7 @@ pub struct InstallationInfo {
     pub id: u64,
     /// The account's login, as GitHub spells it.
     pub account: String,
+    pub account_id: Option<u64>,
     /// `Organization` or `User`.
     pub account_type: Option<String>,
     /// `all` or `selected`.
@@ -73,6 +81,7 @@ impl Installation {
         Some(InstallationInfo {
             id: self.id,
             account: account.login,
+            account_id: account.id,
             account_type: account.kind,
             repository_selection: self.repository_selection,
             created_at: self.created_at.as_deref().and_then(parse_rfc3339_ms),
@@ -94,6 +103,50 @@ struct RepoJson {
 #[derive(Deserialize)]
 struct RepoList {
     repositories: Vec<RepoJson>,
+}
+
+#[derive(Deserialize)]
+struct Count {
+    total_count: usize,
+}
+
+/// A repository as someone signed in to GitHub sees it.
+#[derive(Deserialize)]
+struct SeenJson {
+    name: String,
+    #[serde(default)]
+    permissions: Option<SeenPermissions>,
+}
+
+#[derive(Deserialize)]
+struct SeenPermissions {
+    #[serde(default)]
+    admin: bool,
+}
+
+#[derive(Deserialize)]
+struct SeenList {
+    repositories: Vec<SeenJson>,
+}
+
+#[derive(Deserialize)]
+struct InstallationList {
+    installations: Vec<Installation>,
+}
+
+/// Who someone signed in to GitHub as.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Viewer {
+    pub login: String,
+    pub id: u64,
+}
+
+#[derive(Deserialize)]
+struct UserToken {
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 /// The permissions agents get on repositories they may write to.
@@ -253,22 +306,6 @@ impl<'a> Github<'a> {
         Ok(out)
     }
 
-    /// One installation of the app, by its id.
-    pub async fn installation(&self, id: u64) -> AppResult<InstallationInfo> {
-        let (status, v) = self
-            .app_call(Method::Get, &format!("/app/installations/{id}"), None)
-            .await?;
-        if status == 404 {
-            return Err(AppError(ApiError::not_found("GitHub installation")));
-        }
-        if status != 200 {
-            return Err(unavailable("GitHub did not answer"));
-        }
-        let inst: Installation = serde_json::from_value(v)?;
-        inst.info()
-            .ok_or_else(|| AppError(ApiError::not_found("GitHub installation")))
-    }
-
     /// The installation on `owner`, when the app is installed there.
     pub async fn installation_on(&self, owner: &str) -> AppResult<Option<InstallationInfo>> {
         for path in [
@@ -308,6 +345,200 @@ impl<'a> Github<'a> {
             }
         }
         Ok(out)
+    }
+
+    /// How many repositories an installation reaches.
+    pub async fn reached(&self, inst: u64) -> AppResult<usize> {
+        let token = self.installation_token(inst, None, None).await?;
+        let (status, v) = self
+            .call(
+                Method::Get,
+                "/installation/repositories?per_page=1",
+                &format!("token {}", token.token),
+                None,
+            )
+            .await?;
+        if status != 200 {
+            return Err(unavailable(
+                "GitHub did not list the installation's repositories",
+            ));
+        }
+        Ok(serde_json::from_value::<Count>(v)?.total_count)
+    }
+
+    // ───────────────────────── signing in to GitHub ─────────────────────────
+
+    /// The app's OAuth client.
+    fn client(&self) -> AppResult<(&str, &str)> {
+        self.cfg.client().ok_or_else(|| {
+            not_configured("Connecting GitHub accounts takes the GitHub App's client ID and secret")
+        })
+    }
+
+    /// Where people sign in to GitHub with the app, which sends them back
+    /// to `redirect_uri` with a code and `state` (PKCE: `challenge`).
+    pub fn authorize_url(
+        &self,
+        redirect_uri: &str,
+        state: &str,
+        challenge: &str,
+    ) -> AppResult<String> {
+        let (client_id, _) = self.client()?;
+        let mut url = url::Url::parse(&format!("{WEB}/login/oauth/authorize"))
+            .map_err(crate::error::internal)?;
+        url.query_pairs_mut()
+            .append_pair("client_id", client_id)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("state", state)
+            .append_pair("code_challenge", challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("allow_signup", "false");
+        Ok(url.into())
+    }
+
+    /// Trades the code GitHub sent back for a user access token, which
+    /// acts as the person within the app's permissions; `None` when GitHub
+    /// refuses the code. fctl uses it once and revokes it ([`Self::revoke`]).
+    pub async fn exchange(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+        verifier: &str,
+    ) -> AppResult<Option<String>> {
+        let (client_id, client_secret) = self.client()?;
+        let form = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("client_id", client_id)
+            .append_pair("client_secret", client_secret)
+            .append_pair("code", code)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("code_verifier", verifier)
+            .finish();
+        let headers = Headers::new();
+        headers.set("Accept", "application/json")?;
+        headers.set("Content-Type", "application/x-www-form-urlencoded")?;
+        headers.set("User-Agent", "fctl-control")?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post)
+            .with_headers(headers)
+            .with_body(Some(form.into()));
+        let req = Request::new_with_init(&format!("{WEB}/login/oauth/access_token"), &init)?;
+        let mut res = Fetch::Request(req).send().await?;
+        let status = res.status_code();
+        let text = res.text().await.unwrap_or_default();
+        // GitHub answers a refused code with 200 and an error.
+        let answer: Option<UserToken> = serde_json::from_str(&text).ok();
+        match answer {
+            Some(UserToken {
+                access_token: Some(token),
+                ..
+            }) if status == 200 => Ok(Some(token)),
+            other => {
+                worker::console_error!(
+                    "GitHub refused a sign-in code: {status} {}",
+                    other.and_then(|t| t.error).unwrap_or_default()
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// Who a user access token is for.
+    pub async fn viewer(&self, token: &str) -> AppResult<Viewer> {
+        let (status, v) = self
+            .call(Method::Get, "/user", &format!("Bearer {token}"), None)
+            .await?;
+        if status != 200 {
+            return Err(unavailable("GitHub did not say who signed in"));
+        }
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// The installations of the app that the person a user access token is
+    /// for can see: those on their own account, and those that reach a
+    /// repository they can see. Nobody learns from it where else the app
+    /// is installed.
+    pub async fn user_installations(&self, token: &str) -> AppResult<Vec<InstallationInfo>> {
+        let mut out = Vec::new();
+        for page in 1..=10 {
+            let (status, v) = self
+                .call(
+                    Method::Get,
+                    &format!("/user/installations?per_page=100&page={page}"),
+                    &format!("Bearer {token}"),
+                    None,
+                )
+                .await?;
+            if status != 200 {
+                return Err(unavailable(
+                    "GitHub did not list the installations you can see",
+                ));
+            }
+            let list: InstallationList = serde_json::from_value(v)?;
+            let n = list.installations.len();
+            out.extend(
+                list.installations
+                    .into_iter()
+                    .filter_map(Installation::info),
+            );
+            if n < 100 {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The repositories of installation `inst` that the person a user
+    /// access token is for can see, and whether they are an admin of each:
+    /// none when they can't see the installation.
+    pub async fn seen(&self, token: &str, inst: u64) -> AppResult<Vec<Seen>> {
+        let mut out = Vec::new();
+        for page in 1..=30 {
+            let (status, v) = self
+                .call(
+                    Method::Get,
+                    &format!("/user/installations/{inst}/repositories?per_page=100&page={page}"),
+                    &format!("Bearer {token}"),
+                    None,
+                )
+                .await?;
+            if status == 404 {
+                break;
+            }
+            if status != 200 {
+                return Err(unavailable(
+                    "GitHub did not list the repositories you can see there",
+                ));
+            }
+            let list: SeenList = serde_json::from_value(v)?;
+            let n = list.repositories.len();
+            out.extend(list.repositories.into_iter().map(|r| Seen {
+                name: r.name,
+                admin: r.permissions.is_some_and(|p| p.admin),
+            }));
+            if n < 100 {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Revokes a user access token: fctl keeps none.
+    pub async fn revoke(&self, token: &str) -> AppResult<()> {
+        let (client_id, client_secret) = self.client()?;
+        let basic = base64::engine::general_purpose::STANDARD
+            .encode(format!("{client_id}:{client_secret}"));
+        let (status, _) = self
+            .call(
+                Method::Delete,
+                &format!("/applications/{client_id}/token"),
+                &format!("Basic {basic}"),
+                Some(json!({ "access_token": token })),
+            )
+            .await?;
+        if status != 204 {
+            worker::console_error!("revoking a GitHub sign-in: {status}");
+        }
+        Ok(())
     }
 
     /// Asks for a token; GitHub's refusal comes back as `Ok(Err((status, message)))`.

@@ -99,7 +99,7 @@ pub enum AdminCmd {
         confirm: Option<String>,
     },
     /// The accounts the instance's GitHub App is installed on, and the
-    /// workspaces that use them or ask to.
+    /// workspaces that use them. Workspaces' admins connect them.
     #[command(subcommand)]
     Github(GithubCmd),
     /// The people who asked for early access on the sign-in page and have
@@ -199,19 +199,10 @@ pub enum EarlyAccessCmd {
 
 #[derive(Subcommand)]
 pub enum GithubCmd {
-    /// List them, with the requests waiting for approval.
+    /// List them, with the workspaces that use each.
     List,
-    /// Let a workspace work in an account (approving its request).
-    Approve {
-        /// The GitHub account.
-        account: String,
-        /// The workspace (slug or id).
-        workspace: String,
-        /// Only this repository of it (repeatable; default: every one).
-        #[arg(long = "repo", value_name = "NAME")]
-        repos: Vec<String>,
-    },
-    /// Stop a workspace from working in an account, or decline its request.
+    /// Stop a workspace from working in an account. Only its admins
+    /// connect it again, signing in to GitHub.
     Remove { account: String, workspace: String },
 }
 
@@ -298,17 +289,20 @@ fn print_github(list: &fctl_proto::api::GithubInstallations) {
                 .as_ref()
                 .map(|r| r.join(", "))
                 .unwrap_or_else(|| "every repository".into());
-            let status = match w.status {
-                GithubConnectionStatus::Active => style::accent("connected"),
-                GithubConnectionStatus::Requested => style::amber(&format!(
-                    "asked{} — `fctl admin github approve {} {}`",
-                    w.requested_by
-                        .as_ref()
-                        .map(|u| format!(" by {}", u.name))
-                        .unwrap_or_default(),
-                    i.account,
-                    w.workspace.slug
-                )),
+            let status = match (w.status, &w.github_user) {
+                (GithubConnectionStatus::Requested, _) => style::amber("not connected"),
+                (GithubConnectionStatus::Active, Some(login)) => format!(
+                    "{} {}",
+                    style::accent("connected"),
+                    style::dim(&format!(
+                        "by {}as @{login}",
+                        w.requested_by
+                            .as_ref()
+                            .map(|u| format!("{} ", u.name))
+                            .unwrap_or_default()
+                    ))
+                ),
+                (GithubConnectionStatus::Active, None) => style::accent("connected"),
             };
             println!(
                 "  {:<24} {:<32} {status}",
@@ -683,18 +677,6 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
         AdminCmd::Github(c) => {
             let list = match c {
                 GithubCmd::List => api.admin_github().await?,
-                GithubCmd::Approve {
-                    account,
-                    workspace,
-                    repos,
-                } => {
-                    api.admin_connect_github(
-                        &account,
-                        &workspace,
-                        (!repos.is_empty()).then_some(repos),
-                    )
-                    .await?
-                }
                 GithubCmd::Remove { account, workspace } => {
                     api.admin_disconnect_github(&account, &workspace).await?
                 }

@@ -10,12 +10,19 @@ export type WorkspaceGithub = {
  */
 configured: boolean, app_slug?: string, 
 /**
- * Installs the app on another account and comes back here, for the
- * workspace's admins.
+ * Installs the app on another account and comes back here, through a
+ * GitHub sign-in that connects it, for the workspace's admins.
  */
 install_url?: string, connections: Array<GithubConnection>, 
 /**
- * Connecting an account takes an instance admin's approval: you are
- * not one.
+ * Always false: connecting an account takes signing in to GitHub
+ * instead (older control planes asked an instance admin to approve
+ * it).
  */
-approval_required: boolean, };
+approval_required: boolean, 
+/**
+ * Accounts can be connected here: the instance signs people in to
+ * GitHub with its GitHub App's client ID and secret. Without them,
+ * the workspace keeps the accounts it has.
+ */
+can_connect: boolean, };

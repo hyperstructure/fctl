@@ -1,5 +1,6 @@
 //! The cookies the web app signs in with: the session, a Google sign-in on
-//! its way and a sign-in that waits for its second factor.
+//! its way and a sign-in that waits for its second factor; and a GitHub
+//! sign-in on its way, which connects a GitHub account to a workspace.
 //!
 //! Their names carry the `__Host-` prefix, which binds a cookie to the app's
 //! own host and path. Browsers take such a cookie only with `Secure`, from a
@@ -17,6 +18,9 @@ pub enum Cookie {
     GoogleSignIn,
     /// A sign-in that waits for its second factor (`fctl_2fa_…`).
     SecondFactor,
+    /// A GitHub sign-in on its way, to connect an account to a workspace:
+    /// its signed state.
+    GithubConnect,
 }
 
 impl Cookie {
@@ -29,6 +33,8 @@ impl Cookie {
             (Self::GoogleSignIn, false) => "fctl-oauth",
             (Self::SecondFactor, true) => "__Host-fctl-2fa",
             (Self::SecondFactor, false) => "fctl-2fa",
+            (Self::GithubConnect, true) => "__Host-fctl-github",
+            (Self::GithubConnect, false) => "fctl-github",
         }
     }
 }
@@ -94,7 +100,12 @@ mod tests {
 
     #[test]
     fn names_drop_the_host_prefix_without_secure() {
-        for cookie in [Cookie::Session, Cookie::GoogleSignIn, Cookie::SecondFactor] {
+        for cookie in [
+            Cookie::Session,
+            Cookie::GoogleSignIn,
+            Cookie::SecondFactor,
+            Cookie::GithubConnect,
+        ] {
             let secure = cookie.name(true);
             let plain = cookie.name(false);
             assert_eq!(secure.strip_prefix("__Host-"), Some(plain));

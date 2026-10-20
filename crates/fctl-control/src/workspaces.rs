@@ -521,13 +521,15 @@ pub struct ConnectionRow {
     pub requester_avatar: Option<String>,
     pub approved_by: Option<String>,
     pub approver_name: Option<String>,
+    /// The GitHub account its admin signed in to GitHub as.
+    pub github_user: Option<String>,
     #[serde(deserialize_with = "int")]
     pub created_at: i64,
 }
 
 pub const CONNECTION_SELECT: &str = "SELECT g.workspace_id, g.account, g.installation_id, g.repos, g.status, \
     g.requested_by, ru.name AS requester_name, ru.avatar_url AS requester_avatar, g.approved_by, \
-    au.name AS approver_name, g.created_at FROM workspace_github g \
+    au.name AS approver_name, g.github_user, g.created_at FROM workspace_github g \
     LEFT JOIN users ru ON ru.id = g.requested_by LEFT JOIN users au ON au.id = g.approved_by";
 
 impl ConnectionRow {
@@ -567,12 +569,13 @@ impl ConnectionRow {
                 }),
                 _ => None,
             },
+            github_user: self.github_user.clone(),
             created_at: self.created_at,
         }
     }
 }
 
-/// The GitHub accounts a workspace works in, or asks to.
+/// The GitHub accounts a workspace works in.
 pub async fn connections(db: &D1Database, workspace_id: &str) -> AppResult<Vec<ConnectionRow>> {
     q(
         db,
@@ -583,8 +586,7 @@ pub async fn connections(db: &D1Database, workspace_id: &str) -> AppResult<Vec<C
     .await
 }
 
-/// What a workspace may use on `owner`: `None` when it doesn't work there
-/// (or only asked to).
+/// What a workspace may use on `owner`: `None` when it doesn't work there.
 pub fn scope(connections: &[ConnectionRow], owner: &str) -> Option<Scope> {
     connections
         .iter()

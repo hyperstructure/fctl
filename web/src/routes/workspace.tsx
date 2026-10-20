@@ -70,7 +70,7 @@ function refresh() {
 
 export function WorkspacePage() {
   const { slug } = useParams({ from: "/app/w/$slug" });
-  const { tab: asked = "projects", github, account } = useSearch({ from: "/app/w/$slug" });
+  const { tab: asked = "projects", github, account, reason } = useSearch({ from: "/app/w/$slug" });
   const ws = useWorkspace(slug);
   const w = ws.data;
   const admin = w?.role === "owner" || w?.role === "admin";
@@ -180,7 +180,7 @@ export function WorkspacePage() {
             {w && tab === "projects" && <Projects w={w} />}
             {w && tab === "people" && <People w={w} />}
             {w && tab === "runners" && <Runners w={w} />}
-            {w && tab === "github" && <Github w={w} returned={github} account={account} />}
+            {w && tab === "github" && <Github w={w} returned={github} account={account} reason={reason} />}
             {w && tab === "settings" && <WorkspaceSettings w={w} />}
             {w && tab === "audit" && admin && <Audit w={w} />}
           </div>
@@ -996,18 +996,131 @@ function FirstRunner({ w, yours }: { w: G.Workspace; yours: boolean }) {
 
 // ───────────────────────────── GitHub ─────────────────────────────
 
+/** How coming back from GitHub went (`api::github`), on the GitHub tab. */
+export const GITHUB_OUTCOMES = [
+  "connected",
+  "limited",
+  "refused",
+  "cancelled",
+  "failed",
+  "expired",
+  "other_user",
+  "asked_owner",
+  "installed",
+] as const;
+export type GithubOutcome = (typeof GITHUB_OUTCOMES)[number];
+
+/** Why GitHub's answer let nothing be connected (`fctl_domain::github::Refusal`). */
+export const GITHUB_REFUSALS = [
+  "no_installation",
+  "no_admin",
+  "not_admin",
+  "unreachable",
+  "too_many",
+] as const;
+export type GithubRefusal = (typeof GITHUB_REFUSALS)[number];
+
+/** Up to four repository names, and how many more. */
+function someRepos(repos: string[]) {
+  return `${repos.slice(0, 4).join(", ")}${repos.length > 4 ? ` and ${repos.length - 4} more` : ""}`;
+}
+
+/** What the tab says when the browser comes back from GitHub. */
+function Returned({
+  w,
+  outcome,
+  account = "that account",
+  reason,
+  connection,
+  app,
+}: {
+  w: G.Workspace;
+  outcome: GithubOutcome;
+  account?: string;
+  reason?: GithubRefusal;
+  connection?: G.GithubConnection;
+  app: string;
+}) {
+  const repos = connection?.repos;
+  switch (outcome) {
+    case "connected":
+      return (
+        <Banner tone="ok">
+          {w.name} works in {account} now
+          {repos ? `: ${someRepos(repos)}` : ", in every repository the app reaches there"}.
+        </Banner>
+      );
+    case "limited":
+      return (
+        <Banner tone="ok">
+          {w.name} works in the repositories of {account} you're an admin of
+          {repos ? `: ${someRepos(repos)}` : ""}. Every repository, also those the app reaches there later,
+          takes an admin of all of them with the app installed on all of them, such as an owner of {account}.
+        </Banner>
+      );
+    case "refused":
+      return (
+        <Banner tone="error">
+          {reason === "no_installation"
+            ? `GitHub shows you no installation of the ${app} app on ${account}: it isn't installed there, or it reaches no repository you can see. Install it there, or ask an admin of its repositories to connect it.`
+            : reason === "not_admin"
+              ? `GitHub says you aren't an admin of every repository you named in ${account}. Name the ones you are an admin of, or ask an admin of the others to connect them.`
+              : reason === "unreachable"
+                ? `The app doesn't reach every repository you named in ${account}, or you can't see them on GitHub. Add them to the app's installation there, or check their names.`
+                : reason === "too_many"
+                  ? `You're an admin of more than 100 repositories of ${account}, but not of all of them. Name the ones ${w.name} may use.`
+                  : `GitHub says you aren't an admin of any repository of ${account} the app reaches, so you can't connect it. An admin of its repositories, such as an owner of ${account}, connects it.`}
+        </Banner>
+      );
+    case "cancelled":
+      return <Banner tone="info">You didn't sign in to GitHub, so nothing was connected.</Banner>;
+    case "failed":
+      return (
+        <Banner tone="error">
+          Connecting {account} didn't work: GitHub didn't answer as expected. Try again.
+        </Banner>
+      );
+    case "expired":
+      return <Banner tone="info">That link to connect {account} ran out. Connect it again.</Banner>;
+    case "other_user":
+      return (
+        <Banner tone="info">
+          That link to connect {account} is for another fctl account. Open it where you're signed in as that
+          account, or connect {account} here.
+        </Banner>
+      );
+    case "asked_owner":
+      return (
+        <Banner tone="info">
+          GitHub asked the organization's owners to install the app. Once they have, connect the organization
+          here.
+        </Banner>
+      );
+    case "installed":
+      return (
+        <Banner tone="info">
+          The {app} app is installed on {account}. Connect it below: GitHub asks you to sign in, which shows
+          what you may connect there.
+        </Banner>
+      );
+  }
+}
+
 function Github({
   w,
   returned,
   account,
+  reason,
 }: {
   w: G.Workspace;
-  returned?: "connected" | "requested" | "asked_owner";
+  returned?: GithubOutcome;
   account?: string;
+  reason?: GithubRefusal;
 }) {
   const admin = w.role === "owner" || w.role === "admin";
   const gh = useQuery({ queryKey: keys.workspaceGithub(w.id), queryFn: () => workspaces.github(w.id) });
-  const [name, setName] = useState("");
+  // Installed from GitHub: the account, to connect.
+  const [name, setName] = useState(returned === "installed" ? (account ?? "") : "");
   const [scope, setScope] = useState("");
   const connect = useMutation({
     mutationFn: () => {
@@ -1020,18 +1133,8 @@ function Github({
         repos: repos.length ? repos : undefined,
       });
     },
-    onSuccess: (g) => {
-      queryClient.setQueryData(keys.workspaceGithub(w.id), g);
-      refresh();
-      const c = g.connections.find((x) => x.account.toLowerCase() === name.trim().toLowerCase());
-      toast(
-        c?.status === "active"
-          ? `${w.name} works in ${c.account}`
-          : `Asked an instance admin to let ${w.name} work in ${name.trim()}`,
-      );
-      setName("");
-      setScope("");
-    },
+    // On to GitHub, which brings the browser back here.
+    onSuccess: (link) => window.location.assign(link.url),
   });
   const [dropping, setDropping] = useState<G.GithubConnection | null>(null);
   const disconnect = useMutation({
@@ -1051,29 +1154,25 @@ function Github({
         the self-hosting guide).
       </Banner>
     );
+  const app = g?.app_slug ?? "GitHub";
   return (
     <div>
-      {returned === "connected" && (
-        <Banner tone="ok" className="mb-6">
-          Installed on {account}, and {w.name} works in it now.
-        </Banner>
-      )}
-      {returned === "requested" && (
-        <Banner tone="ok" className="mb-6">
-          Installed on {account}. An instance admin approves {w.name}'s request to work in it; it shows as
-          connected here then.
-        </Banner>
-      )}
-      {returned === "asked_owner" && (
-        <Banner tone="info" className="mb-6">
-          GitHub asked the organization's owners to install the app. Once they have, connect the organization
-          here.
-        </Banner>
+      {returned && g && (
+        <div className="mb-6">
+          <Returned
+            w={w}
+            outcome={returned}
+            account={account}
+            reason={reason}
+            connection={g.connections.find((c) => c.account.toLowerCase() === account?.toLowerCase())}
+            app={app}
+          />
+        </div>
       )}
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
         {w.name}'s projects use repositories of the GitHub accounts it works in: ones the{" "}
-        <span className="font-mono text-[13px]">{g?.app_slug ?? "GitHub"}</span> app is installed on. Agents
-        get tokens for the project's repositories only, for an hour at a time.
+        <span className="font-mono text-[13px]">{app}</span> app is installed on. Agents get tokens for the
+        project's repositories only, for an hour at a time.
       </p>
       <ul className="mt-6 border-t border-line">
         {g?.connections.map((c) => (
@@ -1091,16 +1190,13 @@ function Github({
               <div className="mt-0.5 text-[12px] text-ink-4">
                 {c.repos ? (
                   <>
-                    Only{" "}
-                    <span className="font-mono">
-                      {c.repos.slice(0, 4).join(", ")}
-                      {c.repos.length > 4 && ` and ${c.repos.length - 4} more`}
-                    </span>
+                    Only <span className="font-mono">{someRepos(c.repos)}</span>
                   </>
                 ) : (
                   "Every repository the app reaches there"
                 )}
-                {c.requested_by && ` · asked by ${c.requested_by.name}`}
+                {c.github_user &&
+                  ` · connected by ${c.requested_by?.name ?? "an admin"} as @${c.github_user} on GitHub`}
               </div>
             </div>
             {c.status === "active" ? (
@@ -1108,14 +1204,12 @@ function Github({
                 <Check className="size-3.5" /> Connected
               </span>
             ) : (
-              <span className="text-[12.5px] text-amber">Waiting for an instance admin</span>
+              <span className="text-[12.5px] text-ink-4">Not connected</span>
             )}
             {admin && (
               <button
                 type="button"
-                aria-label={
-                  c.status === "active" ? `Disconnect ${c.account}` : `Take back the request for ${c.account}`
-                }
+                aria-label={`Disconnect ${c.account}`}
                 className="rounded p-1.5 text-ink-4 hover:text-danger"
                 onClick={() => (c.status === "active" ? setDropping(c) : disconnect.mutate(c.account))}
               >
@@ -1128,66 +1222,82 @@ function Github({
           <li className="py-6 text-[13.5px] text-ink-4">{w.name} works in no GitHub account yet.</li>
         )}
       </ul>
-      {admin && g && (
-        <div className="mt-10 grid gap-8 md:grid-cols-2">
-          <div>
-            <h3 className="text-[13.5px] font-semibold text-ink">Install the app on an account</h3>
-            <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
-              On your own account, or an organization you own. GitHub brings you back here, and the account is
-              connected{g.approval_required ? " once an instance admin approves it" : ""}.
-            </p>
-            {g.install_url && (
-              <a href={g.install_url} className="mt-4 inline-block">
-                <Button icon={<GithubIcon className="size-3.5" />}>Install {g.app_slug} on GitHub</Button>
-              </a>
-            )}
-          </div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (name.trim()) connect.mutate();
-            }}
-            className="flex flex-col gap-3"
-          >
-            <h3 className="text-[13.5px] font-semibold text-ink">Connect an account it is installed on</h3>
-            <Field label="Account" error={connect.error?.message}>
-              {(id) => (
-                <Input
-                  id={id}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="hyperstructure"
-                />
-              )}
-            </Field>
-            <Field
-              label="Only these repositories"
-              hint="Optional: names, separated by commas. Empty: every one."
-            >
-              {(id) => (
-                <Input
-                  id={id}
-                  value={scope}
-                  onChange={(e) => setScope(e.target.value)}
-                  placeholder="web, design"
-                />
-              )}
-            </Field>
+      {admin && g && !g.can_connect && (
+        <Banner tone="info" className="mt-8">
+          Connecting an account takes signing in to GitHub, which this instance isn't set up for. Its admins
+          add the GitHub App's client secret (see the self-hosting guide).
+        </Banner>
+      )}
+      {admin && g?.can_connect && (
+        <>
+          <p className="mt-10 max-w-2xl text-[13px] leading-relaxed text-ink-3">
+            Connecting an account takes signing in to GitHub, which shows what you may give {w.name}: every
+            repository of your own account, or of an organization whose every repository the app reaches and
+            you're an admin of; otherwise the repositories you're an admin of.
+          </p>
+          <div className="mt-6 grid gap-8 md:grid-cols-2">
             <div>
-              <Button type="submit" loading={connect.isPending} disabled={!name.trim()}>
-                {g.approval_required ? "Ask an instance admin" : "Connect"}
-              </Button>
+              <h3 className="text-[13.5px] font-semibold text-ink">Install the app on an account</h3>
+              <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
+                On your own account, or an organization you own. GitHub brings you back here through its
+                sign-in, and the account is connected.
+              </p>
+              {g.install_url && (
+                <a href={g.install_url} className="mt-4 inline-block">
+                  <Button icon={<GithubIcon className="size-3.5" />}>Install {app} on GitHub</Button>
+                </a>
+              )}
             </div>
-          </form>
-        </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (name.trim()) connect.mutate();
+              }}
+              className="flex flex-col gap-3"
+            >
+              <h3 className="text-[13.5px] font-semibold text-ink">Connect an account it is installed on</h3>
+              <Field label="Account" error={connect.error?.message}>
+                {(id) => (
+                  <Input
+                    id={id}
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="hyperstructure"
+                  />
+                )}
+              </Field>
+              <Field
+                label="Only these repositories"
+                hint="Optional: names, separated by commas. Empty: every one you may connect."
+              >
+                {(id) => (
+                  <Input
+                    id={id}
+                    value={scope}
+                    onChange={(e) => setScope(e.target.value)}
+                    placeholder="web, design"
+                  />
+                )}
+              </Field>
+              <div>
+                <Button
+                  type="submit"
+                  icon={<GithubIcon className="size-3.5" />}
+                  loading={connect.isPending || connect.isSuccess}
+                  disabled={!name.trim()}
+                >
+                  Connect with GitHub
+                </Button>
+              </div>
+            </form>
+          </div>
+        </>
       )}
       <Dialog
         open={!!dropping}
         onClose={() => setDropping(null)}
         title={`Stop working in ${dropping?.account ?? ""}?`}
-        description={`${w.name}'s projects can't use its repositories any more, and running sessions lose their tokens for it within the hour.${
-          g?.approval_required ? " Connecting it again takes an instance admin's approval." : ""
-        }`}
+        description={`${w.name}'s projects can't use its repositories any more, and running sessions lose their tokens for it within the hour.`}
       >
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setDropping(null)}>

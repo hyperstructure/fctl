@@ -252,8 +252,11 @@ pub enum WorkspacesCmd {
         workspace: Option<String>,
     },
     /// Let a workspace work in a GitHub account the instance's GitHub App
-    /// is installed on (admins). An instance admin approves it, unless you
-    /// are one.
+    /// is installed on (admins). Opens a GitHub sign-in in your browser,
+    /// which shows what you may connect: every repository of your own
+    /// account, or of an organization whose every repository the app
+    /// reaches and you are an admin of; otherwise the repositories you are
+    /// an admin of.
     #[command(
         after_help = "Examples:\n  fctl workspaces connect hyperstructure\n  fctl workspaces connect acme --repo web --repo design"
     )]
@@ -261,16 +264,19 @@ pub enum WorkspacesCmd {
         /// The GitHub account (organization or user).
         account: String,
         /// Only this repository of it (repeatable; default: every one the
-        /// app reaches there).
+        /// app reaches there, as far as you may connect it).
         #[arg(long = "repo", value_name = "NAME")]
         repos: Vec<String>,
+        /// Print the link without opening a browser.
+        #[arg(long)]
+        no_browser: bool,
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
     },
-    /// Stop a workspace from working in a GitHub account, or take back a
-    /// request (admins). Its sessions get no more tokens for it.
+    /// Stop a workspace from working in a GitHub account (admins). Its
+    /// sessions get no more tokens for it.
     Disconnect {
         /// The GitHub account (organization or user).
         account: String,
@@ -858,11 +864,16 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                     .as_ref()
                     .map(|r| r.join(", "))
                     .unwrap_or_else(|| "every repository".into());
-                let state = match c.status {
-                    GithubConnectionStatus::Active => style::accent("connected"),
-                    GithubConnectionStatus::Requested => {
-                        style::amber("waiting for an instance admin")
+                let state = match (c.status, &c.github_user) {
+                    (GithubConnectionStatus::Requested, _) => style::amber("not connected"),
+                    (GithubConnectionStatus::Active, Some(login)) => {
+                        format!(
+                            "{} {}",
+                            style::accent("connected"),
+                            style::dim(&format!("as @{login}"))
+                        )
                     }
+                    (GithubConnectionStatus::Active, None) => style::accent("connected"),
                 };
                 println!(
                     "{:<24} {:<34} {}",
@@ -879,15 +890,23 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                         g.app_slug.as_deref().unwrap_or("GitHub")
                     ))
                 );
+            } else if g.configured && !g.can_connect {
+                println!(
+                    "{}",
+                    style::dim(
+                        "Connecting accounts takes signing in to GitHub, which this instance isn't set up for: its admins add the GitHub App's client secret."
+                    )
+                );
             }
         }
         WorkspacesCmd::Connect {
             account,
             repos,
+            no_browser,
             workspace,
         } => {
             let w = resolve(&api, workspace).await?;
-            let g = api
+            let link = api
                 .connect_github(
                     w.id.as_str(),
                     &ConnectGithubRequest {
@@ -897,25 +916,25 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 )
                 .await?;
             if json {
-                return style::print_json(&g);
+                return style::print_json(&link);
             }
-            let connected = g.connections.iter().any(|c| {
-                c.account.eq_ignore_ascii_case(&account)
-                    && c.status == GithubConnectionStatus::Active
-            });
-            if connected {
-                println!(
-                    "{} {} works in {account}",
-                    style::accent("✓"),
-                    style::bold(&w.name)
-                );
-            } else {
-                println!(
-                    "{} Asked an instance admin to let {} work in {account}",
-                    style::accent("✓"),
-                    style::bold(&w.name)
-                );
+            println!(
+                "Connect {} to {} by signing in to GitHub, in a browser where you're signed in to fctl. The link works for 10 minutes:",
+                style::bold(&account),
+                style::bold(&w.name)
+            );
+            println!();
+            println!("  {}", link.url);
+            println!();
+            if !no_browser && crate::cmd::auth::open_browser(&link.url) {
+                println!("{}", style::dim("Opened it in your browser."));
             }
+            println!(
+                "{}",
+                style::dim(
+                    "GitHub shows fctl what you may connect, and the browser comes back to the workspace. `fctl workspaces github` shows what it works in."
+                )
+            );
         }
         WorkspacesCmd::Disconnect { account, workspace } => {
             let w = resolve(&api, workspace).await?;
