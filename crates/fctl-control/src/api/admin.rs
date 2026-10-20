@@ -1,6 +1,6 @@
 //! `/api/v1/admin/*`: people, the allowlist, invitations, workspaces, the
-//! primary admin role, the audit log, and the instance's settings. GitHub
-//! connections are in `api::github`.
+//! primary instance owner's role, the audit log, and the instance's
+//! settings. GitHub connections are in `api::github`.
 
 use crate::auth;
 use crate::ctx::Ctx;
@@ -47,13 +47,13 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
     {
         if target.role() == InstanceRole::Owner {
             return Err(forbidden(
-                "Nobody can change the primary admin's role. They can hand it to another admin.",
+                "Nobody can change the primary instance owner's role. They can hand it to an admin.",
             ));
         }
         if role == InstanceRole::Owner {
             return Err(validation(
                 "role",
-                "The instance has one primary admin, who hands the role over",
+                "The instance has one primary owner, who hands the role over",
             ));
         }
         if !perm::can_assign_instance_role(actor.role(), target.role(), role) {
@@ -65,10 +65,12 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
             return Err(conflict("You cannot disable yourself"));
         }
         if target.role() == InstanceRole::Owner {
-            return Err(forbidden("Nobody can disable the primary admin"));
+            return Err(forbidden("Nobody can disable the primary instance owner"));
         }
         if target.role() == InstanceRole::Admin && actor.role() != InstanceRole::Owner {
-            return Err(forbidden("Only the primary admin can disable admins"));
+            return Err(forbidden(
+                "Only the primary instance owner can disable admins",
+            ));
         }
     }
     let name = body
@@ -76,7 +78,7 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
         .as_deref()
         .map(|v| validate::name("name", v))
         .transpose()?;
-    // Not if they became the primary admin in the meantime.
+    // Not if they became the primary instance owner in the meantime.
     let changed = q(
         &ctx.db,
         "UPDATE users SET role = COALESCE(?1, role), status = COALESCE(?2, status), name = COALESCE(?3, name), updated_at = ?4 \
@@ -93,7 +95,7 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
     .await?;
     if changed == 0 {
         return Err(forbidden(
-            "Nobody can change the primary admin's role. They can hand it to another admin.",
+            "Nobody can change the primary instance owner's role. They can hand it to an admin.",
         ));
     }
     if body.status == Some(UserStatus::Disabled) {
@@ -120,11 +122,13 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     }
     if target.role() == InstanceRole::Owner {
         return Err(forbidden(
-            "The primary admin can't be deleted. They can hand the role to another admin first.",
+            "The primary instance owner can't be deleted. They can hand the role to an admin first.",
         ));
     }
     if target.role() == InstanceRole::Admin && actor.role() != InstanceRole::Owner {
-        return Err(forbidden("Only the primary admin can delete admins"));
+        return Err(forbidden(
+            "Only the primary instance owner can delete admins",
+        ));
     }
     // The same as deleting your own account (api::account): their
     // workspaces with no other members go, what others use stays, without
@@ -150,7 +154,7 @@ pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         .ok_or_else(|| not_found("User"))?;
     if target.role() != InstanceRole::Member && actor.role() != InstanceRole::Owner {
         return Err(forbidden(
-            "Only the primary admin can reset an admin's password",
+            "Only the primary instance owner can reset an admin's password",
         ));
     }
     let url = crate::api::auth::create_reset_link(ctx, &target.id, Some(&actor.id)).await?;
@@ -186,11 +190,13 @@ pub async fn add_allow(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         InstanceRole::Owner => {
             return Err(validation(
                 "role",
-                "The primary admin hands their role over to an admin",
+                "The primary instance owner hands their role over to an admin",
             ));
         }
         InstanceRole::Admin if actor.role() != InstanceRole::Owner => {
-            return Err(forbidden("Only the primary admin can allow new admins"));
+            return Err(forbidden(
+                "Only the primary instance owner can allow new admins",
+            ));
         }
         r => r,
     };
@@ -254,7 +260,7 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         .run()
         .await?;
     // An account none of whose addresses an entry admits any more is
-    // disabled (never the primary admin's, which may predate the
+    // disabled (never the primary instance owner's, which may predate the
     // allowlist). Of the others, the addresses no entry admits are
     // disconnected, and the primary address moves to one that still is.
     let remaining: Vec<AllowRow> = q(
@@ -593,33 +599,35 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     http::ok(&settings)
 }
 
-// ───────────────────────────── the primary admin ─────────────────────────────
+// ─────────────────────────── the primary instance owner ───────────────────────────
 
-/// `POST /api/v1/admin/transfer` (the primary admin): hands the role to
-/// another admin, and stays an admin.
+/// `POST /api/v1/admin/transfer` (the primary instance owner): hands the
+/// role to an admin, and becomes an admin.
 pub async fn transfer(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: TransferRequest = http::body(req).await?;
     let actor = ctx.admin()?.clone();
     if actor.role() != InstanceRole::Owner {
-        return Err(forbidden("Only the primary admin can hand the role over"));
+        return Err(forbidden(
+            "Only the primary instance owner can hand the role over",
+        ));
     }
     let target = auth::user_by_id(ctx, body.user_id.as_str())
         .await?
         .ok_or_else(|| not_found("User"))?;
     if target.id == actor.id {
-        return Err(conflict("You are the primary admin already"));
+        return Err(conflict("You are the primary instance owner already"));
     }
     if target.role() != InstanceRole::Admin || !target.is_active() {
         return Err(validation(
             "user_id",
-            "Make them an admin first: the primary admin role goes to an admin",
+            "Make them an admin first: the role of primary instance owner goes to an admin",
         ));
     }
     crate::db::batch(
         &ctx.db,
         vec![
             // Only while the new one is still an active admin, so that the
-            // instance always has its primary admin.
+            // instance always has its primary owner.
             q(
                 &ctx.db,
                 "UPDATE users SET role = 'admin', updated_at = ?1 WHERE id = ?2 AND role = 'owner' \
@@ -640,7 +648,7 @@ pub async fn transfer(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .ok_or_else(|| not_found("User"))?;
     if updated.role() != InstanceRole::Owner {
         return Err(conflict(
-            "They stopped being an admin in the meantime, so you are still the primary admin",
+            "They stopped being an admin in the meantime, so you are still the primary instance owner",
         ));
     }
     ctx.audit(

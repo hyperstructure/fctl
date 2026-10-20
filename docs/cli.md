@@ -358,7 +358,7 @@ fctl admin users                           # with their other addresses and how 
 fctl admin invite ada@private.example      # an invitation link (and an email, when set up)
 fctl admin invite grace@example.com -w side-project -w acme:admin   # and to your workspaces
 fctl admin role grace@example.com admin    # an instance admin (or member again)
-fctl admin transfer grace@example.com      # the primary admin hands the role to an admin
+fctl admin transfer grace@example.com      # the primary instance owner hands the role to an admin
 fctl admin disable grace@example.com       # can't sign in; their tokens stop working (or enable)
 fctl admin delete-user grace@example.com   # asks you to type their address
 fctl admin workspaces                      # and which need a primary admin

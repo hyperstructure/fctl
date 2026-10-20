@@ -237,7 +237,7 @@ function Access() {
   );
 }
 
-/** Instance roles: the primary admin hands their own role over instead. */
+/** Instance roles: the primary instance owner hands their own role over instead. */
 const instanceRoles = (actor?: G.InstanceRole): SelectOption<G.InstanceRole>[] => [
   { value: "member", label: "Member", description: "Uses the workspaces they are members of" },
   {
@@ -276,7 +276,7 @@ function Users() {
       setPrimary(null);
       void users.refetch();
       void queryClient.invalidateQueries({ queryKey: keys.me });
-      toast(`${u.name} is the primary admin; you stay an admin`);
+      toast(`${u.name} is the primary instance owner; you are an admin now`);
     },
     onError: (e) => toast(e.message, "error"),
   });
@@ -361,7 +361,7 @@ function Users() {
               <div className="-ml-1 flex shrink-0 flex-wrap items-center gap-1 sm:ml-0">
                 {u.role === "owner" ? (
                   <span className="inline-flex items-center gap-1.5 px-2 text-[12.5px] text-ink-2">
-                    <Crown className="size-3.5 text-accent" /> Primary admin
+                    <Crown className="size-3.5 text-accent" /> Primary instance owner
                   </span>
                 ) : (
                   <Select
@@ -375,12 +375,12 @@ function Users() {
                 )}
                 {me?.user.role === "owner" && u.role === "admin" && u.status === "active" && (
                   <Button size="sm" variant="ghost" onClick={() => setPrimary(u)}>
-                    Make primary admin
+                    Make primary instance owner
                   </Button>
                 )}
                 {u.id !== me?.user.id &&
                   u.role !== "owner" &&
-                  // Admins' accounts are the primary admin's to manage.
+                  // Admins' accounts are the primary instance owner's to manage.
                   (u.role !== "admin" || me?.user.role === "owner") && (
                     <>
                       <Button
@@ -423,8 +423,8 @@ function Users() {
       <Dialog
         open={!!primary}
         onClose={() => setPrimary(null)}
-        title={`Make ${primary?.name ?? ""} the primary admin?`}
-        description="The instance has one primary admin, whom no other admin can demote, disable or remove, and who manages admins. You stay an admin, and only they can hand the role back."
+        title={`Make ${primary?.name ?? ""} the primary instance owner?`}
+        description="The instance has one primary owner, whom no admin can demote, disable or remove, and who manages its admins. You become an admin, and only they can hand the role back."
       >
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setPrimary(null)}>

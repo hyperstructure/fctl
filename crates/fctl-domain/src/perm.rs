@@ -91,8 +91,8 @@ pub fn can_assign_project_role(actor: Option<ProjectRole>, target_role: ProjectR
 }
 
 /// Whether `actor` may change `target`'s instance role to `new_role`. The
-/// primary instance admin (`owner`) manages admins; admins manage members.
-/// Nobody makes a primary admin this way: the primary admin hands the role
+/// primary instance owner (`owner`) manages admins; admins manage members.
+/// Nobody becomes the primary instance owner this way: they hand the role
 /// over (`POST /api/v1/admin/transfer`), and nobody else changes theirs.
 pub fn can_assign_instance_role(
     actor: InstanceRole,
@@ -240,7 +240,7 @@ mod tests {
         assert!(!can_assign_instance_role(Admin, Admin, Member));
         assert!(can_assign_instance_role(Admin, Member, Admin));
         assert!(can_assign_instance_role(Owner, Admin, Member));
-        // Nobody makes or unmakes the primary admin by changing roles.
+        // Nobody makes or unmakes the primary instance owner by changing roles.
         assert!(!can_assign_instance_role(Admin, Member, Owner));
         assert!(!can_assign_instance_role(Owner, Admin, Owner));
         assert!(!can_assign_instance_role(Owner, Owner, Admin));

@@ -68,8 +68,8 @@ this file is the overview. Order within a section is priority.
 - [x] macOS release binaries that run on macOS 12 and later, not only 15+ (#7)
 - [x] Workspaces: their own people, projects, runners, GitHub accounts,
       two-factor requirement and audit log, with one primary admin each and
-      one for the instance; one account with several email addresses, each
-      with its own commit email
+      a primary owner for the instance; one account with several email
+      addresses, each with its own commit email
 
 ## 0.3 — closing the loop
 

@@ -29,10 +29,11 @@ company's work and a private one for their own.
   small team works in every project; the first workspace, which the
   migration makes, starts with none, so nobody sees more than before.
   Someone can be a member of at most five workspaces.
-- **One primary admin each.** A workspace has one primary admin, and the
-  instance one primary instance admin (the `owner` role, as before, now
-  one of them). Other admins can't demote, disable or remove them; they
-  hand the role to another admin themselves and stay an admin. Deleting a
+- **One primary admin each, and a primary instance owner.** A workspace
+  has one primary admin, and the instance one primary instance owner (the
+  `owner` role, as before, now only one): it owns the instance, which its
+  admins run. Other admins can't demote, disable or remove them; they
+  hand the role to an admin themselves and become an admin. Deleting a
   primary admin's account passes a workspace's role to its longest-standing
   admin, or member, people with active accounts first. When a workspace's
   primary admin's account is disabled, nobody can hand the role over, so an

@@ -34,7 +34,7 @@ This starts:
 - a host using the `process` driver whose agents run **fake-claude**: a
   scripted stand-in for Claude Code that speaks the same stream-json protocol.
 
-The first run creates the primary admin (`dev@fctl.test` /
+The first run creates the primary instance owner (`dev@fctl.test` /
 `fctl-dev-password`), a Claude credential, a workspace called Development,
 a runner for it and a project called Playground, and stores a CLI token in
 `.fctl-dev/token`:

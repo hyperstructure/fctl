@@ -134,7 +134,7 @@ function Profile({ me }: { me: G.Me }) {
             {me.user.email}
             <div className="text-[12px] text-ink-4">
               {me.user.role === "owner"
-                ? "The instance's primary admin · "
+                ? "Primary instance owner · "
                 : me.user.role === "admin"
                   ? "An instance admin · "
                   : ""}

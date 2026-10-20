@@ -61,7 +61,7 @@ owner and purpose), so a value copied between rows does not decrypt.
   password of an account that hasn't set it up yet could set it up first;
   the email about it (when email is set up) and the audit log show that,
   and admins reset two-factor for people who lost their phone (the
-  primary admin for admins; the primary admin's own takes a recovery
+  primary instance owner for admins; the owner's own takes a recovery
   code). A workspace's admins can require it of its members in the same
   way: a member without a second factor can't open the workspace until
   they set one up, and their sign-ins ask for it.
@@ -260,14 +260,14 @@ credentials.
   its audit log; the instance's audit log records who deleted it.
 - People delete their own account in Settings (Danger zone) or with
   `fctl account delete`; admins delete members' accounts, and the primary
-  admin admins' too. Both delete the account's addresses, sign-in methods, passkeys
+  instance owner admins' too. Both delete the account's addresses, sign-in methods, passkeys
   and two-factor sign-in, tokens, Claude connections, memberships, shares,
   follows and notification settings and browsers, and the workspaces only
   it is in, with their projects and sessions. Sessions and projects it
   created that others still use stay, credited to "Deleted user": the
   account remains only as a disabled placeholder, without its name,
   emails, commit emails or picture. Commits already pushed keep the
-  trailers in them. The instance's primary admin hands the role over
+  trailers in them. The primary instance owner hands the role over
   before they can delete their account.
 - Settings → Your data (or `fctl account export`) downloads everything the
   instance keeps about you, as JSON. Files you attached are listed in the

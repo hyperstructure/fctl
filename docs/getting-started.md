@@ -277,4 +277,4 @@ Share a single session with someone else in the workspace from its
 
 A workspace has one primary admin, whom no other admin can demote or
 remove; they hand the role to another admin under its **Settings**, as the
-instance's primary admin does under **Admin → People**.
+primary instance owner does under **Admin → People**.

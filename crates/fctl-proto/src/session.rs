@@ -20,10 +20,9 @@ pub struct UserRef {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceRole {
-    /// The primary instance administrator, one per instance: everything
-    /// admins do, and managing admins. Nobody else can demote, disable or
-    /// remove them; they hand the role to another admin
-    /// (`POST /api/v1/admin/transfer`).
+    /// The primary instance owner, one per instance: everything admins
+    /// do, and managing admins. Nobody else can demote, disable or remove
+    /// them; they hand the role to an admin (`POST /api/v1/admin/transfer`).
     Owner,
     /// Manages people and invitations, runners, which workspaces use which
     /// GitHub accounts, and the instance's settings. Sees inside only the

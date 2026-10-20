@@ -88,8 +88,8 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   Signing up requires a matching entry; removing an exact entry disables that
   user. The first account is created through a one-time setup link
   (`/setup#token=…`, from the `FCTL_SETUP_TOKEN` secret) and becomes the
-  primary instance admin.
-- Instance roles: `owner` (the primary instance admin, one per instance),
+  primary instance owner.
+- Instance roles: `owner` (the primary instance owner, one per instance),
   `admin`, `member`. Instance admins run the instance (people, invitations,
   runners, GitHub, settings), not what is inside
   [workspaces](#workspaces) they aren't members of. Workspace roles: `owner`
@@ -162,8 +162,8 @@ answers its other requests, from browser sessions and CLI and access tokens
 alike, with `two_factor_setup_required` (`api::two_factor::open_while_required`),
 and the web app shows the page that sets it up instead of the app. Admins
 reset it for someone who lost their phone and recovery codes (`fctl admin
-reset-two-factor`; only the primary admin resets an admin's, and nobody the
-primary admin's), which removes their authenticator app and recovery
+reset-two-factor`; only the primary instance owner resets an admin's, and
+nobody theirs), which removes their authenticator app and recovery
 codes, and their passkeys where those are the second factor required
 (unless a passkey is their only way in). Turning it on, replacing the app, turning it off, an
 admin's reset and a sign-in with a recovery code go in the audit log, and

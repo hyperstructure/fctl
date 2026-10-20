@@ -771,7 +771,7 @@ impl Api {
         self.post("/admin/invites", req).await
     }
 
-    /// Hands the primary admin role of the instance to another admin.
+    /// Hands the role of primary instance owner to an admin.
     pub async fn transfer_instance(&self, user_id: &str) -> Result<User> {
         self.post(
             "/admin/transfer",

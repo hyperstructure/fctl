@@ -75,7 +75,7 @@ pub struct Plan {
     kept_sessions: i64,
     /// Sessions that must be stopped first: theirs, or in workspaces that go.
     running: i64,
-    /// The account is the instance's primary admin.
+    /// The account is the primary instance owner.
     primary: bool,
 }
 
@@ -83,7 +83,7 @@ impl Plan {
     fn self_blocker(&self) -> Option<String> {
         if self.primary {
             return Some(
-                "You are this instance's primary admin. Hand the role to another admin (Admin → People) before you delete your account."
+                "You are the primary instance owner. Hand the role to an admin (Admin → People) before you delete your account."
                     .into(),
             );
         }

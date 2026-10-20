@@ -44,21 +44,21 @@ pub enum AdminCmd {
         workspaces: Vec<String>,
     },
     /// Make someone an instance admin, or a member again. Only the primary
-    /// admin takes the role from other admins.
+    /// instance owner takes the role from other admins.
     Role {
         /// Any of their email addresses, or their user id.
         user: String,
         #[arg(value_enum)]
         role: Role,
     },
-    /// Hand the primary admin role to another admin (the primary admin).
-    /// You stay an admin.
+    /// Hand the role of primary instance owner to an admin (the primary
+    /// instance owner). You become an admin.
     Transfer {
         /// Any of their email addresses, or their user id.
         user: String,
     },
     /// Disable someone's account: they can't sign in, and their tokens stop
-    /// working. Only the primary admin disables admins.
+    /// working. Only the primary instance owner disables admins.
     Disable {
         /// Any of their email addresses, or their user id.
         user: String,
@@ -69,8 +69,8 @@ pub enum AdminCmd {
         user: String,
     },
     /// Delete someone's account, as deleting their own would: the
-    /// workspaces only they are in go with it. Only the primary admin
-    /// deletes admins. This cannot be undone.
+    /// workspaces only they are in go with it. Only the primary instance
+    /// owner deletes admins. This cannot be undone.
     DeleteUser {
         /// Any of their email addresses, or their user id.
         user: String,
@@ -408,7 +408,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 return style::print_json(&updated);
             }
             println!(
-                "{} {} is the instance's primary admin; you stay an admin",
+                "{} {} is the primary instance owner; you are an admin now",
                 style::accent("✓"),
                 updated.name
             );
@@ -624,7 +624,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             }
             for u in list.users {
                 let role = match u.role {
-                    InstanceRole::Owner => "primary",
+                    InstanceRole::Owner => "owner",
                     r => r.as_str(),
                 };
                 println!(

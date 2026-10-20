@@ -52,7 +52,7 @@ the web app and the Worker (Rust compiled to WebAssembly), renders
 and deploys to your domain. Run it again, without `--create`, for every
 upgrade.
 
-## 3. Set the secrets and create the primary admin
+## 3. Set the secrets and create the primary instance owner
 
 ```sh
 cargo xtask secrets acme
@@ -65,7 +65,7 @@ This sets, once:
   project secret unreadable.
 - `FCTL_SETUP_TOKEN` — a one-time token. The command prints the setup link,
   `https://fctl.acme.dev/setup#token=…`. Open it to create the account of
-  the primary instance admin; after that, the link does nothing.
+  the primary instance owner; after that, the link does nothing.
   `--new-setup-token` prints a fresh one.
 
 Sign in and create your first workspace. Then invite your team under

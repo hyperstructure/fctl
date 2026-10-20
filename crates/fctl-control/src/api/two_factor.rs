@@ -960,12 +960,12 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     }
     if target.role() == InstanceRole::Owner {
         return Err(forbidden(
-            "Nobody can reset the primary admin's two-factor sign-in: they sign in with a recovery code",
+            "Nobody can reset the primary instance owner's two-factor sign-in: they sign in with a recovery code",
         ));
     }
     if target.role() == InstanceRole::Admin && actor.role() != InstanceRole::Owner {
         return Err(forbidden(
-            "Only the primary admin can reset an admin's two-factor sign-in",
+            "Only the primary instance owner can reset an admin's two-factor sign-in",
         ));
     }
     let settings = crate::instance::settings(&ctx.db).await?;
