@@ -2,6 +2,19 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.14.0 (2026-10-20)
+
+### Features
+
+- **control:** Choose repositories after installing the GitHub App ([#161](https://github.com/hyperstructure/fctl/pull/161))
+
+### Fixes
+
+- **web:** Move the home page's workspace filter up, clear of Working now ([#158](https://github.com/hyperstructure/fctl/pull/158))
+- **web:** Line up the invite form on the workspace People tab ([#159](https://github.com/hyperstructure/fctl/pull/159))
+- **web:** Line up buttons with the fields and selects beside them ([#160](https://github.com/hyperstructure/fctl/pull/160))
+- **control:** Workspaces require two-factor while the instance does ([#162](https://github.com/hyperstructure/fctl/pull/162))
+
 ## 0.13.0 (2026-10-20)
 
 ### Breaking changes

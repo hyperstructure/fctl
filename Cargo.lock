@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "fake-claude"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -498,7 +498,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fctl"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "fctl-agent"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "fctl-client"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "fctl-control"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "fctl-domain"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "fctl-host"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "fctl-proto"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "base64",
