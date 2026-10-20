@@ -69,7 +69,8 @@ export function Banner({
       role={tone === "error" ? "alert" : "status"}
     >
       <Icon className="mt-[3px] size-4 shrink-0" />
-      <div className="min-w-0">{children}</div>
+      {/* A long name or link in a message wraps rather than running off a phone. */}
+      <div className="min-w-0 [overflow-wrap:anywhere]">{children}</div>
     </div>
   );
 }
@@ -110,7 +111,7 @@ export function Toaster() {
   useEffect(() => () => listeners.clear(), []);
   return (
     <div
-      className="pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] z-50 flex flex-col items-end gap-2"
+      className="pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] z-50 flex flex-col items-end gap-2"
       aria-live="polite"
     >
       {list.map((t) => (

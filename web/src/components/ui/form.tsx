@@ -104,12 +104,13 @@ export function Field({
         {action}
       </div>
       {children(id)}
+      {/* Names, addresses and links in them wrap on a phone instead of running off it. */}
       {error ? (
-        <p className="animate-rise text-[12.5px] text-danger" role="alert">
+        <p className="animate-rise text-[12.5px] text-danger [overflow-wrap:anywhere]" role="alert">
           {error}
         </p>
       ) : hint ? (
-        <p className="text-[12.5px] text-ink-3">{hint}</p>
+        <p className="text-[12.5px] text-ink-3 [overflow-wrap:anywhere]">{hint}</p>
       ) : null}
     </div>
   );

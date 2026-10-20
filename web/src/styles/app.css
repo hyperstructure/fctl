@@ -2,6 +2,15 @@
 @import "@hyperstructure/design/fonts.css";
 @import "@hyperstructure/design/tokens.css";
 
+/* A fieldset is as wide as its container, as a div is, not as its content
+   (browsers give it min-width: min-content): a row in it wraps or scrolls
+   instead of widening the page. */
+@layer base {
+  fieldset {
+    min-width: 0;
+  }
+}
+
 /* Editorial prose: agent answers, project descriptions. */
 .prose-fctl {
   font-family: var(--font-sans);

@@ -76,12 +76,18 @@ export function AuthFrame({
           options={{ pixel: 3, fps: 30 }}
         />
       </div>
-      <div className="relative z-10 flex items-center justify-between px-6 py-5">
+      <div className="relative z-10 flex items-center justify-between gap-4 px-6 py-5">
         <Logo />
-        <span className="text-[12.5px] text-ink-4">{instance?.name}</span>
+        <span className="min-w-0 truncate text-[12.5px] text-ink-4">{instance?.name}</span>
       </div>
       <div className="relative z-10 flex flex-1 items-center justify-center px-5 pb-16">
-        <div className={cn("w-full animate-rise", wide ? "max-w-[720px]" : "max-w-[400px]")}>
+        {/* An address or a name with no spaces wraps on a phone rather than running off it. */}
+        <div
+          className={cn(
+            "w-full animate-rise [overflow-wrap:anywhere]",
+            wide ? "max-w-[720px]" : "max-w-[400px]",
+          )}
+        >
           <h1 className="font-display text-[34px] leading-[1.1] font-medium tracking-[-0.02em] text-ink">
             {title}
           </h1>
