@@ -1,7 +1,8 @@
 //! Printing a session transcript in the terminal, live.
 
 use crate::style;
-use fctl_proto::event::{EventBody, FileChange, NoticeLevel, SessionEvent};
+use fctl_domain::branches;
+use fctl_proto::event::{EventBody, FileChange, GitState, NoticeLevel, SessionEvent};
 use fctl_proto::session::PullRequestRef;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -15,6 +16,10 @@ pub struct Renderer {
     in_text: bool,
     pub last_seq: u64,
     pub quiet_logs: bool,
+    /// The repositories' state seen last, and the pull requests seen: a
+    /// state shows when a branch changed (`fctl_domain::branches`).
+    git: Option<GitState>,
+    pull_requests: HashSet<String>,
     /// Print each stored event as one line of JSON instead (for scripts).
     pub json: bool,
 }
@@ -176,14 +181,24 @@ impl Renderer {
                 ));
             }
             EventBody::Git(g) => {
+                // A line for each repository whose branch changed: a
+                // commit, a push or a new pull request.
+                let changed = branches::changed(self.git.as_ref(), g, &mut self.pull_requests);
+                self.git = Some(g.clone());
+                if changed.is_empty() {
+                    return;
+                }
                 self.end_text();
-                let line = git_line(None, &g.files, g.ahead, g.pushed, g.pull_request.as_ref());
-                out(&format!("{}\n", style::dim(&line)));
+                if changed.contains(&None) {
+                    let pr = g.pull_request.as_ref();
+                    let line = git_line(None, &g.files, g.ahead, g.pushed, pr);
+                    out(&format!("{}\n", style::dim(&line)));
+                }
                 for r in g.repos.iter().flatten() {
-                    if r.files.is_empty() && r.ahead == 0 && r.pull_request.is_none() {
+                    let name = r.full_name();
+                    if !changed.contains(&Some(name.clone())) {
                         continue;
                     }
-                    let name = r.full_name();
                     let line = git_line(
                         Some(&name),
                         &r.files,

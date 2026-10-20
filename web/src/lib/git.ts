@@ -40,3 +40,47 @@ export function repoChanges(git: G.GitState): RepoChanges[] {
 /** Whether a repository has changes or commits to show. The session lists its
  * pull requests on their own (lib/pulls). */
 export const hasChanges = (r: RepoChanges) => r.files.length > 0 || r.ahead > 0;
+
+/** What a git state says of one repository's branch. */
+type Branch = { head?: string; ahead: number; pushed: boolean; pr?: string };
+
+type BranchState = { head?: string; ahead: number; pushed: boolean; pull_request?: G.PullRequestRef };
+
+function branches(git: G.GitState): Map<string | undefined, Branch> {
+  const branch = (s: BranchState): Branch => ({
+    head: s.head,
+    ahead: s.ahead,
+    pushed: s.pushed,
+    pr: s.pull_request?.url,
+  });
+  return new Map<string | undefined, Branch>([
+    [undefined, branch(git)],
+    ...(git.repos ?? []).map((r) => [`${r.owner}/${r.name}`, branch(r)] as const),
+  ]);
+}
+
+/**
+ * The repositories whose branch changed since the state before, named as in
+ * `repoChanges`: a commit of their own (the head moved, with commits the base
+ * lacks), a push of them, or a pull request not in `seen`, which keeps the
+ * pull requests' URLs from one call to the next. fctl-agent reports the state
+ * while Claude works, after each turn and when the session stops, and most
+ * reports only move files.
+ */
+export function branchChanges(
+  before: G.GitState | undefined,
+  after: G.GitState,
+  seen: Set<string>,
+): (string | undefined)[] {
+  const was = before ? branches(before) : new Map<string | undefined, Branch>();
+  const changed: (string | undefined)[] = [];
+  for (const [name, b] of branches(after)) {
+    const w = was.get(name);
+    const committed = b.ahead > 0 && !!b.head && b.head !== w?.head;
+    const pushed = b.ahead > 0 && b.pushed && !w?.pushed;
+    const opened = !!b.pr && !seen.has(b.pr);
+    if (b.pr) seen.add(b.pr);
+    if (committed || pushed || opened) changed.push(name);
+  }
+  return changed;
+}
