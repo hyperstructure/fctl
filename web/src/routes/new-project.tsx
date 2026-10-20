@@ -121,7 +121,7 @@ export function NewProject() {
           }
         >
           Create a workspace for the people and GitHub accounts you work with, or join one you are invited to
-          on the floor.
+          on the home page.
         </Empty>
       </div>
     );

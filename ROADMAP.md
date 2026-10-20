@@ -22,7 +22,7 @@ this file is the overview. Order within a section is priority.
       systemd services; recovery of running sessions after a restart
 - [x] fctl-agent: journaled, acknowledged events; at-least-once deliveries;
       crash restarts; idle timeouts
-- [x] Web app: the floor, live sessions with streaming transcripts and
+- [x] Web app: the home page, live sessions with streaming transcripts and
       diffs, projects, settings, admin; dithered WebGL scenes
 - [x] CLI for everything, with `--json`
 - [x] fctl.sh: landing page, docs, installer, release downloads
@@ -62,7 +62,7 @@ this file is the overview. Order within a section is priority.
 - [ ] The same notifications by email (#49)
 - [ ] Homebrew tap: `brew install hyperstructure/tap/fctl` (#5)
 - [x] Usage view: each person's Claude plan limits as sessions report them,
-      in Settings, on the floor and in `fctl claude status` (#6)
+      in Settings, on the home page and in `fctl claude status` (#6)
 - [x] Projects that span several repositories, or read every repository of
       an organization (#17)
 - [x] macOS release binaries that run on macOS 12 and later, not only 15+ (#7)

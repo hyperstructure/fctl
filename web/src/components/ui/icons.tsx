@@ -1,4 +1,25 @@
-// Brand marks lucide does not ship.
+// Icons lucide does not ship: GitHub's mark, and fctl's own, drawn on lucide's grid
+// (24 units, 2-unit round strokes) so that they sit beside its icons.
+
+/** Home: a house with its light on, as a project's dot lights up while its agents work. */
+export function HomeIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "size-4"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m2.5 11 9.5-8 9.5 8" />
+      <path d="M5 10v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-9" />
+      <circle cx="12" cy="15" r="2.25" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 
 export function GithubIcon({ className }: { className?: string }) {
   return (

@@ -117,7 +117,7 @@ export function ErrorPage({ error, reset }: ErrorComponentProps) {
         </Button>
         {/* A full load: what broke may be the app's own state. */}
         <a href="/">
-          <Button size="lg">Back to the floor</Button>
+          <Button size="lg">Back home</Button>
         </a>
       </div>
       <p className="mt-4 min-h-[1.6em] font-mono text-[12.5px] text-ink-3" role="status">

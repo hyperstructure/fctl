@@ -6,7 +6,6 @@ import {
   ChevronsUpDown,
   Cpu,
   FolderPlus,
-  Home as HomeIcon,
   Lock,
   LogOut,
   Menu as MenuIcon,
@@ -19,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Avatar, Kbd, Logo, Menu, MenuItem, MenuSeparator, StatusDot } from "@/components/ui";
+import { Avatar, HomeIcon, Kbd, Logo, Menu, MenuItem, MenuSeparator, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
@@ -175,7 +174,7 @@ function Sidebar({
       </div>
       <nav className="mt-4 flex flex-col gap-0.5 px-3">
         <NavLink to="/" icon={<HomeIcon />} active={path === "/"} onClick={onNavigate}>
-          Floor
+          Home
         </NavLink>
       </nav>
       <nav
@@ -192,7 +191,7 @@ function Sidebar({
             <WorkspaceAvatar workspace={i.workspace} size={18} />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-ink">{i.workspace.name}</span>
-              <span className="block truncate text-[11.5px] text-ink-3">Invited · join on the floor</span>
+              <span className="block truncate text-[11.5px] text-ink-3">Invited · join on Home</span>
             </span>
           </Link>
         ))}

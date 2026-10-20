@@ -1,11 +1,11 @@
 // "Did you mean …?" on the not-found page: the app's page that an address
 // which doesn't exist most likely meant.
 
-/** The app's pages with fixed addresses (router.tsx), besides the floor. */
+/** The app's pages with fixed addresses (router.tsx), besides the home page. */
 const PAGES = ["/new", "/settings", "/admin", "/device", "/login"];
 
-/** Words people use for the floor, the list of sessions and projects. */
-const FLOOR = new Set(["sessions", "projects", "floor", "home", "dashboard", "index", "index.html"]);
+/** Words people use for the home page, the list of sessions and projects (and its old name). */
+const HOME = new Set(["sessions", "projects", "home", "floor", "dashboard", "index", "index.html"]);
 const LOGIN = new Set(["signin", "sign-in", "log-in", "logon", "auth"]);
 
 /** Levenshtein distance. */
@@ -40,7 +40,7 @@ export function suggest(path: string): string | null {
   if ((head === "project" || head === "projects") && second) return `/p/${second}`;
   // A project or session page with more after it.
   if ((head === "p" || head === "s") && second) return `/${head}/${second}`;
-  if (FLOOR.has(head)) return "/";
+  if (HOME.has(head)) return "/";
   if (LOGIN.has(head)) return "/login";
   let best: string | null = null;
   let score = Number.POSITIVE_INFINITY;

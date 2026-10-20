@@ -1,4 +1,4 @@
-// The floor: every agent at work as a thread of light, and what to do next.
+// Home: every agent at work as a thread of light, and what to do next.
 
 import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstructure/design/gl/foundry";
 import { useMutation } from "@tanstack/react-query";
@@ -28,6 +28,7 @@ import { ago, lowOnDisk } from "@/lib/format";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspaces } from "@/lib/queries";
 import { repoSummary, repoTitle } from "@/lib/repos";
 import { waitsForYou } from "@/lib/status";
+import { useTaskBoxFocus } from "@/lib/task-box";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 const ACTIVE: G.SessionStatus[] = [
@@ -46,7 +47,7 @@ function greeting(user: G.User) {
   return `${part}, ${firstNames(user)}.`;
 }
 
-/** Palette index in the floor scene: 0 neutral, 1 working, 2 waiting, 3 paused, 4 failed. */
+/** Palette index in the scene: 0 neutral, 1 working, 2 waiting, 3 paused, 4 failed. */
 function laneColor(s: G.SessionStatus): number {
   if (s === "running") return 1;
   if (s === "idle") return 2;
@@ -60,7 +61,8 @@ function lanesFor(n: number): number[] {
   return Array.from({ length: n }, (_, i) => Math.round(((i + 0.5) * LANES) / Math.max(n, 1) - 0.5));
 }
 
-function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<FoundryHandle | null> }) {
+/** The sessions at work as threads of light, in the foundry scene. */
+function Threads({ active, handle }: { active: G.Session[]; handle: RefObject<FoundryHandle | null> }) {
   const energy = useRef(new Map<string, number>());
   // Keyed on ids and statuses: the list itself is a new array on every render.
   const key = [...active]
@@ -174,6 +176,7 @@ function QuickStart({
   const [project, setProject] = useState(first ?? "");
   const [prompt, setPrompt] = useState(kept?.prompt ?? "");
   const ref = useRef<HTMLTextAreaElement>(null);
+  useTaskBoxFocus(ref, editable.length > 0);
   useEffect(() => {
     if ((!project || !editable.some((p) => p.slug === project)) && first) setProject(first);
   }, [first, project, editable]);
@@ -518,7 +521,7 @@ function Invitations({ invitations }: { invitations: G.WorkspaceInvitation[] }) 
   );
 }
 
-/** Narrows the floor's lists to one workspace, with each one's work in progress. */
+/** Narrows the home page's lists to one workspace, with each one's work in progress. */
 function WorkspaceFilter({
   workspaces,
   active,
@@ -626,7 +629,7 @@ export function Home() {
   const online = onlineRunners.length;
   const draining = onlineRunners.filter((r) => r.drain).length;
   const lowDisk = onlineRunners.filter((r) => !r.drain && lowOnDisk(r)).length;
-  const floor = useRef<FoundryHandle | null>(null);
+  const scene = useRef<FoundryHandle | null>(null);
   // The plan that sessions you start run on.
   const usage = me?.claude.find((c) => c.is_default)?.usage;
   const blocked = mine.filter((w) => w.blocked);
@@ -641,11 +644,11 @@ export function Home() {
         className="relative h-[360px] overflow-hidden border-b border-line max-sm:h-[272px]"
         onPointerMove={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
-          floor.current?.pointer((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+          scene.current?.pointer((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
         }}
-        onPointerLeave={() => floor.current?.pointerLeave()}
+        onPointerLeave={() => scene.current?.pointerLeave()}
       >
-        <Floor active={activeAll} handle={floor} />
+        <Threads active={activeAll} handle={scene} />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-canvas" />
         <div className="relative z-[1] mx-auto flex h-full max-w-[920px] flex-col justify-end px-6 pb-10">
           <h1 className="animate-rise font-display text-[40px] leading-[1.08] font-medium tracking-[-0.022em] text-ink">
@@ -664,7 +667,7 @@ export function Home() {
                 {waiting} {waiting === 1 ? "session is" : "sessions are"} waiting for you
               </>
             ) : (
-              "The floor is quiet. Start something."
+              "All quiet. Start something."
             )}
             <span className="text-ink-4">
               {several && ` · in ${mine.length} workspaces`} · {online} {online === 1 ? "runner" : "runners"}{" "}

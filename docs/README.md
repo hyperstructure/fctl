@@ -37,4 +37,5 @@ Three pieces make up a factory:
   one sandbox, on its own branch. Sessions are numbered per project
   (`my-app#12`).
 - **Runner** — a host registered with the control plane.
-- **Floor** — the app's home: every active session as a thread of light.
+- **Home page** — where the web app opens: the box for your next task, and
+  every active session as a thread of light.

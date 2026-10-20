@@ -1,4 +1,4 @@
-// A session in a list (the floor, a workspace's page): its status, title,
+// A session in a list (the home page, a workspace's page): its status, title,
 // workspace and reference, its pull requests, who started it and when it
 // last moved.
 
