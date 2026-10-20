@@ -129,6 +129,10 @@ const COUNTED_CALLS: usize = 32;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counted {
     calls: VecDeque<Call>,
+    /// The call whose response streams now (the latest `message_start`),
+    /// for a `message_delta` that doesn't say which call it ends.
+    #[serde(default)]
+    streaming: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,17 +279,22 @@ pub fn apply_stream_stats(stats: &mut SessionStats, counted: &mut Counted, v: &V
     let before = stats.clone();
     match v.pointer("/event/type").and_then(Value::as_str) {
         Some("message_start") => {
+            let id = v.pointer("/event/message/id").and_then(Value::as_str);
+            counted.streaming = id.map(str::to_owned);
             if let Some(usage) = v.pointer("/event/message/usage") {
-                let id = v.pointer("/event/message/id").and_then(Value::as_str);
                 count_call(stats, counted, id, usage, true);
             }
         }
         // It repeats the input, which the call's start or its stored blocks
-        // count.
+        // count. Without the call's id, it ends the call that streams.
         Some("message_delta") => {
-            if let Some(usage) = v.pointer("/event/usage") {
-                let id = v.get("api_message_id").and_then(Value::as_str);
-                count_call(stats, counted, id, usage, false);
+            let id = v
+                .get("api_message_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| counted.streaming.clone());
+            if let (Some(id), Some(usage)) = (id, v.pointer("/event/usage")) {
+                count_call(stats, counted, Some(&id), usage, false);
             }
         }
         _ => {}
@@ -533,9 +542,6 @@ mod tests {
             (s.input_tokens, s.output_tokens, s.cache_read_tokens),
             (5, 340, 22_000)
         );
-        // Without an id, every report counts.
-        assert!(apply_stream_stats(&mut s, &mut c, &delta(None, 10)));
-        assert_eq!(s.output_tokens, 350);
         // A call's input counts as its response starts, before any of it is
         // stored...
         let start = json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "c",
@@ -544,31 +550,35 @@ mod tests {
         assert!(apply_stream_stats(&mut s, &mut c, &start));
         assert_eq!(
             (s.input_tokens, s.output_tokens, s.cache_read_tokens),
-            (6, 351, 25_000)
+            (6, 341, 25_000)
         );
         // ...and once: its stored blocks repeat it.
         apply_stats(&mut s, &mut c, &block("c", None, 1, 3_000), 5, true);
         assert_eq!(
             (s.input_tokens, s.output_tokens, s.cache_read_tokens),
-            (6, 358, 25_000)
+            (6, 348, 25_000)
         );
+        // A `message_delta` that doesn't name its call (older Claude Code)
+        // ends the one that streams.
+        assert!(apply_stream_stats(&mut s, &mut c, &delta(None, 50)));
+        assert_eq!(s.output_tokens, 390);
         // The other stream events count nothing.
         let text = json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}}});
         assert!(!reports_usage(&text));
         assert!(!apply_stream_stats(&mut s, &mut c, &text));
         // Claude's totals settle the counts at the end of the turn...
         let result = |input: u64, output: u64, cache: u64| json!({"type": "result", "duration_ms": 9000, "modelUsage": {"m": {"inputTokens": input, "outputTokens": output, "cacheReadInputTokens": cache}}});
-        apply_stats(&mut s, &mut c, &result(7, 400, 30_000), 6, true);
+        apply_stats(&mut s, &mut c, &result(7, 420, 30_000), 6, true);
         assert_eq!(
             (s.input_tokens, s.output_tokens, s.cache_read_tokens),
-            (7, 400, 30_000)
+            (7, 420, 30_000)
         );
         // ...unless a resumed session's process knows less than was counted.
         apply_stats(&mut s, &mut c, &block("d", None, 2, 5_000), 7, true);
         apply_stats(&mut s, &mut c, &result(2, 8, 5_000), 8, true);
         assert_eq!(
             (s.input_tokens, s.output_tokens, s.cache_read_tokens),
-            (9, 408, 35_000)
+            (9, 428, 35_000)
         );
     }
 

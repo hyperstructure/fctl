@@ -1474,9 +1474,13 @@ impl SessionObject {
     /// goes missing.
     async fn count_stream(&self, event: &serde_json::Value, now: i64) {
         let Some(mut s) = self.summary() else { return };
-        let mut counted = self.counted();
-        if ev::apply_stream_stats(&mut s.stats, &mut counted, event) {
+        let before = self.counted();
+        let mut counted = before.clone();
+        let changed = ev::apply_stream_stats(&mut s.stats, &mut counted, event);
+        if counted != before {
             self.save_counted(counted);
+        }
+        if changed {
             self.save_summary(&s);
             self.broadcast_summary(&s);
             self.mark_dirty(now).await;
