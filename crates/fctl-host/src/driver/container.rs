@@ -613,11 +613,36 @@ impl ContainerDriver {
             .with_context(|| format!("running {} exec", self.bin))
     }
 
+    /// Stops the sandbox, which keeps its files. With Apple's `container`
+    /// it first gives back the disk space of the files deleted in it.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
         if self.state(&sb.name).await?.as_deref() == Some("running") {
+            if self.flavor == Flavor::Apple {
+                self.give_back_space(&sb.name).await;
+            }
             self.run(&["stop", "-t", "20", &sb.name]).await?;
         }
         Ok(())
+    }
+
+    /// Gives the Mac back the space of the files deleted in the running
+    /// sandbox `name`. Its root filesystem is a sparse disk image, which
+    /// shrinks only where the guest discards blocks, and the guest mounts
+    /// it without `discard`. The container can't trim it, having no
+    /// `CAP_SYS_ADMIN`, but the VM's init can: `container clean`, from
+    /// Apple's `container` 1.4. ext4 trims only the blocks whose release
+    /// its journal has committed, so `sync` goes first. Without `clean`,
+    /// the sandbox keeps the space until the host removes it.
+    async fn give_back_space(&self, name: &str) {
+        // A VM that doesn't answer one command won't answer the next.
+        if timed_out(&self.run(&["exec", name, "sync"]).await) {
+            return;
+        }
+        if let Err(e) = self.run(&["clean", name]).await {
+            let e = format!("{e:#}");
+            let why = e.lines().next().unwrap_or_default();
+            tracing::info!("{name} keeps the disk space of the files deleted in it: {why}");
+        }
     }
 
     pub async fn remove(&self, sb: &Sandbox) -> Result<()> {
@@ -1300,6 +1325,64 @@ mod tests {
             ]
         );
         assert_eq!(driver.vm_disk_free_mb(&images[..1]).await, None);
+        Ok(())
+    }
+
+    /// A stand-in CLI whose one sandbox runs, logging every call in
+    /// `calls`. Its `clean` runs `clean`.
+    fn running_cli(dir: &Path, flavor: Flavor, clean: &str) -> Result<ContainerDriver> {
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  inspect) if [ \"$2\" = --format ]; then echo running; else echo '[{{\"status\": {{\"state\": \"running\"}}}}]'; fi ;;\n  exec|stop) ;;\n  clean) {clean} ;;\n  *) exit 2 ;;\nesac\n",
+            calls = dir.join("calls").display(),
+        );
+        let bin = dir.join("cli");
+        write_script(&bin, &script)?;
+        Ok(ContainerDriver::with_bin(flavor, bin.display().to_string()))
+    }
+
+    fn calls_in(dir: &Path) -> Result<Vec<String>> {
+        let calls = std::fs::read_to_string(dir.join("calls"))?;
+        Ok(calls.lines().map(str::to_owned).collect())
+    }
+
+    #[tokio::test]
+    async fn apple_sandboxes_give_back_the_space_of_deleted_files_as_they_stop() -> Result<()> {
+        let sb = Sandbox {
+            name: "fctl-ses-1".into(),
+            root: None,
+        };
+        let cleans = "echo \"$2\"";
+        // Apple's `container` before 1.4 looks for a plugin.
+        let has_no_clean = "echo \"Error: Plugin 'container-clean' not found.\" >&2; exit 64";
+        for clean in [cleans, has_no_clean] {
+            let dir = tempfile::tempdir()?;
+            running_cli(dir.path(), Flavor::Apple, clean)?
+                .stop(&sb)
+                .await?;
+            // While it runs, after a `sync`: ext4 trims only what its
+            // journal has committed.
+            assert_eq!(
+                calls_in(dir.path())?,
+                [
+                    "inspect fctl-ses-1",
+                    "exec fctl-ses-1 sync",
+                    "clean fctl-ses-1",
+                    "stop -t 20 fctl-ses-1"
+                ]
+            );
+        }
+        // Docker's containers share a filesystem, which frees what they delete.
+        let dir = tempfile::tempdir()?;
+        running_cli(dir.path(), Flavor::Docker, cleans)?
+            .stop(&sb)
+            .await?;
+        assert_eq!(
+            calls_in(dir.path())?,
+            [
+                "inspect --format {{.State.Status}} fctl-ses-1",
+                "stop -t 20 fctl-ses-1"
+            ]
+        );
         Ok(())
     }
 

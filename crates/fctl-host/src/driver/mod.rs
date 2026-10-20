@@ -401,6 +401,8 @@ impl Driver {
         }
     }
 
+    /// Stops the sandbox, which keeps its files. An Apple `container`
+    /// sandbox first gives back the disk space of the files deleted in it.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
         match self {
             Self::Process(d) => d.stop(sb).await,

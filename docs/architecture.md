@@ -888,9 +888,16 @@ the VM's clock from the Mac's every 30 seconds, so the clock is right
 again within half a minute of the Mac waking, and the VM resolves names
 through the Mac. The root filesystem is a sparse 512 GiB disk image cloned
 from the image's, so `df` shows about 500 GB free whatever the Mac has.
-What a session writes there takes space on the Mac until the host removes
-the sandbox, even once the files are deleted: the runtime doesn't hand
-freed blocks back.
+The image grows as the session writes, and shrinks only where the guest
+discards blocks: the guest mounts it without `discard`, and the container
+can't run `fstrim` without `CAP_SYS_ADMIN`, which it doesn't have. So as
+the host stops a sandbox, it runs `sync` in it, then `container clean`
+(Apple's `container` 1.4 and later), which has the VM's init trim the
+root filesystem, and the Mac gets back the space of the files the
+session deleted
+([ADR 0025](adr/0025-hosts-trim-apple-sandboxes-as-they-stop-them.md)).
+While a sandbox runs, it holds the space of the files deleted in it; with
+an older `container`, until the host removes the sandbox.
 
 fctl-agent runs detached inside the sandbox and listens on a unix socket; the
 host talks to it through `fctl-agent attach` over the driver's exec channel.
