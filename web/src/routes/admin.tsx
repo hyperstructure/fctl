@@ -1187,8 +1187,10 @@ function Runners() {
         on a runner of its workspace. A runner belongs to whoever registered it, who adds it to the workspaces
         they run.
       </p>
+      {/* The fields line up by their labels, so the hint or error under the name moves nothing.
+          On a phone, the workspace goes under the name. */}
       <form
-        className="mt-6 flex items-end gap-2"
+        className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-2"
         onSubmit={(e) => {
           e.preventDefault();
           create.mutate();
@@ -1196,7 +1198,7 @@ function Runners() {
       >
         <Field
           label="Register a machine"
-          className="flex-1"
+          className="sm:flex-1"
           hint="A name you'll recognize, like “studio mac”."
           error={create.error?.message}
         >
@@ -1204,41 +1206,42 @@ function Runners() {
             <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="studio mac" />
           )}
         </Field>
-        <Field label="For" hint=" ">
-          {(id) => (
-            <Select
-              id={id}
-              value={workspace}
-              onChange={setWorkspace}
-              options={
-                admined.length > 0
-                  ? admined.map((w) => ({
-                      value: w.id,
-                      label: w.name,
-                      icon: <WorkspaceAvatar workspace={w} size={14} title={false} />,
-                    }))
-                  : [{ value: "none", label: "No workspace yet" }]
-              }
-            />
-          )}
-        </Field>
-        <Button
-          type="submit"
-          variant="primary"
-          icon={<Plus className="size-3.5" />}
-          loading={create.isPending}
-          disabled={!name}
-          className="mb-6"
-        >
-          Register
-        </Button>
+        <div className="flex items-end gap-2">
+          <Field label="For" className="flex-1 sm:flex-none">
+            {(id) => (
+              <Select
+                id={id}
+                value={workspace}
+                onChange={setWorkspace}
+                options={
+                  admined.length > 0
+                    ? admined.map((w) => ({
+                        value: w.id,
+                        label: w.name,
+                        icon: <WorkspaceAvatar workspace={w} size={14} title={false} />,
+                      }))
+                    : [{ value: "none", label: "No workspace yet" }]
+                }
+              />
+            )}
+          </Field>
+          <Button
+            type="submit"
+            variant="primary"
+            icon={<Plus className="size-3.5" />}
+            loading={create.isPending}
+            disabled={!name}
+          >
+            Register
+          </Button>
+        </div>
       </form>
       {runners.data?.runners.length === 0 ? (
         <Empty icon={<Cpu className="size-6" />} title="No machines yet">
           Register one above, then run two commands on it.
         </Empty>
       ) : (
-        <ul className="border-t border-line">
+        <ul className="mt-6 border-t border-line">
           {runners.data?.runners.map((r) => (
             <li key={r.id} className="flex items-start gap-4 border-b border-line py-4 sm:items-center">
               <span
