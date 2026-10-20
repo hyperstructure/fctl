@@ -54,8 +54,10 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
 - **The control plane never panics.** No `unwrap`/`expect`/`panic!` in
   `crates/fctl-control` (Clippy denies them). Durable Object SQL must succeed
   on an already-migrated schema (`IF NOT EXISTS`, `add_column`).
-- **Shipped migrations are immutable.** Add a new file in
-  `crates/fctl-control/migrations`.
+- **Shipped migrations are immutable**, names included: D1 records them by
+  name and would apply a renamed one again. Add a new file in
+  `crates/fctl-control/migrations`, numbered after the highest. (Two pull
+  requests merged together both took `0014`; leave both.)
 
 ## Conventions
 
