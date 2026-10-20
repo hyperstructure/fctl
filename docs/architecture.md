@@ -549,6 +549,20 @@ agent posts a notice; a primary repository out of reach fails the session.
   (which Claude is told to use), new commits on it are pushed, and its pull
   request is looked up. The `git` event carries the primary repository in
   its fields and the others in `repos`.
+- **While Claude works** fctl-agent reports the same state soon after tool
+  calls that can change the repositories (`Bash`, `Write`, `Edit`,
+  `NotebookEdit`, a subagent's too) and when background tasks end: a burst
+  costs one refresh, refreshes come at most every ten seconds
+  (`crates/fctl-agent/src/refresh.rs`), and a `git` event goes out only
+  when the state changed. These refreshes only read: they push nothing,
+  move no work, and look up a branch's pull request only once it was
+  pushed or its pushed head moved, or after `gh pr create`. They read a
+  copy of each clone's index, since `git diff` rewrites the index it reads
+  under its lock, which would fail the agent's own `git commit`
+  ([ADR 0027](adr/0027-agents-report-their-repositories-while-claude-works.md)).
+  The session page's Changes section and the session lists take the newest
+  state; the transcript shows one when a branch gets a commit, a push or a
+  new pull request (`fctl_domain::branches`).
 
 Older hosts and agents ignore the list and the second token, and work on the
 primary repository alone

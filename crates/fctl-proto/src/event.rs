@@ -42,7 +42,8 @@ pub enum EventBody {
     Status(StatusChange),
     /// Output from provisioning, the setup script or the supervisor.
     Log(LogLine),
-    /// The repository changed (after each turn).
+    /// The repositories' state: while Claude works, when it changed (at most
+    /// every ten seconds), after each turn, and when the session stops.
     Git(GitState),
     /// Remote Control was enabled or became unavailable.
     RemoteControl(RemoteControlState),
