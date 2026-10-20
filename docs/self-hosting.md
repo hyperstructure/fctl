@@ -53,6 +53,9 @@ Create the primary instance owner's account (the link works once):
 ```
 
 Open it, then carry on with [your team](#the-first-account-and-your-team).
+`fctl-data` is a volume Docker makes; a directory of yours works too
+(`-v /srv/fctl:/data`) once user 1000, which runs the server in the image,
+can write to it.
 [`deploy/standalone/compose.yaml`](../deploy/standalone/compose.yaml) does
 the same with Docker Compose. To build the image yourself, in a clone:
 `docker build -f deploy/standalone/Dockerfile -t fctl-control .`

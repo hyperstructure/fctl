@@ -87,6 +87,9 @@ WebCrypto. Two ways to run it elsewhere:
   more than a native binary would.
 - Upgrading wrangler upgrades Miniflare and workerd for both `cargo xtask
   dev` and the image; the server takes the Miniflare wrangler depends on.
+  Instances' state is where that Miniflare keeps it (`state/v3` in the
+  data directory), and CI starts from none: an upgrade that moves it has to
+  move theirs too.
 - The Worker's name and its D1 database's id in `wrangler.toml` name the
   standalone state's files, so they stay as they are.
 - `request.cf` is empty outside Cloudflare, so sign-ins record no city or

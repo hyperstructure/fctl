@@ -199,7 +199,9 @@ the Skills workflow, which validates them all in one job against the
 - It runs outside Cloudflare too, on workerd through Miniflare
   (`deploy/standalone`), with the bindings in `wrangler.toml`: a binding
   added there and in `xtask/src/deploy.rs` reaches both. Workers APIs that
-  Miniflare lacks don't work there.
+  Miniflare lacks don't work there. Self-hosted instances keep their state
+  where Miniflare does (`state/v3` in their data directory): when you
+  upgrade wrangler, check that its Miniflare still reads it there.
 
 ## Working on the web app
 

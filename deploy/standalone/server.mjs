@@ -110,7 +110,15 @@ async function main() {
   onSignals();
   const cfg = readConfig(process.env);
   const state = join(cfg.dataDir, "state");
-  mkdirSync(state, { recursive: true });
+  try {
+    mkdirSync(state, { recursive: true });
+  } catch (e) {
+    if (e.code !== "EACCES" && e.code !== "EROFS" && e.code !== "EPERM") throw e;
+    // A directory from the host, mounted at /data, keeps the host's owner.
+    throw new ConfigError(
+      `Can't write to ${cfg.dataDir} (${e.code}): make it writable for user ${process.getuid?.() ?? "?"}, which runs this server`,
+    );
+  }
 
   const lock = await acquire(cfg.dataDir, {
     log,
