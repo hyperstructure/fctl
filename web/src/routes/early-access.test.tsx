@@ -149,7 +149,7 @@ describe("asking for early access", () => {
     expect(withdrawAccess).not.toHaveBeenCalled();
     await act(async () => button("Withdraw my request")?.click());
     expect(withdrawAccess).toHaveBeenCalledWith({ token: "fctl_acr_secret" });
-    expect(page.container.textContent).toContain("Your request is withdrawn");
+    expect(page.container.textContent).toContain("This browser forgot your address.");
     expect(page.container.textContent).toContain("Request early access.");
     expect(loadSent()).toBeUndefined();
   });

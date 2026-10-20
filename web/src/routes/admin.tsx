@@ -128,7 +128,7 @@ export function Admin() {
         {tab === "workspaces" && <Workspaces />}
         {tab === "github" && <Github />}
         {tab === "access" && <Access />}
-        {tab === "early-access" && <EarlyAccess />}
+        {tab === "early-access" && early && <EarlyAccess />}
         {tab === "runners" && <Runners />}
         {tab === "settings" && <InstanceSettings />}
         {tab === "audit" && <Audit />}

@@ -58,9 +58,12 @@ whoever runs them: a list strangers can join has no place there.
   how many there are in all.
 - The list is the admins' to work through: nothing tells them when
   someone asks but the count on the tab and on the sidebar's Admin link.
-- Someone who asked from a browser they no longer have can't withdraw the
-  request; it goes a year after they last asked, or when an admin removes
-  it.
+- Only the browser that first asked withdraws the request. Another one
+  that asks with the address gets a token that withdraws nothing, and,
+  since the answers are the same, the page there can only say that the
+  request is withdrawn unless another browser asked first. Someone without
+  that browser waits for the request to go a year after they last asked,
+  or for an admin to remove it.
 - [The privacy policy](https://fctl.sh/privacy) says what app.fctl.sh keeps
   for a request, who sees it and for how long, in
   hyperstructure/fctl-site.

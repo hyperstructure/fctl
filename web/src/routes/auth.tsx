@@ -514,7 +514,14 @@ export function InvitePage() {
     "Checking your invitation…"
   );
   // The answer to their request for early access.
-  const title = preview.data?.early_access ? <>Your early access is here.</> : <>You're invited.</>;
+  const title = preview.data?.early_access ? (
+    // As the page where they asked said it (routes/early-access.tsx).
+    <>
+      Your <span className="title-hot">early access</span> is here<span className="title-dot">.</span>
+    </>
+  ) : (
+    <>You're invited.</>
+  );
   if (me && !separate) {
     return (
       <AuthFrame title={title} subtitle={subtitle}>

@@ -49,7 +49,10 @@ fctl -- workspaces create "Side project"`, then `workspaces add-runner
 dev-host -w side-project` so that the dev runner takes its sessions too,
 and `admin invite grace@example.com -w side-project`, whose link signs Grace
 up in another browser. The dev instance has no GitHub App, so projects there
-have no repository and the GitHub tabs say so.
+have no repository and the GitHub tabs say so. It takes requests for early
+access, as app.fctl.sh does: signed out, the sign-in page links to
+`/early-access`, and the requests show under Admin → Early access and in
+`cargo run -p fctl -- admin early-access`.
 
 fake-claude reacts to words in the prompt: `write <name>` creates and
 commits a file, `rename <title>` names the session with `fctl edit` (the

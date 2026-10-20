@@ -238,7 +238,11 @@ export function EarlyAccessPage() {
     >
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         {withdrawn && (
-          <Banner tone="ok">Your request is withdrawn, and this browser forgot your address.</Banner>
+          // The control plane's answer is the same either way (api::early_access::withdraw).
+          <Banner tone="ok">
+            This browser forgot your address. Your request is withdrawn, unless another browser asked with it
+            first.
+          </Banner>
         )}
         <Field label="Email" error={error?.field === "email" ? error.message : undefined}>
           {(id) => (
@@ -365,7 +369,7 @@ function Ticket({
         open={asking}
         onClose={() => setAsking(false)}
         title="Withdraw your request?"
-        description="You leave the list, and this browser forgets your address. You can ask again whenever you like."
+        description="You leave the list, and this browser forgets your address. Only the browser that first asked with it can withdraw it. You can ask again whenever you like."
       >
         <div className="flex flex-col gap-4">
           {error && <Banner tone="error">{error}</Banner>}
