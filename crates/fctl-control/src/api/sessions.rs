@@ -497,6 +497,7 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             status: Some(SessionStatus::Queued),
             reason: Some("Resuming".into()),
             clear_runner: true,
+            claude_user: Some(user.to_ref()),
             ..Default::default()
         },
     )

@@ -620,6 +620,11 @@ pub struct RemoteControlState {
     pub session_url: Option<String>,
     /// Why Remote Control is off, when it was requested.
     pub unavailable_reason: Option<String>,
+    /// The person on whose Claude subscription the run that reported it
+    /// ran: who started the session, or who resumed it. Only they can open
+    /// it in the Claude apps. The control plane adds it; agents, and
+    /// control planes before it, leave it out.
+    pub user: Option<UserRef>,
 }
 
 /// Counters shown on session lists. Tokens count each API call as it comes,

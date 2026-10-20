@@ -1,5 +1,7 @@
 // Remote Control: following a session in the Claude apps.
 
+import type * as G from "@/gen";
+
 const SESSION_URL = /^https:\/\/claude\.ai\/code\/((?:session|cse)_[A-Za-z0-9_-]+)$/;
 
 /**
@@ -20,4 +22,26 @@ export function claudeAppUrl(sessionUrl: string): string | undefined {
 export function claudeAppLink(sessionUrl: string): { href: string; target?: string; rel?: string } {
   const app = claudeAppUrl(sessionUrl);
   return app ? { href: app } : { href: sessionUrl, target: "_blank", rel: "noreferrer" };
+}
+
+/**
+ * The person on whose Claude subscription a session's Remote Control state
+ * `rc` came about: who started the session, or who resumed it. Only they can
+ * open it in the Claude apps. Before the session has any, and from control
+ * planes before they said, it is who started the session.
+ */
+export function remoteControlUser(rc: G.RemoteControlState | undefined, startedBy: G.UserRef): G.UserRef {
+  return rc?.user ?? startedBy;
+}
+
+/**
+ * The claude.ai/code URL of a session's Remote Control state `rc` for `me`:
+ * none unless it is theirs to open (see {@link remoteControlUser}).
+ */
+export function remoteControlUrl(
+  rc: G.RemoteControlState | undefined,
+  startedBy: G.UserRef,
+  me: G.UserId | undefined,
+): string | undefined {
+  return me !== undefined && remoteControlUser(rc, startedBy).id === me ? rc?.session_url : undefined;
 }

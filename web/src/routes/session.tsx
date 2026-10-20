@@ -51,7 +51,7 @@ import { hasChanges, type RepoChanges, repoChanges } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
 import { prFullRef, prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
-import { claudeAppLink } from "@/lib/remote-control";
+import { claudeAppLink, remoteControlUrl, remoteControlUser } from "@/lib/remote-control";
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
 import { statusReason } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
@@ -123,7 +123,8 @@ export function SessionPage() {
   const status = session?.status;
   // The session's workspace as your list has it now (renames and avatars).
   const workspace = freshest(workspaceIndex, session?.workspace ?? initial.data?.workspace);
-  const rc = session?.remote_control;
+  // Only the person on whose Claude subscription it runs can follow it in the Claude apps.
+  const claudeUrl = session && remoteControlUrl(session.remote_control, session.created_by, me?.user.id);
   const role = s.role ?? session?.role;
   const isOwner = role === "owner";
 
@@ -216,9 +217,9 @@ export function SessionPage() {
               {s.viewers.length > 1 && <AvatarStack users={s.viewers.map((v) => v.user)} />}
               {/* On phones the buttons stack, so that the title keeps its room. */}
               <div className="flex flex-col items-center gap-1 sm:flex-row sm:gap-1.5">
-                {rc?.session_url && (
+                {claudeUrl && (
                   <a
-                    {...claudeAppLink(rc.session_url)}
+                    {...claudeAppLink(claudeUrl)}
                     className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 sm:inline-flex"
                   >
                     Open in Claude <ArrowUpRight className="size-3.5" />
@@ -264,12 +265,12 @@ export function SessionPage() {
                 >
                   {(close) => (
                     <>
-                      {rc?.session_url && (
+                      {claudeUrl && (
                         <>
                           {/* The header has no room for the button on phones. */}
                           <MenuItem
                             icon={<ArrowUpRight />}
-                            link={claudeAppLink(rc.session_url)}
+                            link={claudeAppLink(claudeUrl)}
                             onClick={close}
                             className="sm:hidden"
                           >
@@ -277,7 +278,7 @@ export function SessionPage() {
                           </MenuItem>
                           <MenuItem
                             icon={<Globe />}
-                            link={{ href: rc.session_url, target: "_blank", rel: "noreferrer" }}
+                            link={{ href: claudeUrl, target: "_blank", rel: "noreferrer" }}
                             onClick={close}
                           >
                             Open on claude.ai
@@ -366,6 +367,8 @@ export function SessionPage() {
               status={status}
               stall={stall}
               canManage={isOwner}
+              startedBy={session.created_by}
+              me={me?.user.id}
               onLoadOlder={() => void store.loadOlder()}
               hasMoreBefore={s.hasMoreBefore}
               loadingOlder={s.loadingOlder}
@@ -408,6 +411,7 @@ export function SessionPage() {
       {rail && session && (
         <Rail
           session={session}
+          me={me?.user.id}
           git={s.git}
           viewers={s.viewers}
           model={s.model}
@@ -572,6 +576,7 @@ function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
 
 function Rail({
   session,
+  me,
   git,
   viewers,
   model,
@@ -579,6 +584,8 @@ function Rail({
   stall,
 }: {
   session: G.Session;
+  /** The signed-in person. */
+  me?: G.UserId;
   git?: G.GitState;
   viewers: G.Presence[];
   model?: string;
@@ -593,6 +600,41 @@ function Rail({
   // Several repositories: each under its name, those without changes left out.
   const changed = others.filter(hasChanges);
   const prs = pullRequests(session);
+  const rc = session.remote_control;
+  const claudeUrl = remoteControlUrl(rc, session.created_by, me);
+  const rcUser = remoteControlUser(rc, session.created_by);
+  // The Claude apps show it only to the person on whose subscription it runs.
+  const claude = claudeUrl ? (
+    <>
+      <a
+        {...claudeAppLink(claudeUrl)}
+        className="flex items-center justify-between rounded-md border border-accent/25 bg-accent-soft px-3 py-2 text-[12.5px] text-accent"
+      >
+        Open in the Claude app <ArrowUpRight className="size-3.5" />
+      </a>
+      <div className="mt-3 flex items-center justify-between">
+        <span className="text-[12.5px] text-ink-4">Browser</span>
+        <a
+          href={claudeUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+        >
+          claude.ai <ArrowUpRight className="size-3.5" />
+        </a>
+      </div>
+    </>
+  ) : rcUser.id !== me ? (
+    rc?.session_url ? (
+      <p className="text-[12.5px] leading-relaxed text-ink-4">
+        Only {rcUser.name} can follow it in the Claude apps: it runs on their Claude subscription.
+      </p>
+    ) : null
+  ) : (
+    <p className="text-[12.5px] leading-relaxed text-ink-4">
+      {rc?.unavailable_reason ?? "Remote Control appears here when the session's Claude login supports it."}
+    </p>
+  );
   return (
     <aside className="sticky top-0 hidden h-dvh w-[300px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
       <RailSection title="Changes">
@@ -659,33 +701,8 @@ function Rail({
         <Row k="Billing" v="Claude subscription" />
       </RailSection>
       <RailSection title="Follow along">
-        {session.remote_control?.session_url ? (
-          <>
-            <a
-              {...claudeAppLink(session.remote_control.session_url)}
-              className="flex items-center justify-between rounded-md border border-accent/25 bg-accent-soft px-3 py-2 text-[12.5px] text-accent"
-            >
-              Open in the Claude app <ArrowUpRight className="size-3.5" />
-            </a>
-            <div className="mt-3 flex items-center justify-between">
-              <span className="text-[12.5px] text-ink-4">Browser</span>
-              <a
-                href={session.remote_control.session_url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
-              >
-                claude.ai <ArrowUpRight className="size-3.5" />
-              </a>
-            </div>
-          </>
-        ) : (
-          <p className="text-[12.5px] leading-relaxed text-ink-4">
-            {session.remote_control?.unavailable_reason ??
-              "Remote Control appears here when the session's Claude login supports it."}
-          </p>
-        )}
-        <div className="mt-3 flex items-center justify-between">
+        {claude}
+        <div className={cn("flex items-center justify-between", claude && "mt-3")}>
           <span className="text-[12.5px] text-ink-4">CLI</span>
           <CopyButton text={`fctl attach ${session.id}`} label="fctl attach" />
         </div>

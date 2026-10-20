@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type * as G from "@/gen";
 import type { Stall } from "@/lib/stall";
 import { emptyLive, type Item } from "@/lib/transcript";
 import { Transcript } from "./transcript";
@@ -76,6 +77,16 @@ const published = (): Item => ({
   },
 });
 
+const ada: G.UserRef = { id: "usr_ada", name: "Ada" };
+const bo: G.UserRef = { id: "usr_bo", name: "Bo" };
+const remote = (user?: G.UserRef): Item => ({
+  kind: "remote",
+  key: `r-${++seq}`,
+  seq,
+  ts: 0,
+  rc: { enabled: true, session_url: "https://claude.ai/code/session_01AbC", user },
+});
+
 const stall: Stall = {
   kind: "away",
   runner: "now",
@@ -84,7 +95,8 @@ const stall: Stall = {
   showFrom: 0,
 };
 
-function transcript(items: Item[], status: "running" | "idle", withStall?: Stall) {
+/** A transcript of a session Ada started, as `me` sees it. */
+function transcript(items: Item[], status: "running" | "idle", withStall?: Stall, me: G.UserId = ada.id) {
   return render(
     <Transcript
       sessionId="ses_1"
@@ -92,6 +104,8 @@ function transcript(items: Item[], status: "running" | "idle", withStall?: Stall
       live={emptyLive()}
       status={status}
       stall={withStall}
+      startedBy={ada}
+      me={me}
       onLoadOlder={() => {}}
       hasMoreBefore={false}
       loadingOlder={false}
@@ -123,6 +137,24 @@ describe("the transcript", () => {
     const [title, detail] = [...c.querySelectorAll("[role=status] p")].map((p) => p.textContent);
     expect(title).toMatch(/^Runner now hasn't been heard from since .+\.$/);
     expect(detail).toMatch(/^The agent's work shows up here when it's back/);
+  });
+});
+
+describe("Remote Control", () => {
+  const followable = (c: HTMLElement) => c.textContent?.includes("Followable in the Claude apps");
+
+  it("is offered only to the person on whose Claude subscription the session ran", () => {
+    expect(followable(transcript([remote(ada)], "idle", undefined, ada.id))).toBe(true);
+    expect(followable(transcript([remote(ada)], "idle", undefined, bo.id))).toBe(false);
+    // Bo resumed Ada's session, on Bo's subscription.
+    expect(followable(transcript([remote(bo)], "idle", undefined, bo.id))).toBe(true);
+    expect(followable(transcript([remote(bo)], "idle", undefined, ada.id))).toBe(false);
+  });
+
+  it("is the starter's where the control plane doesn't say whose it is", () => {
+    const c = transcript([remote()], "idle", undefined, ada.id);
+    expect(c.querySelector("a")?.getAttribute("href")).toBe("claude://code/session_01AbC");
+    expect(followable(transcript([remote()], "idle", undefined, bo.id))).toBe(false);
   });
 });
 

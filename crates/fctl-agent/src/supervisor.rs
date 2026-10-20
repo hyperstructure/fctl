@@ -1013,11 +1013,13 @@ impl Supervisor {
                             .and_then(Value::as_str)
                             .map(str::to_owned),
                         unavailable_reason: None,
+                        user: None,
                     },
                     Err(e) => RemoteControlState {
                         enabled: false,
                         session_url: None,
                         unavailable_reason: Some(e),
+                        user: None,
                     },
                 }
             } else {
@@ -1027,6 +1029,7 @@ impl Supervisor {
                     unavailable_reason: Some(
                         "Remote Control needs a full Claude login. Connect one under Settings → Claude.".into(),
                     ),
+                    user: None,
                 }
             };
             self.persisted.remote_control_url = rc.session_url.clone();

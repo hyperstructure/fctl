@@ -62,6 +62,10 @@ pub struct ControlState {
     /// Said in the transcript, after the status.
     #[serde(default)]
     pub notice: Option<fctl_proto::event::Notice>,
+    /// On whose Claude subscription the session runs from now on: a resume
+    /// runs it on the resumer's. Its Remote Control links are theirs.
+    #[serde(default)]
+    pub claude_user: Option<UserRef>,
 }
 
 /// FleetObject asks a session on a draining runner whether it stops now: it

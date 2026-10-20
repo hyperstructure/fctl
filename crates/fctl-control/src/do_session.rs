@@ -14,6 +14,7 @@ use crate::internal::{
 use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_domain::journal::{self, Take};
 use fctl_domain::notify;
+use fctl_domain::remote_control;
 use fctl_domain::usage as plan;
 use fctl_proto::api::{EventPage, PlanLimit};
 use fctl_proto::event::{EventBody, GitState, StatusChange, UserMessage};
@@ -351,6 +352,14 @@ impl SessionObject {
             self.set_meta("summary", &text);
         }
         self.mem.borrow_mut().summary = Some(s.clone());
+    }
+
+    /// On whose Claude subscription the session runs: who started it, until
+    /// someone else resumes it (`ControlState::claude_user`).
+    fn claude_user(&self, s: &Session) -> UserRef {
+        self.meta("claude_user")
+            .and_then(|u| serde_json::from_str(&u).ok())
+            .unwrap_or_else(|| s.created_by.clone())
     }
 
     fn counted(&self) -> ev::Counted {
@@ -832,6 +841,11 @@ impl SessionObject {
         if let Some(a) = b.archived {
             s.archived = a;
         }
+        if let Some(u) = b.claude_user
+            && let Ok(json) = serde_json::to_string(&u)
+        {
+            self.set_meta("claude_user", &json);
+        }
         let new_runner = b.runner.is_some() || b.clear_runner;
         if let Some(r) = b.runner {
             s.runner = Some(r);
@@ -1275,7 +1289,9 @@ impl SessionObject {
                         lists_changed |= Self::apply_git(s, g);
                         summary_changed = true;
                     }
-                    if let (EventBody::RemoteControl(rc), Some(s)) = (&body, summary.as_mut()) {
+                    if let (EventBody::RemoteControl(rc), Some(s)) = (&mut body, summary.as_mut()) {
+                        let user = self.claude_user(s);
+                        remote_control::attribute(rc, s.remote_control.as_ref(), &user);
                         s.remote_control = Some(rc.clone());
                         summary_changed = true;
                     }
@@ -1577,7 +1593,9 @@ impl SessionObject {
         if let Some(e) = state.effort {
             s.effort = fctl_domain::validate::effort(&e).ok();
         }
-        if let Some(rc) = state.remote_control {
+        if let Some(mut rc) = state.remote_control {
+            let user = self.claude_user(&s);
+            remote_control::attribute(&mut rc, s.remote_control.as_ref(), &user);
             s.remote_control = Some(rc);
         }
         if let Some(st) = state.stats {
