@@ -150,14 +150,21 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   if (!open) return null;
   let lastGroup = "";
+  // On touch screens Safari scrolls the list in a native scroll view, which loses the
+  // swipe when the layers above it are rebuilt (WebKit bug 322849: a filter changing on
+  // an ancestor). Above it were the card's rise, which animates a filter and then keeps
+  // one, and the layers of two blurs and of the card's clip. So on touch screens the
+  // palette fades in whole, without blurs (a darker dim stands in for the backdrop's), in
+  // an opaque card that doesn't clip: the only layer above the list is the fixed backdrop,
+  // which stays as it is while it's open.
   return createPortal(
     // biome-ignore lint/a11y/noStaticElementInteractions: clicking outside closes; Escape closes from the keyboard
     <div
       role="presentation"
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-[14vh] backdrop-blur-[3px]"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-[14vh] backdrop-blur-[3px] pointer-coarse:animate-fade pointer-coarse:bg-black/55 pointer-coarse:backdrop-filter-none"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="w-full max-w-xl animate-rise overflow-hidden rounded-xl border border-line-strong bg-surface/95 shadow-[0_30px_120px_rgb(0_0_0/0.55)] backdrop-blur-2xl">
+      <div className="w-full max-w-xl animate-rise overflow-hidden rounded-xl border border-line-strong bg-surface/95 shadow-[0_30px_120px_rgb(0_0_0/0.55)] backdrop-blur-2xl pointer-coarse:animate-none pointer-coarse:overflow-visible pointer-coarse:bg-surface pointer-coarse:backdrop-filter-none">
         <div className="flex items-center gap-3 border-b border-line px-4">
           <Search className="size-4 text-ink-4" />
           <input
@@ -187,7 +194,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             className="h-13 flex-1 bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-4"
           />
         </div>
-        <div className="max-h-[52vh] overflow-y-auto p-1.5">
+        {/* A swipe past either end stays in the list rather than scrolling the page. Its
+            own stacking context (isolate) keeps the layers of the pulsing status dots
+            inside the list, where they scroll with it, rather than beside it. */}
+        <div className="isolate max-h-[52vh] overflow-y-auto overscroll-contain p-1.5">
           {entries.length === 0 && (
             <div className="px-3 py-8 text-center text-[13px] text-ink-4">Nothing matches “{q}”.</div>
           )}

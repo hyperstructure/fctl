@@ -107,4 +107,28 @@ describe("⌘K", () => {
     // Or the key would go on to the task box, as a line break.
     expect(enter.defaultPrevented).toBe(true);
   });
+
+  it("scrolls its list on touch screens with nothing above it that changes", () => {
+    const { input } = palette();
+    const list = input.parentElement?.nextElementSibling;
+    const card = list?.parentElement;
+    const backdrop = card?.parentElement;
+    const classes = (el: Element | null | undefined) => el?.className.split(" ") ?? [];
+    // A swipe past its end stays in it, and its pulsing status dots are drawn inside it.
+    expect(classes(list)).toEqual(
+      expect.arrayContaining(["overflow-y-auto", "overscroll-contain", "isolate"]),
+    );
+    // Safari on iPhones and iPads drops a swipe in it when the layers above it change.
+    expect(classes(card)).toEqual(
+      expect.arrayContaining([
+        "pointer-coarse:animate-none",
+        "pointer-coarse:backdrop-filter-none",
+        "pointer-coarse:overflow-visible",
+        "pointer-coarse:bg-surface",
+      ]),
+    );
+    expect(classes(backdrop)).toEqual(
+      expect.arrayContaining(["pointer-coarse:animate-fade", "pointer-coarse:backdrop-filter-none"]),
+    );
+  });
 });
