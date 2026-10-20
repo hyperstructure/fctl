@@ -392,8 +392,8 @@ pub async fn delete(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
 
 // ───────────────────────────── export ─────────────────────────────
 
-/// Times (`ts`, `*_at`) become RFC 3339; `data` columns holding JSON are
-/// inlined.
+/// Times (`ts`, `*_at`) become RFC 3339; `data` and `pull_requests`
+/// columns holding JSON are inlined.
 fn readable(mut row: Value) -> Value {
     if let Value::Object(map) = &mut row {
         for (k, v) in map.iter_mut() {
@@ -403,12 +403,14 @@ fn readable(mut row: Value) -> Value {
                 *v = Value::String(iso8601(ms as i64));
             }
         }
-        let parsed = match map.get("data") {
-            Some(Value::String(d)) => serde_json::from_str::<Value>(d).ok(),
-            _ => None,
-        };
-        if let Some(p) = parsed {
-            map.insert("data".into(), p);
+        for key in ["data", "pull_requests"] {
+            let parsed = match map.get(key) {
+                Some(Value::String(d)) => serde_json::from_str::<Value>(d).ok(),
+                _ => None,
+            };
+            if let Some(p) = parsed {
+                map.insert(key.into(), p);
+            }
         }
     }
     row
@@ -681,7 +683,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     let sessions: Vec<Value> = q(
         &ctx.db,
         "SELECT s.id, p.slug AS project, s.number, s.title, s.description, s.prompt, s.status, s.branch, s.base_branch, \
-         s.model, s.effort, s.pr_url AS pull_request, s.created_at, s.started_at, s.ended_at \
+         s.model, s.effort, s.pr_url AS pull_request, s.pull_requests, s.created_at, s.started_at, s.ended_at \
          FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.created_by = ? ORDER BY s.created_at",
         &me(),
     )?

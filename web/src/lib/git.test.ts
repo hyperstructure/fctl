@@ -58,6 +58,9 @@ describe("repoChanges", () => {
     const repos = repoChanges(git);
     expect(repos.map((r) => r.name)).toEqual([undefined, "acme/lib", "acme/docs"]);
     expect(repos.map(hasChanges)).toEqual([false, true, false]);
+    // A pull request alone is no change: the session lists it on its own.
+    const [, , docs] = repos;
+    expect(docs && hasChanges({ ...docs, pr })).toBe(false);
     expect(repos[1]).toMatchObject({ readOnly: false, additions: 2, pr });
     expect(repos[2]?.readOnly).toBe(true);
   });

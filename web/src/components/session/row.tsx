@@ -1,12 +1,15 @@
 // A session in a list (the home page, a workspace's page): its status, title,
-// workspace and reference, who started it and when it last moved.
+// workspace and reference, its pull requests, who started it and when it
+// last moved.
 
 import { Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { Avatar, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
+import { cn } from "@/lib/cn";
 import { agoShort, stamp } from "@/lib/format";
+import { prsLabel, prTitle, pullRequests } from "@/lib/pulls";
 import { statusReason } from "@/lib/status";
 
 export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.WorkspaceRef }) {
@@ -41,7 +44,7 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
               <span className="text-danger/80">−{s.stats.deletions}</span>
             </span>
           )}
-          {s.pull_request && <span className="shrink-0 max-sm:hidden">· PR #{s.pull_request.number}</span>}
+          <PullRequestsLabel s={s} className="max-sm:hidden" />
         </div>
       </div>
       <Avatar user={s.created_by} size={20} />
@@ -55,5 +58,17 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
       {/* It appears on hover; on a phone its room goes to the title. */}
       <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100 max-sm:hidden" />
     </Link>
+  );
+}
+
+/** "· PRs fctl#120, design#14", with their titles on hover; nothing without any. */
+export function PullRequestsLabel({ s, className }: { s: G.Session; className?: string }) {
+  const prs = pullRequests(s);
+  const label = prsLabel(prs);
+  if (!label) return null;
+  return (
+    <span className={cn("truncate", className)} title={prs.map(prTitle).join("\n")}>
+      · {label}
+    </span>
   );
 }

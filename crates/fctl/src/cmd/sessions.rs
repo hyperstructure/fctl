@@ -7,7 +7,7 @@ use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use fctl_client::Api;
-use fctl_domain::files;
+use fctl_domain::{files, pulls};
 use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
 use fctl_proto::api::{CreateSessionRequest, UpdateSessionRequest};
 use fctl_proto::session::Session;
@@ -252,6 +252,27 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
+/// `fctl show`'s lines for a session's pull requests, each with the name of
+/// its repository: `pr:       fctl#120 <url>`. Control planes from before
+/// `pull_requests` have the one, and leave its repository to its URL.
+fn pull_request_lines(s: &Session) -> Vec<String> {
+    let prs: Vec<_> = if s.pull_requests.is_empty() {
+        s.pull_request.iter().collect()
+    } else {
+        s.pull_requests.iter().collect()
+    };
+    let label = if prs.len() > 1 { "prs:" } else { "pr:" };
+    prs.iter()
+        .enumerate()
+        .map(|(i, pr)| {
+            let repo = pr.repo.clone().or_else(|| pulls::repo_of(&pr.url));
+            let name = repo.as_ref().map_or("", |r| r.name.as_str());
+            let label = if i == 0 { label } else { "" };
+            format!("{label:<10}{name}#{} {}", pr.number, pr.url)
+        })
+        .collect()
+}
+
 pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<()> {
     let api = config::api(server)?;
     let s = resolve(&api, reference).await?;
@@ -284,8 +305,8 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
                 .unwrap_or_default()
         );
     }
-    if let Some(pr) = &s.pull_request {
-        println!("pr:       #{} {}", pr.number, pr.url);
+    for line in pull_request_lines(&s) {
+        println!("{line}");
     }
     if let Some(r) = &s.runner {
         println!("runner:   {}", r.name);
@@ -635,5 +656,38 @@ mod tests {
             sandbox_session(Some("/s.sock".into()), Some(String::new()), None),
             None
         );
+    }
+
+    #[test]
+    fn show_lists_every_pull_request_with_its_repository() -> Result<()> {
+        let mut s: Session = serde_json::from_value(serde_json::json!({
+            "id": "ses_1", "project_id": "prj_1", "project_slug": "app", "number": 1,
+            "title": "Fix it", "status": "stopped",
+            "created_by": { "id": "usr_1", "name": "Ada" },
+            "created_at": 1, "updated_at": 1, "stats": {}, "archived": false,
+            "pull_request": { "number": 12, "url": "https://github.com/acme/app/pull/12" }
+        }))?;
+        // From a control plane before `pull_requests`.
+        assert_eq!(
+            pull_request_lines(&s),
+            ["pr:       app#12 https://github.com/acme/app/pull/12"]
+        );
+        s.pull_requests = serde_json::from_value(serde_json::json!([
+            { "number": 12, "url": "https://github.com/acme/app/pull/12",
+              "repo": { "owner": "acme", "name": "app" } },
+            { "number": 3, "url": "https://github.com/acme/lib/pull/3",
+              "repo": { "owner": "acme", "name": "lib" } }
+        ]))?;
+        assert_eq!(
+            pull_request_lines(&s),
+            [
+                "prs:      app#12 https://github.com/acme/app/pull/12",
+                "          lib#3 https://github.com/acme/lib/pull/3"
+            ]
+        );
+        s.pull_request = None;
+        s.pull_requests.clear();
+        assert!(pull_request_lines(&s).is_empty());
+        Ok(())
     }
 }

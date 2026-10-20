@@ -522,6 +522,10 @@ pub struct SessionRow {
     pub pr_url: Option<String>,
     pub pr_title: Option<String>,
     pub pr_state: Option<String>,
+    /// Every pull request it found, JSON (NULL before it found any, and for
+    /// sessions from before the column).
+    #[serde(default)]
+    pub pull_requests: Option<String>,
     pub remote_control: Option<String>,
     pub stats: String,
     #[serde(deserialize_with = "int_bool")]
@@ -564,7 +568,7 @@ impl SessionRow {
     }
 
     pub fn to_session(&self, role: Option<SessionRole>) -> Session {
-        Session {
+        let mut s = Session {
             id: self.session_id(),
             project_id: ProjectId(self.project_id.clone()),
             project_slug: self.project_slug.clone(),
@@ -589,9 +593,15 @@ impl SessionRow {
                     url: url.clone(),
                     title: self.pr_title.clone(),
                     state: self.pr_state.clone(),
+                    repo: None,
                 }),
                 _ => None,
             },
+            pull_requests: self
+                .pull_requests
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<Vec<PullRequestRef>>(j).ok())
+                .unwrap_or_default(),
             runner: match (&self.runner_id, &self.runner_name) {
                 (Some(id), Some(name)) => Some(RunnerRef {
                     id: RunnerId(id.clone()),
@@ -608,7 +618,9 @@ impl SessionRow {
             role,
             archived: self.archived,
             following: Some(self.following),
-        }
+        };
+        fctl_domain::pulls::backfill(&mut s);
+        s
     }
 }
 
@@ -618,7 +630,7 @@ impl SessionRow {
 pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
-    s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.remote_control, s.stats, s.archived, \
+    s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.pull_requests, s.remote_control, s.stats, s.archived, \
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \

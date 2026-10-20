@@ -48,6 +48,7 @@ import { cn } from "@/lib/cn";
 import { ago, duration, num, until } from "@/lib/format";
 import { hasChanges, type RepoChanges, repoChanges } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
+import { prFullRef, prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink } from "@/lib/remote-control";
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
@@ -61,6 +62,7 @@ export function SessionPage() {
   const initial = useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) });
   const [s, store] = useLiveSession(id, initial.data);
   const session = s.session ?? initial.data;
+  const prs = session ? pullRequests(session) : [];
   const workspaceIndex = useWorkspaceIndex();
   const stall = useStall(session, s);
   const [rail, setRail] = useState(true);
@@ -195,15 +197,23 @@ export function SessionPage() {
                         {session.branch}
                       </span>
                     )}
-                    {session.pull_request && (
-                      <a
-                        href={session.pull_request.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
-                      >
-                        <GitPullRequest className="size-3" />#{session.pull_request.number}
-                      </a>
+                    {prs.length > 0 && (
+                      // Together, so that they wrap to the next line as one list.
+                      <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+                        {prs.map((pr) => (
+                          <a
+                            key={pr.url}
+                            href={pr.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            title={prTitle(pr)}
+                            className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
+                          >
+                            <GitPullRequest className="size-3" />
+                            {prRef(pr)}
+                          </a>
+                        ))}
+                      </span>
                     )}
                     {s.connection === "reconnecting" && <span className="text-amber">Reconnecting…</span>}
                     {stall && <span className="text-amber">{stallLabel(stall)}</span>}
@@ -454,7 +464,7 @@ function AgentTime({ stats, until }: { stats: G.SessionStats; until?: number }) 
   return <span className="tabular-nums">{duration(agentTime(stats, now, until))}</span>;
 }
 
-/** A repository's changed files, totals and pull request. */
+/** A repository's changed files and totals. */
 function Changes({
   repo,
   title,
@@ -540,21 +550,33 @@ function Changes({
           </span>
         </div>
       )}
-      {repo.pr && (
-        <a
-          href={repo.pr.url}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-3 flex items-center gap-2 rounded-md border border-line px-3 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
-        >
-          <GitPullRequest className="size-3.5 text-accent" />
-          <span className="min-w-0 flex-1 truncate">
-            {repo.pr.title ?? `Pull request #${repo.pr.number}`}
-          </span>
-          <ArrowUpRight className="size-3.5 text-ink-4" />
-        </a>
-      )}
     </div>
+  );
+}
+
+/** Every pull request of the session, with the repository of each. */
+function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
+  return (
+    <ul className="flex flex-col gap-1.5">
+      {prs.map((pr) => (
+        <li key={pr.url}>
+          <a
+            href={pr.url}
+            target="_blank"
+            rel="noreferrer"
+            title={prTitle(pr)}
+            className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
+          >
+            <GitPullRequest className="size-3.5 shrink-0 text-accent" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{pr.title ?? `Pull request #${pr.number}`}</span>
+              <span className="block truncate font-mono text-[11.5px] text-ink-4">{prFullRef(pr)}</span>
+            </span>
+            <ArrowUpRight className="size-3.5 shrink-0 text-ink-4" />
+          </a>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -580,15 +602,12 @@ function Rail({
   );
   // Several repositories: each under its name, those without changes left out.
   const changed = others.filter(hasChanges);
+  const prs = pullRequests(session);
   return (
     <aside className="sticky top-0 hidden h-dvh w-[300px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
       <RailSection title="Changes">
         {primary && others.length === 0 ? (
-          <Changes
-            repo={{ ...primary, pr: session.pull_request ?? primary.pr }}
-            limit={60}
-            showTotals={!!git}
-          />
+          <Changes repo={primary} limit={60} showTotals={!!git} />
         ) : (
           <div className="flex flex-col gap-5">
             {primary && (hasChanges(primary) || changed.length === 0) && (
@@ -605,6 +624,11 @@ function Rail({
           </div>
         )}
       </RailSection>
+      {prs.length > 0 && (
+        <RailSection title="Pull requests">
+          <PullRequests prs={prs} />
+        </RailSection>
+      )}
       <RailSection title="Work">
         <Row k="Turns" v={turnsTaken(st)} />
         <Row k="Tool calls" v={st.tool_calls} />
