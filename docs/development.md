@@ -55,14 +55,19 @@ access, as app.fctl.sh does: signed out, the sign-in page links to
 `cargo run -p fctl -- admin early-access`.
 
 fake-claude reacts to words in the prompt: `write <name>` creates and
-commits a file, `rename <title>` names the session with `fctl edit` (the
-host's own fctl comes first on its agents' PATH), `screenshot` draws a
-small PNG and publishes it with `fctl publish` (allow that first: `cargo
-run -p fctl -- admin set --publish-screenshots on`, then `cargo run -p fctl
--- projects set --publish-screenshots on`), `slow` streams slowly,
-`background <seconds>` starts a shell command in the background that
-ends after that many seconds and takes its result in a turn of its own
-(the session waits for it, then runs again, as with Claude Code),
+commits a file, `push` pushes the branch (dev projects have no repository,
+so a bare one in the sandbox's `~/.fake-github` stands in for GitHub),
+`watch <seconds>` watches the pull request's checks in one tool call that
+long, as agents wait for CI before they end their turn (meanwhile the
+session page shows the commit and the push), `rename <title>` names the
+session with `fctl edit` (the host's own fctl comes first on its agents'
+PATH), `screenshot` draws a small PNG and publishes it with `fctl publish`
+(allow that first: `cargo run -p fctl -- admin set --publish-screenshots
+on`, then `cargo run -p fctl -- projects set --publish-screenshots on`),
+`slow` streams slowly, `background <seconds>` starts a shell command in
+the background that ends after that many seconds and takes its result in
+a turn of its own (the session waits for it, then runs again, as with
+Claude Code),
 `limit` hits a usage limit that resets 20 seconds later (the session
 pauses and continues half a minute after the reset; a message that also
 says `reset`, like the one fctl-agent continues it with, doesn't count),
@@ -162,9 +167,13 @@ server, Clippy (native and wasm) with warnings as errors, `cargo test`, the
 web app's Vitest suite, the standalone server's tests (`node --test`), and
 a production build of the web app.
 
-`cargo xtask dev --smoke` starts the local stack as `cargo xtask dev` does,
-runs `fctl run -p playground "write notes.md"`, waits until the agent has
-committed `notes.md` and finished its turn, stops the session and then
+`cargo xtask dev --smoke` starts the local stack as `cargo xtask dev` does
+and runs `fctl run -p playground` with a task that has fake-claude commit
+`notes.md`, push it, watch its checks for 12 seconds and leave a command
+running in the background. It waits until the session has shown the
+commit pushed before the turn ended, the turn has ended, the session has
+waited for the command and the agent has taken its result in a turn of its
+own, then stops the session, checks the effort level it reports, and stops
 everything else. It fails when any step does. CI runs it from a fresh
 checkout, so its migrations, Worker, bootstrap, host and agent all run
 before a change can deploy. Locally it uses your `.fctl-dev/` state and

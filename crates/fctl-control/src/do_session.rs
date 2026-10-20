@@ -1301,8 +1301,9 @@ impl SessionObject {
                     if summary_changed {
                         self.broadcast_summary(&s);
                     }
-                    // The dashboards hear of each status change; a turn's
-                    // changes and pull requests come after it ends.
+                    // The dashboards hear of each status change, and of the
+                    // changes and pull requests the agent reports, during
+                    // turns too (at most every ten seconds).
                     if lists_changed {
                         self.notify_fleet(&s);
                     }

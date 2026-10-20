@@ -2,9 +2,10 @@
 //! branches it worked on, in all of its project's repositories, each with
 //! the repository it was opened in.
 //!
-//! After each turn fctl-agent looks up the pull request of the branch each
-//! repository has checked out (`GitState`), so it reports only the latest
-//! one per repository. The control plane keeps the others: a session that
+//! fctl-agent looks up the pull request of the branch each repository has
+//! checked out (`GitState`) after each turn, and while Claude works once the
+//! branch is pushed or `gh pr create` ran, so it reports only the latest one
+//! per repository. The control plane keeps the others: a session that
 //! opened one in each of three repositories, or a second one after the
 //! first was merged, lists them all.
 

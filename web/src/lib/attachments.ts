@@ -9,7 +9,10 @@ export function showsInline(type: string): boolean {
   return type === "image/png" || type === "image/jpeg" || type === "image/gif" || type === "image/webp";
 }
 
-/** Videos the lightbox plays; it offers the download of one the browser can't play. */
+/**
+ * Videos the lightbox plays. Except on touch screens, it offers the download
+ * of one the browser can't play.
+ */
 export function playable(type: string): boolean {
   return type === "video/mp4" || type === "video/webm" || type === "video/quicktime";
 }

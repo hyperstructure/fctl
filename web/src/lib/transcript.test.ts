@@ -77,6 +77,31 @@ describe("TranscriptBuilder", () => {
     expect(items[0]?.kind === "tool" && [items[0].children, items[0].childLast]).toEqual([2, "Read"]);
   });
 
+  it("shows a state when a branch changes, and keeps the newest", () => {
+    const b = new TranscriptBuilder();
+    const git = (head: string, ahead: number, files: number, pushed = false): G.GitState => ({
+      head,
+      ahead,
+      behind: 0,
+      files: Array.from({ length: files }, (_, i) => ({ path: `f${i}`, status: "modified" })),
+      uncommitted: 0,
+      pushed,
+    });
+    // Edits while Claude works, then a commit, then the end of the turn.
+    const items = b.add([
+      ev("git", git("base", 0, 1)),
+      ev("git", git("base", 0, 2)),
+      ev("git", git("c1", 1, 2)),
+      claude({ type: "result", subtype: "success", is_error: false, duration_ms: 5, result: "Done" }),
+      ev("git", git("c1", 1, 3)),
+      ev("git", git("c1", 1, 3, true)),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["git", "turn", "git"]);
+    expect(items[0]?.kind === "git" && [items[0].git.ahead, items[0].repos]).toEqual([1, [undefined]]);
+    expect(items[2]?.kind === "git" && items[2].git.pushed).toBe(true);
+    expect(b.latestGit?.files).toHaveLength(3);
+  });
+
   it("ignores events it has already seen", () => {
     const b = new TranscriptBuilder();
     const e = ev("user_message", { id: "dlv_1", text: "hi", source: "web" });

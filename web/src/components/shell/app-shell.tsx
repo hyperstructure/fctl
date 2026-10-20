@@ -9,7 +9,6 @@ import {
   FolderPlus,
   Lock,
   LogOut,
-  Menu as MenuIcon,
   Moon,
   Plus,
   Search,
@@ -49,11 +48,15 @@ import {
   useFolded,
 } from "@/lib/workspaces";
 import { CommandPalette } from "./command-palette";
+import { MenuButton, ShellContext, useHeaderButtons } from "./menu-button";
 
 export function AppShell() {
   const [palette, setPalette] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const openPalette = useCallback(() => setPalette(true), []);
+  const openDrawer = useCallback(() => setDrawer(true), []);
+  // A page whose header holds the menu button (the session's) takes the top bar's place.
+  const [headerButton, shell] = useHeaderButtons(openDrawer);
   useHotkey("mod+k", openPalette, { inInputs: true });
   useFeed(); // live updates for every page
   usePush();
@@ -80,20 +83,17 @@ export function AppShell() {
       {/* The page is never wider than the window: what is wider scrolls in its own row. The
           clip, unlike hidden, keeps the sticky bars working. */}
       <div className="flex min-w-0 flex-1 flex-col overflow-x-clip pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(244px+env(safe-area-inset-left))]">
-        {/* On phones: a button a thumb hits easily (44 px), its icon in line with the page's text. */}
-        <div className="sticky top-0 z-10 flex h-14 items-center gap-1.5 border-b border-line bg-canvas/80 px-2.5 backdrop-blur-xl md:hidden">
-          <button
-            type="button"
-            aria-label="Open menu"
-            className="flex size-11 items-center justify-center rounded-lg text-ink-3 hover:text-ink"
-            onClick={() => setDrawer(true)}
-          >
-            <MenuIcon className="size-6" />
-          </button>
-          <Logo large />
-        </div>
+        {/* On phones: the menu button, its icon in line with the page's text. */}
+        {!headerButton && (
+          <div className="sticky top-0 z-10 flex h-14 items-center gap-1.5 border-b border-line bg-canvas/80 px-2.5 backdrop-blur-xl md:hidden">
+            <MenuButton onClick={openDrawer} />
+            <Logo large />
+          </div>
+        )}
         <main className="min-w-0 flex-1">
-          <Outlet />
+          <ShellContext value={shell}>
+            <Outlet />
+          </ShellContext>
         </main>
       </div>
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
@@ -196,8 +196,10 @@ function Sidebar({
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-14 items-center justify-between px-4">
-        <Link to="/" onClick={onNavigate} className="rounded-md">
-          <Logo />
+        {/* On phones, as large as the top bar's logo. The link is a flex box, as tall as the
+            logo, to keep it in the middle: as a line of text it would sit 3 px higher. */}
+        <Link to="/" onClick={onNavigate} className="flex rounded-md">
+          <Logo large />
         </Link>
         <button
           type="button"

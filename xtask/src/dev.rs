@@ -218,10 +218,12 @@ fn wrangler_dev(root: &Path, no_vite: bool, children: &mut Children) -> Result<(
 }
 
 /// `--smoke`: starts a session with the CLI as a person would, and fails
-/// unless the agent commits a file and finishes its turn, the session waits
-/// for the command the agent left running in the background and the agent
-/// takes its result in a turn of its own, the session stops when asked, and
-/// it says which effort level Claude worked at.
+/// unless the agent commits and pushes a file and the session shows both
+/// while the turn still runs (the agent watches its checks meanwhile), the
+/// agent finishes its turn, the session waits for the command the agent
+/// left running in the background and the agent takes its result in a turn
+/// of its own, the session stops when asked, and it says which effort level
+/// Claude worked at.
 fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
     let fctl = || {
         let mut cmd = Command::new(util::target_dir(root).join("debug/fctl"));
@@ -234,7 +236,7 @@ fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
         "--project",
         "playground",
         "--detach",
-        "write notes.md, then run the checks in the background 3",
+        "write notes.md, push it, watch 12 seconds of checks, then run the checks in the background 3",
     ]))?;
     let session: Session =
         serde_json::from_str(&out).context("reading the session `fctl run` started")?;
@@ -255,7 +257,7 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
         &auth,
         children,
         Duration::from_secs(60),
-        "finish its turn with a commit and wait for its background task",
+        "show its commit and push, finish its turn and wait for its background task",
         |s| match s.status() {
             Some(SessionStatus::Stopped) => bail!("the session stopped before its turn ended"),
             Some(SessionStatus::Idle) => {
@@ -302,7 +304,8 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
     }
     let subject = seen.commit.map(|c| c.subject).unwrap_or_default();
     eprintln!(
-        "\n\x1b[1msmoke test passed\x1b[0m: the agent committed \"{subject}\", \
+        "\n\x1b[1msmoke test passed\x1b[0m: the agent committed \"{subject}\" and \
+         pushed it, the session showed both before the turn ended, the agent \
          finished its turn, the session waited for its background task and \
          the agent took its result in a turn of its own, the session stopped, \
          and it said Claude worked at medium effort\n"
@@ -320,6 +323,8 @@ struct Seen {
     /// The session said it waited for a background task.
     waited_for_background: bool,
     commit: Option<CommitInfo>,
+    /// The session showed the agent's commit pushed before the turn ended.
+    pushed_in_turn: bool,
 }
 
 impl Seen {
@@ -388,10 +393,18 @@ impl Seen {
                 if v["is_error"].as_bool() == Some(true) {
                     bail!("the agent's turn failed: {v}");
                 }
+                if self.results == 0 && !self.pushed_in_turn {
+                    bail!(
+                        "the agent's first turn ended before the session showed its commit pushed"
+                    );
+                }
                 self.turn_ok = true;
                 self.results += 1;
             }
-            EventBody::Git(g) if g.ahead > 0 => self.commit = g.last_commit.clone(),
+            EventBody::Git(g) if g.ahead > 0 => {
+                self.commit = g.last_commit.clone();
+                self.pushed_in_turn |= self.results == 0 && g.pushed;
+            }
             _ => {}
         }
         Ok(())
