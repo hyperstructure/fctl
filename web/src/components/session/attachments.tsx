@@ -18,6 +18,7 @@ import {
   showsInline,
 } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
+import { type DraftFile, deleteFile, loadFiles, pageFiles, saveFile, setPageFiles } from "@/lib/draft";
 import { bytes } from "@/lib/format";
 
 /** A file in the composer, uploading as soon as it is added. */
@@ -44,20 +45,37 @@ interface Upload {
   to: string;
   promise: Promise<G.Attachment>;
   abort: () => void;
+  /** Once it is done. */
+  attachment?: G.Attachment;
 }
+
+/**
+ * The uploads of kept drafts (the floor's), by draft key. Finished ones
+ * outlive the composer, so its files come back ready when the page does.
+ */
+const keptUploads = new Map<string, Upload>();
+
+const preview = (file: File) => (previewable(file.type) ? URL.createObjectURL(file) : undefined);
 
 /**
  * The files of the message being written. Uploads go to `scope` (and again
  * if it changes, like the floor's project picker); `take` waits for them and
- * empties the composer.
+ * empties the composer. With `keep` (the person's id), the files are kept in
+ * this browser (`@/lib/draft`) and come back when the composer opens again.
  */
-export function useAttachments(scope: UploadScope | undefined) {
+export function useAttachments(scope: UploadScope | undefined, { keep }: { keep?: string } = {}) {
   const to = scope ? JSON.stringify(scope) : undefined;
   const [drafts, setDrafts] = useState<Draft[]>([]);
-  const uploads = useRef(new Map<string, Upload>());
+  const uploads = useRef(keep ? keptUploads : new Map<string, Upload>());
   const pasted = useRef(0);
   const live = useRef(drafts);
   live.current = drafts;
+  const scopeNow = useRef(to);
+  scopeNow.current = to;
+  // Whether the kept files are back, so that what the composer has can be kept.
+  const [restored, setRestored] = useState(!keep);
+  const mounted = useRef(false);
+  const restoring = useRef(false);
 
   const patch = useCallback((key: string, p: Partial<Draft>) => {
     setDrafts((ds) => ds.map((d) => (d.key === key ? { ...d, ...p } : d)));
@@ -69,11 +87,12 @@ export function useAttachments(scope: UploadScope | undefined) {
       const up = api.uploadAttachment(JSON.parse(to), d.file, d.name, (progress) =>
         patch(d.key, { progress }),
       );
-      const entry = { to, ...up };
+      const entry: Upload = { to, ...up };
       uploads.current.set(d.key, entry);
       patch(d.key, { status: "uploading", progress: 0, error: undefined, attachment: undefined });
       up.promise.then(
         (attachment) => {
+          entry.attachment = attachment;
           if (uploads.current.get(d.key) === entry)
             patch(d.key, { status: "ready", progress: 1, attachment });
         },
@@ -85,21 +104,70 @@ export function useAttachments(scope: UploadScope | undefined) {
     [patch],
   );
 
-  // Another project (the floor's picker) needs its own copies.
+  // Files upload to the composer's scope: kept ones that come back, and
+  // copies for another project (the floor's picker).
   useEffect(() => {
     if (!to) return;
-    for (const d of live.current) {
+    for (const d of drafts) {
       if (uploads.current.get(d.key)?.to !== to) start(d, to);
     }
-  }, [to, start]);
+  }, [to, drafts, start]);
 
-  // Leaving the page cancels uploads and frees the previews.
+  // The kept files, once, as the composer opens: those this page had, which
+  // may not all have fitted in the browser's storage, or else the stored ones.
+  useEffect(() => {
+    mounted.current = true;
+    if (keep && !restoring.current) {
+      restoring.current = true;
+      const back = (files: DraftFile[]) => {
+        if (!mounted.current) return;
+        const have = new Set(live.current.map((d) => d.key));
+        const kept = files
+          .filter((f) => !have.has(f.key))
+          .map((f): Draft => {
+            // Uploaded while the page was here before.
+            const done = uploads.current.get(f.key);
+            const attachment = done?.to === scopeNow.current ? done?.attachment : undefined;
+            return {
+              ...f,
+              preview: preview(f.file),
+              status: attachment ? "ready" : "uploading",
+              progress: attachment ? 1 : 0,
+              attachment,
+            };
+          });
+        setDrafts((ds) => [...kept, ...ds]);
+        setRestored(true);
+      };
+      const here = pageFiles(keep);
+      if (here) back(here);
+      else void loadFiles(keep).then(back);
+    }
+    return () => {
+      mounted.current = false;
+    };
+  }, [keep]);
+
+  useEffect(() => {
+    if (keep && restored)
+      setPageFiles(
+        keep,
+        drafts.map(({ key, name, file }) => ({ key, name, file })),
+      );
+  }, [keep, restored, drafts]);
+
+  // Leaving the page cancels uploads under way and frees the previews. Kept
+  // drafts hold on to their finished uploads, for when the page comes back.
   useEffect(
     () => () => {
-      for (const u of uploads.current.values()) u.abort();
+      for (const [key, u] of uploads.current) {
+        if (keep && u.attachment) continue;
+        u.abort();
+        uploads.current.delete(key);
+      }
       for (const d of live.current) if (d.preview) URL.revokeObjectURL(d.preview);
     },
-    [],
+    [keep],
   );
 
   const add = useCallback(
@@ -119,7 +187,7 @@ export function useAttachments(scope: UploadScope | undefined) {
           key: crypto.randomUUID(),
           file,
           name: opts.pasted ? pastedName(file, ++pasted.current) : file.name || "file",
-          preview: previewable(file.type) ? URL.createObjectURL(file) : undefined,
+          preview: preview(file),
           status: "uploading",
           progress: 0,
         });
@@ -127,19 +195,25 @@ export function useAttachments(scope: UploadScope | undefined) {
       if (!added.length) return;
       setDrafts((ds) => [...ds, ...added]);
       if (to) for (const d of added) start(d, to);
+      // Kept when it fits; otherwise for as long as the page is open.
+      if (keep) for (const d of added) void saveFile(keep, d);
     },
-    [to, start],
+    [to, start, keep],
   );
 
-  const remove = useCallback((key: string) => {
-    uploads.current.get(key)?.abort();
-    uploads.current.delete(key);
-    setDrafts((ds) => {
-      const d = ds.find((x) => x.key === key);
-      if (d?.preview) URL.revokeObjectURL(d.preview);
-      return ds.filter((x) => x.key !== key);
-    });
-  }, []);
+  const remove = useCallback(
+    (key: string) => {
+      uploads.current.get(key)?.abort();
+      uploads.current.delete(key);
+      if (keep) void deleteFile(keep, key);
+      setDrafts((ds) => {
+        const d = ds.find((x) => x.key === key);
+        if (d?.preview) URL.revokeObjectURL(d.preview);
+        return ds.filter((x) => x.key !== key);
+      });
+    },
+    [keep],
+  );
 
   const retry = useCallback(
     (key: string) => {
@@ -155,8 +229,9 @@ export function useAttachments(scope: UploadScope | undefined) {
    */
   const take = useCallback(async (): Promise<{ files: SentFiles; restore: () => void }> => {
     const taken = live.current;
+    const sent = taken.map((d) => uploads.current.get(d.key));
     const results = await Promise.allSettled(
-      taken.map((d) => uploads.current.get(d.key)?.promise ?? Promise.reject(new Error("not uploaded"))),
+      sent.map((u) => u?.promise ?? Promise.reject(new Error("not uploaded"))),
     );
     if (results.some((r) => r.status === "rejected")) {
       throw new Error("Some files did not upload. Try them again or remove them.");
@@ -166,11 +241,18 @@ export function useAttachments(scope: UploadScope | undefined) {
     taken.forEach((d, i) => {
       const a = attachments[i];
       if (d.preview && a) previews[a.id] = d.preview;
+      uploads.current.delete(d.key);
     });
     setDrafts((ds) => ds.filter((d) => !taken.includes(d)));
     return {
       files: { attachments, previews },
-      restore: () => setDrafts((ds) => [...taken, ...ds]),
+      restore: () => {
+        taken.forEach((d, i) => {
+          const u = sent[i];
+          if (u) uploads.current.set(d.key, u);
+        });
+        setDrafts((ds) => [...taken, ...ds]);
+      },
     };
   }, []);
 

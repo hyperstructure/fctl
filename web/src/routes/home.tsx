@@ -4,7 +4,7 @@ import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstru
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, Cpu, FolderPlus, KeyRound, Plus, ShieldCheck, Users } from "lucide-react";
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { PlanUsageStrip } from "@/components/plan-usage";
 import {
   AttachButton,
@@ -21,6 +21,7 @@ import type * as G from "@/gen";
 import { workspaces as wsApi } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
+import { forgetDraft, loadText, saveText } from "@/lib/draft";
 import { feed, useFeed } from "@/lib/feed";
 import { ago, lowOnDisk } from "@/lib/format";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspaces } from "@/lib/queries";
@@ -119,14 +120,17 @@ function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<Foun
   );
 }
 
-/** A project's repositories in a line: the name gives way where space is short, the count stays. */
+/**
+ * A project's repositories in a line. Where space is short the name gives way and the count
+ * stays: the grid's narrowest is the count alone, its widest the whole line.
+ */
 function RepoText({ project }: { project: G.Project }) {
   const s = repoSummary(project);
   if (!s) return "No repository";
   return (
-    <span className="flex min-w-0 font-mono text-[11.5px]">
-      {s.name && <span className="truncate">{s.name}</span>}
-      {s.more && <span className="shrink-0 whitespace-pre">{s.name ? ` ${s.more}` : s.more}</span>}
+    <span className="grid grid-cols-[minmax(0,max-content)_auto] font-mono text-[11.5px]">
+      <span className="truncate">{s.name}</span>
+      <span className="whitespace-pre">{s.name && s.more ? ` ${s.more}` : s.more}</span>
     </span>
   );
 }
@@ -134,7 +138,15 @@ function RepoText({ project }: { project: G.Project }) {
 /** The project a new session goes to: picked here last time, while it is still there. */
 const LAST_TARGET = "fctl:last-target";
 
-function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspaces: G.Workspace[] }) {
+function QuickStart({
+  user,
+  projects,
+  workspaces,
+}: {
+  user: string;
+  projects: G.Project[];
+  workspaces: G.Workspace[];
+}) {
   const index = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
   // Projects where you may start sessions, under their workspaces, in your order.
   const editable = useMemo(() => {
@@ -147,6 +159,8 @@ function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspace
           (b.last_activity_at ?? b.created_at) - (a.last_activity_at ?? a.created_at),
       );
   }, [projects, workspaces, index]);
+  // What was being written here before, kept in this browser until a session starts with it.
+  const [kept] = useState(() => loadText(user));
   const remembered = (() => {
     try {
       return localStorage.getItem(LAST_TARGET) ?? undefined;
@@ -154,9 +168,10 @@ function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspace
       return undefined;
     }
   })();
-  const first = editable.find((p) => p.slug === remembered)?.slug ?? editable[0]?.slug;
+  const here = (slug?: string) => editable.find((p) => p.slug === slug)?.slug;
+  const first = here(kept?.project) ?? here(remembered) ?? editable[0]?.slug;
   const [project, setProject] = useState(first ?? "");
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(kept?.prompt ?? "");
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if ((!project || !editable.some((p) => p.slug === project)) && first) setProject(first);
@@ -167,12 +182,33 @@ function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspace
       localStorage.setItem(LAST_TARGET, slug);
     } catch {}
   };
-  const { start, starting } = useStartSession();
-  const files = useAttachments(editable.length && project ? { project } : undefined);
+  const sent = useRef(false);
+  const { start, starting } = useStartSession(() => {
+    // The draft went out with the session.
+    sent.current = true;
+    return forgetDraft(user);
+  });
+  const files = useAttachments(editable.length && project ? { project } : undefined, { keep: user });
   const attach = (f: File[], pasted?: boolean) => {
     files.add(f, { pasted });
     ref.current?.focus();
   };
+  // The draft is kept as it changes, and on the way out with the caret where it is then.
+  const caret = useRef(kept?.selection);
+  const save = useRef(() => {});
+  save.current = () => {
+    if (sent.current) return;
+    if (ref.current) caret.current = [ref.current.selectionStart, ref.current.selectionEnd];
+    const empty = !prompt.trim() && !files.drafts.length;
+    saveText(user, empty ? undefined : { prompt, project, selection: caret.current });
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: saves when the draft changes
+  useEffect(() => save.current(), [prompt, project, files.drafts.length]);
+  useEffect(() => () => save.current(), []);
+  useLayoutEffect(() => {
+    const s = kept?.selection;
+    if (s) ref.current?.setSelectionRange(s[0], s[1]);
+  }, [kept]);
   const dragging = useFileDrop(attach, editable.length > 0 && !starting);
   if (!editable.length) return null;
   const target = editable.find((p) => p.slug === project);
@@ -198,6 +234,7 @@ function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspace
         value={prompt}
         readOnly={starting}
         onChange={(e) => setPrompt(e.target.value)}
+        onBlur={() => save.current()}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
@@ -249,7 +286,7 @@ function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspace
           />
           {target && repoSummary(target) && (
             <span
-              className="hidden min-w-0 items-center gap-1.5 font-mono text-[11.5px] text-ink-4 md:inline-flex"
+              className="hidden shrink-[100] items-center gap-1.5 font-mono text-[11.5px] text-ink-4 md:inline-flex"
               title={repoTitle(target, ws?.name)}
             >
               <GithubIcon className="size-3 shrink-0" />
@@ -630,8 +667,12 @@ export function Home() {
       </div>
       <div className="mx-auto max-w-[920px] px-6">
         <div className="-mt-6 relative z-[2]">
-          {projects.data && workspaces.data && (
-            <QuickStart projects={projects.data.projects} workspaces={workspaces.data.workspaces} />
+          {me && projects.data && workspaces.data && (
+            <QuickStart
+              user={me.user.id}
+              projects={projects.data.projects}
+              workspaces={workspaces.data.workspaces}
+            />
           )}
           {usage?.length ? <PlanUsageStrip usage={usage} className="mt-3" /> : null}
         </div>

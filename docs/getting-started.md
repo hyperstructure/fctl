@@ -201,6 +201,10 @@ paperclip, by pasting them into the message box, or by dropping them on the
 page (`fctl run -a screenshot.png "…"` in the terminal). The agent sees
 them in its sandbox and gets screenshots in the message itself.
 
+A task you write on the floor stays in your browser, with its project and
+files, until a session starts with it: leave the page, and it is there when
+you come back.
+
 `fctl run` follows the session live in your terminal; Ctrl-C detaches and the
 agent keeps working. The agent works on a branch named
 `fctl/<number>-<title>`, commits as it goes, pushes, and opens a pull request

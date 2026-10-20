@@ -52,6 +52,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api, emails, workspaces as wsApi } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { forgetDraft } from "@/lib/draft";
 import { ago, browserName } from "@/lib/format";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
@@ -1414,6 +1415,7 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
     mutationFn: () => api.deleteAccount({ email: typed }),
     onSuccess: async () => {
       await forgetPush();
+      await forgetDraft();
       queryClient.clear();
       window.location.assign("/login?deleted=1");
     },

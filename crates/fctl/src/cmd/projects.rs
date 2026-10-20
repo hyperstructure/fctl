@@ -416,7 +416,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::dim("idle")
                 };
                 println!(
-                    "{:<24} {:<36} {}  {}",
+                    "{:<24} {:<40} {}  {}",
                     style::bold(&p.slug),
                     style::dim(&repo),
                     active,

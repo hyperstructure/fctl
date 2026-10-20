@@ -5,6 +5,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { ArrowUp } from "lucide-react";
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { Spinner, toast } from "@/components/ui";
+import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { SentFiles } from "./attachments";
@@ -19,9 +20,10 @@ export interface StartFiles {
  * Starts a session and opens it. While a start is in flight, `start` does nothing, so a double
  * click or a second ⌘↵ cannot create a duplicate. `starting` stays true until the session page
  * replaces the form, and turns false again if the start fails (attached files go back in the
- * form). A start needs a prompt or files; it waits for files still uploading.
+ * form). A start needs a prompt or files; it waits for files still uploading. `onStarted` runs
+ * once the session exists, and the session page opens when what it returns is done.
  */
-export function useStartSession() {
+export function useStartSession(onStarted?: (s: G.Session) => unknown) {
   const navigate = useNavigate();
   // isPending reaches the component a tick after mutate(); this closes that gap.
   const inFlight = useRef(false);
@@ -46,7 +48,10 @@ export function useStartSession() {
         throw e;
       }
     },
-    onSuccess: (s) => navigate({ to: "/s/$id", params: { id: s.id } }),
+    onSuccess: async (s) => {
+      await onStarted?.(s);
+      return navigate({ to: "/s/$id", params: { id: s.id } });
+    },
     onError: (e) => {
       inFlight.current = false;
       toast(e.message, "error");
