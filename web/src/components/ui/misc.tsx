@@ -5,14 +5,29 @@ import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { hue, initials } from "@/lib/format";
 
-export function Logo({ className, withWord = true }: { className?: string; withWord?: boolean }) {
+/** fctl's mark and name; `large` in the top bar on phones, where it heads every page. */
+export function Logo({
+  className,
+  withWord = true,
+  large = false,
+}: {
+  className?: string;
+  withWord?: boolean;
+  large?: boolean;
+}) {
   return (
-    <span className={cn("inline-flex items-center gap-2", className)}>
-      <svg viewBox={mark.viewBox} className="size-[22px]" aria-hidden="true">
+    <span className={cn("inline-flex items-center", large ? "gap-2.5" : "gap-2", className)}>
+      <svg viewBox={mark.viewBox} className={large ? "size-[26px]" : "size-[22px]"} aria-hidden="true">
         <rect width="256" height="256" rx={mark.radius} fill={mark.background} />
         <path d={mark.path} fill={mark.foreground} fillRule="evenodd" />
       </svg>
-      {withWord && <span className="font-semibold tracking-[-0.02em] text-ink text-[15px]">fctl</span>}
+      {withWord && (
+        <span
+          className={cn("font-semibold tracking-[-0.02em] text-ink", large ? "text-[17px]" : "text-[15px]")}
+        >
+          fctl
+        </span>
+      )}
     </span>
   );
 }

@@ -77,16 +77,17 @@ export function AppShell() {
         />
       )}
       <div className="flex min-w-0 flex-1 flex-col pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(244px+env(safe-area-inset-left))]">
-        <div className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b border-line bg-canvas/80 px-3 backdrop-blur-xl md:hidden">
+        {/* On phones: a button a thumb hits easily (44 px), its icon in line with the page's text. */}
+        <div className="sticky top-0 z-10 flex h-14 items-center gap-1.5 border-b border-line bg-canvas/80 px-2.5 backdrop-blur-xl md:hidden">
           <button
             type="button"
             aria-label="Open menu"
-            className="rounded-md p-2 text-ink-3 hover:text-ink"
+            className="flex size-11 items-center justify-center rounded-lg text-ink-3 hover:text-ink"
             onClick={() => setDrawer(true)}
           >
-            <MenuIcon className="size-4.5" />
+            <MenuIcon className="size-6" />
           </button>
-          <Logo />
+          <Logo large />
         </div>
         <main className="min-w-0 flex-1">
           <Outlet />
@@ -178,10 +179,10 @@ function Sidebar({
         <button
           type="button"
           aria-label="Close menu"
-          className="rounded-md p-1.5 text-ink-4 hover:text-ink md:hidden"
+          className="-mr-2 flex size-11 items-center justify-center rounded-lg text-ink-4 hover:text-ink md:hidden"
           onClick={onNavigate}
         >
-          <X className="size-4" />
+          <X className="size-5" />
         </button>
       </div>
       <div className="px-3">
