@@ -1210,6 +1210,7 @@ impl SessionObject {
                 let mut out = Vec::new();
                 let mut summary = self.summary();
                 let mut summary_changed = false;
+                let mut lists_changed = false;
                 let mut turn_ended = false;
                 let mut usage = Vec::new();
                 // Newer events that came before older ones wait for them
@@ -1247,7 +1248,7 @@ impl SessionObject {
                         ev::shape_for_storage(v);
                     }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
-                        Self::apply_git(s, g);
+                        lists_changed |= Self::apply_git(s, g);
                         summary_changed = true;
                     }
                     if let (EventBody::RemoteControl(rc), Some(s)) = (&body, summary.as_mut()) {
@@ -1272,6 +1273,11 @@ impl SessionObject {
                     self.save_summary(&s);
                     if summary_changed {
                         self.broadcast_summary(&s);
+                    }
+                    // The dashboards hear of each status change; a turn's
+                    // changes and pull requests come after it ends.
+                    if lists_changed {
+                        self.notify_fleet(&s);
                     }
                     // A host that reconnects reports its state before it
                     // replays the events it kept: a turn that ended meanwhile
@@ -1435,8 +1441,18 @@ impl SessionObject {
     /// Counts changes in every repository, and keeps every pull request the
     /// agent found (`fctl_domain::pulls`). The session's pull request, for
     /// older clients, is the primary repository's, or another repository's
-    /// when it has none.
-    fn apply_git(s: &mut Session, g: &GitState) {
+    /// when it has none. Returns whether what session lists show changed:
+    /// the counts or the pull requests.
+    fn apply_git(s: &mut Session, g: &GitState) -> bool {
+        let listed = |s: &Session| {
+            (
+                s.stats.files_changed,
+                s.stats.additions,
+                s.stats.deletions,
+                s.pull_request.as_ref().map(|p| p.url.clone()),
+            )
+        };
+        let before = listed(s);
         if let Some(b) = &g.branch {
             s.branch = Some(b.clone());
         }
@@ -1447,7 +1463,8 @@ impl SessionObject {
         if let Some(pr) = found.first() {
             s.pull_request = Some(pr.clone());
         }
-        fctl_domain::pulls::merge(&mut s.pull_requests, &found);
+        let merged = fctl_domain::pulls::merge(&mut s.pull_requests, &found);
+        merged || listed(s) != before
     }
 
     fn track_live(&self, event: &serde_json::Value, text: &str) {
