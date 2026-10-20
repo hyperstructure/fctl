@@ -2,6 +2,7 @@
 import type { Attachment } from "./Attachment";
 import type { GitIdentity } from "./GitIdentity";
 import type { ProjectSpec } from "./ProjectSpec";
+import type { PullRequestRef } from "./PullRequestRef";
 import type { SessionCredentials } from "./SessionCredentials";
 import type { SessionId } from "./SessionId";
 import type { UserRef } from "./UserRef";
@@ -76,4 +77,10 @@ web_url: string, idle_timeout_secs: number,
  * Identifies this run of the session; echoed in `SessionEnded` so a late
  * report from an earlier run cannot end a newer one.
  */
-run_id?: string, };
+run_id?: string, 
+/**
+ * The pull requests the session lists. Its agent follows them with the
+ * ones it finds, so their state stays current in a new sandbox too.
+ * Older agents ignore them.
+ */
+pull_requests?: Array<PullRequestRef>, };

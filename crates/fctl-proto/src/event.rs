@@ -167,7 +167,8 @@ pub struct LogLine {
     pub text: String,
 }
 
-/// One changed file, as `git diff --numstat` reports it against the base.
+/// One changed file, as `git diff --numstat` reports it since the branch
+/// left its base.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -202,7 +203,9 @@ pub struct GitState {
     pub ahead: u32,
     /// Commits on the base that are not on the branch.
     pub behind: u32,
-    /// Changed files relative to the base, including uncommitted work.
+    /// What the branch changed since it left the base (since their merge
+    /// base), uncommitted and untracked work included. Older agents
+    /// compared the work with the base's tip.
     pub files: Vec<FileChange>,
     pub uncommitted: u32,
     pub last_commit: Option<CommitInfo>,
@@ -210,9 +213,20 @@ pub struct GitState {
     pub pushed: bool,
     /// The pull request of the branch, when one exists.
     pub pull_request: Option<PullRequestRef>,
+    /// Once the branch's pull request is merged: the commits on the branch
+    /// after the head it merged, which the base doesn't have. fctl-agent
+    /// doesn't push a merged branch, so they stay in the sandbox unless the
+    /// agent pushes them. Absent before, and from older agents.
+    pub unmerged: Option<u32>,
     /// The project's other repositories the agent cloned. Absent from agents
     /// that work in the primary repository only.
     pub repos: Option<Vec<RepoGitState>>,
+    /// Every pull request fctl-agent follows for the session, the branches'
+    /// above included, in the order it found them: those of the branches
+    /// the repositories had checked out, and those `gh pr create` printed,
+    /// whichever branch, worktree or clone they came from, with their state
+    /// as last looked up. Absent from older agents.
+    pub pull_requests: Option<Vec<PullRequestRef>>,
 }
 
 impl GitState {
@@ -246,6 +260,7 @@ pub struct RepoGitState {
     pub last_commit: Option<CommitInfo>,
     pub pushed: bool,
     pub pull_request: Option<PullRequestRef>,
+    pub unmerged: Option<u32>,
 }
 
 impl RepoGitState {
@@ -270,6 +285,7 @@ impl RepoGitState {
             last_commit: st.last_commit,
             pushed: st.pushed,
             pull_request: st.pull_request,
+            unmerged: st.unmerged,
         }
     }
 

@@ -12,4 +12,4 @@ export type RepoGitState = { owner: string, name: string, access: RepoAccess,
 /**
  * Where it is cloned in the sandbox.
  */
-path?: string, branch?: string, base?: string, head?: string, ahead: number, behind: number, files: Array<FileChange>, uncommitted: number, last_commit?: CommitInfo, pushed: boolean, pull_request?: PullRequestRef, };
+path?: string, branch?: string, base?: string, head?: string, ahead: number, behind: number, files: Array<FileChange>, uncommitted: number, last_commit?: CommitInfo, pushed: boolean, pull_request?: PullRequestRef, unmerged?: number, };
