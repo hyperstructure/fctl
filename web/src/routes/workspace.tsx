@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
+import { GithubAvatar } from "@/components/github-avatar";
 import { SessionRow } from "@/components/session/row";
 import {
   Avatar,
@@ -971,12 +972,7 @@ function Github({
       <ul className="mt-6 border-t border-line">
         {g?.connections.map((c) => (
           <li key={c.account} className="flex items-center gap-3.5 border-b border-line py-3.5">
-            <img
-              src={`https://github.com/${encodeURIComponent(c.account)}.png?size=64`}
-              alt=""
-              className="size-8 shrink-0 rounded-md bg-raised"
-              referrerPolicy="no-referrer"
-            />
+            <GithubAvatar account={c.account} />
             <div className="min-w-0 flex-1">
               <a
                 href={`https://github.com/${encodeURIComponent(c.account)}`}
