@@ -277,7 +277,7 @@ function Projects({ w }: { w: G.Workspace }) {
                   <span className="shrink-0 text-[12px] text-ink-4 tabular-nums">
                     {agoShort(p.last_activity_at ?? p.created_at)}
                   </span>
-                  <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100" />
+                  <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100 max-sm:hidden" />
                 </Link>
               </li>
             ))}

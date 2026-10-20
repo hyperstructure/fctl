@@ -291,7 +291,7 @@ function Sessions({ project }: { project: G.Project }) {
                 >
                   {agoShort(s.last_activity_at ?? s.created_at)}
                 </time>
-                <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all group-hover:opacity-100" />
+                <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all group-hover:opacity-100 max-sm:hidden" />
               </Link>
             ))}
           </div>
