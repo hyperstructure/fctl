@@ -66,6 +66,9 @@ this file is the overview. Order within a section is priority.
 - [x] Projects that span several repositories, or read every repository of
       an organization (#17)
 - [x] macOS release binaries that run on macOS 12 and later, not only 15+ (#7)
+- [x] The control plane without Cloudflare: the same Worker on workerd, in
+      one container (`ghcr.io/hyperstructure/fctl-control`) for a spare
+      machine, a homelab or a Kubernetes cluster
 - [x] Workspaces: their own people, projects, runners, GitHub accounts,
       two-factor requirement and audit log, with one primary admin each and
       a primary owner for the instance; one account with several email

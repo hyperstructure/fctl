@@ -622,11 +622,14 @@ pub struct RemoteControlState {
     pub unavailable_reason: Option<String>,
 }
 
-/// Counters shown on session lists.
+/// Counters shown on session lists. Tokens count each API call as it comes,
+/// and settle on Claude's own totals at the end of each turn.
+#[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 #[serde(default)]
 pub struct SessionStats {
+    /// Turns that ended (each with Claude's `result`).
     pub turns: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -637,6 +640,17 @@ pub struct SessionStats {
     pub deletions: u32,
     /// Milliseconds Claude spent working (sum of turn durations).
     pub busy_ms: u64,
+    /// When the turn under way started (absent between turns). It isn't in
+    /// `turns` or `busy_ms` until it ends.
+    pub turn_started_at: Option<Millis>,
+}
+
+impl SessionStats {
+    /// Turns taken, the one under way included.
+    pub fn turns_taken(&self) -> u32 {
+        self.turns
+            .saturating_add(u32::from(self.turn_started_at.is_some()))
+    }
 }
 
 #[skip_serializing_none]

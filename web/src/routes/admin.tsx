@@ -44,6 +44,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, cpus, diskBelow, lowOnDisk, memory, sandboxLimits } from "@/lib/format";
 import { buildsImages, runsImages } from "@/lib/images";
+import { installCommand } from "@/lib/install";
 import { keys, queryClient, useMe, useRunners, useWorkspaces } from "@/lib/queries";
 
 type Tab = "people" | "workspaces" | "github" | "runners" | "access" | "settings" | "audit";
@@ -1176,9 +1177,6 @@ function Runners() {
   });
   // Disabling a runner that runs sessions, or removing one, asks first.
   const [confirm, setConfirm] = useState<{ runner: G.Runner; action: "disable" | "remove" } | null>(null);
-  const site = location.hostname.startsWith("app.")
-    ? `https://${location.hostname.slice(4)}`
-    : location.origin;
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
@@ -1347,7 +1345,7 @@ function Runners() {
         {reg && (
           <div className="flex flex-col gap-3">
             <div className="text-[12.5px] text-ink-3">1. Install fctl</div>
-            <CodeBox value={`curl -fsSL ${site}/install | sh`} />
+            <CodeBox value={installCommand()} />
             <div className="text-[12.5px] text-ink-3">2. Register it as a runner and start the service</div>
             <CodeBox value={`FCTL_SERVER=${location.origin} fctl host install --token ${reg.token}`} />
             <p className="text-[12.5px] leading-relaxed text-ink-4">

@@ -1,0 +1,145 @@
+# The fctl control plane in a Kubernetes cluster, without Cloudflare
+# (docs/self-hosting.md). Set FCTL_PUBLIC_URL and the Ingress's host below to
+# your address, then:
+#
+#   kubectl create namespace fctl
+#   kubectl -n fctl create secret generic fctl \
+#     --from-literal=FCTL_MASTER_KEY="$(openssl rand -base64 32)"
+#   kubectl -n fctl apply -f kubernetes.yaml
+#   kubectl -n fctl logs statefulset/fctl-control   # the link that creates the first account
+#
+# One replica, always: the state is SQLite files on the volume, and two
+# servers on it would each run the same sessions. A StatefulSet never runs
+# two pods of one identity, so an upgrade stops the old pod first.
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: fctl-control
+  labels:
+    app.kubernetes.io/name: fctl-control
+spec:
+  replicas: 1
+  serviceName: fctl-control
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fctl-control
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fctl-control
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: fctl-control
+          # Pin a release (ghcr.io/hyperstructure/fctl-control:0.11.0) to
+          # upgrade when you choose: migrations apply as it starts.
+          image: ghcr.io/hyperstructure/fctl-control:latest
+          ports:
+            - name: http
+              containerPort: 8787
+          env:
+            - name: FCTL_PUBLIC_URL
+              value: https://fctl.example.com
+            # The Ingress controller adds X-Forwarded-For: count the proxies
+            # that do, so that rate limits and the audit log see people's
+            # addresses.
+            - name: FCTL_TRUST_PROXY
+              value: "1"
+          # FCTL_MASTER_KEY, and the GitHub App's, Google's and Resend's
+          # secrets when you use them (docs/self-hosting.md).
+          envFrom:
+            - secretRef:
+                name: fctl
+                optional: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fctl-control
+  labels:
+    app.kubernetes.io/name: fctl-control
+spec:
+  selector:
+    app.kubernetes.io/name: fctl-control
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fctl-control
+  annotations:
+    # With ingress-nginx: attachments are up to 20 MB (its default is 1 MB).
+    nginx.ingress.kubernetes.io/proxy-body-size: 25m
+    # With cert-manager, a certificate for the host below:
+    # cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  rules:
+    - host: fctl.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fctl-control
+                port:
+                  name: http
+  tls:
+    - hosts: [fctl.example.com]
+      secretName: fctl-control-tls

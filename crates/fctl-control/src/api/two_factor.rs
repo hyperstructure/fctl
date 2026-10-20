@@ -15,8 +15,9 @@ use crate::auth;
 use crate::ctx::Ctx;
 use crate::db::{Count, Query, batch, n, os, q, s};
 use crate::error::{AppError, AppResult, conflict, forbidden, internal, not_found, validation};
-use crate::http::{self, CHALLENGE_COOKIE};
+use crate::http;
 use crate::model::UserRow;
+use fctl_domain::cookies::Cookie;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::totp;
 use fctl_domain::two_factor::{
@@ -195,7 +196,7 @@ pub async fn challenge(
     .run()
     .await?;
     ctx.cookies.push(http::set_cookie(
-        CHALLENGE_COOKIE,
+        Cookie::SecondFactor,
         &secret,
         (CHALLENGE_TTL_MS / 1000) as u64,
         ctx.cfg.secure_cookies(),
@@ -252,7 +253,7 @@ fn expired() -> AppError {
 
 /// The request's waiting sign-in, by its cookie: its hash and row.
 async fn waiting(ctx: &Ctx, req: &Request) -> AppResult<(String, ChallengeRow)> {
-    let Some(secret) = http::cookie(req, CHALLENGE_COOKIE) else {
+    let Some(secret) = http::cookie(req, Cookie::SecondFactor, ctx.cfg.secure_cookies()) else {
         return Err(expired());
     };
     let hash = hash_secret(&secret);
@@ -286,7 +287,7 @@ async fn active_user(ctx: &Ctx, id: &str) -> AppResult<UserRow> {
 
 fn clear_cookie(ctx: &mut Ctx) {
     ctx.cookies.push(http::set_cookie(
-        CHALLENGE_COOKIE,
+        Cookie::SecondFactor,
         "",
         0,
         ctx.cfg.secure_cookies(),
@@ -306,7 +307,7 @@ pub async fn current(ctx: &Ctx, req: &Request) -> AppResult<Response> {
 /// you?", "Start again").
 pub async fn cancel(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     http::check_same_origin(req, ctx.cfg.origin(), ctx.cfg.dev)?;
-    if let Some(secret) = http::cookie(req, CHALLENGE_COOKIE) {
+    if let Some(secret) = http::cookie(req, Cookie::SecondFactor, ctx.cfg.secure_cookies()) {
         q(
             &ctx.db,
             "DELETE FROM sign_in_challenges WHERE hash = ?",

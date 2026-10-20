@@ -127,8 +127,6 @@ impl Config {
     /// Whether cookies can carry the `Secure` attribute (always, except plain
     /// http outside localhost).
     pub fn secure_cookies(&self) -> bool {
-        self.public_url.starts_with("https://")
-            || self.public_url.starts_with("http://localhost")
-            || self.public_url.starts_with("http://127.0.0.1")
+        fctl_domain::cookies::secure(&self.public_url)
     }
 }

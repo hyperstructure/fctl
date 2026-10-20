@@ -10,6 +10,9 @@
 //! project the first time, and keeps its state in .fctl-dev/ (delete it to
 //! start over).
 //! With `--smoke` (CI), it runs one session to the end and stops.
+//! With `--server <url>`, the host and the smoke test use a control plane
+//! that already runs there instead (the standalone one, from `cargo xtask
+//! serve` or its container image), which bootstraps with the dev setup token.
 
 use crate::util::{self, run};
 use anyhow::{Context, Result, bail};
@@ -19,13 +22,21 @@ use fctl_proto::session::{Session, SessionStatus};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Child, Command};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-const API: &str = "http://127.0.0.1:8787";
+const LOCAL_API: &str = "http://127.0.0.1:8787";
 const WEB: &str = "http://localhost:5173";
 pub const DEV_EMAIL: &str = "dev@fctl.test";
 pub const DEV_PASSWORD: &str = "fctl-dev-password";
-const SETUP_TOKEN: &str = "dev-setup-token";
+pub const SETUP_TOKEN: &str = "dev-setup-token";
+
+static SERVER: OnceLock<String> = OnceLock::new();
+
+/// The control plane's origin: wrangler dev's, or `--server`.
+fn api() -> &'static str {
+    SERVER.get().map_or(LOCAL_API, String::as_str)
+}
 
 pub struct DevOpts {
     /// Do not start a host (control plane and web app only).
@@ -34,6 +45,8 @@ pub struct DevOpts {
     pub no_vite: bool,
     /// Run one fake-claude session to the end, then stop everything (CI).
     pub smoke: bool,
+    /// Use the control plane at this origin instead of starting wrangler dev.
+    pub server: Option<String>,
 }
 
 struct Children(Vec<(&'static str, Child)>);
@@ -83,15 +96,16 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     if opts.smoke && opts.no_host {
         bail!("--smoke runs a session, which needs the host: leave out --no-host");
     }
-    let state = root.join(".fctl-dev");
-    std::fs::create_dir_all(&state)?;
-    if !root.join("node_modules").exists() {
-        util::npm_install(root)?;
+    let mut state = root.join(".fctl-dev");
+    let mut no_vite = opts.no_vite;
+    if let Some(server) = &opts.server {
+        // It serves its own web app, and isn't in development mode, so Vite's
+        // origin can't sign in to it.
+        no_vite = true;
+        state = state.join("server");
+        let _ = SERVER.set(server.trim_end_matches('/').to_owned());
     }
-    // wrangler dev builds the Worker with `worker-build --dev` (wrangler.toml):
-    // this installs it when it is missing.
-    util::worker_build()?;
-    dev_vars(root)?;
+    std::fs::create_dir_all(&state)?;
     run(Command::new("cargo")
         .args([
             "build",
@@ -103,39 +117,18 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
             "fake-claude",
         ])
         .current_dir(root))?;
-    // wrangler serves web/dist; Vite serves the live sources on top.
-    if !root.join("web/dist/index.html").exists() || opts.no_vite {
-        util::build_web(root)?;
-    }
-
-    // CI=1: apply without asking (they are local and recorded in d1_migrations).
-    run(util::wrangler(root)?
-        .args(["d1", "migrations", "apply", "DB", "--local"])
-        .env("CI", "1")
-        .current_dir(root.join("crates/fctl-control")))?;
-
     let mut children = Children(Vec::new());
-    let wrangler = util::wrangler(root)?
-        .args([
-            "dev",
-            "--port",
-            "8787",
-            "--ip",
-            "127.0.0.1",
-            "--test-scheduled",
-        ])
-        .current_dir(root.join("crates/fctl-control"))
-        .spawn()
-        .context("starting wrangler dev")?;
-    children.0.push(("wrangler", wrangler));
+    if opts.server.is_none() {
+        wrangler_dev(root, no_vite, &mut children)?;
+    }
     wait_for(
-        &format!("{API}/api/v1/health"),
+        &format!("{}/api/v1/health", api()),
         Duration::from_secs(300),
         &mut children,
     )?;
 
     let token = bootstrap(&state)?;
-    if !opts.no_vite {
+    if !no_vite {
         // Vite itself, not `npm run dev`: npm doesn't pass SIGINT on, and
         // stopping npm leaves Vite serving.
         let vite = Command::new(root.join("node_modules/.bin/vite"))
@@ -151,7 +144,7 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     }
 
     if opts.smoke {
-        if !opts.no_vite {
+        if !no_vite {
             // The app, and the API through Vite's proxy.
             wait_for(
                 &format!("{WEB}/api/v1/health"),
@@ -163,15 +156,21 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
         return smoke(root, &token, &mut children);
     }
 
-    let open = if opts.no_vite { API } else { WEB };
+    let api = api();
+    let open = if no_vite { api } else { WEB };
+    let state_dir = if opts.server.is_some() {
+        ".fctl-dev/server"
+    } else {
+        ".fctl-dev"
+    };
     eprintln!(
         "\n\x1b[1mfctl dev is running\x1b[0m\n\n  \
          app       {open}\n  \
          sign in   {DEV_EMAIL} / {DEV_PASSWORD}\n  \
-         api       {API}/api/v1\n  \
-         cli       export FCTL_SERVER={API} FCTL_TOKEN=$(cat .fctl-dev/token)\n\n\
+         api       {api}/api/v1\n  \
+         cli       export FCTL_SERVER={api} FCTL_TOKEN=$(cat {state_dir}/token)\n\n\
          Agents run fake-claude: try a task like \"write notes.md\", \"rename Fix the login test\", \"screenshot\", \"slow\", \"background 30\", \"limit\" or \"crash\".\n\
-         Ctrl-C stops everything. State lives in .fctl-dev/.\n"
+         Ctrl-C stops everything. State lives in {state_dir}/.\n"
     );
 
     // Run until something exits (or Ctrl-C, which reaches every child too).
@@ -181,6 +180,43 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     }
 }
 
+/// The control plane under `wrangler dev`, with the web app it serves built
+/// and the D1 migrations applied.
+fn wrangler_dev(root: &Path, no_vite: bool, children: &mut Children) -> Result<()> {
+    if !root.join("node_modules").exists() {
+        util::npm_install(root)?;
+    }
+    // wrangler dev builds the Worker with `worker-build --dev` (wrangler.toml):
+    // this installs it when it is missing.
+    util::worker_build()?;
+    dev_vars(root)?;
+    // wrangler serves web/dist; Vite serves the live sources on top.
+    if !root.join("web/dist/index.html").exists() || no_vite {
+        util::build_web(root)?;
+    }
+
+    // CI=1: apply without asking (they are local and recorded in d1_migrations).
+    run(util::wrangler(root)?
+        .args(["d1", "migrations", "apply", "DB", "--local"])
+        .env("CI", "1")
+        .current_dir(root.join("crates/fctl-control")))?;
+
+    let wrangler = util::wrangler(root)?
+        .args([
+            "dev",
+            "--port",
+            "8787",
+            "--ip",
+            "127.0.0.1",
+            "--test-scheduled",
+        ])
+        .current_dir(root.join("crates/fctl-control"))
+        .spawn()
+        .context("starting wrangler dev")?;
+    children.0.push(("wrangler", wrangler));
+    Ok(())
+}
+
 /// `--smoke`: starts a session with the CLI as a person would, and fails
 /// unless the agent commits a file and finishes its turn, the session waits
 /// for the command the agent left running in the background and the agent
@@ -188,7 +224,7 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
 fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
     let fctl = || {
         let mut cmd = Command::new(util::target_dir(root).join("debug/fctl"));
-        cmd.env("FCTL_SERVER", API).env("FCTL_TOKEN", token);
+        cmd.env("FCTL_SERVER", api()).env("FCTL_TOKEN", token);
         cmd
     };
     let out = util::output(fctl().args([
@@ -393,12 +429,12 @@ fn call(
     auth: Option<&Auth>,
     body: Option<Value>,
 ) -> Result<(u16, Value, Option<String>)> {
-    let url = format!("{API}/api/v1{path}");
+    let url = format!("{}/api/v1{path}", api());
     let agent = agent();
     let mut req = ureq::http::Request::builder()
         .method(method)
         .uri(&url)
-        .header("Origin", API)
+        .header("Origin", api())
         .header("Content-Type", "application/json");
     match auth {
         Some(Auth::Bearer(t)) => req = req.header("Authorization", format!("Bearer {t}")),
@@ -413,7 +449,8 @@ fn call(
         .get_all("set-cookie")
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .find(|v| v.starts_with("__Host-fctl="))
+        // Without the `__Host-` prefix over plain http (fctl_domain::cookies).
+        .find(|v| v.starts_with("__Host-fctl=") || v.starts_with("fctl="))
         .and_then(|v| v.split(';').next())
         .map(str::to_owned);
     let text = res.body_mut().read_to_string().unwrap_or_default();
@@ -463,10 +500,15 @@ fn bootstrap(state: &Path) -> Result<String> {
             Some(json!({ "email": DEV_EMAIL, "password": DEV_PASSWORD })),
         )?
     };
-    ok(
-        "signing in as the dev owner (delete .fctl-dev and crates/fctl-control/.wrangler to start over)",
-        &res,
-    )?;
+    let what = if SERVER.get().is_some() {
+        format!(
+            "signing in as the dev owner (the control plane at {} makes it when it was started with FCTL_SETUP_TOKEN={SETUP_TOKEN} and has no account yet)",
+            api()
+        )
+    } else {
+        "signing in as the dev owner (delete .fctl-dev and crates/fctl-control/.wrangler to start over)".to_owned()
+    };
+    ok(&what, &res)?;
     if res.1.get("two_factor").is_some() {
         bail!(
             "the dev owner has two-factor sign-in, so a password alone can't sign it in: turn it off in Settings (or with `fctl account two-factor disable`), or delete .fctl-dev and crates/fctl-control/.wrangler to start over"
@@ -556,7 +598,7 @@ fn host(root: &Path, state: &Path, token: &str) -> Result<Child> {
     let bin = util::target_dir(root).join("debug");
     let toml = format!(
         "# Written by cargo xtask dev.\n\
-         server = \"{API}\"\n\
+         server = \"{api}\"\n\
          name = \"dev-host\"\n\
          driver = \"process\"\n\
          capacity = 4\n\
@@ -567,6 +609,7 @@ fn host(root: &Path, state: &Path, token: &str) -> Result<Child> {
          # Development machines and CI runners may have less free than the 20 GiB\n\
          # a host keeps by default, and would take no sessions.\n\
          min_free_disk_gb = 1\n",
+        api = api(),
         claude = toml_str(&bin.join("fake-claude")),
         agent = toml_str(&bin.join("fctl-agent")),
         data = toml_str(&state.join("data")),

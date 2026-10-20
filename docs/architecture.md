@@ -5,7 +5,7 @@ isolated sandboxes on machines you own. This document is the map. Read it
 before changing anything that crosses a component boundary.
 
 ```
-                         ┌──────────────── Cloudflare ────────────────┐
+                         ┌──────── Cloudflare, or a container ────────┐
   browser (web app) ───► │  fctl-control  (Rust → wasm Worker)        │
   fctl CLI ────────────► │   ├─ REST API  /api/v1/*                   │
   Claude apps ◄─┐        │   ├─ static web app (Workers assets)       │
@@ -37,7 +37,8 @@ before changing anything that crosses a component boundary.
 |---|---|---|
 | `crates/fctl-proto` | Wire types for every protocol below. TypeScript is generated from it. | everywhere |
 | `crates/fctl-domain` | Pure logic: roles and permissions, validation, tokens, scheduling, event shaping. No I/O. | everywhere |
-| `crates/fctl-control` | The control plane Worker: HTTP API, auth, Durable Objects, GitHub App client. | Cloudflare (wasm32) |
+| `crates/fctl-control` | The control plane Worker: HTTP API, auth, Durable Objects, GitHub App client. | Cloudflare, or workerd anywhere (wasm32) |
+| `deploy/standalone` | The control plane without Cloudflare: a server that runs the Worker on workerd through Miniflare, its container image and examples for Docker Compose and Kubernetes. | a container, any machine |
 | `crates/fctl-host` | The host daemon library: control-plane client, session manager, sandbox drivers. | macOS, Linux |
 | `crates/fctl-agent` | The supervisor inside each sandbox: runs `claude`, journals events, prepares the workspace. | Linux sandboxes |
 | `crates/fctl` | The `fctl` binary: CLI for people and agents, plus `fctl host …`. | macOS, Linux |
@@ -63,7 +64,8 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
    supervisor refuses to run when Claude reports an API-key credential source,
    and it interrupts a session the moment Claude reports paid overage use.
    See [Claude credentials](#claude-credentials).
-2. **Your machines do the work.** Cloudflare holds state and routes messages.
+2. **Your machines do the work.** The control plane (on Cloudflare, or in
+   [a container of your own](#deployment)) holds state and routes messages.
    Hosts connect outbound only: no open ports, no tunnels, NAT friendly.
 3. **Nothing is lost on a reconnect.** Agent events carry a sequence number
    assigned in the sandbox and are journaled there until the control plane
@@ -97,7 +99,9 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   `owner`, `maintainer`, `editor` (can start sessions and message agents),
   `viewer`. Sessions can also be shared with people in their workspace.
 - Credentials are opaque random tokens with a type prefix, stored as SHA-256
-  hashes: `fctl_ws_` (web session cookie `__Host-fctl`), `fctl_cli_` (CLI,
+  hashes: `fctl_ws_` (web session cookie `__Host-fctl`, or `fctl` over plain
+  http outside localhost, where browsers refuse the prefix:
+  `fctl_domain::cookies`), `fctl_cli_` (CLI,
   issued through the device flow), `fctl_pat_` (personal access token),
   `fctl_rt_` (runner).
 - Cookie requests that change state must come from the app's origin
@@ -345,7 +349,8 @@ while they wait to go out, and forgets them once sent (see
 and shares cascade) and, in the same batch, queues its sessions in
 `session_purges` and the project in `file_purges`; their Durable Object
 storage, the event logs and the attached files and published screenshots,
-is deleted right after. An hourly cron trigger (`src/housekeeping.rs`) retries what failed and
+is deleted right after. An hourly cron trigger (`src/housekeeping.rs`; the
+standalone server runs it outside Cloudflare) retries what failed and
 deletes expired tokens, password resets, sign-ins waiting for a code,
 passkey challenges, device codes and invites, the
 links of expired published screenshots, abandoned Claude logins, and audit
@@ -607,6 +612,16 @@ imports so it loads in every repository
   (`crates/fctl-domain/src/journal.rs`).
 - Streaming deltas (`stream_event`) are forwarded but not stored; SessionDO
   keeps the in-progress text in memory so late viewers see it.
+- The session's counters (`SessionStats`) move as the agent works. Each
+  API call's input and cache reads count as its response starts
+  (`message_start`), or with its stored messages if that stream event went
+  missing, and its output with the `message_delta` that ends it. Claude
+  reports each several times, so SessionDO remembers the calls it counted.
+  A turn is under way while the session runs (`turn_started_at`), so
+  viewers count its time up. Each turn's `result` adds its duration and
+  settles the tokens on Claude's own totals (`modelUsage`), which also have
+  the calls that stream nothing and the output lost while the uplink was
+  down (`crates/fctl-domain/src/events.rs`).
 - Host status (`provisioning`, `preparing`) is sent as idempotent state, not
   as sequenced events.
 - Deliveries (messages, interrupts, stops) wait in SessionDO's outbox until
@@ -988,6 +1003,21 @@ control plane by a version. Add fields as optional; never repurpose a tag.
 ## Deployment
 
 - `app.<domain>` — fctl-control and the web app (one Worker).
+- Or, without Cloudflare, the same Worker and web app in one container
+  (`ghcr.io/hyperstructure/fctl-control`, `deploy/standalone`), on any
+  machine or Kubernetes cluster
+  ([ADR 0026](adr/0026-the-control-plane-runs-without-cloudflare-on-workerd.md)).
+  `server.mjs` runs them on workerd, Cloudflare's open-source Workers
+  runtime, through Miniflare, with the bindings of `wrangler.toml` and its
+  state (D1 and every Durable Object, as SQLite files) in a data directory.
+  It does what Cloudflare does around the Worker: applies the D1 migrations
+  as it starts, sets `CF-Connecting-IP` (from the connection, or from
+  `X-Forwarded-For` behind trusted proxies) and drops what clients must not
+  set (`CF-*`, `MF-*`, `/cdn-cgi/`), and runs the hourly cron trigger. A
+  lock file keeps a second server off the same data, and the server exits
+  when workerd stops answering, so that Docker or Kubernetes starts it
+  again. `request.cf` is empty there, so sign-ins record no city or
+  country.
 - `<domain>` — the site Worker from hyperstructure/fctl-site (landing page,
   docs, `/install`, `/releases`). It reads releases from a KV namespace that
   `cargo xtask publish` writes (`deploy/releases.toml`); the two share the
@@ -996,4 +1026,4 @@ control plane by a version. Add fields as optional; never repurpose a tag.
   `fctl login` and `fctl host install` (launchd on macOS, systemd on Linux).
 
 Everything instance-specific (domain, GitHub App, Google client, email) is
-configuration; see [self-hosting](self-hosting.md).
+configuration, the same for both; see [self-hosting](self-hosting.md).

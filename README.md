@@ -39,8 +39,8 @@ release.
 ```
  web app · fctl CLI · Claude apps
               │
-   control plane on Cloudflare        a Rust → wasm Worker, Durable Objects, D1
-              │  (hosts dial out)
+   control plane                      a Rust → wasm Worker, Durable Objects, D1:
+              │  (hosts dial out)     on Cloudflare, or in one container anywhere
          fctl host on your Mac        one Linux VM per session
               │
    fctl-agent + Claude Code           journaled events, branch, push, pull request
@@ -55,7 +55,9 @@ release.
 - **Follow along anywhere.** With a full Claude login, sessions join Remote
   Control and show up in the Claude apps.
 - **Yours.** Deploy your own instance to your Cloudflare account with
-  `cargo xtask deploy`. MIT licensed.
+  `cargo xtask deploy`, or run it without one, on a spare machine or a
+  Kubernetes cluster: `docker run ghcr.io/hyperstructure/fctl-control`
+  ([self-hosting](docs/self-hosting.md)). MIT licensed.
 
 ## Developing
 

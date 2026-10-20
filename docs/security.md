@@ -18,9 +18,9 @@ trusts.
 | Workspace avatars | images in D1 | the workspace's members, people it invited, instance admins |
 | Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
 | Published screenshots | the project's Durable Object, found by the SHA-256 of their links' tokens in D1 | anyone with a link, until it expires |
-| GitHub App key | a Worker secret | the control plane, to mint short-lived tokens |
+| GitHub App key | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to mint short-lived tokens |
 | Web Push (VAPID) key | encrypted in D1 | the control plane, to sign notifications |
-| Master key | a Worker secret | the control plane |
+| Master key | a Worker secret (outside Cloudflare, the server's environment, or a file it made in its data directory) | the control plane |
 
 Encrypted values are bound to their row (the AES-GCM associated data names the
 owner and purpose), so a value copied between rows does not decrypt.
@@ -40,7 +40,10 @@ owner and purpose), so a value copied between rows does not decrypt.
   admins see inside only the ones they are members of. A workspace sees
   only the address each member joined as.
 - Browser sessions are `__Host-` cookies (`Secure`, `HttpOnly`,
-  `SameSite=Lax`). Requests that change state must come from the app's own
+  `SameSite=Lax`). An instance served over plain http at an address other
+  than localhost, which only [a control plane of your own](#the-control-plane-without-cloudflare)
+  can be, sets them without the prefix and `Secure`, which browsers refuse
+  there. Requests that change state must come from the app's own
   origin (`Origin` / `Sec-Fetch-Site`) and carry JSON; WebSocket upgrades are
   origin-checked too.
 - **Two-factor sign-in.** With an authenticator app set up (Settings, or
@@ -240,6 +243,32 @@ build never sees, and runs the build in its container runtime's builder,
 outside any sandbox ([Sandbox images](sandbox-images.md#which-images-a-host-runs)).
 Hosts pull images with their own registry logins; fctl stores no registry
 credentials.
+
+## The control plane without Cloudflare
+
+The standalone control plane ([Self-hosting](self-hosting.md#on-your-own-machine-or-cluster))
+runs the same Worker, so the rest of this page holds for it too. What
+Cloudflare does around the Worker, its server (`deploy/standalone`) does:
+
+- **Addresses.** Sign-in rate limits and the audit log go by the address
+  in `CF-Connecting-IP`. The server sets it from the connection, or behind
+  `FCTL_TRUST_PROXY` proxies from what they added to `X-Forwarded-For`,
+  and replaces any a client sends. It also drops headers that steer
+  Miniflare (`MF-*`), which would take them from anyone, and answers
+  `/cdn-cgi/`, where Miniflare has pages of its own, with a 404.
+- **Secrets** are environment variables, or files (`<NAME>_FILE`).
+  Without `FCTL_MASTER_KEY`, the server makes a master key and keeps it in
+  its data directory, next to what it encrypts: a copy of the directory
+  then has both. Set the key from a secret store to keep them apart.
+- **TLS** is the reverse proxy's in front. Over plain http, anyone on the
+  network in between reads sign-in cookies, CLI and runner tokens, and
+  whatever the apps show; keep such an instance to a network you trust.
+- **The data directory** holds D1 and every Durable Object as SQLite
+  files: password hashes, encrypted credentials and secrets, transcripts
+  and attached files. Encryption at rest is the disk's. One server at a
+  time uses it (`server.lock`): two would each run the same sessions.
+- Errors the Worker throws come back as plain 500s, without the stack
+  traces Miniflare shows in development.
 
 ## Retention
 

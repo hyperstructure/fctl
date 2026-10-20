@@ -76,7 +76,10 @@ attached files also gets a sentence about them: how many images it holds,
 and whether each listed file is on disk. Turns other than `limit` and
 `crash` report plan usage as Claude Code does (`unifiedWindows`), with
 five-hour and weekly windows that follow the clock, so Settings → Claude,
-the floor and `fctl claude status` show it. Its `system/init` message lists a
+the floor and `fctl claude status` show it. Each of its API calls reports
+tokens as Claude Code's do, its input as it starts and with its assistant
+messages, and its output in the `message_delta` that ends it, so the
+session page's Work counters move during a turn. Its `system/init` message lists a
 claude.ai connector, `claude.ai Fake Docs`, unless
 `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, so sessions in a project with
 claude.ai connectors turned off show none (`fctl logs --json`). Its commits
@@ -104,6 +107,29 @@ trigger. To run it locally:
 curl "http://127.0.0.1:8787/cdn-cgi/handler/scheduled?cron=17+*+*+*+*"
 ```
 
+## The standalone control plane
+
+Outside Cloudflare, the control plane runs as `deploy/standalone/server.mjs`
+runs it: the Worker and the web app built for production, on workerd
+through Miniflare, as `wrangler dev` runs them, with what Cloudflare does
+around the Worker done by the server: migrations, the client's address,
+the hourly job ([Self-hosting](self-hosting.md#on-your-own-machine-or-cluster),
+[ADR 0026](adr/0026-the-control-plane-runs-without-cloudflare-on-workerd.md)).
+Its container image is `deploy/standalone/Dockerfile`. To run it from your
+checkout, without Docker:
+
+```sh
+FCTL_SETUP_TOKEN=dev-setup-token cargo xtask serve      # http://localhost:8787, state in .fctl-serve/
+cargo xtask dev --smoke --server http://localhost:8787  # a host and a session through it
+```
+
+`--server` points `cargo xtask dev` at a control plane that already runs,
+instead of starting `wrangler dev`: it bootstraps the dev owner there with
+the dev setup token, and runs the host (and with `--smoke`, the session)
+against it. Give it the server's `FCTL_PUBLIC_URL`, the origin the server
+accepts requests from. Its state goes in `.fctl-dev/server/`. Delete
+`.fctl-serve/` to start the server over.
+
 ## Checks
 
 ```sh
@@ -113,9 +139,10 @@ cargo xtask dev --smoke    # and CI's other job: a session through the local sta
 ```
 
 That is `cargo fmt --check`, a check that `web/src/gen` matches the Rust
-types, Biome and TypeScript for the web app, Clippy (native and wasm) with
-warnings as errors, `cargo test`, the web app's Vitest suite, and a
-production build of the web app.
+types, Biome and TypeScript for the web app, Biome for the standalone
+server, Clippy (native and wasm) with warnings as errors, `cargo test`, the
+web app's Vitest suite, the standalone server's tests (`node --test`), and
+a production build of the web app.
 
 `cargo xtask dev --smoke` starts the local stack as `cargo xtask dev` does,
 runs `fctl run -p playground "write notes.md"`, waits until the agent has
@@ -124,6 +151,10 @@ everything else. It fails when any step does. CI runs it from a fresh
 checkout, so its migrations, Worker, bootstrap, host and agent all run
 before a change can deploy. Locally it uses your `.fctl-dev/` state and
 ports 8787 and 5173: stop `cargo xtask dev` first.
+
+CI also builds the standalone control plane's image, starts it and runs
+`cargo xtask dev --smoke --server` against it, so the container, its
+migrations and its proxy run a session too.
 
 Pull requests that change the agent skills in `.claude/skills` also run
 the Skills workflow, which validates them all in one job against the
@@ -142,9 +173,10 @@ the Skills workflow, which validates them all in one job against the
 | `crates/fctl-agent` | The supervisor inside each sandbox: runs Claude, journals events, prepares git |
 | `crates/fctl` | The `fctl` binary: CLI plus `fctl host` |
 | `crates/fake-claude` | The scripted Claude stand-in |
-| `xtask` | `cargo xtask`: dev, check, gen, deploy, secrets, dist, publish |
+| `xtask` | `cargo xtask`: dev, check, gen, serve, deploy, secrets, dist, publish |
 | `web` | The web app (React, TanStack Router and Query, Tailwind, WebGL) |
 | `deploy/instances` | Instance descriptions for `cargo xtask deploy` |
+| `deploy/standalone` | The control plane without Cloudflare: its server, container image, Compose and Kubernetes examples |
 | `docs` | These docs; `docs/adr` records decisions |
 
 ## Changing a protocol
@@ -164,8 +196,15 @@ the Skills workflow, which validates them all in one job against the
   create tables with `IF NOT EXISTS` and add columns with `add_column`,
   which checks first.
 - D1 migrations are in `crates/fctl-control/migrations`; `cargo xtask dev`
-  applies them locally (in CI, to a fresh database) and `cargo xtask deploy`
-  before deploying. Never edit a migration that has shipped.
+  applies them locally (in CI, to a fresh database), `cargo xtask deploy`
+  before deploying, and the standalone server as it starts. Never edit a
+  migration that has shipped.
+- It runs outside Cloudflare too, on workerd through Miniflare
+  (`deploy/standalone`), with the bindings in `wrangler.toml`: a binding
+  added there and in `xtask/src/deploy.rs` reaches both. Workers APIs that
+  Miniflare lacks don't work there. Self-hosted instances keep their state
+  where Miniflare does (`state/v3` in their data directory): when you
+  upgrade wrangler, check that its Miniflare still reads it there.
 
 ## Working on the web app
 
