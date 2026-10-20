@@ -6,7 +6,7 @@ use crate::db::{Count, batch, n, os, q, s};
 use crate::error::{AppError, AppResult, conflict, forbidden, not_found, validation};
 use crate::github;
 use crate::http;
-use crate::model::{PROJECT_SELECT, PROJECT_VISIBLE, ProjectRow};
+use crate::model::{PROJECT_ORDER, PROJECT_SELECT, PROJECT_VISIBLE, ProjectRow};
 use crate::workspaces::{self as ws, ConnectionRow};
 use fctl_domain::{naming, perm, published, settings, validate};
 use fctl_proto::api::*;
@@ -16,7 +16,7 @@ use serde::Deserialize;
 use worker::{Request, Response};
 
 /// `GET /api/v1/projects[?workspace=…][&archived=1]`: the projects the
-/// caller sees, in all their workspaces or one.
+/// caller sees, in all their workspaces or one, in their order.
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let user = ctx.user()?;
     let settings = ctx.settings();
@@ -30,7 +30,7 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     if !include_archived {
         sql.push_str(" AND p.archived_at IS NULL");
     }
-    sql.push_str(" ORDER BY COALESCE(last_activity_at, p.created_at) DESC");
+    sql.push_str(&format!(" ORDER BY {PROJECT_ORDER}"));
     let rows: Vec<ProjectRow> = q(&ctx.db, &sql, &params)?.all().await?;
     http::ok(&ProjectList {
         projects: rows

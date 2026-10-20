@@ -151,17 +151,12 @@ function QuickStart({
   workspaces: G.Workspace[];
 }) {
   const index = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
-  // Projects where you may start sessions, under their workspaces, in your order.
-  const editable = useMemo(() => {
-    const order = new Map(workspaces.map((w, i) => [w.id, i]));
-    return projects
-      .filter((p) => p.role !== "viewer" && (!p.workspace || !index.get(p.workspace.id)?.blocked))
-      .sort(
-        (a, b) =>
-          (order.get(a.workspace?.id ?? "") ?? 99) - (order.get(b.workspace?.id ?? "") ?? 99) ||
-          (b.last_activity_at ?? b.created_at) - (a.last_activity_at ?? a.created_at),
-      );
-  }, [projects, workspaces, index]);
+  // Projects where you may start sessions, under their workspaces, in your order (the list's).
+  const editable = useMemo(
+    () =>
+      projects.filter((p) => p.role !== "viewer" && (!p.workspace || !index.get(p.workspace.id)?.blocked)),
+    [projects, index],
+  );
   // What was being written here before, kept in this browser until a session starts with it.
   const [kept] = useState(() => loadText(user));
   const remembered = (() => {

@@ -115,6 +115,7 @@ fctl workspaces create "Side project" --color pink
 fctl workspaces create Acme --as ada.lovelace@acme.example   # join it as another of your addresses
 fctl workspaces show -w side-project
 fctl workspaces use side-project           # the default for the commands below
+fctl workspaces order side-project acme    # yours in this order, in lists and the app's sidebar
 fctl workspaces join side-project          # an invitation (or decline it)
 fctl workspaces leave side-project         # your sessions there stop
 fctl workspaces claude crd_01… -w acme     # your sessions there run on this Claude connection
@@ -174,6 +175,7 @@ fctl projects set -p my-app --setup-script 'npm ci'   # or @setup.sh, or - to re
 fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects use my-app
+fctl projects order my-app site        # these first in their workspace, the others after them
 fctl projects delete my-app            # with its sessions; asks you to type the slug
 ```
 

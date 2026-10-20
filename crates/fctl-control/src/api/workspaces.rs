@@ -7,7 +7,9 @@ use crate::db::{Count, batch, n, os, q, s};
 use crate::error::{AppError, AppResult, conflict, forbidden, not_found, validation};
 use crate::http;
 use crate::internal::{self, LiveRunners};
-use crate::model::{RUNNER_SELECT, RunnerRow, RunnerView, UserRow};
+use crate::model::{
+    PROJECT_ORDER, PROJECT_VISIBLE, RUNNER_SELECT, RunnerRow, RunnerView, UserRow, WORKSPACE_ORDER,
+};
 use crate::workspaces::{self as ws, INVITATION_SELECT, InvitationRow, WorkspaceRow};
 use base64::Engine;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
@@ -769,6 +771,32 @@ pub async fn update_membership(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
     let a = ws::load(ctx, id).await?;
     a.require_open()?;
     let user = ctx.user()?.clone();
+    // Checked before anything changes: a request with both changes both or neither.
+    let project_order = match &body.project_order {
+        Some(wanted) => {
+            // The projects they see there, in their order now.
+            let current: Vec<Named> = q(
+                &ctx.db,
+                &format!(
+                    "SELECT p.id, p.slug FROM projects p JOIN workspaces w ON w.id = p.workspace_id \
+                     JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?1 \
+                     LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1 \
+                     WHERE w.id = ?2 AND {PROJECT_VISIBLE} ORDER BY {PROJECT_ORDER}"
+                ),
+                &[s(&user.id), s(a.id())],
+            )?
+            .all()
+            .await?;
+            let order = fctl_domain::order::arrange(
+                &Named::pairs(&current),
+                wanted,
+                "project_order",
+                &format!("your projects in {}", a.row.name),
+            )?;
+            Some(serde_json::to_string(&order)?)
+        }
+        None => None,
+    };
     if let Some(claude) = body.claude.as_deref() {
         let claude = claude.trim();
         if !claude.is_empty() {
@@ -795,7 +823,69 @@ pub async fn update_membership(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
         .run()
         .await?;
     }
+    if let Some(order) = project_order {
+        q(
+            &ctx.db,
+            "UPDATE workspace_members SET project_order = ? WHERE workspace_id = ? AND user_id = ?",
+            &[s(&order), s(a.id()), s(&user.id)],
+        )?
+        .run()
+        .await?;
+    }
     http::ok(&respond(ctx, a.id()).await?)
+}
+
+/// Something with an id and a slug, which both name it.
+#[derive(Deserialize)]
+struct Named {
+    id: String,
+    slug: String,
+}
+
+impl Named {
+    fn pairs(list: &[Named]) -> Vec<(&str, &str)> {
+        list.iter()
+            .map(|n| (n.id.as_str(), n.slug.as_str()))
+            .collect()
+    }
+}
+
+/// `PUT /api/v1/me/workspace-order`: the caller's workspaces in the order
+/// they want them; the ones they don't name follow as they were.
+pub async fn order(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
+    let body: WorkspaceOrderRequest = http::body(req).await?;
+    let user = ctx.user()?.clone();
+    let current: Vec<Named> = q(
+        &ctx.db,
+        &format!(
+            "SELECT w.id, w.slug FROM workspace_members wm JOIN workspaces w ON w.id = wm.workspace_id \
+             WHERE wm.user_id = ? ORDER BY {WORKSPACE_ORDER}"
+        ),
+        &[s(&user.id)],
+    )?
+    .all()
+    .await?;
+    let order = fctl_domain::order::arrange(
+        &Named::pairs(&current),
+        &body.workspaces,
+        "workspaces",
+        "your workspaces",
+    )?;
+    let statements = order
+        .iter()
+        .zip(0_i64..)
+        .map(|(id, position)| {
+            q(
+                &ctx.db,
+                "UPDATE workspace_members SET position = ? WHERE workspace_id = ? AND user_id = ?",
+                &[n(position), s(id), s(&user.id)],
+            )
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    if !statements.is_empty() {
+        batch(&ctx.db, statements).await?;
+    }
+    list(ctx).await
 }
 
 // ───────────────────────────── invitations ─────────────────────────────

@@ -979,6 +979,18 @@ impl Api {
             .await
     }
 
+    /// Puts your workspaces in order (ids or slugs): the ones named first,
+    /// the others after them as they were.
+    pub async fn order_workspaces(&self, workspaces: &[String]) -> Result<WorkspaceList> {
+        self.put(
+            "/me/workspace-order",
+            &WorkspaceOrderRequest {
+                workspaces: workspaces.to_vec(),
+            },
+        )
+        .await
+    }
+
     pub async fn workspace_audit(&self, id: &str, before: Option<i64>) -> Result<AuditList> {
         let mut path = format!("/workspaces/{}/audit", enc(id));
         if let Some(b) = before {

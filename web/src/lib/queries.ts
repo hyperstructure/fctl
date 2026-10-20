@@ -2,6 +2,7 @@
 import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "./api";
+import { withPendingProjects, withPendingWorkspaces } from "./order";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,10 +64,16 @@ export function useMe() {
   });
 }
 
-export const useProjects = () => useQuery({ queryKey: keys.projects, queryFn: api.projects });
-/** Your workspaces and the invitations waiting for you. */
+/** Your projects, in your order: under your workspaces in theirs. */
+export const useProjects = () =>
+  useQuery({ queryKey: keys.projects, queryFn: () => api.projects().then(withPendingProjects) });
+/** Your workspaces, in your order, and the invitations waiting for you. */
 export const useWorkspaces = () =>
-  useQuery({ queryKey: keys.workspaces, queryFn: workspaces.list, staleTime: 30_000 });
+  useQuery({
+    queryKey: keys.workspaces,
+    queryFn: () => workspaces.list().then(withPendingWorkspaces),
+    staleTime: 30_000,
+  });
 /** One of your workspaces, by id or slug. */
 export const useWorkspace = (id: string | undefined) =>
   useQuery({

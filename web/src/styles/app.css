@@ -271,6 +271,14 @@
   }
 }
 
+/* While something is dragged into its place (lib/sortable.ts). */
+html[data-dragging],
+html[data-dragging] * {
+  cursor: grabbing !important;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

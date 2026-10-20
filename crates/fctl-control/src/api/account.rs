@@ -16,7 +16,7 @@ use crate::db::{Count, Val, batch, n, q, s};
 use crate::error::{AppResult, conflict, internal, validation};
 use crate::http;
 use crate::internal as dobj;
-use crate::model::{UserRow, workspace_ref};
+use crate::model::{UserRow, WORKSPACE_ORDER, workspace_ref};
 use fctl_domain::account::{self as acct, iso8601};
 use fctl_proto::api::{
     AccountDeletion, DeleteAccountRequest, DeletedProject, Handover, Ok as Done,
@@ -403,7 +403,7 @@ fn readable(mut row: Value) -> Value {
                 *v = Value::String(iso8601(ms as i64));
             }
         }
-        for key in ["data", "pull_requests"] {
+        for key in ["data", "pull_requests", "project_order"] {
             let parsed = match map.get(key) {
                 Some(Value::String(d)) => serde_json::from_str::<Value>(d).ok(),
                 _ => None,
@@ -655,8 +655,15 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "workspaces".into(),
         rows(
             ctx,
-            "SELECT w.slug, w.name, m.role, m.email AS as_address, m.created_at AS joined_at \
-             FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ? ORDER BY m.created_at",
+            // In their order, with the order of each one's projects they chose.
+            &format!(
+                "SELECT w.slug, w.name, wm.role, wm.email AS as_address, wm.created_at AS joined_at, \
+                 CASE WHEN wm.project_order IS NOT NULL THEN (SELECT json_group_array(slug) FROM \
+                 (SELECT p.slug FROM json_each(wm.project_order) o JOIN projects p ON p.id = o.value ORDER BY o.key)) \
+                 END AS project_order \
+                 FROM workspace_members wm JOIN workspaces w ON w.id = wm.workspace_id WHERE wm.user_id = ? \
+                 ORDER BY {WORKSPACE_ORDER}"
+            ),
             &me(),
         )
         .await?,

@@ -222,5 +222,6 @@ export type { WorkspaceInviteId } from "./WorkspaceInviteId";
 export type { WorkspaceList } from "./WorkspaceList";
 export type { WorkspaceMember } from "./WorkspaceMember";
 export type { WorkspaceMemberList } from "./WorkspaceMemberList";
+export type { WorkspaceOrderRequest } from "./WorkspaceOrderRequest";
 export type { WorkspaceRef } from "./WorkspaceRef";
 export type { WorkspaceRole } from "./WorkspaceRole";

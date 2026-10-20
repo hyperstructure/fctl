@@ -132,6 +132,17 @@ pub enum WorkspacesCmd {
         /// The workspace (slug or id).
         workspace: String,
     },
+    /// Put your workspaces in the order you want them, in lists and the
+    /// app's sidebar: the ones you name first, the others after them as
+    /// they were.
+    #[command(
+        after_help = "Examples:\n  fctl workspaces order side-project acme   # these two first\n  fctl workspaces order acme                # acme first"
+    )]
+    Order {
+        /// Your workspaces (slugs or ids), in order.
+        #[arg(required = true, value_name = "WORKSPACE")]
+        workspaces: Vec<String>,
+    },
     /// The people in a workspace, and the invitations nobody answered yet.
     Members {
         /// The workspace (slug or id); default from `fctl workspaces use`,
@@ -554,6 +565,15 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             }
             println!("{} Saved {}", style::accent("✓"), style::bold(&out.slug));
         }
+        WorkspacesCmd::Order { workspaces } => {
+            let list = api.order_workspaces(&workspaces).await?;
+            if json {
+                return style::print_json(&list);
+            }
+            for w in &list.workspaces {
+                print_workspace(w);
+            }
+        }
         WorkspacesCmd::Use { workspace } => {
             let w = api.workspace(&workspace).await?;
             let mut cfg = config::CliConfig::load();
@@ -928,6 +948,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                         w.id.as_str(),
                         &UpdateMembershipRequest {
                             claude: Some(claude),
+                            ..Default::default()
                         },
                     )
                     .await?
