@@ -61,6 +61,7 @@ export function SessionPage() {
   const initial = useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) });
   const [s, store] = useLiveSession(id, initial.data);
   const session = s.session ?? initial.data;
+  const prs = session ? pullRequests(session) : [];
   const workspaceIndex = useWorkspaceIndex();
   const stall = useStall(session, s);
   const [rail, setRail] = useState(true);
@@ -195,19 +196,24 @@ export function SessionPage() {
                         {session.branch}
                       </span>
                     )}
-                    {pullRequests(session).map((pr) => (
-                      <a
-                        key={pr.url}
-                        href={pr.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={prTitle(pr)}
-                        className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
-                      >
-                        <GitPullRequest className="size-3" />
-                        {prRef(pr)}
-                      </a>
-                    ))}
+                    {prs.length > 0 && (
+                      // Together, so that they wrap to the next line as one list.
+                      <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+                        {prs.map((pr) => (
+                          <a
+                            key={pr.url}
+                            href={pr.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            title={prTitle(pr)}
+                            className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
+                          >
+                            <GitPullRequest className="size-3" />
+                            {prRef(pr)}
+                          </a>
+                        ))}
+                      </span>
+                    )}
                     {s.connection === "reconnecting" && <span className="text-amber">Reconnecting…</span>}
                     {stall && <span className="text-amber">{stallLabel(stall)}</span>}
                   </div>

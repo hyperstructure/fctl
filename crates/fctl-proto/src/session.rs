@@ -597,9 +597,8 @@ pub struct PullRequestRef {
     pub title: Option<String>,
     /// `open`, `closed`, `merged` or `draft`.
     pub state: Option<String>,
-    /// The repository it was opened in. Sessions' pull requests have it;
-    /// agents leave it out of their git state, which says the repository
-    /// of each.
+    /// The repository it was opened in. A session's pull requests have it;
+    /// agents leave it out of their git state, where its URL says it.
     pub repo: Option<RepoRef>,
 }
 
