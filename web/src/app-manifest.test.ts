@@ -36,6 +36,18 @@ describe("the installable app", () => {
     expect(manifest).toMatchObject({ name: "fctl", start_url: "/", display: "standalone" });
   });
 
+  it("keeps the screen's size on phones, without zooming", () => {
+    const viewport = html.match(/<meta name="viewport" content="([^"]+)"/)?.[1] ?? "";
+    expect(viewport.split(/,\s*/)).toEqual(
+      expect.arrayContaining([
+        "width=device-width",
+        "initial-scale=1",
+        "maximum-scale=1",
+        "user-scalable=no",
+      ]),
+    );
+  });
+
   it("links the manifest and the home screen icon", () => {
     expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest" />');
     expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />');
