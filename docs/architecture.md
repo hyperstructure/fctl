@@ -708,9 +708,12 @@ A task, message or resume can carry files: up to 10, of at most 20 MB each.
    large images.
 
 Viewers of a session read its files with
-`GET /api/v1/sessions/{id}/attachments/{attachment}`. Hosts and agents
-announce the `attachments` feature in their hellos; an older one passes the
-text alone, and the transcript says so.
+`GET /api/v1/sessions/{id}/attachments/{attachment}`. It answers a single
+byte range (`Range`, `206 Partial Content`) from only the chunks that hold
+it, because Safari plays a video only from a server that does: the session
+page plays attached videos, and shows images, in a lightbox. Hosts and
+agents announce the `attachments` feature in their hellos; an older one
+passes the text alone, and the transcript says so.
 
 ### Published screenshots
 
