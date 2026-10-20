@@ -398,7 +398,12 @@ pub async fn post_body<T: DeserializeOwned>(
 
 /// GETs from a Durable Object and returns its response as is (file bodies).
 pub async fn fetch(stub: &Stub, path: &str) -> AppResult<Response> {
-    let req = build(Method::Get, path, None, &[])?;
+    fetch_with(stub, path, &[]).await
+}
+
+/// The same, with request headers (a file's `Range`).
+pub async fn fetch_with(stub: &Stub, path: &str, headers: &[(&str, &str)]) -> AppResult<Response> {
+    let req = build(Method::Get, path, None, headers)?;
     Ok(stub.fetch_with_request(req).await?)
 }
 

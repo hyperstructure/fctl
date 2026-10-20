@@ -236,6 +236,26 @@ impl FilesObject {
         Ok(Some(bytes))
     }
 
+    /// Bytes `start..=end` of a file, from only the chunks that hold them.
+    fn read_range(&self, id: &str, start: u64, end: u64) -> Result<Option<Vec<u8>>> {
+        let (first, last, offset) = files::chunk_span(start, end);
+        let mut bytes = Vec::new();
+        let cursor = self.sql.exec(
+            "SELECT data FROM chunks WHERE file_id = ? AND n BETWEEN ? AND ? ORDER BY n",
+            Some(vec![sv(id), iv(first as i64), iv(last as i64)]),
+        )?;
+        for r in cursor.raw() {
+            if let Some(SqlStorageValue::Blob(chunk)) = r?.into_iter().next() {
+                bytes.extend_from_slice(&chunk);
+            }
+        }
+        let part = bytes.get(offset..offset + (end - start) as usize + 1);
+        if part.is_none() {
+            worker::console_error!("file {id} lacks bytes {start}-{end}");
+        }
+        Ok(part.map(<[u8]>::to_vec))
+    }
+
     /// Hands uploads to a message: each must be the sender's and not sent in
     /// another session.
     fn claim(&self, b: ClaimFiles) -> std::result::Result<serde_json::Value, ApiError> {
@@ -275,7 +295,8 @@ impl FilesObject {
             .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))
     }
 
-    /// A claimed file's bytes, as a complete response (`?id=&session=`).
+    /// A claimed file's bytes (`?id=&session=`): all of them, or the range
+    /// a `Range` header asks for, which video players need.
     fn file(&self, req: &Request) -> Result<Response> {
         let id = crate::http::query(req, "id").unwrap_or_default();
         let session = crate::http::query(req, "session").unwrap_or_default();
@@ -285,14 +306,30 @@ impl FilesObject {
         else {
             return internal::do_error(&ApiError::not_found("File"));
         };
-        let Some(bytes) = self.read_chunks(&id, row.size as u64)? else {
+        let att = row.attachment();
+        let range = files::byte_range(crate::http::header(req, "Range").as_deref(), att.size);
+        let h = Headers::new();
+        h.set("Accept-Ranges", "bytes")?;
+        let (status, bytes) = match range {
+            files::ByteRange::Whole => (200, self.read_chunks(&id, att.size)?),
+            files::ByteRange::Part { start, end } => {
+                h.set(
+                    "Content-Range",
+                    &format!("bytes {start}-{end}/{}", att.size),
+                )?;
+                (206, self.read_range(&id, start, end)?)
+            }
+            files::ByteRange::Unsatisfiable => {
+                h.set("Content-Range", &format!("bytes */{}", att.size))?;
+                return Ok(Response::empty()?.with_status(416).with_headers(h));
+            }
+        };
+        let Some(bytes) = bytes else {
             return internal::do_error(&api_err(ErrorCode::Internal, "The file is incomplete"));
         };
-        let att = row.attachment();
         let inline = files::shows_inline(&att.media_type);
-        let h = Headers::new();
         h.set("Content-Type", &att.media_type)?;
-        h.set("Content-Length", &att.size.to_string())?;
+        h.set("Content-Length", &bytes.len().to_string())?;
         h.set(
             "Content-Disposition",
             &files::content_disposition(&att.name, inline),
@@ -306,7 +343,9 @@ impl FilesObject {
         )?;
         h.set("Cross-Origin-Resource-Policy", "same-origin")?;
         h.set("Referrer-Policy", "same-origin")?;
-        Ok(Response::from_bytes(bytes)?.with_headers(h))
+        Ok(Response::from_bytes(bytes)?
+            .with_status(status)
+            .with_headers(h))
     }
 
     /// Deletes uploads no message claimed in time and published screenshots
