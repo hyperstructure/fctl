@@ -248,6 +248,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "DELETE FROM workspace_invitations WHERE email IN (SELECT email FROM user_emails WHERE user_id = ?1) OR email = ?2",
         "DELETE FROM allowlist WHERE pattern IN (SELECT email FROM user_emails WHERE user_id = ?1) OR pattern = ?2",
         "DELETE FROM invites WHERE email IN (SELECT email FROM user_emails WHERE user_id = ?1) OR email = ?2",
+        "DELETE FROM access_requests WHERE email IN (SELECT email FROM user_emails WHERE user_id = ?1) OR email = ?2",
     ] {
         statements.push(q(db, sql, &[s(id), s(&user.email)])?);
     }
@@ -647,6 +648,18 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             ctx,
             "SELECT email, email = (SELECT email FROM users WHERE id = ?1) AS \"primary\", commit_email, created_at AS added_at \
              FROM user_emails WHERE user_id = ?1 ORDER BY created_at",
+            &me(),
+        )
+        .await?,
+    );
+    // Until the hourly cron trigger deletes them, once the address has an
+    // account.
+    doc.insert(
+        "early_access_requests".into(),
+        rows(
+            ctx,
+            "SELECT email, created_at AS first_asked_at, asked_at AS last_asked_at, invited_at FROM access_requests \
+             WHERE email IN (SELECT email FROM user_emails WHERE user_id = ?1) ORDER BY created_at",
             &me(),
         )
         .await?,

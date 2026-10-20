@@ -34,6 +34,7 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
             email: ctx.cfg.email.is_some(),
             github: ctx.cfg.github.is_some(),
             publish_screenshots: settings.publish_screenshots,
+            early_access: ctx.cfg.early_access,
         },
     })
 }
@@ -151,12 +152,14 @@ pub async fn invite_preview(ctx: &Ctx, token: &str) -> AppResult<Response> {
     )?
     .all()
     .await?;
+    let early_access = crate::api::early_access::asked(ctx, &invite.email).await?;
     http::ok(&InvitePreview {
         email: invite.email,
         instance: crate::instance::name(&ctx.db, &ctx.cfg).await?,
         invited_by: invite.inviter,
         expires_at: invite.expires_at,
         workspaces: workspaces.iter().map(|w| w.workspace()).collect(),
+        early_access,
     })
 }
 

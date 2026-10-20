@@ -3,6 +3,7 @@ pub mod admin;
 pub mod attachments;
 pub mod auth;
 pub mod claude;
+pub mod early_access;
 pub mod emails;
 pub mod github;
 pub mod google;

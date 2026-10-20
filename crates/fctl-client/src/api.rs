@@ -78,6 +78,18 @@ impl Api {
         self.get("/instance").await
     }
 
+    /// Asks for early access to the instance, without an account, where
+    /// it takes requests (`InstanceInfo.features.early_access`).
+    pub async fn request_access(&self, email: &str) -> Result<Ok> {
+        self.post(
+            "/access-requests",
+            &RequestAccessRequest {
+                email: email.to_owned(),
+            },
+        )
+        .await
+    }
+
     pub async fn me(&self) -> Result<Me> {
         self.get("/auth/me").await
     }
@@ -769,6 +781,17 @@ impl Api {
     /// admin of.
     pub async fn invite(&self, req: &CreateInviteRequest) -> Result<Invite> {
         self.post("/admin/invites", req).await
+    }
+
+    /// Who asked for early access and has no account yet (admins).
+    pub async fn access_requests(&self) -> Result<AccessRequestList> {
+        self.get("/admin/access-requests").await
+    }
+
+    /// Removes an early access request (admins); asking again adds it back.
+    pub async fn remove_access_request(&self, id: &str) -> Result<Ok> {
+        self.delete(&format!("/admin/access-requests/{}", enc(id)))
+            .await
     }
 
     /// Hands the role of primary instance owner to an admin.

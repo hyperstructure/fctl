@@ -9,6 +9,9 @@ worker = "fctl"
 instance_name = "fctl"
 # The app's origin. Its host becomes the Worker's custom domain.
 public_url = "https://app.fctl.sh"
+# The sign-in page lets people without an account ask for early access, and
+# admins invite them from Admin → Early access.
+early_access = true
 
 [d1]
 database_name = "fctl-sh"

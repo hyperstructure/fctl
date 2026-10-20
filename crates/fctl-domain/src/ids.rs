@@ -53,6 +53,7 @@ id_ctor!(push_device_id, PushDeviceId);
 id_ctor!(passkey_id, PasskeyId);
 id_ctor!(workspace_id, WorkspaceId);
 id_ctor!(workspace_invite_id, WorkspaceInviteId);
+id_ctor!(access_request_id, AccessRequestId);
 
 /// A random UUID v4 (for `claude --session-id`).
 pub fn uuid_v4() -> String {

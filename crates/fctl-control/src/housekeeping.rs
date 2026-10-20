@@ -1,6 +1,7 @@
 //! Deleting what is no longer needed: the event logs of deleted sessions,
 //! the files of deleted projects, expired sign-in records and invitations,
-//! the links of expired published screenshots and old audit entries. Runs
+//! early access requests that are done or old, the links of expired
+//! published screenshots and old audit entries. Runs
 //! from the Worker's hourly cron trigger; deleting a project or a workspace
 //! also purges its sessions and files right away.
 
@@ -15,6 +16,8 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub const AUDIT_RETENTION_MS: i64 = 365 * DAY_MS;
 /// Claude login jobs are minutes long; anything older is abandoned.
 const LOGIN_JOB_RETENTION_MS: i64 = DAY_MS;
+/// Early access requests are deleted a year after they last asked.
+pub const ACCESS_REQUEST_RETENTION_MS: i64 = 365 * DAY_MS;
 /// Event logs purged per run (each is one Durable Object request).
 pub const PURGES_PER_RUN: i64 = 200;
 
@@ -136,6 +139,10 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
             "DELETE FROM workspace_invitations WHERE expires_at < ?",
             now,
         ),
+        (
+            "DELETE FROM access_requests WHERE asked_at < ?",
+            now - ACCESS_REQUEST_RETENTION_MS,
+        ),
         // Their links stopped working at expiry; their FilesObject deletes
         // the bytes on its own alarm.
         ("DELETE FROM published_files WHERE expires_at < ?", now),
@@ -150,6 +157,15 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     ] {
         deleted += q(&db, sql, &[n(cutoff)])?.run().await?;
     }
+    // Early access requests whose address has an account now are done.
+    deleted += q(
+        &db,
+        "DELETE FROM access_requests WHERE email IN (SELECT email FROM user_emails) \
+         OR email IN (SELECT email FROM users)",
+        &[],
+    )?
+    .run()
+    .await?;
     deleted += settle(&db).await?;
     if purged > 0 || purged_files > 0 || deleted > 0 {
         worker::console_log!(

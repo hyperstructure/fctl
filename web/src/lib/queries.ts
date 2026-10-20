@@ -28,6 +28,7 @@ export const keys = {
   runners: ["runners"] as const,
   users: ["users"] as const,
   allowlist: ["allowlist"] as const,
+  accessRequests: ["admin", "access-requests"] as const,
   tokens: ["tokens"] as const,
   github: ["github"] as const,
   repos: (workspace: string) => ["repos", workspace] as const,

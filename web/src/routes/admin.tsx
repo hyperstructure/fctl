@@ -1,7 +1,8 @@
-// Admin: who is here and who gets in, the workspaces, which of them work in
-// which GitHub accounts, the machines doing the work, what the instance
-// allows, and what happened. Instance admins see what workspaces are and
-// who runs them, not what is inside the ones they aren't members of.
+// Admin: who is here and who gets in (and, where the instance takes them,
+// who asked for early access), the workspaces, which of them work in which
+// GitHub accounts, the machines doing the work, what the instance allows,
+// and what happened. Instance admins see what workspaces are and who runs
+// them, not what is inside the ones they aren't members of.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
@@ -9,17 +10,21 @@ import {
   Check,
   Cpu,
   Crown,
+  Ellipsis,
   ExternalLink,
   Fingerprint,
   Globe,
+  Inbox,
   Link2,
+  Mail,
   MailPlus,
   Plus,
   ShieldCheck,
   ShieldOff,
   Trash2,
+  Users as UsersIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { GithubAvatar } from "@/components/github-avatar";
 import {
@@ -28,10 +33,14 @@ import {
   Banner,
   Button,
   CodeBox,
+  CopyButton,
   Dialog,
   Empty,
   Field,
+  IconButton,
   Input,
+  Menu,
+  MenuItem,
   Section,
   Select,
   type SelectOption,
@@ -42,12 +51,13 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, cpus, diskBelow, lowOnDisk, memory, sandboxLimits } from "@/lib/format";
+import { invitationMail, ordered, requestState } from "@/lib/early-access";
+import { ago, cpus, day, diskBelow, lowOnDisk, memory, sandboxLimits, stamp } from "@/lib/format";
 import { buildsImages, runsImages } from "@/lib/images";
 import { installCommand } from "@/lib/install";
-import { keys, queryClient, useMe, useRunners, useWorkspaces } from "@/lib/queries";
+import { keys, queryClient, useInstance, useMe, useRunners, useWorkspaces } from "@/lib/queries";
 
-type Tab = "people" | "workspaces" | "github" | "runners" | "access" | "settings" | "audit";
+type Tab = "people" | "workspaces" | "github" | "runners" | "access" | "early-access" | "settings" | "audit";
 
 const TABS: { tab: Tab; label: string }[] = [
   { tab: "people", label: "People" },
@@ -55,6 +65,8 @@ const TABS: { tab: Tab; label: string }[] = [
   { tab: "github", label: "GitHub" },
   { tab: "runners", label: "Runners" },
   { tab: "access", label: "Access" },
+  // Where the instance takes requests for early access.
+  { tab: "early-access", label: "Early access" },
   { tab: "settings", label: "Settings" },
   { tab: "audit", label: "Audit log" },
 ];
@@ -68,6 +80,14 @@ export function Admin() {
       (n, i) => n + i.workspaces.filter((w) => w.status === "requested").length,
       0,
     ) ?? 0;
+  const early = !!useInstance().data?.features.early_access;
+  const requests = useQuery({
+    queryKey: keys.accessRequests,
+    queryFn: api.accessRequests,
+    enabled: early,
+  });
+  // People who wait for an invitation, on the Early access tab.
+  const asking = requests.data?.waiting ?? 0;
   const { data: me } = useMe();
   if (me && me.user.role === "member")
     return (
@@ -80,7 +100,7 @@ export function Admin() {
       <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">Admin</h1>
       <nav className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
         <div className="flex w-max min-w-full gap-1 border-b border-line">
-          {TABS.map((t) => (
+          {TABS.filter((t) => t.tab !== "early-access" || early).map((t) => (
             <Link
               key={t.tab}
               to="/admin"
@@ -91,9 +111,9 @@ export function Admin() {
               )}
             >
               {t.label}
-              {t.tab === "github" && waiting > 0 && (
+              {((t.tab === "github" && waiting > 0) || (t.tab === "early-access" && asking > 0)) && (
                 <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-highlight px-1 text-[10.5px] font-semibold text-highlight-ink tabular-nums">
-                  {waiting}
+                  {t.tab === "github" ? waiting : asking}
                 </span>
               )}
               {tab === t.tab && (
@@ -108,6 +128,7 @@ export function Admin() {
         {tab === "workspaces" && <Workspaces />}
         {tab === "github" && <Github />}
         {tab === "access" && <Access />}
+        {tab === "early-access" && <EarlyAccess />}
         {tab === "runners" && <Runners />}
         {tab === "settings" && <InstanceSettings />}
         {tab === "audit" && <Audit />}
@@ -126,6 +147,7 @@ function Access() {
     mutationFn: () => api.allow({ pattern, role: admin ? "admin" : "member", invite: true }),
     onSuccess: (r) => {
       void list.refetch();
+      void queryClient.invalidateQueries({ queryKey: keys.accessRequests });
       setPattern("");
       setInvite(r.invite ?? null);
       if (!r.invite) toast(`${r.entry.pattern} can now sign in`);
@@ -236,6 +258,252 @@ function Access() {
         </div>
       </Dialog>
     </div>
+  );
+}
+
+/**
+ * Early access: the people who asked on the sign-in page and have no account yet. Inviting
+ * one makes their link, which the row then shows, to copy or send from the admin's mail app.
+ */
+function EarlyAccess() {
+  const list = useQuery({ queryKey: keys.accessRequests, queryFn: api.accessRequests });
+  const { data: instance } = useInstance();
+  const [view, setView] = useState<"waiting" | "invited">("waiting");
+  /** The invitations made on this page, by address: their links, which only their answer has. */
+  const [made, setMade] = useState<Record<string, G.Invite>>({});
+  /** Whose invitation to make with the dialog, which also invites to workspaces. */
+  const [options, setOptions] = useState<string | null>(null);
+  const keep = (i: G.Invite) => setMade((m) => ({ ...m, [i.email]: i }));
+  const invite = useMutation({
+    mutationFn: (email: string) => api.createInvite({ email }),
+    onSuccess: (i) => {
+      keep(i);
+      void list.refetch();
+      void queryClient.invalidateQueries({ queryKey: keys.allowlist });
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const remove = useMutation({
+    mutationFn: (r: G.AccessRequest) => api.removeAccessRequest(r.id),
+    onSuccess: (_, r) => {
+      toast(`Removed ${r.email}'s request`);
+      void list.refetch();
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const { waiting, invited } = ordered(list.data?.requests ?? []);
+  // Those invited from here stay where they were, with their links, until the page is left.
+  const shown =
+    view === "waiting"
+      ? [...waiting, ...invited.filter((r) => made[r.email])].sort((a, b) => a.created_at - b.created_at)
+      : invited;
+  const page = `${location.origin}/early-access`;
+  const all = (list.data?.waiting ?? 0) + (list.data?.invited ?? 0);
+  return (
+    <div>
+      <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
+        People who asked for early access on the sign-in page. Invite someone to make their link, then send it
+        to them{instance?.features.email ? " (we email it too)" : ""}: it works once, for 14 days, and sets up
+        their account. Once they have one, they leave this list.
+      </p>
+      <div className="mt-4 flex max-w-full items-center gap-2 text-[12.5px] text-ink-4">
+        <span className="shrink-0">They ask at</span>
+        <code className="min-w-0 truncate font-mono text-ink-2">{page}</code>
+        <CopyButton text={page} label="Copy link" className="shrink-0" />
+      </div>
+      <fieldset className="mt-6 flex gap-1" aria-label="Show">
+        {(
+          [
+            ["waiting", "Waiting", list.data?.waiting],
+            ["invited", "Invited", list.data?.invited],
+          ] as const
+        ).map(([v, label, n]) => (
+          <button
+            key={v}
+            type="button"
+            aria-pressed={view === v}
+            onClick={() => setView(v)}
+            className={cn(
+              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12.5px] transition-colors duration-150",
+              view === v
+                ? "border-line-strong bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
+                : "border-transparent text-ink-3 hover:bg-hover hover:text-ink",
+            )}
+          >
+            {label}
+            {!!n && <span className="text-[11px] text-ink-4 tabular-nums">{n}</span>}
+          </button>
+        ))}
+      </fieldset>
+      {list.data && shown.length === 0 ? (
+        view === "waiting" ? (
+          <Empty title="Nobody is waiting" icon={<Inbox className="size-6" />}>
+            When someone asks for early access, they show up here, longest waiting first.
+          </Empty>
+        ) : (
+          <Empty title="Nobody invited yet" icon={<UsersIcon className="size-6" />}>
+            The people you invite stay here, with whether their link still works, until they have an account.
+          </Empty>
+        )
+      ) : (
+        <ul className="mt-4 border-t border-line">
+          {shown.map((r) => (
+            <RequestRow
+              key={r.id}
+              request={r}
+              invitation={made[r.email]}
+              instance={instance?.name ?? "fctl"}
+              inviting={invite.isPending && invite.variables === r.email}
+              onInvite={() => invite.mutate(r.email)}
+              onOptions={() => setOptions(r.email)}
+              onRemove={() => remove.mutate(r)}
+            />
+          ))}
+        </ul>
+      )}
+      {list.data && list.data.requests.length < all && (
+        <p className="mt-4 text-[12.5px] text-ink-4">
+          The first {list.data.requests.length} of {all}: invite or remove some to see the rest.
+        </p>
+      )}
+      <InviteDialog
+        open={!!options}
+        email={options ?? undefined}
+        onClose={() => setOptions(null)}
+        onInvited={keep}
+      />
+    </div>
+  );
+}
+
+function RequestRow({
+  request: r,
+  invitation,
+  instance,
+  inviting,
+  onInvite,
+  onOptions,
+  onRemove,
+}: {
+  request: G.AccessRequest;
+  /** The invitation made for them on this page. */
+  invitation?: G.Invite;
+  instance: string;
+  inviting: boolean;
+  onInvite: () => void;
+  onOptions: () => void;
+  onRemove: () => void;
+}) {
+  const state = invitation ? "invited" : requestState(r);
+  // Asking again within the hour isn't news.
+  const again = r.asked_at - r.created_at > 3_600_000 ? ` · asked again ${ago(r.asked_at)}` : "";
+  const by = r.invited_by ? ` by ${r.invited_by.name}` : "";
+  const expires = invitation?.expires_at ?? r.invite_expires_at;
+  return (
+    <li className="flex flex-col gap-3 border-b border-line py-3">
+      <div className="flex items-center gap-3">
+        <Avatar user={{ id: r.email, name: r.email }} size={30} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[14px] text-ink">{r.email}</div>
+          <div className="text-[12px] text-ink-4">
+            {state === "waiting" ? (
+              <span title={stamp(r.created_at)}>
+                Asked {ago(r.created_at)}
+                {again}
+              </span>
+            ) : (
+              <>
+                <span title={r.invited_at ? stamp(r.invited_at) : undefined}>
+                  Invited {invitation ? "just now" : ago(r.invited_at)}
+                  {invitation ? "" : by}
+                </span>
+                {" · "}
+                {state === "invited" && expires ? (
+                  `the link works until ${day(expires)}`
+                ) : (
+                  <span className="text-amber">the link expired</span>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {!invitation && (
+            <Button
+              size="sm"
+              variant={state === "waiting" ? "secondary" : "ghost"}
+              icon={state === "waiting" ? <MailPlus className="size-3.5" /> : <Link2 className="size-3.5" />}
+              loading={inviting}
+              onClick={onInvite}
+              title={state === "invited" ? "Their first link works too, until it expires" : undefined}
+            >
+              {state === "waiting" ? "Invite" : state === "invited" ? "New link" : "Invite again"}
+            </Button>
+          )}
+          <Menu
+            trigger={(toggle, open) => (
+              <IconButton
+                label={`More for ${r.email}`}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                onClick={toggle}
+                className="size-7"
+              >
+                <Ellipsis className="size-4" />
+              </IconButton>
+            )}
+          >
+            {(close) => (
+              <>
+                {state === "waiting" && (
+                  <MenuItem
+                    icon={<MailPlus />}
+                    onClick={() => {
+                      close();
+                      onOptions();
+                    }}
+                  >
+                    Invite to workspaces too…
+                  </MenuItem>
+                )}
+                <MenuItem
+                  danger
+                  icon={<Trash2 />}
+                  onClick={() => {
+                    close();
+                    onRemove();
+                  }}
+                >
+                  Remove the request
+                </MenuItem>
+              </>
+            )}
+          </Menu>
+        </div>
+      </div>
+      {invitation?.url && (
+        <div className="flex animate-rise flex-col gap-2 sm:pl-[42px]">
+          <CodeBox value={invitation.url} />
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px] text-ink-4">
+            <a
+              href={invitationMail({
+                email: r.email,
+                url: invitation.url,
+                instance,
+                expiresAt: invitation.expires_at,
+              })}
+              className="inline-flex h-7 items-center gap-1.5 rounded-sm border border-line-strong bg-raised px-2.5 text-[12.5px] font-medium text-ink transition-colors hover:border-ink-4"
+            >
+              <Mail className="size-3.5" /> Email it to them
+            </a>
+            <span>
+              {invitation.emailed ? "We emailed it to them too. " : ""}It works once, until{" "}
+              {day(invitation.expires_at)}.
+            </span>
+          </div>
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -484,12 +752,26 @@ function Users() {
 }
 
 /** Inviting someone to the instance, and to workspaces the inviter is an admin of. */
-function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+function InviteDialog({
+  open,
+  onClose,
+  email: asked,
+  onInvited,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Their address, when they asked for early access. */
+  email?: string;
+  onInvited?: (invite: G.Invite) => void;
+}) {
   const { data: me } = useMe();
   const mine = (useWorkspaces().data?.workspaces ?? []).filter(
     (w) => !w.blocked && (w.role === "owner" || w.role === "admin"),
   );
   const [email, setEmail] = useState("");
+  useEffect(() => {
+    if (open && asked) setEmail(asked);
+  }, [open, asked]);
   const [admin, setAdmin] = useState(false);
   const [picked, setPicked] = useState<Record<string, G.WorkspaceRole | undefined>>({});
   const [done, setDone] = useState<G.Invite | null>(null);
@@ -511,7 +793,9 @@ function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void })
       }),
     onSuccess: (i) => {
       setDone(i);
+      onInvited?.(i);
       void queryClient.invalidateQueries({ queryKey: keys.allowlist });
+      void queryClient.invalidateQueries({ queryKey: keys.accessRequests });
     },
   });
   const close = () => {

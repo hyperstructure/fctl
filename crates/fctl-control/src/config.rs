@@ -5,6 +5,7 @@
 //! | `FCTL_PUBLIC_URL` | var | Origin of the app, e.g. `https://app.fctl.sh` |
 //! | `FCTL_INSTANCE_NAME` | var | Shown in the UI and emails |
 //! | `FCTL_DEV` | var | `1` in local development (relaxed origin checks, dev endpoints) |
+//! | `FCTL_EARLY_ACCESS` | var | `1` where people without an account ask for early access (app.fctl.sh) |
 //! | `FCTL_MASTER_KEY` | secret | 32 random bytes, base64; encrypts credentials and signs state |
 //! | `FCTL_SETUP_TOKEN` | secret | One-time token for creating the owner account |
 //! | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID` | var | The GitHub App |
@@ -47,6 +48,9 @@ pub struct Config {
     /// `https://app.example.com` (no trailing slash).
     pub public_url: String,
     pub dev: bool,
+    /// The sign-in page lets people without an account ask for early
+    /// access, and admins invite them from the list (`api::early_access`).
+    pub early_access: bool,
     pub master_key: Option<[u8; 32]>,
     pub setup_token: Option<String>,
     pub github: Option<GithubConfig>,
@@ -107,6 +111,7 @@ impl Config {
             instance_name: var(env, "FCTL_INSTANCE_NAME").unwrap_or_else(|| "fctl".to_owned()),
             public_url,
             dev: var(env, "FCTL_DEV").is_some_and(|v| v == "1" || v == "true"),
+            early_access: var(env, "FCTL_EARLY_ACCESS").is_some_and(|v| v == "1" || v == "true"),
             master_key,
             setup_token: var(env, "FCTL_SETUP_TOKEN"),
             github,
