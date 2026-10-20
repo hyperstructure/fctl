@@ -41,7 +41,10 @@ export function Lightbox({
 }: {
   file: LightboxFile;
   src: string;
-  /** Offers the file as a download. */
+  /**
+   * Offers the file as a download, except on touch screens, where iOS
+   * answers a download with a sheet of its own.
+   */
   download?: boolean;
   onClose: () => void;
 }) {
@@ -52,7 +55,12 @@ export function Lightbox({
   const pressedOutside = useRef(false);
   const [failed, setFailed] = useState(false);
   const video = playable(file.media_type ?? "");
+  // The dialog focuses itself as it opens, not the X: Safari shows a focus
+  // ring on what a dialog focuses, even when a tap opened it. Tab reaches
+  // the X. (Chrome focuses the X anyway, with a ring only for the keyboard.)
+  // React doesn't set the `autofocus` attribute from `autoFocus`.
   useEffect(() => {
+    ref.current?.setAttribute("autofocus", "");
     ref.current?.showModal();
   }, []);
   // The page behind holds still. A scrollbar that takes room (not an overlay
@@ -91,7 +99,7 @@ export function Lightbox({
       onClick={(e) => {
         if (pressedOutside.current && outside(e.target)) close();
       }}
-      className="m-0 size-full max-h-none max-w-none overflow-hidden bg-transparent p-0 backdrop:animate-fade backdrop:bg-black/75 backdrop:backdrop-blur-[3px]"
+      className="m-0 size-full max-h-none max-w-none overflow-hidden bg-transparent p-0 outline-none backdrop:animate-fade backdrop:bg-black/75 backdrop:backdrop-blur-[3px]"
     >
       <button
         type="button"
@@ -133,7 +141,7 @@ export function Lightbox({
         <figcaption
           className={cn(
             "flex h-9 max-w-[calc(100vw-2rem)] items-center gap-3 rounded-full border border-line-strong bg-surface/90 pl-4 text-[12.5px] text-ink-2 backdrop-blur-xl",
-            download ? "pr-1" : "pr-4",
+            download ? "pr-1 pointer-coarse:pr-4" : "pr-4",
           )}
         >
           <span className="truncate">{file.name}</span>
@@ -144,7 +152,7 @@ export function Lightbox({
               download={file.name}
               aria-label={`Download ${file.name}`}
               title="Download"
-              className="flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink"
+              className="flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink pointer-coarse:hidden"
             >
               <Download className="size-3.5" />
             </a>

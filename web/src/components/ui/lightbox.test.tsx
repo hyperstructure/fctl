@@ -49,9 +49,17 @@ describe("Lightbox", () => {
     expect(dialog.getAttribute("aria-label")).toBe("after.png");
     expect(dialog.querySelector("img")?.getAttribute("src")).toBe("/files/after.png");
     expect(dialog.querySelector("figcaption")?.textContent).toBe("after.png1440×900 · 245 KB");
-    // The X comes first, at the top right: the dialog focuses it as it opens.
+    // The X comes first, at the top right: Tab reaches it first.
     expect(dialog.querySelector("button")?.getAttribute("aria-label")).toBe("Close");
     expect(dialog.querySelector("button")?.className).toMatch(/\bfixed top-3 right-3\b/);
+  });
+
+  it("focuses itself as it opens, not the X, and shows no ring", () => {
+    // Safari rings what a dialog focuses as it opens, even after a tap.
+    const { dialog } = open();
+    expect(dialog.hasAttribute("autofocus")).toBe(true);
+    // The dialog fills the window: a ring around it would only show at the edges.
+    expect(dialog.className).toMatch(/\boutline-none\b/);
   });
 
   it("closes with the X", () => {
@@ -110,6 +118,8 @@ describe("Lightbox", () => {
     const link = open(shot, true).dialog.querySelector("a[download]");
     expect(link?.getAttribute("href")).toBe("/files/after.png");
     expect(link?.getAttribute("download")).toBe("after.png");
+    // Not on touch screens, where iOS answers it with a sheet of its own.
+    expect(link?.className).toMatch(/\bpointer-coarse:hidden\b/);
   });
 
   it("holds the page still while it is open", () => {
