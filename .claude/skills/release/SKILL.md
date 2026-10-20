@@ -77,8 +77,9 @@ and `latest`. Hosts of the new version pull it; until it is there, their
 sessions start from `latest`. To publish it at once:
 `gh workflow run image.yml -R hyperstructure/sandbox`.
 
-Follow it with `gh run watch` or in the Actions tab; it takes about 10
-minutes.
+Follow it with `gh run watch` or in the Actions tab. Build and Publish
+take about 10 minutes; the standalone image takes a few more, since it runs
+a session before it publishes.
 
 ## 3. After
 
