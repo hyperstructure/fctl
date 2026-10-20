@@ -1,7 +1,14 @@
 import { act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { keyDirection, NEAR_BOTTOM, Stick, scrollsInside, useStickToBottom } from "./stick-to-bottom";
+import {
+  keyDirection,
+  mayShrink,
+  NEAR_BOTTOM,
+  Stick,
+  scrollsInside,
+  useStickToBottom,
+} from "./stick-to-bottom";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -151,6 +158,56 @@ describe("keys", () => {
   });
 });
 
+describe("changes to the page", () => {
+  /** The records of what `change` does to a paragraph of text. */
+  async function records(change: (p: HTMLElement) => void) {
+    const p = document.createElement("p");
+    p.lang = "en";
+    p.append("Done. Everything looks good", document.createElement("span"));
+    document.body.append(p);
+    cleanups.push(() => p.remove());
+    const seen: MutationRecord[] = [];
+    const o = new MutationObserver((r) => seen.push(...r));
+    // As the session page observes it.
+    o.observe(p, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+      attributeOldValue: true,
+      characterDataOldValue: true,
+    });
+    change(p);
+    await new Promise((r) => setTimeout(r));
+    o.disconnect();
+    return seen;
+  }
+  const text = (p: HTMLElement) => p.firstChild as Text;
+  /** Whether what `change` does to a paragraph may make the page shorter. */
+  const shrinks = async (change: (p: HTMLElement) => void) => mayShrink(await records(change));
+
+  it("only grow the page when they add to it, as text that streams in does", async () => {
+    expect(await shrinks((p) => p.append(document.createElement("em")))).toBe(false);
+    expect(await shrinks((p) => text(p).appendData(": the change is committed"))).toBe(false);
+  });
+
+  it("change nothing when they leave an attribute as it was, as React does at every render", async () => {
+    expect(await shrinks((p) => p.setAttribute("lang", "en"))).toBe(false);
+    expect(
+      await shrinks((p) => {
+        p.setAttribute("title", "");
+        p.removeAttribute("title");
+      }),
+    ).toBe(false);
+  });
+
+  it("may make it shorter when they take something out, shorten text or restyle", async () => {
+    expect(await shrinks((p) => p.querySelector("span")?.remove())).toBe(true);
+    expect(await shrinks((p) => text(p).deleteData(0, 6))).toBe(true);
+    expect(await shrinks((p) => p.setAttribute("class", "hidden"))).toBe(true);
+  });
+});
+
 describe("a box that scrolls inside the page", () => {
   /** A box `room` px taller inside than out, scrolled `top` px down, with a line in it. */
   function box(overflow: string, room: number, top: number) {
@@ -264,7 +321,21 @@ describe("the session page", () => {
     const on = (type: string, init: object = {}) =>
       document.body.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), init));
     const button = () => container.querySelector("button") as HTMLButtonElement;
-    return { grow, scroll, gap, top: () => top, show, leave, on, button };
+    /**
+     * The page changes by `by` px and the browser lays it out, with its resize
+     * observers and scroll event still to come at its next frame. Shorter at
+     * its bottom, the page moves up to its new bottom.
+     */
+    const change = async (by: number) => {
+      height += by;
+      top = Math.min(top, height - view);
+      // Shorter takes something out (a line of the header); longer, something in.
+      if (by < 0) container.querySelector("span")?.remove();
+      else container.append(document.createElement("span"));
+      await act(async () => {});
+    };
+    const scrolled = () => window.dispatchEvent(new Event("scroll"));
+    return { grow, scroll, gap, top: () => top, show, leave, on, button, change, scrolled };
   }
 
   it("follows the transcript to its bottom as it grows", () => {
@@ -281,6 +352,19 @@ describe("the session page", () => {
     p.scroll(p.top() - 40);
     p.grow(22, true);
     expect(p.gap()).toBe(40 + 22);
+  });
+
+  it("keeps following when the page gets shorter and grows again before it scrolls", async () => {
+    const p = sessionPage();
+    // The header loses a line, then the transcript gets one, before the next frame: its
+    // scroll event says the page went up and away from its bottom, as the reader's would.
+    await p.change(23);
+    p.grow(0);
+    await p.change(-23);
+    await p.change(67);
+    p.scrolled();
+    p.grow(0);
+    expect(p.gap()).toBe(0);
   });
 
   it("stays where the reader scrolls up to, and follows again at the bottom", () => {
