@@ -237,10 +237,11 @@ jobs:
           curl -fsSL https://fctl.sh/install | FCTL_INSTALL_DIR="$RUNNER_TEMP/bin" sh
           "$RUNNER_TEMP/bin/fctl" --version
 
-  # The tap's brew bump workflow also runs every day, but GitHub starts it
-  # hours late at times. Given the version, it waits until livecheck finds it
-  # on fctl.sh, then opens a pull request with the URLs and checksums for every
-  # platform, which a code owner of the tap merges.
+  # hyperstructure/homebrew-tap's brew bump workflow runs every day, and GitHub
+  # starts it hours late at times, so this starts it with the version. It
+  # waits until livecheck finds that version on fctl.sh, then opens a pull
+  # request with the formula's URLs and checksums for every platform, which a
+  # code owner of the tap merges.
   homebrew:
     name: Homebrew tap
     needs: [prepare, publish]
