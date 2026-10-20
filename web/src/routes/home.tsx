@@ -468,7 +468,7 @@ function Invitations({ invitations }: { invitations: G.WorkspaceInvitation[] }) 
           className="flex flex-wrap items-center gap-4 rounded-xl border border-accent/25 bg-accent-soft px-4 py-3.5"
         >
           <WorkspaceAvatar workspace={i.workspace} size={36} />
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
             <div className="text-[14.5px] text-ink">
               {i.invited_by ? `${i.invited_by.name} invited you to ` : "You're invited to "}
               <span className="font-medium">{i.workspace.name}</span>
@@ -491,7 +491,8 @@ function Invitations({ invitations }: { invitations: G.WorkspaceInvitation[] }) 
               )}
             </div>
           </div>
-          <div className="flex gap-2">
+          {/* On a phone they take a line of their own, where a long name gives way. */}
+          <div className="flex max-w-full min-w-0 gap-2">
             <Button
               size="sm"
               variant="ghost"
@@ -506,8 +507,9 @@ function Invitations({ invitations }: { invitations: G.WorkspaceInvitation[] }) 
               disabled={i.needs_two_factor}
               loading={accept.isPending && accept.variables?.id === i.id}
               onClick={() => accept.mutate(i)}
+              className="min-w-0"
             >
-              Join {i.workspace.name}
+              <span className="truncate">Join {i.workspace.name}</span>
             </Button>
           </div>
         </div>
@@ -549,7 +551,7 @@ function WorkspaceFilter({
   );
   return (
     <fieldset
-      className="-mx-1 flex gap-1 overflow-x-auto px-1 [scrollbar-width:none]"
+      className="-mx-6 flex gap-1 overflow-x-auto px-6 [scrollbar-width:none]"
       aria-label="Show the work of"
     >
       {chip(undefined, "All workspaces", count())}
@@ -692,7 +694,7 @@ export function Home() {
               className="flex items-center gap-3 rounded-xl border border-amber/25 bg-amber-soft px-4 py-3 text-[13.5px] text-ink-2"
             >
               <WorkspaceAvatar workspace={w} size={24} />
-              <span className="min-w-0 flex-1">
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
                 {w.name} requires two-factor sign-in. Until you set it up, its projects and sessions are
                 closed to you.
               </span>

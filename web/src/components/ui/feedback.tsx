@@ -69,7 +69,8 @@ export function Banner({
       role={tone === "error" ? "alert" : "status"}
     >
       <Icon className="mt-[3px] size-4 shrink-0" />
-      <div className="min-w-0">{children}</div>
+      {/* A long name or link in a message wraps rather than running off a phone. */}
+      <div className="min-w-0 [overflow-wrap:anywhere]">{children}</div>
     </div>
   );
 }

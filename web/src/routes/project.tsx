@@ -1334,7 +1334,9 @@ function Secrets({ project }: { project: G.Project }) {
       <ul className="border-t border-line">
         {secrets.data?.secrets.map((x) => (
           <li key={x.name} className="flex items-center gap-3 border-b border-line py-3">
-            <code className="min-w-0 flex-1 font-mono text-[13px] text-ink">{x.name}</code>
+            <code className="min-w-0 flex-1 font-mono text-[13px] text-ink [overflow-wrap:anywhere]">
+              {x.name}
+            </code>
             <span className="text-[12px] text-ink-4">
               updated {ago(x.updated_at)}
               {x.updated_by ? ` by ${x.updated_by.name}` : ""}

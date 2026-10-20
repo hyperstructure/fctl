@@ -1241,8 +1241,13 @@ function Leave({ w }: { w: G.Workspace }) {
   if (w.role === "owner") return null;
   return (
     <>
-      <Button variant="ghost" icon={<LogOut className="size-3.5" />} onClick={() => setLeaving(true)}>
-        Leave {w.name}
+      <Button
+        variant="ghost"
+        icon={<LogOut className="size-3.5 shrink-0" />}
+        onClick={() => setLeaving(true)}
+        className="max-w-full"
+      >
+        <span className="truncate">Leave {w.name}</span>
       </Button>
       <Dialog
         open={leaving}
