@@ -5,7 +5,7 @@ use crate::style;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use fctl_domain::usage::{self as plan, Standing};
-use fctl_proto::api::{ClaudeLoginState, PlanLimit};
+use fctl_proto::api::{ClaudeCredentialInfo, ClaudeLoginState, CredentialStatus, PlanLimit};
 
 use std::time::Duration;
 
@@ -22,6 +22,92 @@ pub enum ClaudeCmd {
     },
     /// Show connected subscriptions and how much of each plan's limits is used.
     Status,
+}
+
+/// What to say to someone with no Claude connection.
+pub(crate) const NO_CONNECTION: &str =
+    "You have no Claude connection yet: connect one with `fctl claude connect`.";
+
+/// How a connection reads in lists: its account, else its label, else its kind.
+fn name(c: &ClaudeCredentialInfo) -> String {
+    c.account_email
+        .clone()
+        .or_else(|| c.label.clone())
+        .unwrap_or_else(|| c.kind.as_str().into())
+}
+
+/// What sort of connection it is: `oauth · Remote Control · max`.
+fn about(c: &ClaudeCredentialInfo) -> String {
+    let mut about = format!(
+        "{} · {}",
+        c.kind.as_str(),
+        if c.remote_control {
+            "Remote Control"
+        } else {
+            "inference only"
+        }
+    );
+    if let Some(t) = &c.subscription_type {
+        about.push_str(&format!(" · {t}"));
+    }
+    about
+}
+
+/// One of your connections that sessions can run on: the one whose id is
+/// `which`, else the working one whose account or label it is.
+pub(crate) fn pick_connection<'a>(
+    mine: &'a [ClaudeCredentialInfo],
+    which: &str,
+    now: i64,
+) -> Result<&'a ClaudeCredentialInfo> {
+    let c = match mine.iter().find(|c| c.id.as_str() == which) {
+        Some(c) => c,
+        None => {
+            let named: Vec<&ClaudeCredentialInfo> = mine
+                .iter()
+                .filter(|c| {
+                    [&c.account_email, &c.label]
+                        .into_iter()
+                        .flatten()
+                        .any(|n| n.eq_ignore_ascii_case(which))
+                })
+                .collect();
+            let working: Vec<&ClaudeCredentialInfo> = named
+                .iter()
+                .copied()
+                .filter(|c| c.status == CredentialStatus::Active)
+                .collect();
+            match (working.as_slice(), named.first().copied()) {
+                ([c], _) => *c,
+                // It needs reconnecting, which is said below.
+                ([], Some(c)) => c,
+                ([], None) if mine.is_empty() => bail!(NO_CONNECTION),
+                ([], None) => bail!(
+                    "None of your Claude connections is {which}. `fctl claude status` lists them, with their ids."
+                ),
+                (several, _) => bail!(
+                    "{} of your Claude connections are {which}; use one of their ids:\n{}",
+                    several.len(),
+                    several
+                        .iter()
+                        .map(|c| {
+                            let added = style::ago_from(c.created_at, now);
+                            format!("  {}  {} · added {added}", c.id, about(c))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            }
+        }
+    };
+    if c.status != CredentialStatus::Active {
+        bail!(
+            "{} ({}) needs reconnecting, so sessions can't run on it: `fctl claude connect` adds a new connection",
+            name(c),
+            c.id
+        );
+    }
+    Ok(c)
 }
 
 /// A credential's plan limits, one line each, as sessions last reported them.
@@ -80,26 +166,22 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
             if me.claude.is_empty() {
                 println!("No Claude subscription connected. Run `fctl claude connect`.");
             }
-            for c in me.claude {
+            for c in &me.claude {
                 println!(
-                    "{} {} · {} · {}{}",
+                    "{} {} · {}{}{}",
                     if c.is_default {
                         style::accent("●")
                     } else {
                         style::dim("○")
                     },
-                    c.account_email
-                        .or(c.label)
-                        .unwrap_or_else(|| c.kind.as_str().into()),
-                    c.kind.as_str(),
-                    if c.remote_control {
-                        "Remote Control"
+                    name(c),
+                    about(c),
+                    if c.status == CredentialStatus::Active {
+                        String::new()
                     } else {
-                        "inference only"
+                        format!(" · {}", style::red("needs reconnecting"))
                     },
-                    c.subscription_type
-                        .map(|t| format!(" · {t}"))
-                        .unwrap_or_default()
+                    style::dim(&format!(" · {}", c.id))
                 );
                 print_usage(&c.usage);
             }
@@ -172,5 +254,101 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
             }
             bail!("The sign-in timed out")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: i64 = 1_800_000_000_000;
+    const DAY: i64 = 86_400_000;
+
+    fn connection(
+        id: &str,
+        kind: &str,
+        account: Option<&str>,
+        status: &str,
+        created_at: i64,
+    ) -> Result<ClaudeCredentialInfo> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "id": id,
+            "kind": kind,
+            "account_email": account,
+            "remote_control": kind == "oauth",
+            "status": status,
+            "is_default": false,
+            "created_at": created_at,
+        }))?)
+    }
+
+    fn picked(mine: &[ClaudeCredentialInfo], which: &str) -> Result<String, String> {
+        pick_connection(mine, which, NOW)
+            .map(|c| c.id.to_string())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn connections_are_picked_by_id_account_or_label() -> Result<()> {
+        let mut seat = connection("crd_01SEAT", "setup_token", None, "active", 0)?;
+        seat.label = Some("Work seat".into());
+        let mine = [
+            connection("crd_01ADA", "oauth", Some("ada@example.com"), "active", 0)?,
+            connection("crd_01TOKEN", "setup_token", None, "active", 0)?,
+            seat,
+        ];
+        assert_eq!(picked(&mine, "crd_01TOKEN"), Ok("crd_01TOKEN".into()));
+        assert_eq!(picked(&mine, "Ada@Example.com"), Ok("crd_01ADA".into()));
+        assert_eq!(picked(&mine, "work seat"), Ok("crd_01SEAT".into()));
+        assert_eq!(
+            picked(&mine, "grace@example.com"),
+            Err("None of your Claude connections is grace@example.com. `fctl claude status` lists them, with their ids.".into())
+        );
+        assert_eq!(picked(&[], "ada@example.com"), Err(NO_CONNECTION.into()));
+        Ok(())
+    }
+
+    #[test]
+    fn an_account_with_several_connections_takes_the_working_one() -> Result<()> {
+        let mine = [
+            connection("crd_01OLD", "oauth", Some("ada@example.com"), "invalid", 0)?,
+            connection("crd_01NEW", "oauth", Some("ada@example.com"), "active", 0)?,
+        ];
+        assert_eq!(picked(&mine, "ada@example.com"), Ok("crd_01NEW".into()));
+        // Named by its id, the broken one says why it can't be used.
+        assert_eq!(
+            picked(&mine, "crd_01OLD"),
+            Err("ada@example.com (crd_01OLD) needs reconnecting, so sessions can't run on it: `fctl claude connect` adds a new connection".into())
+        );
+        assert_eq!(
+            picked(&mine[..1], "ada@example.com"),
+            picked(&mine, "crd_01OLD")
+        );
+        let both = [
+            connection(
+                "crd_01LOGIN",
+                "oauth",
+                Some("ada@example.com"),
+                "active",
+                NOW - 3 * DAY,
+            )?,
+            connection(
+                "crd_01TOKEN",
+                "setup_token",
+                Some("ada@example.com"),
+                "active",
+                NOW - 5 * 60_000,
+            )?,
+        ];
+        assert_eq!(
+            picked(&both, "ada@example.com"),
+            Err(
+                "2 of your Claude connections are ada@example.com; use one of their ids:\n  \
+                 crd_01LOGIN  oauth · Remote Control · added 3d ago\n  \
+                 crd_01TOKEN  setup_token · inference only · added 5m ago"
+                    .into()
+            )
+        );
+        Ok(())
     }
 }
