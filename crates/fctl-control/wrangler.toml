@@ -1,5 +1,8 @@
 # Local development configuration (`cargo xtask dev`, `wrangler dev`).
 # Deployments render their own config from deploy/instances/<name>.toml.
+# The standalone control plane (deploy/standalone) runs with the bindings
+# here, and its own [vars]. Its state's files are named after `name` and the
+# D1 `database_id`, so keep both as they are.
 name = "fctl-control"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-10-01"

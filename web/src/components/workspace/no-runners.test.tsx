@@ -57,6 +57,7 @@ const side: G.Workspace = {
   runners: 0,
   runners_online: 0,
   github: [],
+  skip_invites: false,
   created_at: 0,
 };
 const member: G.Workspace = { ...side, role: "member", email: "grace@example.com" };

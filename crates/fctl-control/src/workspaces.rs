@@ -29,7 +29,7 @@ pub const SUCCESSOR: &str = "(SELECT o.user_id FROM workspace_members o JOIN use
 /// show of them. Bind: `?1` = caller user id.
 pub const WORKSPACE_SELECT: &str = concat!(
     "SELECT w.id, w.slug, w.name, w.color, w.avatar_updated_at, w.base_role, \
-    w.require_two_factor, w.created_at, wm.role AS role, wm.email AS email, wm.credential_id AS credential_id, \
+    w.require_two_factor, w.skip_invites, w.created_at, wm.role AS role, wm.email AS email, wm.credential_id AS credential_id, \
     (SELECT COUNT(*) FROM workspace_members x WHERE x.workspace_id = w.id) AS members, \
     (SELECT COUNT(*) FROM projects p WHERE p.workspace_id = w.id AND p.archived_at IS NULL) AS projects, \
     (SELECT json_group_array(rw.runner_id) FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id \
@@ -55,6 +55,8 @@ pub struct WorkspaceRow {
     pub base_role: String,
     #[serde(deserialize_with = "int_bool")]
     pub require_two_factor: bool,
+    #[serde(deserialize_with = "int_bool")]
+    pub skip_invites: bool,
     #[serde(deserialize_with = "int")]
     pub created_at: i64,
     /// The caller's membership.
@@ -147,6 +149,7 @@ impl WorkspaceRow {
             runners: runners.len() as u32,
             runners_online: runners.iter().filter(|r| online.contains(r)).count() as u32,
             github: strings(self.github.as_deref()),
+            skip_invites: self.skip_invites,
             created_at: self.created_at,
         }
     }

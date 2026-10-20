@@ -1,0 +1,19 @@
+# The context of deploy/standalone/Dockerfile is the repository: it builds the
+# Worker and the web app from their sources, so their outputs, local state
+# and secrets stay out.
+.git
+**/node_modules
+target
+dist
+web/dist
+crates/fctl-control/build
+**/.wrangler
+**/.dev.vars
+**/.dev.vars.*
+.fctl-dev
+.fctl-serve*
+**/*.pem
+**/*.key
+**/.env
+**/.env.*
+deploy/standalone/**/*.test.mjs

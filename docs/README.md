@@ -7,9 +7,10 @@ Claude apps, and anyone you share a project with can steer the agents too.
 
 Three pieces make up a factory:
 
-- **The control plane** — a Cloudflare Worker with Durable Objects and D1
+- **The control plane** — a Worker with Durable Objects and D1
   that serves the web app and the API, keeps every session's event log, and
-  hands work to hosts. One per team (yours might be `app.fctl.sh`).
+  hands work to hosts. One per team (yours might be `app.fctl.sh`). It runs
+  on Cloudflare, or in one container on any machine or Kubernetes cluster.
 - **Hosts** — your machines (a spare Mac is ideal). `fctl host` runs as a
   service, connects out to the control plane, and runs each session in its
   own Linux VM.
@@ -22,7 +23,7 @@ Three pieces make up a factory:
 |---|---|
 | Start using fctl on an instance someone set up | [Getting started](getting-started.md) |
 | Drive everything from a terminal or a script | [The CLI](cli.md) |
-| Run your own instance on your Cloudflare account | [Self-hosting](self-hosting.md) |
+| Run your own instance, on a machine of yours or on Cloudflare | [Self-hosting](self-hosting.md) |
 | Know what sessions run in, give a project its own image, or choose the images a host runs | [Sandbox images](sandbox-images.md) |
 | Understand how the pieces talk to each other | [Architecture](architecture.md) |
 | Know what fctl does with your credentials | [Security](security.md) |

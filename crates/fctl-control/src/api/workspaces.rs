@@ -241,13 +241,15 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let updated = q(
         &ctx.db,
         "UPDATE workspaces SET name = COALESCE(?, name), slug = COALESCE(?, slug), color = COALESCE(?, color), \
-         base_role = COALESCE(?, base_role), require_two_factor = COALESCE(?, require_two_factor), updated_at = ? WHERE id = ?",
+         base_role = COALESCE(?, base_role), require_two_factor = COALESCE(?, require_two_factor), \
+         skip_invites = COALESCE(?, skip_invites), updated_at = ? WHERE id = ?",
         &[
             os(name.as_deref()),
             os(slug.as_deref()),
             os(body.color.map(WorkspaceColor::as_str)),
             os(body.base_role.map(BaseRole::as_str)),
             body.require_two_factor.map_or(crate::db::null(), crate::db::b),
+            body.skip_invites.map_or(crate::db::null(), crate::db::b),
             n(ctx.now),
             s(a.id()),
         ],

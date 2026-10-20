@@ -318,17 +318,39 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
   const gh = useQuery({ queryKey: keys.workspaceGithub(w.id), queryFn: () => workspaces.github(w.id) });
   // Without a GitHub App on the instance there is nothing to connect.
   const github = w.github.length > 0 || gh.data?.configured === true;
+  // A workspace for one has nobody to invite: its admins skip the step.
+  const skipInvites = useMutation({
+    mutationFn: () => workspaces.update(w.id, { skip_invites: true }),
+    onSuccess: (x) => {
+      queryClient.setQueryData(keys.workspace(w.slug), x);
+      refresh();
+      toast("Skipped: invite people from the People tab any time");
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const invited = w.members > 1;
   const all: { done: boolean; skip?: boolean; title: string; body: string; action: ReactNode }[] = [
     {
-      done: w.members > 1,
+      done: invited,
+      skip: w.skip_invites && !invited,
       title: "Invite the people you work with",
       body: "They join with the address you invite, and see its projects as the base role lets them.",
       action: (
-        <Link to="/w/$slug" params={{ slug: w.slug }} search={{ tab: "people" }}>
-          <Button size="sm" icon={<MailPlus className="size-3.5" />}>
-            Invite
+        <>
+          <Link to="/w/$slug" params={{ slug: w.slug }} search={{ tab: "people" }}>
+            <Button size="sm" icon={<MailPlus className="size-3.5" />}>
+              Invite
+            </Button>
+          </Link>
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={skipInvites.isPending}
+            onClick={() => skipInvites.mutate()}
+          >
+            Skip for now
           </Button>
-        </Link>
+        </>
       ),
     },
     {
@@ -382,7 +404,10 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
       </div>
       <ol className="mt-3 divide-y divide-line border-y border-line">
         {steps.map((s) => (
-          <li key={s.title} className="flex gap-4 py-4">
+          <li
+            key={s.title}
+            className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 py-4 sm:grid-cols-[auto_minmax(0,1fr)_auto]"
+          >
             <span
               className={cn(
                 "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border transition-colors",
@@ -391,7 +416,7 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
             >
               {s.done ? <Check className="size-3.5" /> : <span className="size-1.5 rounded-full bg-ink-4" />}
             </span>
-            <div className="min-w-0 flex-1">
+            <div>
               <div
                 className={cn(
                   "text-[14.5px] font-medium",
@@ -402,7 +427,12 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
               </div>
               {!s.done && <div className="mt-1 text-[13.5px] leading-relaxed text-ink-3">{s.body}</div>}
             </div>
-            {!s.done && s.action}
+            {/* Under the words on a phone; beside them on wider screens, the step's own action at the edge. */}
+            {!s.done && (
+              <div className="col-start-2 mt-3 flex items-center gap-1 sm:col-start-3 sm:row-start-1 sm:mt-0 sm:flex-row-reverse sm:items-start">
+                {s.action}
+              </div>
+            )}
           </li>
         ))}
       </ol>
