@@ -1,10 +1,21 @@
 // Lists people put in order by dragging, as the sidebar's workspaces and
 // projects. A mouse drags once it moves a few pixels, so a click still
-// opens what it clicks; a finger holds still for a moment first, so a swipe
-// still scrolls. Alt (Option) with ↑ or ↓ moves the focused one. The others make
-// room as it passes them, and a dropped one settles into its place.
+// opens what it clicks; a finger holds still for a moment first, so a
+// swipe still scrolls. Alt (Option) with ↑ or ↓ moves the focused one. The
+// others make room as it passes them, and a dropped one settles into its
+// place.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+
+// How far a mouse moves before dragging, how long a finger holds still
+// first and how far it may wander meanwhile, the band at a scrolling list's
+// edges that scrolls it, and how fast.
+const MOUSE_SLOP = 4;
+const HOLD_MS = 320;
+const TOUCH_SLOP = 8;
+const EDGE = 48;
+const MAX_SCROLL = 14;
+const SETTLE = "transform 220ms var(--ease-out)";
 
 /** Where an item is, top to bottom (pixels, as laid out without transforms). */
 export interface Box {
@@ -84,16 +95,6 @@ export function moveItem<T>(list: readonly T[], from: number, to: number): T[] {
   return next;
 }
 
-// How far a mouse moves before dragging, how long a finger holds still
-// first and how far it may wander meanwhile, the band at a scrolling list's
-// edges that scrolls it, and how fast.
-const MOUSE_SLOP = 4;
-const HOLD_MS = 320;
-const TOUCH_SLOP = 8;
-const EDGE = 48;
-const MAX_SCROLL = 14;
-const SETTLE = "transform 220ms var(--ease-out)";
-
 const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
 /** The nearest ancestor that scrolls vertically. */
@@ -105,17 +106,21 @@ function scrollParent(el: HTMLElement): HTMLElement {
   return (document.scrollingElement ?? document.documentElement) as HTMLElement;
 }
 
-// Screen readers hear where a moved item went.
+// Screen readers hear where a moved item went, from a live region that is
+// in the page before anything is said in it (else they may not hear it).
 let region: HTMLElement | undefined;
-function announce(text: string) {
-  if (!region) {
+function liveRegion(): HTMLElement {
+  if (!region?.isConnected) {
     region = document.createElement("div");
     region.setAttribute("aria-live", "assertive");
     region.className = "sr-only";
     document.body.append(region);
   }
-  region.textContent = text;
+  return region;
 }
+const announce = (text: string) => {
+  liveRegion().textContent = text;
+};
 
 interface Drag {
   id: string;
@@ -381,8 +386,11 @@ export function useSortable({
     if (p.touch) navigator.vibrate?.(8);
   }, [end, scrollFrame]);
 
-  // Unmounted mid-drag (the drawer closed): let go.
-  useEffect(() => () => end(false), [end]);
+  useEffect(() => {
+    liveRegion();
+    // Unmounted mid-drag (the drawer closed): let go.
+    return () => end(false);
+  }, [end]);
 
   const handleProps = useCallback(
     (id: string) => ({

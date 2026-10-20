@@ -771,34 +771,32 @@ pub async fn update_membership(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
     let a = ws::load(ctx, id).await?;
     a.require_open()?;
     let user = ctx.user()?.clone();
-    if let Some(wanted) = &body.project_order {
-        // The projects they see there, in their order now.
-        let current: Vec<Named> = q(
-            &ctx.db,
-            &format!(
-                "SELECT p.id, p.slug FROM projects p JOIN workspaces w ON w.id = p.workspace_id \
-                 JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?1 \
-                 LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1 \
-                 WHERE w.id = ?2 AND {PROJECT_VISIBLE} ORDER BY {PROJECT_ORDER}"
-            ),
-            &[s(&user.id), s(a.id())],
-        )?
-        .all()
-        .await?;
-        let order = fctl_domain::order::arrange(
-            &Named::pairs(&current),
-            wanted,
-            "project_order",
-            &format!("your projects in {}", a.row.name),
-        )?;
-        q(
-            &ctx.db,
-            "UPDATE workspace_members SET project_order = ? WHERE workspace_id = ? AND user_id = ?",
-            &[s(&serde_json::to_string(&order)?), s(a.id()), s(&user.id)],
-        )?
-        .run()
-        .await?;
-    }
+    // Checked before anything changes: a request with both changes both or neither.
+    let project_order = match &body.project_order {
+        Some(wanted) => {
+            // The projects they see there, in their order now.
+            let current: Vec<Named> = q(
+                &ctx.db,
+                &format!(
+                    "SELECT p.id, p.slug FROM projects p JOIN workspaces w ON w.id = p.workspace_id \
+                     JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?1 \
+                     LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1 \
+                     WHERE w.id = ?2 AND {PROJECT_VISIBLE} ORDER BY {PROJECT_ORDER}"
+                ),
+                &[s(&user.id), s(a.id())],
+            )?
+            .all()
+            .await?;
+            let order = fctl_domain::order::arrange(
+                &Named::pairs(&current),
+                wanted,
+                "project_order",
+                &format!("your projects in {}", a.row.name),
+            )?;
+            Some(serde_json::to_string(&order)?)
+        }
+        None => None,
+    };
     if let Some(claude) = body.claude.as_deref() {
         let claude = claude.trim();
         if !claude.is_empty() {
@@ -821,6 +819,15 @@ pub async fn update_membership(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
                 s(a.id()),
                 s(&user.id),
             ],
+        )?
+        .run()
+        .await?;
+    }
+    if let Some(order) = project_order {
+        q(
+            &ctx.db,
+            "UPDATE workspace_members SET project_order = ? WHERE workspace_id = ? AND user_id = ?",
+            &[s(&order), s(a.id()), s(&user.id)],
         )?
         .run()
         .await?;
