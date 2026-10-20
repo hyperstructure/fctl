@@ -5,6 +5,7 @@ export * from "./feedback";
 export * from "./form";
 export * from "./gl-canvas";
 export * from "./icons";
+export * from "./lightbox";
 export * from "./misc";
 export * from "./name-fields";
 export * from "./overlay";

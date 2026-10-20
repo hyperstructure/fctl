@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachmentUrl, filesFromPaste, pastedName, previewable, showsInline } from "./attachments";
+import { attachmentUrl, filesFromPaste, pastedName, playable, previewable, showsInline } from "./attachments";
 import { bytes } from "./format";
 
 function clipboard(files: File[], data: Record<string, string>): DataTransfer {
@@ -40,6 +40,15 @@ describe("attachments", () => {
     expect(previewable("image/svg+xml")).toBe(true);
     expect(previewable("image/heic")).toBe(false);
     expect(previewable("application/pdf")).toBe(false);
+  });
+
+  it("knows which videos play in place", () => {
+    expect(playable("video/mp4")).toBe(true);
+    expect(playable("video/webm")).toBe(true);
+    expect(playable("video/quicktime")).toBe(true);
+    expect(playable("video/x-msvideo")).toBe(false);
+    expect(playable("audio/mpeg")).toBe(false);
+    expect(playable("image/gif")).toBe(false);
   });
 
   it("builds file URLs and sizes", () => {

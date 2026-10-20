@@ -91,10 +91,16 @@ async fn store(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppResult<
 }
 
 /// `GET /api/v1/sessions/{id}/attachments/{attachment}`: a file sent in the
-/// session, for anyone who can see the session.
-pub async fn download(ctx: &Ctx, session_id: &str, attachment_id: &str) -> AppResult<Response> {
+/// session, for anyone who can see the session. It answers a `Range` header
+/// with those bytes, as Safari needs to play a video.
+pub async fn download(
+    ctx: &Ctx,
+    req: &Request,
+    session_id: &str,
+    attachment_id: &str,
+) -> AppResult<Response> {
     let a = access::session(ctx, session_id).await?;
-    file(ctx, &a.row.project_id, &a.row.id, attachment_id).await
+    file(ctx, req, &a.row.project_id, &a.row.id, attachment_id).await
 }
 
 /// `GET /api/v1/runner/sessions/{id}/attachments/{attachment}`: the same for
@@ -123,11 +129,12 @@ pub async fn runner_download(
     if assigned.runner_id.as_deref() != Some(r.id.as_str()) {
         return Err(forbidden("This session is not assigned to this runner"));
     }
-    file(ctx, &assigned.project_id, session_id, attachment_id).await
+    file(ctx, req, &assigned.project_id, session_id, attachment_id).await
 }
 
 async fn file(
     ctx: &Ctx,
+    req: &Request,
     project_id: &str,
     session_id: &str,
     attachment_id: &str,
@@ -136,13 +143,16 @@ async fn file(
         return Err(not_found("File"));
     }
     let stub = internal::files_stub(&ctx.env, project_id)?;
-    internal::fetch(
+    let range = http::header(req, "Range");
+    let headers: Vec<(&str, &str)> = range.iter().map(|r| ("Range", r.as_str())).collect();
+    internal::fetch_with(
         &stub,
         &format!(
             "/file?id={}&session={}",
             enc(attachment_id),
             enc(session_id)
         ),
+        &headers,
     )
     .await
 }

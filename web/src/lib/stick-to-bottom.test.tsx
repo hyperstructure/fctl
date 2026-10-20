@@ -285,6 +285,20 @@ describe("the session page", () => {
     expect(p.gap()).toBe(0);
   });
 
+  it("keeps following under a dialog the wheel and keys turn in, like the lightbox", () => {
+    const p = sessionPage();
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("open", "");
+    const picture = document.createElement("img");
+    dialog.append(picture);
+    document.body.append(dialog);
+    cleanups.push(() => dialog.remove());
+    picture.dispatchEvent(Object.assign(new Event("wheel", { bubbles: true }), { deltaY: -4 }));
+    picture.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    p.grow(26);
+    expect(p.gap()).toBe(0);
+  });
+
   it("holds still while a button is down, and follows once it is up", () => {
     const p = sessionPage();
     p.on("pointerdown", { button: 0 });

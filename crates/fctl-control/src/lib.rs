@@ -265,7 +265,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::attachments::upload_to_session(ctx, req, id).await
         }
         (Get, ["sessions", id, "attachments", file]) => {
-            api::attachments::download(ctx, id, file).await
+            api::attachments::download(ctx, req, id, file).await
         }
         // Published screenshots: anyone with a link reads it.
         (Get | Head, ["published", token, ..]) => api::published::serve(ctx, req, token).await,

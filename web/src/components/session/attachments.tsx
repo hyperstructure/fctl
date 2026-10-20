@@ -2,10 +2,20 @@
 // the page, pasting, the files waiting in the composer, and the files a
 // message carries in the transcript.
 
-import { Download, File, FileArchive, FileImage, FileText, Paperclip, RotateCw, X } from "lucide-react";
+import {
+  Download,
+  File,
+  FileArchive,
+  FileImage,
+  FilePlay,
+  FileText,
+  Paperclip,
+  Play,
+  RotateCw,
+  X,
+} from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { IconButton, toast } from "@/components/ui";
+import { IconButton, Lightbox, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api, type UploadScope } from "@/lib/api";
 import {
@@ -14,6 +24,7 @@ import {
   MAX_FILE_BYTES,
   MAX_FILES,
   pastedName,
+  playable,
   previewable,
   showsInline,
 } from "@/lib/attachments";
@@ -372,6 +383,7 @@ export function DropHint({ show }: { show: boolean }) {
 function FileIcon({ type, className }: { type: string; className?: string }) {
   const c = cn("shrink-0", className);
   if (type.startsWith("image/")) return <FileImage className={c} />;
+  if (type.startsWith("video/")) return <FilePlay className={c} />;
   if (/zip|gzip|x-tar|x-7z|x-rar/.test(type)) return <FileArchive className={c} />;
   if (type.startsWith("text/") || /json|yaml|toml|xml|pdf/.test(type)) return <FileText className={c} />;
   return <File className={c} />;
@@ -478,8 +490,26 @@ export function MessageFiles({
   const [open, setOpen] = useState<G.Attachment>();
   const src = (f: G.Attachment) =>
     previews?.[f.id] ?? (sessionId ? attachmentUrl(sessionId, f.id) : undefined);
+  const openSrc = open && src(open);
+  // The session that has the files, once the message is sent.
+  const sent = pending ? undefined : sessionId;
   const images = files.filter((f) => previews?.[f.id] || showsInline(f.media_type));
-  const others = files.filter((f) => !images.includes(f));
+  // Videos play in the lightbox once they are sent.
+  const videos = sent ? files.filter((f) => !images.includes(f) && playable(f.media_type)) : [];
+  const others = files.filter((f) => !images.includes(f) && !videos.includes(f));
+  const chip =
+    "flex h-12 w-60 max-w-full items-center gap-2.5 rounded-lg border border-line bg-raised/50 px-3";
+  const chipBody = (f: G.Attachment): ReactNode => (
+    <>
+      <FileIcon type={f.media_type} className="size-5 text-ink-3" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] text-ink">{f.name}</div>
+        <div className="font-mono text-[10.5px] text-ink-4">{bytes(f.size)}</div>
+      </div>
+    </>
+  );
+  const chipHint =
+    "size-3.5 shrink-0 text-ink-4 opacity-0 transition-opacity duration-150 group-hover/file:opacity-100";
   return (
     <div className="flex flex-wrap items-start gap-2">
       {images.map((f) => (
@@ -488,7 +518,7 @@ export function MessageFiles({
           type="button"
           onClick={() => setOpen(f)}
           aria-label={`View ${f.name}`}
-          className="overflow-hidden rounded-lg border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
+          className="cursor-zoom-in overflow-hidden rounded-lg border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
         >
           <img
             src={src(f)}
@@ -501,103 +531,43 @@ export function MessageFiles({
           />
         </button>
       ))}
-      {others.map((f) => {
-        const body: ReactNode = (
-          <>
-            <FileIcon type={f.media_type} className="size-5 text-ink-3" />
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[13px] text-ink">{f.name}</div>
-              <div className="font-mono text-[10.5px] text-ink-4">{bytes(f.size)}</div>
-            </div>
-          </>
-        );
-        const chip =
-          "flex h-12 w-60 max-w-full items-center gap-2.5 rounded-lg border border-line bg-raised/50 px-3";
-        return pending || !sessionId ? (
-          <div key={f.id} className={chip}>
-            {body}
-          </div>
-        ) : (
+      {videos.map((f) => (
+        <button
+          key={f.id}
+          type="button"
+          onClick={() => setOpen(f)}
+          aria-label={`Play ${f.name}`}
+          title={`Play ${f.name}`}
+          className={cn(
+            chip,
+            "group/file text-left transition-[border-color] duration-150 hover:border-line-strong",
+          )}
+        >
+          {chipBody(f)}
+          <Play className={chipHint} />
+        </button>
+      ))}
+      {others.map((f) =>
+        sent ? (
           <a
             key={f.id}
-            href={attachmentUrl(sessionId, f.id)}
+            href={attachmentUrl(sent, f.id)}
             download={f.name}
             title={`Download ${f.name}`}
             className={cn(chip, "group/file transition-[border-color] duration-150 hover:border-line-strong")}
           >
-            {body}
-            <Download className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-opacity duration-150 group-hover/file:opacity-100" />
+            {chipBody(f)}
+            <Download className={chipHint} />
           </a>
-        );
-      })}
-      {open && (
-        <ImageViewer file={open} src={src(open)} download={!pending} onClose={() => setOpen(undefined)} />
+        ) : (
+          <div key={f.id} className={chip}>
+            {chipBody(f)}
+          </div>
+        ),
+      )}
+      {open && openSrc && (
+        <Lightbox file={open} src={openSrc} download={!pending} onClose={() => setOpen(undefined)} />
       )}
     </div>
-  );
-}
-
-/** A full-size look at an image, on the native <dialog> (Escape closes it). */
-function ImageViewer({
-  file,
-  src,
-  download,
-  onClose,
-}: {
-  file: G.Attachment;
-  src?: string;
-  download: boolean;
-  onClose: () => void;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    ref.current?.showModal();
-  }, []);
-  return createPortal(
-    // biome-ignore lint/a11y/useKeyWithClickEvents: the click closes on the backdrop only; Escape is native to <dialog>.
-    <dialog
-      ref={ref}
-      onClose={onClose}
-      onClick={(e) => {
-        if (e.target === ref.current) onClose();
-      }}
-      aria-label={file.name}
-      className="m-auto max-h-none max-w-none bg-transparent p-0 backdrop:bg-black/75 backdrop:backdrop-blur-[3px] open:animate-rise"
-    >
-      <figure className="flex flex-col items-center gap-3">
-        <img
-          src={src}
-          alt={file.name}
-          className="max-h-[82vh] max-w-[92vw] rounded-lg border border-line-strong bg-raised object-contain shadow-[0_30px_120px_rgb(0_0_0/0.55)]"
-        />
-        <figcaption className="flex max-w-[92vw] items-center gap-3 rounded-full border border-line-strong bg-surface/90 py-1 pr-1 pl-4 text-[12.5px] text-ink-2 backdrop-blur-xl">
-          <span className="truncate">{file.name}</span>
-          <span className="shrink-0 font-mono text-[11px] text-ink-4">
-            {file.width && file.height ? `${file.width}×${file.height} · ` : ""}
-            {bytes(file.size)}
-          </span>
-          {download && src && (
-            <a
-              href={src}
-              download={file.name}
-              className="flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink"
-              aria-label={`Download ${file.name}`}
-              title="Download"
-            >
-              <Download className="size-3.5" />
-            </a>
-          )}
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="flex size-7 shrink-0 items-center justify-center rounded-full text-ink-3 hover:bg-hover hover:text-ink"
-          >
-            <X className="size-3.5" />
-          </button>
-        </figcaption>
-      </figure>
-    </dialog>,
-    document.body,
   );
 }

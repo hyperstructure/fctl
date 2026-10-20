@@ -1,8 +1,9 @@
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as G from "@/gen";
 import type { DraftFile } from "@/lib/draft";
-import { useAttachments } from "./attachments";
+import { MessageFiles, useAttachments } from "./attachments";
 
 const { uploadAttachment, stored, onPage } = vi.hoisted(() => ({
   uploadAttachment: vi.fn(),
@@ -10,7 +11,13 @@ const { uploadAttachment, stored, onPage } = vi.hoisted(() => ({
   onPage: new Map<string, DraftFile[]>(),
 }));
 vi.mock("@/lib/api", () => ({ api: { uploadAttachment } }));
-vi.mock("@/components/ui", () => ({ IconButton: () => null, toast: vi.fn() }));
+vi.mock("@/components/ui", () => ({
+  IconButton: () => null,
+  Lightbox: ({ file, src }: { file: { name: string }; src: string }) => (
+    <dialog open aria-label={file.name} data-src={src} />
+  ),
+  toast: vi.fn(),
+}));
 // The browser's storage, in memory.
 vi.mock("@/lib/draft", () => ({
   loadFiles: async (user: string) => stored.get(user) ?? [],
@@ -158,5 +165,51 @@ describe("attachments of a message", () => {
     m.unmount();
     expect(pending[0]?.abort).toHaveBeenCalled();
     expect(onPage.size).toBe(0);
+  });
+});
+
+describe("files in the transcript", () => {
+  const file = (id: string, name: string, media_type: string): G.Attachment => ({
+    id,
+    name,
+    media_type,
+    size: 3_400_000,
+  });
+  const show = (node: ReactNode) => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() => root.render(node));
+    unmounts.push(() => act(() => root.unmount()));
+    return container;
+  };
+
+  it("plays videos over the page and downloads other files", () => {
+    const c = show(
+      <MessageFiles
+        sessionId="ses_1"
+        files={[file("att_1", "bug.mov", "video/quicktime"), file("att_2", "notes.txt", "text/plain")]}
+      />,
+    );
+    act(() => c.querySelector<HTMLButtonElement>('button[aria-label="Play bug.mov"]')?.click());
+    expect(c.querySelector('dialog[aria-label="bug.mov"]')?.getAttribute("data-src")).toBe(
+      "/api/v1/sessions/ses_1/attachments/att_1",
+    );
+    expect(c.querySelector('a[download="notes.txt"]')?.getAttribute("href")).toBe(
+      "/api/v1/sessions/ses_1/attachments/att_2",
+    );
+  });
+
+  it("shows images over the page", () => {
+    const c = show(<MessageFiles sessionId="ses_1" files={[file("att_1", "after.png", "image/png")]} />);
+    act(() => c.querySelector<HTMLButtonElement>('button[aria-label="View after.png"]')?.click());
+    expect(c.querySelector('dialog[aria-label="after.png"]')).not.toBeNull();
+  });
+
+  it("plays a video once it is sent", () => {
+    const c = show(
+      <MessageFiles sessionId="ses_1" files={[file("att_1", "bug.mov", "video/quicktime")]} pending />,
+    );
+    expect(c.querySelector("button")).toBeNull();
+    expect(c.textContent).toContain("bug.mov");
   });
 });

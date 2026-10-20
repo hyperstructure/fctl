@@ -280,6 +280,79 @@ pub fn content_disposition(name: &str, inline: bool) -> String {
     format!("{kind}; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
 }
 
+/// What a `Range` header asks of a file (RFC 9110, 14.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ByteRange {
+    /// The whole file: no header, or one the server may ignore (several
+    /// ranges, another unit, a malformed one).
+    Whole,
+    /// Bytes `start..=end`, all within the file.
+    Part { start: u64, end: u64 },
+    /// A range that starts past the end (`416 Range Not Satisfiable`).
+    Unsatisfiable,
+}
+
+/// The bytes a `Range` header asks for, of a file of `size` bytes. Media
+/// players ask for one range at a time, and Safari plays a video only from
+/// a server that answers them.
+pub fn byte_range(header: Option<&str>, size: u64) -> ByteRange {
+    let Some(set) = header.and_then(|h| {
+        let (unit, set) = h.split_once('=')?;
+        unit.trim().eq_ignore_ascii_case("bytes").then_some(set)
+    }) else {
+        return ByteRange::Whole;
+    };
+    let Some((first, last)) = set.split_once('-').filter(|_| !set.contains(',')) else {
+        return ByteRange::Whole;
+    };
+    let (first, last) = (first.trim(), last.trim());
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    // Too many digits for a u64 is still past the end of any file.
+    let number = |s: &str| s.parse::<u64>().unwrap_or(u64::MAX);
+    if first.is_empty() {
+        // `bytes=-500`: the last 500 bytes.
+        if !digits(last) {
+            return ByteRange::Whole;
+        }
+        let n = number(last);
+        if n == 0 || size == 0 {
+            return ByteRange::Unsatisfiable;
+        }
+        return ByteRange::Part {
+            start: size.saturating_sub(n),
+            end: size - 1,
+        };
+    }
+    // `bytes=500-999`, or `bytes=500-` to the end.
+    if !digits(first) || !(last.is_empty() || digits(last)) {
+        return ByteRange::Whole;
+    }
+    let start = number(first);
+    let end = if last.is_empty() {
+        u64::MAX
+    } else {
+        number(last)
+    };
+    if end < start {
+        ByteRange::Whole
+    } else if start >= size {
+        ByteRange::Unsatisfiable
+    } else {
+        ByteRange::Part {
+            start,
+            end: end.min(size - 1),
+        }
+    }
+}
+
+/// Where bytes `start..=end` of a stored file are: its chunks `first..=last`
+/// and the offset of `start` in chunk `first`. Every chunk but a file's last
+/// holds [`CHUNK_BYTES`].
+pub fn chunk_span(start: u64, end: u64) -> (u64, u64, usize) {
+    let chunk = CHUNK_BYTES as u64;
+    (start / chunk, end / chunk, (start % chunk) as usize)
+}
+
 /// `912 B`, `245 KB`, `1.2 MB`: decimal units, as file managers show them.
 pub fn human_size(bytes: u64) -> String {
     const KB: u64 = 1000;
@@ -452,6 +525,76 @@ mod tests {
         assert!(shows_inline("image/webp"));
         assert!(!shows_inline("image/svg+xml"));
         assert!(!shows_inline("text/html"));
+    }
+
+    #[test]
+    fn reads_byte_ranges() {
+        use ByteRange::*;
+        let r = |h: &str| byte_range(Some(h), 1000);
+        // What Safari and Chrome ask for before and while playing.
+        assert_eq!(r("bytes=0-1"), Part { start: 0, end: 1 });
+        assert_eq!(r("bytes=0-"), Part { start: 0, end: 999 });
+        assert_eq!(
+            r("bytes=500-"),
+            Part {
+                start: 500,
+                end: 999
+            }
+        );
+        assert_eq!(
+            r("bytes=900-2000"),
+            Part {
+                start: 900,
+                end: 999
+            }
+        );
+        assert_eq!(
+            r("bytes=999-999"),
+            Part {
+                start: 999,
+                end: 999
+            }
+        );
+        assert_eq!(
+            r("bytes=-100"),
+            Part {
+                start: 900,
+                end: 999
+            }
+        );
+        assert_eq!(r("bytes=-5000"), Part { start: 0, end: 999 });
+        assert_eq!(r("Bytes = 10-20"), Part { start: 10, end: 20 });
+        assert_eq!(
+            r("bytes=0-99999999999999999999999"),
+            Part { start: 0, end: 999 }
+        );
+        // Past the end.
+        assert_eq!(r("bytes=1000-"), Unsatisfiable);
+        assert_eq!(r("bytes=1000-1001"), Unsatisfiable);
+        assert_eq!(r("bytes=99999999999999999999999-"), Unsatisfiable);
+        assert_eq!(r("bytes=-0"), Unsatisfiable);
+        assert_eq!(byte_range(Some("bytes=0-"), 0), Unsatisfiable);
+        assert_eq!(byte_range(Some("bytes=-1"), 0), Unsatisfiable);
+        // Answered with the whole file, as servers may.
+        assert_eq!(byte_range(None, 1000), Whole);
+        assert_eq!(r("bytes=0-1,5-6"), Whole);
+        assert_eq!(r("items=0-1"), Whole);
+        assert_eq!(r("bytes=5-1"), Whole);
+        assert_eq!(r("bytes=-"), Whole);
+        assert_eq!(r("bytes=+1-2"), Whole);
+        assert_eq!(r("bytes=a-b"), Whole);
+        assert_eq!(r("bytes 0-1"), Whole);
+        assert_eq!(r(""), Whole);
+    }
+
+    #[test]
+    fn finds_ranges_in_chunks() {
+        let c = CHUNK_BYTES as u64;
+        assert_eq!(chunk_span(0, 1), (0, 0, 0));
+        assert_eq!(chunk_span(0, c - 1), (0, 0, 0));
+        assert_eq!(chunk_span(c - 1, c), (0, 1, CHUNK_BYTES - 1));
+        assert_eq!(chunk_span(c, 3 * c + 5), (1, 3, 0));
+        assert_eq!(chunk_span(2 * c + 7, 2 * c + 7), (2, 2, 7));
     }
 
     #[test]
