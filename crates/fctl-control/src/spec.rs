@@ -320,7 +320,7 @@ pub async fn github_tokens(
         return Err(AppError(ApiError::new(
             ErrorCode::NotConfigured,
             format!(
-                "This project's workspace may not use {}. Its admins connect {} in the workspace's settings, or an instance admin adds the repository to the connection.",
+                "This project's workspace may not use {}. Its admins connect {} with it, under the workspace's GitHub tab.",
                 p.full_name(),
                 p.owner
             ),
@@ -355,7 +355,7 @@ pub async fn github_tokens(
 /// not use.
 fn refused_notice(g: &RepoGrant) -> String {
     format!(
-        "This project's workspace may not use {}, so this session works without it. Its admins connect {} in the workspace's settings, or remove the repository from the project.",
+        "This project's workspace may not use {}, so this session works without it. Its admins connect {} with it under the workspace's GitHub tab, or remove the repository from the project.",
         g.label(),
         g.owner
     )

@@ -136,11 +136,24 @@ outside it except through these channels:
   needs. Reading a whole account includes its private repositories, as far
   as the workspace may use them. Running sessions lose a repository removed
   from the project, or an account taken from its workspace, when their
-  tokens are next refreshed, within the hour. Which workspaces use which
-  accounts is an instance admin's decision: anyone can install the app on
-  an account they own, but only an instance admin's approval lets a
-  workspace use it, since GitHub's setup redirect can name anyone's
-  installation.
+  tokens are next refreshed, within the hour. A session's tokens are minted
+  for the runner the session runs on only: a runner serves the workspaces
+  its owner added it to, and gets no token for a session in another
+  workspace.
+
+  Which accounts a workspace may use is its own admins' decision, and only
+  within what they may touch on GitHub. A workspace's admin connects an
+  account by signing in to GitHub with the instance's app, and the
+  workspace gets what GitHub says that person may give: every repository of
+  their own account, or of an organization whose every repository the app
+  reaches and they administer all of; otherwise the repositories they
+  administer. So no workspace reaches another account's repositories
+  through the shared app, and an instance admin — who holds the app's key —
+  connects nothing into a workspace, though they can take an account away.
+  Installing the app on an account is necessary but not sufficient: it lets
+  the instance mint tokens there, but no workspace uses it until one of its
+  admins connects it with a GitHub sign-in
+  ([ADR 0029](adr/0029-workspaces-connect-github-accounts-with-a-github-sign-in.md)).
 - **Claude.** A short-lived access token for the session's owner. Refresh
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host.

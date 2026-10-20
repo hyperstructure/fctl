@@ -89,8 +89,9 @@ this file is the overview. Order within a section is priority.
 - [ ] Network egress policies per project
 - [ ] Master key rotation
 - [ ] Email through Cloudflare's email service (no Resend account)
-- [ ] GitHub sign-in, and with it workspace admins who connect the GitHub
-      accounts they manage without an instance admin's approval
+- [x] Workspace admins connect the GitHub accounts they manage themselves,
+      verified with a GitHub sign-in, without an instance admin's approval
+- [ ] GitHub sign-in as a way to sign in to fctl
 - [ ] Merging two accounts into one with both their addresses
 - [ ] Linux hosts with Firecracker microVMs
 - [ ] Windows hosts through WSL 2

@@ -1,4 +1,4 @@
-# 0029: Sessions follow every pull request their agent opens
+# 0030: Sessions follow every pull request their agent opens
 
 2026-10-20 · accepted
 

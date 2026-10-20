@@ -11,6 +11,7 @@ pub mod cookies;
 pub mod disk;
 pub mod events;
 pub mod files;
+pub mod github;
 pub mod ids;
 pub mod image;
 pub mod journal;

@@ -7,7 +7,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
 import {
-  Check,
   Cpu,
   Crown,
   Ellipsis,
@@ -73,13 +72,6 @@ const TABS: { tab: Tab; label: string }[] = [
 
 export function Admin() {
   const { tab = "people" } = useSearch({ from: "/app/admin" });
-  const github = useQuery({ queryKey: keys.adminGithub, queryFn: api.adminGithub });
-  // Requests that wait for an instance admin, on the GitHub tab.
-  const waiting =
-    github.data?.installations.reduce(
-      (n, i) => n + i.workspaces.filter((w) => w.status === "requested").length,
-      0,
-    ) ?? 0;
   const early = !!useInstance().data?.features.early_access;
   const requests = useQuery({
     queryKey: keys.accessRequests,
@@ -111,9 +103,9 @@ export function Admin() {
               )}
             >
               {t.label}
-              {((t.tab === "github" && waiting > 0) || (t.tab === "early-access" && asking > 0)) && (
+              {t.tab === "early-access" && asking > 0 && (
                 <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-highlight px-1 text-[10.5px] font-semibold text-highlight-ink tabular-nums">
-                  {t.tab === "github" ? waiting : asking}
+                  {asking}
                 </span>
               )}
               {tab === t.tab && (
@@ -962,7 +954,7 @@ function Workspaces() {
       closeDelete();
       void list.refetch();
       void queryClient.invalidateQueries({ queryKey: keys.workspaces });
-      // Its requests to use GitHub accounts went with it.
+      // Its GitHub accounts went with it.
       void queryClient.invalidateQueries({ queryKey: keys.adminGithub });
       toast(`${w.workspace.name} was deleted`);
     },
@@ -1137,59 +1129,21 @@ function Workspaces() {
   );
 }
 
-/** The accounts the instance's GitHub App is installed on, and the workspaces that use them or ask to. */
+/** The accounts the instance's GitHub App is installed on, and the workspaces that use them. */
 function Github() {
   const list = useQuery({ queryKey: keys.adminGithub, queryFn: api.adminGithub });
-  const workspaces = useQuery({ queryKey: keys.adminWorkspaces, queryFn: api.adminWorkspaces });
-  const [connecting, setConnecting] = useState<{ account: string; workspace?: string; repos: string } | null>(
-    null,
-  );
-  const save = (g: G.GithubInstallations) => {
-    queryClient.setQueryData(keys.adminGithub, g);
-    void queryClient.invalidateQueries({ queryKey: keys.workspaces });
-    void queryClient.invalidateQueries({ queryKey: ["workspace"] });
-  };
-  const connect = useMutation({
-    mutationFn: (v: { account: string; workspace: string; repos?: string[] }) =>
-      api.adminConnectGithub(v.account, v.workspace, v.repos),
-    onSuccess: (g) => {
-      save(g);
-      setConnecting(null);
-    },
-  });
-  // Approving a request, from its row (the dialog has its own).
-  const approve = useMutation({
-    mutationFn: (v: { account: string; workspace: G.WorkspaceRef; repos?: string[] }) =>
-      api.adminConnectGithub(v.account, v.workspace.id, v.repos),
-    onSuccess: (g, v) => {
-      save(g);
-      toast(`${v.workspace.name} works in ${v.account} now`);
-    },
-    onError: (e) => toast(e.message, "error"),
-  });
   const [dropping, setDropping] = useState<{ account: string; workspace: G.WorkspaceRef } | null>(null);
   const disconnect = useMutation({
     mutationFn: (v: { account: string; workspace: string }) =>
       api.adminDisconnectGithub(v.account, v.workspace),
     onSuccess: (g) => {
-      save(g);
+      queryClient.setQueryData(keys.adminGithub, g);
+      void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+      void queryClient.invalidateQueries({ queryKey: ["workspace"] });
       setDropping(null);
     },
     onError: (e) => toast(e.message, "error"),
   });
-  // A dialog opens without the last one's error.
-  const openConnect = (v: { account: string; workspace?: string; repos: string }) => {
-    connect.reset();
-    setConnecting(v);
-  };
-  const approving = (account: string, workspace: string) =>
-    approve.isPending &&
-    approve.variables?.account === account &&
-    approve.variables.workspace.id === workspace;
-  const declining = (account: string, workspace: string) =>
-    disconnect.isPending &&
-    disconnect.variables?.account === account &&
-    disconnect.variables.workspace === workspace;
   const g = list.data;
   if (g && !g.configured)
     return (
@@ -1198,9 +1152,6 @@ function Github() {
         self-hosting guide).
       </Banner>
     );
-  const requests = (g?.installations ?? []).flatMap((i) =>
-    i.workspaces.filter((w) => w.status === "requested").map((w) => ({ account: i.account, ...w })),
-  );
   const scopeOf = (repos?: string[]) =>
     repos
       ? `Only ${repos.slice(0, 4).join(", ")}${repos.length > 4 ? ` and ${repos.length - 4} more` : ""}`
@@ -1209,47 +1160,9 @@ function Github() {
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
         The <span className="font-mono text-[13px]">{g?.app_slug}</span> app mints tokens for the accounts it
-        is installed on. A workspace's projects use an account once you connect it to the workspace, or
-        approve its admins' request: anyone could name an installation, and its tokens can write.
+        is installed on. A workspace's admins connect the ones they may, signing in to GitHub, which says what
+        they may give it: you can take an account from a workspace, and only its admins connect it again.
       </p>
-      {requests.length > 0 && (
-        <section className="mt-6 flex flex-col gap-2">
-          <h2 className="text-[13px] font-semibold text-ink">Waiting for you</h2>
-          {requests.map((r) => (
-            <div
-              key={`${r.account}-${r.workspace.id}`}
-              className="flex flex-wrap items-center gap-3 rounded-lg border border-accent/25 bg-accent-soft px-4 py-3"
-            >
-              <WorkspaceAvatar workspace={r.workspace} size={24} />
-              <div className="min-w-0 flex-1 text-[13.5px] text-ink-2">
-                <span className="text-ink">{r.requested_by?.name ?? "An admin"}</span> asks for{" "}
-                <span className="text-ink">{r.workspace.name}</span> to work in{" "}
-                <span className="font-mono text-[13px] text-ink">{r.account}</span>
-                <span className="block text-[12px] text-ink-4">
-                  {scopeOf(r.repos)} · {ago(r.created_at)}
-                </span>
-              </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                loading={declining(r.account, r.workspace.id)}
-                onClick={() => disconnect.mutate({ account: r.account, workspace: r.workspace.id })}
-              >
-                Decline
-              </Button>
-              <Button
-                size="sm"
-                variant="primary"
-                icon={<Check className="size-3.5" />}
-                loading={approving(r.account, r.workspace.id)}
-                onClick={() => approve.mutate({ account: r.account, workspace: r.workspace, repos: r.repos })}
-              >
-                Approve
-              </Button>
-            </div>
-          ))}
-        </section>
-      )}
       <ul className="mt-8 border-t border-line">
         {g?.installations.map((i) => (
           <li key={i.account} className="border-b border-line py-4">
@@ -1272,51 +1185,31 @@ function Github() {
                     : "The app isn't installed there (any more)"}
                 </div>
               </div>
-              {i.installation_id && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  icon={<Plus className="size-3.5" />}
-                  onClick={() => openConnect({ account: i.account, repos: "" })}
-                >
-                  Connect to a workspace
-                </Button>
-              )}
             </div>
-            {i.workspaces.filter((w) => w.status === "active").length > 0 && (
+            {i.workspaces.length > 0 ? (
               <ul className="mt-3 ml-11 flex flex-col gap-1.5">
-                {i.workspaces
-                  .filter((w) => w.status === "active")
-                  .map((w) => (
-                    <li key={w.workspace.id} className="flex items-center gap-2.5 text-[13px] text-ink-2">
-                      <WorkspaceAvatar workspace={w.workspace} size={18} />
-                      <span className="truncate">{w.workspace.name}</span>
-                      <span className="truncate text-[12px] text-ink-4">{scopeOf(w.repos)}</span>
-                      <span className="flex-1" />
-                      <Button
-                        size="sm"
-                        variant="quiet"
-                        onClick={() =>
-                          openConnect({
-                            account: i.account,
-                            workspace: w.workspace.id,
-                            repos: w.repos?.join(", ") ?? "",
-                          })
-                        }
-                      >
-                        Repositories
-                      </Button>
-                      <button
-                        type="button"
-                        aria-label={`Disconnect ${w.workspace.name} from ${i.account}`}
-                        className="rounded p-1 text-ink-4 hover:text-danger"
-                        onClick={() => setDropping({ account: i.account, workspace: w.workspace })}
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
-                    </li>
-                  ))}
+                {i.workspaces.map((w) => (
+                  <li key={w.workspace.id} className="flex items-center gap-2.5 text-[13px] text-ink-2">
+                    <WorkspaceAvatar workspace={w.workspace} size={18} />
+                    <span className="truncate">{w.workspace.name}</span>
+                    <span className="truncate text-[12px] text-ink-4">
+                      {scopeOf(w.repos)}
+                      {w.github_user && ` · by ${w.requested_by?.name ?? "an admin"} as @${w.github_user}`}
+                    </span>
+                    <span className="flex-1" />
+                    <button
+                      type="button"
+                      aria-label={`Disconnect ${w.workspace.name} from ${i.account}`}
+                      className="rounded p-1 text-ink-4 hover:text-danger"
+                      onClick={() => setDropping({ account: i.account, workspace: w.workspace })}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </li>
+                ))}
               </ul>
+            ) : (
+              <p className="mt-1.5 ml-11 text-[12px] text-ink-4">No workspace works in it.</p>
             )}
           </li>
         ))}
@@ -1324,18 +1217,11 @@ function Github() {
           <li className="py-6 text-[13px] text-ink-4">The app isn't installed on any account yet.</li>
         )}
       </ul>
-      {g?.install_url && (
-        <a href={g.install_url} target="_blank" rel="noreferrer" className="mt-6 inline-block">
-          <Button variant="ghost" icon={<Plus className="size-3.5" />}>
-            Install it on another account
-          </Button>
-        </a>
-      )}
       <Dialog
         open={!!dropping}
         onClose={() => setDropping(null)}
         title={`Disconnect ${dropping?.workspace.name ?? ""} from ${dropping?.account ?? ""}?`}
-        description={`Its projects can't use ${dropping?.account ?? "the account"}'s repositories any more, and its running sessions lose their tokens for it within the hour. Its admins can ask for it again.`}
+        description={`Its projects can't use ${dropping?.account ?? "the account"}'s repositories any more, and its running sessions lose their tokens for it within the hour. Only its admins connect it again, signing in to GitHub.`}
       >
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setDropping(null)}>
@@ -1351,75 +1237,6 @@ function Github() {
             Disconnect
           </Button>
         </div>
-      </Dialog>
-      <Dialog
-        open={!!connecting}
-        onClose={() => setConnecting(null)}
-        title={`${connecting?.account ?? ""}'s repositories for a workspace`}
-        description="The workspace's projects may use these repositories, and agents get tokens only for the ones their project lists."
-      >
-        {connecting && (
-          <form
-            className="flex flex-col gap-4"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!connecting.workspace) return;
-              const repos = connecting.repos
-                .split(/[\s,]+/)
-                .map((r) => r.trim())
-                .filter(Boolean);
-              connect.mutate({
-                account: connecting.account,
-                workspace: connecting.workspace,
-                repos: repos.length ? repos : undefined,
-              });
-            }}
-          >
-            <Field label="Workspace">
-              {(id) => (
-                <Select
-                  id={id}
-                  value={connecting.workspace}
-                  placeholder="Choose one"
-                  onChange={(v) => setConnecting((c) => (c ? { ...c, workspace: v } : c))}
-                  options={(workspaces.data?.workspaces ?? []).map((w) => ({
-                    value: w.workspace.id,
-                    label: w.workspace.name,
-                    icon: <WorkspaceAvatar workspace={w.workspace} size={16} title={false} />,
-                  }))}
-                />
-              )}
-            </Field>
-            <Field
-              label="Only these repositories"
-              hint="Names, separated by commas. Empty: every repository the app reaches there."
-              error={connect.error?.message}
-            >
-              {(id) => (
-                <Input
-                  id={id}
-                  value={connecting.repos}
-                  onChange={(e) => setConnecting((c) => (c ? { ...c, repos: e.target.value } : c))}
-                  placeholder="web, design"
-                  className="font-mono text-[13px]"
-                />
-              )}
-            </Field>
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={() => setConnecting(null)}>
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                variant="primary"
-                loading={connect.isPending}
-                disabled={!connecting.workspace}
-              >
-                Connect
-              </Button>
-            </div>
-          </form>
-        )}
       </Dialog>
     </div>
   );

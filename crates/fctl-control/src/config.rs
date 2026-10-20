@@ -10,6 +10,7 @@
 //! | `FCTL_SETUP_TOKEN` | secret | One-time token for creating the owner account |
 //! | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID` | var | The GitHub App |
 //! | `GITHUB_APP_PRIVATE_KEY` | secret | Its private key (PKCS#8 PEM) |
+//! | `GITHUB_CLIENT_SECRET` | secret | Its client secret: signing in to GitHub to connect accounts |
 //! | `GITHUB_DEFAULT_OWNER` | var | Organization new repositories are created in |
 //! | `GOOGLE_CLIENT_ID` | var | Google OAuth client (optional) |
 //! | `GOOGLE_CLIENT_SECRET` | secret | Its secret |
@@ -23,11 +24,20 @@ use worker::Env;
 pub struct GithubConfig {
     pub app_id: String,
     pub slug: String,
-    /// For GitHub user sign-in (on the roadmap).
-    #[allow(dead_code)]
+    /// The app's OAuth client, which signs people in to GitHub when they
+    /// connect an account to a workspace (`api::github`).
     pub client_id: Option<String>,
+    pub client_secret: Option<String>,
     pub private_key_pem: String,
     pub default_owner: Option<String>,
+}
+
+impl GithubConfig {
+    /// The client ID and secret, when people can sign in to GitHub to
+    /// connect accounts.
+    pub fn client(&self) -> Option<(&str, &str)> {
+        Some((self.client_id.as_deref()?, self.client_secret.as_deref()?))
+    }
 }
 
 #[derive(Clone)]
@@ -87,6 +97,7 @@ impl Config {
                 app_id,
                 slug: var(env, "GITHUB_APP_SLUG").unwrap_or_else(|| "fctl".to_owned()),
                 client_id: var(env, "GITHUB_CLIENT_ID"),
+                client_secret: var(env, "GITHUB_CLIENT_SECRET"),
                 private_key_pem,
                 default_owner: var(env, "GITHUB_DEFAULT_OWNER"),
             }),

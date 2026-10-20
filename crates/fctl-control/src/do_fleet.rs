@@ -705,7 +705,7 @@ impl FleetObject {
                 session_id,
                 kind,
             } => {
-                let reply = self.credential(&session_id, kind, now).await;
+                let reply = self.credential(&rs.id, &session_id, kind, now).await;
                 let msg = match reply {
                     Ok(c) => FleetToHost::Credential {
                         request_id,
@@ -725,7 +725,7 @@ impl FleetObject {
                 self.send_runner(&rs.id, &msg);
             }
             HostToFleet::ClaudeLogin { job_id, update } => {
-                self.on_login_update(&job_id, update, now).await
+                self.on_login_update(&rs.id, &job_id, update, now).await
             }
             HostToFleet::Pong => {}
         }
@@ -936,6 +936,12 @@ impl FleetObject {
         error: Option<String>,
         now: i64,
     ) {
+        // Only the runner the session was given answers for it: another
+        // one's answer, late or made up, leaves it alone.
+        if !self.assigned_to(session_id.as_str(), runner_id) {
+            worker::console_log!("ignoring an answer for {session_id} from a runner it isn't on");
+            return;
+        }
         if accepted {
             let _ = self.sql.exec(
                 "UPDATE assignments SET accepted = 1 WHERE session_id = ? AND runner_id = ?",
@@ -1556,6 +1562,17 @@ impl FleetObject {
             .map(|h| h.runner_id)
     }
 
+    /// Whether the fleet gave the session to `runner_id`.
+    fn assigned_to(&self, session_id: &str, runner_id: &str) -> bool {
+        self.sql
+            .exec(
+                "SELECT session_id, runner_id, accepted FROM assignments WHERE session_id = ? AND runner_id = ?",
+                Some(vec![sv(session_id), sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<AssignRow>())
+            .is_ok_and(|r| !r.is_empty())
+    }
+
     /// Remembers that `runner_id` took the session, and forgets the runners
     /// of sessions that have not run for a long time.
     fn set_home(&self, session_id: &str, runner_id: &str, now: i64) {
@@ -1735,8 +1752,13 @@ impl FleetObject {
 
     // ───────────────────────────── credentials ─────────────────────────────
 
+    /// A session's credentials, for the runner it runs on (`runner_id`)
+    /// only: as its uplink, another runner gets nothing, so that nobody's
+    /// runner gets the GitHub tokens or Claude credential of sessions in
+    /// workspaces it doesn't serve.
     async fn credential(
         &self,
+        runner_id: &str,
         session_id: &SessionId,
         kind: CredentialKind,
         now: i64,
@@ -1750,6 +1772,11 @@ impl FleetObject {
             .await
             .map_err(|e| e.0)?
             .ok_or_else(|| ApiError::not_found("Session"))?;
+        if row.runner_id.as_deref() != Some(runner_id) {
+            return Err(ApiError::forbidden(
+                "This session is not assigned to this runner",
+            ));
+        }
         match kind {
             CredentialKind::Github => {
                 let project = spec::project_row(&db, &row.project_id)
@@ -1867,8 +1894,18 @@ impl FleetObject {
         Ok(serde_json::json!({ "ok": true }))
     }
 
-    async fn on_login_update(&self, job_id: &LoginJobId, update: ClaudeLoginUpdate, now: i64) {
-        let Some(row) = self.login_row(job_id.as_str()) else {
+    async fn on_login_update(
+        &self,
+        runner_id: &str,
+        job_id: &LoginJobId,
+        update: ClaudeLoginUpdate,
+        now: i64,
+    ) {
+        // Only from the runner the sign-in was sent to.
+        let Some(row) = self
+            .login_row(job_id.as_str())
+            .filter(|r| r.runner_id.as_deref() == Some(runner_id))
+        else {
             return;
         };
         let Ok(db) = self.env.d1("DB") else { return };

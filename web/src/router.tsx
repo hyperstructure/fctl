@@ -18,7 +18,14 @@ import { ProjectPage } from "@/routes/project";
 import { SessionPage } from "@/routes/session";
 import { SettingsPage } from "@/routes/settings";
 import { SignedInLayout } from "@/routes/two-factor";
-import { WorkspacePage, type WorkspaceTab } from "@/routes/workspace";
+import {
+  GITHUB_OUTCOMES,
+  GITHUB_REFUSALS,
+  type GithubOutcome,
+  type GithubRefusal,
+  WorkspacePage,
+  type WorkspaceTab,
+} from "@/routes/workspace";
 
 async function me() {
   return queryClient.ensureQueryData({
@@ -114,11 +121,12 @@ const workspace = createRoute({
   component: WorkspacePage,
   validateSearch: (
     s: Record<string, unknown>,
-  ): { tab?: WorkspaceTab; github?: "connected" | "requested" | "asked_owner"; account?: string } => ({
+  ): { tab?: WorkspaceTab; github?: GithubOutcome; account?: string; reason?: GithubRefusal } => ({
     tab: oneOf(s.tab, ["projects", "people", "runners", "github", "settings", "audit"] as const),
-    // Back from installing the GitHub App (api::github::installed).
-    github: oneOf(s.github, ["connected", "requested", "asked_owner"] as const),
+    // Back from GitHub: installing the app, or the sign-in that connects an account (api::github).
+    github: oneOf(s.github, GITHUB_OUTCOMES),
     account: str(s.account),
+    reason: oneOf(s.reason, GITHUB_REFUSALS),
   }),
 });
 const project = createRoute({

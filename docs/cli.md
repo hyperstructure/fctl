@@ -140,7 +140,7 @@ fctl workspaces add-runner                 # on a runner: this machine
 fctl workspaces remove-runner studio-mac   # the ones running there carry on
 
 fctl workspaces github                     # the GitHub accounts it works in
-fctl workspaces connect acme               # an account the app is installed on (an instance admin approves)
+fctl workspaces connect acme               # opens a GitHub sign-in that connects what you may of acme
 fctl workspaces connect acme --repo web --repo design   # only these repositories of it
 fctl workspaces disconnect acme
 
@@ -359,7 +359,7 @@ has, and run `fctl host restart` after changing either.
 ## Admin
 
 Instance admins manage people and invitations, the GitHub App's
-connections, every runner and the instance's settings, and see what each
+installations, every runner and the instance's settings, and see what each
 workspace is and who runs it, but not inside the ones they aren't members
 of.
 
@@ -374,9 +374,8 @@ fctl admin delete-user grace@example.com   # asks you to type their address
 fctl admin workspaces                      # and which need a primary admin
 fctl admin set-primary side-project grace@example.com   # when its primary admin's account is disabled
 fctl admin delete-workspace side-project   # asks you to type its name
-fctl admin github                          # the app's installations, and the requests waiting
-fctl admin github approve acme side-project --repo web   # the workspace works in acme's web
-fctl admin github remove acme side-project               # …no longer, or decline its request
+fctl admin github                          # the app's installations, and the workspaces that use each
+fctl admin github remove acme side-project               # take acme from the workspace (its admins reconnect it)
 fctl admin early-access                    # who asked for early access, where the instance takes requests
 fctl admin early-access remove spam@example.com   # asking again adds them back
 fctl admin allowlist

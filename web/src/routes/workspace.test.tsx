@@ -6,21 +6,26 @@ import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
 import { WorkspacePage } from "./workspace";
 
-const route = vi.hoisted(() => ({ tab: "runners" as string | undefined }));
+const route = vi.hoisted(() => ({
+  tab: "runners" as string | undefined,
+  // Back from GitHub.
+  github: undefined as string | undefined,
+  account: undefined as string | undefined,
+  reason: undefined as string | undefined,
+}));
 const update = vi.hoisted(() => vi.fn());
+const connectGithub = vi.hoisted(() => vi.fn());
 
-// No request is answered but saving the workspace: the page shows what the cache holds.
+// No request is answered but saving the workspace and connecting GitHub: the page shows what the cache holds.
 vi.mock("@/lib/api", () => {
   const pending = new Proxy({}, { get: () => () => new Promise(() => {}) });
-  const workspaces = new Proxy(
-    {},
-    { get: (_, k) => (k === "update" ? update : () => new Promise(() => {})) },
-  );
+  const answered: Record<string | symbol, unknown> = { update, connectGithub };
+  const workspaces = new Proxy({}, { get: (_, k) => answered[k] ?? (() => new Promise(() => {})) });
   return { api: pending, workspaces, ApiFailure: class extends Error {} };
 });
 vi.mock("@tanstack/react-router", () => ({
   useParams: () => ({ slug: "side-project" }),
-  useSearch: () => ({ tab: route.tab }),
+  useSearch: () => ({ tab: route.tab, github: route.github, account: route.account, reason: route.reason }),
   useNavigate: () => () => {},
   Link: ({ children }: { children: ReactNode }) => <a href="/w/side-project">{children}</a>,
 }));
@@ -32,7 +37,9 @@ afterEach(() => {
   for (const unmount of roots.splice(0)) unmount();
   queryClient.clear();
   update.mockReset();
-  route.tab = "runners";
+  connectGithub.mockReset();
+  vi.restoreAllMocks();
+  Object.assign(route, { tab: "runners", github: undefined, account: undefined, reason: undefined });
 });
 
 const side: G.Workspace = {
@@ -119,6 +126,7 @@ function projectsTab(workspace: G.Workspace, projects: G.Project[] = []) {
     configured: true,
     connections: [],
     approval_required: false,
+    can_connect: true,
   });
   queryClient.setQueryData<G.ProjectList>(keys.projects, { projects });
   const container = document.createElement("div");
@@ -181,5 +189,115 @@ describe("setting up a workspace for one", () => {
     for (const title of ["Bring a machine online", "Connect a GitHub account", "Create a project"])
       expect(step(page, title)?.textContent ?? "").not.toContain("Skip for now");
     expect(step(page, "Invite the people you work with")?.textContent).toContain("Skip for now");
+  });
+});
+
+describe("a workspace's GitHub tab", () => {
+  const github: G.WorkspaceGithub = {
+    configured: true,
+    app_slug: "fctl-sh",
+    install_url: "https://github.com/apps/fctl-sh/installations/new?state=signed",
+    connections: [],
+    approval_required: false,
+    can_connect: true,
+  };
+
+  /** The tab as `workspace` sees it, with `g` from the control plane. */
+  function githubTab(workspace: G.Workspace, g: G.WorkspaceGithub) {
+    route.tab = "github";
+    queryClient.setQueryData(keys.workspace(workspace.slug), workspace);
+    queryClient.setQueryData<G.WorkspaceGithub>(keys.workspaceGithub(workspace.id), g);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspacePage />
+        </QueryClientProvider>,
+      ),
+    );
+    roots.push(() => act(() => root.unmount()));
+    return container;
+  }
+
+  it("connects an account through a GitHub sign-in", async () => {
+    connectGithub.mockResolvedValue({
+      url: "https://fctl.test/api/v1/github/connect?ticket=t",
+      expires_at: 1,
+    });
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    const page = githubTab(side, github);
+    expect(page.textContent).toContain("Connecting an account takes signing in to GitHub");
+    expect(page.textContent).toContain("Install fctl-sh on GitHub");
+    const [account, repos] = [...page.querySelectorAll("input")];
+    const type = (input: HTMLInputElement | undefined, text: string) =>
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
+        input?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    type(account, " acme ");
+    type(repos, "web, design");
+    await act(async () => {
+      page.querySelector("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await act(() => new Promise((done) => setTimeout(done, 10)));
+    expect(connectGithub).toHaveBeenCalledWith("ws_side", { account: "acme", repos: ["web", "design"] });
+    expect(assign).toHaveBeenCalledWith("https://fctl.test/api/v1/github/connect?ticket=t");
+  });
+
+  it("says what GitHub let it connect, and as whom", () => {
+    Object.assign(route, { github: "limited", account: "acme" });
+    const page = githubTab(side, {
+      ...github,
+      connections: [
+        {
+          account: "acme",
+          repos: ["web", "design"],
+          status: "active",
+          requested_by: { id: "usr_ada", name: "Ada Lovelace" },
+          github_user: "ada",
+          created_at: 0,
+        },
+      ],
+    });
+    expect(page.textContent).toContain(
+      "Side project works in the repositories of acme you're an admin of: web, design.",
+    );
+    expect(page.textContent).toContain("connected by Ada Lovelace as @ada on GitHub");
+  });
+
+  it("explains why GitHub's answer connected nothing", () => {
+    Object.assign(route, { github: "refused", account: "acme", reason: "not_admin" });
+    expect(githubTab(side, github).textContent).toContain(
+      "GitHub says you aren't an admin of every repository you named in acme.",
+    );
+    Object.assign(route, { reason: undefined });
+    expect(githubTab(side, github).textContent).toContain(
+      "GitHub says you aren't an admin of any repository of acme the app reaches, so you can't connect it.",
+    );
+    // The same whether the app isn't installed there or reaches nothing they can see.
+    Object.assign(route, { reason: "no_installation" });
+    expect(githubTab(side, github).textContent).toContain(
+      "GitHub shows you no installation of the fctl-sh app on acme: it isn't installed there, or it reaches no repository you can see.",
+    );
+  });
+
+  it("fills in an account installed from GitHub", () => {
+    Object.assign(route, { github: "installed", account: "acme" });
+    const page = githubTab(side, github);
+    expect(page.textContent).toContain("The fctl-sh app is installed on acme. Connect it below");
+    expect(page.querySelector("input")?.value).toBe("acme");
+  });
+
+  it("offers nothing to connect where the instance can't sign people in to GitHub", () => {
+    const page = githubTab(side, { ...github, install_url: undefined, can_connect: false });
+    expect(page.textContent).toContain("which this instance isn't set up for");
+    expect(page.textContent).not.toContain("Connect with GitHub");
+  });
+
+  it("shows members the accounts, not the forms", () => {
+    const page = githubTab({ ...side, role: "member" }, { ...github, install_url: undefined });
+    expect(page.textContent).toContain("Side project works in no GitHub account yet.");
+    expect(page.textContent).not.toContain("Connect with GitHub");
   });
 });

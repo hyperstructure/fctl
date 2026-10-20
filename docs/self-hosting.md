@@ -112,7 +112,7 @@ Docker and Kubernetes secrets do.
 | `FCTL_DATA_DIR` | `/data` in the image | Where the state lives |
 | `FCTL_PORT`, `FCTL_LISTEN` | `8787` (or `PORT`), `0.0.0.0` | Where it listens |
 | `FCTL_TRUST_PROXY` | `0` | How many [reverse proxies](#https-and-reverse-proxies) in front add `X-Forwarded-For` |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY` | | [The GitHub App](#connect-github-optional-recommended) |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | | [Google sign-in](#google-sign-in-optional) |
 | `RESEND_API_KEY`, `FCTL_EMAIL_FROM` | | [Email](#email-optional) |
 
@@ -286,7 +286,13 @@ installed on that are connected to the workspace.
    URL** to `https://fctl.acme.dev/api/v1/github/installed` (your
    `FCTL_PUBLIC_URL` followed by `/api/v1/github/installed`) and tick
    **Redirect on update**, so that people who install it from a workspace
-   come back to it. Repository permissions:
+   come back to it. Add a **Callback URL**,
+   `https://fctl.acme.dev/api/v1/github/authorized` (your `FCTL_PUBLIC_URL`
+   followed by `/api/v1/github/authorized`): a workspace's admin signs in
+   to GitHub there to connect an account, which shows the app what they may
+   connect. Leave **Request user authorization (OAuth) during
+   installation** off — fctl starts the sign-in itself. Repository
+   permissions:
 
    | Permission | Access | Why |
    |---|---|---|
@@ -303,16 +309,20 @@ installed on that are connected to the workspace.
    To let workspaces use other accounts (someone's own, a friend's
    organization), make the app public (**Advanced → Make public**): only
    then can others install it. Installing it lets the instance mint tokens
-   for that account, but no workspace uses it until it is connected to the
-   workspace.
-3. Generate a private key, and tell the control plane about the app.
+   for that account, but no workspace uses it until one of its admins
+   connects it.
+3. Generate a **private key** and a **client secret** (both under the app's
+   settings), and tell the control plane about the app. The client secret
+   signs workspace admins in to GitHub to connect accounts; reading their
+   installations and repositories needs only the Metadata permission above,
+   so the app asks for no more.
 
    On your own machine, set `GITHUB_APP_ID`, `GITHUB_APP_SLUG`,
    `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER` (the organization **New
-   repository** creates repositories in) and `GITHUB_APP_PRIVATE_KEY`, the
-   key as GitHub gives it (with Kubernetes, in the `fctl` Secret:
-   `--from-file=GITHUB_APP_PRIVATE_KEY=acme-fctl.private-key.pem`), and
-   start the server again.
+   repository** creates repositories in), `GITHUB_APP_PRIVATE_KEY` (the key
+   as GitHub gives it; with Kubernetes, in the `fctl` Secret:
+   `--from-file=GITHUB_APP_PRIVATE_KEY=acme-fctl.private-key.pem`) and
+   `GITHUB_CLIENT_SECRET`, and start the server again.
 
    On Cloudflare, fill in the instance file:
 
@@ -324,28 +334,41 @@ installed on that are connected to the workspace.
    default_owner = "acme"     # where "New repository" creates repositories
    ```
 
-   Then store the key and redeploy:
+   Then store the key and the client secret and redeploy:
 
    ```sh
    cargo xtask secrets acme --github-key ~/Downloads/acme-fctl.private-key.pem
+   echo "$GITHUB_CLIENT_SECRET" | cargo xtask secrets acme --set GITHUB_CLIENT_SECRET
    cargo xtask deploy acme
    ```
 
 The key is stored as PKCS#8, which WebCrypto imports (`cargo xtask secrets`
-and the server convert it); it never reaches a host or a sandbox.
+and the server convert it); it never reaches a host or a sandbox. Without
+the client secret, a workspace keeps the accounts it has but can't connect
+a new one, and its GitHub tab says so.
 
 ### Which workspace uses which account
 
-A workspace's admins install the app from the workspace's **GitHub** tab,
-or name an account it is installed on, and the workspace works there once
-an instance admin approves it under **Admin → GitHub** (`fctl admin github
-approve <account> <workspace>`). GitHub sends the installation's id to the
-setup URL, where anyone could send another account's, so connections take
-an instance admin; an instance admin's own connect at once. A connection
-can be narrowed to some of the account's repositories (`--repo`). New
-repositories go into `default_owner` when the workspace works in all of it,
-otherwise into an organization the workspace works in all of; the app can
-create repositories in organizations, not in people's own accounts.
+A workspace's admins connect accounts under the workspace's **GitHub** tab,
+or with `fctl workspaces connect <account>`. Connecting sends them to
+GitHub to sign in with the app, which shows fctl what they may give the
+workspace: every repository of their own account, or of an organization
+whose every repository the app reaches and they administer all of (as its
+owners do); otherwise the repositories they administer. So nobody connects
+another account's repositories to their workspace — GitHub won't let them —
+and an instance admin, who holds the app's key, connects nothing into a
+workspace either. Installing the app on an account from the tab brings them
+back through the same sign-in. A connection can be narrowed to some of the
+repositories they may connect (`--repo`). New repositories go into
+`default_owner` when the workspace works in all of it, otherwise into an
+organization the workspace works in all of; the app can create repositories
+in organizations, not in people's own accounts.
+
+Under **Admin → GitHub** (`fctl admin github`), an instance admin sees the
+app's installations and the workspaces that use each, and can take an
+account from a workspace (`fctl admin github remove <account>
+<workspace>`), which its running sessions lose within the hour. Only the
+workspace's own admins connect it again.
 
 ### What sessions get
 

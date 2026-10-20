@@ -265,12 +265,6 @@ export const api = {
   adminWorkspacePrimary: (id: string, userId: string) =>
     request<G.Ok>("POST", `/admin/workspaces/${enc(id)}/primary`, { user_id: userId }),
   adminGithub: () => request<G.GithubInstallations>("GET", "/admin/github"),
-  adminConnectGithub: (account: string, workspace: string, repos?: string[]) =>
-    request<G.GithubInstallations>(
-      "PUT",
-      `/admin/github/${enc(account)}/workspaces/${enc(workspace)}`,
-      repos ? { repos } : {},
-    ),
   adminDisconnectGithub: (account: string, workspace: string) =>
     request<G.GithubInstallations>("DELETE", `/admin/github/${enc(account)}/workspaces/${enc(workspace)}`),
   audit: (before?: number) => request<G.AuditList>("GET", `/admin/audit${before ? `?before=${before}` : ""}`),
@@ -327,8 +321,9 @@ export const workspaces = {
   removeRunner: (id: string, runner: string) =>
     request<G.RunnerList>("DELETE", `/workspaces/${enc(id)}/runners/${enc(runner)}`),
   github: (id: string) => request<G.WorkspaceGithub>("GET", `/workspaces/${enc(id)}/github`),
+  // The link to the GitHub sign-in that connects the account.
   connectGithub: (id: string, b: G.ConnectGithubRequest) =>
-    request<G.WorkspaceGithub>("POST", `/workspaces/${enc(id)}/github`, b),
+    request<G.ConnectGithubLink>("POST", `/workspaces/${enc(id)}/github/connect`, b),
   disconnectGithub: (id: string, account: string) =>
     request<G.WorkspaceGithub>("DELETE", `/workspaces/${enc(id)}/github/${enc(account)}`),
   accept: (invitation: string) => request<G.Workspace>("POST", `/invitations/${enc(invitation)}/accept`, {}),
