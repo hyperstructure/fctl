@@ -8,8 +8,13 @@
 //! an admin of. Every repository of the account, also those the app reaches
 //! there later, takes their own account, or an organization whose every
 //! repository the app reaches and they are an admin of, as its owners are.
+//!
+//! The admin chooses from what the sign-in showed them ([`offer`],
+//! [`choose`]), or names the repositories before it ([`grant`]).
 
 use crate::repos::{MAX_REPOS, Scope};
+use crate::validate::Result;
+use fctl_proto::ApiError;
 
 /// A repository the app's installation reaches, as the person sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,9 +54,6 @@ pub enum Refusal {
     /// The app doesn't reach some of the repositories they named, or they
     /// can't see them.
     Unreachable,
-    /// They are an admin of more of its repositories than a connection
-    /// lists, but not of all of them.
-    TooMany,
 }
 
 impl Refusal {
@@ -61,7 +63,6 @@ impl Refusal {
             Self::NoAdmin => "no_admin",
             Self::NotAdmin => "not_admin",
             Self::Unreachable => "unreachable",
-            Self::TooMany => "too_many",
         }
     }
 
@@ -71,56 +72,99 @@ impl Refusal {
             "no_admin" => Some(Self::NoAdmin),
             "not_admin" => Some(Self::NotAdmin),
             "unreachable" => Some(Self::Unreachable),
-            "too_many" => Some(Self::TooMany),
             _ => None,
         }
     }
 }
 
-/// What a workspace gets of an account.
+/// What the person may connect of the account, from which they choose.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Grant {
-    pub scope: Scope,
-    /// Every repository was asked for, and only these are the person's to
-    /// give.
-    pub narrowed: bool,
+pub struct Offer {
+    /// Every repository, also those the app reaches there later: their own
+    /// account, or an organization whose every repository the app reaches
+    /// and they are an admin of.
+    pub all: bool,
+    /// The repositories the app reaches that they are an admin of, as
+    /// GitHub spells them, in alphabetical order.
+    pub repos: Vec<String>,
+    /// How many more it reaches that they can see but aren't an admin of.
+    pub others: usize,
 }
 
-/// What the person may connect of the account, `asked`: every repository
-/// (`None`) or these, as [`crate::repos::scope_names`] checked them. Every
-/// repository they can't have becomes the ones they are an admin of; named
-/// ones they aren't an admin of are refused, with their names.
+/// What the person may choose from of the account: nothing when it isn't
+/// their own and they are an admin of none of its repositories the app
+/// reaches.
+pub fn offer(standing: &Standing) -> std::result::Result<Offer, Refusal> {
+    let mut repos: Vec<String> = standing
+        .seen
+        .iter()
+        .filter(|r| r.admin)
+        .map(|r| r.name.clone())
+        .collect();
+    repos.sort_by_key(|n| n.to_lowercase());
+    let others = standing.seen.len() - repos.len();
+    let of_all = standing.reaches_all && standing.reached > 0 && repos.len() >= standing.reached;
+    let all = standing.own || of_all;
+    if !all && repos.is_empty() {
+        return Err(Refusal::NoAdmin);
+    }
+    Ok(Offer { all, repos, others })
+}
+
+/// What a workspace gets of what was offered: every repository (`None`),
+/// where the offer has it, or the ones `chosen`, as the offer spells them.
+pub fn choose(offer: &Offer, chosen: Option<&[String]>) -> Result<Scope> {
+    let Some(names) = chosen else {
+        if offer.all {
+            return Ok(Scope::All);
+        }
+        return Err(ApiError::validation(
+            "repos",
+            "Choose the repositories: you may connect the ones you're an admin of, not every one",
+        ));
+    };
+    let mut repos: Vec<String> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+    for name in names.iter().map(|n| n.trim()) {
+        match offer.repos.iter().find(|r| r.eq_ignore_ascii_case(name)) {
+            Some(r) if !repos.contains(r) => repos.push(r.clone()),
+            Some(_) => {}
+            None => missing.push(name),
+        }
+    }
+    if !missing.is_empty() {
+        return Err(ApiError::validation(
+            "repos",
+            format!(
+                "You may connect only repositories the app reaches that you're an admin of, which {} isn't",
+                missing.join(", ")
+            ),
+        ));
+    }
+    if repos.is_empty() {
+        return Err(ApiError::validation(
+            "repos",
+            "Choose at least one repository",
+        ));
+    }
+    if repos.len() > MAX_REPOS {
+        return Err(ApiError::validation(
+            "repos",
+            format!("Choose at most {MAX_REPOS} repositories"),
+        ));
+    }
+    repos.sort_by_key(|n| n.to_lowercase());
+    Ok(Scope::Repos(repos))
+}
+
+/// What the person may connect of the repositories they named before
+/// signing in, as [`crate::repos::scope_names`] checked them: each one the
+/// app reaches that they see and are an admin of, as GitHub spells it.
+/// Otherwise the refusal, with the names it is for.
 pub fn grant(
     standing: &Standing,
-    asked: Option<&[String]>,
-) -> Result<Grant, (Refusal, Vec<String>)> {
-    let Some(names) = asked else {
-        let mut theirs: Vec<String> = standing
-            .seen
-            .iter()
-            .filter(|r| r.admin)
-            .map(|r| r.name.clone())
-            .collect();
-        let of_all =
-            standing.reaches_all && standing.reached > 0 && theirs.len() >= standing.reached;
-        if standing.own || of_all {
-            return Ok(Grant {
-                scope: Scope::All,
-                narrowed: false,
-            });
-        }
-        if theirs.is_empty() {
-            return Err((Refusal::NoAdmin, Vec::new()));
-        }
-        if theirs.len() > MAX_REPOS {
-            return Err((Refusal::TooMany, Vec::new()));
-        }
-        theirs.sort_by_key(|n| n.to_lowercase());
-        return Ok(Grant {
-            scope: Scope::Repos(theirs),
-            narrowed: true,
-        });
-    };
+    names: &[String],
+) -> std::result::Result<Scope, (Refusal, Vec<String>)> {
     let mut repos = Vec::new();
     let (mut unreachable, mut not_admin) = (Vec::new(), Vec::new());
     for name in names {
@@ -140,10 +184,7 @@ pub fn grant(
     if !not_admin.is_empty() {
         return Err((Refusal::NotAdmin, not_admin));
     }
-    Ok(Grant {
-        scope: Scope::Repos(repos),
-        narrowed: false,
-    })
+    Ok(Scope::Repos(repos))
 }
 
 #[cfg(test)]
@@ -164,32 +205,34 @@ mod tests {
         v.iter().map(|s| (*s).to_owned()).collect()
     }
 
-    fn all() -> Result<Grant, (Refusal, Vec<String>)> {
-        Ok(Grant {
-            scope: Scope::All,
-            narrowed: false,
+    fn offered(all: bool, repos: &[&str], others: usize) -> std::result::Result<Offer, Refusal> {
+        Ok(Offer {
+            all,
+            repos: names(repos),
+            others,
         })
     }
 
     #[test]
-    fn people_connect_every_repository_of_their_own_account() {
+    fn people_may_connect_every_repository_of_their_own_account() {
+        // Also when the app reaches only some of it: the rest is theirs too.
         let mine = Standing {
             own: true,
             reaches_all: false,
             reached: 2,
             seen: seen(&[("site", true), ("notes", true)]),
         };
-        assert_eq!(grant(&mine, None), all());
-        // Also before the app reaches any of it.
+        assert_eq!(offer(&mine), offered(true, &["notes", "site"], 0));
+        // And before the app reaches any of it.
         let empty = Standing {
             own: true,
             ..Standing::default()
         };
-        assert_eq!(grant(&empty, None), all());
+        assert_eq!(offer(&empty), offered(true, &[], 0));
     }
 
     #[test]
-    fn admins_of_every_repository_of_an_organization_connect_all_of_it() {
+    fn admins_of_every_repository_of_an_organization_may_connect_all_of_it() {
         // As its owners are: the app reaches all of it, and they administer
         // every repository.
         let owner = Standing {
@@ -198,11 +241,11 @@ mod tests {
             reached: 3,
             seen: seen(&[("web", true), ("api", true), ("design", true)]),
         };
-        assert_eq!(grant(&owner, None), all());
+        assert_eq!(offer(&owner), offered(true, &["api", "design", "web"], 0));
     }
 
     #[test]
-    fn everyone_else_gets_the_repositories_they_are_an_admin_of() {
+    fn everyone_else_may_connect_the_repositories_they_are_an_admin_of() {
         // A member who administers some of them.
         let member = Standing {
             own: false,
@@ -210,29 +253,17 @@ mod tests {
             reached: 3,
             seen: seen(&[("web", true), ("api", false), ("Design", true)]),
         };
-        assert_eq!(
-            grant(&member, None),
-            Ok(Grant {
-                scope: Scope::Repos(names(&["Design", "web"])),
-                narrowed: true,
-            })
-        );
+        assert_eq!(offer(&member), offered(false, &["Design", "web"], 1));
         // The app reaches only some of the organization: what it reaches
-        // later may not be theirs, so even an owner gets the ones it
-        // reaches now.
+        // later may not be theirs, so even an owner chooses among the ones
+        // it reaches now.
         let selected = Standing {
             own: false,
             reaches_all: false,
             reached: 2,
             seen: seen(&[("web", true), ("api", true)]),
         };
-        assert_eq!(
-            grant(&selected, None),
-            Ok(Grant {
-                scope: Scope::Repos(names(&["api", "web"])),
-                narrowed: true,
-            })
-        );
+        assert_eq!(offer(&selected), offered(false, &["api", "web"], 0));
         // They see fewer than it reaches.
         let partial = Standing {
             own: false,
@@ -240,24 +271,32 @@ mod tests {
             reached: 5,
             seen: seen(&[("web", true)]),
         };
-        assert_eq!(
-            grant(&partial, None),
-            Ok(Grant {
-                scope: Scope::Repos(names(&["web"])),
-                narrowed: true,
-            })
-        );
+        assert_eq!(offer(&partial), offered(false, &["web"], 0));
+        // More than a connection lists: they choose some.
+        let many = Standing {
+            own: false,
+            reaches_all: true,
+            reached: MAX_REPOS + 5,
+            seen: (0..=MAX_REPOS)
+                .map(|i| Seen {
+                    name: format!("repo-{i:03}"),
+                    admin: true,
+                })
+                .collect(),
+        };
+        let o = offer(&many).map(|o| (o.all, o.repos.len()));
+        assert_eq!(o, Ok((false, MAX_REPOS + 1)));
     }
 
     #[test]
-    fn people_who_administer_none_of_it_connect_nothing() {
+    fn people_who_administer_none_of_it_are_offered_nothing() {
         let reader = Standing {
             own: false,
             reaches_all: true,
             reached: 2,
             seen: seen(&[("web", false), ("api", false)]),
         };
-        assert_eq!(grant(&reader, None), Err((Refusal::NoAdmin, Vec::new())));
+        assert_eq!(offer(&reader), Err(Refusal::NoAdmin));
         // Nobody can tell an empty organization's owners from strangers.
         let empty = Standing {
             own: false,
@@ -265,24 +304,52 @@ mod tests {
             reached: 0,
             seen: Vec::new(),
         };
-        assert_eq!(grant(&empty, None), Err((Refusal::NoAdmin, Vec::new())));
+        assert_eq!(offer(&empty), Err(Refusal::NoAdmin));
     }
 
     #[test]
-    fn more_than_a_connection_lists_is_refused() {
-        let many: Vec<Seen> = (0..=MAX_REPOS)
-            .map(|i| Seen {
-                name: format!("repo-{i}"),
-                admin: true,
-            })
-            .collect();
-        let standing = Standing {
-            own: false,
-            reaches_all: true,
-            reached: MAX_REPOS + 5,
-            seen: many,
+    fn every_repository_is_chosen_only_where_it_was_offered() {
+        let all = Offer {
+            all: true,
+            repos: names(&["site", "notes"]),
+            others: 0,
         };
-        assert_eq!(grant(&standing, None), Err((Refusal::TooMany, Vec::new())));
+        assert_eq!(choose(&all, None), Ok(Scope::All));
+        let some = Offer {
+            all: false,
+            ..all.clone()
+        };
+        let refused = choose(&some, None).map_err(|e| e.field);
+        assert_eq!(refused, Err(Some("repos".into())));
+    }
+
+    #[test]
+    fn chosen_repositories_come_from_the_offer() {
+        let o = Offer {
+            all: true,
+            repos: names(&["Web", "api", "design"]),
+            others: 2,
+        };
+        // As the offer spells them, once each, in alphabetical order.
+        assert_eq!(
+            choose(&o, Some(&names(&[" web", "design", "WEB"]))),
+            Ok(Scope::Repos(names(&["design", "Web"])))
+        );
+        // Not what it didn't offer, nor nothing at all.
+        let secret = choose(&o, Some(&names(&["web", "secret"]))).map_err(|e| e.message);
+        assert!(secret.is_err_and(|m| m.contains("secret")));
+        assert!(choose(&o, Some(&[])).is_err());
+        // At most as many as a connection lists.
+        let many = Offer {
+            all: false,
+            repos: (0..=MAX_REPOS).map(|i| format!("repo-{i:03}")).collect(),
+            others: 0,
+        };
+        assert!(choose(&many, Some(&many.repos)).is_err());
+        assert_eq!(
+            choose(&many, Some(&many.repos[..MAX_REPOS])),
+            Ok(Scope::Repos(many.repos[..MAX_REPOS].to_vec()))
+        );
     }
 
     #[test]
@@ -295,18 +362,15 @@ mod tests {
         };
         // As GitHub spells them.
         assert_eq!(
-            grant(&member, Some(&names(&["web", "design"]))),
-            Ok(Grant {
-                scope: Scope::Repos(names(&["Web", "design"])),
-                narrowed: false,
-            })
+            grant(&member, &names(&["web", "design"])),
+            Ok(Scope::Repos(names(&["Web", "design"])))
         );
         assert_eq!(
-            grant(&member, Some(&names(&["web", "api"]))),
+            grant(&member, &names(&["web", "api"])),
             Err((Refusal::NotAdmin, names(&["api"])))
         );
         assert_eq!(
-            grant(&member, Some(&names(&["web", "secret", "api"]))),
+            grant(&member, &names(&["web", "secret", "api"])),
             Err((Refusal::Unreachable, names(&["secret"])))
         );
         // Their own account's, too, only where the app reaches.
@@ -317,7 +381,7 @@ mod tests {
             seen: seen(&[("site", true)]),
         };
         assert_eq!(
-            grant(&mine, Some(&names(&["notes"]))),
+            grant(&mine, &names(&["notes"])),
             Err((Refusal::Unreachable, names(&["notes"])))
         );
     }
@@ -329,7 +393,6 @@ mod tests {
             Refusal::NoAdmin,
             Refusal::NotAdmin,
             Refusal::Unreachable,
-            Refusal::TooMany,
         ] {
             assert_eq!(Refusal::parse(r.as_str()), Some(r));
         }

@@ -1054,6 +1054,31 @@ impl Api {
             .await
     }
 
+    /// Connects what you choose of an account your GitHub sign-in offered
+    /// you (`WorkspaceGithub::offers`).
+    pub async fn choose_github_repos(
+        &self,
+        id: &str,
+        account: &str,
+        req: &ChooseGithubRepos,
+    ) -> Result<WorkspaceGithub> {
+        self.post(
+            &format!("/workspaces/{}/github/offers/{}", enc(id), enc(account)),
+            req,
+        )
+        .await
+    }
+
+    /// Connects nothing of what your GitHub sign-in offered you of an account.
+    pub async fn dismiss_github_offer(&self, id: &str, account: &str) -> Result<WorkspaceGithub> {
+        self.delete(&format!(
+            "/workspaces/{}/github/offers/{}",
+            enc(id),
+            enc(account)
+        ))
+        .await
+    }
+
     pub async fn accept_invitation(&self, id: &str) -> Result<Workspace> {
         self.post(
             &format!("/invitations/{}/accept", enc(id)),

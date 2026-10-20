@@ -15,18 +15,26 @@ const route = vi.hoisted(() => ({
 }));
 const update = vi.hoisted(() => vi.fn());
 const connectGithub = vi.hoisted(() => vi.fn());
+const chooseGithub = vi.hoisted(() => vi.fn());
+const dismissGithubOffer = vi.hoisted(() => vi.fn());
+const navigate = vi.hoisted(() => vi.fn());
 
 // No request is answered but saving the workspace and connecting GitHub: the page shows what the cache holds.
 vi.mock("@/lib/api", () => {
   const pending = new Proxy({}, { get: () => () => new Promise(() => {}) });
-  const answered: Record<string | symbol, unknown> = { update, connectGithub };
+  const answered: Record<string | symbol, unknown> = {
+    update,
+    connectGithub,
+    chooseGithub,
+    dismissGithubOffer,
+  };
   const workspaces = new Proxy({}, { get: (_, k) => answered[k] ?? (() => new Promise(() => {})) });
   return { api: pending, workspaces, ApiFailure: class extends Error {} };
 });
 vi.mock("@tanstack/react-router", () => ({
   useParams: () => ({ slug: "side-project" }),
   useSearch: () => ({ tab: route.tab, github: route.github, account: route.account, reason: route.reason }),
-  useNavigate: () => () => {},
+  useNavigate: () => navigate,
   Link: ({ children }: { children: ReactNode }) => <a href="/w/side-project">{children}</a>,
 }));
 
@@ -38,6 +46,9 @@ afterEach(() => {
   queryClient.clear();
   update.mockReset();
   connectGithub.mockReset();
+  chooseGithub.mockReset();
+  dismissGithubOffer.mockReset();
+  navigate.mockReset();
   vi.restoreAllMocks();
   Object.assign(route, { tab: "runners", github: undefined, account: undefined, reason: undefined });
 });
@@ -127,6 +138,7 @@ function projectsTab(workspace: G.Workspace, projects: G.Project[] = []) {
     connections: [],
     approval_required: false,
     can_connect: true,
+    offers: [],
   });
   queryClient.setQueryData<G.ProjectList>(keys.projects, { projects });
   const container = document.createElement("div");
@@ -196,10 +208,31 @@ describe("a workspace's GitHub tab", () => {
   const github: G.WorkspaceGithub = {
     configured: true,
     app_slug: "fctl-sh",
-    install_url: "https://github.com/apps/fctl-sh/installations/new?state=signed",
+    install_url: "https://fctl.test/api/v1/github/install?state=signed",
     connections: [],
     approval_required: false,
     can_connect: true,
+    offers: [],
+  };
+
+  const acme: G.GithubConnection = {
+    account: "acme",
+    repos: ["web", "design"],
+    status: "active",
+    requested_by: { id: "usr_ada", name: "Ada Lovelace" },
+    github_user: "ada",
+    created_at: 0,
+  };
+
+  /** What Ada's GitHub sign-in showed her she may connect of acme. */
+  const offer: G.GithubOffer = {
+    account: "acme",
+    account_type: "Organization",
+    github_user: "ada",
+    all: false,
+    repos: ["api", "design", "web"],
+    others: 2,
+    expires_at: Date.now() + 600_000,
   };
 
   /** The tab as `workspace` sees it, with `g` from the control plane. */
@@ -220,7 +253,22 @@ describe("a workspace's GitHub tab", () => {
     return container;
   }
 
-  it("connects an account through a GitHub sign-in", async () => {
+  /** The button that says `text`. */
+  const button = (page: HTMLElement, text: string) =>
+    [...page.querySelectorAll("button")].find((b) => b.textContent?.trim() === text);
+  const click = async (el: Element | null | undefined) => {
+    await act(async () => {
+      el?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(() => new Promise((done) => setTimeout(done, 10)));
+  };
+  /** The repositories checked in the choice. */
+  const checked = (page: HTMLElement) =>
+    [...page.querySelectorAll<HTMLInputElement>("input[type=checkbox]")]
+      .filter((c) => c.checked)
+      .map((c) => c.closest("label")?.textContent);
+
+  it("connects accounts through a GitHub sign-in, without names to type", async () => {
     connectGithub.mockResolvedValue({
       url: "https://fctl.test/api/v1/github/connect?ticket=t",
       expires_at: 1,
@@ -228,41 +276,112 @@ describe("a workspace's GitHub tab", () => {
     const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
     const page = githubTab(side, github);
     expect(page.textContent).toContain("Connecting an account takes signing in to GitHub");
-    expect(page.textContent).toContain("Install fctl-sh on GitHub");
-    const [account, repos] = [...page.querySelectorAll("input")];
-    const type = (input: HTMLInputElement | undefined, text: string) =>
-      act(() => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
-        input?.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-    type(account, " acme ");
-    type(repos, "web, design");
-    await act(async () => {
-      page.querySelector("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    });
-    await act(() => new Promise((done) => setTimeout(done, 10)));
-    expect(connectGithub).toHaveBeenCalledWith("ws_side", { account: "acme", repos: ["web", "design"] });
+    expect(page.querySelector("input")).toBeNull();
+    // Installing goes through the control plane, which keeps where it started.
+    expect(page.querySelector("a[href^='https://fctl.test/api/v1/github/install']")?.textContent).toBe(
+      "Install fctl-sh on GitHub",
+    );
+    await click(button(page, "Connect with GitHub"));
+    expect(connectGithub).toHaveBeenCalledWith("ws_side", { account: undefined });
     expect(assign).toHaveBeenCalledWith("https://fctl.test/api/v1/github/connect?ticket=t");
   });
 
-  it("says what GitHub let it connect, and as whom", () => {
-    Object.assign(route, { github: "limited", account: "acme" });
+  it("chooses again which repositories of a connected account it works in", async () => {
+    connectGithub.mockResolvedValue({
+      url: "https://fctl.test/api/v1/github/connect?ticket=t",
+      expires_at: 1,
+    });
+    vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    const page = githubTab(side, { ...github, connections: [acme] });
+    await click(
+      page.querySelector("button[aria-label='Choose which repositories of acme Side project works in']"),
+    );
+    expect(connectGithub).toHaveBeenCalledWith("ws_side", { account: "acme" });
+  });
+
+  it("offers the repositories GitHub showed, all of them to begin with", async () => {
+    Object.assign(route, { github: "choose", account: "acme" });
+    chooseGithub.mockResolvedValue({ ...github, connections: [{ ...acme, repos: ["api", "web"] }] });
+    const page = githubTab(side, { ...github, offers: [offer] });
+    expect(page.textContent).toContain("Choose what Side project works in on acme");
+    expect(page.textContent).toContain("Signed in to GitHub as @ada");
+    expect(page.textContent).toContain(
+      "It also reaches 2 repositories there that you aren't an admin of: their admins can connect them.",
+    );
+    // An organization it doesn't reach all of: no "every repository".
+    expect(page.querySelector("input[type=radio]")).toBeNull();
+    expect(checked(page)).toEqual(["api", "design", "web"]);
+    const design = [...page.querySelectorAll<HTMLInputElement>("input[type=checkbox]")][1];
+    await click(design);
+    expect(checked(page)).toEqual(["api", "web"]);
+    await click(button(page, "Connect acme"));
+    expect(chooseGithub).toHaveBeenCalledWith("ws_side", "acme", { repos: ["api", "web"] });
+    expect(navigate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        search: { tab: "github", github: "connected", account: "acme" },
+        replace: true,
+      }),
+    );
+  });
+
+  it("offers every repository where the person may give it, or some", async () => {
+    chooseGithub.mockResolvedValue({ ...github, connections: [{ ...acme, repos: undefined }] });
+    const page = githubTab(side, { ...github, offers: [{ ...offer, all: true, others: 0 }] });
+    const [every, some] = [...page.querySelectorAll<HTMLInputElement>("input[type=radio]")];
+    expect(every?.checked).toBe(true);
+    expect(page.textContent).toContain("It reaches api, design, web now.");
+    // The list shows once they choose some.
+    expect(page.querySelector("input[type=checkbox]")).toBeNull();
+    await click(some);
+    expect(checked(page)).toEqual(["api", "design", "web"]);
+    await click(every);
+    await click(button(page, "Connect acme"));
+    expect(chooseGithub).toHaveBeenCalledWith("ws_side", "acme", { repos: undefined });
+  });
+
+  it("starts from what it works in there now", () => {
     const page = githubTab(side, {
       ...github,
-      connections: [
-        {
-          account: "acme",
-          repos: ["web", "design"],
-          status: "active",
-          requested_by: { id: "usr_ada", name: "Ada Lovelace" },
-          github_user: "ada",
-          created_at: 0,
-        },
-      ],
+      connections: [{ ...acme, repos: ["Web"] }],
+      offers: [{ ...offer, all: true }],
     });
-    expect(page.textContent).toContain(
-      "Side project works in the repositories of acme you're an admin of: web, design.",
+    const [every] = [...page.querySelectorAll<HTMLInputElement>("input[type=radio]")];
+    expect(every?.checked).toBe(false);
+    expect(checked(page)).toEqual(["web"]);
+  });
+
+  it("connects nothing when they'd rather not", async () => {
+    Object.assign(route, { github: "choose", account: "acme" });
+    dismissGithubOffer.mockResolvedValue(github);
+    const page = githubTab(side, { ...github, offers: [offer] });
+    await click(button(page, "Not now"));
+    expect(dismissGithubOffer).toHaveBeenCalledWith("ws_side", "acme");
+    expect(chooseGithub).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ search: { tab: "github" } }));
+  });
+
+  it("offers every repository first where the app reaches none yet", () => {
+    const page = githubTab(side, {
+      ...github,
+      connections: [{ ...acme, repos: ["web"] }],
+      offers: [{ ...offer, all: true, repos: [] }],
+    });
+    expect(page.textContent).toContain("It reaches none yet.");
+    expect(page.querySelector<HTMLInputElement>("input[type=radio]")?.checked).toBe(true);
+    expect(page.querySelector("input[type=checkbox]")).toBeNull();
+  });
+
+  it("says when the choice ran out", () => {
+    Object.assign(route, { github: "choose", account: "acme" });
+    expect(githubTab(side, github).textContent).toContain(
+      "What GitHub showed you waits 10 minutes for you to choose from, and that ran out.",
     );
+  });
+
+  it("says what GitHub let it connect, and as whom", () => {
+    Object.assign(route, { github: "connected", account: "acme" });
+    const page = githubTab(side, { ...github, connections: [acme] });
+    expect(page.textContent).toContain("Side project works in acme now: web, design.");
     expect(page.textContent).toContain("connected by Ada Lovelace as @ada on GitHub");
   });
 
@@ -280,24 +399,41 @@ describe("a workspace's GitHub tab", () => {
     expect(githubTab(side, github).textContent).toContain(
       "GitHub shows you no installation of the fctl-sh app on acme: it isn't installed there, or it reaches no repository you can see.",
     );
+    // Without an account: none of the ones GitHub showed.
+    Object.assign(route, { account: undefined, reason: "no_admin" });
+    expect(githubTab(side, github).textContent).toContain(
+      "GitHub says you aren't an admin of any repository the fctl-sh app reaches on the accounts it shows you",
+    );
   });
 
-  it("fills in an account installed from GitHub", () => {
-    Object.assign(route, { github: "installed", account: "acme" });
+  it("asks people back from GitHub to connect from here", () => {
+    Object.assign(route, { github: "installed" });
     const page = githubTab(side, github);
-    expect(page.textContent).toContain("The fctl-sh app is installed on acme. Connect it below");
-    expect(page.querySelector("input")?.value).toBe("acme");
+    expect(page.textContent).toContain(
+      "The fctl-sh app changed on GitHub. To choose what Side project works in",
+    );
+    expect(button(page, "Connect with GitHub")).toBeDefined();
   });
 
   it("offers nothing to connect where the instance can't sign people in to GitHub", () => {
-    const page = githubTab(side, { ...github, install_url: undefined, can_connect: false });
+    const page = githubTab(side, {
+      ...github,
+      install_url: undefined,
+      can_connect: false,
+      connections: [acme],
+    });
     expect(page.textContent).toContain("which this instance isn't set up for");
     expect(page.textContent).not.toContain("Connect with GitHub");
+    expect(page.querySelector("button[aria-label^='Choose which repositories']")).toBeNull();
   });
 
-  it("shows members the accounts, not the forms", () => {
-    const page = githubTab({ ...side, role: "member" }, { ...github, install_url: undefined });
+  it("shows members the accounts, not the forms or anyone's choices", () => {
+    const page = githubTab(
+      { ...side, role: "member" },
+      { ...github, install_url: undefined, offers: [offer] },
+    );
     expect(page.textContent).toContain("Side project works in no GitHub account yet.");
     expect(page.textContent).not.toContain("Connect with GitHub");
+    expect(page.textContent).not.toContain("Choose what");
   });
 });

@@ -1,5 +1,6 @@
 //! Deleting what is no longer needed: the event logs of deleted sessions,
-//! the files of deleted projects, expired sign-in records and invitations,
+//! the files of deleted projects, expired sign-in records, invitations and
+//! what GitHub sign-ins offered to connect,
 //! early access requests that are done or old, the links of expired
 //! published screenshots and old audit entries. Runs
 //! from the Worker's hourly cron trigger; deleting a project or a workspace
@@ -134,6 +135,7 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
         ("DELETE FROM sign_in_challenges WHERE expires_at < ?", now),
         ("DELETE FROM passkey_challenges WHERE expires_at < ?", now),
         ("DELETE FROM device_codes WHERE expires_at < ?", now),
+        ("DELETE FROM github_offers WHERE expires_at < ?", now),
         ("DELETE FROM invites WHERE expires_at < ?", now),
         (
             "DELETE FROM workspace_invitations WHERE expires_at < ?",

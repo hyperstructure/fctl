@@ -256,16 +256,18 @@ pub enum WorkspacesCmd {
     /// which shows what you may connect: every repository of your own
     /// account, or of an organization whose every repository the app
     /// reaches and you are an admin of; otherwise the repositories you are
-    /// an admin of.
+    /// an admin of. You choose from it on the workspace's GitHub tab,
+    /// unless you name the repositories here.
     #[command(
-        after_help = "Examples:\n  fctl workspaces connect hyperstructure\n  fctl workspaces connect acme --repo web --repo design"
+        after_help = "Examples:\n  fctl workspaces connect\n  fctl workspaces connect hyperstructure\n  fctl workspaces connect acme --repo web --repo design"
     )]
     Connect {
-        /// The GitHub account (organization or user).
-        account: String,
-        /// Only this repository of it (repeatable; default: every one the
-        /// app reaches there, as far as you may connect it).
-        #[arg(long = "repo", value_name = "NAME")]
+        /// The GitHub account (organization or user). Without it, you
+        /// choose from every account GitHub shows you the app on.
+        account: Option<String>,
+        /// Only this repository of it (repeatable), connected once you sign
+        /// in. Without it, you choose the repositories after signing in.
+        #[arg(long = "repo", value_name = "NAME", requires = "account")]
         repos: Vec<String>,
         /// Print the link without opening a browser.
         #[arg(long)]
@@ -854,7 +856,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             }
             if g.connections.is_empty() {
                 println!(
-                    "{} works in no GitHub account yet. Connect one with `fctl workspaces connect <account>`.",
+                    "{} works in no GitHub account yet. Connect one with `fctl workspaces connect`.",
                     w.name
                 );
             }
@@ -882,11 +884,24 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                     state
                 );
             }
+            for o in &g.offers {
+                let repos = if o.all {
+                    "every repository, or some of them".to_owned()
+                } else {
+                    o.repos.join(", ")
+                };
+                println!(
+                    "{:<24} {:<34} {}",
+                    style::bold(&o.account),
+                    style::dim(&repos),
+                    style::amber("waiting for you to choose, on its GitHub tab")
+                );
+            }
             if let Some(url) = &g.install_url {
                 println!(
                     "{}",
                     style::dim(&format!(
-                        "Install the {} app on another account: {url}",
+                        "Install the {} app on another account, or give it more repositories: {url}",
                         g.app_slug.as_deref().unwrap_or("GitHub")
                     ))
                 );
@@ -906,21 +921,25 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             workspace,
         } => {
             let w = resolve(&api, workspace).await?;
+            let named = !repos.is_empty();
             let link = api
                 .connect_github(
                     w.id.as_str(),
                     &ConnectGithubRequest {
                         account: account.clone(),
-                        repos: (!repos.is_empty()).then_some(repos),
+                        repos: named.then_some(repos),
                     },
                 )
                 .await?;
             if json {
                 return style::print_json(&link);
             }
+            let what = match &account {
+                Some(a) => style::bold(a),
+                None => "GitHub accounts".to_owned(),
+            };
             println!(
-                "Connect {} to {} by signing in to GitHub, in a browser where you're signed in to fctl. The link works for 10 minutes:",
-                style::bold(&account),
+                "Connect {what} to {} by signing in to GitHub, in a browser where you're signed in to fctl. The link works for 10 minutes:",
                 style::bold(&w.name)
             );
             println!();
@@ -931,9 +950,11 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             }
             println!(
                 "{}",
-                style::dim(
+                style::dim(if named {
                     "GitHub shows fctl what you may connect, and the browser comes back to the workspace. `fctl workspaces github` shows what it works in."
-                )
+                } else {
+                    "GitHub shows fctl what you may connect, and the browser comes back to the workspace, where you choose the repositories. `fctl workspaces github` shows what it works in."
+                })
             );
         }
         WorkspacesCmd::Disconnect { account, workspace } => {

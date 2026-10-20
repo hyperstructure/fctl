@@ -1407,8 +1407,9 @@ pub struct WorkspaceGithub {
     /// The instance has a GitHub App.
     pub configured: bool,
     pub app_slug: Option<String>,
-    /// Installs the app on another account and comes back here, through a
-    /// GitHub sign-in that connects it, for the workspace's admins.
+    /// Installs the app on another account, or gives it more repositories,
+    /// and comes back here through a GitHub sign-in, after which you choose
+    /// what the workspace works in: for the workspace's admins.
     pub install_url: Option<String>,
     pub connections: Vec<GithubConnection>,
     /// Always false: connecting an account takes signing in to GitHub
@@ -1420,6 +1421,51 @@ pub struct WorkspaceGithub {
     /// the workspace keeps the accounts it has.
     #[serde(default)]
     pub can_connect: bool,
+    /// What your GitHub sign-ins showed you may connect here, while you
+    /// choose. Only yours, for the workspace's admins.
+    #[serde(default)]
+    pub offers: Vec<GithubOffer>,
+}
+
+/// What you may connect of a GitHub account to a workspace, as the GitHub
+/// sign-in you just made showed it, until `expires_at`:
+/// `POST /api/v1/workspaces/{id}/github/offers/{account}` connects what you
+/// choose of it ([`ChooseGithubRepos`]), and
+/// `DELETE /api/v1/workspaces/{id}/github/offers/{account}` nothing.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct GithubOffer {
+    /// The account's login.
+    pub account: String,
+    /// `Organization` or `User`.
+    pub account_type: Option<String>,
+    /// The GitHub account you signed in to GitHub as.
+    pub github_user: String,
+    /// You may connect every repository of it, also those the app reaches
+    /// there later: it is your own account, or an organization whose every
+    /// repository the app reaches and you are an admin of.
+    pub all: bool,
+    /// The repositories of it you may connect: those the app reaches that
+    /// you are an admin of, in alphabetical order.
+    pub repos: Vec<String>,
+    /// How many more repositories the app reaches there that you can see
+    /// but aren't an admin of.
+    pub others: u32,
+    pub expires_at: Millis,
+}
+
+/// `POST /api/v1/workspaces/{id}/github/offers/{account}` (admins): connect
+/// what you choose of an account your GitHub sign-in offered you
+/// ([`GithubOffer`]). The answer is the workspace's [`WorkspaceGithub`].
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ChooseGithubRepos {
+    /// These of its repositories, from the offer's. Absent: every
+    /// repository, also those the app reaches there later, where the offer
+    /// has it.
+    pub repos: Option<Vec<String>>,
 }
 
 /// `POST /api/v1/workspaces/{id}/github/connect` (admins): connect an
@@ -1430,19 +1476,22 @@ pub struct WorkspaceGithub {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct ConnectGithubRequest {
-    /// The account's login.
-    pub account: String,
-    /// Only these repositories of it. Absent: every one the app reaches,
-    /// as far as you may connect it.
+    /// The account's login. Absent: every account GitHub shows you the app
+    /// on, to choose from.
+    pub account: Option<String>,
+    /// Only these repositories of it, connected once you have signed in
+    /// as far as GitHub says you may. Absent: you choose from the ones you
+    /// may connect after signing in ([`GithubOffer`]).
     pub repos: Option<Vec<String>>,
 }
 
 /// Where connecting an account goes on: open it in a browser signed in to
-/// fctl as you. GitHub asks you to sign in, and the account is connected
-/// with what GitHub says you may: every repository of your own account, or
-/// of an organization whose every repository the app reaches and you are
-/// an admin of; otherwise the repositories you are an admin of. The
-/// browser comes back to the workspace's GitHub tab.
+/// fctl as you. GitHub asks you to sign in, which shows fctl what you may
+/// connect: every repository of your own account, or of an organization
+/// whose every repository the app reaches and you are an admin of;
+/// otherwise the repositories you are an admin of. The browser comes back
+/// to the workspace's GitHub tab, where you choose from it, unless you
+/// named the repositories.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ConnectGithubLink {

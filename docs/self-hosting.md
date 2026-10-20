@@ -285,8 +285,9 @@ installed on that are connected to the workspace.
    GitHub Apps → New GitHub App**. Turn the webhook off. Set its **Setup
    URL** to `https://fctl.acme.dev/api/v1/github/installed` (your
    `FCTL_PUBLIC_URL` followed by `/api/v1/github/installed`) and tick
-   **Redirect on update**, so that people who install it from a workspace
-   come back to it. Add a **Callback URL**,
+   **Redirect on update**, so that people who install it from a workspace,
+   or give it more repositories, come back to the workspace to choose what
+   it works in. Add a **Callback URL**,
    `https://fctl.acme.dev/api/v1/github/authorized` (your `FCTL_PUBLIC_URL`
    followed by `/api/v1/github/authorized`): a workspace's admin signs in
    to GitHub there to connect an account, which shows the app what they may
@@ -350,16 +351,18 @@ a new one, and its GitHub tab says so.
 ### Which workspace uses which account
 
 A workspace's admins connect accounts under the workspace's **GitHub** tab,
-or with `fctl workspaces connect <account>`. Connecting sends them to
-GitHub to sign in with the app, which shows fctl what they may give the
-workspace: every repository of their own account, or of an organization
-whose every repository the app reaches and they administer all of (as its
-owners do); otherwise the repositories they administer. So nobody connects
-another account's repositories to their workspace — GitHub won't let them —
-and an instance admin, who holds the app's key, connects nothing into a
-workspace either. Installing the app on an account from the tab brings them
-back through the same sign-in. A connection can be narrowed to some of the
-repositories they may connect (`--repo`). New repositories go into
+or with `fctl workspaces connect`. Connecting sends them to GitHub to sign
+in with the app, which shows fctl what they may give the workspace: every
+repository of their own account, or of an organization whose every
+repository the app reaches and they administer all of (as its owners do);
+otherwise the repositories they administer. Back on the tab, they choose
+which of those the workspace works in. So nobody connects another account's
+repositories to their workspace — GitHub won't let them — and an instance
+admin, who holds the app's key, connects nothing into a workspace either.
+Installing the app on an account from the tab, or giving it more
+repositories there, brings them back to the same choice through the same
+sign-in. Repositories named with `--repo` are connected without the
+choice, where GitHub says they may be. New repositories go into
 `default_owner` when the workspace works in all of it, otherwise into an
 organization the workspace works in all of; the app can create repositories
 in organizations, not in people's own accounts.
