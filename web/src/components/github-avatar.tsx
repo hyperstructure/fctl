@@ -1,19 +1,19 @@
-// A GitHub account's avatar, in a rounded square: the accounts the app is
-// installed on are mostly organizations.
+// A GitHub account's avatar, in a rounded square as GitHub shows
+// organizations'.
 
 import { useState } from "react";
 import { GithubIcon } from "@/components/ui";
 
 /**
- * Its avatar, `size` pixels square, from avatars.githubusercontent.com: the Content Security
- * Policy (public/_headers) lets images load from there, and not from github.com, so not from
- * github.com/<login>.png, which redirects there.
+ * The account's avatar, `size` pixels square. From avatars.githubusercontent.com, not
+ * github.com/<login>.png: that redirects there, but the Content Security Policy
+ * (public/_headers) doesn't let images load from github.com.
  */
 export function githubAvatarUrl(account: string, size: number): string {
   return `https://avatars.githubusercontent.com/${encodeURIComponent(account)}?s=${size}`;
 }
 
-/** 32 pixels square, or the GitHub mark when its avatar doesn't load. */
+/** 32 pixels square; the GitHub mark when the avatar doesn't load. */
 export function GithubAvatar({ account }: { account: string }) {
   const [broken, setBroken] = useState<string>();
   if (broken === account) {
