@@ -34,12 +34,12 @@ export function PasskeySettings({ me }: { me: G.Me }) {
   const [added, setAdded] = useState<string | null>(null);
   const [removing, setRemoving] = useState<G.Passkey | null>(null);
   // Keep the person's passkey provider in step: the passkeys this account
-  // has, and the name it lists them by.
+  // has, and, when it changed, the name it lists them by.
   const accepted = me.passkeys.map((p) => p.credential_id).join(",");
   useEffect(() => {
     const handle = userHandle(me.user.id);
     signalAccepted(rpId(), handle, accepted ? accepted.split(",") : []);
-    signalDetails(rpId(), handle, me.user.email, me.user.name);
+    if (accepted) signalDetails(rpId(), handle, me.user.email, me.user.name);
   }, [accepted, me.user.id, me.user.email, me.user.name]);
   const required = me.two_factor.required;
   return (
