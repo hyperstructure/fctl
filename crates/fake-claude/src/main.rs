@@ -3,8 +3,7 @@
 //! It speaks the same protocol as `claude -p --input-format stream-json
 //! --output-format stream-json --include-partial-messages`: control requests
 //! (`initialize`, `interrupt`, `remote_control`, `get_settings`), user turns
-//! on stdin, and
-//! `system`, `stream_event`, `assistant`, `user`, `result` and
+//! on stdin, and `system`, `stream_event`, `assistant`, `user`, `result` and
 //! `rate_limit_event` messages on stdout. A user turn that arrives during
 //! another waits for it, and each `result` says how many turns still wait
 //! (`queued_turn_count`), as Claude Code's does. With
@@ -26,7 +25,7 @@
 //! | `overage` | reports paid extra usage starting |
 //! | `refresh` | asks its host for a fresh OAuth token |
 //! | `crash` | exits with status 3 |
-//! | `effort <level>` | works at that effort level from then on (`low` … `max`, or `none` as a model that takes none), as when someone changes it in the Claude apps over Remote Control; `get_settings` says so |
+//! | `effort <level>` | works at that effort level from then on (`low` … `max`, or `none` as a model that takes none), as Claude Code does after `/effort <level>`, which it takes too; `get_settings` says so |
 //! | (attached files) | says how many images the message holds and checks that each listed file is on disk |
 //!
 //! Plan usage comes as Claude Code reports it after a response
@@ -618,12 +617,12 @@ fn adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
-/// The effort level after `effort` in a lowercased turn: `Some(None)` for
-/// `none`.
+/// The effort level after `effort` (or Claude Code's `/effort`) in a
+/// lowercased turn: `Some(None)` for `none`.
 fn effort_in(lower: &str) -> Option<Option<String>> {
     let mut words = lower.split_whitespace();
     while let Some(word) = words.next() {
-        if word != "effort" {
+        if word.strip_prefix('/').unwrap_or(word) != "effort" {
             continue;
         }
         match words
@@ -888,6 +887,7 @@ mod tests {
             Some(Some("high".into()))
         );
         assert_eq!(effort_in("effort xhigh."), Some(Some("xhigh".into())));
+        assert_eq!(effort_in("/effort max"), Some(Some("max".into())));
         assert_eq!(effort_in("effort none"), Some(None));
         // Other words after it change nothing.
         assert_eq!(effort_in("put some effort into it"), None);

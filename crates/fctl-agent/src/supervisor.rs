@@ -1214,8 +1214,8 @@ impl Supervisor {
         let tasks_changed = self.tasks.observe(&v);
         self.emit(EventBody::Claude(v));
         if is_result {
-            // Someone following the session in the Claude apps can change
-            // the effort level there.
+            // `/effort high` in a message changes the effort level, and so
+            // can the Claude apps over Remote Control.
             if let Some(c) = self.claude.as_mut() {
                 read_effort(c, &self.work_tx);
             }
