@@ -37,6 +37,10 @@ Since then:
   with macOS 26, write 10 MiB in a container, delete it, `sync` and clean.
   They check that the allocated size of the container's `rootfs.ext4` on
   the Mac fell by at least 80% of what the write took.
+- The same check by hand, on a Mac: with a 1 GiB file written in an
+  Alpine container, its `rootfs.ext4` had 2,190,692 KiB allocated (`du`).
+  After `rm`, `sync` and `container clean`, it had 1,109,288 KiB: the Mac
+  got back 1,081,404 KiB.
 
 ## Decision
 
@@ -47,8 +51,9 @@ Since then:
 - **No `CAP_SYS_ADMIN`.** Sandboxes keep the capabilities they had: the
   trim needs none of theirs, and nothing in the sandbox decides when it
   happens. fctl-agent doesn't change.
-- **When sandboxes stop, not after each turn.** Idle sessions stop ten
-  minutes after their last turn
+- **When sandboxes stop, not after each turn,** as the person who started
+  the session that built this chose. Idle sessions stop ten minutes after
+  their last turn
   ([ADR 0013](0013-idle-sessions-stop-and-a-message-resumes-them.md)), and
   stopped sandboxes are what a host keeps for days and removes when its
   disk runs low. Trimming as they stop covers them with one trim each.
