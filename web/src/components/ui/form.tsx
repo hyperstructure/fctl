@@ -2,6 +2,7 @@ import {
   forwardRef,
   type InputHTMLAttributes,
   type ReactNode,
+  type RefObject,
   type TextareaHTMLAttributes,
   useId,
   useLayoutEffect,
@@ -56,8 +57,14 @@ export const Textarea = forwardRef<
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
-    const line = Number.parseFloat(getComputedStyle(el).lineHeight) || 22;
-    const pad = el.offsetHeight - el.clientHeight + 16;
+    const style = getComputedStyle(el);
+    const line = Number.parseFloat(style.lineHeight) || 22;
+    // Its borders and padding, which its height includes.
+    const pad =
+      el.offsetHeight -
+      el.clientHeight +
+      Number.parseFloat(style.paddingTop) +
+      Number.parseFloat(style.paddingBottom);
     el.style.height = `${Math.min(Math.max(el.scrollHeight, line * minRows + pad), line * maxRows + pad)}px`;
   }, [value, maxRows, minRows]);
   return (
@@ -78,6 +85,37 @@ export const Textarea = forwardRef<
     />
   );
 });
+
+/**
+ * The controls under a bare Textarea, in a row of their own: over the textarea, they would cover
+ * the end of its text once it scrolls. A press between them focuses the textarea, as a press in
+ * its margins does.
+ */
+export function TextareaControls({
+  textarea,
+  className,
+  children,
+}: {
+  textarea: RefObject<HTMLTextAreaElement | null>;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: a shortcut for pointers to the textarea, which has the keys
+    <div
+      className={cn("flex items-center", className)}
+      onMouseDown={(e) => {
+        if (e.button !== 0 || (e.target instanceof Element && e.target.closest("a, button, input, label")))
+          return;
+        // Without the default, the focus stays where it is instead of leaving for the page.
+        e.preventDefault();
+        textarea.current?.focus();
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 export function Field({
   label,

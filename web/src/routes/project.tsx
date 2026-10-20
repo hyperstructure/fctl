@@ -31,6 +31,7 @@ import {
   StatusDot,
   Switch,
   Textarea,
+  TextareaControls,
   toast,
 } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
@@ -225,6 +226,7 @@ function Sessions({ project }: { project: G.Project }) {
               ref={ref}
               bare
               minRows={2}
+              maxRows={12}
               value={prompt}
               readOnly={starting}
               onChange={(e) => setPrompt(e.target.value)}
@@ -241,17 +243,17 @@ function Sessions({ project }: { project: G.Project }) {
                 attach(pasted, true);
               }}
               placeholder={`What should an agent do in ${project.name}?`}
-              className="block px-5 pt-4 pb-14 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
+              className="block px-5 pt-4 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
             />
-            <div className="absolute bottom-3 left-2.5">
+            <TextareaControls textarea={ref} className="justify-between gap-3 pt-2 pr-3 pb-3 pl-2.5">
               <AttachButton onFiles={(f) => attach(f)} />
-            </div>
-            <div className="absolute right-3 bottom-3 flex items-center gap-3">
-              <span className="text-[11.5px] text-ink-4">⌘↵</span>
-              <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
-                Start a session
-              </StartButton>
-            </div>
+              <div className="flex items-center gap-3">
+                <span className="text-[11.5px] text-ink-4">⌘↵</span>
+                <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
+                  Start a session
+                </StartButton>
+              </div>
+            </TextareaControls>
             <DropHint show={dragging} />
           </form>
           <NoRunnerNote workspace={workspace} className="mt-3" />

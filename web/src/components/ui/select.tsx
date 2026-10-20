@@ -318,7 +318,8 @@ export function Select<T extends string>({
         onKeyDown={onKeyDown}
         onBlur={hide}
       >
-        {current?.icon && <span className="shrink-0 text-ink-3 [&_svg]:size-3.5">{current.icon}</span>}
+        {/* A flex box, so that an inline icon (an avatar) is centered rather than on the baseline. */}
+        {current?.icon && <span className="flex shrink-0 text-ink-3 [&_svg]:size-3.5">{current.icon}</span>}
         <Value
           text={current?.label ?? (value || placeholder || "")}
           index={selected}
@@ -395,7 +396,12 @@ export function Select<T extends string>({
                   }}
                   onClick={() => pick(i)}
                 >
-                  {o.icon && <span className="mt-0.5 shrink-0 text-ink-3 [&_svg]:size-3.5">{o.icon}</span>}
+                  {/* As tall as the first line, with the icon in its middle. */}
+                  {o.icon && (
+                    <span className="flex h-5 shrink-0 items-center text-ink-3 [&_svg]:size-3.5">
+                      {o.icon}
+                    </span>
+                  )}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] leading-5">{o.item ?? o.label}</span>
                     {o.description && (

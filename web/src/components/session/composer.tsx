@@ -3,7 +3,7 @@
 
 import { ArrowUp, Square } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
-import { Spinner, Textarea, toast } from "@/components/ui";
+import { Spinner, Textarea, TextareaControls, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
@@ -120,7 +120,7 @@ export function Composer({
           bare
           value={text}
           minRows={1}
-          maxRows={12}
+          maxRows={10}
           onChange={(e) => {
             setText(e.target.value);
             onTyping();
@@ -141,43 +141,45 @@ export function Composer({
                   ? "Message the agent (it reads it after this step)…"
                   : "Message the agent…"
           }
-          className="block px-4 pt-3.5 pb-12 text-[14.5px] leading-[1.55] text-ink"
+          className="block px-4 pt-3.5 text-[14.5px] leading-[1.55] text-ink"
           aria-label="Message the agent"
         />
-        <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1.5">
-          <AttachButton
-            onFiles={(f) => {
-              files.add(f);
-              ref.current?.focus();
-            }}
-          />
-          <span className="pointer-events-none text-[11.5px] text-ink-4 opacity-0 transition-opacity group-focus-within:opacity-100">
-            {failed ? "↵ resume" : resumes ? "↵ send and resume · ⇧↵ new line" : "↵ send · ⇧↵ new line"}
-          </span>
-        </div>
-        <div className="absolute right-2.5 bottom-2.5 flex items-center gap-1.5">
-          {running && (
+        <TextareaControls textarea={ref} className="justify-between gap-1.5 px-2.5 pt-1.5 pb-2.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <AttachButton
+              onFiles={(f) => {
+                files.add(f);
+                ref.current?.focus();
+              }}
+            />
+            <span className="pointer-events-none truncate text-[11.5px] text-ink-4 opacity-0 transition-opacity group-focus-within:opacity-100">
+              {failed ? "↵ resume" : resumes ? "↵ send and resume · ⇧↵ new line" : "↵ send · ⇧↵ new line"}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {running && (
+              <button
+                type="button"
+                onClick={onInterrupt}
+                className="flex h-8 items-center gap-1.5 rounded-full border border-line-strong bg-raised px-3 text-[12.5px] text-ink-2 transition-colors hover:border-danger/40 hover:text-danger"
+              >
+                <Square className="size-3 fill-current" /> Interrupt
+              </button>
+            )}
             <button
               type="button"
-              onClick={onInterrupt}
-              className="flex h-8 items-center gap-1.5 rounded-full border border-line-strong bg-raised px-3 text-[12.5px] text-ink-2 transition-colors hover:border-danger/40 hover:text-danger"
+              aria-label={failed ? "Resume" : "Send"}
+              disabled={!ready || sending}
+              onClick={() => void submit()}
+              className={cn(
+                "flex size-8 items-center justify-center rounded-full transition-all duration-200 ease-[var(--ease-spring)]",
+                ready ? "scale-100 bg-ink text-canvas hover:scale-105" : "scale-90 bg-raised text-ink-4",
+              )}
             >
-              <Square className="size-3 fill-current" /> Interrupt
+              {sending ? <Spinner className="size-4" /> : <ArrowUp className="size-4" />}
             </button>
-          )}
-          <button
-            type="button"
-            aria-label={failed ? "Resume" : "Send"}
-            disabled={!ready || sending}
-            onClick={() => void submit()}
-            className={cn(
-              "flex size-8 items-center justify-center rounded-full transition-all duration-200 ease-[var(--ease-spring)]",
-              ready ? "scale-100 bg-ink text-canvas hover:scale-105" : "scale-90 bg-raised text-ink-4",
-            )}
-          >
-            {sending ? <Spinner className="size-4" /> : <ArrowUp className="size-4" />}
-          </button>
-        </div>
+          </div>
+        </TextareaControls>
         <DropHint show={dragging} />
       </div>
     </div>
