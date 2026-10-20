@@ -534,11 +534,13 @@ function WorkspaceFilter({
   active,
   value,
   onChange,
+  className,
 }: {
   workspaces: G.Workspace[];
   active: G.Session[];
   value: string | undefined;
   onChange: (id: string | undefined) => void;
+  className?: string;
 }) {
   if (workspaces.length < 2) return null;
   const count = (id?: string) => active.filter((s) => !id || s.workspace?.id === id).length;
@@ -561,7 +563,7 @@ function WorkspaceFilter({
   );
   return (
     <fieldset
-      className="-mx-6 flex gap-1 overflow-x-auto px-6 [scrollbar-width:none]"
+      className={cn("-mx-6 flex gap-1 overflow-x-auto px-6 [scrollbar-width:none]", className)}
       aria-label="Show the work of"
     >
       {chip(undefined, "All workspaces", count())}
@@ -729,9 +731,14 @@ export function Home() {
           {mine.length > 0 && (
             <>
               <section>
-                <div className="mb-3 flex flex-col gap-3">
-                  <WorkspaceFilter workspaces={mine} active={activeAll} value={only} onChange={setOnly} />
-                </div>
+                {/* Up into the gap above, clear of the list below: it narrows Recently too. */}
+                <WorkspaceFilter
+                  workspaces={mine}
+                  active={activeAll}
+                  value={only}
+                  onChange={setOnly}
+                  className="-mt-6 mb-9"
+                />
                 <div className="mb-2 flex items-baseline justify-between">
                   <h2 className="text-[13px] font-semibold text-ink">Working now</h2>
                   <span className="text-[12px] text-ink-4">{activeList.length} active</span>
