@@ -62,8 +62,10 @@ It runs in three steps, and a fourth beside them:
    package`), creates the GitHub release with the notes, publishes the
    files to https://fctl.sh/releases (moving `latest`), and installs it
    with the installer as a check.
-4. **Standalone image**, beside Build and Publish: the control plane
-   without Cloudflare (`deploy/standalone`),
+4. **Standalone image**, beside Build and Publish: the Standalone image
+   workflow (`.github/workflows/standalone-image.yml`) builds the control
+   plane without Cloudflare (`deploy/standalone`) at the tag, runs a
+   session through it, and only then publishes
    `ghcr.io/hyperstructure/fctl-control:X.Y.Z` for arm64 and amd64, moving
    `X.Y` and `latest` when the release is the newest they cover.
 
@@ -75,8 +77,9 @@ and `latest`. Hosts of the new version pull it; until it is there, their
 sessions start from `latest`. To publish it at once:
 `gh workflow run image.yml -R hyperstructure/sandbox`.
 
-Follow it with `gh run watch` or in the Actions tab; it takes about 10
-minutes.
+Follow it with `gh run watch` or in the Actions tab. Build and Publish
+take about 10 minutes; the standalone image takes a few more, since it runs
+a session before it publishes.
 
 ## 3. After
 
@@ -103,11 +106,18 @@ minutes.
   binaries the Build jobs made, which are kept for 7 days. Or rebuild the
   tag from the start with
   `gh workflow run release.yml --ref main -f tag=vX.Y.Z`. If the code is
-  broken, fix it and release a patch. The same goes for the standalone
-  image, which a rebuild publishes again under the same tags.
-- **The image** (hyperstructure/sandbox's Image workflow failed, or the
-  release has no image after an hour): its `publish` skill says what to do.
-  Start it for the release with
+  broken, fix it and release a patch.
+- **The standalone image** (its session failed, or its Publish job did):
+  nothing is published until a session has run through the image. If it
+  was the infrastructure, run the failed jobs again, or publish the image
+  on its own:
+  `gh workflow run standalone-image.yml --ref main -f tag=vX.Y.Z`. A
+  rebuild of the tag publishes it again too, under the same tags. If the
+  image is broken, fix it in a pull request (one that changes
+  `deploy/standalone` runs the same session) and release a patch.
+- **The sandbox image** (hyperstructure/sandbox's Image workflow failed, or
+  the release has no image after an hour): its `publish` skill says what
+  to do. Start it for the release with
   `gh workflow run image.yml -R hyperstructure/sandbox -f version=X.Y.Z`.
   The image is built from that repository's `main`, so fixing it takes a
   pull request there, not an fctl release.
