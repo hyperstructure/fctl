@@ -404,11 +404,12 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                         last = Some(w);
                     }
                 }
-                let repo = p
-                    .repo
-                    .as_ref()
-                    .map(|r| r.full_name())
-                    .unwrap_or_else(|| "no repository".into());
+                let repo = fctl_domain::repos::summary(
+                    p.repo.as_ref(),
+                    p.other_repos,
+                    p.all_repos_of.as_deref(),
+                )
+                .unwrap_or_else(|| "no repository".into());
                 let active = if p.active_sessions > 0 {
                     style::accent(&format!("{} active", p.active_sessions))
                 } else {

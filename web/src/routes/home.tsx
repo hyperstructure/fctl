@@ -24,6 +24,7 @@ import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
 import { ago, lowOnDisk } from "@/lib/format";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspaces } from "@/lib/queries";
+import { repoSummary, repoTitle } from "@/lib/repos";
 import { waitsForYou } from "@/lib/status";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
@@ -115,6 +116,18 @@ function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<Foun
         options={{ pixel: 3 }}
       />
     </div>
+  );
+}
+
+/** A project's repositories in a line: the name gives way where space is short, the count stays. */
+function RepoText({ project }: { project: G.Project }) {
+  const s = repoSummary(project);
+  if (!s) return "No repository";
+  return (
+    <span className="flex min-w-0 font-mono text-[11.5px]">
+      {s.name && <span className="truncate">{s.name}</span>}
+      {s.more && <span className="shrink-0 whitespace-pre">{s.name ? ` ${s.more}` : s.more}</span>}
+    </span>
   );
 }
 
@@ -218,13 +231,7 @@ function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspace
                 label: several && w ? `${w.name} / ${p.name}` : p.name,
                 item: p.name,
                 icon: w ? <WorkspaceAvatar workspace={w} size={14} title={false} /> : undefined,
-                description: p.repo ? (
-                  <span className="font-mono text-[11.5px]">
-                    {p.repo.owner}/{p.repo.name}
-                  </span>
-                ) : (
-                  "No repository"
-                ),
+                description: <RepoText project={p} />,
                 section:
                   several && w
                     ? {
@@ -240,15 +247,13 @@ function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspace
               };
             })}
           />
-          {target?.repo && (
+          {target && repoSummary(target) && (
             <span
-              className="hidden min-w-0 items-center gap-1.5 truncate font-mono text-[11.5px] text-ink-4 md:inline-flex"
-              title={`Agents work in ${target.repo.owner}/${target.repo.name}${ws ? `, in ${ws.name}` : ""}`}
+              className="hidden min-w-0 items-center gap-1.5 font-mono text-[11.5px] text-ink-4 md:inline-flex"
+              title={repoTitle(target, ws?.name)}
             >
               <GithubIcon className="size-3 shrink-0" />
-              <span className="truncate">
-                {target.repo.owner}/{target.repo.name}
-              </span>
+              <RepoText project={target} />
             </span>
           )}
         </div>

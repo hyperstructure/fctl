@@ -47,6 +47,7 @@ import { ApiFailure, api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort } from "@/lib/format";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspace } from "@/lib/queries";
+import { repoSummary } from "@/lib/repos";
 import { BASE_ROLES, claudeOptions, roleLabel } from "@/lib/workspaces";
 
 export type WorkspaceTab = "projects" | "people" | "runners" | "github" | "settings" | "audit";
@@ -190,6 +191,18 @@ export function WorkspacePage() {
 
 // ───────────────────────────── projects ─────────────────────────────
 
+/** A project's repositories in its line of the list: "hyperstructure/fctl (+3 more)". */
+function RepoLine({ project }: { project: G.Project }) {
+  const s = repoSummary(project);
+  if (!s) return "No repository";
+  return (
+    <>
+      {s.name && <span className="font-mono">{s.name}</span>}
+      {s.name && s.more ? ` ${s.more}` : s.more}
+    </>
+  );
+}
+
 function Projects({ w }: { w: G.Workspace }) {
   const projects = useProjects();
   const sessions = useSessions({ workspace: w.id, limit: 8 });
@@ -260,13 +273,7 @@ function Projects({ w }: { w: G.Workspace }) {
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[14.5px] text-ink">{p.name}</div>
                     <div className="mt-0.5 truncate text-[12px] text-ink-4">
-                      {p.repo ? (
-                        <span className="font-mono">
-                          {p.repo.owner}/{p.repo.name}
-                        </span>
-                      ) : (
-                        "No repository"
-                      )}
+                      <RepoLine project={p} />
                       {" · "}
                       {p.total_sessions} {p.total_sessions === 1 ? "session" : "sessions"}
                       {p.active_sessions > 0 && (
