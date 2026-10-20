@@ -81,6 +81,10 @@ jobs:
           tag=${TAG:-$(releases 'v*' | head -1)}
           [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$tag' is not a release tag like v0.11.0"; exit 1; }
           git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "::error::$tag does not exist"; exit 1; }
+          # actions/checkout leaves origin/main at the commit this run started
+          # from, and a release's run starts before it pushes the release
+          # commit the tag points to: check the tag against main as it is now.
+          git fetch --quiet --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$tag" origin/main || { echo "::error::$tag is not on main"; exit 1; }
           git cat-file -e "$tag:deploy/standalone/Dockerfile" 2>/dev/null || { echo "::error::$tag predates the standalone image"; exit 1; }
           # From here on, the release: the image, and the CLI, host and agent
