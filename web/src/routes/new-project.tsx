@@ -271,7 +271,8 @@ export function NewProject() {
           </Banner>
         )}
         {mode === "create" && (
-          <div className="flex items-end gap-4">
+          // They line up by their labels, so the hint or an error under the name moves nothing.
+          <div className="flex items-start gap-4">
             {owners.length > 1 && (
               <Field label="Account">
                 {(id) => (
@@ -291,17 +292,20 @@ export function NewProject() {
               error={field?.startsWith("create_repo") ? create.error?.message : undefined}
             >
               {(id) => (
-                <Input
-                  id={id}
-                  value={newRepo}
-                  onChange={(e) => setNewRepo(e.target.value)}
-                  placeholder="my-new-app"
-                />
+                <div className="flex items-center gap-4">
+                  <Input
+                    id={id}
+                    value={newRepo}
+                    onChange={(e) => setNewRepo(e.target.value)}
+                    placeholder="my-new-app"
+                    className="min-w-0 flex-1"
+                  />
+                  <div className="flex items-center gap-2 text-[13px] text-ink-2">
+                    <Switch checked={priv} onChange={setPriv} label="Private" /> Private
+                  </div>
+                </div>
               )}
             </Field>
-            <div className="mb-7 flex items-center gap-2 text-[13px] text-ink-2">
-              <Switch checked={priv} onChange={setPriv} label="Private" /> Private
-            </div>
           </div>
         )}
         <Field label="Name" error={field === "name" ? create.error?.message : undefined}>

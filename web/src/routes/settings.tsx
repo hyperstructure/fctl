@@ -305,7 +305,6 @@ function CommitEmail({ address, onSaved }: { address: G.EmailAddress; onSaved: (
   const changed = value.trim() !== (address.commit_email ?? "");
   return (
     <form
-      className="flex items-start gap-2"
       onSubmit={(e) => {
         e.preventDefault();
         if (changed) save.mutate();
@@ -313,7 +312,6 @@ function CommitEmail({ address, onSaved }: { address: G.EmailAddress; onSaved: (
     >
       <Field
         label="Commit email"
-        className="min-w-0 flex-1"
         error={save.error?.message}
         hint={
           <>
@@ -334,20 +332,23 @@ function CommitEmail({ address, onSaved }: { address: G.EmailAddress; onSaved: (
         }
       >
         {(id) => (
-          <Input
-            id={id}
-            type="email"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="None: commits don't credit you"
-            autoComplete="off"
-            spellCheck={false}
-          />
+          <div className="flex gap-2">
+            <Input
+              id={id}
+              type="email"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="None: commits don't credit you"
+              autoComplete="off"
+              spellCheck={false}
+              className="min-w-0 flex-1"
+            />
+            <Button type="submit" size="field" disabled={!changed} loading={save.isPending}>
+              Save
+            </Button>
+          </div>
         )}
       </Field>
-      <Button type="submit" className="mt-[22px]" disabled={!changed} loading={save.isPending}>
-        Save
-      </Button>
     </form>
   );
 }
@@ -678,7 +679,7 @@ function Claude({ me }: { me: G.Me }) {
               placeholder="sk-ant-oat01-…"
               className="font-mono"
             />
-            <Button type="submit" variant="secondary" loading={add.isPending} disabled={!token}>
+            <Button type="submit" variant="secondary" size="field" loading={add.isPending} disabled={!token}>
               Connect
             </Button>
           </div>
@@ -1314,7 +1315,13 @@ function Tokens() {
                   onChange={(e) => setName(e.target.value)}
                   placeholder="deploy bot"
                 />
-                <Button type="submit" variant="secondary" loading={create.isPending} disabled={!name}>
+                <Button
+                  type="submit"
+                  variant="secondary"
+                  size="field"
+                  loading={create.isPending}
+                  disabled={!name}
+                >
                   Create
                 </Button>
               </div>

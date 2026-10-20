@@ -167,42 +167,46 @@ function Access() {
         colleagues sign in with Google. Removing an entry disables the accounts it admitted.
       </p>
       <form
-        className="mt-6 flex items-end gap-2"
+        className="mt-6"
         onSubmit={(e) => {
           e.preventDefault();
           add.mutate();
         }}
       >
-        <Field label="Email or domain" className="flex-1" error={add.error?.message}>
+        <Field label="Email or domain" error={add.error?.message}>
           {(id) => (
-            <Input
-              id={id}
-              value={pattern}
-              onChange={(e) => setPattern(e.target.value)}
-              placeholder="ada@example.com or *@example.com"
-            />
+            <div className="flex gap-2">
+              <Input
+                id={id}
+                value={pattern}
+                onChange={(e) => setPattern(e.target.value)}
+                placeholder="ada@example.com or *@example.com"
+                className="min-w-0 flex-1"
+              />
+              {me?.user.role === "owner" && (
+                <label className="flex items-center gap-2 text-[13px] text-ink-3">
+                  <input
+                    type="checkbox"
+                    checked={admin}
+                    onChange={(e) => setAdmin(e.target.checked)}
+                    className="accent-[var(--c-accent)]"
+                  />{" "}
+                  Admin
+                </label>
+              )}
+              <Button
+                type="submit"
+                variant="primary"
+                size="field"
+                icon={<MailPlus className="size-3.5" />}
+                loading={add.isPending}
+                disabled={!pattern}
+              >
+                Allow
+              </Button>
+            </div>
           )}
         </Field>
-        {me?.user.role === "owner" && (
-          <label className="mb-2.5 flex items-center gap-2 text-[13px] text-ink-3">
-            <input
-              type="checkbox"
-              checked={admin}
-              onChange={(e) => setAdmin(e.target.checked)}
-              className="accent-[var(--c-accent)]"
-            />{" "}
-            Admin
-          </label>
-        )}
-        <Button
-          type="submit"
-          variant="primary"
-          icon={<MailPlus className="size-3.5" />}
-          loading={add.isPending}
-          disabled={!pattern}
-        >
-          Allow
-        </Button>
       </form>
       <ul className="mt-6 border-t border-line">
         {list.data?.entries.map((e) => (
@@ -1308,9 +1312,9 @@ function Runners() {
             <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="studio mac" />
           )}
         </Field>
-        <div className="flex items-end gap-2">
-          <Field label="For" className="flex-1 sm:flex-none">
-            {(id) => (
+        <Field label="For">
+          {(id) => (
+            <div className="flex gap-2">
               <Select
                 id={id}
                 value={workspace}
@@ -1324,19 +1328,21 @@ function Runners() {
                       }))
                     : [{ value: "none", label: "No workspace yet" }]
                 }
+                className="flex-1 sm:flex-none"
               />
-            )}
-          </Field>
-          <Button
-            type="submit"
-            variant="primary"
-            icon={<Plus className="size-3.5" />}
-            loading={create.isPending}
-            disabled={!name}
-          >
-            Register
-          </Button>
-        </div>
+              <Button
+                type="submit"
+                variant="primary"
+                size="field"
+                icon={<Plus className="size-3.5" />}
+                loading={create.isPending}
+                disabled={!name}
+              >
+                Register
+              </Button>
+            </div>
+          )}
+        </Field>
       </form>
       {runners.data?.runners.length === 0 ? (
         <Empty icon={<Cpu className="size-6" />} title="No machines yet">

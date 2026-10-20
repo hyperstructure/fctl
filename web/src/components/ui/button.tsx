@@ -1,12 +1,14 @@
 import { type ButtonHTMLAttributes, forwardRef, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { Spinner } from "./feedback";
+import { fieldHeight } from "./form";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "quiet";
-type Size = "sm" | "md" | "lg";
+type Size = "sm" | "md" | "field" | "lg";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
+  /** `field` is as tall as an Input or a Select, for a button beside one. */
   size?: Size;
   loading?: boolean;
   icon?: ReactNode;
@@ -26,6 +28,7 @@ const variants: Record<Variant, string> = {
 const sizes: Record<Size, string> = {
   sm: "h-7 px-2.5 text-[12.5px] gap-1.5 rounded-sm",
   md: "h-8.5 px-3.5 text-[13.5px] gap-2 rounded-md",
+  field: `${fieldHeight} px-3.5 text-[13.5px] gap-2 rounded-md`,
   lg: "h-11 px-5 text-[15px] gap-2.5 rounded-lg",
 };
 

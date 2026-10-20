@@ -385,15 +385,15 @@ function Repositories({ project }: { project: G.Project }) {
       </p>
       {manage && (
         <form
-          className="mb-6 flex flex-wrap items-end gap-2"
+          className="mb-6"
           onSubmit={(e) => {
             e.preventDefault();
             if (repo.trim()) add.mutate();
           }}
         >
-          <Field label="Add a repository" className="min-w-[240px] flex-1" error={add.error?.message}>
+          <Field label="Add a repository" error={add.error?.message}>
             {(id) => (
-              <>
+              <div className="flex flex-wrap gap-2">
                 <Input
                   id={id}
                   list={suggestionsId}
@@ -403,32 +403,33 @@ function Repositories({ project }: { project: G.Project }) {
                   autoComplete="off"
                   autoCapitalize="off"
                   spellCheck={false}
-                  className="font-mono text-[13px]"
+                  className="min-w-[240px] flex-1 font-mono text-[13px]"
                 />
                 <datalist id={suggestionsId}>
                   {suggestions.map((n) => (
                     <option key={n} value={n} />
                   ))}
                 </datalist>
-              </>
+                <Select
+                  aria-label="Access"
+                  value={wide ? "read" : access}
+                  disabled={wide}
+                  onChange={setAccess}
+                  options={ACCESS}
+                />
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="field"
+                  icon={<Plus className="size-3.5" />}
+                  loading={add.isPending}
+                  disabled={!repo.trim()}
+                >
+                  Add
+                </Button>
+              </div>
             )}
           </Field>
-          <Select
-            aria-label="Access"
-            value={wide ? "read" : access}
-            disabled={wide}
-            onChange={setAccess}
-            options={ACCESS}
-          />
-          <Button
-            type="submit"
-            variant="primary"
-            icon={<Plus className="size-3.5" />}
-            loading={add.isPending}
-            disabled={!repo.trim()}
-          >
-            Add
-          </Button>
         </form>
       )}
       {repos.isPending ? (
@@ -1201,33 +1202,42 @@ function Members({ project }: { project: G.Project }) {
     <div>
       {manage && (
         <form
-          className="mb-6 flex items-end gap-2"
+          className="mb-6"
           onSubmit={(e) => {
             e.preventDefault();
             add.mutate();
           }}
         >
-          <Field label="Add someone by email" className="flex-1" error={add.error?.message}>
+          <Field label="Add someone by email" error={add.error?.message}>
             {(id) => (
-              <Input
-                id={id}
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="teammate@example.com"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id={id}
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="teammate@example.com"
+                  className="min-w-0 flex-1"
+                />
+                <Select
+                  aria-label="Role"
+                  value={role}
+                  onChange={setRole}
+                  options={projectRoles(project.role)}
+                />
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="field"
+                  icon={<Plus className="size-3.5" />}
+                  loading={add.isPending}
+                  disabled={!email}
+                >
+                  Add
+                </Button>
+              </div>
             )}
           </Field>
-          <Select aria-label="Role" value={role} onChange={setRole} options={projectRoles(project.role)} />
-          <Button
-            type="submit"
-            variant="primary"
-            icon={<Plus className="size-3.5" />}
-            loading={add.isPending}
-            disabled={!email}
-          >
-            Add
-          </Button>
         </form>
       )}
       <ul className="border-t border-line">
@@ -1296,8 +1306,9 @@ function Secrets({ project }: { project: G.Project }) {
         Secrets are encrypted at rest and handed to sandboxes as environment variables. They are never shown
         again — not even to you. Names that would change how Claude bills (ANTHROPIC_*) are refused.
       </Banner>
+      {/* The fields line up by their labels, so an error under the name moves nothing. */}
       <form
-        className="mb-6 grid grid-cols-[1fr_1.4fr_auto] items-end gap-2"
+        className="mb-6 grid grid-cols-[1fr_1.4fr] items-start gap-2"
         onSubmit={(e) => {
           e.preventDefault();
           set.mutate();
@@ -1321,17 +1332,27 @@ function Secrets({ project }: { project: G.Project }) {
           )}
         </Field>
         <Field label="Value">
-          {(id) => <SecretInput id={id} value={value} onChange={(e) => setValue(e.target.value)} />}
+          {(id) => (
+            <div className="flex gap-2">
+              <SecretInput
+                id={id}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                className="min-w-0 flex-1"
+              />
+              <Button
+                type="submit"
+                variant="primary"
+                size="field"
+                icon={<KeyRound className="size-3.5" />}
+                loading={set.isPending}
+                disabled={!name || !value}
+              >
+                Save
+              </Button>
+            </div>
+          )}
         </Field>
-        <Button
-          type="submit"
-          variant="primary"
-          icon={<KeyRound className="size-3.5" />}
-          loading={set.isPending}
-          disabled={!name || !value}
-        >
-          Save
-        </Button>
       </form>
       <ul className="border-t border-line">
         {secrets.data?.secrets.map((x) => (

@@ -542,23 +542,31 @@ function People({ w }: { w: G.Workspace }) {
               />
             )}
           </Field>
-          <div className="flex items-end gap-2">
-            <Field label="Role" className="flex-1 sm:flex-none">
-              {/* The label names only the trigger; the aria-label names its list too. */}
-              {(id) => (
-                <Select id={id} aria-label="Role" value={role} onChange={setRole} options={inviteRoles} />
-              )}
-            </Field>
-            <Button
-              type="submit"
-              variant="primary"
-              icon={<MailPlus className="size-3.5" />}
-              loading={invite.isPending}
-              disabled={!email.trim()}
-            >
-              Invite
-            </Button>
-          </div>
+          <Field label="Role">
+            {/* The label names only the trigger; the aria-label names its list too. */}
+            {(id) => (
+              <div className="flex gap-2">
+                <Select
+                  id={id}
+                  aria-label="Role"
+                  value={role}
+                  onChange={setRole}
+                  options={inviteRoles}
+                  className="flex-1 sm:flex-none"
+                />
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="field"
+                  icon={<MailPlus className="size-3.5" />}
+                  loading={invite.isPending}
+                  disabled={!email.trim()}
+                >
+                  Invite
+                </Button>
+              </div>
+            )}
+          </Field>
         </form>
       )}
       {notOnInstance && (
@@ -775,38 +783,43 @@ function Runners({ w }: { w: G.Workspace }) {
         Each runner belongs to the person who registered it, who can let it work for several workspaces.
       </p>
       {admin && (
-        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-end">
+        // The two line up by their labels, so an error under the name moves nothing.
+        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-start">
           <form
-            className="flex flex-1 items-end gap-2"
+            className="sm:flex-1"
             onSubmit={(e) => {
               e.preventDefault();
               if (name.trim()) create.mutate();
             }}
           >
-            <Field label="Register a machine" className="flex-1" error={create.error?.message}>
+            <Field label="Register a machine" error={create.error?.message}>
               {(id) => (
-                <Input
-                  id={id}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="studio mac"
-                />
+                <div className="flex gap-2">
+                  <Input
+                    id={id}
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="studio mac"
+                    className="min-w-0 flex-1"
+                  />
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    size="field"
+                    icon={<Plus className="size-3.5" />}
+                    loading={create.isPending}
+                    disabled={!name.trim()}
+                  >
+                    Register
+                  </Button>
+                </div>
               )}
             </Field>
-            <Button
-              type="submit"
-              variant="primary"
-              icon={<Plus className="size-3.5" />}
-              loading={create.isPending}
-              disabled={!name.trim()}
-            >
-              Register
-            </Button>
           </form>
           {yours.length > 0 && (
-            <div className="flex items-end gap-2">
-              <Field label="Or add one of yours">
-                {(id) => (
+            <Field label="Or add one of yours">
+              {(id) => (
+                <div className="flex gap-2">
                   <Select
                     id={id}
                     value={adding}
@@ -820,12 +833,17 @@ function Runners({ w }: { w: G.Workspace }) {
                         : "Runs no workspace yet",
                     }))}
                   />
-                )}
-              </Field>
-              <Button disabled={!adding} loading={add.isPending} onClick={() => adding && add.mutate(adding)}>
-                Add
-              </Button>
-            </div>
+                  <Button
+                    size="field"
+                    disabled={!adding}
+                    loading={add.isPending}
+                    onClick={() => adding && add.mutate(adding)}
+                  >
+                    Add
+                  </Button>
+                </div>
+              )}
+            </Field>
           )}
         </div>
       )}
@@ -1718,9 +1736,9 @@ function Primary({ w }: { w: G.Workspace }) {
             Make someone an admin first (People): the role goes to an admin.
           </p>
         ) : (
-          <div className="flex items-end gap-2">
-            <Field label="Hand it to" className="flex-1">
-              {(id) => (
+          <Field label="Hand it to">
+            {(id) => (
+              <div className="flex gap-2">
                 <Select
                   id={id}
                   value={to}
@@ -1731,13 +1749,19 @@ function Primary({ w }: { w: G.Workspace }) {
                     label: m.user.name,
                     description: m.email,
                   }))}
+                  className="flex-1"
                 />
-              )}
-            </Field>
-            <Button disabled={!to} loading={transfer.isPending} onClick={() => to && transfer.mutate(to)}>
-              Hand it over
-            </Button>
-          </div>
+                <Button
+                  size="field"
+                  disabled={!to}
+                  loading={transfer.isPending}
+                  onClick={() => to && transfer.mutate(to)}
+                >
+                  Hand it over
+                </Button>
+              </div>
+            )}
+          </Field>
         )}
       </Section>
       <DangerZone

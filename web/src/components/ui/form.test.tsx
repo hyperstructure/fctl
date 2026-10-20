@@ -1,7 +1,8 @@
 import { act, createRef, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SecretInput, Textarea, TextareaControls } from "./form";
+import { Button } from "./button";
+import { fieldHeight, Input, SecretInput, Textarea, TextareaControls } from "./form";
 import { Select } from "./select";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -22,6 +23,22 @@ function render(node: ReactNode) {
   });
   return { container, rerender: (next: ReactNode) => act(() => root.render(next)) };
 }
+
+describe("Input", () => {
+  it("is as tall as the Selects and the buttons beside it", () => {
+    const { container } = render(
+      <>
+        <Input aria-label="Email" />
+        <Select aria-label="Role" value="a" options={[{ value: "a", label: "Admin" }]} onChange={() => {}} />
+        <Button size="field">Add</Button>
+      </>,
+    );
+    const heights = [...container.querySelectorAll("input, button")].map((el) =>
+      el.className.split(" ").filter((c) => c.startsWith("h-")),
+    );
+    expect(heights).toEqual([[fieldHeight], [fieldHeight], [fieldHeight]]);
+  });
+});
 
 describe("SecretInput", () => {
   it("masks a text field, which browsers don't fill saved passwords into or spellcheck", () => {

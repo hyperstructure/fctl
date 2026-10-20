@@ -70,7 +70,9 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   tokens from `@hyperstructure/design`, Biome formatting. Live session state
   goes through `web/src/lib/live.ts`; do not open extra WebSockets. Choices
   from a list use `Select` (`web/src/components/ui/select.tsx`), not a native
-  `<select>`.
+  `<select>`. Controls beside an Input or a Select go in its `Field`'s row, as
+  tall as it (Button `size="field"`), and Fields side by side line up by their
+  labels (`items-start`), so that a hint or an error under one moves nothing.
 - Design: the brand palette is yellow `#ffff5d` (lime `#eaff81` on light
   backgrounds), hot pink `#ff00d8`, blue `#007eff`, blackish `#171717`,
   whiteish `#fafafa`. Red is for danger only (`danger`: destructive actions,

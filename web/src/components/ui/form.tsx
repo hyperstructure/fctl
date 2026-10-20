@@ -16,11 +16,14 @@ const field =
   "hover:border-ink-4/60 focus:border-accent/70 focus:bg-sunken focus:shadow-[0_0_0_3px_var(--c-accent-soft)] " +
   "aria-invalid:border-danger/60 aria-invalid:focus:shadow-[0_0_0_3px_var(--c-danger-soft)] disabled:opacity-60";
 
+/** How tall an Input is, and the Selects (`md`) and buttons (`field`) beside one, so that they line up. */
+export const fieldHeight = "h-9.5";
+
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input(
   { className, ...rest },
   ref,
 ) {
-  return <input ref={ref} className={cn(field, "h-9.5", className)} {...rest} />;
+  return <input ref={ref} className={cn(field, fieldHeight, className)} {...rest} />;
 });
 
 /**
@@ -119,6 +122,11 @@ export function TextareaControls({
   );
 }
 
+/**
+ * A label over a control, with a hint or an error under it. Selects and buttons that go with the
+ * control share its row, in `children`: beside the Field, they would line up with its label or its
+ * hint instead.
+ */
 export function Field({
   label,
   hint,
