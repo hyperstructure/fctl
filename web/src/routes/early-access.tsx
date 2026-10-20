@@ -2,10 +2,12 @@
 // people without an account ask for early access with their email address.
 // A thread of the foundry behind the page is theirs: it shows while they
 // type an address, and lights up, with a packet running into the planet, once
-// they are on the list. Then the page says what to have ready for when the
-// invitation comes. This browser remembers the request (`lib/early-access`),
-// so the page says so when they come back.
+// they are on the list; the threads make way for the pointer. Then the page
+// says what to have ready for when the invitation comes. This browser
+// remembers the request (`lib/early-access`), so the page says so when they
+// come back.
 
+import { prefersReducedMotion } from "@hyperstructure/design/gl/core";
 import type { FoundryHandle, FoundryLane } from "@hyperstructure/design/gl/foundry";
 import { Link } from "@tanstack/react-router";
 import {
@@ -16,7 +18,7 @@ import {
   type LucideIcon,
   MessageSquareText,
 } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Banner, Button, Field, Input } from "@/components/ui";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -67,8 +69,26 @@ export function EarlyAccessPage() {
   const input = useRef<HTMLInputElement>(null);
   const site = siteUrl();
 
+  // The threads make way for the pointer, over the whole page.
+  useEffect(() => {
+    const move = (e: PointerEvent) => {
+      const page = document.documentElement;
+      scene.current?.pointer(e.pageX / page.scrollWidth, e.pageY / page.scrollHeight);
+    };
+    const leave = () => scene.current?.pointerLeave();
+    window.addEventListener("pointermove", move, { passive: true });
+    document.documentElement.addEventListener("pointerleave", leave);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      document.documentElement.removeEventListener("pointerleave", leave);
+    };
+  }, []);
+
   const typed = !sent && ADDRESS.test(email.trim());
   useEffect(() => {
+    // The foundry shows the first lanes it gets at once and eases later ones in, one frame
+    // per change when motion is reduced: then their thread shows only once it is lit.
+    if (!sent && prefersReducedMotion()) return;
     const lanes = new Map<number, FoundryLane>();
     if (sent) lanes.set(LANE, { lit: 1, color: 1, energy: burst ? 1 : 0.25 });
     else if (typed) lanes.set(LANE, { lit: 0.6, color: 2, energy: 0.35 });
@@ -82,6 +102,13 @@ export function EarlyAccessPage() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!email.trim()) {
+      setError(
+        new ApiFailure(400, { code: "validation", field: "email", message: "Enter your email address" }),
+      );
+      input.current?.focus();
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -126,7 +153,8 @@ export function EarlyAccessPage() {
       <AuthFrame
         title={
           <span key="listed" className="inline-block animate-rise">
-            You're on the list.
+            You're <span className="title-hot">on the list</span>
+            <span className="title-dot">.</span>
           </span>
         }
         subtitle={
@@ -137,16 +165,15 @@ export function EarlyAccessPage() {
         }
         onFoundry={keep}
         footer={
-          <span className="inline-flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1">
-            Another address?
+          <Frosted>
             <button type="button" onClick={another} className="text-ink underline underline-offset-2">
-              Ask with it
+              Ask with another address
             </button>
             <span aria-hidden="true" className="text-ink-4">
               ·
             </span>
-            Have an account? {signIn}
-          </span>
+            {signIn}
+          </Frosted>
         }
       >
         <p className="sr-only" aria-live="polite">
@@ -189,11 +216,16 @@ export function EarlyAccessPage() {
 
   return (
     <AuthFrame
-      title={<>Request early access.</>}
+      title={
+        <>
+          Request <span className="title-hot">early access</span>
+          <span className="title-dot">.</span>
+        </>
+      }
       subtitle="Describe the work, and Claude agents do it in sandboxes on your own machines."
       onFoundry={keep}
       below={<Points />}
-      footer={<>Have an account? {signIn}</>}
+      footer={<Frosted>Have an account? {signIn}</Frosted>}
     >
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         <Field label="Email" error={error?.field === "email" ? error.message : undefined}>
@@ -225,13 +257,12 @@ export function EarlyAccessPage() {
           variant="primary"
           size="lg"
           loading={busy}
-          disabled={!email.trim()}
           trailing={<ArrowRight className="size-4" />}
         >
           Request early access
         </Button>
         <p className="text-center text-[12.5px] leading-relaxed text-ink-4">
-          We use your address only to send you an invitation.{" "}
+          It's used only to send your invitation.{" "}
           <a
             href={`${site}/privacy`}
             target="_blank"
@@ -249,7 +280,7 @@ export function EarlyAccessPage() {
 /** What fctl does, under the form. */
 function Points() {
   return (
-    <ul className="mt-7 flex flex-col gap-3.5 px-1">
+    <ul className="mt-5 flex flex-col gap-3.5 rounded-xl bg-canvas/60 px-3 py-3 backdrop-blur-md">
       {POINTS.map(({ icon: Icon, lead, rest }, i) => (
         <li
           key={lead}
@@ -301,5 +332,17 @@ function Ticket({ sent, fresh }: { sent: Sent; fresh: boolean }) {
         <div className="text-[12.5px] text-ink-3">On the list since {day(sent.at)}</div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Text over the foundry, on the page's own color frosted: nothing shows over the stars,
+ * and the planet behind the text gives way.
+ */
+function Frosted({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 rounded-full bg-canvas/60 px-3 py-1 backdrop-blur-md">
+      {children}
+    </span>
   );
 }

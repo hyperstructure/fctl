@@ -1244,4 +1244,47 @@ mod tests {
         );
         Ok(())
     }
+
+    fn request(fields: serde_json::Value) -> Result<AccessRequest> {
+        let mut r = serde_json::json!({
+            "id": "acr_01ADA",
+            "email": "ada@example.com",
+            "created_at": NOW - 2 * 86_400_000,
+            "asked_at": NOW - 2 * 86_400_000,
+        });
+        if let (Some(r), Some(f)) = (r.as_object_mut(), fields.as_object()) {
+            r.extend(f.clone());
+        }
+        Ok(serde_json::from_value(r)?)
+    }
+
+    #[test]
+    fn requests_say_when_they_asked() -> Result<()> {
+        assert_eq!(asked(&request(serde_json::json!({}))?, NOW), "asked 2d ago");
+        // Asking again within the hour isn't news; later, it is.
+        let soon = request(serde_json::json!({ "asked_at": NOW - 2 * 86_400_000 + 60_000 }))?;
+        assert_eq!(asked(&soon, NOW), "asked 2d ago");
+        let later = request(serde_json::json!({ "asked_at": NOW - 3 * 3_600_000 }))?;
+        assert_eq!(asked(&later, NOW), "asked 2d ago, again 3h ago");
+        Ok(())
+    }
+
+    #[test]
+    fn invited_requests_say_whether_their_link_still_works() -> Result<()> {
+        let invited = request(serde_json::json!({
+            "invited_at": NOW - 86_400_000,
+            "invited_by": { "id": "usr_maya", "name": "Maya" },
+            "invite_expires_at": NOW + 13 * 86_400_000,
+        }))?;
+        assert_eq!(
+            invitation(&invited, NOW),
+            "invited 1d ago by Maya, hasn't joined yet"
+        );
+        let expired = request(serde_json::json!({ "invited_at": NOW - 20 * 86_400_000 }))?;
+        assert_eq!(
+            invitation(&expired, NOW),
+            "invited 20d ago, the link expired"
+        );
+        Ok(())
+    }
 }

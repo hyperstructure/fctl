@@ -302,9 +302,9 @@ function EarlyAccess() {
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
-        People who asked for early access on the sign-in page. Invite someone to make their link, then send it
-        to them{instance?.features.email ? " (we email it too)" : ""}: it works once, for 14 days, and sets up
-        their account. Once they have one, they leave this list.
+        People who asked for early access on the sign-in page, longest waiting first. Invite someone to make
+        their link, then send it to them{instance?.features.email ? " (we email it too)" : ""}: it works once,
+        for 14 days, and sets up their account. They leave the list once they have one.
       </p>
       <div className="mt-4 flex max-w-full items-center gap-2 text-[12.5px] text-ink-4">
         <span className="shrink-0">They ask at</span>
@@ -414,15 +414,18 @@ function RequestRow({
             ) : (
               <>
                 <span title={r.invited_at ? stamp(r.invited_at) : undefined}>
-                  Invited {invitation ? "just now" : ago(r.invited_at)}
-                  {invitation ? "" : by}
+                  Invited {invitation ? "just now" : `${ago(r.invited_at)}${by}`}
                 </span>
-                {" · "}
-                {state === "invited" && expires ? (
-                  `the link works until ${day(expires)}`
-                ) : (
-                  <span className="text-amber">the link expired</span>
-                )}
+                {/* A link made here says itself how long it works. */}
+                {!invitation &&
+                  (state === "invited" && expires ? (
+                    ` · the link works until ${day(expires)}`
+                  ) : (
+                    <>
+                      {" · "}
+                      <span className="text-amber">the link expired</span>
+                    </>
+                  ))}
               </>
             )}
           </div>
@@ -431,7 +434,7 @@ function RequestRow({
           {!invitation && (
             <Button
               size="sm"
-              variant={state === "waiting" ? "secondary" : "ghost"}
+              variant={state === "invited" ? "ghost" : "secondary"}
               icon={state === "waiting" ? <MailPlus className="size-3.5" /> : <Link2 className="size-3.5" />}
               loading={inviting}
               onClick={onInvite}

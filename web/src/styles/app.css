@@ -124,6 +124,21 @@
   contain-intrinsic-size: auto 120px;
 }
 
+/* Words of a headline in the brand's yellow, as on fctl.sh, with a pink full
+   stop (routes/early-access.tsx). On light backgrounds the yellow becomes a
+   highlighter stroke under the words, on each line they wrap to. */
+.title-hot {
+  color: var(--c-accent);
+}
+:root[data-theme="light"] .title-hot {
+  background: linear-gradient(to top, var(--c-highlight) 0.28em, transparent 0.28em) no-repeat;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.title-dot {
+  color: var(--c-pink);
+}
+
 /* A hairline that fades at both ends. */
 .rule-fade {
   height: 1px;

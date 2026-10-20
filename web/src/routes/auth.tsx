@@ -179,21 +179,18 @@ function GoogleButton({ label, next }: { label: string; next?: string }) {
 }
 
 /** On the sign-in page, where the instance takes requests: the way in for people without an account. */
-function EarlyAccessLink({ forgot }: { forgot: boolean }) {
+function EarlyAccessLink() {
   return (
-    <span className="flex flex-col items-center gap-3">
-      <span className="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5">
-        No account yet?
-        <Link
-          to="/early-access"
-          className="group inline-flex items-center gap-2 rounded-full border border-line-strong bg-surface/85 py-1 pr-2.5 pl-2.5 font-medium text-ink backdrop-blur-xl transition-colors hover:border-ink-4"
-        >
-          <span className="size-1.5 rounded-full bg-highlight ring-1 ring-ink/15" />
-          Request early access
-          <ArrowRight className="size-3.5 text-ink-3 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-ink" />
-        </Link>
-      </span>
-      {forgot && <span className="text-ink-4">Forgot your password? Ask an admin of this instance.</span>}
+    <span className="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5">
+      No account yet?
+      <Link
+        to="/early-access"
+        className="group inline-flex items-center gap-2 rounded-full border border-line-strong bg-surface/85 py-1 pr-2.5 pl-2.5 font-medium text-ink backdrop-blur-xl transition-colors hover:border-ink-4"
+      >
+        <span className="size-1.5 rounded-full bg-highlight ring-1 ring-ink/15" />
+        Request early access
+        <ArrowRight className="size-3.5 text-ink-3 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-ink motion-reduce:transition-none" />
+      </Link>
     </span>
   );
 }
@@ -246,7 +243,7 @@ export function LoginPage() {
       subtitle="Agents are building while you're away. Sign in to see what they've done."
       footer={
         instance?.features.early_access ? (
-          <EarlyAccessLink forgot={!instance.features.email} />
+          <EarlyAccessLink />
         ) : instance && !instance.features.email ? (
           "Need an account or a new password? Ask an admin of this instance."
         ) : undefined
@@ -305,7 +302,8 @@ export function LoginPage() {
         <Field
           label="Password"
           action={
-            instance?.features.email ? (
+            // Without email, where the footer is the way to early access, it says whom to ask.
+            instance?.features.email || instance?.features.early_access ? (
               <button
                 type="button"
                 className="text-[12px] text-ink-3 hover:text-ink"
@@ -329,7 +327,10 @@ export function LoginPage() {
         </Field>
         {error && <Banner tone="error">{error.message}</Banner>}
         {sent && <Banner tone="ok">If {email} has an account, a reset link is on its way.</Banner>}
-        {forgot && (
+        {forgot && !instance?.features.email && (
+          <Banner tone="info">Ask an admin of this instance for a link to choose a new password.</Banner>
+        )}
+        {forgot && instance?.features.email && (
           <Banner tone="info">
             We'll email a reset link to {email || "your address"}.{" "}
             <button

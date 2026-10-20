@@ -91,6 +91,9 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   user. The first account is created through a one-time setup link
   (`/setup#token=…`, from the `FCTL_SETUP_TOKEN` secret) and becomes the
   primary instance owner.
+- **Early access**, where the deployment turns it on (as app.fctl.sh's
+  does): people without an account ask for an invitation on the sign-in
+  page, and admins invite them from a list ([Early access](#early-access)).
 - Instance roles: `owner` (the primary instance owner, one per instance),
   `admin`, `member`. Instance admins run the instance (people, invitations,
   runners, GitHub, settings), not what is inside
@@ -108,6 +111,32 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   (`Origin`/`Sec-Fetch-Site` checks) and carry JSON; file uploads carry
   `application/octet-stream`, which browsers cannot send cross-site without
   asking first either. WebSocket upgrades check the origin too.
+
+### Early access
+
+Where the deployment turns it on (`early_access` in its file in
+`deploy/instances`, which sets `FCTL_EARLY_ACCESS`; app.fctl.sh's does,
+and the standalone server doesn't take it), the sign-in page links to
+`/early-access`, where people without an account leave their email address
+(`POST /api/v1/access-requests`). The answer is the same whether the
+address asked before, was invited or has an account, so that it tells
+nobody who uses the instance: an address that has an account isn't
+recorded, and asking again moves the request's `asked_at`. A rate limit per
+client address applies, as for sign-ups. The browser keeps the address it
+asked with, so that the page says it is on the list when they come back.
+
+Instance admins see the requests under Admin → Early access, and with
+`fctl admin early-access` (`GET /api/v1/admin/access-requests`): those
+waiting first, longest waiting first, then those invited, with whether
+their link still works. Inviting one is an instance invitation like any
+other (`POST /api/v1/admin/invites`), which works once for 14 days; the
+list shows its link, to copy or to send from the admin's mail app (a
+`mailto:` link) where the instance sends no email, and the invitation page
+greets them as having asked. Any invitation to the address marks its
+request invited, and by whom. A request goes once its address has an
+account (the hourly cron trigger), when an admin removes it (`DELETE
+/api/v1/admin/access-requests/{id}`, in the audit log), or a year after it
+last asked (`access_requests`).
 
 ### Two-factor sign-in
 
@@ -328,8 +357,9 @@ runner of the person's workspaces, or their own.
 **D1** (`crates/fctl-control/migrations`) holds relational state: users and
 their email addresses, identities, two-factor sign-in (sealed authenticator
 secrets, hashed recovery codes, sign-ins waiting for a code), passkeys'
-public keys and their challenges, allowlist, auth tokens, device codes,
-workspaces (with their avatar images), their members, invitations, GitHub
+public keys and their challenges, allowlist, early access requests, auth
+tokens, device codes, workspaces (with their avatar images), their members,
+invitations, GitHub
 accounts and runners, projects, their members and
 repositories, sessions (summary rows), shares, who follows which session,
 notification settings and browsers (push subscriptions), runners, encrypted
@@ -361,8 +391,9 @@ storage, the event logs and the attached files and published screenshots,
 is deleted right after. An hourly cron trigger (`src/housekeeping.rs`; the
 standalone server runs it outside Cloudflare) retries what failed and
 deletes expired tokens, password resets, sign-ins waiting for a code,
-passkey challenges, device codes and invites, the
-links of expired published screenshots, abandoned Claude logins, and audit
+passkey challenges, device codes and invites, early access requests whose
+address has an account or that are a year old, the links of expired
+published screenshots, abandoned Claude logins, and audit
 log entries older than a year. Deleting a workspace does the same for all
 its projects. Deleting an account (`src/api/account.rs`) does it for the
 workspaces only that account is in, passes the primary admin role of its

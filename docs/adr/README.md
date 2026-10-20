@@ -32,3 +32,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0024](0024-workspaces-hold-people-projects-runners-and-github-accounts.md) | Workspaces hold people, projects, runners and GitHub accounts |
 | [0025](0025-hosts-trim-apple-sandboxes-as-they-stop-them.md) | Hosts trim Apple sandboxes as they stop them |
 | [0026](0026-the-control-plane-runs-without-cloudflare-on-workerd.md) | The control plane also runs without Cloudflare, on workerd |
+| [0027](0027-app-fctl-sh-takes-early-access-requests.md) | app.fctl.sh takes requests for early access |

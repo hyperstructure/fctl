@@ -1,5 +1,6 @@
 // The signed-in layout: a quiet sidebar, the page, and the command palette.
 
+import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   ChevronRight,
@@ -37,7 +38,7 @@ import { forgetDraft } from "@/lib/draft";
 import { useFeed } from "@/lib/feed";
 import { useHotkey } from "@/lib/hotkeys";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
-import { queryClient, useInstance, useMe, useProjects, useWorkspaces } from "@/lib/queries";
+import { keys, queryClient, useInstance, useMe, useProjects, useWorkspaces } from "@/lib/queries";
 import { type Sortable, useSortable } from "@/lib/sortable";
 import { useTheme } from "@/lib/theme";
 import {
@@ -117,12 +118,15 @@ function NavLink({
   children,
   active,
   onClick,
+  badge,
 }: {
   to: string;
   icon: React.ReactNode;
   children: React.ReactNode;
   active: boolean;
   onClick: () => void;
+  /** A count of what waits there, and what it counts. */
+  badge?: { n: number; label: string };
 }) {
   return (
     <Link
@@ -144,6 +148,15 @@ function NavLink({
         {icon}
       </span>
       {children}
+      {badge && badge.n > 0 && (
+        <span
+          title={badge.label}
+          className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-highlight px-1 text-[10.5px] font-semibold text-highlight-ink tabular-nums"
+        >
+          {badge.n}
+          <span className="sr-only">: {badge.label}</span>
+        </span>
+      )}
     </Link>
   );
 }
@@ -172,6 +185,14 @@ function Sidebar({
   const [theme, setTheme] = useTheme();
   const navigate = useNavigate();
   const isAdmin = me?.user.role === "owner" || me?.user.role === "admin";
+  // Who waits for an invitation, where the instance takes requests for early access.
+  const asking =
+    useQuery({
+      queryKey: keys.accessRequests,
+      queryFn: api.accessRequests,
+      enabled: isAdmin && !!instance?.features.early_access,
+      staleTime: 60_000,
+    }).data?.waiting ?? 0;
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-14 items-center justify-between px-4">
@@ -254,7 +275,17 @@ function Sidebar({
       </nav>
       <div className="flex flex-col gap-0.5 border-t border-line px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         {isAdmin && (
-          <NavLink to="/admin" icon={<Shield />} active={path === "/admin"} onClick={onNavigate}>
+          <NavLink
+            to="/admin"
+            icon={<Shield />}
+            active={path === "/admin"}
+            onClick={onNavigate}
+            badge={{
+              n: asking,
+              label:
+                asking === 1 ? "1 person waits for early access" : `${asking} people wait for early access`,
+            }}
+          >
             Admin
           </NavLink>
         )}

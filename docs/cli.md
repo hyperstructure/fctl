@@ -376,6 +376,8 @@ fctl admin delete-workspace side-project   # asks you to type its name
 fctl admin github                          # the app's installations, and the requests waiting
 fctl admin github approve acme side-project --repo web   # the workspace works in acme's web
 fctl admin github remove acme side-project               # …no longer, or decline its request
+fctl admin early-access                    # who asked for early access, where the instance takes requests
+fctl admin early-access remove spam@example.com   # asking again adds them back
 fctl admin allowlist
 fctl admin allow ada@example.com           # also creates an invite link
 fctl admin allow '*@example.com'           # a whole domain
@@ -396,6 +398,12 @@ fctl admin reset-two-factor grace@example.com   # they lost their phone and reco
 command that requires it lists who hasn't set it up yet: until they do,
 they can only set it up, in the browser or with `fctl account two-factor
 enable`, and their other requests fail.
+
+Where the instance takes requests for early access (as app.fctl.sh does),
+`fctl admin early-access` lists the people who asked on the sign-in page
+and have no account yet, those waiting longest first, then those invited
+and whether their link still works. `fctl admin invite` with their address
+answers one: it prints their link, and the request shows as invited.
 
 `fctl admin audit` and `fctl workspaces audit` show 100 entries at a time;
 `--before` with the time after "Older:" (`next_before` in `--json`) shows
