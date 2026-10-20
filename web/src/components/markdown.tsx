@@ -3,21 +3,40 @@
 
 import { lexer, type Token, type Tokens } from "marked";
 import { memo, type ReactNode, useEffect, useState } from "react";
-import { CopyButton } from "@/components/ui";
+import { CopyButton, Lightbox } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { highlight } from "@/lib/highlight";
 
-function inline(tokens: Token[] | undefined, key = "i"): ReactNode[] {
+/** An image in the agent's answer, which a click shows at full size. */
+function ZoomImage({ src, alt }: { src: string; alt: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label={`View ${alt || "image"}`}
+        className="max-w-full cursor-zoom-in"
+      >
+        <img src={src} alt={alt} className="max-w-full rounded-md" loading="lazy" />
+      </button>
+      {open && <Lightbox file={{ name: alt || "Image" }} src={src} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+/** `linked`: inside a link, which a click follows. */
+function inline(tokens: Token[] | undefined, key = "i", linked = false): ReactNode[] {
   if (!tokens) return [];
   return tokens.map((t, i) => {
     const k = `${key}${i}`;
     switch (t.type) {
       case "strong":
-        return <strong key={k}>{inline((t as Tokens.Strong).tokens, k)}</strong>;
+        return <strong key={k}>{inline((t as Tokens.Strong).tokens, k, linked)}</strong>;
       case "em":
-        return <em key={k}>{inline((t as Tokens.Em).tokens, k)}</em>;
+        return <em key={k}>{inline((t as Tokens.Em).tokens, k, linked)}</em>;
       case "del":
-        return <del key={k}>{inline((t as Tokens.Del).tokens, k)}</del>;
+        return <del key={k}>{inline((t as Tokens.Del).tokens, k, linked)}</del>;
       case "codespan":
         return <code key={k}>{(t as Tokens.Codespan).text}</code>;
       case "br":
@@ -32,7 +51,7 @@ function inline(tokens: Token[] | undefined, key = "i"): ReactNode[] {
             target={l.href.startsWith("http") ? "_blank" : undefined}
             rel="noreferrer noopener"
           >
-            {inline(l.tokens, k)}
+            {inline(l.tokens, k, true)}
           </a>
         ) : (
           <span key={k}>{l.text}</span>
@@ -40,16 +59,17 @@ function inline(tokens: Token[] | undefined, key = "i"): ReactNode[] {
       }
       case "image": {
         const im = t as Tokens.Image;
-        return /^https:/i.test(im.href) ? (
+        if (!/^https:/i.test(im.href)) return <span key={k}>{im.text}</span>;
+        return linked ? (
           <img key={k} src={im.href} alt={im.text} className="max-w-full rounded-md" loading="lazy" />
         ) : (
-          <span key={k}>{im.text}</span>
+          <ZoomImage key={k} src={im.href} alt={im.text} />
         );
       }
       case "text": {
         const tx = t as Tokens.Text;
         return tx.tokens ? (
-          <span key={k}>{inline(tx.tokens, k)}</span>
+          <span key={k}>{inline(tx.tokens, k, linked)}</span>
         ) : (
           <span key={k}>{decode(tx.text)}</span>
         );

@@ -17,9 +17,9 @@ import {
   TriangleAlert,
   Unplug,
 } from "lucide-react";
-import { memo, type ReactNode, useState } from "react";
+import { type MouseEvent, memo, type ReactNode, useState } from "react";
 import { Markdown } from "@/components/markdown";
-import { Avatar, Button, CopyButton, Dialog, Spinner, toast } from "@/components/ui";
+import { Avatar, Button, CopyButton, Dialog, Lightbox, plainClick, Spinner, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -94,13 +94,21 @@ const UserMessage = memo(function UserMessage({
 
 /**
  * A screenshot the agent published for a pull request: the image while its
- * link works, and for people who manage the session, deleting it sooner.
+ * link works, which a click shows at full size over the page, and for
+ * people who manage the session, deleting it sooner.
  */
 function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?: boolean }) {
   const [state, setState] = useState<"shown" | "offline" | "deleted">(() =>
     file.expires_at > Date.now() ? "shown" : "offline",
   );
   const [confirm, setConfirm] = useState(false);
+  const [viewing, setViewing] = useState(false);
+  // With a modifier key, the browser opens the link in a new tab instead.
+  const view = (e: MouseEvent) => {
+    if (!plainClick(e)) return;
+    e.preventDefault();
+    setViewing(true);
+  };
   const token = linkToken(file.url);
   const del = useMutation({
     mutationFn: () => api.unpublish(token ?? ""),
@@ -119,7 +127,13 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
       <Milestone icon={<ImageUp />} tone="info">
         Published{" "}
         {state === "shown" ? (
-          <a href={file.url} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+          <a
+            href={file.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={view}
+            className="underline underline-offset-2"
+          >
             {file.name}
           </a>
         ) : (
@@ -137,8 +151,9 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
             href={file.url}
             target="_blank"
             rel="noreferrer"
-            aria-label={`Open ${file.name}`}
-            className="overflow-hidden rounded-lg border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
+            onClick={view}
+            aria-label={`View ${file.name}`}
+            className="cursor-zoom-in overflow-hidden rounded-lg border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
           >
             <img
               src={file.url}
@@ -167,6 +182,7 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
           </div>
         </div>
       )}
+      {viewing && <Lightbox file={file} src={file.url} download onClose={() => setViewing(false)} />}
       <Dialog
         open={confirm}
         onClose={() => setConfirm(false)}

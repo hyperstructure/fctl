@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -5,10 +6,20 @@ import type { Stall } from "@/lib/stall";
 import { emptyLive, type Item } from "@/lib/transcript";
 import { Transcript } from "./transcript";
 
-vi.mock("@/components/ui", () => ({
-  Avatar: () => null,
-  Spinner: () => <svg className="animate-spin" />,
-}));
+vi.mock("@/components/ui", async () => {
+  const { plainClick } =
+    await vi.importActual<typeof import("@/components/ui/lightbox")>("@/components/ui/lightbox");
+  return {
+    Avatar: () => null,
+    Button: () => null,
+    CopyButton: () => null,
+    Dialog: () => null,
+    Lightbox: ({ file }: { file: { name: string } }) => <dialog open aria-label={file.name} />,
+    plainClick,
+    Spinner: () => <svg className="animate-spin" />,
+    toast: vi.fn(),
+  };
+});
 vi.mock("@/components/markdown", () => ({
   CodeBlock: () => null,
   Markdown: ({ text }: { text: string }) => <p>{text}</p>,
@@ -25,7 +36,8 @@ afterEach(() => {
 function render(node: ReactNode) {
   const container = document.createElement("div");
   const root = createRoot(container);
-  act(() => root.render(node));
+  const client = new QueryClient();
+  act(() => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>));
   roots.push(() => act(() => root.unmount()));
   return container;
 }
@@ -43,6 +55,26 @@ const tool = (result?: string): Item => ({
   children: 0,
 });
 const turn = (): Item => ({ kind: "turn", key: `turn-${++seq}`, seq, ts: 0, durationMs: 1000, ok: true });
+const published = (): Item => ({
+  kind: "notice",
+  key: `notice-${++seq}`,
+  seq,
+  ts: 0,
+  notice: {
+    level: "info",
+    code: "screenshot_published",
+    message: "Published after.png",
+    published: {
+      url: `https://app.fctl.test/api/v1/published/${"a".repeat(43)}/after.png`,
+      name: "after.png",
+      media_type: "image/png",
+      size: 245_300,
+      width: 1440,
+      height: 900,
+      expires_at: Date.now() + 86_400_000,
+    },
+  },
+});
 
 const stall: Stall = {
   kind: "away",
@@ -91,5 +123,39 @@ describe("the transcript", () => {
     const [title, detail] = [...c.querySelectorAll("[role=status] p")].map((p) => p.textContent);
     expect(title).toMatch(/^Runner now hasn't been heard from since .+\.$/);
     expect(detail).toMatch(/^The agent's work shows up here when it's back/);
+  });
+});
+
+describe("a published screenshot", () => {
+  const click = (el: Element, init: MouseEventInit = {}) => {
+    const e = new MouseEvent("click", { bubbles: true, cancelable: true, ...init });
+    act(() => {
+      el.dispatchEvent(e);
+    });
+    return e;
+  };
+  const viewer = (c: HTMLElement) => c.querySelector('dialog[aria-label="after.png"]');
+
+  it("opens over the page, not in a new tab, from its picture and its name", () => {
+    const c = transcript([published()], "idle");
+    const picture = c.querySelector('a[aria-label="View after.png"]') as HTMLAnchorElement;
+    expect(picture.target).toBe("_blank");
+    expect(viewer(c)).toBeNull();
+    expect(click(picture).defaultPrevented).toBe(true);
+    expect(viewer(c)).not.toBeNull();
+    const c2 = transcript([published()], "idle");
+    const name = [...c2.querySelectorAll("a")].find(
+      (a) => a.textContent === "after.png",
+    ) as HTMLAnchorElement;
+    expect(click(name).defaultPrevented).toBe(true);
+    expect(viewer(c2)).not.toBeNull();
+  });
+
+  it("leaves a click with a modifier key to the browser, which opens a new tab", () => {
+    const c = transcript([published()], "idle");
+    const picture = c.querySelector('a[aria-label="View after.png"]') as HTMLAnchorElement;
+    expect(click(picture, { metaKey: true }).defaultPrevented).toBe(false);
+    expect(click(picture, { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(viewer(c)).toBeNull();
   });
 });

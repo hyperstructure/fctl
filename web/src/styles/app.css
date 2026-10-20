@@ -207,6 +207,18 @@
   }
 }
 
+/* The lightbox (components/ui/lightbox.tsx): a screenshot or video grows
+   into place as the page dims behind it. */
+@theme {
+  --animate-zoom-in: zoom-in 220ms var(--ease-out) both;
+}
+@keyframes zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
 /* Two-factor sign-in: wrong codes shake their boxes, digits pop in, and a
    QR code appears from its middle out. */
 @theme {
