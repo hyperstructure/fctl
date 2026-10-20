@@ -95,7 +95,9 @@ export function useStickToBottom(content: RefObject<HTMLElement | null>, key: un
       stick.pinned(window.scrollY);
     };
     const asked = (dir: number, target: EventTarget | null) => {
-      if (dir && !scrollsInside(target, dir)) stick.asked(dir, window.scrollY, gap());
+      if (dir && !inDialog(target) && !scrollsInside(target, dir)) {
+        stick.asked(dir, window.scrollY, gap());
+      }
       syncAnchoring();
     };
     const grown = new ResizeObserver(([entry]) => {
@@ -189,6 +191,15 @@ export function keyDirection(e: KeyboardEvent): number {
     default:
       return 0;
   }
+}
+
+/**
+ * Whether an event comes from a dialog over the page, like the lightbox
+ * that holds the page still: its wheel and keys aren't the reader's on the
+ * page.
+ */
+export function inDialog(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("dialog[open]") !== null;
 }
 
 /**
