@@ -8,6 +8,7 @@ import { keys, queryClient } from "@/lib/queries";
 import { Admin } from "@/routes/admin";
 import { InvitePage, LoginPage, ResetPage, SetupPage, TwoFactorPage } from "@/routes/auth";
 import { DevicePage } from "@/routes/device";
+import { EarlyAccessPage } from "@/routes/early-access";
 import { ErrorPage } from "@/routes/error";
 import { Home } from "@/routes/home";
 import { NewProject } from "@/routes/new-project";
@@ -59,6 +60,20 @@ const login = createRoute({
   },
 });
 const setup = createRoute({ getParentRoute: () => root, path: "/setup", component: SetupPage });
+// Where the instance takes requests for early access (as app.fctl.sh does).
+const earlyAccess = createRoute({
+  getParentRoute: () => root,
+  path: "/early-access",
+  component: EarlyAccessPage,
+  beforeLoad: async () => {
+    const info = await queryClient.ensureQueryData({ queryKey: keys.instance, queryFn: api.instance });
+    if (info.setup_required) throw redirect({ to: "/setup" });
+    if (!info.features.early_access) {
+      throw redirect({ to: "/login", search: { next: undefined, error: undefined, deleted: undefined } });
+    }
+    if (await me()) throw redirect({ to: "/" });
+  },
+});
 const invite = createRoute({ getParentRoute: () => root, path: "/invite", component: InvitePage });
 const reset = createRoute({ getParentRoute: () => root, path: "/reset", component: ResetPage });
 // After Google, when the account's Google sign-ins ask for a code.
@@ -130,13 +145,23 @@ const admin = createRoute({
     tab:
       s.tab === "users"
         ? undefined
-        : oneOf(s.tab, ["people", "access", "workspaces", "github", "runners", "settings", "audit"] as const),
+        : oneOf(s.tab, [
+            "people",
+            "access",
+            "early-access",
+            "workspaces",
+            "github",
+            "runners",
+            "settings",
+            "audit",
+          ] as const),
   }),
 });
 
 const tree = root.addChildren([
   login,
   setup,
+  earlyAccess,
   invite,
   reset,
   twoFactor,

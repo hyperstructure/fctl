@@ -131,6 +131,11 @@ id_type!(
     WorkspaceInviteId,
     "wiv"
 );
+id_type!(
+    /// Someone without an account asking for early access.
+    AccessRequestId,
+    "acr"
+);
 
 #[cfg(test)]
 mod tests {

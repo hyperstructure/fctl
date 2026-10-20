@@ -16,4 +16,11 @@ github: boolean,
 /**
  * Admins let projects publish screenshots ([`InstanceSettings`]).
  */
-publish_screenshots: boolean, };
+publish_screenshots: boolean, 
+/**
+ * People without an account ask for early access from the sign-in
+ * page ([`RequestAccessRequest`]), and admins invite them from the
+ * list ([`AccessRequestList`]): where the deployment turns it on
+ * (`FCTL_EARLY_ACCESS`), as app.fctl.sh's does.
+ */
+early_access: boolean, };

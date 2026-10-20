@@ -94,6 +94,10 @@ export const api = {
   instance: () => request<G.InstanceInfo>("GET", "/instance"),
   setup: (b: G.SetupRequest) => request<G.AuthResponse>("POST", "/setup", b),
   invitePreview: (token: string) => request<G.InvitePreview>("GET", `/invites/${enc(token)}`),
+  /** Asks for early access, without an account (where `features.early_access`). */
+  requestAccess: (b: G.RequestAccessRequest) => request<G.AccessRequested>("POST", "/access-requests", b),
+  /** Withdraws it, with the token its answer had. */
+  withdrawAccess: (b: G.WithdrawAccessRequest) => request<G.Ok>("POST", "/access-requests/withdraw", b),
   signup: (b: G.SignupRequest) => request<G.AuthResponse>("POST", "/auth/signup", b),
   login: (b: G.LoginRequest) => request<G.AuthResponse>("POST", "/auth/login", b),
   logout: () => request<G.Ok>("POST", "/auth/logout", {}),
@@ -252,6 +256,8 @@ export const api = {
     ),
   createInvite: (b: G.CreateInviteRequest) => request<G.Invite>("POST", "/admin/invites", b),
   revokeInvite: (id: string) => request<G.Ok>("DELETE", `/admin/invites/${enc(id)}`),
+  accessRequests: () => request<G.AccessRequestList>("GET", "/admin/access-requests"),
+  removeAccessRequest: (id: string) => request<G.Ok>("DELETE", `/admin/access-requests/${enc(id)}`),
   transferInstance: (userId: string) => request<G.User>("POST", "/admin/transfer", { user_id: userId }),
   adminWorkspaces: () => request<G.AdminWorkspaceList>("GET", "/admin/workspaces"),
   adminDeleteWorkspace: (id: string, name: string) =>

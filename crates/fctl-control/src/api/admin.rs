@@ -374,6 +374,8 @@ async fn create_invite_for(
     )?
     .run()
     .await?;
+    // An address that asked for early access has its answer.
+    crate::api::early_access::invited(ctx, email).await?;
     let url = ctx.cfg.url(&format!("/invite#token={secret}"));
     let mut emailed = false;
     if let Some(mail) = ctx.cfg.email.clone() {

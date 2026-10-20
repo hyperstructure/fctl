@@ -45,7 +45,7 @@ plain http gives up:
 
 ```
 Made a master key in /data/master-key. It encrypts stored credentials and secrets: keep it with the data (or set FCTL_MASTER_KEY to it).
-Applied 16 database migrations
+Applied 18 database migrations
 fctl control plane 0.11.0 at http://192.168.1.20:8787, listening on 0.0.0.0:8787, data in /data
 Over plain http, anyone on the network in between can read sign-ins and tokens, and browsers offer passkeys, notifications and installing the app only over https (or on localhost): keep it to a network you trust, or put a reverse proxy with TLS in front.
 Create the primary instance owner's account (the link works once):

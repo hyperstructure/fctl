@@ -8,9 +8,9 @@ use clap::builder::BoolishValueParser;
 use clap::{ArgGroup, Subcommand};
 use fctl_domain::size;
 use fctl_proto::api::{
-    CreateInviteRequest, GithubConnectionStatus, InstanceSettings, InviteWorkspace, Runner,
-    RunnerSession, RunnerStatus, UpdateInstanceSettingsRequest, UpdateRunnerRequest,
-    UpdateUserRequest, User, UserStatus,
+    AccessRequest, AccessRequestList, CreateInviteRequest, GithubConnectionStatus,
+    InstanceSettings, InviteWorkspace, Runner, RunnerSession, RunnerStatus,
+    UpdateInstanceSettingsRequest, UpdateRunnerRequest, UpdateUserRequest, User, UserStatus,
 };
 use fctl_proto::session::{InstanceRole, WorkspaceRole};
 use std::io::{BufRead, IsTerminal, Write};
@@ -102,6 +102,17 @@ pub enum AdminCmd {
     /// workspaces that use them or ask to.
     #[command(subcommand)]
     Github(GithubCmd),
+    /// The people who asked for early access on the sign-in page and have
+    /// no account yet, where the instance takes requests (as app.fctl.sh
+    /// does): those waiting first, longest waiting first. Invite one with
+    /// `fctl admin invite <email>`.
+    #[command(
+        after_help = "Examples:\n  fctl admin early-access\n  fctl admin invite ada@example.com\n  fctl admin early-access remove spam@example.com"
+    )]
+    EarlyAccess {
+        #[command(subcommand)]
+        cmd: Option<EarlyAccessCmd>,
+    },
     /// Show who may sign up.
     Allowlist,
     /// Allow an email (invites them) or a domain (`*@example.com`).
@@ -171,6 +182,18 @@ pub enum AdminCmd {
         /// who has one. With --require-two-factor, everyone needs one.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         two_factor_google: Option<bool>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum EarlyAccessCmd {
+    /// List them (the default).
+    List,
+    /// Remove someone's request (by their address or the request's id).
+    /// Asking again adds it back.
+    Remove {
+        /// Their email address, or the request's id.
+        request: String,
     },
 }
 
@@ -300,6 +323,70 @@ fn print_github(list: &fctl_proto::api::GithubInstallations) {
             style::dim(&format!("Install it on another account: {url}"))
         );
     }
+}
+
+/// Who asked for early access: those waiting, then those invited.
+fn print_access_requests(list: &AccessRequestList, now: i64) {
+    if list.requests.is_empty() {
+        println!("Nobody is waiting for early access.");
+        return;
+    }
+    let (invited, waiting): (Vec<&AccessRequest>, Vec<&AccessRequest>) =
+        list.requests.iter().partition(|r| r.invited_at.is_some());
+    if !waiting.is_empty() {
+        println!("{}", style::bold(&format!("Waiting ({})", list.waiting)));
+        for r in &waiting {
+            println!("  {:<36} {}", r.email, style::dim(&asked(r, now)));
+        }
+    }
+    if !invited.is_empty() {
+        if !waiting.is_empty() {
+            println!();
+        }
+        println!("{}", style::bold(&format!("Invited ({})", list.invited)));
+        for r in &invited {
+            println!("  {:<36} {}", r.email, style::dim(&invitation(r, now)));
+        }
+    }
+    let shown = list.requests.len() as u64;
+    let all = u64::from(list.waiting) + u64::from(list.invited);
+    if shown < all {
+        println!("{}", style::dim(&format!("…and {} more", all - shown)));
+    }
+    if !waiting.is_empty() {
+        println!(
+            "\n{}",
+            style::dim("Invite someone with `fctl admin invite <email>`: it prints their link.")
+        );
+    }
+}
+
+/// "asked 2d ago", "asked 5d ago, again 3h ago".
+fn asked(r: &AccessRequest, now: i64) -> String {
+    let first = format!("asked {}", style::ago_from(r.created_at, now));
+    // Asking again within the hour isn't news.
+    if r.asked_at - r.created_at > 60 * 60 * 1000 {
+        format!("{first}, again {}", style::ago_from(r.asked_at, now))
+    } else {
+        first
+    }
+}
+
+/// "invited 1d ago by Maya", with whether the link still works.
+fn invitation(r: &AccessRequest, now: i64) -> String {
+    let mut s = format!(
+        "invited {}",
+        style::ago_from(r.invited_at.unwrap_or(now), now)
+    );
+    if let Some(by) = &r.invited_by {
+        s.push_str(&format!(" by {}", by.name));
+    }
+    s.push_str(if r.invite_expires_at.is_some() {
+        ", hasn't joined yet"
+    } else {
+        ", the link expired"
+    });
+    s
 }
 
 fn print_settings(s: &InstanceSettings) {
@@ -656,6 +743,29 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 println!("  {}", style::dim(&more.join(" · ")));
             }
         }
+        AdminCmd::EarlyAccess { cmd } => match cmd.unwrap_or(EarlyAccessCmd::List) {
+            EarlyAccessCmd::List => {
+                let list = api.access_requests().await?;
+                if json {
+                    return style::print_json(&list);
+                }
+                print_access_requests(&list, style::now_ms());
+            }
+            EarlyAccessCmd::Remove { request } => {
+                let list = api.access_requests().await?;
+                let wanted = request.trim().to_lowercase();
+                let found = list
+                    .requests
+                    .into_iter()
+                    .find(|r| r.email == wanted || r.id.as_str() == request.trim())
+                    .context("Nobody waiting or invited asked with that address or id")?;
+                let out = api.remove_access_request(found.id.as_str()).await?;
+                if json {
+                    return style::print_json(&out);
+                }
+                println!("Removed {}'s request", found.email);
+            }
+        },
         AdminCmd::Allowlist => {
             let list = api.allowlist().await?;
             if json {
@@ -1131,6 +1241,49 @@ mod tests {
                  rnr_01NEVER  offline, never connected, Ada Lovelace's"
                     .into()
             )
+        );
+        Ok(())
+    }
+
+    fn request(fields: serde_json::Value) -> Result<AccessRequest> {
+        let mut r = serde_json::json!({
+            "id": "acr_01ADA",
+            "email": "ada@example.com",
+            "created_at": NOW - 2 * 86_400_000,
+            "asked_at": NOW - 2 * 86_400_000,
+        });
+        if let (Some(r), Some(f)) = (r.as_object_mut(), fields.as_object()) {
+            r.extend(f.clone());
+        }
+        Ok(serde_json::from_value(r)?)
+    }
+
+    #[test]
+    fn requests_say_when_they_asked() -> Result<()> {
+        assert_eq!(asked(&request(serde_json::json!({}))?, NOW), "asked 2d ago");
+        // Asking again within the hour isn't news; later, it is.
+        let soon = request(serde_json::json!({ "asked_at": NOW - 2 * 86_400_000 + 60_000 }))?;
+        assert_eq!(asked(&soon, NOW), "asked 2d ago");
+        let later = request(serde_json::json!({ "asked_at": NOW - 3 * 3_600_000 }))?;
+        assert_eq!(asked(&later, NOW), "asked 2d ago, again 3h ago");
+        Ok(())
+    }
+
+    #[test]
+    fn invited_requests_say_whether_their_link_still_works() -> Result<()> {
+        let invited = request(serde_json::json!({
+            "invited_at": NOW - 86_400_000,
+            "invited_by": { "id": "usr_maya", "name": "Maya" },
+            "invite_expires_at": NOW + 13 * 86_400_000,
+        }))?;
+        assert_eq!(
+            invitation(&invited, NOW),
+            "invited 1d ago by Maya, hasn't joined yet"
+        );
+        let expired = request(serde_json::json!({ "invited_at": NOW - 20 * 86_400_000 }))?;
+        assert_eq!(
+            invitation(&expired, NOW),
+            "invited 20d ago, the link expired"
         );
         Ok(())
     }

@@ -11,9 +11,9 @@ use crate::session::{
     SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use crate::{
-    AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId, LoginJobId, Millis,
-    PasskeyId, ProjectId, PushDeviceId, RunnerId, SessionId, TokenId, UserId, WorkspaceId,
-    WorkspaceInviteId,
+    AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId,
+    LoginJobId, Millis, PasskeyId, ProjectId, PushDeviceId, RunnerId, SessionId, TokenId, UserId,
+    WorkspaceId, WorkspaceInviteId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -43,6 +43,12 @@ pub struct Features {
     /// Admins let projects publish screenshots ([`InstanceSettings`]).
     #[serde(default)]
     pub publish_screenshots: bool,
+    /// People without an account ask for early access from the sign-in
+    /// page ([`RequestAccessRequest`]), and admins invite them from the
+    /// list ([`AccessRequestList`]): where the deployment turns it on
+    /// (`FCTL_EARLY_ACCESS`), as app.fctl.sh's does.
+    #[serde(default)]
+    pub early_access: bool,
 }
 
 /// `POST /api/v1/setup`: create the owner account with the setup token.
@@ -968,6 +974,76 @@ pub struct InvitePreview {
     /// The workspaces it invites to as well.
     #[serde(default)]
     pub workspaces: Vec<WorkspaceRef>,
+    /// The address asked for early access, which this invitation answers.
+    #[serde(default)]
+    pub early_access: bool,
+}
+
+/// `POST /api/v1/access-requests` (public, where [`Features::early_access`]):
+/// someone without an account asks for early access. The answer
+/// ([`AccessRequested`]) is the same whether the address asked before, was
+/// invited or has an account.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RequestAccessRequest {
+    pub email: String,
+}
+
+/// The answer to [`RequestAccessRequest`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AccessRequested {
+    /// Withdraws the request ([`WithdrawAccessRequest`]) when it was the
+    /// address's first; otherwise it withdraws nothing, and looks the same.
+    pub token: String,
+}
+
+/// `POST /api/v1/access-requests/withdraw` (public): the browser that asked
+/// for early access withdraws its request. The answer is `ok` whether the
+/// token withdrew one or not.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WithdrawAccessRequest {
+    pub token: String,
+}
+
+/// Someone who asked for early access, for the instance's admins.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AccessRequest {
+    pub id: AccessRequestId,
+    pub email: String,
+    /// When they first asked.
+    pub created_at: Millis,
+    /// When they last asked: asking again moves it.
+    pub asked_at: Millis,
+    /// When an admin last invited the address (from this list or any
+    /// other way).
+    pub invited_at: Option<Millis>,
+    pub invited_by: Option<UserRef>,
+    /// When the address's newest unused invitation stops working; absent
+    /// once it has, or before any.
+    pub invite_expires_at: Option<Millis>,
+}
+
+/// `GET /api/v1/admin/access-requests`: who asked for early access and
+/// has no account yet, those still waiting first (longest waiting first),
+/// then those invited (latest first). A request goes once its address has
+/// an account, when an admin removes it or the browser that asked
+/// withdraws it, or a year after it last asked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AccessRequestList {
+    /// At most [`AccessRequestList::LIMIT`].
+    pub requests: Vec<AccessRequest>,
+    /// How many wait for an invitation, and how many were invited, in all.
+    pub waiting: u32,
+    pub invited: u32,
+}
+
+impl AccessRequestList {
+    pub const LIMIT: u32 = 500;
 }
 
 #[skip_serializing_none]

@@ -51,6 +51,8 @@ simple = { limit = 30, period = 60 }
 FCTL_INSTANCE_NAME = "fctl dev"
 FCTL_PUBLIC_URL = "http://localhost:8787"
 FCTL_DEV = "1"
+# The sign-in page takes early access requests, as app.fctl.sh's does.
+FCTL_EARLY_ACCESS = "1"
 
 # Hourly housekeeping (src/housekeeping.rs). `cargo xtask dev` runs wrangler
 # with --test-scheduled: curl "http://127.0.0.1:8787/cdn-cgi/handler/scheduled?cron=17+*+*+*+*"

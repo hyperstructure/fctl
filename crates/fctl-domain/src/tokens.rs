@@ -25,6 +25,8 @@ pub enum SecretKind {
     SignInChallenge,
     /// OAuth `state` and similar short-lived nonces.
     Nonce,
+    /// Withdraws a request for early access, in the browser that made it.
+    AccessRequest,
 }
 
 impl SecretKind {
@@ -39,6 +41,7 @@ impl SecretKind {
             Self::DeviceCode => "fctl_dc_",
             Self::SignInChallenge => "fctl_2fa_",
             Self::Nonce => "fctl_n_",
+            Self::AccessRequest => "fctl_acr_",
         }
     }
 
@@ -53,6 +56,7 @@ impl SecretKind {
             Self::DeviceCode,
             Self::SignInChallenge,
             Self::Nonce,
+            Self::AccessRequest,
         ]
         .into_iter()
         .find(|k| secret.starts_with(k.prefix()))

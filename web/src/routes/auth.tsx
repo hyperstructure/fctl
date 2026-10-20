@@ -1,9 +1,9 @@
 // Sign-in, setup, invitations and password resets, and the second step of
 // a sign-in with two-factor.
 
-import { foundry } from "@hyperstructure/design/gl/foundry";
+import { type FoundryHandle, foundry } from "@hyperstructure/design/gl/foundry";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowRight, Fingerprint } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { usePasskeySignIn } from "@/components/passkeys/sign-in";
@@ -13,6 +13,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { ApiFailure, api, emails } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { saveSent } from "@/lib/early-access";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
 import { RECOVERY_LEFT } from "@/lib/two-factor";
@@ -53,12 +54,20 @@ function forgetInvite() {
   } catch {}
 }
 
+/** The invitation made or joined an account: the request for early access it answered is done. */
+function used() {
+  forgetInvite();
+  saveSent(undefined);
+}
+
 export function AuthFrame({
   title,
   subtitle,
   children,
   footer,
   wide,
+  below,
+  onFoundry,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
@@ -66,13 +75,21 @@ export function AuthFrame({
   footer?: ReactNode;
   /** Room for more than a form (setting up two-factor). */
   wide?: boolean;
+  /** Under the card, before the footer. */
+  below?: ReactNode;
+  /** The scene behind the page, once it is mounted, for pages that light its threads. */
+  onFoundry?: (scene: FoundryHandle) => void;
 }) {
   const { data: instance } = useInstance();
   return (
     <div className="relative flex min-h-dvh flex-col overflow-hidden bg-canvas">
       <div className="absolute inset-0">
         <GLCanvas
-          scene={() => foundry({ planet: [1.02, -0.75, 1.15], density: 0.6 }).scene}
+          scene={() => {
+            const scene = foundry({ planet: [1.02, -0.75, 1.15], density: 0.6 });
+            onFoundry?.(scene);
+            return scene.scene;
+          }}
           options={{ pixel: 3, fps: 30 }}
         />
       </div>
@@ -95,6 +112,7 @@ export function AuthFrame({
           <div className="mt-8 rounded-xl border border-line-strong bg-surface/90 p-6 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl">
             {children}
           </div>
+          {below}
           {footer && <div className="mt-5 text-center text-[13px] text-ink-3">{footer}</div>}
         </div>
       </div>
@@ -167,6 +185,23 @@ function GoogleButton({ label, next }: { label: string; next?: string }) {
   );
 }
 
+/** On the sign-in page, where the instance takes requests: the way in for people without an account. */
+function EarlyAccessLink() {
+  return (
+    <span className="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5">
+      No account yet?
+      <Link
+        to="/early-access"
+        className="group inline-flex items-center gap-2 rounded-full border border-line-strong bg-surface/85 py-1 pr-2.5 pl-2.5 font-medium text-ink backdrop-blur-xl transition-colors hover:border-ink-4"
+      >
+        <span className="size-1.5 rounded-full bg-highlight ring-1 ring-ink/15" />
+        Request early access
+        <ArrowRight className="size-3.5 text-ink-3 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-ink motion-reduce:transition-none" />
+      </Link>
+    </span>
+  );
+}
+
 export function LoginPage() {
   const search = useSearch({ from: "/login" });
   const { data: instance } = useInstance();
@@ -214,9 +249,11 @@ export function LoginPage() {
       title={<>Welcome back.</>}
       subtitle="Agents are building while you're away. Sign in to see what they've done."
       footer={
-        instance && !instance.features.email
-          ? "Need an account or a new password? Ask an admin of this instance."
-          : undefined
+        instance?.features.early_access ? (
+          <EarlyAccessLink />
+        ) : instance && !instance.features.email ? (
+          "Need an account or a new password? Ask an admin of this instance."
+        ) : undefined
       }
     >
       {search.deleted && !external && (
@@ -272,7 +309,8 @@ export function LoginPage() {
         <Field
           label="Password"
           action={
-            instance?.features.email ? (
+            // Without email, where the footer is the way to early access, it says whom to ask.
+            instance?.features.email || instance?.features.early_access ? (
               <button
                 type="button"
                 className="text-[12px] text-ink-3 hover:text-ink"
@@ -296,7 +334,10 @@ export function LoginPage() {
         </Field>
         {error && <Banner tone="error">{error.message}</Banner>}
         {sent && <Banner tone="ok">If {email} has an account, a reset link is on its way.</Banner>}
-        {forgot && (
+        {forgot && !instance?.features.email && (
+          <Banner tone="info">Ask an admin of this instance for a link to choose a new password.</Banner>
+        )}
+        {forgot && instance?.features.email && (
           <Banner tone="info">
             We'll email a reset link to {email || "your address"}.{" "}
             <button
@@ -424,14 +465,14 @@ export function InvitePage() {
   const { busy, error, submit, fieldError } = useSubmit(
     () => api.signup({ email, given_name: given, family_name: family, password, invite: token }),
     (r) => {
-      forgetInvite();
+      used();
       if (r.me) signedIn(r.me);
     },
   );
   const connect = useMutation({
     mutationFn: () => emails.connectInvite(token),
     onSuccess: (m) => {
-      forgetInvite();
+      used();
       signedIn(m);
     },
   });
@@ -479,9 +520,18 @@ export function InvitePage() {
   ) : (
     "Checking your invitation…"
   );
+  // The answer to their request for early access.
+  const title = preview.data?.early_access ? (
+    // As the page where they asked said it (routes/early-access.tsx).
+    <>
+      Your <span className="title-hot">early access</span> is here<span className="title-dot">.</span>
+    </>
+  ) : (
+    <>You're invited.</>
+  );
   if (me && !separate) {
     return (
-      <AuthFrame title={<>You're invited.</>} subtitle={subtitle}>
+      <AuthFrame title={title} subtitle={subtitle}>
         {workspacesLine}
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-3 rounded-xl border border-line px-4 py-3">
@@ -519,7 +569,7 @@ export function InvitePage() {
   }
   return (
     <AuthFrame
-      title={<>You're invited.</>}
+      title={title}
       subtitle={subtitle}
       footer={
         !me && (

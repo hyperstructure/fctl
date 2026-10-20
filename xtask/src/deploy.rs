@@ -22,6 +22,10 @@ pub struct Instance {
     pub github: Option<Github>,
     pub email: Option<Email>,
     pub google: Option<Google>,
+    /// The sign-in page lets people without an account ask for early
+    /// access, and admins invite them from a list (app.fctl.sh).
+    #[serde(default)]
+    pub early_access: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +113,9 @@ impl Instance {
         }
         if let Some(g) = &self.google {
             vars.push(("GOOGLE_CLIENT_ID", g.client_id.clone()));
+        }
+        if self.early_access {
+            vars.push(("FCTL_EARLY_ACCESS", "1".to_owned()));
         }
         let q = |s: &str| toml::Value::String(s.to_owned()).to_string();
         let vars = vars
@@ -415,5 +422,17 @@ app_slug = "acme-fctl"
             Some("NotifyObject")
         );
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
+        assert!(doc["vars"].get("FCTL_EARLY_ACCESS").is_none());
+    }
+
+    #[test]
+    fn app_fctl_sh_takes_early_access_requests() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let doc: toml::Table =
+            toml::from_str(&load(&root, "fctl-sh").unwrap().wrangler_toml()).unwrap();
+        assert_eq!(doc["vars"]["FCTL_EARLY_ACCESS"].as_str(), Some("1"));
+        let example: toml::Table =
+            toml::from_str(&load(&root, "example").unwrap().wrangler_toml()).unwrap();
+        assert!(example["vars"].get("FCTL_EARLY_ACCESS").is_none());
     }
 }

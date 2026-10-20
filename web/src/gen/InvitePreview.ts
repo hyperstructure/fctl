@@ -8,4 +8,8 @@ export type InvitePreview = { email: string, instance: string, invited_by?: stri
 /**
  * The workspaces it invites to as well.
  */
-workspaces: Array<WorkspaceRef>, };
+workspaces: Array<WorkspaceRef>, 
+/**
+ * The address asked for early access, which this invitation answers.
+ */
+early_access: boolean, };
