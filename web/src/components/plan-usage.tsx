@@ -92,7 +92,8 @@ export function PlanUsageList({ usage }: { usage: G.PlanLimit[] }) {
   );
 }
 
-/** The default credential's limits in one line, under the floor's task box. */
+/** The default credential's limits in one line, under the floor's task box. Phones get
+ * shorter meters and gaps, so two limits fit on the line from 390 px. */
 export function PlanUsageStrip({ usage, className }: { usage: G.PlanLimit[]; className?: string }) {
   const now = useNow();
   const urgent = pressing(usage, now);
@@ -104,15 +105,15 @@ export function PlanUsageStrip({ usage, className }: { usage: G.PlanLimit[]; cla
         to="/settings"
         search={{ linked: undefined, error: undefined }}
         title={`As a session reported it ${ago(reportedAt(usage))}`}
-        className="flex flex-wrap items-center gap-x-5 gap-y-1.5 self-start rounded-md text-ink-3 transition-colors hover:text-ink-2"
+        className="flex flex-wrap items-center gap-x-4 gap-y-1.5 self-start rounded-md text-ink-3 transition-colors hover:text-ink-2 sm:gap-x-5"
       >
         <span className="text-ink-4">Claude plan</span>
         {usage.map((l) => {
           const st = standing(l, now);
           return (
-            <span key={l.window} className="flex items-center gap-2">
+            <span key={l.window} className="flex items-center gap-1.5 sm:gap-2">
               <span>{shortLabel(l.window)}</span>
-              <Meter limit={l} now={now} className="w-14" />
+              <Meter limit={l} now={now} className="w-10 sm:w-14" />
               <span className={cn("font-mono text-[11px] tabular-nums", st !== "fine" && TONE[st].text)}>
                 {st === "reset" ? "reset" : st === "reached" ? "used up" : percent(l) || "–"}
               </span>
