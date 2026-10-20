@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { AuditLog } from "@/components/audit-log";
+import { GithubAvatar } from "@/components/github-avatar";
 import {
   Avatar,
   AvatarStack,
@@ -965,12 +966,7 @@ function Github() {
         {g?.installations.map((i) => (
           <li key={i.account} className="border-b border-line py-4">
             <div className="flex items-center gap-3.5">
-              <img
-                src={`https://github.com/${encodeURIComponent(i.account)}.png?size=64`}
-                alt=""
-                className="size-8 shrink-0 rounded-md bg-raised"
-                referrerPolicy="no-referrer"
-              />
+              <GithubAvatar account={i.account} />
               <div className="min-w-0 flex-1">
                 <a
                   href={`https://github.com/${encodeURIComponent(i.account)}`}
