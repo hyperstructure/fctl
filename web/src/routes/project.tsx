@@ -57,6 +57,7 @@ import {
   useRunners,
   useSessions,
 } from "@/lib/queries";
+import { repoLabel, repoSummary } from "@/lib/repos";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 type Tab = "sessions" | "repositories" | "settings" | "members" | "secrets";
@@ -67,7 +68,7 @@ export function ProjectPage() {
   const project = useProject(slug);
   const p = project.data;
   const manage = p?.role === "owner" || p?.role === "maintainer";
-  const others = (useProjectRepos(p?.id).data?.repos ?? []).filter((r) => !r.primary).length;
+  const repos = p && repoSummary(p);
   const workspace = freshest(useWorkspaceIndex(), p?.workspace);
   if (project.isError)
     return (
@@ -94,29 +95,32 @@ export function ProjectPage() {
             <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ink-3">{p.description}</p>
           )}
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-ink-3">
-            {p.repo ? (
-              <a
-                href={`https://github.com/${p.repo.owner}/${p.repo.name}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 font-mono text-ink-2 transition-colors hover:text-ink"
-              >
-                <GithubIcon className="size-3.5" />
-                {p.repo.owner}/{p.repo.name}
-              </a>
+            {repos ? (
+              <span className="inline-flex items-center gap-1.5">
+                {p.repo && (
+                  <a
+                    href={`https://github.com/${p.repo.owner}/${p.repo.name}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 font-mono text-ink-2 transition-colors hover:text-ink"
+                  >
+                    <GithubIcon className="size-3.5" />
+                    {repos.name}
+                  </a>
+                )}
+                {repos.more && (
+                  <Link
+                    to="/p/$slug"
+                    params={{ slug }}
+                    search={{ tab: "repositories" }}
+                    className="transition-colors hover:text-ink"
+                  >
+                    {p.repo ? repos.more : repoLabel(p)}
+                  </Link>
+                )}
+              </span>
             ) : (
-              others === 0 && <span>No repository</span>
-            )}
-            {others > 0 && (
-              <Link
-                to="/p/$slug"
-                params={{ slug }}
-                search={{ tab: "repositories" }}
-                className="transition-colors hover:text-ink"
-              >
-                {p.repo ? "+" : ""}
-                {others} {others === 1 ? "repository" : "repositories"}
-              </Link>
+              <span>No repository</span>
             )}
             <span className="inline-flex items-center gap-1.5 font-mono">
               <GitBranch className="size-3.5 text-ink-4" />
@@ -327,7 +331,12 @@ function Repositories({ project }: { project: G.Project }) {
   const list = repos.data?.repos ?? [];
   const owner = list[0]?.owner;
   const wide = repo.trim().endsWith("/*");
-  const save = (r: G.ProjectRepoList) => queryClient.setQueryData(keys.projectRepos(project.id), r);
+  const save = (r: G.ProjectRepoList) => {
+    queryClient.setQueryData(keys.projectRepos(project.id), r);
+    // The project's header and the lists of projects count them.
+    for (const k of [keys.project(project.slug), keys.project(project.id), keys.projects])
+      void queryClient.invalidateQueries({ queryKey: k });
+  };
   const add = useMutation({
     mutationFn: () => api.addProjectRepo(project.id, { repo: repo.trim(), access: wide ? "read" : access }),
     onSuccess: (r) => {

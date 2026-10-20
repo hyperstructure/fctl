@@ -563,6 +563,16 @@ pub struct Project {
     pub name: String,
     pub description: Option<String>,
     pub repo: Option<RepoRef>,
+    /// How many repositories its agents may use besides `repo`, named one
+    /// by one (`GET /api/v1/projects/{id}/repos` lists them). Absent from
+    /// older control planes.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub other_repos: u32,
+    /// The account whose every repository its agents may also read (an
+    /// owner-wide grant, `owner/*`): the one `repo` belongs to. Absent
+    /// without one.
+    pub all_repos_of: Option<String>,
     pub default_branch: String,
     pub settings: ProjectSettings,
     /// The caller's role: their membership, their workspace's base role, or

@@ -384,6 +384,22 @@ pub fn narrow(plan: TokenPlan, scope: Option<&Scope>) -> (TokenPlan, Vec<String>
     )
 }
 
+/// A project's repositories in a few words, as lists show them: its
+/// primary one and how many more its agents may use
+/// (`hyperstructure/fctl (+3 more)`), or `(+entire org)` when they may read
+/// every repository of its account. `None` when it has none.
+pub fn summary(primary: Option<&RepoRef>, others: u32, all_of: Option<&str>) -> Option<String> {
+    match (primary, all_of, others) {
+        (Some(p), Some(_), _) => Some(format!("{} (+entire org)", p.full_name())),
+        (Some(p), None, 0) => Some(p.full_name()),
+        (Some(p), None, n) => Some(format!("{} (+{n} more)", p.full_name())),
+        (None, Some(owner), _) => Some(format!("{owner} (entire org)")),
+        (None, None, 0) => None,
+        (None, None, 1) => Some("1 repository".to_owned()),
+        (None, None, n) => Some(format!("{n} repositories")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,5 +647,30 @@ mod tests {
         assert!(scope_names("acme", &names(&["other/web"])).is_err());
         assert!(scope_names("acme", &names(&[])).is_err());
         assert!(scope_names("acme", &names(&["../x"])).is_err());
+    }
+
+    #[test]
+    fn summaries_count_the_other_repositories() {
+        let fctl = r("hyperstructure/fctl");
+        assert_eq!(
+            summary(Some(&fctl), 0, None).as_deref(),
+            Some("hyperstructure/fctl")
+        );
+        assert_eq!(
+            summary(Some(&fctl), 3, None).as_deref(),
+            Some("hyperstructure/fctl (+3 more)")
+        );
+        // Named ones are in the org too.
+        assert_eq!(
+            summary(Some(&fctl), 2, Some("hyperstructure")).as_deref(),
+            Some("hyperstructure/fctl (+entire org)")
+        );
+        assert_eq!(
+            summary(None, 0, Some("hyperstructure")).as_deref(),
+            Some("hyperstructure (entire org)")
+        );
+        assert_eq!(summary(None, 1, None).as_deref(), Some("1 repository"));
+        assert_eq!(summary(None, 2, None).as_deref(), Some("2 repositories"));
+        assert_eq!(summary(None, 0, None), None);
     }
 }

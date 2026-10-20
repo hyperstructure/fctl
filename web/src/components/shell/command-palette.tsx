@@ -18,6 +18,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { useMe, useProjects, useSessions, useWorkspaces } from "@/lib/queries";
+import { repoLabel } from "@/lib/repos";
 import { getTheme, setTheme } from "@/lib/theme";
 
 interface Entry {
@@ -69,7 +70,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         id: `p-${p.id}`,
         group: "Projects",
         label: several && p.workspace ? `${p.workspace.name} / ${p.name}` : p.name,
-        hint: p.repo ? `${p.repo.owner}/${p.repo.name}` : undefined,
+        hint: repoLabel(p),
         icon: <FolderGit2 className="size-4" />,
         run: go(() => navigate({ to: "/p/$slug", params: { slug: p.slug }, search: { tab: undefined } })),
       });

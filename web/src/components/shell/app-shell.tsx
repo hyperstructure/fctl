@@ -24,6 +24,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { forgetDraft } from "@/lib/draft";
 import { useFeed } from "@/lib/feed";
 import { useHotkey } from "@/lib/hotkeys";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
@@ -281,6 +282,7 @@ function Sidebar({
                   onClick={async () => {
                     close();
                     await forgetPush();
+                    await forgetDraft();
                     await api.logout().catch(() => {});
                     queryClient.clear();
                     window.location.assign("/login");

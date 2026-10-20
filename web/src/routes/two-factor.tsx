@@ -12,6 +12,7 @@ import { Banner, Button, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api, TWO_FACTOR_REQUIRED } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { forgetDraft } from "@/lib/draft";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { forgetPush } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
@@ -65,6 +66,7 @@ function TwoFactorRequired({ me }: { me: G.Me }) {
   });
   const signOut = async () => {
     await forgetPush();
+    await forgetDraft();
     await api.logout().catch(() => {});
     queryClient.clear();
     window.location.assign("/login");

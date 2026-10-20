@@ -350,6 +350,12 @@ pub struct ProjectRow {
     pub total_sessions: i64,
     #[serde(deserialize_with = "opt_int", default)]
     pub last_activity_at: Option<i64>,
+    /// Repositories in `project_repos` named one by one.
+    #[serde(deserialize_with = "int", default)]
+    pub other_repos: i64,
+    /// The account of an owner-wide grant in `project_repos`.
+    #[serde(default)]
+    pub all_repos_of: Option<String>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
@@ -387,6 +393,8 @@ impl ProjectRow {
             name: self.name.clone(),
             description: self.description.clone(),
             repo: self.repo(),
+            other_repos: self.other_repos.max(0) as u32,
+            all_repos_of: self.all_repos_of.clone(),
             default_branch: self.default_branch.clone(),
             settings: self.settings(),
             role: effective_role,
@@ -456,14 +464,16 @@ impl RepoRow {
     }
 }
 
-/// SELECT for projects with their workspace, the caller's roles and
-/// session counts. Bind: `?1` = caller user id.
+/// SELECT for projects with their workspace, the caller's roles, session
+/// counts and their other repositories. Bind: `?1` = caller user id.
 pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.repo_owner, p.repo_name, \
     p.default_branch, p.settings, p.session_counter, p.created_by, cu.name AS creator_name, \
     cu.avatar_url AS creator_avatar, p.created_at, p.updated_at, p.archived_at, m.role AS member_role, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping')) AS active_sessions, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) AS total_sessions, \
     (SELECT MAX(COALESCE(s.last_activity_at, s.created_at)) FROM sessions s WHERE s.project_id = p.id) AS last_activity_at, \
+    (SELECT COUNT(*) FROM project_repos r WHERE r.project_id = p.id AND r.name != '*') AS other_repos, \
+    (SELECT r.owner FROM project_repos r WHERE r.project_id = p.id AND r.name = '*' LIMIT 1) AS all_repos_of, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
     w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \

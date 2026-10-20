@@ -32,10 +32,10 @@ function render(node: ReactNode) {
   return { container, rerender };
 }
 
-function mount() {
+function mount(onStarted?: Parameters<typeof useStartSession>[0]) {
   let current: ReturnType<typeof useStartSession> | undefined;
   function Probe() {
-    current = useStartSession();
+    current = useStartSession(onStarted);
     return null;
   }
   render(<Probe />);
@@ -73,6 +73,21 @@ describe("starting a session", () => {
     s().start("web", "Fix the flaky test");
     await settle();
     expect(createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the session once what has to happen first is done", async () => {
+    createSession.mockResolvedValue({ id: "ses_1" });
+    navigate.mockResolvedValue(undefined);
+    let forgotten: () => void = () => {};
+    const onStarted = vi.fn(() => new Promise<void>((r) => (forgotten = r)));
+    const s = mount(onStarted);
+    act(() => s().start("web", "Fix the flaky test"));
+    await settle();
+    expect(onStarted).toHaveBeenCalledWith({ id: "ses_1" });
+    expect(navigate).not.toHaveBeenCalled();
+    forgotten();
+    await settle();
+    expect(navigate).toHaveBeenCalledWith({ to: "/s/$id", params: { id: "ses_1" } });
   });
 
   it("shows the error and can start again after a failure", async () => {
