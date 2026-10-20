@@ -255,7 +255,16 @@ the instance creates one, as its primary admin.
   address, as far as the limit and two-factor allow; the rest keep waiting.
 - **Your preferences.** Each member chooses the Claude connection their
   sessions in it run on (`workspace_members.credential_id`), else their
-  default one, so that a company's seat pays for the company's work.
+  default one, so that a company's seat pays for the company's work. They
+  also put their workspaces, and each one's projects, in the order they
+  want, by dragging them in the app's sidebar or with `fctl workspaces
+  order` and `fctl projects order` (`PUT /api/v1/me/workspace-order`, and
+  `project_order` in `PATCH /api/v1/workspaces/{id}/membership`). The
+  membership keeps it (`workspace_members.position`, `project_order`), and
+  lists of workspaces and projects come in it (`model::WORKSPACE_ORDER`,
+  `PROJECT_ORDER`): what someone hasn't placed follows, oldest first, so
+  nothing moves unless they move it. Which workspaces they fold in the
+  sidebar stays in their browser.
 - **Audit log.** What happens in a workspace (people, roles, runners, GitHub
   accounts, settings, projects, sessions) goes in its log
   (`audit_log.workspace_id`), which its admins read; the rest is the

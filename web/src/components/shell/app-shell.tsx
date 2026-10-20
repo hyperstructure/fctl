@@ -231,7 +231,7 @@ function Sidebar({
           />
         ))}
         <p id={ORDER_HELP} hidden>
-          Drag to move it, or press Alt with the up or down arrow.
+          Drag to move it, or press Alt or Option with the up or down arrow.
         </p>
         {workspaces && workspaces.workspaces.length < workspaces.limit && (
           <Link
@@ -333,9 +333,10 @@ const notSaved = (e: unknown) =>
 
 // Rows people drag: a held finger lifts one instead of opening the link's menu.
 const DRAGGABLE = "touch-manipulation select-none [-webkit-touch-callout:none]";
-// A row or workspace lifted to be dragged, and settling into its place.
+// A row or workspace lifted to be dragged, and settling into its place: a
+// little larger, over the others.
 const LIFTED =
-  "relative z-10 bg-raised shadow-[inset_0_0_0_1px_var(--c-line-strong),0_12px_28px_-10px_rgb(0_0_0/0.5),0_2px_6px_-2px_rgb(0_0_0/0.16)]";
+  "relative z-10 scale-[1.02] bg-raised shadow-[inset_0_0_0_1px_var(--c-line-strong),0_16px_32px_-8px_rgb(0_0_0/0.55),0_3px_8px_-2px_rgb(0_0_0/0.22)]";
 
 /** A workspace in the sidebar: its name (its page) and its projects, which fold away. */
 function WorkspaceGroup({
@@ -371,7 +372,10 @@ function WorkspaceGroup({
     <section
       ref={sort.itemRef(workspace.id)}
       aria-label={workspace.name}
-      className={cn("rounded-md transition-[background-color,box-shadow] duration-150", lifted && LIFTED)}
+      className={cn(
+        "rounded-md transition-[background-color,box-shadow,scale] duration-150 ease-[var(--ease-out)]",
+        lifted && LIFTED,
+      )}
     >
       <div
         {...handle}
@@ -456,7 +460,7 @@ function WorkspaceGroup({
                   search={{ tab: undefined }}
                   onClick={onNavigate}
                   className={cn(
-                    "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-[color,background-color,box-shadow] duration-150",
+                    "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-[color,background-color,box-shadow,scale] duration-150 ease-[var(--ease-out)]",
                     DRAGGABLE,
                     sortProjects.lifted === p.id
                       ? `${LIFTED} text-ink`

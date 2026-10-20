@@ -1,7 +1,16 @@
 import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Box, gapOf, limitsOf, moveItem, shiftOf, targetIndex, useSortable } from "./sortable";
+import {
+  type Box,
+  gapOf,
+  limitsOf,
+  moveItem,
+  scrollSpeed,
+  shiftOf,
+  targetIndex,
+  useSortable,
+} from "./sortable";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -62,6 +71,29 @@ describe("limitsOf", () => {
     expect(limitsOf(rows, 0)).toEqual([0, 102]);
     expect(limitsOf(rows, 2)).toEqual([-68, 34]);
     expect(limitsOf([{ top: 10, height: 20 }], 0)).toEqual([0, 0]);
+  });
+});
+
+describe("scrollSpeed", () => {
+  // A list from y = 100 to 500 whose items may move 300 px either way.
+  const limits = [-300, 300] as const;
+
+  it("scrolls toward the edge the item is dragged to, faster closer to it", () => {
+    expect(scrollSpeed(300, 200, 100, 500, 100, limits)).toBe(0);
+    expect(scrollSpeed(476, 200, 100, 500, 276, limits)).toBe(7);
+    expect(scrollSpeed(520, 200, 100, 500, 280, limits)).toBe(14);
+    expect(scrollSpeed(124, 300, 100, 500, -176, limits)).toBe(-7);
+  });
+
+  it("doesn't scroll away from where the item is going", () => {
+    // Picked up near the bottom, dragged up.
+    expect(scrollSpeed(470, 480, 100, 500, -10, limits)).toBe(0);
+    expect(scrollSpeed(110, 100, 100, 500, 10, limits)).toBe(0);
+  });
+
+  it("stops once the item can go no further that way", () => {
+    expect(scrollSpeed(490, 200, 100, 500, 300, limits)).toBe(0);
+    expect(scrollSpeed(110, 400, 100, 500, -300, limits)).toBe(0);
   });
 });
 
@@ -174,6 +206,47 @@ describe("useSortable", () => {
     });
     expect(onReorder).toHaveBeenCalledTimes(1);
     expect(row("a").getAttribute("aria-describedby")).toBe("help");
+  });
+
+  it("moves on from the new order when keys come faster than it shows", () => {
+    const onReorder = vi.fn();
+    // A list that takes its order from elsewhere, and shows the new one later.
+    function Slow() {
+      const [ids, setIds] = useState(["a", "b", "c"]);
+      const sort = useSortable({
+        ids,
+        onReorder: (next) => {
+          onReorder(next);
+          setTimeout(() => setIds(next), 50);
+        },
+        label: (id) => id,
+      });
+      return (
+        <div>
+          {ids.map((id) => (
+            <a key={id} href={`#${id}`} ref={sort.itemRef(id)} {...sort.handleProps(id)} data-row="">
+              {id}
+            </a>
+          ))}
+        </div>
+      );
+    }
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    act(() => root.render(<Slow />));
+    unmounts.push(() => {
+      act(() => root.unmount());
+      container.remove();
+    });
+    const a = container.querySelector('a[href="#a"]') as HTMLElement;
+    act(() => {
+      for (let i = 0; i < 2; i++)
+        a.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }));
+    });
+    expect(onReorder).toHaveBeenLastCalledWith(["b", "c", "a"]);
+    act(() => vi.advanceTimersByTime(100));
+    expect([...container.querySelectorAll("a")].map((x) => x.textContent)).toEqual(["b", "c", "a"]);
   });
 
   it("drags with a mouse once it moves, and the click that ends it opens nothing", () => {

@@ -1,7 +1,7 @@
 // Lists people put in order by dragging, as the sidebar's workspaces and
 // projects. A mouse drags once it moves a few pixels, so a click still
 // opens what it clicks; a finger holds still for a moment first, so a swipe
-// still scrolls. Alt with ↑ or ↓ moves the focused one. The others make
+// still scrolls. Alt (Option) with ↑ or ↓ moves the focused one. The others make
 // room as it passes them, and a dropped one settles into its place.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -54,6 +54,26 @@ export function limitsOf(boxes: readonly Box[], from: number): [number, number] 
   const last = boxes[boxes.length - 1];
   if (!moving || !first || !last) return [0, 0];
   return [first.top - moving.top, last.top + last.height - moving.height - moving.top];
+}
+
+/**
+ * How fast a list scrolls (pixels a frame, up negative) with the pointer at
+ * `y`, near its edges at `top` and `bottom`: toward where the item is
+ * dragged from `startY`, while it can go further that way (`offset`, its
+ * distance from its place, within `limits`).
+ */
+export function scrollSpeed(
+  y: number,
+  startY: number,
+  top: number,
+  bottom: number,
+  offset: number,
+  [min, max]: readonly [number, number],
+): number {
+  if (y < top + EDGE && y < startY && offset > min) return -Math.min(1, (top + EDGE - y) / EDGE) * MAX_SCROLL;
+  if (y > bottom - EDGE && y > startY && offset < max)
+    return Math.min(1, (y - (bottom - EDGE)) / EDGE) * MAX_SCROLL;
+  return 0;
 }
 
 /** `list` with the item at `from` moved to `to`. */
@@ -111,12 +131,12 @@ interface Drag {
   frame: number;
 }
 
+/** How far the pointer has taken the dragged item from its place, scrolling included. */
+const offsetOf = (d: Drag) => d.y - d.startY + (d.scroller.scrollTop - d.startScroll);
+
 /** Puts the dragged item under the pointer, and the others out of its way. */
 function follow(d: Drag) {
-  const dy = Math.min(
-    d.limits[1],
-    Math.max(d.limits[0], d.y - d.startY + (d.scroller.scrollTop - d.startScroll)),
-  );
+  const dy = Math.min(d.limits[1], Math.max(d.limits[0], offsetOf(d)));
   const moving = d.els[d.from];
   const box = d.boxes[d.from];
   if (!moving || !box) return;
@@ -237,6 +257,8 @@ export function useSortable({
         release([...els.current.values()], true, settled);
       }, 1500);
       before.current = { tops, focus: document.activeElement, fallback };
+      // A key pressed again before the list shows the new order moves on from it.
+      latest.current = { ...latest.current, ids: next };
       latest.current.onReorder(next);
     },
     [release, settled],
@@ -280,9 +302,7 @@ export function useSortable({
     const r = d.scroller.getBoundingClientRect();
     const top = Math.max(r.top, 0);
     const bottom = Math.min(r.bottom, window.innerHeight);
-    let v = 0;
-    if (d.y < top + EDGE) v = -Math.min(1, (top + EDGE - d.y) / EDGE) * MAX_SCROLL;
-    else if (d.y > bottom - EDGE) v = Math.min(1, (d.y - (bottom - EDGE)) / EDGE) * MAX_SCROLL;
+    const v = scrollSpeed(d.y, d.startY, top, bottom, offsetOf(d), d.limits);
     if (v) {
       const was = d.scroller.scrollTop;
       d.scroller.scrollTop = was + v;
@@ -338,7 +358,9 @@ export function useSortable({
       const r = el.getBoundingClientRect();
       return { top: r.top, height: r.height };
     });
-    for (const el of elements) el.style.transition = el === moving ? "none" : SETTLE;
+    // The others glide aside; the dragged one follows the pointer at once (its
+    // classes may animate how it lifts, but not its transform).
+    for (const el of elements) el.style.transition = el === moving ? "" : SETTLE;
     const scroller = scrollParent(moving);
     drag.current = {
       id: p.id,
