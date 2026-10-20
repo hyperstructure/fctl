@@ -1,9 +1,9 @@
 # Checks every pull request and push, and runs a session through the local
-# stack and through the standalone control plane's image; deploys
-# app.fctl.sh from main (also when started by hand, as the Release workflow
-# does after its release commit), and pins fctl.sh (hyperstructure/fctl-site)
-# to the new docs when docs/ changed. Pull request titles are checked in
-# commits.yml.
+# stack; deploys app.fctl.sh from main (also when started by hand, as the
+# Release workflow does after its release commit), and pins fctl.sh
+# (hyperstructure/fctl-site) to the new docs when docs/ changed. Pull request
+# titles are checked in commits.yml; the standalone control plane's image in
+# standalone-image.yml, on pull requests that change it and for each release.
 name: CI
 
 on:
@@ -59,44 +59,6 @@ jobs:
           cache: npm
       # No npm ci: like a fresh clone, cargo xtask dev installs what it needs.
       - run: cargo xtask dev --smoke
-
-  # The control plane without Cloudflare (deploy/standalone): its container
-  # image builds, starts on a fresh volume, applies the migrations, and runs
-  # the same session as `dev` does, through a host outside the container.
-  image:
-    name: Standalone image
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Rust toolchain (from rust-toolchain.toml)
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build the image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: deploy/standalone/Dockerfile
-          tags: fctl-control:ci
-          load: true
-          cache-from: type=gha,scope=standalone
-          cache-to: type=gha,scope=standalone,mode=max
-      - name: Start it
-        run: |
-          docker run -d --name fctl -p 127.0.0.1:8787:8787 \
-            -e FCTL_PUBLIC_URL=http://127.0.0.1:8787 -e FCTL_SETUP_TOKEN=dev-setup-token \
-            fctl-control:ci
-      - name: A session through it
-        run: cargo xtask dev --smoke --server http://127.0.0.1:8787
-      - name: It stops cleanly
-        run: |
-          docker stop fctl
-          test "$(docker inspect -f '{{.State.ExitCode}}' fctl)" = 0
-          docker logs fctl 2>&1 | grep -q 'SIGTERM: stopping'
-      - name: Its log
-        if: always()
-        run: docker logs fctl || true
 
   deploy:
     name: Deploy app.fctl.sh

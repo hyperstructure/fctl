@@ -130,6 +130,17 @@ against it. Give it the server's `FCTL_PUBLIC_URL`, the origin the server
 accepts requests from. Its state goes in `.fctl-dev/server/`. Delete
 `.fctl-serve/` to start the server over.
 
+The image runs the same session with Docker, as the Standalone image
+workflow does ([Checks](#checks)):
+
+```sh
+docker build -f deploy/standalone/Dockerfile -t fctl-control .
+docker run --rm -d --name fctl -p 127.0.0.1:8787:8787 \
+  -e FCTL_PUBLIC_URL=http://127.0.0.1:8787 -e FCTL_SETUP_TOKEN=dev-setup-token fctl-control
+cargo xtask dev --smoke --server http://127.0.0.1:8787
+docker stop fctl
+```
+
 ## Checks
 
 ```sh
@@ -152,9 +163,16 @@ checkout, so its migrations, Worker, bootstrap, host and agent all run
 before a change can deploy. Locally it uses your `.fctl-dev/` state and
 ports 8787 and 5173: stop `cargo xtask dev` first.
 
-CI also builds the standalone control plane's image, starts it and runs
-`cargo xtask dev --smoke --server` against it, so the container, its
-migrations and its proxy run a session too.
+The Standalone image workflow (`.github/workflows/standalone-image.yml`)
+builds the standalone control plane's image, starts it and runs `cargo
+xtask dev --smoke --server` against it, so the container, its migrations
+and its proxy run a session too. The build takes several minutes, so it
+runs on the pull requests that change the image, its server or the
+bindings it reads (`deploy/standalone`, `.dockerignore`,
+`crates/fctl-control/wrangler.toml`), and for each release before it
+publishes the image; other pull requests don't run it. To check the image
+of another change, run the same session through it yourself
+([The standalone control plane](#the-standalone-control-plane)).
 
 Pull requests that change the agent skills in `.claude/skills` also run
 the Skills workflow, which validates them all in one job against the
@@ -267,7 +285,11 @@ redeploys), builds the binaries in parallel jobs (`cargo xtask dist build`:
 fctl for macOS and Linux on arm64 and x86_64, and the Linux agents), makes
 the archives from them (`cargo xtask dist package`), creates the GitHub
 release with the notes and publishes to `https://fctl.sh/releases`
-(`cargo xtask publish --latest`). Within the hour,
+(`cargo xtask publish --latest`). Beside those jobs, the Standalone image
+workflow runs a session through the release's standalone control plane and
+then publishes its image to `ghcr.io/hyperstructure/fctl-control`;
+`gh workflow run standalone-image.yml --ref main -f tag=v0.1.2` publishes
+a release's image again. Within the hour,
 [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox), where
 the default sandbox image lives, publishes the release's image to
 `ghcr.io/hyperstructure/sandbox`: its Image workflow looks for new releases

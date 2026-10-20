@@ -100,7 +100,11 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   the same Worker on workerd, with the bindings in `wrangler.toml`.
   `FCTL_SETUP_TOKEN=dev-setup-token cargo xtask serve`, then
   `cargo xtask dev --smoke --server http://localhost:8787`, runs a session
-  through it; CI does the same with its container image.
+  through it. The Standalone image workflow (`standalone-image.yml`) does
+  the same with its container image, but only on pull requests that change
+  `deploy/standalone`, `.dockerignore` or `wrangler.toml`, and for each
+  release before it publishes the image: for another change that could
+  affect the server, run the session through `cargo xtask serve` yourself.
 - UI: look at it in both themes (Settings → Appearance) and at a phone width.
 
 ## Other repositories

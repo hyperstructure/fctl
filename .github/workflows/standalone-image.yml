@@ -1,0 +1,175 @@
+# The control plane without Cloudflare (deploy/standalone): builds its
+# container image, starts it on a fresh volume, runs the session CI's
+# `cargo xtask dev --smoke` runs, through a host outside the container, and
+# checks that it stops cleanly. For a release, it then publishes the image for
+# amd64 and arm64 as ghcr.io/hyperstructure/fctl-control:<version>, plus
+# :<major>.<minor> and :latest when the release is the newest they cover.
+#
+# - The Release workflow runs it for each release, beside Build and Publish.
+# - `gh workflow run standalone-image.yml --ref main -f tag=v0.11.0`
+#   publishes a release's image again (without `tag`, the newest release's):
+#   after its run failed, or for the base images' updates.
+# - Pull requests that change the image, its server or the bindings it reads
+#   build it and run the session, without publishing. Other pull requests
+#   don't wait for the build: CI's `cargo xtask dev --smoke` runs the same
+#   Worker on the same runtime, through `wrangler dev`. Since it doesn't run
+#   on every pull request, it isn't a required check (.github/rulesets/).
+#
+# Only main publishes, and only release tags. An image whose session fails
+# isn't published.
+name: Standalone image
+
+on:
+  pull_request:
+    paths:
+      - deploy/standalone/**
+      - crates/fctl-control/wrangler.toml
+      - .dockerignore
+      - .github/workflows/standalone-image.yml
+  workflow_call:
+    inputs:
+      tag:
+        description: The release to publish, like v0.11.0
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release to publish, like v0.11.0 (default the newest)
+        required: false
+
+permissions:
+  contents: read
+
+# One publishing run at a time, Release's included; a pull request's new
+# commits cancel its older runs.
+concurrency:
+  group: standalone-image-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  IMAGE: ghcr.io/hyperstructure/fctl-control
+
+jobs:
+  image:
+    name: Build and run a session
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      tags: ${{ steps.release.outputs.tags }}
+      labels: ${{ steps.release.outputs.labels }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: The release, its tags and labels
+        id: release
+        if: github.event_name != 'pull_request'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Images are published from main (this run is on $GITHUB_REF_NAME)."
+            exit 1
+          fi
+          # Release tags matching $1, newest first.
+          releases() { git tag --list "$1" --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'; }
+          tag=${TAG:-$(releases 'v*' | head -1)}
+          [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$tag' is not a release tag like v0.11.0"; exit 1; }
+          git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "::error::$tag does not exist"; exit 1; }
+          git merge-base --is-ancestor "$tag" origin/main || { echo "::error::$tag is not on main"; exit 1; }
+          git cat-file -e "$tag:deploy/standalone/Dockerfile" 2>/dev/null || { echo "::error::$tag predates the standalone image"; exit 1; }
+          # From here on, the release: the image, and the CLI, host and agent
+          # that run its session.
+          git checkout --quiet "$tag"
+          version=${tag#v}
+          IFS=. read -r major minor _ <<<"$version"
+          tags="$IMAGE:$version"
+          if [ "$(releases "v$major.$minor.*" | head -1)" = "$tag" ]; then
+            tags="$tags,$IMAGE:$major.$minor"
+          fi
+          if [ "$(releases 'v*' | head -1)" = "$tag" ]; then
+            tags="$tags,$IMAGE:latest"
+          fi
+          {
+            echo "tag=$tag"
+            echo "tags=$tags"
+            echo "labels<<EOF"
+            echo "org.opencontainers.image.version=$version"
+            echo "org.opencontainers.image.revision=$(git rev-parse HEAD)"
+            echo "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building $tag's image. Publish pushes it as \`${tags//,/\`, \`}\` once a session has run through it." >> "$GITHUB_STEP_SUMMARY"
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # amd64 only, loaded into Docker to run. Releases write the build cache
+      # (pull requests only read it), and Publish builds from it: it pushes
+      # these layers, not another build's.
+      - name: Build the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/standalone/Dockerfile
+          tags: fctl-control:check
+          load: true
+          cache-from: type=gha,scope=standalone
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,scope=standalone,mode=max,ignore-error=true' || '' }}
+      - name: Start it
+        run: |
+          docker run -d --name fctl -p 127.0.0.1:8787:8787 \
+            -e FCTL_PUBLIC_URL=http://127.0.0.1:8787 -e FCTL_SETUP_TOKEN=dev-setup-token \
+            fctl-control:check
+      - name: A session through it
+        run: cargo xtask dev --smoke --server http://127.0.0.1:8787
+      - name: It stops cleanly
+        run: |
+          docker stop fctl
+          test "$(docker inspect -f '{{.State.ExitCode}}' fctl)" = 0
+          docker logs fctl 2>&1 | grep -q 'SIGTERM: stopping'
+      - name: Its log
+        if: always()
+        run: docker logs fctl || true
+
+  publish:
+    name: Publish
+    needs: image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ needs.image.outputs.tag }}
+      TAGS: ${{ needs.image.outputs.tags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+      # The Worker and the web app build once, natively; QEMU runs the last
+      # stage for arm64.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Sign in to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/standalone/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ env.TAGS }}
+          labels: ${{ needs.image.outputs.labels }}
+          cache-from: type=gha,scope=standalone
+      - name: Summary
+        run: echo "Published \`${TAGS//,/\`, \`}\`." >> "$GITHUB_STEP_SUMMARY"
