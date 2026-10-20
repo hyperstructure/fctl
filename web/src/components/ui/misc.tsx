@@ -5,7 +5,10 @@ import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { hue, initials } from "@/lib/format";
 
-/** fctl's mark and name; `large` in the top bar on phones, where it heads every page. */
+/**
+ * fctl's mark and name; `large` makes it larger on phones, in the top bar that heads every page
+ * and in the sidebar it opens. From 768 px up, where the top bar is hidden, it's the usual size.
+ */
 export function Logo({
   className,
   withWord = true,
@@ -16,14 +19,21 @@ export function Logo({
   large?: boolean;
 }) {
   return (
-    <span className={cn("inline-flex items-center", large ? "gap-2.5" : "gap-2", className)}>
-      <svg viewBox={mark.viewBox} className={large ? "size-[26px]" : "size-[22px]"} aria-hidden="true">
+    <span className={cn("inline-flex items-center", large ? "gap-2.5 md:gap-2" : "gap-2", className)}>
+      <svg
+        viewBox={mark.viewBox}
+        className={large ? "size-[26px] md:size-[22px]" : "size-[22px]"}
+        aria-hidden="true"
+      >
         <rect width="256" height="256" rx={mark.radius} fill={mark.background} />
         <path d={mark.path} fill={mark.foreground} fillRule="evenodd" />
       </svg>
       {withWord && (
         <span
-          className={cn("font-semibold tracking-[-0.02em] text-ink", large ? "text-[17px]" : "text-[15px]")}
+          className={cn(
+            "font-semibold tracking-[-0.02em] text-ink",
+            large ? "text-[17px] md:text-[15px]" : "text-[15px]",
+          )}
         >
           fctl
         </span>

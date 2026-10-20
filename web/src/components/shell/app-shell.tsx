@@ -175,8 +175,10 @@ function Sidebar({
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-14 items-center justify-between px-4">
-        <Link to="/" onClick={onNavigate} className="rounded-md">
-          <Logo />
+        {/* On phones as large as the top bar's logo, and as high: a flex link is as tall as the
+            logo, which sat 3 px above the middle on a line of text. */}
+        <Link to="/" onClick={onNavigate} className="flex rounded-md">
+          <Logo large />
         </Link>
         <button
           type="button"
