@@ -95,17 +95,15 @@ const stall: Stall = {
   showFrom: 0,
 };
 
-/** A transcript of a session Ada started, as `me` sees it. */
-function transcript(items: Item[], status: "running" | "idle", withStall?: Stall, me: G.UserId = ada.id) {
+function transcript(items: Item[], status: "running" | "idle", withStall?: Stall) {
   return render(
     <Transcript
       sessionId="ses_1"
+      startedBy={ada}
       items={items}
       live={emptyLive()}
       status={status}
       stall={withStall}
-      startedBy={ada}
-      me={me}
       onLoadOlder={() => {}}
       hasMoreBefore={false}
       loadingOlder={false}
@@ -141,20 +139,35 @@ describe("the transcript", () => {
 });
 
 describe("Remote Control", () => {
+  /** A transcript of a session Ada started, as `me` sees it. */
+  const seenBy = (me: G.UserId, items: Item[]) =>
+    render(
+      <Transcript
+        sessionId="ses_1"
+        startedBy={ada}
+        me={me}
+        items={items}
+        live={emptyLive()}
+        status="idle"
+        onLoadOlder={() => {}}
+        hasMoreBefore={false}
+        loadingOlder={false}
+      />,
+    );
   const followable = (c: HTMLElement) => c.textContent?.includes("Followable in the Claude apps");
 
   it("is offered only to the person on whose Claude subscription the session ran", () => {
-    expect(followable(transcript([remote(ada)], "idle", undefined, ada.id))).toBe(true);
-    expect(followable(transcript([remote(ada)], "idle", undefined, bo.id))).toBe(false);
+    expect(followable(seenBy(ada.id, [remote(ada)]))).toBe(true);
+    expect(followable(seenBy(bo.id, [remote(ada)]))).toBe(false);
     // Bo resumed Ada's session, on Bo's subscription.
-    expect(followable(transcript([remote(bo)], "idle", undefined, bo.id))).toBe(true);
-    expect(followable(transcript([remote(bo)], "idle", undefined, ada.id))).toBe(false);
+    expect(followable(seenBy(bo.id, [remote(bo)]))).toBe(true);
+    expect(followable(seenBy(ada.id, [remote(bo)]))).toBe(false);
   });
 
   it("is the starter's where the control plane doesn't say whose it is", () => {
-    const c = transcript([remote()], "idle", undefined, ada.id);
+    const c = seenBy(ada.id, [remote()]);
     expect(c.querySelector("a")?.getAttribute("href")).toBe("claude://code/session_01AbC");
-    expect(followable(transcript([remote()], "idle", undefined, bo.id))).toBe(false);
+    expect(followable(seenBy(bo.id, [remote()]))).toBe(false);
   });
 });
 
