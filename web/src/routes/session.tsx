@@ -902,28 +902,30 @@ function ShareDialog({ open, onClose, session }: { open: boolean; onClose: () =>
       description="Project members already see it. Share it with anyone else on this instance."
     >
       <form
-        className="flex items-end gap-2"
         onSubmit={(e) => {
           e.preventDefault();
           add.mutate();
         }}
       >
-        <Field label="Email" className="flex-1" error={add.error?.message}>
+        <Field label="Email" error={add.error?.message}>
           {(id) => (
-            <Input
-              id={id}
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="teammate@example.com"
-            />
+            <div className="flex gap-2">
+              <Input
+                id={id}
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="teammate@example.com"
+                className="min-w-0 flex-1"
+              />
+              <Select aria-label="Access" value={role} onChange={setRole} options={SHARE_ROLES} />
+              <Button type="submit" variant="primary" size="field" loading={add.isPending}>
+                Share
+              </Button>
+            </div>
           )}
         </Field>
-        <Select aria-label="Access" value={role} onChange={setRole} options={SHARE_ROLES} />
-        <Button type="submit" variant="primary" loading={add.isPending}>
-          Share
-        </Button>
       </form>
       <ul className="mt-5 flex flex-col gap-2">
         {shares.data?.shares.map((sh) => (

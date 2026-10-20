@@ -16,6 +16,7 @@ import {
   useState,
 } from "react";
 import { cn } from "@/lib/cn";
+import { fieldHeight } from "./form";
 
 export interface SelectOption<T extends string = string> {
   value: T;
@@ -58,7 +59,7 @@ const MAX_HEIGHT = 384;
 
 const sizes = {
   md:
-    "h-9.5 gap-2 rounded-md border border-line-strong bg-sunken/60 pr-2.5 pl-3 text-[14px] text-ink " +
+    `${fieldHeight} gap-2 rounded-md border border-line-strong bg-sunken/60 pr-2.5 pl-3 text-[14px] text-ink ` +
     "hover:border-ink-4/60 active:scale-[0.99] " +
     "focus-visible:border-accent/70 focus-visible:bg-sunken focus-visible:shadow-[0_0_0_3px_var(--c-accent-soft)] " +
     "aria-expanded:border-accent/70 aria-expanded:bg-sunken aria-expanded:shadow-[0_0_0_3px_var(--c-accent-soft)]",

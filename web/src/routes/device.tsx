@@ -56,7 +56,8 @@ export function DevicePage() {
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
                 placeholder="XXXX-XXXX"
-                className="h-12 text-center font-mono text-[20px] tracking-[0.2em]"
+                // As tall as the button beside it.
+                className="h-11 text-center font-mono text-[20px] tracking-[0.2em]"
                 maxLength={9}
                 autoFocus
               />
