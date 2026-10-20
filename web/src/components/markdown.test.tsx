@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Markdown } from "./markdown";
+import { ImageSizes, Markdown } from "./markdown";
 
 vi.mock("@/components/ui", () => ({
   CopyButton: () => null,
@@ -17,10 +17,17 @@ afterEach(() => {
   for (const unmount of roots.splice(0)) unmount();
 });
 
-function render(text: string) {
+/** `sizes`: the images whose size the page knows, as a session's published screenshots. */
+function render(text: string, sizes = new Map<string, { width?: number; height?: number }>()) {
   const container = document.createElement("div");
   const root = createRoot(container);
-  act(() => root.render(<Markdown text={text} />));
+  act(() =>
+    root.render(
+      <ImageSizes value={sizes}>
+        <Markdown text={text} />
+      </ImageSizes>,
+    ),
+  );
   roots.push(() => act(() => root.unmount()));
   return container;
 }
@@ -41,6 +48,28 @@ describe("images in the agent's answers", () => {
     const c = render(`[![after.png](${src})](https://github.com/acme/web/pull/7)`);
     expect(c.querySelector("button")).toBeNull();
     expect(c.querySelector("a img")?.getAttribute("src")).toBe(src);
+  });
+
+  it("take the room of a published screenshot before it loads, and load as the reader nears it", () => {
+    const sizes = new Map([[src, { width: 1440, height: 900 }]]);
+    for (const text of [
+      `![after.png](${src})`,
+      `[![after.png](${src})](https://github.com/acme/web/pull/7)`,
+    ]) {
+      const img = render(text, sizes).querySelector("img");
+      expect([img?.getAttribute("width"), img?.getAttribute("height")]).toEqual(["1440", "900"]);
+      expect(img?.getAttribute("loading")).toBe("lazy");
+    }
+  });
+
+  it("load with the page when their size isn't known, so that they can't push it as the reader scrolls up", () => {
+    const other = render("![a diagram](https://app.fctl.test/diagram.png)").querySelector("img");
+    expect(other?.getAttribute("loading")).toBeNull();
+    expect(other?.hasAttribute("width")).toBe(false);
+    // Without both sides, the browser can't keep the room.
+    const half = render(`![after.png](${src})`, new Map([[src, { width: 1440 }]])).querySelector("img");
+    expect(half?.getAttribute("loading")).toBeNull();
+    expect(half?.hasAttribute("width")).toBe(false);
   });
 
   it("show only their text from anywhere but https", () => {

@@ -107,6 +107,8 @@ export async function createPasskey(o: G.PasskeyCreationOptions): Promise<G.Pass
     publicKey: creationOptions(o),
   })) as PublicKeyCredential | null;
   if (!credential) throw new DOMException("No passkey was made", "NotAllowedError");
+  // It has the account's details: its provider needs no signal for them.
+  saveDetails(o.user.id, detailsDigest(o.user.name, o.user.displayName));
   const response = credential.response as AuthenticatorAttestationResponse;
   return {
     id: credential.id,
@@ -183,11 +185,49 @@ export function signalAccepted(rpId: string, userId: string, credentialIds: stri
     .catch(() => {});
 }
 
-/** The account's name and email, which providers list its passkeys by. */
+/**
+ * The account's email and name, which providers list its passkeys by, when
+ * they changed since this browser last gave them: Apple's Passwords notifies
+ * the person of each one, changed or not.
+ */
 export function signalDetails(rpId: string, userId: string, name: string, displayName: string) {
-  pkc()
-    ?.signalCurrentUserDetails?.({ rpId, userId, name, displayName })
-    .catch(() => {});
+  const p = pkc();
+  const digest = detailsDigest(name, displayName);
+  if (!p?.signalCurrentUserDetails || loadDetails(userId) === digest) return;
+  // Kept before the browser answers: Safari's signals haven't always answered
+  // (WebKit bug 298951), and a second visit meanwhile mustn't give them again.
+  saveDetails(userId, digest);
+  p.signalCurrentUserDetails({ rpId, userId, name, displayName }).catch(() => {
+    if (loadDetails(userId) === digest) saveDetails(userId, undefined);
+  });
+}
+
+/** localStorage, after the user handle: the details this browser last gave its passkey provider, as a digest. */
+const DETAILS = "fctl:passkey-details:";
+
+/** A short digest (FNV-1a) of an account's details, so that the browser doesn't keep the email itself. */
+function detailsDigest(name: string, displayName: string): string {
+  const text = JSON.stringify([name, displayName]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(36);
+}
+
+function loadDetails(userId: string): string | null {
+  try {
+    return localStorage.getItem(DETAILS + userId);
+  } catch {
+    return null;
+  }
+}
+
+function saveDetails(userId: string, digest: string | undefined) {
+  try {
+    if (digest) localStorage.setItem(DETAILS + userId, digest);
+    else localStorage.removeItem(DETAILS + userId);
+  } catch {
+    // Private browsing without storage: each visit to Settings gives them again.
+  }
 }
 
 /** The user handle the server gave this account's passkeys: its id, base64url. */

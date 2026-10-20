@@ -61,9 +61,9 @@ export class Stick {
 }
 
 /**
- * Keeps the page's bottom in view while `content` grows, as long as the
- * reader is at the bottom. A new `key` (another session) starts at the
- * bottom again.
+ * Keeps the page's bottom in view while `content` grows, or anything else on
+ * the page, as long as the reader is at the bottom. A new `key` (another
+ * session) starts at the bottom again.
  */
 export function useStickToBottom(content: RefObject<HTMLElement | null>, key: unknown) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` starts it over
@@ -100,15 +100,38 @@ export function useStickToBottom(content: RefObject<HTMLElement | null>, key: un
       }
       syncAnchoring();
     };
-    const grown = new ResizeObserver(([entry]) => {
-      const h = entry?.contentRect.height ?? 0;
-      // What a click opened grows the transcript where the reader is: stay there.
-      if (clicked && h > height) stick.stuck = false;
-      height = h;
+    const grown = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target !== el) continue;
+        const h = entry.contentRect.height;
+        // What a click opened grows the transcript where the reader is: stay there.
+        if (clicked && h > height) stick.stuck = false;
+        height = h;
+      }
       syncAnchoring();
       toBottom();
     });
     grown.observe(el);
+    // And the rest of the page, like a header whose status wraps to another line.
+    grown.observe(page);
+    // When the page gets shorter at its bottom, the browser moves it up to the new
+    // bottom, and the page may grow again before the scroll event: that would look
+    // like the reader scrolling up. Seen as soon as the page changes, the move is
+    // the browser's. Only what can make the page shorter is looked at: reading the
+    // scroll position lays the page out, and text that streams in only grows.
+    const changed = new MutationObserver((records) => {
+      if (!stick.stuck || !mayShrink(records)) return;
+      stick.scrolled(window.scrollY, gap());
+      syncAnchoring();
+    });
+    changed.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+      attributeOldValue: true,
+      characterDataOldValue: true,
+    });
     syncAnchoring();
 
     const off = new AbortController();
@@ -161,9 +184,34 @@ export function useStickToBottom(content: RefObject<HTMLElement | null>, key: un
     return () => {
       off.abort();
       grown.disconnect();
+      changed.disconnect();
       page.style.overflowAnchor = "";
     };
   }, [content, key]);
+}
+
+/**
+ * Whether changes may have made the page shorter: something taken out, text
+ * shortened or an attribute changed. Text that streams in only adds to it, and
+ * React sets some attributes at every render, back to the value they had.
+ */
+export function mayShrink(records: MutationRecord[]): boolean {
+  const attributes = new Map<Node, Set<string>>();
+  for (const r of records) {
+    if (r.type === "childList") {
+      if (r.removedNodes.length) return true;
+    } else if (r.type === "characterData") {
+      if ((r.target.nodeValue?.length ?? 0) < (r.oldValue?.length ?? 0)) return true;
+    } else {
+      // The first change to an attribute holds its value from before them all.
+      const name = r.attributeName ?? "";
+      const seen = attributes.get(r.target) ?? new Set<string>();
+      if (seen.has(name)) continue;
+      attributes.set(r.target, seen.add(name));
+      if (!(r.target instanceof Element) || r.target.getAttribute(name) !== r.oldValue) return true;
+    }
+  }
+  return false;
 }
 
 /** Which way a key scrolls the page: up (-1), down (1), all the way down (Infinity) or not at all (0). */

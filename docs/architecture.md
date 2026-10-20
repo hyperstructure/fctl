@@ -249,7 +249,10 @@ decoder, `fctl_domain::cbor`), and WebCrypto checks the signatures
   provider which passkeys the account has, what the account is called, and
   which passkey fctl doesn't know any more (`signalAllAcceptedCredentials`,
   `signalCurrentUserDetails`, `signalUnknownCredential`), so that it stops
-  offering removed ones.
+  offering removed ones. Settings gives the account's email and name only
+  when they changed since this browser last gave them or made a passkey
+  with them (it keeps a hash of them for each account): Apple's Passwords
+  notifies the person of each time, changed or not.
 
 Adding and removing a passkey go in the audit log, and adding one emails
 the person when email is set up. A passkey that is the account's last way

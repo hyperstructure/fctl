@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, useContext } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
@@ -21,10 +21,21 @@ vi.mock("@/components/ui", async () => {
     toast: vi.fn(),
   };
 });
-vi.mock("@/components/markdown", () => ({
-  CodeBlock: () => null,
-  Markdown: ({ text }: { text: string }) => <p>{text}</p>,
-}));
+vi.mock("@/components/markdown", async () => {
+  const { ImageSizes } =
+    await vi.importActual<typeof import("@/components/markdown")>("@/components/markdown");
+  return {
+    CodeBlock: () => null,
+    ImageSizes,
+    // With the images whose size it knows, which take their room before they load.
+    Markdown: function Markdown({ text }: { text: string }) {
+      const sizes = useContext(ImageSizes);
+      return (
+        <p data-sizes={[...sizes].map(([url, s]) => `${url} ${s.width}×${s.height}`).join(",")}>{text}</p>
+      );
+    },
+  };
+});
 vi.mock("./attachments", () => ({ MessageFiles: () => null }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -56,6 +67,7 @@ const tool = (result?: string): Item => ({
   children: 0,
 });
 const turn = (): Item => ({ kind: "turn", key: `turn-${++seq}`, seq, ts: 0, durationMs: 1000, ok: true });
+const prose = (text: string): Item => ({ kind: "prose", key: `prose-${++seq}`, seq, ts: 0, text });
 const published = (): Item => ({
   kind: "notice",
   key: `notice-${++seq}`,
@@ -95,7 +107,12 @@ const stall: Stall = {
   showFrom: 0,
 };
 
-function transcript(items: Item[], status: "running" | "idle", withStall?: Stall) {
+function transcript(
+  items: Item[],
+  status: "running" | "idle",
+  withStall?: Stall,
+  { onLoadOlder = () => {}, hasMoreBefore = false } = {},
+) {
   return render(
     <Transcript
       sessionId="ses_1"
@@ -104,8 +121,8 @@ function transcript(items: Item[], status: "running" | "idle", withStall?: Stall
       live={emptyLive()}
       status={status}
       stall={withStall}
-      onLoadOlder={() => {}}
-      hasMoreBefore={false}
+      onLoadOlder={onLoadOlder}
+      hasMoreBefore={hasMoreBefore}
       loadingOlder={false}
     />,
   );
@@ -135,6 +152,17 @@ describe("the transcript", () => {
     const [title, detail] = [...c.querySelectorAll("[role=status] p")].map((p) => p.textContent);
     expect(title).toMatch(/^Runner now hasn't been heard from since .+\.$/);
     expect(detail).toMatch(/^The agent's work shows up here when it's back/);
+  });
+});
+
+describe("earlier activity", () => {
+  // Where the reader's place stays meanwhile: lib/keep-place.test.tsx.
+  it("loads when the reader asks for it", () => {
+    const onLoadOlder = vi.fn();
+    const c = transcript([tool("done")], "idle", undefined, { onLoadOlder, hasMoreBefore: true });
+    const button = [...c.querySelectorAll("button")].find((b) => b.textContent === "Show earlier activity");
+    act(() => button?.click());
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -194,6 +222,13 @@ describe("a published screenshot", () => {
     ) as HTMLAnchorElement;
     expect(click(name).defaultPrevented).toBe(true);
     expect(viewer(c2)).not.toBeNull();
+  });
+
+  it("takes its room in the agent's answers before it loads", () => {
+    const c = transcript([published(), prose("The new header: ![after.png](…)")], "idle");
+    expect(c.querySelector("p[data-sizes]")?.getAttribute("data-sizes")).toBe(
+      `https://app.fctl.test/api/v1/published/${"a".repeat(43)}/after.png 1440×900`,
+    );
   });
 
   it("leaves a click with a modifier key to the browser, which opens a new tab", () => {
