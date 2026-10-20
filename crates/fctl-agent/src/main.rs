@@ -11,6 +11,7 @@ mod journal;
 mod link;
 mod local;
 mod prompt;
+mod refresh;
 mod supervisor;
 mod tasks;
 mod workspace;

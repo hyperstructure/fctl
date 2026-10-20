@@ -243,7 +243,8 @@ turns them off.
 ## 8. Follow along and steer
 
 - **Web app** — the session page streams the transcript as the agent writes
-  it: tool calls, diffs, the files changed so far. Type below to message the
+  it: tool calls, diffs, and the files changed, commits and pull requests
+  so far, seconds after the agent makes them. Type below to message the
   agent, with files attached if you like; it reads your message at its next
   step. **Interrupt** stops the current turn.
 - **Terminal** — `fctl attach my-app#12` streams the session and lets you

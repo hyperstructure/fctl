@@ -10,8 +10,9 @@ use crate::journal::Journal;
 use crate::link::{self, LinkEvent};
 use crate::local;
 use crate::prompt;
+use crate::refresh::Refresh;
 use crate::tasks::{self, Task, Tasks};
-use crate::workspace::{self, Paths};
+use crate::workspace::{self, Moment, Paths};
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -44,6 +45,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long `fctl publish` waits for the host to upload a screenshot.
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How long a refresh of the repositories' state may take, pushes and pull
+/// request lookups included, before the next one goes ahead without it.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -70,7 +75,9 @@ struct Persisted {
 
 pub(crate) enum Work {
     Prepared(Result<(), String>),
-    Git(GitState),
+    /// A refresh of the repositories' state at a moment ended: what they
+    /// hold, unless it failed.
+    Git(Option<GitState>, Moment),
     Log(LogLevel, String, LogSource),
     /// The effort level Claude works at ([`claude::applied_effort`]).
     Effort(String),
@@ -124,8 +131,15 @@ pub struct Supervisor {
     stderr_budget: (Instant, u32),
     claude_credential: Option<ClaudeCredential>,
     exit_after: Option<Instant>,
-    /// The repositories' state after the last turn, for its pull requests.
+    /// The repositories' state reported last.
     last_git: Option<GitState>,
+    /// When to refresh the repositories' state while Claude works.
+    refresh: Refresh,
+    /// A refresh of the repositories' state runs: one at a time.
+    syncing: bool,
+    /// A turn ended: the refresh that pushes and looks up pull requests
+    /// follows the one that runs.
+    turn_ended: bool,
     /// Files that came before `Configure` (the task's): saved once the
     /// sandbox's home is known.
     pending_files: Vec<(Attachment, String)>,
@@ -199,6 +213,9 @@ impl Supervisor {
                 claude_credential: None,
                 exit_after: None,
                 last_git: None,
+                refresh: Refresh::default(),
+                syncing: false,
+                turn_ended: false,
                 pending_files: Vec::new(),
                 told_no_fctl: false,
                 claude_version: None,
@@ -768,12 +785,25 @@ impl Supervisor {
                 self.set_status(SessionStatus::Failed, Some(e));
                 self.finish().await;
             }
-            Work::Git(state) => {
-                if let Some(pr) = &state.pull_request {
-                    tracing::info!("pull request #{} {}", pr.number, pr.url);
+            Work::Git(state, moment) => {
+                self.syncing = false;
+                // Once the session has stopped, the state it stopped with
+                // is its last.
+                if let Some(state) = state.filter(|_| self.exit_after.is_none()) {
+                    // While Claude works, only a change is news, and a
+                    // repository in the middle of a rebase has none yet.
+                    let working = matches!(moment, Moment::Working { .. });
+                    let news =
+                        self.last_git.as_ref() != Some(&state) && !workspace::detached(&state);
+                    if !working || news {
+                        if let Some(pr) = &state.pull_request {
+                            tracing::info!("pull request #{} {}", pr.number, pr.url);
+                        }
+                        self.last_git = Some(state.clone());
+                        self.emit(EventBody::Git(state));
+                    }
                 }
-                self.last_git = Some(state.clone());
-                self.emit(EventBody::Git(state));
+                self.sync();
             }
             Work::Effort(effort) => {
                 if self.state.effort.as_ref() != Some(&effort) {
@@ -1212,6 +1242,7 @@ impl Supervisor {
             .unwrap_or(0)
             > 0;
         let tasks_changed = self.tasks.observe(&v);
+        self.refresh.observe(&v, Instant::now());
         self.emit(EventBody::Claude(v));
         if is_result {
             // `/effort high` in a message changes the effort level, and so
@@ -1275,22 +1306,55 @@ impl Supervisor {
     }
 
     /// After each turn: git state, pushes and pull requests, in every
-    /// repository.
+    /// repository, once the refresh that runs, if one does, has ended.
     fn after_turn(&mut self) {
+        self.turn_ended = true;
+        self.sync();
+    }
+
+    /// Starts the next refresh of the repositories' state, unless one runs:
+    /// the one after a turn, or one while Claude works once it is due
+    /// ([`Refresh`]).
+    fn sync(&mut self) {
+        let now = Instant::now();
+        if self.syncing || self.exit_after.is_some() || !(self.turn_ended || self.refresh.due(now))
+        {
+            return;
+        }
         let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) else {
             return;
         };
+        let moment = if std::mem::take(&mut self.turn_ended) {
+            self.refresh.start(now);
+            Moment::TurnEnded
+        } else {
+            Moment::Working {
+                opened_pr: self.refresh.start(now),
+            }
+        };
+        self.syncing = true;
+        let last = self.last_git.clone();
         let work = self.work_tx.clone();
         tokio::spawn(async move {
-            let Ok(synced) =
-                workspace::sync(&paths, &config.spec, config.push_on_commit, true).await
-            else {
-                return;
+            let push = config.push_on_commit;
+            let sync = workspace::sync(&paths, &config.spec, push, moment, last.as_ref());
+            let state = match tokio::time::timeout(SYNC_TIMEOUT, sync).await {
+                Ok(Ok(synced)) => {
+                    for (level, text) in synced.logs {
+                        let _ = work.send(Work::Log(level, text, LogSource::Agent));
+                    }
+                    Some(synced.state)
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!("reading the repositories' state failed: {e:#}");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!("reading the repositories' state took too long; gave up");
+                    None
+                }
             };
-            for (level, text) in synced.logs {
-                let _ = work.send(Work::Log(level, text, LogSource::Agent));
-            }
-            let _ = work.send(Work::Git(synced.state));
+            let _ = work.send(Work::Git(state, moment));
         });
     }
 
@@ -1487,6 +1551,7 @@ impl Supervisor {
     async fn on_tick(&mut self) {
         let now = now_ms();
         self.expire_publishes();
+        self.sync();
         // Usage limit reset: continue.
         if self.state.status == SessionStatus::Paused && self.resume_at.is_some_and(|t| now >= t) {
             self.resume_at = None;
@@ -1578,20 +1643,18 @@ impl Supervisor {
         if let Some(mut c) = self.claude.take() {
             c.kill().await;
         }
-        if let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone())
-            && let Ok(synced) =
-                workspace::sync(&paths, &config.spec, config.push_on_commit, false).await
-        {
-            for (level, text) in synced.logs {
-                self.log(LogSource::Agent, level, &text);
+        if let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) {
+            let (push, last) = (config.push_on_commit, self.last_git.as_ref());
+            // No lookups while stopping: the pull requests found before
+            // still stand.
+            if let Ok(synced) =
+                workspace::sync(&paths, &config.spec, push, Moment::Stopping, last).await
+            {
+                for (level, text) in synced.logs {
+                    self.log(LogSource::Agent, level, &text);
+                }
+                self.emit(EventBody::Git(synced.state));
             }
-            // No lookups while stopping: the pull requests found after the
-            // last turn still stand.
-            let mut st = synced.state;
-            if let Some(last) = &self.last_git {
-                workspace::keep_pull_requests(&mut st, last);
-            }
-            self.emit(EventBody::Git(st));
         }
         let (status, reason) = match &self.stopping {
             Some((why, _)) => (SessionStatus::Stopped, Some(why.clone())),
@@ -2078,6 +2141,139 @@ mod tests {
             }
         }
         out
+    }
+
+    fn bash(id: &str, command: &str) -> Value {
+        json!({"type": "assistant", "parent_tool_use_id": null, "session_id": "s", "uuid": "u",
+               "message": {"id": format!("msg_{id}"), "role": "assistant",
+                           "content": [{"type": "tool_use", "id": id, "name": "Bash", "input": {"command": command}}]}})
+    }
+
+    fn tool_result(id: &str) -> Value {
+        json!({"type": "user", "parent_tool_use_id": null, "session_id": "s", "uuid": "u",
+               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": "", "is_error": false}]}})
+    }
+
+    /// Hands the supervisor the end of the refresh of the repositories'
+    /// state that runs, and sends the host what it emitted.
+    async fn synced(sup: &mut Supervisor, work: &mut mpsc::UnboundedReceiver<Work>) {
+        assert!(sup.syncing, "no refresh runs");
+        while let Ok(Some(w)) = tokio::time::timeout(Duration::from_secs(10), work.recv()).await {
+            let done = matches!(w, Work::Git(..));
+            sup.on_work(w).await;
+            if done {
+                break;
+            }
+        }
+        sup.flush();
+    }
+
+    /// What the events are: the kind, or `result` for Claude's.
+    fn kinds(events: &[EventBody]) -> Vec<&'static str> {
+        events
+            .iter()
+            .map(|e| match e.claude_type() {
+                Some("result") => "result",
+                _ => e.kind(),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn commits_show_while_claude_works() -> anyhow::Result<()> {
+        use crate::refresh::{EVERY, QUIET};
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, mut work) = Supervisor::new(dir.path().join("state"), None)?;
+        sup.config = Some(config(dir.path(), false)?);
+        let paths = Paths::new(
+            &dir.path().join("workspace"),
+            &dir.path().join("home"),
+            &dir.path().join("state"),
+        );
+        std::fs::create_dir_all(&paths.workdir)?;
+        std::fs::create_dir_all(&paths.home)?;
+        let (wd, home) = (paths.workdir.clone(), paths.home.clone());
+        let init = ["init", "-q", "-b", "fctl/1-test"];
+        assert!(workspace::run(&wd, &home, "git", &init).await?.ok);
+        sup.paths = Some(paths);
+        let (host_tx, mut host) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        sup.turn_active = true;
+        sup.set_status(SessionStatus::Running, None);
+
+        // The agent commits in the middle of its turn.
+        sup.on_claude_message(bash("t1", "git commit -m 'Add notes'"))
+            .await;
+        std::fs::write(wd.join("notes.md"), "# Notes\n")?;
+        let add = workspace::run(&wd, &home, "git", &["add", "notes.md"]).await?;
+        let commit = [
+            "-c",
+            "user.name=Ada",
+            "-c",
+            "user.email=ada@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "Add notes",
+        ];
+        let commit = workspace::run(&wd, &home, "git", &commit).await?;
+        assert!(add.ok && commit.ok, "{}", commit.stderr);
+        sup.on_claude_message(tool_result("t1")).await;
+        // The refresh waits for the burst of tool calls to end…
+        sup.on_tick().await;
+        assert!(!sup.syncing);
+        sup.refresh.backdate(QUIET);
+        sup.on_tick().await;
+        synced(&mut sup, &mut work).await;
+        // …then the state shows the commit before the turn ends, and
+        // nothing was pushed: not even tried, without a remote.
+        let events = events_sent(&mut host);
+        assert_eq!(kinds(&events), ["claude", "claude", "git"]);
+        let Some(EventBody::Git(state)) = events.last() else {
+            panic!("expected the repository's state");
+        };
+        assert_eq!(
+            (state.ahead, state.files.len(), state.pushed),
+            (1, 1, false)
+        );
+        let subject = state.last_commit.as_ref().map(|c| c.subject.as_str());
+        assert_eq!(subject, Some("Add notes"));
+        assert_eq!(sup.state.status, SessionStatus::Running);
+
+        // A rebase under way, its HEAD detached, waits for a later refresh.
+        let detach = ["checkout", "-q", "--detach"];
+        assert!(workspace::run(&wd, &home, "git", &detach).await?.ok);
+        sup.on_claude_message(bash("t2", "git rebase -i main"))
+            .await;
+        sup.on_claude_message(tool_result("t2")).await;
+        sup.refresh.backdate(EVERY);
+        sup.on_tick().await;
+        synced(&mut sup, &mut work).await;
+        assert_eq!(kinds(&events_sent(&mut host)), ["claude", "claude"]);
+        let attach = ["checkout", "-q", "fctl/1-test"];
+        assert!(workspace::run(&wd, &home, "git", &attach).await?.ok);
+
+        // A refresh that finds nothing new says nothing, and the turn that
+        // ends meanwhile has its state reported once it is done.
+        sup.on_claude_message(bash("t3", "cargo test")).await;
+        sup.on_claude_message(tool_result("t3")).await;
+        sup.refresh.backdate(EVERY);
+        sup.on_tick().await;
+        assert!(sup.syncing);
+        sup.on_claude_message(result()).await;
+        assert!(sup.turn_ended);
+        synced(&mut sup, &mut work).await;
+        assert_eq!(
+            kinds(&events_sent(&mut host)),
+            ["claude", "claude", "result"]
+        );
+        // After the turn fctl-agent pushes, which fails without a remote.
+        synced(&mut sup, &mut work).await;
+        let events = events_sent(&mut host);
+        assert_eq!(kinds(&events), ["log", "git"]);
+        assert!(matches!(&events[0], EventBody::Log(l) if l.text.starts_with("git push failed")));
+        assert!(!sup.syncing && !sup.turn_ended);
+        Ok(())
     }
 
     #[tokio::test]

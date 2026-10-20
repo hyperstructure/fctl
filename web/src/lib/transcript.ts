@@ -16,6 +16,7 @@ import {
   resultText,
   type ToolResultBlock,
 } from "./claude-types";
+import { branchChanges } from "./git";
 
 interface Base {
   key: string;
@@ -57,7 +58,8 @@ export type Item =
   | (Base & { kind: "status"; status: G.SessionStatus; reason?: string; resumeAt?: number })
   | (Base & { kind: "logs"; lines: G.LogLine[] })
   | (Base & { kind: "notice"; notice: G.Notice })
-  | (Base & { kind: "git"; git: G.GitState })
+  /** The repositories whose branch changed (`branchChanges`), in a state. */
+  | (Base & { kind: "git"; git: G.GitState; repos: (string | undefined)[] })
   | (Base & { kind: "remote"; rc: G.RemoteControlState })
   | (Base & { kind: "interrupt"; by?: G.UserRef })
   | (Base & { kind: "init"; model: string; version?: string })
@@ -73,6 +75,7 @@ export class TranscriptBuilder {
   model?: string;
   private tools = new Map<string, number>();
   private seen = new Set<number>();
+  private pullRequests = new Set<string>();
   private setupOpen = true;
 
   /** Appends events (in seq order); returns the new items array. */
@@ -183,10 +186,13 @@ export class TranscriptBuilder {
       case "notice":
         items.push({ ...base, kind: "notice", key: `n-${ev.seq}`, notice: ev.data });
         return;
-      case "git":
+      case "git": {
+        // A line when a branch changed: a commit, a push or a new pull request.
+        const repos = branchChanges(this.latestGit, ev.data, this.pullRequests);
         this.latestGit = ev.data;
-        items.push({ ...base, kind: "git", key: `g-${ev.seq}`, git: ev.data });
+        if (repos.length) items.push({ ...base, kind: "git", key: `g-${ev.seq}`, git: ev.data, repos });
         return;
+      }
       case "remote_control":
         items.push({ ...base, kind: "remote", key: `r-${ev.seq}`, rc: ev.data });
         return;

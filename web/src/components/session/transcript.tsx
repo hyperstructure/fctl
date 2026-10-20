@@ -312,10 +312,10 @@ function Logs({ lines }: { lines: G.LogLine[] }) {
   );
 }
 
-/** One line per repository with changes: the primary one, then the others by name. */
-function GitItem({ git }: { git: G.GitState }) {
-  const repos = repoChanges(git).filter((r) => r.files.length > 0 || r.pr);
-  return repos.map((r) => (
+/** One line per repository whose branch changed: the primary one, then the others by name. */
+function GitItem({ git, repos }: { git: G.GitState; repos: (string | undefined)[] }) {
+  const changed = repoChanges(git).filter((r) => repos.includes(r.name));
+  return changed.map((r) => (
     <Milestone key={r.name ?? ""} icon={<GitBranch />}>
       {r.name && <span className="font-mono text-ink-3">{r.name}: </span>}
       {r.files.length} {r.files.length === 1 ? "file" : "files"} changed{" "}
@@ -431,7 +431,7 @@ const ItemView = memo(function ItemView({
         </Milestone>
       );
     case "git":
-      return <GitItem git={item.git} />;
+      return <GitItem git={item.git} repos={item.repos} />;
     case "remote":
       return item.rc.session_url ? (
         <Milestone icon={<Radio />} tone="ok">

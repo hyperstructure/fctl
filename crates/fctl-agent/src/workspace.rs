@@ -1,19 +1,22 @@
 //! The session's repositories: cloning the primary one, branches, the setup
-//! script, git state after each turn, pushing, and the credentials git and
-//! `gh` use.
+//! script, their state while Claude works and after each turn, pushing, and
+//! the credentials git and `gh` use.
 //!
 //! The agent clones the project's other repositories itself, when it needs
-//! them, into `~/repos/<owner>/<name>`. After each turn fctl-agent finds
-//! those clones, keeps the work in writable ones on the session branch,
-//! pushes it, and looks up its pull request.
+//! them, into `~/repos/<owner>/<name>`. fctl-agent finds those clones each
+//! time it reports the state; after each turn it also keeps the work in
+//! writable ones on the session branch, pushes it, and looks up its pull
+//! request.
 
 use anyhow::{Context, Result, bail};
 use fctl_domain::repos;
 use fctl_proto::event::{CommitInfo, FileChange, GitState, LogLevel, RepoGitState};
 use fctl_proto::runner::{GitIdentity, GithubCredential, SessionSpec};
 use fctl_proto::session::{PullRequestRef, RepoAccess, RepoGrant, RepoRef};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -64,12 +67,26 @@ pub struct Output {
 
 /// Runs a command to completion, capturing output.
 pub async fn run(dir: &Path, home: &Path, program: &str, args: &[&str]) -> Result<Output> {
+    run_with(dir, home, program, args, &[]).await
+}
+
+/// [`run`], with more environment variables. The command is killed when
+/// its caller stops waiting for it (a timeout).
+async fn run_with(
+    dir: &Path,
+    home: &Path,
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &OsStr)],
+) -> Result<Output> {
     let out = Command::new(program)
         .args(args)
         .current_dir(dir)
         .env("HOME", home)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .output()
         .await
         .with_context(|| format!("running {program}"))?;
@@ -433,6 +450,48 @@ pub async fn setup_script(
     Ok(status.success())
 }
 
+/// A private copy of a clone's index, for git commands that only read it
+/// but may write it: `git diff` refreshes the index it reads when files'
+/// stat data is stale, holding the index lock meanwhile, which would make
+/// the agent's own `git add` or `git commit` fail if they ran at that
+/// moment, as they can while Claude works. `GIT_OPTIONAL_LOCKS` keeps
+/// `git status` from doing the same, not `git diff`.
+struct IndexCopy(Option<PathBuf>);
+
+impl IndexCopy {
+    async fn of(dir: &Path, home: &Path) -> Self {
+        static COPIES: AtomicU64 = AtomicU64::new(0);
+        let Ok(index) = git_ok_in(dir, home, &["rev-parse", "--git-path", "index"]).await else {
+            return Self(None);
+        };
+        let n = COPIES.fetch_add(1, Ordering::Relaxed);
+        let copy = std::env::temp_dir().join(format!("fctl-index-{}-{n}", std::process::id()));
+        // Without an index (nothing staged yet) there is nothing to write,
+        // and without a copy git reads the index itself.
+        match std::fs::copy(dir.join(index.trim()), &copy) {
+            Ok(_) => Self(Some(copy)),
+            Err(_) => Self(None),
+        }
+    }
+
+    /// The environment that has git read the copy, and skip optional locks.
+    fn env(&self) -> Vec<(&'static str, &OsStr)> {
+        let mut env = vec![("GIT_OPTIONAL_LOCKS", OsStr::new("0"))];
+        if let Some(copy) = &self.0 {
+            env.push(("GIT_INDEX_FILE", copy.as_os_str()));
+        }
+        env
+    }
+}
+
+impl Drop for IndexCopy {
+    fn drop(&mut self) {
+        if let Some(copy) = &self.0 {
+            let _ = std::fs::remove_file(copy);
+        }
+    }
+}
+
 /// The primary repository's state relative to the base branch.
 pub async fn state(p: &Paths, spec: &SessionSpec) -> Result<GitState> {
     state_at(&p.workdir, &p.home, &spec.base_branch).await
@@ -487,6 +546,8 @@ pub async fn state_at(dir: &Path, home: &Path, base: &str) -> Result<GitState> {
                 .unwrap_or(0),
         )
     };
+    let index = IndexCopy::of(dir, home).await;
+    let env = index.env();
     let mut files: Vec<FileChange> = Vec::new();
     // Without a base branch, everything is new: diff against the empty tree.
     const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -496,14 +557,10 @@ pub async fn state_at(dir: &Path, home: &Path, base: &str) -> Result<GitState> {
         EMPTY_TREE.to_owned()
     };
     if head.is_some() {
-        let numstat = run(dir, home, "git", &["diff", "--numstat", "-M", &diff_target]).await?;
-        let names = run(
-            dir,
-            home,
-            "git",
-            &["diff", "--name-status", "-M", &diff_target],
-        )
-        .await?;
+        let numstat = ["diff", "--numstat", "-M", &diff_target];
+        let numstat = run_with(dir, home, "git", &numstat, &env).await?;
+        let names = ["diff", "--name-status", "-M", &diff_target];
+        let names = run_with(dir, home, "git", &names, &env).await?;
         let statuses: Vec<(String, String)> = names
             .stdout
             .lines()
@@ -539,7 +596,7 @@ pub async fn state_at(dir: &Path, home: &Path, base: &str) -> Result<GitState> {
             });
         }
     }
-    let porcelain = run(dir, home, "git", &["status", "--porcelain"]).await?;
+    let porcelain = run_with(dir, home, "git", &["status", "--porcelain"], &env).await?;
     let mut uncommitted = 0u32;
     for line in porcelain.stdout.lines() {
         uncommitted += 1;
@@ -804,20 +861,81 @@ pub async fn onto_session_branch(
     Ok(true)
 }
 
-/// What the repositories hold after a turn, and what fctl-agent did about it.
+/// When fctl-agent reports the repositories' state, which decides what else
+/// it does: it changes them (moves work onto the session branch, pushes)
+/// only once a turn has ended or as the session stops, and asks GitHub for
+/// pull requests only where it can find one it hasn't.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Moment {
+    /// While Claude works: it reads them, and looks up the pull request of a
+    /// branch once it was pushed or its pushed head moved since the last
+    /// report, or after `gh pr create` ran (`opened_pr`).
+    Working { opened_pr: bool },
+    /// A turn ended: the work in writable clones moves onto the session
+    /// branch, new commits are pushed, and every pushed branch's pull
+    /// request is looked up.
+    TurnEnded,
+    /// The session stops: as when a turn ends, without lookups.
+    Stopping,
+}
+
+impl Moment {
+    /// Whether fctl-agent may change the repositories: move work onto the
+    /// session branch and push it.
+    fn writes(self) -> bool {
+        !matches!(self, Moment::Working { .. })
+    }
+
+    /// Whether to look up the pull request of a branch whose head is on the
+    /// remote as `now` says. `before` is how the last report had it: `None`
+    /// when it didn't have the repository.
+    fn looks_up(self, now: OnRemote, before: Option<OnRemote>) -> bool {
+        now.is_some()
+            && match self {
+                Moment::Working { opened_pr } => opened_pr || before != Some(now),
+                Moment::TurnEnded => true,
+                Moment::Stopping => false,
+            }
+    }
+}
+
+/// A branch and its head, when the remote has that commit.
+type OnRemote<'a> = Option<(&'a str, &'a str)>;
+
+fn on_remote<'a>(
+    branch: &'a Option<String>,
+    head: &'a Option<String>,
+    pushed: bool,
+) -> OnRemote<'a> {
+    match (branch, head) {
+        (Some(b), Some(h)) if pushed => Some((b, h)),
+        _ => None,
+    }
+}
+
+/// What the repositories hold, and what fctl-agent did about it.
 pub struct Synced {
     pub state: GitState,
     /// For the transcript: pushes, and what went wrong.
     pub logs: Vec<(LogLevel, String)>,
 }
 
-/// After a turn and when the session stops: pushes new commits on the
-/// session branch of the primary repository and of the writable clones,
-/// and (with `prs`) looks up their pull requests.
-pub async fn sync(p: &Paths, spec: &SessionSpec, push_commits: bool, prs: bool) -> Result<Synced> {
+/// The state of the primary repository and the clones of the others at
+/// `moment`. When a turn ends or the session stops it also moves the work
+/// in writable clones onto the session branch and, with `push_commits`,
+/// pushes new commits on the session branch. The pull requests of the
+/// state reported last (`last`) stand until a lookup finds another.
+pub async fn sync(
+    p: &Paths,
+    spec: &SessionSpec,
+    push_commits: bool,
+    moment: Moment,
+    last: Option<&GitState>,
+) -> Result<Synced> {
     let mut logs = Vec::new();
     let mut st = state(p, spec).await?;
-    if spec.project.repo.is_some() && push_commits && st.ahead > 0 && !st.pushed {
+    if moment.writes() && spec.project.repo.is_some() && push_commits && st.ahead > 0 && !st.pushed
+    {
         match push(&p.workdir, &p.home, &st).await {
             Ok(true) => {
                 let branch = st.branch.clone().unwrap_or_default();
@@ -830,18 +948,25 @@ pub async fn sync(p: &Paths, spec: &SessionSpec, push_commits: bool, prs: bool) 
             Err(e) => logs.push((LogLevel::Warn, format!("{e:#}"))),
         }
     }
-    if prs
-        && st.pushed
+    let before = last.map(|l| on_remote(&l.branch, &l.head, l.pushed));
+    if moment.looks_up(on_remote(&st.branch, &st.head, st.pushed), before)
         && let Some(b) = st.branch.clone()
     {
         st.pull_request = pull_request(&p.workdir, &p.home, &b).await;
     }
     let mut repos = Vec::new();
     for c in clones(p, spec).await {
-        repos.push(sync_clone(p, spec, &c, push_commits, prs, &mut logs).await);
+        let before = last.and_then(|l| l.repos.as_ref()).and_then(|rs| {
+            rs.iter()
+                .find(|r| r.owner == c.repo.owner && r.name == c.repo.name)
+        });
+        repos.push(sync_clone(p, spec, &c, push_commits, moment, before, &mut logs).await);
     }
     if !repos.is_empty() {
         st.repos = Some(repos);
+    }
+    if let Some(last) = last {
+        keep_pull_requests(&mut st, last);
     }
     Ok(Synced { state: st, logs })
 }
@@ -851,7 +976,8 @@ async fn sync_clone(
     spec: &SessionSpec,
     c: &RepoClone,
     push_commits: bool,
-    prs: bool,
+    moment: Moment,
+    before: Option<&RepoGitState>,
     logs: &mut Vec<(LogLevel, String)>,
 ) -> RepoGitState {
     let (dir, home, branch) = (c.dir.as_path(), p.home.as_path(), spec.branch.as_str());
@@ -861,19 +987,21 @@ async fn sync_clone(
         .unwrap_or_else(|| "main".to_owned());
     let mut st = state_at(dir, home, &base).await.unwrap_or_default();
     if c.access == RepoAccess::Write {
-        match onto_session_branch(dir, home, branch, &base, &st).await {
-            Ok(true) => {
-                logs.push((
-                    LogLevel::Info,
-                    format!("Moved the work in {name} from {base} to {branch}"),
-                ));
-                st = state_at(dir, home, &base).await.unwrap_or_default();
+        if moment.writes() {
+            match onto_session_branch(dir, home, branch, &base, &st).await {
+                Ok(true) => {
+                    logs.push((
+                        LogLevel::Info,
+                        format!("Moved the work in {name} from {base} to {branch}"),
+                    ));
+                    st = state_at(dir, home, &base).await.unwrap_or_default();
+                }
+                Ok(false) => {}
+                Err(e) => logs.push((LogLevel::Warn, format!("{name}: {e:#}"))),
             }
-            Ok(false) => {}
-            Err(e) => logs.push((LogLevel::Warn, format!("{name}: {e:#}"))),
         }
         let on_branch = st.branch.as_deref() == Some(branch);
-        if on_branch && push_commits && st.ahead > 0 && !st.pushed {
+        if moment.writes() && on_branch && push_commits && st.ahead > 0 && !st.pushed {
             match push(dir, home, &st).await {
                 Ok(true) => {
                     logs.push((LogLevel::Info, format!("Pushed {branch} to {name}")));
@@ -885,7 +1013,8 @@ async fn sync_clone(
                 Err(e) => logs.push((LogLevel::Warn, format!("{name}: {e:#}"))),
             }
         }
-        if prs && on_branch && st.pushed {
+        let before = before.map(|r| on_remote(&r.branch, &r.head, r.pushed));
+        if on_branch && moment.looks_up(on_remote(&st.branch, &st.head, st.pushed), before) {
             st.pull_request = pull_request(dir, home, branch).await;
         }
     }
@@ -895,6 +1024,12 @@ async fn sync_clone(
         Err(_) => dir.display().to_string(),
     };
     RepoGitState::new(&c.repo, c.access, Some(path), st)
+}
+
+/// Whether a repository's HEAD is detached, as in the middle of a rebase.
+pub fn detached(st: &GitState) -> bool {
+    let detached = |branch: &Option<String>| branch.as_deref() == Some("HEAD");
+    detached(&st.branch) || st.repos.iter().flatten().any(|r| detached(&r.branch))
 }
 
 /// Copies the pull requests `last` found to the same branches in `st`.
@@ -1211,7 +1346,7 @@ pub(crate) mod tests {
             assert!(run(&clone, &p.home, "git", &commit).await?.ok);
         }
 
-        let synced = sync(&p, &spec, true, false).await?;
+        let synced = sync(&p, &spec, true, Moment::Stopping, None).await?;
         let repos = synced.state.repos.context("repos")?;
         let names: Vec<String> = repos.iter().map(RepoGitState::full_name).collect();
         assert_eq!(names, ["acme/docs", "acme/lib"]);
@@ -1245,8 +1380,121 @@ pub(crate) mod tests {
         assert!(!run(&docs, &p.home, "git", &has_branch).await?.ok);
 
         // The next turn changes nothing more.
-        let again = sync(&p, &spec, true, false).await?;
+        let again = sync(&p, &spec, true, Moment::Stopping, None).await?;
         assert!(again.logs.is_empty(), "{:?}", again.logs);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn reading_the_state_leaves_the_index_to_the_agent() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        std::fs::write(origin.join("a.txt"), "one\n")?;
+        git_ok_in(&origin, &p.home, &["add", "a.txt"]).await?;
+        git_ok_in(&origin, &p.home, &["commit", "-q", "-m", "Add a"]).await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        std::fs::write(p.workdir.join("b.txt"), "two\n")?;
+        git_ok(&p, &["add", "b.txt"]).await?;
+        git_ok(&p, &["commit", "-q", "-m", "Add b"]).await?;
+        // a.txt keeps its content with newer stat data, as after a
+        // formatter ran over it; b.txt changes.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(p.workdir.join("a.txt"))?
+            .set_modified(later)?;
+        std::fs::write(p.workdir.join("b.txt"), "two\nthree\n")?;
+        let index = p.workdir.join(".git/index");
+        let before = std::fs::read(&index)?;
+
+        let st = state(&p, &spec).await?;
+        assert!(
+            std::fs::read(&index)? == before,
+            "reading the state rewrote the index"
+        );
+        let files: Vec<(&str, &str, Option<u32>)> = st
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.status.as_str(), f.additions))
+            .collect();
+        assert_eq!(files, [("b.txt", "added", Some(2))]);
+        assert_eq!((st.ahead, st.uncommitted), (1, 1));
+        // `git diff` on the index itself rewrites it, under its lock.
+        git_ok(&p, &["diff", "--numstat", "origin/main"]).await?;
+        assert!(std::fs::read(&index)? != before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_refresh_while_claude_works_only_reads() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec_with(serde_json::json!([
+            { "owner": "acme", "name": "lib", "access": "write" }
+        ]))?;
+        configure_git(&p, &spec.git_author).await?;
+        let widgets = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let lib = fake_github(dir.path(), &p.home, "acme/lib").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let clone = p.repos.join("acme/lib");
+        let to = clone.display().to_string();
+        let url = "https://github.com/acme/lib.git";
+        assert!(
+            run(&p.home, &p.home, "git", &["clone", "-q", url, &to])
+                .await?
+                .ok
+        );
+        // The agent commits in both, in the clone on its default branch.
+        for dir in [&p.workdir, &clone] {
+            std::fs::write(dir.join("change.txt"), "hello\n")?;
+            git_ok_in(dir, &p.home, &["add", "change.txt"]).await?;
+            git_ok_in(dir, &p.home, &["commit", "-q", "-m", "Change"]).await?;
+        }
+
+        // Even after `gh pr create`, nothing is pushed or looked up.
+        let working = Moment::Working { opened_pr: true };
+        let synced = sync(&p, &spec, true, working, None).await?;
+        assert!(synced.logs.is_empty(), "{:?}", synced.logs);
+        let st = synced.state;
+        assert_eq!((st.ahead, st.pushed), (1, false));
+        let repos = st.repos.context("repos")?;
+        assert_eq!(repos[0].branch.as_deref(), Some("main"));
+        assert_eq!((repos[0].ahead, repos[0].pushed), (1, false));
+        let session_branch = ["rev-parse", "--verify", "--quiet", "refs/heads/fctl/1-test"];
+        for dir in [&widgets, &lib, &clone] {
+            assert!(!run(dir, &p.home, "git", &session_branch).await?.ok);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn looks_up_pull_requests_only_where_one_can_have_appeared() {
+        let branch = Some("fctl/1-test".to_owned());
+        let (first, second) = (Some("a1".to_owned()), Some("b2".to_owned()));
+        let pushed = on_remote(&branch, &first, true);
+        let moved = on_remote(&branch, &second, true);
+        let committed = on_remote(&branch, &second, false);
+        let working = Moment::Working { opened_pr: false };
+        // A branch pushed since the last report, or whose pushed head moved.
+        assert!(working.looks_up(pushed, Some(None)));
+        assert!(working.looks_up(moved, Some(pushed)));
+        // A repository the last report didn't have.
+        assert!(working.looks_up(pushed, None));
+        // Nothing new for GitHub.
+        assert!(!working.looks_up(pushed, Some(pushed)));
+        assert!(!working.looks_up(committed, Some(pushed)));
+        // After `gh pr create`, every pushed branch.
+        let opened = Moment::Working { opened_pr: true };
+        assert!(opened.looks_up(pushed, Some(pushed)));
+        assert!(!opened.looks_up(committed, Some(pushed)));
+        // When a turn ends, every pushed branch; none when the session stops.
+        assert!(Moment::TurnEnded.looks_up(pushed, Some(pushed)));
+        assert!(!Moment::TurnEnded.looks_up(committed, None));
+        assert!(!Moment::Stopping.looks_up(moved, Some(None)));
     }
 }
