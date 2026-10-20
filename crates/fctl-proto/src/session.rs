@@ -597,6 +597,10 @@ pub struct PullRequestRef {
     pub title: Option<String>,
     /// `open`, `closed`, `merged` or `draft`.
     pub state: Option<String>,
+    /// The repository it was opened in. Sessions' pull requests have it;
+    /// agents leave it out of their git state, which says the repository
+    /// of each.
+    pub repo: Option<RepoRef>,
 }
 
 #[skip_serializing_none]
@@ -666,7 +670,16 @@ pub struct Session {
     pub last_activity_at: Option<Millis>,
     pub branch: Option<String>,
     pub base_branch: Option<String>,
+    /// The pull request of its branch in the primary repository, or in
+    /// another repository when that has none: the last one its agent found.
     pub pull_request: Option<PullRequestRef>,
+    /// Every pull request its agent found for the branches it worked on, in
+    /// all of the project's repositories, in the order it found them
+    /// (`fctl_domain::pulls`). Absent while it has none, and from control
+    /// planes before it, which have `pull_request` only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<PullRequestRef>>", optional))]
+    pub pull_requests: Vec<PullRequestRef>,
     pub runner: Option<RunnerRef>,
     pub model: Option<String>,
     pub remote_control: Option<RemoteControlState>,
