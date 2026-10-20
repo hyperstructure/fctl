@@ -120,10 +120,12 @@ pub fn billing_guard(v: &Value) -> Option<BillingGuard> {
 const COUNTED_CALLS: usize = 32;
 
 /// The API calls whose tokens the session's counters hold so far. Claude
-/// Code repeats a call's usage in each of its content blocks, the blocks of
-/// subagents that run at once interleave, and a call's output comes in its
-/// `message_delta` stream event, which can overtake the call's stored
-/// messages.
+/// reports a call's usage several times: as its response starts
+/// (`message_start`, a stream event) and again in each of its stored content
+/// blocks, with its input in full and its output only begun, and as it ends
+/// (`message_delta`, a stream event), with its output. Stream events can
+/// overtake stored messages or go missing, and the blocks of subagents that
+/// run at once interleave.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counted {
     calls: VecDeque<Call>,
@@ -160,12 +162,31 @@ impl Counted {
     }
 }
 
-/// Counts a call's output tokens so far (Claude reports them as a running
-/// total for the call).
-fn count_output(stats: &mut SessionStats, call: Option<&mut Call>, so_far: u64) {
-    let counted = call.as_ref().map_or(0, |c| c.output);
-    if so_far > counted {
-        stats.output_tokens = stats.output_tokens.saturating_add(so_far - counted);
+/// Counts what Claude reports of an API call's `usage`: its input and
+/// cache reads once (`input`), its output as the running total it is. A
+/// call without an id counts each time.
+fn count_call(
+    stats: &mut SessionStats,
+    counted: &mut Counted,
+    id: Option<&str>,
+    usage: &Value,
+    input: bool,
+) {
+    let n = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let mut call = id.map(|id| counted.call(id));
+    if input && !call.as_ref().is_some_and(|c| c.input) {
+        stats.input_tokens = stats.input_tokens.saturating_add(n("input_tokens"));
+        stats.cache_read_tokens = stats
+            .cache_read_tokens
+            .saturating_add(n("cache_read_input_tokens"));
+        if let Some(c) = call.as_mut() {
+            c.input = true;
+        }
+    }
+    let so_far = n("output_tokens");
+    let before = call.as_ref().map_or(0, |c| c.output);
+    if so_far > before {
+        stats.output_tokens = stats.output_tokens.saturating_add(so_far - before);
         if let Some(c) = call {
             c.output = so_far;
         }
@@ -198,24 +219,9 @@ pub fn apply_stats(
                 })
                 .unwrap_or(0);
             stats.tool_calls = stats.tool_calls.saturating_add(tools as u32);
-            // The usage when the response started: its input in full, its
-            // output only begun (`message_delta` has the rest).
             if let Some(usage) = v.pointer("/message/usage") {
-                let n = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-                let mut call = v
-                    .pointer("/message/id")
-                    .and_then(Value::as_str)
-                    .map(|id| counted.call(id));
-                if !call.as_ref().is_some_and(|c| c.input) {
-                    stats.input_tokens = stats.input_tokens.saturating_add(n("input_tokens"));
-                    stats.cache_read_tokens = stats
-                        .cache_read_tokens
-                        .saturating_add(n("cache_read_input_tokens"));
-                    if let Some(c) = call.as_mut() {
-                        c.input = true;
-                    }
-                }
-                count_output(stats, call, n("output_tokens"));
+                let id = v.pointer("/message/id").and_then(Value::as_str);
+                count_call(stats, counted, id, usage, true);
             }
             if running && stats.turn_started_at.is_none() {
                 stats.turn_started_at = Some(ts);
@@ -252,25 +258,39 @@ pub fn apply_stats(
     }
 }
 
-/// Updates session counters from a stream event: an API call's output
-/// tokens, which only its `message_delta` has. Returns whether they changed.
+/// Whether a stream event reports an API call's tokens: the one that starts
+/// its response and the one that ends it. The others come by the dozen a
+/// second and count nothing.
+pub fn reports_usage(v: &Value) -> bool {
+    matches!(
+        v.pointer("/event/type").and_then(Value::as_str),
+        Some("message_start" | "message_delta")
+    )
+}
+
+/// Updates session counters from a stream event ([`reports_usage`]): an API
+/// call's input as its response starts, before any of it is stored, and its
+/// output, which only the end has. Returns whether they changed.
 pub fn apply_stream_stats(stats: &mut SessionStats, counted: &mut Counted, v: &Value) -> bool {
-    if v.pointer("/event/type").and_then(Value::as_str) != Some("message_delta") {
-        return false;
+    let before = stats.clone();
+    match v.pointer("/event/type").and_then(Value::as_str) {
+        Some("message_start") => {
+            if let Some(usage) = v.pointer("/event/message/usage") {
+                let id = v.pointer("/event/message/id").and_then(Value::as_str);
+                count_call(stats, counted, id, usage, true);
+            }
+        }
+        // It repeats the input, which the call's start or its stored blocks
+        // count.
+        Some("message_delta") => {
+            if let Some(usage) = v.pointer("/event/usage") {
+                let id = v.get("api_message_id").and_then(Value::as_str);
+                count_call(stats, counted, id, usage, false);
+            }
+        }
+        _ => {}
     }
-    let Some(so_far) = v
-        .pointer("/event/usage/output_tokens")
-        .and_then(Value::as_u64)
-    else {
-        return false;
-    };
-    let before = stats.output_tokens;
-    let call = v
-        .get("api_message_id")
-        .and_then(Value::as_str)
-        .map(|id| counted.call(id));
-    count_output(stats, call, so_far);
-    stats.output_tokens != before
+    *stats != before
 }
 
 /// Follows the session's status: a turn is under way while it runs.
@@ -516,19 +536,36 @@ mod tests {
         // Without an id, every report counts.
         assert!(apply_stream_stats(&mut s, &mut c, &delta(None, 10)));
         assert_eq!(s.output_tokens, 350);
-        // Other stream events count nothing.
-        let start = json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "c", "usage": {"input_tokens": 9, "output_tokens": 1}}}});
-        assert!(!apply_stream_stats(&mut s, &mut c, &start));
+        // A call's input counts as its response starts, before any of it is
+        // stored...
+        let start = json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "c",
+            "usage": {"input_tokens": 1, "cache_read_input_tokens": 3_000, "output_tokens": 1}}}});
+        assert!(reports_usage(&start));
+        assert!(apply_stream_stats(&mut s, &mut c, &start));
+        assert_eq!(
+            (s.input_tokens, s.output_tokens, s.cache_read_tokens),
+            (6, 351, 25_000)
+        );
+        // ...and once: its stored blocks repeat it.
+        apply_stats(&mut s, &mut c, &block("c", None, 1, 3_000), 5, true);
+        assert_eq!(
+            (s.input_tokens, s.output_tokens, s.cache_read_tokens),
+            (6, 358, 25_000)
+        );
+        // The other stream events count nothing.
+        let text = json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}}});
+        assert!(!reports_usage(&text));
+        assert!(!apply_stream_stats(&mut s, &mut c, &text));
         // Claude's totals settle the counts at the end of the turn...
         let result = |input: u64, output: u64, cache: u64| json!({"type": "result", "duration_ms": 9000, "modelUsage": {"m": {"inputTokens": input, "outputTokens": output, "cacheReadInputTokens": cache}}});
-        apply_stats(&mut s, &mut c, &result(7, 400, 30_000), 5, true);
+        apply_stats(&mut s, &mut c, &result(7, 400, 30_000), 6, true);
         assert_eq!(
             (s.input_tokens, s.output_tokens, s.cache_read_tokens),
             (7, 400, 30_000)
         );
         // ...unless a resumed session's process knows less than was counted.
-        apply_stats(&mut s, &mut c, &block("d", None, 2, 5_000), 6, true);
-        apply_stats(&mut s, &mut c, &result(2, 8, 5_000), 7, true);
+        apply_stats(&mut s, &mut c, &block("d", None, 2, 5_000), 7, true);
+        apply_stats(&mut s, &mut c, &result(2, 8, 5_000), 8, true);
         assert_eq!(
             (s.input_tokens, s.output_tokens, s.cache_read_tokens),
             (9, 408, 35_000)

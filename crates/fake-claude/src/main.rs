@@ -30,9 +30,10 @@
 //! Plan usage comes as Claude Code reports it after a response
 //! (`unifiedWindows` in a `rate_limit_event`): the five-hour and weekly
 //! windows follow the clock, so every session reports the same numbers.
-//! Each API call's tokens come as Claude Code's do: its input with each of
-//! its assistant messages, its output in the `message_delta` that ends it,
-//! and the process's totals with each `result` (`modelUsage`).
+//! Each API call's tokens come as Claude Code's do: its input as its
+//! response starts (`message_start`, when it streams) and with each of its
+//! assistant messages, its output in the `message_delta` that ends it, and
+//! the process's totals with each `result` (`modelUsage`).
 //!
 //! Environment: `FAKE_CLAUDE_API_KEY_SOURCE` overrides the reported
 //! `apiKeySource` (default `none`); `FAKE_CLAUDE_DELAY_MS` sets the delay
@@ -71,6 +72,19 @@ fn uuid() -> String {
         &h[13..16],
         &h[17..20],
         &h[20..32]
+    )
+}
+
+/// A short id for a message, tool use, task or request, as Claude's have:
+/// the end of a [`uuid`], which is what changes from one to the next, and a
+/// count, so that no two are the same.
+fn short_id(len: usize) -> String {
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    let u = uuid();
+    format!(
+        "{}{:x}",
+        &u[u.len() - len..],
+        COUNT.fetch_add(1, Ordering::SeqCst)
     )
 }
 
@@ -118,10 +132,10 @@ impl Session {
     /// Starts a shell command in the background that ends after `secs`, as
     /// Claude Code's Bash tool does with `run_in_background`.
     fn start_background(&mut self, secs: u64) {
-        let id = format!("b{}", &uuid()[..8]);
-        let tool_use_id = format!("toolu_{}", &uuid()[..12]);
+        let id = format!("b{}", short_id(8));
+        let tool_use_id = format!("toolu_{}", short_id(12));
         let description = format!("Wait {secs} seconds in the background");
-        let msg_id = format!("msg_{}", &uuid()[..8]);
+        let msg_id = format!("msg_{}", short_id(8));
         let usage = self.call_started();
         out(
             &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": format!("sleep {secs}"), "description": description, "run_in_background": true}}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
@@ -202,7 +216,7 @@ impl Session {
     }
 
     fn stream_text(&mut self, text: &str) -> String {
-        let msg_id = format!("msg_{}", &uuid()[..8]);
+        let msg_id = format!("msg_{}", short_id(8));
         let usage = self.call_started();
         out(
             &json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": msg_id, "role": "assistant", "model": self.model, "content": [], "usage": usage}}, "api_message_id": msg_id, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
@@ -232,8 +246,8 @@ impl Session {
     }
 
     fn tool(&mut self, name: &str, input: Value, output: &str, is_error: bool) {
-        let tool_id = format!("toolu_{}", &uuid()[..12]);
-        let msg_id = format!("msg_{}", &uuid()[..8]);
+        let tool_id = format!("toolu_{}", short_id(12));
+        let msg_id = format!("msg_{}", short_id(8));
         let usage = self.call_started();
         out(
             &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": input}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
@@ -314,7 +328,7 @@ impl Session {
             );
         }
         if lower.contains("refresh") {
-            let req_id = format!("req_{}", &uuid()[..8]);
+            let req_id = format!("req_{}", short_id(8));
             out(
                 &json!({"type": "control_request", "request_id": req_id, "request": {"subtype": "oauth_token_refresh"}}),
             );
@@ -772,7 +786,15 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{adler32, asks_for_limit, background_for, crc32, rename_to, screenshot_png};
+    use super::{
+        adler32, asks_for_limit, background_for, crc32, rename_to, screenshot_png, short_id,
+    };
+
+    #[test]
+    fn short_ids_differ() {
+        let ids: std::collections::HashSet<String> = (0..1000).map(|_| short_id(8)).collect();
+        assert_eq!(ids.len(), 1000);
+    }
 
     #[test]
     fn draws_a_png() {

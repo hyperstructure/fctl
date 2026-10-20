@@ -1313,13 +1313,8 @@ impl SessionObject {
                 self.track_live(&event, &text);
                 self.broadcast(&format!(r#"{{"type":"stream","event":{text}}}"#));
                 self.pulse_kind("delta", 1, now);
-                // An API call's output tokens come at its end.
-                if event
-                    .pointer("/event/type")
-                    .and_then(serde_json::Value::as_str)
-                    == Some("message_delta")
-                {
-                    self.count_output(&event, now).await;
+                if ev::reports_usage(&event) {
+                    self.count_stream(&event, now).await;
                 }
             }
             UplinkUp::State { state } => self.apply_state(state, now).await,
@@ -1474,9 +1469,10 @@ impl SessionObject {
         changed
     }
 
-    /// Counts an API call's output tokens from its `message_delta`, which
-    /// comes only live: the turn's result settles what goes missing.
-    async fn count_output(&self, event: &serde_json::Value, now: i64) {
+    /// Counts an API call's tokens from the stream events that start and end
+    /// its response, which come only live: the turn's result settles what
+    /// goes missing.
+    async fn count_stream(&self, event: &serde_json::Value, now: i64) {
         let Some(mut s) = self.summary() else { return };
         let mut counted = self.counted();
         if ev::apply_stream_stats(&mut s.stats, &mut counted, event) {

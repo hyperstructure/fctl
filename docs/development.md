@@ -77,9 +77,9 @@ and whether each listed file is on disk. Turns other than `limit` and
 `crash` report plan usage as Claude Code does (`unifiedWindows`), with
 five-hour and weekly windows that follow the clock, so Settings → Claude,
 the floor and `fctl claude status` show it. Each of its API calls reports
-tokens as Claude Code's do, its input with its assistant messages and its
-output in the `message_delta` that ends it, so the session page's Work
-counters move during a turn. Its `system/init` message lists a
+tokens as Claude Code's do, its input as it starts and with its assistant
+messages, and its output in the `message_delta` that ends it, so the
+session page's Work counters move during a turn. Its `system/init` message lists a
 claude.ai connector, `claude.ai Fake Docs`, unless
 `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, so sessions in a project with
 claude.ai connectors turned off show none (`fctl logs --json`). Its commits
