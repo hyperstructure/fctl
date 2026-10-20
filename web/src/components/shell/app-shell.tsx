@@ -64,10 +64,14 @@ export function AppShell() {
   const path = useRouterState({ select: (s) => s.location.pathname });
   return (
     <div className="flex min-h-dvh bg-canvas">
+      {/* On phones the sidebar is a drawer over the page: opaque, and out of the page once
+          it has slid away (display: none), so that it is drawn anew each time it opens.
+          Kept off screen with a blur, it sometimes stopped showing properly in Safari on iOS
+          until a reload. */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface/80 pl-[env(safe-area-inset-left)] backdrop-blur-xl transition-transform duration-300 ease-out md:translate-x-0",
-          drawer ? "translate-x-0" : "-translate-x-full",
+          "fixed inset-y-0 left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] transition-[translate,display] transition-discrete duration-300 ease-out max-md:starting:-translate-x-full md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
+          drawer ? "translate-x-0" : "-translate-x-full max-md:hidden",
         )}
       >
         <Sidebar onPalette={openPalette} onNavigate={() => setDrawer(false)} path={path} />
