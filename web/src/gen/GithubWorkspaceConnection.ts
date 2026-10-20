@@ -4,6 +4,14 @@ import type { UserRef } from "./UserRef";
 import type { WorkspaceRef } from "./WorkspaceRef";
 
 /**
- * A workspace that uses an account, or asks to.
+ * A workspace that uses an account.
  */
-export type GithubWorkspaceConnection = { workspace: WorkspaceRef, repos?: Array<string>, status: GithubConnectionStatus, requested_by?: UserRef, created_at: number, };
+export type GithubWorkspaceConnection = { workspace: WorkspaceRef, repos?: Array<string>, status: GithubConnectionStatus, 
+/**
+ * Its admin who connected it.
+ */
+requested_by?: UserRef, 
+/**
+ * The GitHub account they signed in to GitHub as.
+ */
+github_user?: string, created_at: number, };

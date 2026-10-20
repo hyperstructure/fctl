@@ -3,11 +3,13 @@ import type { GithubInstallation } from "./GithubInstallation";
 
 /**
  * `GET /api/v1/admin/github` (instance admins): the accounts the
- * instance's GitHub App is installed on, and the workspaces that use each
- * or ask to.
+ * instance's GitHub App is installed on, and the workspaces that use
+ * each. Workspaces' admins connect them; instance admins can take one
+ * from a workspace.
  */
 export type GithubInstallations = { configured: boolean, app_slug?: string, 
 /**
- * Where to install the app on more accounts.
+ * Where to install the app on more accounts: only from older control
+ * planes, since workspaces install it themselves.
  */
 install_url?: string, installations: Array<GithubInstallation>, };

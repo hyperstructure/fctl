@@ -155,9 +155,6 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::admin::workspace_primary(ctx, req, id).await
         }
         (Get, ["admin", "github"]) => api::github::admin_list(ctx).await,
-        (Put, ["admin", "github", account, "workspaces", workspace]) => {
-            api::github::admin_connect(ctx, req, &http::decode(account), workspace).await
-        }
         (Delete, ["admin", "github", account, "workspaces", workspace]) => {
             api::github::admin_disconnect(ctx, &http::decode(account), workspace).await
         }
@@ -198,13 +195,18 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::workspaces::remove_runner(ctx, id, runner).await
         }
         (Get, ["workspaces", id, "github"]) => api::github::workspace(ctx, id).await,
-        (Post, ["workspaces", id, "github"]) => api::github::connect(ctx, req, id).await,
+        (Post, ["workspaces", id, "github"]) => {
+            api::github::connect_from_older_cli(ctx, req, id).await
+        }
+        (Post, ["workspaces", id, "github", "connect"]) => api::github::connect(ctx, req, id).await,
         (Delete, ["workspaces", id, "github", account]) => {
             api::github::disconnect(ctx, id, &http::decode(account)).await
         }
         (Post, ["invitations", id, "accept"]) => api::workspaces::accept(ctx, id).await,
         (Post, ["invitations", id, "decline"]) => api::workspaces::decline(ctx, id).await,
         (Get, ["github", "installed"]) => api::github::installed(ctx, req).await,
+        (Get, ["github", "connect"]) => api::github::connect_link(ctx, req).await,
+        (Get, ["github", "authorized"]) => api::github::authorized(ctx, req).await,
 
         // Runners (admin) and hosts
         (Get, ["runners"]) => api::runners::list(ctx).await,

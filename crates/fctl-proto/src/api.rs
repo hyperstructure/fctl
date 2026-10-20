@@ -1352,7 +1352,9 @@ pub struct DeleteWorkspaceRequest {
 pub enum GithubConnectionStatus {
     /// Its projects use the account's repositories.
     Active,
-    /// One of its admins asked; an instance admin hasn't approved it yet.
+    /// One of its admins asked an instance admin, who hasn't approved it:
+    /// only from control planes before workspaces connected accounts
+    /// themselves.
     Requested,
 }
 
@@ -1385,8 +1387,15 @@ pub struct GithubConnection {
     /// every one the app reaches there.
     pub repos: Option<Vec<String>>,
     pub status: GithubConnectionStatus,
+    /// The workspace's admin who connected it (or asked an instance admin
+    /// to, before workspaces connected accounts themselves).
     pub requested_by: Option<UserRef>,
+    /// The instance admin who approved it, for connections from before
+    /// workspaces connected accounts themselves.
     pub approved_by: Option<UserRef>,
+    /// The GitHub account its admin signed in to GitHub as, which showed
+    /// fctl what they may connect. Absent for connections from before that.
+    pub github_user: Option<String>,
     pub created_at: Millis,
 }
 
@@ -1398,37 +1407,62 @@ pub struct WorkspaceGithub {
     /// The instance has a GitHub App.
     pub configured: bool,
     pub app_slug: Option<String>,
-    /// Installs the app on another account and comes back here, for the
-    /// workspace's admins.
+    /// Installs the app on another account and comes back here, through a
+    /// GitHub sign-in that connects it, for the workspace's admins.
     pub install_url: Option<String>,
     pub connections: Vec<GithubConnection>,
-    /// Connecting an account takes an instance admin's approval: you are
-    /// not one.
+    /// Always false: connecting an account takes signing in to GitHub
+    /// instead (older control planes asked an instance admin to approve
+    /// it).
     pub approval_required: bool,
+    /// Accounts can be connected here: the instance signs people in to
+    /// GitHub with its GitHub App's client ID and secret. Without them,
+    /// the workspace keeps the accounts it has.
+    #[serde(default)]
+    pub can_connect: bool,
 }
 
-/// `POST /api/v1/workspaces/{id}/github` (admins): use an account the
-/// instance's GitHub App is installed on, or ask an instance admin to.
+/// `POST /api/v1/workspaces/{id}/github/connect` (admins): connect an
+/// account the instance's GitHub App is installed on. The answer is a link
+/// ([`ConnectGithubLink`]) to a GitHub sign-in that shows fctl what you
+/// may connect there.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct ConnectGithubRequest {
     /// The account's login.
     pub account: String,
-    /// Only these repositories of it. Absent: every one the app reaches.
+    /// Only these repositories of it. Absent: every one the app reaches,
+    /// as far as you may connect it.
     pub repos: Option<Vec<String>>,
 }
 
+/// Where connecting an account goes on: open it in a browser signed in to
+/// fctl as you. GitHub asks you to sign in, and the account is connected
+/// with what GitHub says you may: every repository of your own account, or
+/// of an organization whose every repository the app reaches and you are
+/// an admin of; otherwise the repositories you are an admin of. The
+/// browser comes back to the workspace's GitHub tab.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ConnectGithubLink {
+    pub url: String,
+    /// It works until then.
+    pub expires_at: Millis,
+}
+
 /// `GET /api/v1/admin/github` (instance admins): the accounts the
-/// instance's GitHub App is installed on, and the workspaces that use each
-/// or ask to.
+/// instance's GitHub App is installed on, and the workspaces that use
+/// each. Workspaces' admins connect them; instance admins can take one
+/// from a workspace.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct GithubInstallations {
     pub configured: bool,
     pub app_slug: Option<String>,
-    /// Where to install the app on more accounts.
+    /// Where to install the app on more accounts: only from older control
+    /// planes, since workspaces install it themselves.
     pub install_url: Option<String>,
     pub installations: Vec<GithubInstallation>,
 }
@@ -1450,7 +1484,7 @@ pub struct GithubInstallation {
     pub workspaces: Vec<GithubWorkspaceConnection>,
 }
 
-/// A workspace that uses an account, or asks to.
+/// A workspace that uses an account.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -1458,19 +1492,11 @@ pub struct GithubWorkspaceConnection {
     pub workspace: WorkspaceRef,
     pub repos: Option<Vec<String>>,
     pub status: GithubConnectionStatus,
+    /// Its admin who connected it.
     pub requested_by: Option<UserRef>,
+    /// The GitHub account they signed in to GitHub as.
+    pub github_user: Option<String>,
     pub created_at: Millis,
-}
-
-/// `PUT /api/v1/admin/github/{account}/workspaces/{workspace}` (instance
-/// admins): the workspace uses the account (approving a request), with
-/// these repositories.
-#[skip_serializing_none]
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
-pub struct SetGithubConnectionRequest {
-    /// Absent: every repository the app reaches there.
-    pub repos: Option<Vec<String>>,
 }
 
 /// A workspace, as instance admins see it: what it is and who runs it,
