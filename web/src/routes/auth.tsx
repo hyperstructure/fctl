@@ -13,6 +13,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { ApiFailure, api, emails } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { saveSent } from "@/lib/early-access";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
 import { RECOVERY_LEFT } from "@/lib/two-factor";
@@ -51,6 +52,12 @@ function forgetInvite() {
   try {
     sessionStorage.removeItem(PENDING_INVITE);
   } catch {}
+}
+
+/** The invitation made or joined an account: the request for early access it answered is done. */
+function used() {
+  forgetInvite();
+  saveSent(undefined);
 }
 
 export function AuthFrame({
@@ -458,14 +465,14 @@ export function InvitePage() {
   const { busy, error, submit, fieldError } = useSubmit(
     () => api.signup({ email, given_name: given, family_name: family, password, invite: token }),
     (r) => {
-      forgetInvite();
+      used();
       if (r.me) signedIn(r.me);
     },
   );
   const connect = useMutation({
     mutationFn: () => emails.connectInvite(token),
     onSuccess: (m) => {
-      forgetInvite();
+      used();
       signedIn(m);
     },
   });
