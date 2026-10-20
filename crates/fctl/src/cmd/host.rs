@@ -743,9 +743,11 @@ fn runner_api() -> Result<fctl_client::Api> {
 /// `api` is the instance they go to, which must be the one it runs for.
 pub(crate) async fn this_runner(api: &fctl_client::Api) -> Result<Runner> {
     const NAME_IT: &str = "Which runner? This machine isn't one: give the runner's name or id (`fctl admin runners` lists them)";
-    let (Ok(cfg), Ok(token)) = (HostConfig::load(), HostConfig::load_token()) else {
+    if !HostConfig::path().exists() {
         bail!(NAME_IT);
-    };
+    }
+    let cfg = HostConfig::load()?;
+    let token = HostConfig::load_token()?;
     if config::normalize_server(&cfg.server) != config::normalize_server(api.base()) {
         bail!(
             "This machine is a runner of {}, not of {}: name the runner or give its id",
