@@ -23,6 +23,7 @@ import { useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/session/composer";
 import { AgentOrb } from "@/components/session/orb";
 import { Transcript } from "@/components/session/transcript";
+import { HeaderMenuButton } from "@/components/shell/menu-button";
 import {
   Avatar,
   AvatarStack,
@@ -129,9 +130,10 @@ export function SessionPage() {
   return (
     <div className="flex min-h-dvh">
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Header */}
+        {/* Header. On phones it holds the menu button, in place of the top bar it would cover. */}
         <header className="sticky top-0 z-10 border-b border-line bg-canvas/80 backdrop-blur-xl">
-          <div className="flex items-center gap-4 px-6 py-3.5">
+          <div className="flex items-center gap-4 py-3.5 pr-6 pl-2.5 md:pl-6">
+            <HeaderMenuButton className="-mr-2.5" />
             <AgentOrb status={status} activity={s.activity} />
             <div className="min-w-0 flex-1">
               {session ? (
@@ -243,10 +245,11 @@ export function SessionPage() {
                   <Share2 className="size-4" />
                 </IconButton>
               )}
+              {/* Only where the rail shows (`hidden` would lose to IconButton's `inline-flex`). */}
               <IconButton
                 label="Details"
                 onClick={() => setRail(!rail)}
-                className={cn("hidden lg:inline-flex", rail && "text-ink")}
+                className={cn("max-lg:hidden", rail && "text-ink")}
               >
                 <PanelRight className="size-4" />
               </IconButton>
