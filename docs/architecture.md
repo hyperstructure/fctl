@@ -589,6 +589,30 @@ agent posts a notice; a primary repository out of reach fails the session.
   (which Claude is told to use), new commits on it are pushed, and its pull
   request is looked up. The `git` event carries the primary repository in
   its fields and the others in `repos`.
+- **Changes** are what each branch changed since it left its base: the
+  diff from the merge base of the branch and `origin/<base>`, uncommitted
+  and untracked work included, so the base's later commits never show as
+  the session's. Once the branch's pull request merged, from the base as it
+  was just before (the pull request's `baseRefOid`), so that the work it
+  merged still shows, however it merged.
+- **Pull requests.** fctl-agent follows every pull request of its session
+  (`crates/fctl-agent/src/followed.rs`): those of the branches it looks
+  up, those whose URL `gh pr create` printed, whichever branch, worktree or
+  clone they came from, and those the session lists when a sandbox starts
+  (the spec's `pull_requests`). It keeps them in its state file, reports
+  them all in the `git` event's `pull_requests`, and looks each up again
+  when a turn ends until it is merged, so the session lists them with their
+  state (`fctl_domain::pulls`). The system prompt tells agents to make
+  another pull request's branch where the repository is checked out, not in
+  a worktree, since Changes shows the checked-out branches.
+- **Merged branches** aren't pushed again: GitHub deletes a merged pull
+  request's branch in repositories set up to, and a push would bring it
+  back. Before it pushes a
+  branch whose pull request it saw open, or whose upstream a fetch pruned
+  (`[gone]`), fctl-agent looks the pull request up. Commits after a merged
+  one stay in the sandbox: the transcript says so, and Changes shows the
+  branch merged, with the commits since (`unmerged`) not pushed
+  ([ADR 0029](adr/0029-sessions-follow-every-pull-request-their-agent-opens.md)).
 - **While Claude works** fctl-agent reports the same state soon after tool
   calls that can change the repositories (`Bash`, `Write`, `Edit`,
   `NotebookEdit`, a subagent's too) and when background tasks end: a burst
@@ -596,7 +620,8 @@ agent posts a notice; a primary repository out of reach fails the session.
   (`crates/fctl-agent/src/refresh.rs`), and a `git` event goes out only
   when the state changed. These refreshes only read: they push nothing,
   move no work, and look up a branch's pull request only once it was
-  pushed or its pushed head moved, or after `gh pr create`. They read a
+  pushed or its pushed head moved, or after `gh pr create`, along with the
+  pull requests it printed. They read a
   copy of each clone's index, since `git diff` rewrites the index it reads
   under its lock, which would fail the agent's own `git commit`
   ([ADR 0027](adr/0027-agents-report-their-repositories-while-claude-works.md)).

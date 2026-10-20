@@ -34,3 +34,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0026](0026-the-control-plane-runs-without-cloudflare-on-workerd.md) | The control plane also runs without Cloudflare, on workerd |
 | [0027](0027-agents-report-their-repositories-while-claude-works.md) | Agents report their repositories while Claude works |
 | [0028](0028-app-fctl-sh-takes-early-access-requests.md) | app.fctl.sh takes requests for early access |
+| [0029](0029-sessions-follow-every-pull-request-their-agent-opens.md) | Sessions follow every pull request their agent opens |
