@@ -23,8 +23,8 @@ The image runs the Worker and the web app that run on Cloudflare, on
 workerd through Miniflare, with all its state (the database, every
 session's event log, attached files) in `/data`
 ([ADR 0026](adr/0026-the-control-plane-runs-without-cloudflare-on-workerd.md)).
-It listens on port 8787, for amd64 and arm64 machines alike (a Raspberry Pi
-4 or later will do), and each release of fctl publishes it.
+It listens on port 8787, runs on amd64 and arm64 machines alike, and each
+release of fctl publishes it.
 
 ### With Docker
 
@@ -40,10 +40,14 @@ docker logs fctl
 to: the machine's address on your network here, `http://localhost:8787`
 to keep it to this machine, or the https address of a
 [reverse proxy](#https-and-reverse-proxies) in front. The log has the link
-that creates the first account, the primary instance owner's:
+that creates the first account, the primary instance owner's, after what
+plain http gives up:
 
 ```
+Made a master key in /data/master-key. It encrypts stored credentials and secrets: keep it with the data (or set FCTL_MASTER_KEY to it).
+Applied 13 database migrations
 fctl control plane 0.11.0 at http://192.168.1.20:8787, listening on 0.0.0.0:8787, data in /data
+Over plain http, anyone on the network in between can read sign-ins and tokens, and browsers offer passkeys, notifications and installing the app only over https (or on localhost): keep it to a network you trust, or put a reverse proxy with TLS in front.
 Create the primary instance owner's account (the link works once):
   http://192.168.1.20:8787/setup#token=…
 ```

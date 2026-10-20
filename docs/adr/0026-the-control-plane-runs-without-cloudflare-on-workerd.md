@@ -66,13 +66,13 @@ WebCrypto. Two ways to run it elsewhere:
   (`fctl_domain::cookies`). The server says, as it starts, what that gives
   up: passkeys, notifications and the installable app need https, and
   anyone on the network reads the cookies.
-- **Cloudflare stays the way app.fctl.sh runs**, and the one this ADR
-  doesn't change.
+- **app.fctl.sh stays on Cloudflare.** Nothing about deploying there
+  changes.
 
 ## Consequences
 
-- An instance takes a machine with Docker, or Node.js and a clone, and no
-  account anywhere. The same hosts, CLI and web app work with both.
+- An instance takes a machine with Docker (or Rust, Node.js and a clone)
+  and no account anywhere. The same hosts, CLI and web app work with both.
 - The two ways run the same code on the same runtime, and CI runs a
   session through each: `cargo xtask dev --smoke` through `wrangler dev`,
   and the image's job through the container.
@@ -83,7 +83,7 @@ WebCrypto. Two ways to run it elsewhere:
   serving, and a crash of workerd is Miniflare's to restart. The server
   exits when the runtime stops answering, so that Docker or Kubernetes
   starts it again.
-- The server needs about 450 MB of memory at rest (Node.js and workerd),
+- The server needs about 500 MB of memory at rest (Node.js and workerd),
   more than a native binary would.
 - Upgrading wrangler upgrades Miniflare and workerd for both `cargo xtask
   dev` and the image; the server takes the Miniflare wrangler depends on.
