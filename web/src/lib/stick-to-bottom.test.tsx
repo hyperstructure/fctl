@@ -212,14 +212,19 @@ describe("the session page", () => {
       top = Math.max(0, Math.min(o.top ?? 0, height - view));
     }) as typeof window.scrollTo);
     let resized: ResizeObserverCallback | undefined;
+    const observed = new Set<Element>();
     vi.stubGlobal(
       "ResizeObserver",
       class {
         constructor(cb: ResizeObserverCallback) {
           resized = cb;
         }
-        observe() {}
-        disconnect() {}
+        observe(target: Element) {
+          observed.add(target);
+        }
+        disconnect() {
+          observed.clear();
+        }
       },
     );
 
@@ -242,9 +247,17 @@ describe("the session page", () => {
       container.remove();
     };
     cleanups.push(() => container.isConnected && leave());
-    const grow = (by: number) => {
+    /** The transcript grows by `by` px, or with `outside`, the rest of the page (the header, the composer). */
+    const grow = (by: number, outside = false) => {
       height += by;
-      act(() => resized?.([{ contentRect: { height } } as ResizeObserverEntry], {} as ResizeObserver));
+      const target = outside ? document.documentElement : container.firstElementChild;
+      if (!target || !observed.has(target)) return;
+      act(() =>
+        resized?.(
+          [{ target, contentRect: { height } } as unknown as ResizeObserverEntry],
+          {} as ResizeObserver,
+        ),
+      );
     };
     grow(0);
     const gap = () => height - top - view;
@@ -259,6 +272,15 @@ describe("the session page", () => {
     expect(p.gap()).toBe(0);
     p.grow(26);
     expect(p.gap()).toBe(0);
+  });
+
+  it("follows the rest of the page to its bottom too, like a header that gets another line", () => {
+    const p = sessionPage();
+    p.grow(22, true);
+    expect(p.gap()).toBe(0);
+    p.scroll(p.top() - 40);
+    p.grow(22, true);
+    expect(p.gap()).toBe(40 + 22);
   });
 
   it("stays where the reader scrolls up to, and follows again at the bottom", () => {

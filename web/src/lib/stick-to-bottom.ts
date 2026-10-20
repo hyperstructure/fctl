@@ -61,9 +61,9 @@ export class Stick {
 }
 
 /**
- * Keeps the page's bottom in view while `content` grows, as long as the
- * reader is at the bottom. A new `key` (another session) starts at the
- * bottom again.
+ * Keeps the page's bottom in view while `content` grows, or anything else on
+ * the page, as long as the reader is at the bottom. A new `key` (another
+ * session) starts at the bottom again.
  */
 export function useStickToBottom(content: RefObject<HTMLElement | null>, key: unknown) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` starts it over
@@ -100,15 +100,20 @@ export function useStickToBottom(content: RefObject<HTMLElement | null>, key: un
       }
       syncAnchoring();
     };
-    const grown = new ResizeObserver(([entry]) => {
-      const h = entry?.contentRect.height ?? 0;
-      // What a click opened grows the transcript where the reader is: stay there.
-      if (clicked && h > height) stick.stuck = false;
-      height = h;
+    const grown = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target !== el) continue;
+        const h = entry.contentRect.height;
+        // What a click opened grows the transcript where the reader is: stay there.
+        if (clicked && h > height) stick.stuck = false;
+        height = h;
+      }
       syncAnchoring();
       toBottom();
     });
     grown.observe(el);
+    // And the rest of the page, like a header whose status wraps to another line.
+    grown.observe(page);
     syncAnchoring();
 
     const off = new AbortController();
