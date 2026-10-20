@@ -154,10 +154,12 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
 
 The machine appears under the workspace's **Runners** tab as online, and
 the workspace's sessions start on it. It is yours: add it to your other
-workspaces from their Runners tab (`fctl workspaces add-runner <runner> -w
-side-project`), and it takes the sessions of all of them. For a Mac that
-runs around the clock, keep it plugged in and turn on automatic login, so
-the host starts again after a reboot or a power cut.
+workspaces from their Runners tab, or with `fctl workspaces add-runner -w
+side-project` on the machine, and it takes the sessions of all of them.
+Elsewhere, that command takes the runner's name or the id `fctl host
+status` shows. For a Mac that runs around the clock, keep it plugged in
+and turn on automatic login, so the host starts again after a reboot or a
+power cut.
 
 ## 6. Create a project
 

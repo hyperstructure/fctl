@@ -61,14 +61,24 @@ pub fn status(s: fctl_proto::session::SessionStatus) -> String {
 }
 
 /// A runner's state: online, offline, disabled, draining or drained.
-pub fn runner_status(r: &fctl_proto::api::Runner) -> String {
+pub fn runner_state(r: &fctl_proto::api::Runner) -> &'static str {
     use fctl_proto::api::RunnerStatus;
     match (r.status, &r.drain) {
-        (RunnerStatus::Disabled, _) => red("disabled"),
-        (_, Some(_)) if r.active_sessions > 0 => amber("draining"),
-        (_, Some(_)) => amber("drained"),
-        (RunnerStatus::Online, None) => accent("online"),
-        (RunnerStatus::Offline, None) => dim("offline"),
+        (RunnerStatus::Disabled, _) => "disabled",
+        (_, Some(_)) if r.active_sessions > 0 => "draining",
+        (_, Some(_)) => "drained",
+        (RunnerStatus::Online, None) => "online",
+        (RunnerStatus::Offline, None) => "offline",
+    }
+}
+
+/// [`runner_state`], colored.
+pub fn runner_status(r: &fctl_proto::api::Runner) -> String {
+    match runner_state(r) {
+        s @ "disabled" => red(s),
+        s @ ("draining" | "drained") => amber(s),
+        s @ "online" => accent(s),
+        s => dim(s),
     }
 }
 

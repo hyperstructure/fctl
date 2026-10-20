@@ -131,8 +131,9 @@ fctl workspaces set --name "Side project" --avatar logo.png   # or --avatar none
 fctl workspaces set --base-role editor     # every member starts sessions in every project
 fctl workspaces set --require-two-factor on   # closed to members without a second factor
 
-fctl workspaces runners                    # the runners its sessions start on
-fctl workspaces add-runner studio-mac      # one of yours runs its sessions too
+fctl workspaces runners                    # the runners its sessions start on, with their ids
+fctl workspaces add-runner studio-mac      # one of yours runs its sessions too (its name or id)
+fctl workspaces add-runner                 # on a runner: this machine
 fctl workspaces remove-runner studio-mac   # the ones running there carry on
 
 fctl workspaces github                     # the GitHub accounts it works in
@@ -234,7 +235,7 @@ fctl host install --workspace acme   # for a workspace you are an admin of (defa
 fctl host install --token fctl_rt_…   # with a runner token from a workspace's Runners tab
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host run                    # run in the foreground (what the service runs)
-fctl host status                 # with the runner's sessions, and whether it drains
+fctl host status                 # with the runner's id and sessions, and whether it drains
 fctl host doctor                 # check the driver, image, agent binary, connection
 fctl host logs -n 200
 fctl host image pull             # pull the sandbox image again now (the host does every 6 hours)
@@ -372,7 +373,7 @@ fctl admin allow ada@example.com           # also creates an invite link
 fctl admin allow '*@example.com'           # a whole domain
 fctl admin allow grace@example.com --admin
 fctl admin disallow '*@example.com'        # its addresses lose access (and accounts with no other)
-fctl admin runners                         # with their images; draining ones say who drained them
+fctl admin runners                         # with their ids and images; draining ones say who drained them
 fctl admin drain studio-mac                # no new sessions start on it (name or id)
 fctl admin undrain studio-mac
 fctl admin audit                           # what happened on the instance, newest first
