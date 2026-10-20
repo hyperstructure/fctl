@@ -586,7 +586,8 @@ export function Home() {
   return (
     <div>
       <div
-        className="relative h-[360px] overflow-hidden border-b border-line"
+        // Shorter on a phone, so that the composer and the sessions start higher up.
+        className="relative h-[360px] overflow-hidden border-b border-line max-sm:h-[272px]"
         onPointerMove={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
           floor.current?.pointer((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
