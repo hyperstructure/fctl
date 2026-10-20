@@ -9,7 +9,7 @@ use fctl_domain::{disk, image, size};
 use fctl_host::config::means_default_image;
 use fctl_host::driver::{DiskSpot, Driver};
 use fctl_host::{HostConfig, refresh, service};
-use fctl_proto::api::{RunnerDetail, RunnerStatus};
+use fctl_proto::api::{Runner, RunnerDetail, RunnerStatus};
 use std::io::IsTerminal;
 
 #[derive(Subcommand)]
@@ -344,6 +344,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
+            if let Ok(d) = &runner {
+                println!("id:       {}", d.runner.id);
+            }
             println!("driver:   {}", cfg.driver);
             println!("capacity: {} sessions", cfg.capacity);
             if let Some(l) = &sandbox {
@@ -734,6 +737,36 @@ fn runner_api() -> Result<fctl_client::Api> {
     let cfg = HostConfig::load().context(NOT_A_RUNNER)?;
     let token = HostConfig::load_token().context(NOT_A_RUNNER)?;
     Ok(fctl_client::Api::new(&cfg.server, Some(token)))
+}
+
+/// This machine's runner, for commands about a runner that leave it out.
+/// `api` is the instance they go to, which must be the one it runs for.
+pub(crate) async fn this_runner(api: &fctl_client::Api) -> Result<Runner> {
+    const NAME_IT: &str = "Which runner? This machine isn't one: give the runner's name or id (`fctl admin runners` lists them)";
+    if !HostConfig::path().exists() {
+        bail!(NAME_IT);
+    }
+    let cfg = HostConfig::load()?;
+    let token = HostConfig::load_token()?;
+    if config::normalize_server(&cfg.server) != config::normalize_server(api.base()) {
+        bail!(
+            "This machine is a runner of {}, not of {}: name the runner or give its id",
+            cfg.server,
+            api.base()
+        );
+    }
+    // `main` prints an API error's message alone, which would drop a context.
+    let d = fctl_client::Api::new(&cfg.server, Some(token))
+        .this_runner()
+        .await
+        .map_err(|e| {
+            let why = e.api().map_or_else(|| e.to_string(), |a| a.message.clone());
+            anyhow::anyhow!(
+                "Could not ask {} which runner this machine is: {why}",
+                cfg.server
+            )
+        })?;
+    Ok(d.runner)
 }
 
 /// Polls until no session runs on this runner, saying what changes.

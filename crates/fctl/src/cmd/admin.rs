@@ -9,8 +9,8 @@ use clap::{ArgGroup, Subcommand};
 use fctl_domain::size;
 use fctl_proto::api::{
     CreateInviteRequest, GithubConnectionStatus, InstanceSettings, InviteWorkspace, Runner,
-    RunnerSession, UpdateInstanceSettingsRequest, UpdateRunnerRequest, UpdateUserRequest, User,
-    UserStatus,
+    RunnerSession, RunnerStatus, UpdateInstanceSettingsRequest, UpdateRunnerRequest,
+    UpdateUserRequest, User, UserStatus,
 };
 use fctl_proto::session::{InstanceRole, WorkspaceRole};
 use std::io::{BufRead, IsTerminal, Write};
@@ -727,6 +727,12 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             }
             for r in list.runners {
                 let state = style::runner_status(&r);
+                let about: Vec<&str> = r
+                    .version
+                    .as_deref()
+                    .into_iter()
+                    .chain([r.id.as_str()])
+                    .collect();
                 println!(
                     "{:<24} {:<8} {:<8} {}/{} sessions  {}",
                     style::bold(&r.name),
@@ -734,7 +740,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     r.driver.as_deref().unwrap_or_default(),
                     r.active_sessions,
                     r.capacity,
-                    style::dim(r.version.as_deref().unwrap_or_default())
+                    style::dim(&about.join(" · "))
                 );
                 if let Some(d) = drain_line(&r) {
                     println!("  {}", style::dim(&d));
@@ -934,23 +940,51 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
 /// A runner by its id or name.
 pub(crate) async fn find_runner(api: &fctl_client::Api, which: &str) -> Result<Runner> {
     let all = api.runners().await?.runners;
+    pick_runner(&all, which, style::now_ms()).cloned()
+}
+
+/// The runner whose id is `which`, or the only one called that.
+fn pick_runner<'a>(all: &'a [Runner], which: &str, now: i64) -> Result<&'a Runner> {
     if let Some(r) = all.iter().find(|r| r.id.as_str() == which) {
-        return Ok(r.clone());
+        return Ok(r);
     }
     let named: Vec<&Runner> = all.iter().filter(|r| r.name == which).collect();
     match named.as_slice() {
-        [r] => Ok((*r).clone()),
-        [] => bail!("No runner is called {which}. `fctl admin runners` lists them."),
+        [r] => Ok(r),
+        [] => bail!(
+            "No runner {} {which}. `fctl admin runners` lists them, with their ids.",
+            if which.starts_with("rnr_") {
+                "has the id"
+            } else {
+                "is called"
+            }
+        ),
         _ => bail!(
-            "{} runners are called {which}; use one of their ids: {}",
+            "{} runners are called {which}; use one of their ids:\n{}",
             named.len(),
             named
                 .iter()
-                .map(|r| r.id.as_str())
+                .map(|r| format!("  {}  {}", r.id, tell_apart(r, now)))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join("\n")
         ),
     }
+}
+
+/// What tells runners with the same name apart: `online, Ada Lovelace's`,
+/// `offline, seen 3d ago`.
+fn tell_apart(r: &Runner, now: i64) -> String {
+    let mut about = vec![style::runner_state(r).to_owned()];
+    if r.status != RunnerStatus::Online {
+        about.push(match r.last_seen_at {
+            Some(t) => format!("seen {}", style::ago_from(t, now)),
+            None => "never connected".to_owned(),
+        });
+    }
+    if let Some(u) = &r.created_by {
+        about.push(format!("{}'s", u.name));
+    }
+    about.join(", ")
 }
 
 /// "1 passkey", "3 passkeys".
@@ -1023,5 +1057,81 @@ pub(crate) fn print_sessions(sessions: &[RunnerSession]) {
             s.number,
             style::dim(&s.title)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: i64 = 1_800_000_000_000;
+
+    fn runner(id: &str, name: &str, status: &str, last_seen_at: Option<i64>) -> Result<Runner> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "id": id,
+            "name": name,
+            "status": status,
+            "drivers": [],
+            "capacity": 4,
+            "active_sessions": 0,
+            "labels": [],
+            "last_seen_at": last_seen_at,
+            "created_at": 0,
+            "created_by": { "id": "usr_ada", "name": "Ada Lovelace" },
+        }))?)
+    }
+
+    #[test]
+    fn runners_are_found_by_id_or_a_name_only_one_has() -> Result<()> {
+        let all = [
+            runner("rnr_01STUDIO", "studio-mac", "online", Some(NOW))?,
+            runner("rnr_01OLD", "laptop", "offline", None)?,
+            runner("rnr_01NEW", "laptop", "online", Some(NOW))?,
+        ];
+        let id = |which| {
+            pick_runner(&all, which, NOW)
+                .map(|r| r.id.to_string())
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(id("rnr_01STUDIO"), Ok("rnr_01STUDIO".into()));
+        assert_eq!(id("studio-mac"), Ok("rnr_01STUDIO".into()));
+        assert_eq!(id("rnr_01OLD"), Ok("rnr_01OLD".into()));
+        assert_eq!(
+            id("Studio-Mac"),
+            Err(
+                "No runner is called Studio-Mac. `fctl admin runners` lists them, with their ids."
+                    .into()
+            )
+        );
+        assert_eq!(
+            id("rnr_01GONE"),
+            Err(
+                "No runner has the id rnr_01GONE. `fctl admin runners` lists them, with their ids."
+                    .into()
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runners_with_the_same_name_are_told_apart_by_their_ids() -> Result<()> {
+        let all = [
+            runner("rnr_01OLD", "laptop", "offline", Some(NOW - 3 * 86_400_000))?,
+            runner("rnr_01NEW", "laptop", "online", Some(NOW))?,
+            runner("rnr_01NEVER", "laptop", "offline", None)?,
+        ];
+        assert_eq!(
+            pick_runner(&all, "laptop", NOW)
+                .map_err(|e| e.to_string())
+                .err(),
+            Some(
+                "3 runners are called laptop; use one of their ids:\n  \
+                 rnr_01OLD  offline, seen 3d ago, Ada Lovelace's\n  \
+                 rnr_01NEW  online, Ada Lovelace's\n  \
+                 rnr_01NEVER  offline, never connected, Ada Lovelace's"
+                    .into()
+            )
+        );
+        Ok(())
     }
 }

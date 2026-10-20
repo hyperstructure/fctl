@@ -9,7 +9,7 @@ use clap::{ArgGroup, Subcommand, ValueEnum};
 use fctl_client::Api;
 use fctl_proto::api::{
     BaseRole, ConnectGithubRequest, CreateWorkspaceRequest, GithubConnectionStatus,
-    InviteToWorkspaceRequest, UpdateMembershipRequest, UpdateWorkspaceRequest, Workspace,
+    InviteToWorkspaceRequest, Runner, UpdateMembershipRequest, UpdateWorkspaceRequest, Workspace,
     WorkspaceInvitation, WorkspaceMember,
 };
 use fctl_proto::session::{WorkspaceColor, WorkspaceRole};
@@ -209,9 +209,12 @@ pub enum WorkspacesCmd {
         workspace: Option<String>,
     },
     /// Let one of your runners run a workspace's sessions (its admins).
+    #[command(
+        after_help = "Examples:\n  fctl workspaces add-runner -w side-project              # on the runner: this machine\n  fctl workspaces add-runner studio-mac -w side-project\n  fctl workspaces add-runner rnr_01… -w side-project      # an id from `fctl admin runners`"
+    )]
     AddRunner {
-        /// The runner's name or id.
-        runner: String,
+        /// The runner's name or id (default: this machine's, on a runner).
+        runner: Option<String>,
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
         #[arg(short, long)]
@@ -219,8 +222,8 @@ pub enum WorkspacesCmd {
     },
     /// Stop a runner from taking a workspace's sessions. Running ones carry on.
     RemoveRunner {
-        /// The runner's name or id.
-        runner: String,
+        /// The runner's name or id (default: this machine's, on a runner).
+        runner: Option<String>,
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
         #[arg(short, long)]
@@ -327,6 +330,14 @@ async fn person(api: &Api, workspace: &Workspace, who: &str) -> Result<Workspace
                 workspace.name, workspace.slug
             )
         })
+}
+
+/// The runner named (its name or id), else this machine's.
+async fn runner_or_this(api: &Api, which: Option<&str>) -> Result<Runner> {
+    match which {
+        Some(which) => super::admin::find_runner(api, which).await,
+        None => super::host::this_runner(api).await,
+    }
 }
 
 /// "primary admin", "admin", "member".
@@ -743,29 +754,31 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             }
             if list.runners.is_empty() {
                 println!(
-                    "{} has no runners yet. Register one on the machine with `fctl host install --workspace {}`.",
-                    w.name, w.slug
+                    "{} has no runners yet. Add one of yours with `fctl workspaces add-runner -w {}` on it, or register a machine with `fctl host install --workspace {}`.",
+                    w.name, w.slug, w.slug
                 );
             }
             for r in &list.runners {
-                let owner = r
+                let about: Vec<String> = r
                     .created_by
                     .as_ref()
                     .map(|u| format!("{}'s", u.name))
-                    .unwrap_or_default();
+                    .into_iter()
+                    .chain([r.id.to_string()])
+                    .collect();
                 println!(
                     "{:<24} {:<8} {}/{} sessions  {}",
                     style::bold(&r.name),
                     style::runner_status(r),
                     r.active_sessions,
                     r.capacity,
-                    style::dim(&owner)
+                    style::dim(&about.join(" · "))
                 );
             }
         }
         WorkspacesCmd::AddRunner { runner, workspace } => {
             let w = resolve(&api, workspace).await?;
-            let r = super::admin::find_runner(&api, &runner).await?;
+            let r = runner_or_this(&api, runner.as_deref()).await?;
             let list = api
                 .add_workspace_runner(w.id.as_str(), r.id.as_str())
                 .await?;
@@ -781,7 +794,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
         }
         WorkspacesCmd::RemoveRunner { runner, workspace } => {
             let w = resolve(&api, workspace).await?;
-            let r = super::admin::find_runner(&api, &runner).await?;
+            let r = runner_or_this(&api, runner.as_deref()).await?;
             let list = api
                 .remove_workspace_runner(w.id.as_str(), r.id.as_str())
                 .await?;
