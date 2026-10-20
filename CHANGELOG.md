@@ -2,6 +2,33 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.11.0 (2026-10-20)
+
+### Features
+
+- Explain how to set up a runner when a workspace has none ([#121](https://github.com/hyperstructure/fctl/pull/121))
+- Run the control plane without Cloudflare, in one container ([#123](https://github.com/hyperstructure/fctl/pull/123))
+- Let admins skip inviting people when setting up a workspace ([#125](https://github.com/hyperstructure/fctl/pull/125))
+- List every pull request a session opens, with its repository ([#124](https://github.com/hyperstructure/fctl/pull/124))
+- **web:** Rename the floor to Home, focus its task box, open it with ⌘K ([#127](https://github.com/hyperstructure/fctl/pull/127))
+- **web:** Choose a project's model from a list, or type a model ID ([#130](https://github.com/hyperstructure/fctl/pull/130))
+- Show the effort level Claude works at, next to its model ([#131](https://github.com/hyperstructure/fctl/pull/131))
+- Drag workspaces and projects into the order you want ([#134](https://github.com/hyperstructure/fctl/pull/134))
+
+### Fixes
+
+- Count a session's turns, agent time and tokens while its turn runs ([#122](https://github.com/hyperstructure/fctl/pull/122))
+- **web:** Stop pulling the session page back to the bottom ([#135](https://github.com/hyperstructure/fctl/pull/135))
+
+### Documentation
+
+- Show the 14 migrations a new standalone server applies ([#126](https://github.com/hyperstructure/fctl/pull/126))
+- Count both 0014 migrations and say to keep them ([#128](https://github.com/hyperstructure/fctl/pull/128))
+
+### Other changes
+
+- Build the standalone image only for releases and changes to it ([#129](https://github.com/hyperstructure/fctl/pull/129))
+
 ## 0.10.1 (2026-10-20)
 
 ### Features
