@@ -1466,8 +1466,11 @@ pub struct Runner {
     /// planes that can't drain runners.
     pub drain: Option<RunnerDrain>,
     /// The workspaces whose sessions it runs, of the ones you can see.
-    /// Sessions start only on runners of their workspace.
+    /// Sessions start only on runners of their workspace. Absent from
+    /// control planes before workspaces, which may still answer the web
+    /// app while an instance upgrades.
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<WorkspaceRef>>", optional))]
     pub workspaces: Vec<WorkspaceRef>,
     /// Whether you may add it to your workspaces and remove it from any:
     /// you registered it.

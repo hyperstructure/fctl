@@ -769,7 +769,7 @@ function Runners({ w }: { w: G.Workspace }) {
                     options={yours.map((r) => ({
                       value: r.id,
                       label: r.name,
-                      description: r.workspaces.length
+                      description: r.workspaces?.length
                         ? `Also runs ${r.workspaces.map((x) => x.name).join(", ")}`
                         : "Runs no workspace yet",
                     }))}
@@ -792,7 +792,7 @@ function Runners({ w }: { w: G.Workspace }) {
       ) : (
         <ul className="mt-6 border-t border-line">
           {list.data?.runners.map((r) => {
-            const others = r.workspaces.filter((x) => x.id !== w.id);
+            const others = (r.workspaces ?? []).filter((x) => x.id !== w.id);
             return (
               <li key={r.id} className="flex items-center gap-4 border-b border-line py-4">
                 <span
