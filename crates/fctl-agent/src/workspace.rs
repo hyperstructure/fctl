@@ -70,7 +70,8 @@ pub async fn run(dir: &Path, home: &Path, program: &str, args: &[&str]) -> Resul
     run_with(dir, home, program, args, &[]).await
 }
 
-/// [`run`], with more environment variables.
+/// [`run`], with more environment variables. The command is killed when
+/// its caller stops waiting for it (a timeout).
 async fn run_with(
     dir: &Path,
     home: &Path,
@@ -85,6 +86,7 @@ async fn run_with(
         .env("GIT_TERMINAL_PROMPT", "0")
         .envs(env.iter().copied())
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .output()
         .await
         .with_context(|| format!("running {program}"))?;

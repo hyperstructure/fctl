@@ -45,6 +45,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long `fctl publish` waits for the host to upload a screenshot.
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How long a refresh of the repositories' state may take, pushes and pull
+/// request lookups included, before the next one goes ahead without it.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1333,19 +1337,23 @@ impl Supervisor {
         let work = self.work_tx.clone();
         tokio::spawn(async move {
             let push = config.push_on_commit;
-            let state =
-                match workspace::sync(&paths, &config.spec, push, moment, last.as_ref()).await {
-                    Ok(synced) => {
-                        for (level, text) in synced.logs {
-                            let _ = work.send(Work::Log(level, text, LogSource::Agent));
-                        }
-                        Some(synced.state)
+            let sync = workspace::sync(&paths, &config.spec, push, moment, last.as_ref());
+            let state = match tokio::time::timeout(SYNC_TIMEOUT, sync).await {
+                Ok(Ok(synced)) => {
+                    for (level, text) in synced.logs {
+                        let _ = work.send(Work::Log(level, text, LogSource::Agent));
                     }
-                    Err(e) => {
-                        tracing::debug!("reading the repositories' state failed: {e:#}");
-                        None
-                    }
-                };
+                    Some(synced.state)
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!("reading the repositories' state failed: {e:#}");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!("reading the repositories' state took too long; gave up");
+                    None
+                }
+            };
             let _ = work.send(Work::Git(state, moment));
         });
     }
