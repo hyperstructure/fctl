@@ -15,7 +15,17 @@ import {
 } from "@/components/session/attachments";
 import { SessionRow } from "@/components/session/row";
 import { StartButton, useStartSession } from "@/components/session/start";
-import { Button, firstNames, GithubIcon, GLCanvas, Select, Skeleton, Textarea, toast } from "@/components/ui";
+import {
+  Button,
+  firstNames,
+  GithubIcon,
+  GLCanvas,
+  Select,
+  Skeleton,
+  Textarea,
+  TextareaControls,
+  toast,
+} from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import { NoRunnerNote } from "@/components/workspace/no-runners";
 import type * as G from "@/gen";
@@ -235,7 +245,7 @@ function QuickStart({
           ref={ref}
           bare
           minRows={2}
-          maxRows={10}
+          maxRows={8}
           value={prompt}
           readOnly={starting}
           onChange={(e) => setPrompt(e.target.value)}
@@ -253,10 +263,10 @@ function QuickStart({
             attach(pasted, true);
           }}
           placeholder="What should an agent build next?"
-          className="block px-5 pt-4 pb-16 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
+          className="block px-5 pt-4 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
           aria-label="Task for a new session"
         />
-        <div className="absolute right-3 bottom-3 left-2.5 flex items-center gap-2">
+        <TextareaControls textarea={ref} className="gap-2 pt-4 pr-3 pb-3 pl-2.5">
           <AttachButton onFiles={(f) => attach(f)} />
           <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
             <span className="hidden text-ink-4 sm:inline">in</span>
@@ -308,7 +318,7 @@ function QuickStart({
           >
             Start
           </StartButton>
-        </div>
+        </TextareaControls>
         <DropHint show={dragging} />
       </form>
       <NoRunnerNote workspace={target?.workspace && index.get(target.workspace.id)} className="mt-3" />

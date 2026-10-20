@@ -345,7 +345,8 @@ export function AttachButton({
         label="Attach files"
         title="Attach files (or paste, or drop them here)"
         onClick={() => input.current?.click()}
-        className={className}
+        // A row of controls that runs short on a phone squeezes the others first.
+        className={cn("shrink-0", className)}
       >
         <Paperclip className="size-4" />
       </IconButton>
