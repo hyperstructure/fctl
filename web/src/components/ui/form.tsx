@@ -22,6 +22,29 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
   return <input ref={ref} className={cn(field, "h-9.5", className)} {...rest} />;
 });
 
+/**
+ * A masked field for a secret, such as an API key. It is a text field, not a password field:
+ * browsers fill saved passwords into password fields whatever `autocomplete` says, and offer to
+ * save what is typed into them. Like a password field, it isn't spellchecked (some browsers send
+ * the text to a server for that) or autocorrected.
+ */
+export const SecretInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes<HTMLInputElement>, "type">>(
+  function SecretInput({ className, ...rest }, ref) {
+    return (
+      <Input
+        ref={ref}
+        type="text"
+        autoComplete="off"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        className={cn("[-webkit-text-security:disc]", className)}
+        {...rest}
+      />
+    );
+  },
+);
+
 /** A textarea that grows with its content up to `maxRows`. */
 export const Textarea = forwardRef<
   HTMLTextAreaElement,
