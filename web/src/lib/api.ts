@@ -308,6 +308,9 @@ export const workspaces = {
     request<G.WorkspaceMemberList>("POST", `/workspaces/${enc(id)}/transfer`, { user_id: userId }),
   updateMembership: (id: string, b: G.UpdateMembershipRequest) =>
     request<G.Workspace>("PATCH", `/workspaces/${enc(id)}/membership`, b),
+  /** Puts your workspaces in order: the ones named first, the others after them as they were. */
+  order: (workspaces: string[]) =>
+    request<G.WorkspaceList>("PUT", "/me/workspace-order", { workspaces } satisfies G.WorkspaceOrderRequest),
   audit: (id: string, before?: number) =>
     request<G.AuditList>("GET", `/workspaces/${enc(id)}/audit${before ? `?before=${before}` : ""}`),
   runners: (id: string) => request<G.RunnerList>("GET", `/workspaces/${enc(id)}/runners`),

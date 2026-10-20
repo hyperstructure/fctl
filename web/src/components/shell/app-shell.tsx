@@ -18,7 +18,17 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Avatar, HomeIcon, Kbd, Logo, Menu, MenuItem, MenuSeparator, StatusDot } from "@/components/ui";
+import {
+  Avatar,
+  HomeIcon,
+  Kbd,
+  Logo,
+  Menu,
+  MenuItem,
+  MenuSeparator,
+  StatusDot,
+  toast,
+} from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
@@ -28,8 +38,15 @@ import { useFeed } from "@/lib/feed";
 import { useHotkey } from "@/lib/hotkeys";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
 import { queryClient, useInstance, useMe, useProjects, useWorkspaces } from "@/lib/queries";
+import { type Sortable, useSortable } from "@/lib/sortable";
 import { useTheme } from "@/lib/theme";
-import { groupProjects, useFactorsWatch, useFolded } from "@/lib/workspaces";
+import {
+  groupProjects,
+  reorderProjects,
+  reorderWorkspaces,
+  useFactorsWatch,
+  useFolded,
+} from "@/lib/workspaces";
 import { CommandPalette } from "./command-palette";
 
 export function AppShell() {
@@ -143,6 +160,12 @@ function Sidebar({
   const { data: workspaces } = useWorkspaces();
   const [folded, toggleFold] = useFolded();
   const groups = groupProjects(workspaces?.workspaces ?? [], projects?.projects ?? []);
+  const sort = useSortable({
+    ids: groups.map((g) => g.workspace.id),
+    onReorder: (ids) => reorderWorkspaces(ids, notSaved),
+    label: (id) => groups.find((g) => g.workspace.id === id)?.workspace.name ?? "",
+    describedBy: ORDER_HELP,
+  });
   const [theme, setTheme] = useTheme();
   const navigate = useNavigate();
   const isAdmin = me?.user.role === "owner" || me?.user.role === "admin";
@@ -204,8 +227,12 @@ function Sidebar({
             folded={folded.has(workspace.id)}
             onFold={() => toggleFold(workspace.id)}
             onNavigate={onNavigate}
+            sort={sort}
           />
         ))}
+        <p id={ORDER_HELP} hidden>
+          Drag to move it, or press Alt with the up or down arrow.
+        </p>
         {workspaces && workspaces.workspaces.length < workspaces.limit && (
           <Link
             to="/w/new"
@@ -298,6 +325,18 @@ function Sidebar({
   );
 }
 
+// The text that says how to move workspaces and projects, for screen readers.
+const ORDER_HELP = "sidebar-order-help";
+
+const notSaved = (e: unknown) =>
+  toast(`The new order wasn't saved: ${e instanceof Error ? e.message : "try again"}`, "error");
+
+// Rows people drag: a held finger lifts one instead of opening the link's menu.
+const DRAGGABLE = "touch-manipulation select-none [-webkit-touch-callout:none]";
+// A row or workspace lifted to be dragged, and settling into its place.
+const LIFTED =
+  "relative z-10 bg-raised shadow-[inset_0_0_0_1px_var(--c-line-strong),0_12px_28px_-10px_rgb(0_0_0/0.5),0_2px_6px_-2px_rgb(0_0_0/0.16)]";
+
 /** A workspace in the sidebar: its name (its page) and its projects, which fold away. */
 function WorkspaceGroup({
   workspace,
@@ -306,6 +345,7 @@ function WorkspaceGroup({
   folded,
   onFold,
   onNavigate,
+  sort,
 }: {
   workspace: G.Workspace;
   projects: G.Project[];
@@ -313,15 +353,32 @@ function WorkspaceGroup({
   folded: boolean;
   onFold: () => void;
   onNavigate: () => void;
+  /** The sidebar's workspaces, which people drag by their headers. */
+  sort: Sortable;
 }) {
   const here = path === `/w/${workspace.slug}`;
   const active = projects.reduce((n, p) => n + p.active_sessions, 0);
+  const sortProjects = useSortable({
+    ids: projects.map((p) => p.id),
+    onReorder: (ids) => reorderProjects(workspace.id, ids, notSaved),
+    label: (id) => projects.find((p) => p.id === id)?.name ?? "",
+    describedBy: ORDER_HELP,
+  });
+  const lifted = sort.lifted === workspace.id;
+  // Its link, which gets the focus, says how to move it.
+  const { "aria-describedby": describedBy, ...handle } = sort.handleProps(workspace.id);
   return (
-    <section aria-label={workspace.name}>
+    <section
+      ref={sort.itemRef(workspace.id)}
+      aria-label={workspace.name}
+      className={cn("rounded-md transition-[background-color,box-shadow] duration-150", lifted && LIFTED)}
+    >
       <div
+        {...handle}
         className={cn(
           "group flex h-8 items-center gap-1 rounded-md pr-1 transition-colors",
-          here ? "bg-raised shadow-[inset_0_0_0_1px_var(--c-line)]" : "hover:bg-hover/60",
+          DRAGGABLE,
+          here ? "bg-raised shadow-[inset_0_0_0_1px_var(--c-line)]" : !lifted && "hover:bg-hover/60",
         )}
       >
         <button
@@ -343,6 +400,7 @@ function WorkspaceGroup({
           params={{ slug: workspace.slug }}
           search={{ tab: undefined }}
           onClick={onNavigate}
+          aria-describedby={describedBy}
           className="flex min-w-0 flex-1 items-center gap-2 py-1"
         >
           <WorkspaceAvatar workspace={workspace} size={18} title={false} />
@@ -391,15 +449,20 @@ function WorkspaceGroup({
               {projects.map((p) => (
                 <Link
                   key={p.id}
+                  ref={sortProjects.itemRef(p.id)}
+                  {...sortProjects.handleProps(p.id)}
                   to="/p/$slug"
                   params={{ slug: p.slug }}
                   search={{ tab: undefined }}
                   onClick={onNavigate}
                   className={cn(
-                    "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
-                    path === `/p/${p.slug}`
-                      ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
-                      : "text-ink-3 hover:bg-hover/60 hover:text-ink",
+                    "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-[color,background-color,box-shadow] duration-150",
+                    DRAGGABLE,
+                    sortProjects.lifted === p.id
+                      ? `${LIFTED} text-ink`
+                      : path === `/p/${p.slug}`
+                        ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
+                        : "text-ink-3 hover:bg-hover/60 hover:text-ink",
                   )}
                 >
                   <span className="flex size-4 items-center justify-center">

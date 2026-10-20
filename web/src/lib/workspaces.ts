@@ -1,9 +1,11 @@
 // Workspaces in the app: finding a project's or session's workspace as the
-// person's list has it now (names and avatars change), and grouping projects
-// under their workspaces in the order the person joined them.
+// person's list has it now (names and avatars change), grouping projects
+// under their workspaces, and putting both in the order the person wants.
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type * as G from "@/gen";
+import { workspaces as workspacesApi } from "./api";
+import { pending, withPendingProjects, withPendingWorkspaces } from "./order";
 import { keys, queryClient, useMe, useWorkspaces } from "./queries";
 
 /** Your workspaces by id, with the reference something carries as a fallback. */
@@ -30,7 +32,7 @@ export interface WorkspaceGroup {
   projects: G.Project[];
 }
 
-/** Projects under their workspaces, the workspaces in your order (oldest membership first). */
+/** Projects under their workspaces, both in your order. */
 export function groupProjects(
   workspaces: readonly G.Workspace[],
   projects: readonly G.Project[],
@@ -39,6 +41,70 @@ export function groupProjects(
     workspace,
     projects: projects.filter((p) => p.workspace?.id === workspace.id),
   }));
+}
+
+// New orders go to the control plane one at a time, in the order they were
+// made; a newer one for the same list takes the place of one still waiting.
+interface Save {
+  put: () => Promise<unknown>;
+  settle: (error?: unknown) => void;
+}
+const waiting = new Map<string, Save>();
+let saving = false;
+
+async function send() {
+  if (saving) return;
+  saving = true;
+  for (let next = waiting.entries().next(); !next.done; next = waiting.entries().next()) {
+    const [list, save] = next.value;
+    waiting.delete(list);
+    try {
+      await save.put();
+      save.settle();
+    } catch (e) {
+      save.settle(e);
+    }
+  }
+  saving = false;
+}
+
+/**
+ * Puts your workspaces in `order` (ids): lists show it at once, and keep
+ * it while it is saved. `failed` hears when it wasn't saved; then they show
+ * the order the control plane has.
+ */
+export function reorderWorkspaces(order: string[], failed: (e: unknown) => void) {
+  pending.setWorkspaces(order);
+  queryClient.setQueryData<G.WorkspaceList>(keys.workspaces, (old) => old && withPendingWorkspaces(old));
+  queryClient.setQueryData<G.ProjectList>(keys.projects, (old) => old && withPendingProjects(old));
+  waiting.set("workspaces", {
+    put: () => workspacesApi.order(order),
+    settle: (error) => {
+      if (pending.workspaces() !== order) return; // a newer order is on its way
+      pending.setWorkspaces(undefined);
+      // Fetched again, dropping what was fetched before it was saved.
+      void queryClient.invalidateQueries({ queryKey: keys.workspaces });
+      void queryClient.invalidateQueries({ queryKey: keys.projects });
+      if (error) failed(error);
+    },
+  });
+  void send();
+}
+
+/** Puts a workspace's projects in `order` (ids), as `reorderWorkspaces` does your workspaces. */
+export function reorderProjects(workspace: string, order: string[], failed: (e: unknown) => void) {
+  pending.setProjects(workspace, order);
+  queryClient.setQueryData<G.ProjectList>(keys.projects, (old) => old && withPendingProjects(old));
+  waiting.set(`projects:${workspace}`, {
+    put: () => workspacesApi.updateMembership(workspace, { project_order: order }),
+    settle: (error) => {
+      if (pending.projects(workspace) !== order) return;
+      pending.setProjects(workspace, undefined);
+      void queryClient.invalidateQueries({ queryKey: keys.projects });
+      if (error) failed(error);
+    },
+  });
+  void send();
 }
 
 // Which workspaces are folded in the sidebar, remembered in this browser.
