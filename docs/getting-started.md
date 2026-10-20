@@ -72,10 +72,9 @@ work in belong to workspaces: one for your company's repositories, one for
 your own, one for a side project with friends. An invitation to a workspace
 shows on your home page, where you join it; or choose **New workspace** in
 the sidebar (`fctl workspaces create "Side project"`) and be its primary
-admin.
-Each workspace has its own people, admins, runners, GitHub accounts and
-audit log, and can require two-factor sign-in of its members. You can be in
-up to five.
+admin. Each workspace has its own people, admins, runners, GitHub accounts
+and audit log, and can require two-factor sign-in of its members. You can be
+in up to five.
 
 ## 4. Connect your Claude subscription
 
