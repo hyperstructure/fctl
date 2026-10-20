@@ -1,0 +1,21 @@
+{
+  "name": "@fctl/standalone",
+  "private": true,
+  "type": "module",
+  "description": "The fctl control plane outside Cloudflare: the same Worker on workerd, through Miniflare",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "biome check .",
+    "fix": "biome check --write .",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "wrangler": "4.151.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
