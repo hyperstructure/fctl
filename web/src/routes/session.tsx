@@ -214,130 +214,133 @@ export function SessionPage() {
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               {s.viewers.length > 1 && <AvatarStack users={s.viewers.map((v) => v.user)} />}
-              {rc?.session_url && (
-                <a
-                  {...claudeAppLink(rc.session_url)}
-                  className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 sm:inline-flex"
-                >
-                  Open in Claude <ArrowUpRight className="size-3.5" />
-                </a>
-              )}
-              {session && (
-                // On phones it is in the menu, where the title keeps its room.
-                <span className="hidden sm:contents">
-                  <IconButton
-                    label={
-                      following
-                        ? "Following: you get its notifications. Click to stop."
-                        : "Follow: get a notification when it waits for you, pauses or fails"
-                    }
-                    aria-pressed={following}
-                    onClick={() => follow.mutate()}
-                    disabled={follow.isPending}
-                    className={cn(following && "bg-accent-soft")}
+              {/* On phones the buttons stack, so that the title keeps its room. */}
+              <div className="flex flex-col items-center gap-1 sm:flex-row sm:gap-1.5">
+                {rc?.session_url && (
+                  <a
+                    {...claudeAppLink(rc.session_url)}
+                    className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 sm:inline-flex"
                   >
-                    {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
+                    Open in Claude <ArrowUpRight className="size-3.5" />
+                  </a>
+                )}
+                {session && (
+                  // On phones it is in the menu, where the title keeps its room.
+                  <span className="hidden sm:contents">
+                    <IconButton
+                      label={
+                        following
+                          ? "Following: you get its notifications. Click to stop."
+                          : "Follow: get a notification when it waits for you, pauses or fails"
+                      }
+                      aria-pressed={following}
+                      onClick={() => follow.mutate()}
+                      disabled={follow.isPending}
+                      className={cn(following && "bg-accent-soft")}
+                    >
+                      {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
+                    </IconButton>
+                  </span>
+                )}
+                {isOwner && (
+                  <IconButton label="Share" onClick={() => setShare(true)}>
+                    <Share2 className="size-4" />
                   </IconButton>
-                </span>
-              )}
-              {isOwner && (
-                <IconButton label="Share" onClick={() => setShare(true)}>
-                  <Share2 className="size-4" />
+                )}
+                {/* Only where the rail shows (`hidden` would lose to IconButton's `inline-flex`). */}
+                <IconButton
+                  label="Details"
+                  onClick={() => setRail(!rail)}
+                  className={cn("max-lg:hidden", rail && "text-ink")}
+                >
+                  <PanelRight className="size-4" />
                 </IconButton>
-              )}
-              {/* Only where the rail shows (`hidden` would lose to IconButton's `inline-flex`). */}
-              <IconButton
-                label="Details"
-                onClick={() => setRail(!rail)}
-                className={cn("max-lg:hidden", rail && "text-ink")}
-              >
-                <PanelRight className="size-4" />
-              </IconButton>
-              <Menu
-                trigger={(toggle, open) => (
-                  <IconButton label="More" aria-haspopup="menu" aria-expanded={open} onClick={toggle}>
-                    <Ellipsis className="size-4" />
-                  </IconButton>
-                )}
-              >
-                {(close) => (
-                  <>
-                    {rc?.session_url && (
-                      <>
-                        {/* The header has no room for the button on phones. */}
+                <Menu
+                  trigger={(toggle, open) => (
+                    <IconButton label="More" aria-haspopup="menu" aria-expanded={open} onClick={toggle}>
+                      <Ellipsis className="size-4" />
+                    </IconButton>
+                  )}
+                >
+                  {(close) => (
+                    <>
+                      {rc?.session_url && (
+                        <>
+                          {/* The header has no room for the button on phones. */}
+                          <MenuItem
+                            icon={<ArrowUpRight />}
+                            link={claudeAppLink(rc.session_url)}
+                            onClick={close}
+                            className="sm:hidden"
+                          >
+                            Open in Claude
+                          </MenuItem>
+                          <MenuItem
+                            icon={<Globe />}
+                            link={{ href: rc.session_url, target: "_blank", rel: "noreferrer" }}
+                            onClick={close}
+                          >
+                            Open on claude.ai
+                          </MenuItem>
+                        </>
+                      )}
+                      {isOwner && status && !["stopped", "failed"].includes(status) && (
                         <MenuItem
-                          icon={<ArrowUpRight />}
-                          link={claudeAppLink(rc.session_url)}
-                          onClick={close}
-                          className="sm:hidden"
+                          icon={<Square />}
+                          onClick={() => {
+                            close();
+                            stop.mutate();
+                          }}
                         >
-                          Open in Claude
+                          Stop the session
                         </MenuItem>
+                      )}
+                      {isOwner && (status === "stopped" || status === "failed") && (
                         <MenuItem
-                          icon={<Globe />}
-                          link={{ href: rc.session_url, target: "_blank", rel: "noreferrer" }}
-                          onClick={close}
+                          icon={<Play />}
+                          onClick={() => {
+                            close();
+                            resume.mutate(undefined);
+                          }}
                         >
-                          Open on claude.ai
+                          Resume
                         </MenuItem>
-                      </>
-                    )}
-                    {isOwner && status && !["stopped", "failed"].includes(status) && (
+                      )}
+                      {session && (
+                        <MenuItem
+                          icon={following ? <BellOff /> : <Bell />}
+                          onClick={() => {
+                            close();
+                            follow.mutate();
+                          }}
+                        >
+                          {following ? "Stop following" : "Follow"}
+                        </MenuItem>
+                      )}
                       <MenuItem
-                        icon={<Square />}
+                        icon={<Terminal />}
                         onClick={() => {
                           close();
-                          stop.mutate();
+                          void navigator.clipboard.writeText(`fctl attach ${id}`);
+                          toast("Copied `fctl attach` command");
                         }}
                       >
-                        Stop the session
+                        Copy `fctl attach`
                       </MenuItem>
-                    )}
-                    {isOwner && (status === "stopped" || status === "failed") && (
                       <MenuItem
-                        icon={<Play />}
+                        icon={<ExternalLink />}
                         onClick={() => {
                           close();
-                          resume.mutate(undefined);
+                          void navigator.clipboard.writeText(location.href);
+                          toast("Link copied");
                         }}
                       >
-                        Resume
+                        Copy link
                       </MenuItem>
-                    )}
-                    {session && (
-                      <MenuItem
-                        icon={following ? <BellOff /> : <Bell />}
-                        onClick={() => {
-                          close();
-                          follow.mutate();
-                        }}
-                      >
-                        {following ? "Stop following" : "Follow"}
-                      </MenuItem>
-                    )}
-                    <MenuItem
-                      icon={<Terminal />}
-                      onClick={() => {
-                        close();
-                        void navigator.clipboard.writeText(`fctl attach ${id}`);
-                        toast("Copied `fctl attach` command");
-                      }}
-                    >
-                      Copy `fctl attach`
-                    </MenuItem>
-                    <MenuItem
-                      icon={<ExternalLink />}
-                      onClick={() => {
-                        close();
-                        void navigator.clipboard.writeText(location.href);
-                        toast("Link copied");
-                      }}
-                    >
-                      Copy link
-                    </MenuItem>
-                  </>
-                )}
-              </Menu>
+                    </>
+                  )}
+                </Menu>
+              </div>
             </div>
           </div>
         </header>
