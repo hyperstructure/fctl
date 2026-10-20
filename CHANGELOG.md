@@ -2,6 +2,12 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.10.1 (2026-10-20)
+
+### Features
+
+- **host:** Give back the space Apple sandboxes freed as they stop ([#120](https://github.com/hyperstructure/fctl/pull/120))
+
 ## 0.10.0 (2026-10-20)
 
 ### Features
