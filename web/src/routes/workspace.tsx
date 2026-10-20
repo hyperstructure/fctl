@@ -332,7 +332,7 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
     {
       done: w.runners > 0,
       title: "Bring a machine online",
-      body: "Sessions here run only on the workspace's runners: register one, or add one of yours.",
+      body: "Its sessions wait until one of its runners is online: register a Mac or Linux machine, or add one of yours.",
       action: (
         <Link to="/w/$slug" params={{ slug: w.slug }} search={{ tab: "runners" }}>
           <Button size="sm" icon={<Cpu className="size-3.5" />}>
@@ -792,11 +792,17 @@ function Runners({ w }: { w: G.Workspace }) {
         </div>
       )}
       {list.data?.runners.length === 0 ? (
-        <Empty icon={<Cpu className="size-6" />} title="No runners yet">
-          {admin
-            ? "Register a machine above, then run two commands on it."
-            : "Its admins add the machines its sessions run on."}
-        </Empty>
+        admin ? (
+          <FirstRunner w={w} yours={yours.length > 0} />
+        ) : (
+          <Empty icon={<Cpu className="size-6" />} title="No runners yet">
+            {w.name}'s sessions wait until an admin adds a runner: a machine that runs its agents in
+            sandboxes.{" "}
+            {w.primary
+              ? `Ask ${w.primary.name}, its primary admin, to add one.`
+              : "Ask one of its admins to add one."}
+          </Empty>
+        )
       ) : (
         <ul className="mt-6 border-t border-line">
           {list.data?.runners.map((r) => {
@@ -892,6 +898,48 @@ function Runners({ w }: { w: G.Workspace }) {
         )}
       </Dialog>
     </div>
+  );
+}
+
+/** For admins of a workspace without runners: what bringing a machine online takes, under the form. */
+function FirstRunner({ w, yours }: { w: G.Workspace; yours: boolean }) {
+  const steps: { title: string; body: string }[] = [
+    {
+      title: "Choose a machine that stays on",
+      body: "A Mac with Apple silicon or a Linux machine. Agents work there in sandboxes: install Apple's container on macOS 26 or later, Lima on older macOS, or Docker on Linux.",
+    },
+    { title: "Register it", body: "Give it a name above and choose Register." },
+    {
+      title: "Run the two commands you get on it",
+      body: "They install fctl and start the runner, which shows up here as online within seconds.",
+    },
+  ];
+  return (
+    <section className="mt-10 animate-rise">
+      <h3 className="font-display text-xl text-ink">No runners yet</h3>
+      <p className="mt-1 max-w-2xl text-[14px] leading-relaxed text-ink-3">
+        {w.name}'s sessions wait until one of its runners is online.{" "}
+        {yours ? "Add one of yours above, or bring another machine online:" : "To bring a machine online:"}
+      </p>
+      <ol className="mt-4 divide-y divide-line border-y border-line">
+        {steps.map((s, i) => (
+          <li key={s.title} className="flex gap-4 py-4">
+            <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border border-line-strong font-mono text-[11.5px] text-ink-3">
+              {i + 1}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[14.5px] font-medium text-ink">{s.title}</div>
+              <div className="mt-1 max-w-2xl text-[13.5px] leading-relaxed text-ink-3">{s.body}</div>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <p className="mt-4 text-[12.5px] leading-relaxed text-ink-4">
+        Signed in to fctl on the machine already?{" "}
+        <code className="font-mono text-[12px] text-ink-3">fctl host install --workspace {w.slug}</code>{" "}
+        registers it and starts the runner.
+      </p>
+    </section>
   );
 }
 

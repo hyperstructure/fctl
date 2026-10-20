@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { claudeOptions } from "./workspaces";
+import { claudeOptions, runnersOf } from "./workspaces";
 
 const cred = (c: Partial<G.ClaudeCredentialInfo> & { id: string }): G.ClaudeCredentialInfo => ({
   kind: "oauth",
@@ -33,5 +33,43 @@ describe("claudeOptions", () => {
   it("names one that was removed instead of showing its id", () => {
     const options = claudeOptions(me([own]), "crd_gone", "Claude: ");
     expect(options.at(-1)).toMatchObject({ value: "crd_gone", label: "Claude: A connection you removed" });
+  });
+});
+
+describe("runnersOf", () => {
+  const ref = (id: string): G.WorkspaceRef => ({ id, slug: id, name: id, color: "blue" });
+  const runner = (r: Partial<G.Runner> & { id: string }): G.Runner => ({
+    name: r.id,
+    status: "online",
+    drivers: [],
+    capacity: 4,
+    active_sessions: 0,
+    labels: [],
+    created_at: 0,
+    workspaces: [],
+    yours: false,
+    ...r,
+  });
+
+  it("counts the runners that serve the workspace, and those online", () => {
+    const runners = [
+      runner({ id: "studio", workspaces: [ref("ws_side"), ref("ws_work")] }),
+      runner({ id: "mini", status: "offline", workspaces: [ref("ws_side")] }),
+      runner({ id: "old", status: "disabled", workspaces: [ref("ws_side")] }),
+      runner({ id: "office", workspaces: [ref("ws_work")] }),
+    ];
+    expect(runnersOf(runners, "ws_side")).toEqual({ total: 3, online: 1 });
+    expect(runnersOf(runners, "ws_work")).toEqual({ total: 2, online: 2 });
+  });
+
+  it("finds none in a new workspace, even beside runners of no workspace", () => {
+    expect(runnersOf([], "ws_new")).toEqual({ total: 0, online: 0 });
+    expect(runnersOf([runner({ id: "spare", yours: true })], "ws_new")).toEqual({ total: 0, online: 0 });
+  });
+
+  it("can't tell from a control plane before workspaces", () => {
+    const before = runner({ id: "studio" });
+    delete before.workspaces;
+    expect(runnersOf([before], "ws_side")).toBeUndefined();
   });
 });

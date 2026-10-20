@@ -33,6 +33,7 @@ import {
   toast,
 } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
+import { NoRunnerNote } from "@/components/workspace/no-runners";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
@@ -192,58 +193,62 @@ function Sessions({ project }: { project: G.Project }) {
     ref.current?.focus();
   };
   const dragging = useFileDrop(attach, canStart && !starting);
+  const workspace = useWorkspaceIndex().get(project.workspace?.id ?? "");
   return (
     <div className="flex flex-col gap-10">
       {canStart && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            start(project.slug, prompt, files);
-          }}
-          className={cn(
-            "relative rounded-2xl border border-line-strong bg-surface/80 transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-[0_0_0_4px_var(--c-accent-soft)]",
-            dragging && "border-accent/50",
-          )}
-        >
-          <DraftTray
-            drafts={files.drafts}
-            onRemove={files.remove}
-            onRetry={files.retry}
-            className="px-4 pt-4"
-          />
-          <Textarea
-            ref={ref}
-            bare
-            minRows={2}
-            value={prompt}
-            readOnly={starting}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                start(project.slug, prompt, files);
-              }
-            }}
-            onPaste={(e) => {
-              const pasted = filesFromPaste(e.clipboardData);
-              if (!pasted.length || starting) return;
+        <div>
+          <form
+            onSubmit={(e) => {
               e.preventDefault();
-              attach(pasted, true);
+              start(project.slug, prompt, files);
             }}
-            placeholder={`What should an agent do in ${project.name}?`}
-            className="block px-5 pt-4 pb-14 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
-          />
-          <div className="absolute bottom-3 left-2.5">
-            <AttachButton onFiles={(f) => attach(f)} />
-          </div>
-          <div className="absolute right-3 bottom-3 flex items-center gap-3">
-            <span className="text-[11.5px] text-ink-4">⌘↵</span>
-            <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
-              Start a session
-            </StartButton>
-          </div>
-          <DropHint show={dragging} />
-        </form>
+            className={cn(
+              "relative rounded-2xl border border-line-strong bg-surface/80 transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-[0_0_0_4px_var(--c-accent-soft)]",
+              dragging && "border-accent/50",
+            )}
+          >
+            <DraftTray
+              drafts={files.drafts}
+              onRemove={files.remove}
+              onRetry={files.retry}
+              className="px-4 pt-4"
+            />
+            <Textarea
+              ref={ref}
+              bare
+              minRows={2}
+              value={prompt}
+              readOnly={starting}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  start(project.slug, prompt, files);
+                }
+              }}
+              onPaste={(e) => {
+                const pasted = filesFromPaste(e.clipboardData);
+                if (!pasted.length || starting) return;
+                e.preventDefault();
+                attach(pasted, true);
+              }}
+              placeholder={`What should an agent do in ${project.name}?`}
+              className="block px-5 pt-4 pb-14 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
+            />
+            <div className="absolute bottom-3 left-2.5">
+              <AttachButton onFiles={(f) => attach(f)} />
+            </div>
+            <div className="absolute right-3 bottom-3 flex items-center gap-3">
+              <span className="text-[11.5px] text-ink-4">⌘↵</span>
+              <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
+                Start a session
+              </StartButton>
+            </div>
+            <DropHint show={dragging} />
+          </form>
+          <NoRunnerNote workspace={workspace} className="mt-3" />
+        </div>
       )}
       <section>
         <div className="mb-2 flex items-center gap-1">

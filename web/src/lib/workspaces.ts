@@ -90,6 +90,20 @@ export function useFolded(): [Set<string>, (id: string) => void] {
   return [folded, toggle];
 }
 
+/**
+ * How many runners of a list serve a workspace, and how many of those are online. The list is
+ * what someone sees: every runner for instance admins, those of their workspaces for others.
+ * Undefined when it can't tell: control planes before workspaces don't say whose runners are whose.
+ */
+export function runnersOf(
+  runners: readonly G.Runner[],
+  workspace: string,
+): { total: number; online: number } | undefined {
+  if (runners.some((r) => !r.workspaces)) return undefined;
+  const serving = runners.filter((r) => r.workspaces?.some((w) => w.id === workspace));
+  return { total: serving.length, online: serving.filter((r) => r.status === "online").length };
+}
+
 /** "Primary admin", "Admin", "Member". */
 export function roleLabel(role: G.WorkspaceRole): string {
   return role === "owner" ? "Primary admin" : role === "admin" ? "Admin" : "Member";

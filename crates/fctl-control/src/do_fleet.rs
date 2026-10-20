@@ -1380,7 +1380,7 @@ impl FleetObject {
                 Err(Wait::Workspace) if !self.has_runner(&want.workspace_id) => {
                     self.note_waiting(
                         &item,
-                        "Waiting for a runner: this workspace has none yet. Its admins add one in its settings.".into(),
+                        "Waiting for a runner: this workspace has none yet. Its admins add one on its Runners tab.".into(),
                     )
                     .await;
                     continue;
