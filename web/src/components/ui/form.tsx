@@ -105,8 +105,10 @@ export function TextareaControls({
     <div
       className={cn("flex items-center", className)}
       onMouseDown={(e) => {
-        if (e.button !== 0 || (e.target instanceof Element && e.target.closest("a, button, input, label")))
-          return;
+        // Presses on a control are its own, and so are those in a list it opened over the page
+        // (a popover, such as a Select's): the list is in this row only in the DOM.
+        const own = "a, button, input, label, [popover]";
+        if (e.button !== 0 || (e.target instanceof Element && e.target.closest(own))) return;
         // Without the default, the focus stays where it is instead of leaving for the page.
         e.preventDefault();
         textarea.current?.focus();
