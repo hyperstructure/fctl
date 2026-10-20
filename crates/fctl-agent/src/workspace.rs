@@ -1024,6 +1024,12 @@ async fn sync_clone(
     RepoGitState::new(&c.repo, c.access, Some(path), st)
 }
 
+/// Whether a repository's HEAD is detached, as in the middle of a rebase.
+pub fn detached(st: &GitState) -> bool {
+    let detached = |branch: &Option<String>| branch.as_deref() == Some("HEAD");
+    detached(&st.branch) || st.repos.iter().flatten().any(|r| detached(&r.branch))
+}
+
 /// Copies the pull requests `last` found to the same branches in `st`.
 pub fn keep_pull_requests(st: &mut GitState, last: &GitState) {
     if st.pull_request.is_none() && st.branch.is_some() && st.branch == last.branch {

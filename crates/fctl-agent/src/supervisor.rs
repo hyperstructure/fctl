@@ -786,9 +786,12 @@ impl Supervisor {
                 // Once the session has stopped, the state it stopped with
                 // is its last.
                 if let Some(state) = state.filter(|_| self.exit_after.is_none()) {
-                    // While Claude works, only a change is news.
+                    // While Claude works, only a change is news, and a
+                    // repository in the middle of a rebase has none yet.
                     let working = matches!(moment, Moment::Working { .. });
-                    if !working || self.last_git.as_ref() != Some(&state) {
+                    let news =
+                        self.last_git.as_ref() != Some(&state) && !workspace::detached(&state);
+                    if !working || news {
                         if let Some(pr) = &state.pull_request {
                             tracing::info!("pull request #{} {}", pr.number, pr.url);
                         }
@@ -1309,23 +1312,21 @@ impl Supervisor {
     /// the one after a turn, or one while Claude works once it is due
     /// ([`Refresh`]).
     fn sync(&mut self) {
-        if self.syncing || self.exit_after.is_some() {
+        let now = Instant::now();
+        if self.syncing || self.exit_after.is_some() || !(self.turn_ended || self.refresh.due(now))
+        {
             return;
         }
         let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) else {
             return;
         };
-        let now = Instant::now();
-        let moment = if self.turn_ended {
-            self.turn_ended = false;
+        let moment = if std::mem::take(&mut self.turn_ended) {
             self.refresh.start(now);
             Moment::TurnEnded
-        } else if self.refresh.due(now) {
+        } else {
             Moment::Working {
                 opened_pr: self.refresh.start(now),
             }
-        } else {
-            return;
         };
         self.syncing = true;
         let last = self.last_git.clone();
@@ -2231,10 +2232,23 @@ mod tests {
         assert_eq!(subject, Some("Add notes"));
         assert_eq!(sup.state.status, SessionStatus::Running);
 
+        // A rebase under way, its HEAD detached, waits for a later refresh.
+        let detach = ["checkout", "-q", "--detach"];
+        assert!(workspace::run(&wd, &home, "git", &detach).await?.ok);
+        sup.on_claude_message(bash("t2", "git rebase -i main"))
+            .await;
+        sup.on_claude_message(tool_result("t2")).await;
+        sup.refresh.backdate(EVERY);
+        sup.on_tick().await;
+        synced(&mut sup, &mut work).await;
+        assert_eq!(kinds(&events_sent(&mut host)), ["claude", "claude"]);
+        let attach = ["checkout", "-q", "fctl/1-test"];
+        assert!(workspace::run(&wd, &home, "git", &attach).await?.ok);
+
         // A refresh that finds nothing new says nothing, and the turn that
         // ends meanwhile has its state reported once it is done.
-        sup.on_claude_message(bash("t2", "cargo test")).await;
-        sup.on_claude_message(tool_result("t2")).await;
+        sup.on_claude_message(bash("t3", "cargo test")).await;
+        sup.on_claude_message(tool_result("t3")).await;
         sup.refresh.backdate(EVERY);
         sup.on_tick().await;
         assert!(sup.syncing);
