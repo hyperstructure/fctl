@@ -78,6 +78,17 @@ pub fn with_workspaces(settings: &InstanceSettings, in_workspace: bool) -> Insta
     }
 }
 
+/// Whether a workspace requires two-factor sign-in of its members: its
+/// admins chose that (`own`), or the instance requires it, and then every
+/// workspace does and their admins can't turn it off
+/// ([`crate::workspace::check_two_factor`]). The instance's requirement
+/// closes the whole account of anyone it applies to who has no second
+/// factor ([`setup_required`]), so only a workspace's own requirement
+/// closes the workspace ([`workspace_blocked`]).
+pub fn workspace_requires(settings: &InstanceSettings, own: bool) -> bool {
+    own || settings.require_two_factor
+}
+
 /// Whether a workspace that requires two-factor sign-in is closed to an
 /// account: the requirement applies to it as the instance's would (it signs
 /// in with a password, or Google sign-ins ask for codes), and it has
@@ -236,6 +247,31 @@ mod tests {
         // once Google sign-ins ask for codes.
         assert!(!workspace_blocked(&instance, false, NONE));
         assert!(workspace_blocked(&settings(false, true), false, NONE));
+    }
+
+    #[test]
+    fn every_workspace_requires_it_while_the_instance_does() {
+        // Its admins choose, until the instance requires it.
+        assert!(!workspace_requires(&settings(false, false), false));
+        assert!(workspace_requires(&settings(false, false), true));
+        assert!(!workspace_requires(&settings(false, true), false));
+        assert!(workspace_requires(&settings(true, false), false));
+        assert!(workspace_requires(&settings(true, true), false));
+        // Then it applies to exactly the accounts the instance's requirement
+        // closes until they have a second factor: no workspace needs to
+        // close to them on its own.
+        for google in [false, true] {
+            let instance = settings(true, google);
+            for has_password in [false, true] {
+                for factors in [NONE, APP, PASSKEY] {
+                    assert_eq!(
+                        workspace_blocked(&instance, has_password, factors),
+                        setup_required(&instance, has_password, factors),
+                        "google: {google}, password: {has_password}, {factors:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

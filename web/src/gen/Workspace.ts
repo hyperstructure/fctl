@@ -33,8 +33,16 @@ email: string,
 base_role: BaseRole, 
 /**
  * Members need two-factor sign-in: an authenticator app or a passkey.
+ * Its admins chose that, or the instance requires it
+ * (`instance_requires_two_factor`).
  */
 require_two_factor: boolean, 
+/**
+ * The instance requires two-factor sign-in, so every workspace does
+ * too, and its admins can't turn it off
+ * ([`InstanceSettings::require_two_factor`]).
+ */
+instance_requires_two_factor: boolean, 
 /**
  * It requires two-factor sign-in, which you haven't set up: until you
  * do, its projects and sessions are closed to you.

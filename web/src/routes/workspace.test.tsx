@@ -62,6 +62,7 @@ const side: G.Workspace = {
   email: "ada@example.com",
   base_role: "editor",
   require_two_factor: false,
+  instance_requires_two_factor: false,
   blocked: false,
   primary: { id: "usr_ada", name: "Ada Lovelace" },
   members: 2,
@@ -435,5 +436,71 @@ describe("a workspace's GitHub tab", () => {
     expect(page.textContent).toContain("Side project works in no GitHub account yet.");
     expect(page.textContent).not.toContain("Connect with GitHub");
     expect(page.textContent).not.toContain("Choose what");
+  });
+});
+
+describe("two-factor sign-in in a workspace's settings", () => {
+  const members: G.WorkspaceMemberList = {
+    members: [
+      {
+        user: { id: "usr_ada", name: "Ada Lovelace" },
+        email: "ada@example.com",
+        role: "owner",
+        two_factor: true,
+        joined_at: 0,
+      },
+    ],
+    invitations: [],
+  };
+
+  /** The Settings tab as `workspace`'s admin sees it, whose role on the instance is `role`. */
+  function settingsTab(workspace: G.Workspace, role: G.InstanceRole = "member") {
+    route.tab = "settings";
+    queryClient.setQueryData(keys.workspace(workspace.slug), workspace);
+    queryClient.setQueryData(keys.me, { user: { role }, claude: [] } as unknown as G.Me);
+    queryClient.setQueryData(keys.workspaceMembers(workspace.id), members);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspacePage />
+        </QueryClientProvider>,
+      ),
+    );
+    roots.push(() => act(() => root.unmount()));
+    return container;
+  }
+
+  const toggle = (page: HTMLElement) =>
+    page.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Require two-factor sign-in"]');
+
+  it("is the workspace admins' choice while the instance leaves it to them", async () => {
+    update.mockResolvedValue(side);
+    const page = settingsTab({ ...side, require_two_factor: true });
+    expect(toggle(page)?.getAttribute("aria-checked")).toBe("true");
+    expect(toggle(page)?.disabled).toBe(false);
+    expect(page.textContent).toContain("Until they set one up, the workspace is closed to them.");
+    await act(async () => toggle(page)?.click());
+    expect(update).toHaveBeenCalledWith("ws_side", { require_two_factor: false });
+  });
+
+  it("stays on while the instance requires it", async () => {
+    const page = settingsTab({ ...side, require_two_factor: true, instance_requires_two_factor: true });
+    expect(toggle(page)?.getAttribute("aria-checked")).toBe("true");
+    expect(toggle(page)?.disabled).toBe(true);
+    expect(page.textContent).toContain(
+      "This instance requires it, so it stays on in every workspace, and only instance admins can turn it off. Members who sign in with a password need an authenticator app or a passkey, and can do nothing else until they set one up.",
+    );
+    await act(async () => toggle(page)?.click());
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("shows instance admins where they turn it off", () => {
+    const page = settingsTab(
+      { ...side, require_two_factor: true, instance_requires_two_factor: true },
+      "admin",
+    );
+    expect(page.textContent).toContain("only instance admins can turn it off (Admin → Settings).");
   });
 });

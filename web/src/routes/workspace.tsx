@@ -1788,8 +1788,9 @@ function General({ w }: { w: G.Workspace }) {
   );
 }
 
-/** Who sees which projects, and two-factor sign-in. */
+/** Who sees which projects, and two-factor sign-in, which stays on while the instance requires it. */
 function Access({ w }: { w: G.Workspace }) {
+  const { data: me } = useMe();
   const members = useQuery({
     queryKey: keys.workspaceMembers(w.id),
     queryFn: () => workspaces.members(w.id),
@@ -1834,14 +1835,33 @@ function Access({ w }: { w: G.Workspace }) {
         <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
           <span>
             Require two-factor sign-in
-            <span className="block text-[12.5px] leading-relaxed text-ink-4">
-              Members who sign in with a password also need an authenticator app or a passkey, and sign-ins
-              ask for it. Until they set one up, the workspace is closed to them. Joining it takes one too.
-            </span>
+            {w.instance_requires_two_factor ? (
+              <span className="block text-[12.5px] leading-relaxed text-ink-4">
+                This instance requires it, so it stays on in every workspace, and only instance admins can
+                turn it off
+                {me && me.user.role !== "member" ? (
+                  <>
+                    {" "}
+                    (
+                    <Link to="/admin" search={{ tab: "settings" }} className="underline underline-offset-2">
+                      Admin → Settings
+                    </Link>
+                    )
+                  </>
+                ) : null}
+                . Members who sign in with a password need an authenticator app or a passkey, and can do
+                nothing else until they set one up.
+              </span>
+            ) : (
+              <span className="block text-[12.5px] leading-relaxed text-ink-4">
+                Members who sign in with a password also need an authenticator app or a passkey, and sign-ins
+                ask for it. Until they set one up, the workspace is closed to them. Joining it takes one too.
+              </span>
+            )}
           </span>
           <Switch
             checked={w.require_two_factor}
-            disabled={save.isPending}
+            disabled={w.instance_requires_two_factor || save.isPending}
             onChange={(v) =>
               v && without.length > 0 ? setConfirm(true) : save.mutate({ require_two_factor: v })
             }

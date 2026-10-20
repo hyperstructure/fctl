@@ -123,9 +123,20 @@ impl WorkspaceRow {
         })
     }
 
+    /// Members need two-factor sign-in: its admins chose that, or the
+    /// instance requires it.
+    pub fn requires_two_factor(&self, settings: &InstanceSettings) -> bool {
+        fctl_domain::two_factor::workspace_requires(settings, self.require_two_factor)
+    }
+
     /// The workspace as its member, the caller, sees it; `online`: the
     /// runners online now.
-    pub fn to_workspace(&self, blocked: bool, online: &[String]) -> Workspace {
+    pub fn to_workspace(
+        &self,
+        settings: &InstanceSettings,
+        blocked: bool,
+        online: &[String],
+    ) -> Workspace {
         let runners = self.runner_ids();
         Workspace {
             id: fctl_proto::WorkspaceId(self.id.clone()),
@@ -140,7 +151,8 @@ impl WorkspaceRow {
             role: self.role().unwrap_or(WorkspaceRole::Member),
             email: self.email.clone().unwrap_or_default(),
             base_role: self.base_role(),
-            require_two_factor: self.require_two_factor,
+            require_two_factor: self.requires_two_factor(settings),
+            instance_requires_two_factor: settings.require_two_factor,
             blocked,
             claude: self.credential_id.clone().map(CredentialId),
             primary: self.primary(),
