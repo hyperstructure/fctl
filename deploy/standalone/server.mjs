@@ -211,10 +211,12 @@ async function main() {
   });
   cleanup.push(() => proxy.closeAll());
 
-  const worker = await mf.getWorker();
   for (const cron of workerOptions.cronTriggers ?? []) {
     const job = hourly(cron, async (c, at) => {
       try {
+        // Asked for each time: a workerd that restarted after a crash
+        // invalidates the handles Miniflare gave out before.
+        const worker = await mf.getWorker();
         await worker.scheduled({ cron: c, scheduledTime: new Date(at) });
       } catch (e) {
         console.error(`housekeeping failed: ${e.message}`);
