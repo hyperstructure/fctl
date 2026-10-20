@@ -6,6 +6,7 @@
 
 use crate::attachments;
 use crate::claude::{self, Claude, ClaudeOut, LaunchSpec};
+use crate::followed::Pulls;
 use crate::journal::Journal;
 use crate::link::{self, LinkEvent};
 use crate::local;
@@ -71,13 +72,16 @@ struct Persisted {
     /// the next message tells Claude they didn't finish.
     #[serde(default)]
     unfinished: Vec<Task>,
+    /// The pull requests fctl-agent follows for the session.
+    #[serde(default)]
+    pulls: Pulls,
 }
 
 pub(crate) enum Work {
     Prepared(Result<(), String>),
     /// A refresh of the repositories' state at a moment ended: what they
-    /// hold, unless it failed.
-    Git(Option<GitState>, Moment),
+    /// hold and the pull requests it follows, unless it failed.
+    Git(Option<(GitState, Pulls)>, Moment),
     Log(LogLevel, String, LogSource),
     /// The effort level Claude works at ([`claude::applied_effort`]).
     Effort(String),
@@ -690,6 +694,15 @@ impl Supervisor {
             self.save_file(&paths.attachments, &att, &data);
         }
         let spec = config.spec.clone();
+        // Those the session lists: in a new sandbox, fctl-agent knows no
+        // others.
+        if self
+            .persisted
+            .pulls
+            .follow(spec.pull_requests.clone(), &spec)
+        {
+            self.persist();
+        }
         let sandbox_env = prompt::sandbox_env(config.sandbox);
         self.config = Some(config);
         self.set_status(
@@ -785,11 +798,15 @@ impl Supervisor {
                 self.set_status(SessionStatus::Failed, Some(e));
                 self.finish().await;
             }
-            Work::Git(state, moment) => {
+            Work::Git(synced, moment) => {
                 self.syncing = false;
                 // Once the session has stopped, the state it stopped with
                 // is its last.
-                if let Some(state) = state.filter(|_| self.exit_after.is_none()) {
+                if let Some((state, pulls)) = synced.filter(|_| self.exit_after.is_none()) {
+                    if pulls != self.persisted.pulls {
+                        self.persisted.pulls = pulls;
+                        self.persist();
+                    }
                     // While Claude works, only a change is news, and a
                     // repository in the middle of a rebase has none yet.
                     let working = matches!(moment, Moment::Working { .. });
@@ -1327,26 +1344,35 @@ impl Supervisor {
         let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) else {
             return;
         };
+        let opened = self.refresh.start(now);
         let moment = if std::mem::take(&mut self.turn_ended) {
-            self.refresh.start(now);
             Moment::TurnEnded
         } else {
             Moment::Working {
-                opened_pr: self.refresh.start(now),
+                opened_pr: opened.ran,
             }
         };
+        if self
+            .persisted
+            .pulls
+            .follow(opened.pull_requests, &config.spec)
+        {
+            self.persist();
+        }
         self.syncing = true;
         let last = self.last_git.clone();
+        let mut pulls = self.persisted.pulls.clone();
         let work = self.work_tx.clone();
         tokio::spawn(async move {
             let push = config.push_on_commit;
-            let sync = workspace::sync(&paths, &config.spec, push, moment, last.as_ref());
+            let spec = &config.spec;
+            let sync = workspace::sync(&paths, spec, push, moment, last.as_ref(), &mut pulls);
             let state = match tokio::time::timeout(SYNC_TIMEOUT, sync).await {
                 Ok(Ok(synced)) => {
                     for (level, text) in synced.logs {
                         let _ = work.send(Work::Log(level, text, LogSource::Agent));
                     }
-                    Some(synced.state)
+                    Some((synced.state, pulls))
                 }
                 Ok(Err(e)) => {
                     tracing::debug!("reading the repositories' state failed: {e:#}");
@@ -1650,8 +1676,10 @@ impl Supervisor {
             let (push, last) = (config.push_on_commit, self.last_git.as_ref());
             // No lookups while stopping: the pull requests found before
             // still stand.
+            let mut pulls = self.persisted.pulls.clone();
+            let stopping = Moment::Stopping;
             if let Ok(synced) =
-                workspace::sync(&paths, &config.spec, push, Moment::Stopping, last).await
+                workspace::sync(&paths, &config.spec, push, stopping, last, &mut pulls).await
             {
                 for (level, text) in synced.logs {
                     self.log(LogSource::Agent, level, &text);
@@ -2276,6 +2304,62 @@ mod tests {
         assert_eq!(kinds(&events), ["log", "git"]);
         assert!(matches!(&events[0], EventBody::Log(l) if l.text.starts_with("git push failed")));
         assert!(!sup.syncing && !sup.turn_ended);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pull_requests_gh_pr_create_printed_are_followed() -> anyhow::Result<()> {
+        use crate::refresh::QUIET;
+        let dir = tempfile::tempdir()?;
+        let state_dir = dir.path().join("state");
+        let (mut sup, _claude, mut work) = Supervisor::new(state_dir.clone(), None)?;
+        sup.config = Some(config(dir.path(), false)?);
+        let mut paths = Paths::new(
+            &dir.path().join("workspace"),
+            &dir.path().join("home"),
+            &state_dir,
+        );
+        // No gh to ask: the pull request is listed as its URL names it.
+        paths.gh = dir.path().join("no-gh").display().to_string();
+        std::fs::create_dir_all(&paths.workdir)?;
+        std::fs::create_dir_all(&paths.home)?;
+        let init = ["init", "-q", "-b", "fctl/1-test"];
+        assert!(
+            workspace::run(&paths.workdir, &paths.home, "git", &init)
+                .await?
+                .ok
+        );
+        sup.paths = Some(paths);
+        let (host_tx, mut host) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        sup.turn_active = true;
+        sup.set_status(SessionStatus::Running, None);
+
+        // The agent opens one from a branch in a worktree.
+        let create = "cd ~/second && gh pr create --head fctl/1-second --fill";
+        sup.on_claude_message(bash("t1", create)).await;
+        let mut printed = tool_result("t1");
+        printed["message"]["content"][0]["content"] =
+            json!("https://github.com/acme/widgets/pull/2\n");
+        sup.on_claude_message(printed).await;
+        sup.refresh.backdate(QUIET);
+        sup.on_tick().await;
+        synced(&mut sup, &mut work).await;
+        let events = events_sent(&mut host);
+        let Some(EventBody::Git(state)) = events.last() else {
+            panic!("expected the repositories' state");
+        };
+        let listed: Vec<&str> = state
+            .pull_requests
+            .iter()
+            .flatten()
+            .map(|p| p.url.as_str())
+            .collect();
+        assert_eq!(listed, ["https://github.com/acme/widgets/pull/2"]);
+        // A restarted supervisor follows it still.
+        let (again, _claude, _work) = Supervisor::new(state_dir, None)?;
+        assert_eq!(again.persisted.pulls, sup.persisted.pulls);
+        assert_eq!(again.persisted.pulls.listed().len(), 1);
         Ok(())
     }
 

@@ -6,13 +6,14 @@
 //! them, into `~/repos/<owner>/<name>`. fctl-agent finds those clones each
 //! time it reports the state; after each turn it also keeps the work in
 //! writable ones on the session branch, pushes it, and looks up its pull
-//! request.
+//! request. A branch whose pull request merged isn't pushed again.
 
+use crate::followed::{self, Pulls};
 use anyhow::{Context, Result, bail};
 use fctl_domain::repos;
 use fctl_proto::event::{CommitInfo, FileChange, GitState, LogLevel, RepoGitState};
 use fctl_proto::runner::{GitIdentity, GithubCredential, SessionSpec};
-use fctl_proto::session::{PullRequestRef, RepoAccess, RepoGrant, RepoRef};
+use fctl_proto::session::{RepoAccess, RepoGrant, RepoRef};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -42,6 +43,9 @@ pub struct Paths {
     /// The repositories `token_file` covers: `owner/name`, lowercase, one per line.
     pub write_repos_file: PathBuf,
     pub helper: PathBuf,
+    /// The `gh` that looks up pull requests: the sandbox's, a stand-in in
+    /// tests.
+    pub gh: String,
 }
 
 impl Paths {
@@ -55,6 +59,7 @@ impl Paths {
             read_token_file: state.join("github-token-read"),
             write_repos_file: state.join("github-write-repos"),
             helper: state.join("git-credential-fctl"),
+            gh: "gh".to_owned(),
         }
     }
 }
@@ -492,13 +497,23 @@ impl Drop for IndexCopy {
     }
 }
 
-/// The primary repository's state relative to the base branch.
-pub async fn state(p: &Paths, spec: &SessionSpec) -> Result<GitState> {
-    state_at(&p.workdir, &p.home, &spec.base_branch).await
+/// The primary repository's state relative to the base branch; `pulls`
+/// tells whether its branch's pull request merged.
+pub async fn state(p: &Paths, spec: &SessionSpec, pulls: &Pulls) -> Result<GitState> {
+    let followed = spec.project.repo.as_ref().map(|r| (r, pulls));
+    state_at(&p.workdir, &p.home, &spec.base_branch, followed).await
 }
 
-/// A clone's state relative to `base`, a branch of its `origin`.
-pub async fn state_at(dir: &Path, home: &Path, base: &str) -> Result<GitState> {
+/// A clone's state relative to `base`, a branch of its `origin`. With the
+/// repository it is of, the pull requests fctl-agent follows tell whether
+/// its branch's merged: then its changes are the work that merged and
+/// what came after.
+pub async fn state_at(
+    dir: &Path,
+    home: &Path,
+    base: &str,
+    followed: Option<(&RepoRef, &Pulls)>,
+) -> Result<GitState> {
     if !dir.join(".git").exists() {
         return Ok(GitState::default());
     }
@@ -546,16 +561,27 @@ pub async fn state_at(dir: &Path, home: &Path, base: &str) -> Result<GitState> {
                 .unwrap_or(0),
         )
     };
+    let merged = followed.and_then(|(repo, pulls)| pulls.merged(Some(repo), branch.as_deref()));
     let index = IndexCopy::of(dir, home).await;
     let env = index.env();
     let mut files: Vec<FileChange> = Vec::new();
-    // Without a base branch, everything is new: diff against the empty tree.
+    // What the branch changed since it left the base: the diff from their
+    // merge base, which the base's later commits don't move. Once its pull
+    // request merged, from the base as it was just before (`baseRefOid`):
+    // a merge commit puts the branch's commits on the base, which would
+    // leave nothing to compare. Without a base, or a merge base with it,
+    // everything is new: the diff from the empty tree.
     const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-    let diff_target = if has_base {
-        base_ref.clone()
-    } else {
-        EMPTY_TREE.to_owned()
-    };
+    let mut diff_target = EMPTY_TREE.to_owned();
+    if has_base && head.is_some() {
+        let before_merge = merged.and_then(|f| f.base.as_deref());
+        for from in before_merge.into_iter().chain([base_ref.as_str()]) {
+            if let Ok(fork) = git_ok_in(dir, home, &["merge-base", from, "HEAD"]).await {
+                diff_target = fork.trim().to_owned();
+                break;
+            }
+        }
+    }
     if head.is_some() {
         let numstat = ["diff", "--numstat", "-M", &diff_target];
         let numstat = run_with(dir, home, "git", &numstat, &env).await?;
@@ -643,6 +669,20 @@ pub async fn state_at(dir: &Path, home: &Path, base: &str) -> Result<GitState> {
         .map(|s| s.trim().to_owned()),
         None => None,
     };
+    // The commits after the head that merged, which the base doesn't have.
+    let unmerged = match (merged.and_then(|f| f.head.as_deref()), &head) {
+        (Some(merged_head), Some(_)) => {
+            let mut count = vec!["rev-list", "--count", "HEAD", "--not", merged_head];
+            if has_base {
+                count.push(&base_ref);
+            }
+            git_ok_in(dir, home, &count)
+                .await
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+        }
+        _ => None,
+    };
     Ok(GitState {
         branch: branch.clone(),
         base: Some(base.to_owned()),
@@ -654,7 +694,9 @@ pub async fn state_at(dir: &Path, home: &Path, base: &str) -> Result<GitState> {
         uncommitted,
         last_commit,
         pull_request: None,
+        unmerged,
         repos: None,
+        pull_requests: None,
     })
 }
 
@@ -679,48 +721,19 @@ pub async fn push(dir: &Path, home: &Path, st: &GitState) -> Result<bool> {
     Ok(true)
 }
 
-/// The pull request of a branch, through `gh` (which finds the repository
-/// from the clone's remote).
-pub async fn pull_request(dir: &Path, home: &Path, branch: &str) -> Option<PullRequestRef> {
-    let o = run(
-        dir,
-        home,
-        "gh",
-        &[
-            "pr",
-            "view",
-            branch,
-            "--json",
-            "number,url,title,state,isDraft",
-        ],
-    )
-    .await
-    .ok()?;
-    if !o.ok {
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_str(&o.stdout).ok()?;
-    let draft = v
-        .get("isDraft")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let state = v.get("state").and_then(serde_json::Value::as_str).map(|s| {
-        if draft && s == "OPEN" {
-            "draft".to_owned()
-        } else {
-            s.to_lowercase()
-        }
-    });
-    Some(PullRequestRef {
-        number: v.get("number").and_then(serde_json::Value::as_u64)?,
-        url: v.get("url").and_then(serde_json::Value::as_str)?.to_owned(),
-        title: v
-            .get("title")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
-        state,
-        repo: None,
-    })
+/// Whether `branch` was pushed and GitHub no longer has it: its upstream
+/// is set, but a fetch pruned it from the clone (`[gone]`), as when GitHub
+/// deleted the branch after its pull request merged.
+async fn upstream_gone(dir: &Path, home: &Path, branch: &str) -> bool {
+    let branch = format!("refs/heads/{branch}");
+    let track = [
+        "for-each-ref",
+        "--format=%(upstream:track)",
+        branch.as_str(),
+    ];
+    git_ok_in(dir, home, &track)
+        .await
+        .is_ok_and(|s| s.trim() == "[gone]")
 }
 
 /// A clone of one of the project's other repositories.
@@ -864,16 +877,18 @@ pub async fn onto_session_branch(
 /// When fctl-agent reports the repositories' state, which decides what else
 /// it does: it changes them (moves work onto the session branch, pushes)
 /// only once a turn has ended or as the session stops, and asks GitHub for
-/// pull requests only where it can find one it hasn't.
+/// pull requests only where it can find one it hasn't, or one can have
+/// changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Moment {
     /// While Claude works: it reads them, and looks up the pull request of a
     /// branch once it was pushed or its pushed head moved since the last
-    /// report, or after `gh pr create` ran (`opened_pr`).
+    /// report, or after `gh pr create` ran (`opened_pr`), the pull requests
+    /// that printed too.
     Working { opened_pr: bool },
     /// A turn ended: the work in writable clones moves onto the session
-    /// branch, new commits are pushed, and every pushed branch's pull
-    /// request is looked up.
+    /// branch, new commits are pushed, unless their branch's pull request
+    /// merged, and every pull request is looked up that isn't merged.
     TurnEnded,
     /// The session stops: as when a turn ends, without lookups.
     Stopping,
@@ -897,6 +912,17 @@ impl Moment {
                 Moment::Stopping => false,
             }
     }
+
+    /// Whether to look up the pull request of a branch that GitHub deleted
+    /// after it was pushed, unless it is known to have merged: once after
+    /// the agent starts, and after `gh pr create` or a turn.
+    fn looks_up_deleted(self, before: Option<OnRemote>) -> bool {
+        match self {
+            Moment::Working { opened_pr } => opened_pr || before.is_none(),
+            Moment::TurnEnded => true,
+            Moment::Stopping => false,
+        }
+    }
 }
 
 /// A branch and its head, when the remote has that commit.
@@ -913,6 +939,36 @@ fn on_remote<'a>(
     }
 }
 
+/// How the last report had a repository's branch.
+#[derive(Clone, Copy)]
+struct Before<'a> {
+    branch: &'a Option<String>,
+    head: &'a Option<String>,
+    pushed: bool,
+}
+
+impl<'a> Before<'a> {
+    fn of(st: &'a GitState) -> Self {
+        Self {
+            branch: &st.branch,
+            head: &st.head,
+            pushed: st.pushed,
+        }
+    }
+
+    fn of_repo(r: &'a RepoGitState) -> Self {
+        Self {
+            branch: &r.branch,
+            head: &r.head,
+            pushed: r.pushed,
+        }
+    }
+
+    fn on_remote(self) -> OnRemote<'a> {
+        on_remote(self.branch, self.head, self.pushed)
+    }
+}
+
 /// What the repositories hold, and what fctl-agent did about it.
 pub struct Synced {
     pub state: GitState,
@@ -920,134 +976,284 @@ pub struct Synced {
     pub logs: Vec<(LogLevel, String)>,
 }
 
+/// A sync of the repositories as it goes through them.
+struct Run<'a> {
+    p: &'a Paths,
+    moment: Moment,
+    pulls: &'a mut Pulls,
+    /// The URLs of the pull requests looked up so far.
+    looked: Vec<String>,
+    logs: Vec<(LogLevel, String)>,
+}
+
+/// A repository whose branch fctl-agent pushes and looks up the pull
+/// request of: the primary one, or a writable clone on the session branch.
+struct Writable<'a> {
+    dir: &'a Path,
+    repo: &'a RepoRef,
+    /// The branch its state is relative to.
+    base: &'a str,
+    /// `owner/name`, for the others.
+    name: Option<String>,
+}
+
+impl Run<'_> {
+    async fn state(&self, w: &Writable<'_>) -> Result<GitState> {
+        state_at(w.dir, &self.p.home, w.base, Some((w.repo, &*self.pulls))).await
+    }
+
+    /// Looks up the pull request of `branch`, checked out in `w`; if what it
+    /// finds changes whether that merged, or how, `st` follows.
+    async fn look_up(&mut self, w: &Writable<'_>, st: &mut GitState, branch: &str) {
+        let Some(found) = followed::look_up(self.p, w.dir, branch).await else {
+            return;
+        };
+        let was = self.pulls.merged(Some(w.repo), Some(branch)).cloned();
+        self.looked.push(found.pr.url.clone());
+        self.pulls.found(found);
+        if self.pulls.merged(Some(w.repo), Some(branch)) != was.as_ref()
+            && let Ok(fresh) = self.state(w).await
+        {
+            *st = fresh;
+        }
+    }
+
+    /// Pushes the new commits on `w`'s branch when `push` says fctl-agent
+    /// may, unless the branch's pull request merged: GitHub has what it
+    /// merged, and a push would bring back a branch it deleted, so the
+    /// commits after it stay in the sandbox, and the transcript says so.
+    /// Then looks up the pull request where one can have appeared or
+    /// changed. `before` is how the last report had the branch.
+    async fn publish(
+        &mut self,
+        w: &Writable<'_>,
+        st: &mut GitState,
+        push: bool,
+        before: Option<Before<'_>>,
+    ) {
+        let Some(branch) = st.branch.clone().filter(|b| b != "HEAD") else {
+            return;
+        };
+        if st.head.is_none() {
+            return;
+        }
+        let home = self.p.home.as_path();
+        let to = w
+            .name
+            .as_ref()
+            .map(|n| format!(" to {n}"))
+            .unwrap_or_default();
+        let warn = |e: anyhow::Error| match &w.name {
+            Some(n) => format!("{n}: {e:#}"),
+            None => format!("{e:#}"),
+        };
+        // Whether GitHub deleted the branch, asked of git once.
+        let mut gone = None;
+        let mut looked_up = false;
+        if push && st.ahead > 0 && !st.pushed {
+            // A branch whose pull request was open, or that GitHub deleted,
+            // can have merged since the last lookup: ask before pushing.
+            let known = self.pulls.of_branch(w.repo, &branch).map(|f| f.merged());
+            if self.moment == Moment::TurnEnded && known != Some(true) {
+                let deleted = known.is_none() && upstream_gone(w.dir, home, &branch).await;
+                gone = Some(deleted);
+                if known.is_some() || deleted {
+                    self.look_up(w, st, &branch).await;
+                    looked_up = true;
+                }
+            }
+            match self.pulls.merged(Some(w.repo), Some(&branch)) {
+                Some(f) => {
+                    let moved = before.is_none_or(|b| *b.head != st.head);
+                    if st.unmerged != Some(0) && moved {
+                        let number = f.pr.number;
+                        let text = format!(
+                            "Didn't push {branch}{to}: its pull request #{number} is merged"
+                        );
+                        self.logs.push((LogLevel::Info, text));
+                    }
+                }
+                None => match self::push(w.dir, home, st).await {
+                    Ok(true) => {
+                        self.logs
+                            .push((LogLevel::Info, format!("Pushed {branch}{to}")));
+                        if let Ok(fresh) = self.state(w).await {
+                            *st = fresh;
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => self.logs.push((LogLevel::Warn, warn(e))),
+                },
+            }
+        }
+        if looked_up {
+            return;
+        }
+        let now = on_remote(&st.branch, &st.head, st.pushed);
+        let before = before.map(Before::on_remote);
+        let mut look = self.moment.looks_up(now, before);
+        if !look
+            && now.is_none()
+            && self.moment.looks_up_deleted(before)
+            && self.pulls.merged(Some(w.repo), Some(&branch)).is_none()
+        {
+            look = match gone {
+                Some(deleted) => deleted,
+                None => upstream_gone(w.dir, home, &branch).await,
+            };
+        }
+        if look {
+            self.look_up(w, st, &branch).await;
+        }
+    }
+
+    /// Gives `st`, read before the last lookups, its branch's pull request
+    /// as they left it; `was`, the pull requests before them, tells whether
+    /// they changed what merged.
+    async fn attach(&self, w: &Writable<'_>, st: &mut GitState, was: &Pulls) {
+        let branch = st.branch.as_deref();
+        if self.pulls.merged(Some(w.repo), branch) != was.merged(Some(w.repo), branch)
+            && let Ok(fresh) = self.state(w).await
+        {
+            *st = fresh;
+        }
+        st.pull_request = st
+            .branch
+            .as_deref()
+            .and_then(|b| self.pulls.of_branch(w.repo, b))
+            .map(|f| f.pr.clone());
+    }
+}
+
 /// The state of the primary repository and the clones of the others at
-/// `moment`. When a turn ends or the session stops it also moves the work
-/// in writable clones onto the session branch and, with `push_commits`,
-/// pushes new commits on the session branch. The pull requests of the
-/// state reported last (`last`) stand until a lookup finds another.
+/// `moment`, with the pull requests fctl-agent follows (`pulls`), which
+/// lookups update. When a turn ends or the session stops it also moves the
+/// work in writable clones onto the session branch and, with
+/// `push_commits`, pushes new commits on the session branch. `last` is the
+/// state reported last.
 pub async fn sync(
     p: &Paths,
     spec: &SessionSpec,
     push_commits: bool,
     moment: Moment,
     last: Option<&GitState>,
+    pulls: &mut Pulls,
 ) -> Result<Synced> {
-    let mut logs = Vec::new();
-    let mut st = state(p, spec).await?;
-    if moment.writes() && spec.project.repo.is_some() && push_commits && st.ahead > 0 && !st.pushed
-    {
-        match push(&p.workdir, &p.home, &st).await {
-            Ok(true) => {
-                let branch = st.branch.clone().unwrap_or_default();
-                logs.push((LogLevel::Info, format!("Pushed {branch}")));
-                if let Ok(fresh) = state(p, spec).await {
-                    st = fresh;
-                }
-            }
-            Ok(false) => {}
-            Err(e) => logs.push((LogLevel::Warn, format!("{e:#}"))),
-        }
+    let mut run = Run {
+        p,
+        moment,
+        pulls,
+        looked: Vec::new(),
+        logs: Vec::new(),
+    };
+    let mut st = state(p, spec, run.pulls).await?;
+    let primary = spec.project.repo.as_ref().map(|repo| Writable {
+        dir: &p.workdir,
+        repo,
+        base: &spec.base_branch,
+        name: None,
+    });
+    if let Some(w) = &primary {
+        let push = moment.writes() && push_commits;
+        run.publish(w, &mut st, push, last.map(Before::of)).await;
     }
-    let before = last.map(|l| on_remote(&l.branch, &l.head, l.pushed));
-    if moment.looks_up(on_remote(&st.branch, &st.head, st.pushed), before)
-        && let Some(b) = st.branch.clone()
-    {
-        st.pull_request = pull_request(&p.workdir, &p.home, &b).await;
-    }
-    let mut repos = Vec::new();
+    let mut others = Vec::new();
     for c in clones(p, spec).await {
         let before = last.and_then(|l| l.repos.as_ref()).and_then(|rs| {
             rs.iter()
                 .find(|r| r.owner == c.repo.owner && r.name == c.repo.name)
+                .map(Before::of_repo)
         });
-        repos.push(sync_clone(p, spec, &c, push_commits, moment, before, &mut logs).await);
+        let (base, cst) = sync_clone(&mut run, spec, &c, push_commits, before).await;
+        others.push((c, base, cst));
+    }
+    // The pull requests of other branches, worktrees and clones.
+    let was = run.pulls.clone();
+    for url in run.pulls.due(moment, &run.looked) {
+        if let Some(found) = followed::look_up(p, &p.home, &url).await {
+            run.pulls.found(found);
+        }
+    }
+    if let Some(w) = &primary {
+        run.attach(w, &mut st, &was).await;
+    }
+    let mut repos = Vec::new();
+    for (c, base, mut cst) in others {
+        let w = Writable {
+            dir: &c.dir,
+            repo: &c.repo,
+            base: &base,
+            name: None,
+        };
+        run.attach(&w, &mut cst, &was).await;
+        cst.files.truncate(MAX_CLONE_FILES);
+        let path = match c.dir.strip_prefix(&p.home) {
+            Ok(rel) => format!("~/{}", rel.display()),
+            Err(_) => c.dir.display().to_string(),
+        };
+        repos.push(RepoGitState::new(&c.repo, c.access, Some(path), cst));
     }
     if !repos.is_empty() {
         st.repos = Some(repos);
     }
-    if let Some(last) = last {
-        keep_pull_requests(&mut st, last);
+    let listed = run.pulls.listed();
+    if !listed.is_empty() {
+        st.pull_requests = Some(listed);
     }
-    Ok(Synced { state: st, logs })
+    Ok(Synced {
+        state: st,
+        logs: run.logs,
+    })
 }
 
+/// A clone of another repository: in a writable one, the work moves onto
+/// the session branch, which fctl-agent pushes and looks up the pull
+/// request of. Returns its base branch and its state.
 async fn sync_clone(
-    p: &Paths,
+    run: &mut Run<'_>,
     spec: &SessionSpec,
     c: &RepoClone,
     push_commits: bool,
-    moment: Moment,
-    before: Option<&RepoGitState>,
-    logs: &mut Vec<(LogLevel, String)>,
-) -> RepoGitState {
-    let (dir, home, branch) = (c.dir.as_path(), p.home.as_path(), spec.branch.as_str());
+    before: Option<Before<'_>>,
+) -> (String, GitState) {
+    let (dir, home, branch) = (c.dir.as_path(), run.p.home.as_path(), spec.branch.as_str());
     let name = c.repo.full_name();
     let base = default_branch(dir, home)
         .await
         .unwrap_or_else(|| "main".to_owned());
-    let mut st = state_at(dir, home, &base).await.unwrap_or_default();
+    let w = Writable {
+        dir,
+        repo: &c.repo,
+        base: &base,
+        name: Some(name.clone()),
+    };
+    let mut st = run.state(&w).await.unwrap_or_default();
     if c.access == RepoAccess::Write {
-        if moment.writes() {
+        if run.moment.writes() {
             match onto_session_branch(dir, home, branch, &base, &st).await {
                 Ok(true) => {
-                    logs.push((
+                    run.logs.push((
                         LogLevel::Info,
                         format!("Moved the work in {name} from {base} to {branch}"),
                     ));
-                    st = state_at(dir, home, &base).await.unwrap_or_default();
+                    st = run.state(&w).await.unwrap_or_default();
                 }
                 Ok(false) => {}
-                Err(e) => logs.push((LogLevel::Warn, format!("{name}: {e:#}"))),
+                Err(e) => run.logs.push((LogLevel::Warn, format!("{name}: {e:#}"))),
             }
         }
-        let on_branch = st.branch.as_deref() == Some(branch);
-        if moment.writes() && on_branch && push_commits && st.ahead > 0 && !st.pushed {
-            match push(dir, home, &st).await {
-                Ok(true) => {
-                    logs.push((LogLevel::Info, format!("Pushed {branch} to {name}")));
-                    if let Ok(fresh) = state_at(dir, home, &base).await {
-                        st = fresh;
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => logs.push((LogLevel::Warn, format!("{name}: {e:#}"))),
-            }
-        }
-        let before = before.map(|r| on_remote(&r.branch, &r.head, r.pushed));
-        if on_branch && moment.looks_up(on_remote(&st.branch, &st.head, st.pushed), before) {
-            st.pull_request = pull_request(dir, home, branch).await;
+        if st.branch.as_deref() == Some(branch) {
+            let push = run.moment.writes() && push_commits;
+            run.publish(&w, &mut st, push, before).await;
         }
     }
-    st.files.truncate(MAX_CLONE_FILES);
-    let path = match dir.strip_prefix(home) {
-        Ok(rel) => format!("~/{}", rel.display()),
-        Err(_) => dir.display().to_string(),
-    };
-    RepoGitState::new(&c.repo, c.access, Some(path), st)
+    (base, st)
 }
 
 /// Whether a repository's HEAD is detached, as in the middle of a rebase.
 pub fn detached(st: &GitState) -> bool {
     let detached = |branch: &Option<String>| branch.as_deref() == Some("HEAD");
     detached(&st.branch) || st.repos.iter().flatten().any(|r| detached(&r.branch))
-}
-
-/// Copies the pull requests `last` found to the same branches in `st`.
-pub fn keep_pull_requests(st: &mut GitState, last: &GitState) {
-    if st.pull_request.is_none() && st.branch.is_some() && st.branch == last.branch {
-        st.pull_request = last.pull_request.clone();
-    }
-    for r in st.repos.iter_mut().flatten() {
-        if r.pull_request.is_some() || r.branch.is_none() {
-            continue;
-        }
-        r.pull_request = last
-            .repos
-            .iter()
-            .flatten()
-            .find(|o| o.owner == r.owner && o.name == r.name && o.branch == r.branch)
-            .and_then(|o| o.pull_request.clone());
-    }
 }
 
 #[cfg(test)]
@@ -1098,14 +1304,163 @@ pub(crate) mod tests {
         Ok(serde_json::from_value(spec)?)
     }
 
+    /// The sandbox's paths, with a `gh` that isn't there: tests that look up
+    /// pull requests install a [`FakeGh`].
     fn sandbox(dir: &Path) -> Result<Paths> {
-        let p = Paths::new(
+        let mut p = Paths::new(
             &dir.join("workspace"),
             &dir.join("home"),
             &dir.join("state"),
         );
+        p.gh = dir.join("no-gh").display().to_string();
         std::fs::create_dir_all(&p.home)?;
         Ok(p)
+    }
+
+    const FAKE_GH: &str = r#"#!/bin/sh
+# A stand-in for gh: logs each call, and answers `gh pr view <branch or URL>`
+# with the pull request it was given for it.
+here=$(dirname "$0")
+echo "$*" >> "$here/calls"
+[ "$1 $2" = "pr view" ] || exit 1
+case "$*" in
+  *baseRefOid*) [ -f "$here/old" ] && { echo 'Unknown JSON field: "baseRefOid"' >&2; exit 1; } ;;
+esac
+answer="$here/prs/$(printf '%s' "$3" | tr -c 'A-Za-z0-9._-' '_')"
+[ -f "$answer" ] || { echo "no pull requests found for branch \"$3\"" >&2; exit 1; }
+cat "$answer"
+"#;
+
+    /// A stand-in for `gh` that knows the pull requests a test gives it.
+    struct FakeGh(PathBuf);
+
+    impl FakeGh {
+        fn install(p: &mut Paths, dir: &Path) -> Result<Self> {
+            let here = dir.join("fake-gh");
+            std::fs::create_dir_all(here.join("prs"))?;
+            let gh = here.join("gh");
+            std::fs::write(&gh, FAKE_GH)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755))?;
+            }
+            p.gh = gh.display().to_string();
+            Ok(Self(here))
+        }
+
+        /// Answers with pull request `number` of acme/widgets, as GitHub has
+        /// it now, for its branch and for its URL.
+        fn knows(
+            &self,
+            number: u64,
+            branch: &str,
+            state: &str,
+            head: &str,
+            base: &str,
+        ) -> Result<()> {
+            let url = format!("https://github.com/acme/widgets/pull/{number}");
+            let pr = serde_json::json!({
+                "number": number, "url": url, "title": format!("Change {number}"),
+                "state": state, "isDraft": false,
+                "headRefName": branch, "headRefOid": head, "baseRefOid": base
+            });
+            for key in [branch, url.as_str()] {
+                let name: String = key
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                std::fs::write(self.0.join("prs").join(name), pr.to_string())?;
+            }
+            Ok(())
+        }
+
+        /// From now on, as a gh from before `baseRefOid`.
+        fn grow_old(&self) -> Result<()> {
+            Ok(std::fs::write(self.0.join("old"), "")?)
+        }
+
+        /// What it was asked, one call per line.
+        fn calls(&self) -> String {
+            std::fs::read_to_string(self.0.join("calls")).unwrap_or_default()
+        }
+    }
+
+    /// The changed files: `status path +additions -deletions`.
+    fn changes(st: &GitState) -> Vec<String> {
+        st.files
+            .iter()
+            .map(|f| {
+                let n = |c: Option<u32>| c.map_or("?".to_owned(), |c| c.to_string());
+                format!(
+                    "{} {} +{} -{}",
+                    f.status,
+                    f.path,
+                    n(f.additions),
+                    n(f.deletions)
+                )
+            })
+            .collect()
+    }
+
+    async fn commit(dir: &Path, home: &Path, file: &str, text: &str, msg: &str) -> Result<String> {
+        std::fs::write(dir.join(file), text)?;
+        git_ok_in(dir, home, &["add", file]).await?;
+        git_ok_in(dir, home, &["commit", "-q", "-m", msg]).await?;
+        Ok(git_ok_in(dir, home, &["rev-parse", "HEAD"])
+            .await?
+            .trim()
+            .to_owned())
+    }
+
+    /// What GitHub does when it merges the pull request of `branch` and
+    /// deletes the branch: squashes it into one commit on main, or merges
+    /// it with a merge commit. Returns main's head from before.
+    async fn merge_on_github(
+        origin: &Path,
+        home: &Path,
+        branch: &str,
+        squash: bool,
+    ) -> Result<String> {
+        let before = git_ok_in(origin, home, &["rev-parse", "main"]).await?;
+        if squash {
+            git_ok_in(origin, home, &["merge", "-q", "--squash", branch]).await?;
+            git_ok_in(origin, home, &["commit", "-q", "-m", "Change 1 (#1)"]).await?;
+        } else {
+            let merge = [
+                "merge",
+                "-q",
+                "--no-ff",
+                "-m",
+                "Merge pull request #1",
+                branch,
+            ];
+            git_ok_in(origin, home, &merge).await?;
+        }
+        git_ok_in(origin, home, &["branch", "-q", "-D", branch]).await?;
+        Ok(before.trim().to_owned())
+    }
+
+    async fn has_branch(origin: &Path, home: &Path, branch: &str) -> Result<bool> {
+        let r = format!("refs/heads/{branch}");
+        Ok(run(
+            origin,
+            home,
+            "git",
+            &["rev-parse", "--verify", "--quiet", &r],
+        )
+        .await?
+        .ok)
+    }
+
+    fn log_texts(logs: &[(LogLevel, String)]) -> Vec<&str> {
+        logs.iter().map(|(_, t)| t.as_str()).collect()
     }
 
     /// A local repository standing in for `https://github.com/{full}.git`.
@@ -1192,58 +1547,6 @@ pub(crate) mod tests {
         let pushed = ["rev-parse", "--verify", "--quiet", "refs/heads/fctl/1-test"];
         assert!(run(&origin, &p.home, "git", &pushed).await?.ok);
         Ok(())
-    }
-
-    #[test]
-    fn pull_requests_outlast_a_state_without_lookups() {
-        let pr = |n: u64| PullRequestRef {
-            number: n,
-            url: format!("https://github.com/acme/x/pull/{n}"),
-            title: None,
-            state: None,
-            repo: None,
-        };
-        let repo = |name: &str, branch: &str, pr: Option<PullRequestRef>| RepoGitState {
-            owner: "acme".into(),
-            name: name.into(),
-            branch: Some(branch.into()),
-            pull_request: pr,
-            ..Default::default()
-        };
-        let last = GitState {
-            branch: Some("fctl/1".into()),
-            pull_request: Some(pr(1)),
-            repos: Some(vec![
-                repo("lib", "fctl/1", Some(pr(2))),
-                repo("docs", "main", None),
-            ]),
-            ..Default::default()
-        };
-        let mut st = GitState {
-            branch: Some("fctl/1".into()),
-            repos: Some(vec![
-                repo("docs", "main", None),
-                repo("lib", "fctl/1", None),
-                repo("new", "fctl/1", None),
-            ]),
-            ..Default::default()
-        };
-        keep_pull_requests(&mut st, &last);
-        assert_eq!(st.pull_request.map(|p| p.number), Some(1));
-        let prs: Vec<Option<u64>> = st
-            .repos
-            .unwrap_or_default()
-            .iter()
-            .map(|r| r.pull_request.as_ref().map(|p| p.number))
-            .collect();
-        assert_eq!(prs, [None, Some(2), None]);
-        // Another branch is another pull request.
-        let mut moved = GitState {
-            branch: Some("other".into()),
-            ..Default::default()
-        };
-        keep_pull_requests(&mut moved, &last);
-        assert_eq!(moved.pull_request, None);
     }
 
     #[tokio::test]
@@ -1346,7 +1649,15 @@ pub(crate) mod tests {
             assert!(run(&clone, &p.home, "git", &commit).await?.ok);
         }
 
-        let synced = sync(&p, &spec, true, Moment::Stopping, None).await?;
+        let synced = sync(
+            &p,
+            &spec,
+            true,
+            Moment::Stopping,
+            None,
+            &mut Pulls::default(),
+        )
+        .await?;
         let repos = synced.state.repos.context("repos")?;
         let names: Vec<String> = repos.iter().map(RepoGitState::full_name).collect();
         assert_eq!(names, ["acme/docs", "acme/lib"]);
@@ -1380,7 +1691,15 @@ pub(crate) mod tests {
         assert!(!run(&docs, &p.home, "git", &has_branch).await?.ok);
 
         // The next turn changes nothing more.
-        let again = sync(&p, &spec, true, Moment::Stopping, None).await?;
+        let again = sync(
+            &p,
+            &spec,
+            true,
+            Moment::Stopping,
+            None,
+            &mut Pulls::default(),
+        )
+        .await?;
         assert!(again.logs.is_empty(), "{:?}", again.logs);
         Ok(())
     }
@@ -1411,7 +1730,7 @@ pub(crate) mod tests {
         let index = p.workdir.join(".git/index");
         let before = std::fs::read(&index)?;
 
-        let st = state(&p, &spec).await?;
+        let st = state(&p, &spec, &Pulls::default()).await?;
         assert!(
             std::fs::read(&index)? == before,
             "reading the state rewrote the index"
@@ -1458,7 +1777,7 @@ pub(crate) mod tests {
 
         // Even after `gh pr create`, nothing is pushed or looked up.
         let working = Moment::Working { opened_pr: true };
-        let synced = sync(&p, &spec, true, working, None).await?;
+        let synced = sync(&p, &spec, true, working, None, &mut Pulls::default()).await?;
         assert!(synced.logs.is_empty(), "{:?}", synced.logs);
         let st = synced.state;
         assert_eq!((st.ahead, st.pushed), (1, false));
@@ -1496,5 +1815,308 @@ pub(crate) mod tests {
         assert!(Moment::TurnEnded.looks_up(pushed, Some(pushed)));
         assert!(!Moment::TurnEnded.looks_up(committed, None));
         assert!(!Moment::Stopping.looks_up(moved, Some(None)));
+    }
+
+    #[test]
+    fn looks_up_a_deleted_branch_once_after_a_start_and_after_each_turn() {
+        let branch = Some("fctl/1-test".to_owned());
+        let head = Some("a1".to_owned());
+        let working = Moment::Working { opened_pr: false };
+        // The first report after fctl-agent started, which didn't see it go.
+        assert!(working.looks_up_deleted(None));
+        assert!(!working.looks_up_deleted(Some(None)));
+        assert!(!working.looks_up_deleted(Some(on_remote(&branch, &head, true))));
+        assert!(Moment::Working { opened_pr: true }.looks_up_deleted(Some(None)));
+        assert!(Moment::TurnEnded.looks_up_deleted(Some(None)));
+        assert!(!Moment::Stopping.looks_up_deleted(None));
+    }
+
+    #[tokio::test]
+    async fn a_merged_branch_shows_what_it_merged_and_is_not_pushed_again() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut p = sandbox(dir.path())?;
+        let gh = FakeGh::install(&mut p, dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let main = git_ok_in(&origin, &p.home, &["rev-parse", "main"]).await?;
+        let first = commit(&p.workdir, &p.home, "a.txt", "one\ntwo\n", "Add a.txt").await?;
+        gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
+        let mut pulls = Pulls::default();
+        let ended = Moment::TurnEnded;
+        let synced = sync(&p, &spec, true, ended, None, &mut pulls).await?;
+        let st = synced.state;
+        assert_eq!(log_texts(&synced.logs), ["Pushed fctl/1-test"]);
+        assert_eq!(changes(&st), ["added a.txt +2 -0"]);
+        assert_eq!((st.ahead, st.pushed, st.unmerged), (1, true, None));
+        assert_eq!(
+            st.pull_request.and_then(|p| p.state).as_deref(),
+            Some("open")
+        );
+
+        // GitHub squashes it onto main and deletes the branch. The session
+        // resumes on its checkout, with what fctl-agent kept, and fetches.
+        let before = merge_on_github(&origin, &p.home, "fctl/1-test", true).await?;
+        gh.knows(1, "fctl/1-test", "MERGED", &first, &before)?;
+        prepare(&p, &spec, &log).await?;
+        let working = Moment::Working { opened_pr: false };
+        let st = sync(&p, &spec, true, working, None, &mut pulls)
+            .await?
+            .state;
+        // The work it merged, which main has now.
+        assert_eq!(changes(&st), ["added a.txt +2 -0"]);
+        assert_eq!((st.ahead, st.behind, st.pushed), (1, 1, false));
+        let state = st.pull_request.as_ref().and_then(|p| p.state.as_deref());
+        assert_eq!(state, Some("merged"));
+        assert_eq!(st.unmerged, Some(0));
+        // A turn ends: nothing new to push, and the branch stays deleted.
+        let synced = sync(&p, &spec, true, ended, Some(&st), &mut pulls).await?;
+        assert!(synced.logs.is_empty(), "{:?}", synced.logs);
+        assert!(!has_branch(&origin, &p.home, "fctl/1-test").await?);
+
+        // The agent goes on on the merged branch: its new commit stays here,
+        // and the transcript says why.
+        commit(&p.workdir, &p.home, "b.txt", "three\n", "Add b.txt").await?;
+        let synced = sync(&p, &spec, true, ended, Some(&synced.state), &mut pulls).await?;
+        let st = synced.state;
+        assert_eq!(
+            log_texts(&synced.logs),
+            ["Didn't push fctl/1-test: its pull request #1 is merged"]
+        );
+        assert_eq!(changes(&st), ["added a.txt +2 -0", "added b.txt +1 -0"]);
+        assert_eq!((st.ahead, st.pushed, st.unmerged), (2, false, Some(1)));
+        assert!(!has_branch(&origin, &p.home, "fctl/1-test").await?);
+        // It says so once.
+        let again = sync(&p, &spec, true, ended, Some(&st), &mut pulls).await?;
+        assert!(again.logs.is_empty(), "{:?}", again.logs);
+        // Merged is final: no more lookups.
+        let lookups = gh.calls().lines().count();
+        sync(&p, &spec, true, ended, Some(&again.state), &mut pulls).await?;
+        assert_eq!(gh.calls().lines().count(), lookups);
+
+        // An agent that kept nothing, as after an upgrade, tells from the
+        // deleted branch to ask GitHub.
+        let mut fresh = Pulls::default();
+        let st = sync(&p, &spec, true, working, None, &mut fresh)
+            .await?
+            .state;
+        assert_eq!(
+            st.pull_request.and_then(|p| p.state).as_deref(),
+            Some("merged")
+        );
+        let synced = sync(&p, &spec, true, ended, None, &mut fresh).await?;
+        assert!(!has_branch(&origin, &p.home, "fctl/1-test").await?);
+        assert_eq!(synced.state.unmerged, Some(1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_branch_pushed_without_an_upstream_is_not_pushed_again_once_merged() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut p = sandbox(dir.path())?;
+        let gh = FakeGh::install(&mut p, dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let main = git_ok_in(&origin, &p.home, &["rev-parse", "main"]).await?;
+        let first = commit(&p.workdir, &p.home, "a.txt", "one\n", "Add a.txt").await?;
+        // The agent pushes it itself, naming the branch, which sets no
+        // upstream, and opens its pull request.
+        git_ok(&p, &["push", "-q", "origin", "fctl/1-test"]).await?;
+        gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
+        let mut pulls = Pulls::default();
+        let ended = Moment::TurnEnded;
+        let st = sync(&p, &spec, true, ended, None, &mut pulls).await?.state;
+        assert_eq!(st.pull_request.as_ref().map(|p| p.number), Some(1));
+        // It merges; a fetch prunes the branch, and the agent commits more.
+        let before = merge_on_github(&origin, &p.home, "fctl/1-test", true).await?;
+        gh.knows(1, "fctl/1-test", "MERGED", &first, &before)?;
+        git_ok(&p, &["fetch", "-q", "--prune", "origin"]).await?;
+        commit(&p.workdir, &p.home, "b.txt", "two\n", "Add b.txt").await?;
+        // Before pushing, fctl-agent asks GitHub about the pull request it
+        // saw open.
+        let synced = sync(&p, &spec, true, ended, Some(&st), &mut pulls).await?;
+        assert_eq!(
+            log_texts(&synced.logs),
+            ["Didn't push fctl/1-test: its pull request #1 is merged"]
+        );
+        assert!(!has_branch(&origin, &p.home, "fctl/1-test").await?);
+        assert_eq!(synced.state.unmerged, Some(1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_branch_merged_with_a_merge_commit_shows_what_it_merged() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut p = sandbox(dir.path())?;
+        let gh = FakeGh::install(&mut p, dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let main = git_ok_in(&origin, &p.home, &["rev-parse", "main"]).await?;
+        let first = commit(&p.workdir, &p.home, "a.txt", "one\ntwo\n", "Add a.txt").await?;
+        gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
+        let mut pulls = Pulls::default();
+        sync(&p, &spec, true, Moment::TurnEnded, None, &mut pulls).await?;
+        let before = merge_on_github(&origin, &p.home, "fctl/1-test", false).await?;
+        gh.knows(1, "fctl/1-test", "MERGED", &first, &before)?;
+        prepare(&p, &spec, &log).await?;
+        // Main has the branch's commit now, so from its merge base with the
+        // branch nothing changed. From main before the merge, what merged.
+        assert!(state(&p, &spec, &Pulls::default()).await?.files.is_empty());
+        let working = Moment::Working { opened_pr: false };
+        let st = sync(&p, &spec, true, working, None, &mut pulls)
+            .await?
+            .state;
+        assert_eq!(changes(&st), ["added a.txt +2 -0"]);
+        assert_eq!((st.ahead, st.unmerged), (0, Some(0)));
+        assert_eq!(
+            st.pull_request.and_then(|p| p.state).as_deref(),
+            Some("merged")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn changes_are_the_branch_s_own_when_the_base_moves_on() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        commit(&p.workdir, &p.home, "a.txt", "one\ntwo\n", "Add a.txt").await?;
+        // Someone else's change lands on main, and the clone fetches it.
+        commit(&origin, &p.home, "theirs.txt", "1\n2\n3\n", "Their change").await?;
+        git_ok(&p, &["fetch", "-q", "origin"]).await?;
+        // Uncommitted and untracked work counts as it is now.
+        std::fs::write(p.workdir.join("a.txt"), "one\ntwo\nthree\n")?;
+        std::fs::write(p.workdir.join("new.txt"), "x\n")?;
+        let st = state(&p, &spec, &Pulls::default()).await?;
+        assert_eq!(
+            changes(&st),
+            ["added a.txt +3 -0", "untracked new.txt +1 -0"]
+        );
+        assert_eq!((st.ahead, st.behind, st.uncommitted), (1, 1, 2));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pull_requests_from_other_branches_are_followed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut p = sandbox(dir.path())?;
+        let gh = FakeGh::install(&mut p, dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let main = git_ok_in(&origin, &p.home, &["rev-parse", "main"]).await?;
+        let first = commit(&p.workdir, &p.home, "a.txt", "a\n", "First").await?;
+        gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
+        let mut pulls = Pulls::default();
+        let ended = Moment::TurnEnded;
+        let st = sync(&p, &spec, true, ended, None, &mut pulls).await?.state;
+        // A second branch in a worktree beside the checkout, pushed, with
+        // its own pull request.
+        let wt = dir.path().join("second");
+        let wt_arg = wt.display().to_string();
+        let add = [
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fctl/1-second",
+            &wt_arg,
+            "origin/main",
+        ];
+        git_ok(&p, &add).await?;
+        let second = commit(&wt, &p.home, "b.txt", "b\n", "Second").await?;
+        git_ok_in(
+            &wt,
+            &p.home,
+            &["push", "-q", "-u", "origin", "fctl/1-second"],
+        )
+        .await?;
+        gh.knows(2, "fctl/1-second", "OPEN", &second, main.trim())?;
+        // `gh pr create --head fctl/1-second` printed its URL: the refresh
+        // after it looks that up.
+        let printed = fctl_domain::pulls::named_in("https://github.com/acme/widgets/pull/2\n");
+        assert!(pulls.follow(printed, &spec));
+        let working = Moment::Working { opened_pr: true };
+        let st = sync(&p, &spec, true, working, Some(&st), &mut pulls)
+            .await?
+            .state;
+        let found = |st: &GitState| -> Vec<(u64, Option<String>)> {
+            fctl_domain::pulls::found(st)
+                .into_iter()
+                .map(|p| (p.number, p.state))
+                .collect()
+        };
+        assert_eq!(
+            found(&st),
+            [(1, Some("open".into())), (2, Some("open".into()))]
+        );
+        assert!(
+            gh.calls()
+                .contains("pr view https://github.com/acme/widgets/pull/2 --json")
+        );
+        // Changes are the checked-out branch's.
+        assert_eq!(changes(&st), ["added a.txt +1 -0"]);
+        // The second merges: its state follows when a turn ends, and then
+        // the lookups stop.
+        gh.knows(2, "fctl/1-second", "MERGED", &second, main.trim())?;
+        let st = sync(&p, &spec, true, ended, Some(&st), &mut pulls)
+            .await?
+            .state;
+        assert_eq!(
+            found(&st),
+            [(1, Some("open".into())), (2, Some("merged".into()))]
+        );
+        let lookups = gh.calls().matches("pull/2").count();
+        sync(&p, &spec, true, ended, Some(&st), &mut pulls).await?;
+        assert_eq!(gh.calls().matches("pull/2").count(), lookups);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_older_gh_still_finds_pull_requests() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut p = sandbox(dir.path())?;
+        let gh = FakeGh::install(&mut p, dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let main = git_ok_in(&origin, &p.home, &["rev-parse", "main"]).await?;
+        let first = commit(&p.workdir, &p.home, "a.txt", "a\n", "First").await?;
+        gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
+        gh.grow_old()?;
+        let mut pulls = Pulls::default();
+        let st = sync(&p, &spec, true, Moment::TurnEnded, None, &mut pulls)
+            .await?
+            .state;
+        assert_eq!(
+            st.pull_request.and_then(|p| p.state).as_deref(),
+            Some("open")
+        );
+        let calls = gh.calls();
+        assert!(
+            calls.contains("headRefName,headRefOid,baseRefOid"),
+            "{calls}"
+        );
+        assert!(
+            calls.contains("--json number,url,title,state,isDraft\n"),
+            "{calls}"
+        );
+        Ok(())
     }
 }

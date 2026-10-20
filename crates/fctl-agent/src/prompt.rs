@@ -128,7 +128,7 @@ pub fn system_prompt(
         }
         if writable {
             s.push_str(&format!(
-                "- In each of those repositories you change, work on a branch named `{}` too: check it out if it exists on the remote, otherwise create it from the default branch before your first commit. fctl pushes it after every turn. Read-only repositories can't be pushed to.\n",
+                "- In each of those repositories you change, work on a branch named `{}` too: check it out if it exists on the remote, otherwise create it from the default branch before your first commit. fctl pushes it after every turn, until its pull request is merged. Read-only repositories can't be pushed to.\n",
                 spec.branch
             ));
         }
@@ -151,7 +151,10 @@ pub fn system_prompt(
         ));
     }
     s.push_str("- Work in small, verified steps: read before you change, and run the project's tests and linters.\n");
-    s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn; never force-push and never rewrite published history.\n");
+    s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn, until its pull request is merged; never force-push and never rewrite published history.\n");
+    if spec.project.repo.is_some() || writable {
+        s.push_str("- For another pull request, make its branch where the repository is checked out, with `git switch -c <branch> origin/<base>`, not in a worktree or another clone: the session shows the changes on the branch checked out there, and fctl pushes its commits.\n");
+    }
     if spec.project.settings.auto_pull_request {
         let describe = format!(
             "Describe what changed and why, how you verified it, and link the session: {}",
@@ -394,6 +397,7 @@ mod tests {
             web_url: "https://app.fctl.sh/s/ses_1".into(),
             idle_timeout_secs: 7200,
             run_id: None,
+            pull_requests: vec![],
         }
     }
 
@@ -525,6 +529,10 @@ mod tests {
         ));
         assert!(!text.contains("/home/agent/repos"));
         assert!(!text.contains("GH_TOKEN"));
+        assert!(text.contains("after every turn, until its pull request is merged;"));
+        assert!(text.contains(
+            "make its branch where the repository is checked out, with `git switch -c <branch> origin/<base>`, not in a worktree or another clone"
+        ));
     }
 
     #[test]
@@ -573,6 +581,11 @@ mod tests {
         assert!(text.contains(
             "open a pull request in each repository you changed, against its default branch"
         ));
+        assert!(text.contains("For another pull request, make its branch"));
+        // Nowhere to open one.
+        spec.project.repos = None;
+        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None);
+        assert!(!text.contains("For another pull request"));
     }
 
     #[test]
