@@ -8,11 +8,13 @@
  */
 export type ConnectGithubRequest = { 
 /**
- * The account's login.
+ * The account's login. Absent: every account GitHub shows you the app
+ * on, to choose from.
  */
-account: string, 
+account?: string, 
 /**
- * Only these repositories of it. Absent: every one the app reaches,
- * as far as you may connect it.
+ * Only these repositories of it, connected once you have signed in
+ * as far as GitHub says you may. Absent: you choose from the ones you
+ * may connect after signing in ([`GithubOffer`]).
  */
 repos?: Array<string>, };

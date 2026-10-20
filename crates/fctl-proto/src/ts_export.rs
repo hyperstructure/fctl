@@ -128,6 +128,8 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::GithubConnectionStatus,
         api::GithubConnection,
         api::WorkspaceGithub,
+        api::GithubOffer,
+        api::ChooseGithubRepos,
         api::ConnectGithubRequest,
         api::ConnectGithubLink,
         api::GithubInstallations,

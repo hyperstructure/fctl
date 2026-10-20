@@ -202,8 +202,15 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Delete, ["workspaces", id, "github", account]) => {
             api::github::disconnect(ctx, id, &http::decode(account)).await
         }
+        (Post, ["workspaces", id, "github", "offers", account]) => {
+            api::github::choose(ctx, req, id, &http::decode(account)).await
+        }
+        (Delete, ["workspaces", id, "github", "offers", account]) => {
+            api::github::dismiss(ctx, id, &http::decode(account)).await
+        }
         (Post, ["invitations", id, "accept"]) => api::workspaces::accept(ctx, id).await,
         (Post, ["invitations", id, "decline"]) => api::workspaces::decline(ctx, id).await,
+        (Get, ["github", "install"]) => api::github::install(ctx, req).await,
         (Get, ["github", "installed"]) => api::github::installed(ctx, req).await,
         (Get, ["github", "connect"]) => api::github::connect_link(ctx, req).await,
         (Get, ["github", "authorized"]) => api::github::authorized(ctx, req).await,

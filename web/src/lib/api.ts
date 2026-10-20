@@ -326,6 +326,11 @@ export const workspaces = {
     request<G.ConnectGithubLink>("POST", `/workspaces/${enc(id)}/github/connect`, b),
   disconnectGithub: (id: string, account: string) =>
     request<G.WorkspaceGithub>("DELETE", `/workspaces/${enc(id)}/github/${enc(account)}`),
+  // Connects what you chose of what your GitHub sign-in offered you of the account.
+  chooseGithub: (id: string, account: string, b: G.ChooseGithubRepos) =>
+    request<G.WorkspaceGithub>("POST", `/workspaces/${enc(id)}/github/offers/${enc(account)}`, b),
+  dismissGithubOffer: (id: string, account: string) =>
+    request<G.WorkspaceGithub>("DELETE", `/workspaces/${enc(id)}/github/offers/${enc(account)}`),
   accept: (invitation: string) => request<G.Workspace>("POST", `/invitations/${enc(invitation)}/accept`, {}),
   decline: (invitation: string) => request<G.Ok>("POST", `/invitations/${enc(invitation)}/decline`, {}),
 };

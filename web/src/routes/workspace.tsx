@@ -13,6 +13,7 @@ import {
   ImageUp,
   LogOut,
   MailPlus,
+  Pencil,
   Plus,
   ShieldCheck,
   Trash2,
@@ -36,6 +37,7 @@ import {
   Select,
   type SelectOption,
   Skeleton,
+  Spinner,
   StatusDot,
   Switch,
   toast,
@@ -998,8 +1000,8 @@ function FirstRunner({ w, yours }: { w: G.Workspace; yours: boolean }) {
 
 /** How coming back from GitHub went (`api::github`), on the GitHub tab. */
 export const GITHUB_OUTCOMES = [
+  "choose",
   "connected",
-  "limited",
   "refused",
   "cancelled",
   "failed",
@@ -1011,14 +1013,11 @@ export const GITHUB_OUTCOMES = [
 export type GithubOutcome = (typeof GITHUB_OUTCOMES)[number];
 
 /** Why GitHub's answer let nothing be connected (`fctl_domain::github::Refusal`). */
-export const GITHUB_REFUSALS = [
-  "no_installation",
-  "no_admin",
-  "not_admin",
-  "unreachable",
-  "too_many",
-] as const;
+export const GITHUB_REFUSALS = ["no_installation", "no_admin", "not_admin", "unreachable"] as const;
 export type GithubRefusal = (typeof GITHUB_REFUSALS)[number];
+
+/** The most repositories a connection names (`fctl_domain::repos::MAX_REPOS`). */
+const MAX_REPOS = 100;
 
 /** Up to four repository names, and how many more. */
 function someRepos(repos: string[]) {
@@ -1029,9 +1028,10 @@ function someRepos(repos: string[]) {
 function Returned({
   w,
   outcome,
-  account = "that account",
+  account,
   reason,
   connection,
+  choosing,
   app,
 }: {
   w: G.Workspace;
@@ -1039,37 +1039,40 @@ function Returned({
   account?: string;
   reason?: GithubRefusal;
   connection?: G.GithubConnection;
+  /** What the sign-in showed waits below for a choice. */
+  choosing: boolean;
   app: string;
 }) {
   const repos = connection?.repos;
   switch (outcome) {
+    case "choose":
+      return choosing ? null : (
+        <Banner tone="info">
+          What GitHub showed you waits 10 minutes for you to choose from, and that ran out. Connect with
+          GitHub again.
+        </Banner>
+      );
     case "connected":
       return (
         <Banner tone="ok">
-          {w.name} works in {account} now
+          {w.name} works in {account ?? "the account"} now
           {repos ? `: ${someRepos(repos)}` : ", in every repository the app reaches there"}.
-        </Banner>
-      );
-    case "limited":
-      return (
-        <Banner tone="ok">
-          {w.name} works in the repositories of {account} you're an admin of
-          {repos ? `: ${someRepos(repos)}` : ""}. Every repository, also those the app reaches there later,
-          takes an admin of all of them with the app installed on all of them, such as an owner of {account}.
         </Banner>
       );
     case "refused":
       return (
         <Banner tone="error">
           {reason === "no_installation"
-            ? `GitHub shows you no installation of the ${app} app on ${account}: it isn't installed there, or it reaches no repository you can see. Install it there, or ask an admin of its repositories to connect it.`
+            ? account
+              ? `GitHub shows you no installation of the ${app} app on ${account}: it isn't installed there, or it reaches no repository you can see. Install it there, or ask an admin of its repositories to connect it.`
+              : `GitHub shows you no installation of the ${app} app. Install it on your own account or an organization you own, or ask an admin of the repositories to connect them.`
             : reason === "not_admin"
               ? `GitHub says you aren't an admin of every repository you named in ${account}. Name the ones you are an admin of, or ask an admin of the others to connect them.`
               : reason === "unreachable"
                 ? `The app doesn't reach every repository you named in ${account}, or you can't see them on GitHub. Add them to the app's installation there, or check their names.`
-                : reason === "too_many"
-                  ? `You're an admin of more than 100 repositories of ${account}, but not of all of them. Name the ones ${w.name} may use.`
-                  : `GitHub says you aren't an admin of any repository of ${account} the app reaches, so you can't connect it. An admin of its repositories, such as an owner of ${account}, connects it.`}
+                : account
+                  ? `GitHub says you aren't an admin of any repository of ${account} the app reaches, so you can't connect it. An admin of its repositories, such as an owner of ${account}, connects it.`
+                  : `GitHub says you aren't an admin of any repository the ${app} app reaches on the accounts it shows you, so there is nothing for you to connect. An admin of their repositories, such as an owner of the organization, connects them.`}
         </Banner>
       );
     case "cancelled":
@@ -1077,16 +1080,22 @@ function Returned({
     case "failed":
       return (
         <Banner tone="error">
-          Connecting {account} didn't work: GitHub didn't answer as expected. Try again.
+          Connecting {account ?? "to GitHub"} didn't work: GitHub didn't answer as expected. Try again.
         </Banner>
       );
     case "expired":
-      return <Banner tone="info">That link to connect {account} ran out. Connect it again.</Banner>;
+      return (
+        <Banner tone="info">
+          {account
+            ? `That link to connect ${account} ran out. Connect it again.`
+            : "That link ran out. Try again."}
+        </Banner>
+      );
     case "other_user":
       return (
         <Banner tone="info">
-          That link to connect {account} is for another fctl account. Open it where you're signed in as that
-          account, or connect {account} here.
+          That link to connect {account ?? "GitHub"} is for another fctl account. Open it where you're signed
+          in as that account, or connect here.
         </Banner>
       );
     case "asked_owner":
@@ -1099,11 +1108,180 @@ function Returned({
     case "installed":
       return (
         <Banner tone="info">
-          The {app} app is installed on {account}. Connect it below: GitHub asks you to sign in, which shows
-          what you may connect there.
+          The {app} app changed on GitHub. To choose what {w.name} works in, connect with GitHub below: GitHub
+          shows fctl what you may connect.
         </Banner>
       );
   }
+}
+
+/**
+ * What a GitHub sign-in showed the admin they may connect of an account, to choose from: what the workspace
+ * works in there now, else everything, to begin with.
+ */
+function Choice({
+  w,
+  offer,
+  connection,
+  app,
+  onDone,
+}: {
+  w: G.Workspace;
+  offer: G.GithubOffer;
+  connection?: G.GithubConnection;
+  app: string;
+  /** `connected`: the choice is made; otherwise nothing was. */
+  onDone: (g: G.WorkspaceGithub, connected: boolean) => void;
+}) {
+  const [every, setEvery] = useState(offer.all && !connection?.repos);
+  const [picked, setPicked] = useState<string[]>(() => {
+    const now = connection?.repos?.map((r) => r.toLowerCase());
+    if (now) return offer.repos.filter((r) => now.includes(r.toLowerCase()));
+    return offer.repos.length <= MAX_REPOS ? offer.repos : [];
+  });
+  const [filter, setFilter] = useState("");
+  const choose = useMutation({
+    mutationFn: () => workspaces.chooseGithub(w.id, offer.account, { repos: every ? undefined : picked }),
+    onSuccess: (g) => onDone(g, true),
+  });
+  const dismiss = useMutation({
+    mutationFn: () => workspaces.dismissGithubOffer(w.id, offer.account),
+    onSuccess: (g) => onDone(g, false),
+    onError: (e) => toast(e.message, "error"),
+  });
+  const needle = filter.trim().toLowerCase();
+  const shown = needle ? offer.repos.filter((r) => r.toLowerCase().includes(needle)) : offer.repos;
+  const toggle = (r: string, on: boolean) => setPicked((p) => (on ? [...p, r] : p.filter((x) => x !== r)));
+  const ready = every || (picked.length > 0 && picked.length <= MAX_REPOS);
+  const heading = `choice-${offer.account}`;
+  return (
+    <section
+      aria-labelledby={heading}
+      className="animate-rise rounded-lg border border-line-strong p-4 sm:p-5"
+    >
+      <div className="flex items-center gap-3">
+        <GithubAvatar account={offer.account} />
+        <div className="min-w-0">
+          <h3 id={heading} className="text-[14px] font-semibold text-ink [overflow-wrap:anywhere]">
+            Choose what {w.name} works in on {offer.account}
+          </h3>
+          <p className="text-[12.5px] text-ink-3">
+            What the {app} app reaches there, as GitHub shows you, signed in as @{offer.github_user}
+          </p>
+        </div>
+      </div>
+      {offer.all && (
+        <fieldset className="mt-4 flex flex-col gap-2.5">
+          <legend className="sr-only">Which repositories</legend>
+          <label className="flex cursor-pointer items-start gap-2.5 text-[13.5px] text-ink select-none">
+            <input
+              type="radio"
+              name={heading}
+              checked={every}
+              onChange={() => setEvery(true)}
+              className="mt-[3px] size-4 shrink-0 accent-[var(--c-accent)]"
+            />
+            <span>
+              Every repository, also those the app reaches there later
+              <span className="block text-[12.5px] text-ink-3">
+                {offer.repos.length ? `It reaches ${someRepos(offer.repos)} now.` : "It reaches none yet."}
+              </span>
+            </span>
+          </label>
+          {offer.repos.length > 0 && (
+            <label className="flex cursor-pointer items-start gap-2.5 text-[13.5px] text-ink select-none">
+              <input
+                type="radio"
+                name={heading}
+                checked={!every}
+                onChange={() => setEvery(false)}
+                className="mt-[3px] size-4 shrink-0 accent-[var(--c-accent)]"
+              />
+              Only the ones you choose
+            </label>
+          )}
+        </fieldset>
+      )}
+      {!offer.all && (
+        <p className="mt-4 max-w-2xl text-[13px] leading-relaxed text-ink-3">
+          These are the ones you're an admin of. {w.name}'s projects may use the ones you choose; another
+          admin of the account's repositories can connect more.
+        </p>
+      )}
+      {!every && (
+        <div className={cn("mt-3 flex flex-col gap-2", offer.all && "sm:pl-6.5")}>
+          {offer.repos.length > 8 && (
+            <div className="flex items-center gap-2">
+              <Input
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Find a repository"
+                aria-label="Find a repository"
+                className="flex-1"
+              />
+              <Button
+                size="sm"
+                variant="quiet"
+                onClick={() => setPicked((p) => [...p, ...shown.filter((r) => !p.includes(r))])}
+              >
+                All
+              </Button>
+              <Button size="sm" variant="quiet" onClick={() => setPicked([])}>
+                None
+              </Button>
+            </div>
+          )}
+          <ul className="max-h-72 divide-y divide-line overflow-y-auto rounded-lg border border-line">
+            {shown.map((r) => (
+              <li key={r}>
+                <label className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-hover">
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(r)}
+                    onChange={(e) => toggle(r, e.target.checked)}
+                    className="size-4 shrink-0 accent-[var(--c-accent)]"
+                  />
+                  <span className="min-w-0 font-mono text-[13px] text-ink [overflow-wrap:anywhere]">{r}</span>
+                </label>
+              </li>
+            ))}
+            {shown.length === 0 && (
+              <li className="px-3 py-2 text-[13px] text-ink-4">No repository matches.</li>
+            )}
+          </ul>
+          <p className="text-[12.5px] text-ink-3">
+            {picked.length} of {offer.repos.length} chosen
+            {picked.length > MAX_REPOS && `: a connection names at most ${MAX_REPOS}`}
+          </p>
+        </div>
+      )}
+      {offer.others > 0 && (
+        <p className="mt-3 max-w-2xl text-[12.5px] text-ink-3">
+          The app reaches {offer.others} more {offer.others === 1 ? "repository" : "repositories"} there that
+          you can see but aren't an admin of: an admin of them connects them.
+        </p>
+      )}
+      {choose.error && (
+        <p role="alert" className="mt-3 text-[12.5px] text-danger [overflow-wrap:anywhere]">
+          {choose.error.message}
+        </p>
+      )}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button
+          variant="primary"
+          icon={<Check className="size-3.5" />}
+          loading={choose.isPending}
+          disabled={!ready || dismiss.isPending}
+          onClick={() => choose.mutate()}
+        >
+          Connect {offer.account}
+        </Button>
+        <Button variant="ghost" loading={dismiss.isPending} onClick={() => dismiss.mutate()}>
+          Not now
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 function Github({
@@ -1118,24 +1296,17 @@ function Github({
   reason?: GithubRefusal;
 }) {
   const admin = w.role === "owner" || w.role === "admin";
+  const navigate = useNavigate();
   const gh = useQuery({ queryKey: keys.workspaceGithub(w.id), queryFn: () => workspaces.github(w.id) });
-  // Installed from GitHub: the account, to connect.
-  const [name, setName] = useState(returned === "installed" ? (account ?? "") : "");
-  const [scope, setScope] = useState("");
+  // A GitHub sign-in for the account, or for every one GitHub shows the admin the app on.
   const connect = useMutation({
-    mutationFn: () => {
-      const repos = scope
-        .split(/[\s,]+/)
-        .map((r) => r.trim())
-        .filter(Boolean);
-      return workspaces.connectGithub(w.id, {
-        account: name.trim(),
-        repos: repos.length ? repos : undefined,
-      });
-    },
+    mutationFn: (account?: string) => workspaces.connectGithub(w.id, { account }),
     // On to GitHub, which brings the browser back here.
     onSuccess: (link) => window.location.assign(link.url),
+    onError: (e) => toast(e.message, "error"),
   });
+  const signingIn = (account?: string) =>
+    (connect.isPending || connect.isSuccess) && connect.variables === account;
   const [dropping, setDropping] = useState<G.GithubConnection | null>(null);
   const disconnect = useMutation({
     mutationFn: (a: string) => workspaces.disconnectGithub(w.id, a),
@@ -1146,6 +1317,16 @@ function Github({
     },
     onError: (e) => toast(e.message, "error"),
   });
+  const chosen = (account: string) => (g: G.WorkspaceGithub, connected: boolean) => {
+    queryClient.setQueryData(keys.workspaceGithub(w.id), g);
+    if (connected) refresh();
+    void navigate({
+      to: "/w/$slug",
+      params: { slug: w.slug },
+      search: connected ? { tab: "github", github: "connected", account } : { tab: "github" },
+      replace: true,
+    });
+  };
   const g = gh.data;
   if (g && !g.configured)
     return (
@@ -1155,6 +1336,9 @@ function Github({
       </Banner>
     );
   const app = g?.app_slug ?? "GitHub";
+  const connection = (account?: string) =>
+    g?.connections.find((c) => c.account.toLowerCase() === account?.toLowerCase());
+  const offers = admin ? (g?.offers ?? []) : [];
   return (
     <div>
       {returned && g && (
@@ -1164,9 +1348,24 @@ function Github({
             outcome={returned}
             account={account}
             reason={reason}
-            connection={g.connections.find((c) => c.account.toLowerCase() === account?.toLowerCase())}
+            connection={connection(account)}
+            choosing={offers.length > 0}
             app={app}
           />
+        </div>
+      )}
+      {offers.length > 0 && (
+        <div className="mb-8 flex flex-col gap-4">
+          {offers.map((o) => (
+            <Choice
+              key={o.account}
+              w={w}
+              offer={o}
+              connection={connection(o.account)}
+              app={app}
+              onDone={chosen(o.account)}
+            />
+          ))}
         </div>
       )}
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
@@ -1206,6 +1405,18 @@ function Github({
             ) : (
               <span className="text-[12.5px] text-ink-4">Not connected</span>
             )}
+            {admin && g.can_connect && (
+              <button
+                type="button"
+                aria-label={`Choose which repositories of ${c.account} ${w.name} works in`}
+                title="Choose repositories"
+                className="rounded p-1.5 text-ink-4 hover:text-ink disabled:opacity-50"
+                disabled={connect.isPending || connect.isSuccess}
+                onClick={() => connect.mutate(c.account)}
+              >
+                {signingIn(c.account) ? <Spinner className="size-3.5" /> : <Pencil className="size-3.5" />}
+              </button>
+            )}
             {admin && (
               <button
                 type="button"
@@ -1233,14 +1444,14 @@ function Github({
           <p className="mt-10 max-w-2xl text-[13px] leading-relaxed text-ink-3">
             Connecting an account takes signing in to GitHub, which shows what you may give {w.name}: every
             repository of your own account, or of an organization whose every repository the app reaches and
-            you're an admin of; otherwise the repositories you're an admin of.
+            you're an admin of; otherwise the repositories you're an admin of. Then you choose from them here.
           </p>
           <div className="mt-6 grid gap-8 md:grid-cols-2">
             <div>
               <h3 className="text-[13.5px] font-semibold text-ink">Install the app on an account</h3>
               <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
-                On your own account, or an organization you own. GitHub brings you back here through its
-                sign-in, and the account is connected.
+                On your own account or an organization you own, or give it more repositories where it's
+                installed. GitHub brings you back here to choose what {w.name} works in.
               </p>
               {g.install_url && (
                 <a href={g.install_url} className="mt-4 inline-block">
@@ -1248,48 +1459,22 @@ function Github({
                 </a>
               )}
             </div>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (name.trim()) connect.mutate();
-              }}
-              className="flex flex-col gap-3"
-            >
+            <div>
               <h3 className="text-[13.5px] font-semibold text-ink">Connect an account it is installed on</h3>
-              <Field label="Account" error={connect.error?.message}>
-                {(id) => (
-                  <Input
-                    id={id}
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="hyperstructure"
-                  />
-                )}
-              </Field>
-              <Field
-                label="Only these repositories"
-                hint="Optional: names, separated by commas. Empty: every one you may connect."
+              <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
+                GitHub shows you the accounts it's installed on and what you may connect of each, and you
+                choose here.
+              </p>
+              <Button
+                className="mt-4"
+                icon={<GithubIcon className="size-3.5" />}
+                loading={signingIn(undefined)}
+                disabled={connect.isPending || connect.isSuccess}
+                onClick={() => connect.mutate(undefined)}
               >
-                {(id) => (
-                  <Input
-                    id={id}
-                    value={scope}
-                    onChange={(e) => setScope(e.target.value)}
-                    placeholder="web, design"
-                  />
-                )}
-              </Field>
-              <div>
-                <Button
-                  type="submit"
-                  icon={<GithubIcon className="size-3.5" />}
-                  loading={connect.isPending || connect.isSuccess}
-                  disabled={!name.trim()}
-                >
-                  Connect with GitHub
-                </Button>
-              </div>
-            </form>
+                Connect with GitHub
+              </Button>
+            </div>
           </div>
         </>
       )}

@@ -1,28 +1,31 @@
 //! The GitHub accounts workspaces work in (docs/architecture.md#github-accounts):
 //! `/api/v1/workspaces/{id}/github`, the GitHub sign-in that connects one
 //! (`/api/v1/workspaces/{id}/github/connect`, `/api/v1/github/connect` and
-//! `/api/v1/github/authorized`, the GitHub App's callback URL), the app's
-//! setup URL (`/api/v1/github/installed`) and `/api/v1/admin/github`.
+//! `/api/v1/github/authorized`, the GitHub App's callback URL), what the
+//! sign-in offers to choose from (`/api/v1/workspaces/{id}/github/offers`),
+//! installing the app from a workspace (`/api/v1/github/install`, and the
+//! app's setup URL, `/api/v1/github/installed`) and `/api/v1/admin/github`.
 //!
 //! The instance has one GitHub App; installing it on an account lets the
 //! instance mint tokens for that account's repositories, and they can
 //! write. A workspace uses an account once one of its admins connects it,
 //! signing in to GitHub, which shows what they may give the workspace
-//! there (`fctl_domain::github::grant`): anyone can send the setup URL
+//! there (`fctl_domain::github::offer`): anyone can send the setup URL
 //! another account's installation, so nobody, instance admins included,
 //! connects what GitHub doesn't say is theirs to give. fctl uses the
-//! GitHub sign-in once and revokes it.
+//! GitHub sign-in once and revokes it; what it showed waits ten minutes
+//! for the admin to choose from.
 
 use crate::crypto::{self, Keys};
 use crate::ctx::Ctx;
-use crate::db::{n, os, q, s};
+use crate::db::{b, n, os, q, s};
 use crate::error::{AppError, AppResult, not_configured, not_found, validation};
-use crate::github::{self, Github, InstallationInfo};
+use crate::github::{self, Github, InstallationInfo, Viewer};
 use crate::http;
 use crate::model::workspace_ref;
 use crate::workspaces::{self as ws, CONNECTION_SELECT, ConnectionRow, WorkspaceRow};
 use fctl_domain::cookies::Cookie;
-use fctl_domain::github::{Refusal, Standing};
+use fctl_domain::github::{Offer, Refusal, Standing};
 use fctl_domain::repos::{self, Scope};
 use fctl_proto::api::*;
 use fctl_proto::session::WorkspaceRole;
@@ -34,11 +37,14 @@ use worker::{Request, Response};
 const STATE_TTL_MS: i64 = 60 * 60 * 1000;
 
 /// How long a link that connects an account, and the GitHub sign-in it
-/// starts, work.
+/// starts, work; and how long what the sign-in showed waits for a choice.
 const CONNECT_TTL_MS: i64 = 10 * 60 * 1000;
 
 /// The longest signed state a cookie carries: browsers keep 4 KB.
 const MAX_STATE: usize = 3500;
+
+/// The most installations one GitHub sign-in offers to choose from.
+const MAX_OFFERED: usize = 20;
 
 /// What the GitHub App's setup URL gets back: who installed it for which
 /// workspace (signed with the master key).
@@ -60,7 +66,9 @@ struct ConnectTicket {
     purpose: String,
     workspace: String,
     user: String,
-    account: String,
+    /// None: every account GitHub shows them the app on.
+    #[serde(default)]
+    account: Option<String>,
     #[serde(default)]
     repos: Option<Vec<String>>,
     exp: i64,
@@ -76,11 +84,13 @@ struct SignIn {
     workspace: String,
     user: String,
     /// The account named, or the installation GitHub came back with from
-    /// installing the app.
+    /// installing the app; neither: every one GitHub shows them.
     #[serde(default)]
     account: Option<String>,
     #[serde(default)]
     installation: Option<u64>,
+    /// Named before the sign-in, connected at once; otherwise the person
+    /// chooses from what it shows.
     #[serde(default)]
     repos: Option<Vec<String>>,
     /// Sent to GitHub, which sends it back.
@@ -108,9 +118,10 @@ fn connect_keys(ctx: &Ctx) -> AppResult<Keys> {
     ctx.keys()
 }
 
-/// Installs the app on another account, comes back to `workspace` and
-/// connects it.
-fn install_url(ctx: &Ctx, keys: &Keys, slug: &str, workspace_id: &str) -> AppResult<String> {
+/// Installs the app on another account, or gives it more repositories,
+/// from `workspace_id`, and comes back to it (through
+/// `/api/v1/github/install`, which keeps where the browser came from).
+fn install_url(ctx: &Ctx, keys: &Keys, workspace_id: &str) -> AppResult<String> {
     let state = keys.sign(&serde_json::to_vec(&InstallState {
         purpose: PURPOSE.into(),
         workspace: workspace_id.to_owned(),
@@ -118,9 +129,16 @@ fn install_url(ctx: &Ctx, keys: &Keys, slug: &str, workspace_id: &str) -> AppRes
         exp: ctx.now + STATE_TTL_MS,
     })?);
     let encoded: String = url::form_urlencoded::byte_serialize(state.as_bytes()).collect();
-    Ok(format!(
-        "https://github.com/apps/{slug}/installations/new?state={encoded}"
-    ))
+    Ok(ctx
+        .cfg
+        .url(&format!("/api/v1/github/install?state={encoded}")))
+}
+
+/// The installation `signed` started, when it is `user`'s, expired or not.
+fn install_state(keys: &Keys, signed: &str, user: &str) -> Option<InstallState> {
+    keys.verify(signed)
+        .and_then(|b| serde_json::from_slice::<InstallState>(&b).ok())
+        .filter(|st| st.purpose == PURPOSE && st.user == user)
 }
 
 /// `GET /api/v1/workspaces/{id}/github`.
@@ -133,11 +151,16 @@ pub async fn workspace(ctx: &Ctx, id: &str) -> AppResult<Response> {
 async fn respond(ctx: &Ctx, row: &WorkspaceRow, role: WorkspaceRole) -> AppResult<Response> {
     let connections = ws::connections(&ctx.db, &row.id).await?;
     let keys = connect_keys(ctx).ok();
+    let offers = if role.is_admin() {
+        offers(ctx, &row.id).await?
+    } else {
+        Vec::new()
+    };
     http::ok(&WorkspaceGithub {
         configured: ctx.cfg.github.is_some(),
         app_slug: ctx.cfg.github.as_ref().map(|g| g.slug.clone()),
         install_url: match (&ctx.cfg.github, &keys, role.is_admin()) {
-            (Some(g), Some(keys), true) => Some(install_url(ctx, keys, &g.slug, &row.id)?),
+            (Some(_), Some(keys), true) => Some(install_url(ctx, keys, &row.id)?),
             _ => None,
         },
         connections: connections
@@ -146,30 +169,42 @@ async fn respond(ctx: &Ctx, row: &WorkspaceRow, role: WorkspaceRole) -> AppResul
             .collect(),
         approval_required: false,
         can_connect: keys.is_some(),
+        offers: offers.iter().map(OfferRow::to_offer).collect(),
     })
 }
 
-/// The link that connects `body.account` to workspace `id`, after checking
-/// that the caller is one of its admins. Whether the app is installed there
-/// is for the GitHub sign-in to say, to people who may know.
+/// The link that connects `body.account`, or what the caller chooses of
+/// every account GitHub shows them, to workspace `id`, after checking that
+/// the caller is one of its admins. Whether the app is installed there is
+/// for the GitHub sign-in to say, to people who may know.
 async fn link(ctx: &Ctx, id: &str, body: &ConnectGithubRequest) -> AppResult<ConnectGithubLink> {
     let a = ws::load(ctx, id).await?;
     a.require_admin()?;
     github::from_config(&ctx.cfg, ctx.now)?;
     let keys = connect_keys(ctx)?;
-    let account = repos::account(&body.account)?;
-    let repos = body
-        .repos
+    let account = body
+        .account
         .as_deref()
-        .map(|r| repos::scope_names(&account, r))
+        .filter(|a| !a.trim().is_empty())
+        .map(repos::account)
         .transpose()?;
+    let repos = match (&account, body.repos.as_deref()) {
+        (Some(account), Some(r)) => Some(repos::scope_names(account, r)?),
+        (None, Some(_)) => {
+            return Err(validation(
+                "account",
+                "Name the account the repositories are in",
+            ));
+        }
+        (_, None) => None,
+    };
     let user = ctx.user()?.id.clone();
     // What the sign-in's cookie will carry, at its largest.
     let carried = keys.sign(&serde_json::to_vec(&SignIn {
         purpose: SIGN_IN.into(),
         workspace: a.row.id.clone(),
         user: user.clone(),
-        account: Some(account.clone()),
+        account: account.clone(),
         installation: Some(u64::MAX),
         repos: repos.clone(),
         state: crypto::b64url(&[0; 24]),
@@ -179,7 +214,7 @@ async fn link(ctx: &Ctx, id: &str, body: &ConnectGithubRequest) -> AppResult<Con
     if carried.len() > MAX_STATE {
         return Err(validation(
             "repos",
-            "That's more repository names than a GitHub sign-in can carry: name fewer, or connect every repository you may",
+            "That's more repository names than a GitHub sign-in can carry: name fewer, or choose them after signing in",
         ));
     }
     let expires_at = ctx.now + CONNECT_TTL_MS;
@@ -221,7 +256,7 @@ pub async fn connect_from_older_cli(
         ErrorCode::BadRequest,
         format!(
             "Connecting {} takes signing in to GitHub, which shows what you may connect there. Open this link in your browser: {}",
-            body.account.trim(),
+            body.account.as_deref().unwrap_or("an account").trim(),
             link.url
         ),
     )))
@@ -259,6 +294,161 @@ pub async fn disconnect(ctx: &mut Ctx, id: &str, account: &str) -> AppResult<Res
 
 fn forbidden_here() -> AppError {
     crate::error::forbidden("Only the workspace's admins can do this")
+}
+
+// ───────────────────────────── choosing ─────────────────────────────
+
+/// What a GitHub sign-in showed someone they may connect of an account to
+/// a workspace (`github_offers`), while they choose.
+#[derive(Deserialize)]
+struct OfferRow {
+    account: String,
+    #[serde(deserialize_with = "crate::db::int")]
+    installation_id: i64,
+    account_type: Option<String>,
+    github_user: String,
+    #[serde(deserialize_with = "crate::db::int_bool")]
+    all_repos: bool,
+    repos: String,
+    #[serde(deserialize_with = "crate::db::int")]
+    others: i64,
+    #[serde(deserialize_with = "crate::db::int")]
+    expires_at: i64,
+}
+
+const OFFER_SELECT: &str = "SELECT account, installation_id, account_type, github_user, all_repos, repos, \
+    others, expires_at FROM github_offers";
+
+impl OfferRow {
+    fn offer(&self) -> Offer {
+        Offer {
+            all: self.all_repos,
+            repos: ws::strings(Some(&self.repos)),
+            others: usize::try_from(self.others).unwrap_or_default(),
+        }
+    }
+
+    fn to_offer(&self) -> GithubOffer {
+        let offer = self.offer();
+        GithubOffer {
+            account: self.account.clone(),
+            account_type: self.account_type.clone(),
+            github_user: self.github_user.clone(),
+            all: offer.all,
+            repos: offer.repos,
+            others: u32::try_from(self.others).unwrap_or_default(),
+            expires_at: self.expires_at,
+        }
+    }
+}
+
+/// The caller's offers in workspace `workspace_id`, while they last.
+async fn offers(ctx: &Ctx, workspace_id: &str) -> AppResult<Vec<OfferRow>> {
+    let user = ctx.user()?;
+    q(
+        &ctx.db,
+        &format!(
+            "{OFFER_SELECT} WHERE workspace_id = ? AND user_id = ? AND expires_at > ? ORDER BY created_at, account"
+        ),
+        &[s(workspace_id), s(&user.id), n(ctx.now)],
+    )?
+    .all()
+    .await
+}
+
+/// Keeps what `offer` lets the caller connect of `info`'s account to
+/// `row`, for them to choose from.
+async fn keep_offer(
+    ctx: &Ctx,
+    row: &WorkspaceRow,
+    info: &InstallationInfo,
+    github_user: &str,
+    offer: &Offer,
+) -> AppResult<()> {
+    let user = ctx.user()?;
+    q(
+        &ctx.db,
+        "INSERT INTO github_offers (workspace_id, user_id, account, installation_id, account_type, github_user, \
+         all_repos, repos, others, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT (workspace_id, user_id, account) DO UPDATE SET account = excluded.account, \
+         installation_id = excluded.installation_id, account_type = excluded.account_type, \
+         github_user = excluded.github_user, all_repos = excluded.all_repos, repos = excluded.repos, \
+         others = excluded.others, created_at = excluded.created_at, expires_at = excluded.expires_at",
+        &[
+            s(&row.id),
+            s(&user.id),
+            s(&info.account),
+            n(info.id as i64),
+            os(info.account_type.as_deref()),
+            s(github_user),
+            b(offer.all),
+            s(&serde_json::to_string(&offer.repos)?),
+            n(offer.others as i64),
+            n(ctx.now),
+            n(ctx.now + CONNECT_TTL_MS),
+        ],
+    )?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// `POST /api/v1/workspaces/{id}/github/offers/{account}` (admins): connects
+/// what the caller chose of what their GitHub sign-in offered them there.
+pub async fn choose(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    id: &str,
+    account: &str,
+) -> AppResult<Response> {
+    let body: ChooseGithubRepos = http::body(req).await?;
+    let a = ws::load(ctx, id).await?;
+    let role = a.require_admin()?;
+    let user = ctx.user()?.id.clone();
+    let offer: Option<OfferRow> = q(
+        &ctx.db,
+        &format!(
+            "{OFFER_SELECT} WHERE workspace_id = ? AND user_id = ? AND account = ? AND expires_at > ?"
+        ),
+        &[s(a.id()), s(&user), s(account), n(ctx.now)],
+    )?
+    .first()
+    .await?;
+    let Some(offer) = offer else {
+        return Err(AppError(ApiError::new(
+            ErrorCode::NotFound,
+            format!(
+                "What GitHub showed you of {account} waits 10 minutes for your choice, and that ran out. Connect it again."
+            ),
+        )));
+    };
+    let scope = fctl_domain::github::choose(&offer.offer(), body.repos.as_deref())?;
+    connect_account(
+        ctx,
+        &a.row,
+        &offer.account,
+        offer.installation_id,
+        &scope,
+        &offer.github_user,
+    )
+    .await?;
+    respond(ctx, &a.row, role).await
+}
+
+/// `DELETE /api/v1/workspaces/{id}/github/offers/{account}`: the caller
+/// connects nothing of what their GitHub sign-in offered them there.
+pub async fn dismiss(ctx: &mut Ctx, id: &str, account: &str) -> AppResult<Response> {
+    let a = ws::load(ctx, id).await?;
+    let role = a.require_open()?;
+    let user = ctx.user()?.id.clone();
+    q(
+        &ctx.db,
+        "DELETE FROM github_offers WHERE workspace_id = ? AND user_id = ? AND account = ?",
+        &[s(a.id()), s(&user), s(account)],
+    )?
+    .run()
+    .await?;
+    respond(ctx, &a.row, role).await
 }
 
 // ───────────────────────────── signing in to GitHub ─────────────────────────────
@@ -334,7 +524,7 @@ pub async fn connect_link(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let Ok(a) = ws::load(ctx, &ticket.workspace).await else {
         return http::redirect("/");
     };
-    let account = Some(ticket.account.as_str());
+    let account = ticket.account.as_deref();
     if ticket.exp <= ctx.now {
         return http::redirect(&back(&a.row, "expired", account, None));
     }
@@ -351,7 +541,7 @@ pub async fn connect_link(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
             purpose: SIGN_IN.into(),
             workspace: a.row.id.clone(),
             user: user.id,
-            account: Some(ticket.account),
+            account: ticket.account,
             installation: None,
             repos: ticket.repos,
             state: String::new(),
@@ -361,23 +551,71 @@ pub async fn connect_link(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     )
 }
 
+/// `GET /api/v1/github/install?state=…`: on to GitHub to install the app
+/// from a workspace, or to give an installation more repositories. GitHub
+/// sends the state back to the setup URL after installing the app, but not
+/// after a change to an installation, so the browser keeps it too, for the
+/// hour it works.
+pub async fn install(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
+    let Some(user) = ctx.auth.as_ref().map(|a| a.user.clone()) else {
+        return sign_in_first(req);
+    };
+    let (Some(slug), Ok(keys)) = (
+        ctx.cfg.github.as_ref().map(|g| g.slug.clone()),
+        connect_keys(ctx),
+    ) else {
+        return http::redirect("/");
+    };
+    let Some((signed, state)) = http::query(req, "state")
+        .and_then(|signed| install_state(&keys, &signed, &user.id).map(|st| (signed, st)))
+    else {
+        return http::redirect("/");
+    };
+    if state.exp <= ctx.now {
+        return match ws::load(ctx, &state.workspace).await {
+            Ok(a) => http::redirect(&back(&a.row, "expired", None, None)),
+            Err(_) => http::redirect("/"),
+        };
+    }
+    ctx.cookies.push(http::set_cookie(
+        Cookie::GithubInstall,
+        &signed,
+        ((state.exp - ctx.now) / 1000) as u64,
+        ctx.cfg.secure_cookies(),
+    ));
+    let encoded: String = url::form_urlencoded::byte_serialize(signed.as_bytes()).collect();
+    http::redirect(&format!(
+        "https://github.com/apps/{slug}/installations/new?state={encoded}"
+    ))
+}
+
 /// `GET /api/v1/github/installed`: the GitHub App's setup URL, where GitHub
-/// sends people after they install or configure it. Started from a
-/// workspace, it goes on to the GitHub sign-in that connects the
-/// installation to it.
+/// sends people after they install it or change an installation. Started
+/// from a workspace, it goes on to the GitHub sign-in that shows what they
+/// may connect of the installation, to choose from back in the workspace.
 pub async fn installed(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let Some(user) = ctx.auth.as_ref().map(|a| a.user.clone()) else {
         return sign_in_first(req);
     };
+    let secure = ctx.cfg.secure_cookies();
+    // GitHub sends the state back after installing the app; after a change
+    // to an installation, only the browser has it.
+    let kept = http::cookie(req, Cookie::GithubInstall, secure);
+    if kept.is_some() {
+        ctx.cookies
+            .push(http::set_cookie(Cookie::GithubInstall, "", 0, secure));
+    }
     let keys = connect_keys(ctx).ok();
-    let state = http::query(req, "state")
-        .zip(keys.as_ref())
-        .and_then(|(st, keys)| keys.verify(&st))
-        .and_then(|b| serde_json::from_slice::<InstallState>(&b).ok())
-        .filter(|st| st.purpose == PURPOSE && st.exp > ctx.now && st.user == user.id);
+    let state = keys.as_ref().and_then(|keys| {
+        [http::query(req, "state"), kept]
+            .into_iter()
+            .flatten()
+            .filter_map(|signed| install_state(keys, &signed, &user.id))
+            .find(|st| st.exp > ctx.now)
+    });
     let installation = http::query(req, "installation_id").and_then(|i| i.parse::<u64>().ok());
     let (Some(state), Some(keys)) = (state, keys) else {
-        return installed_elsewhere(ctx, &user.id).await;
+        return installed_elsewhere(ctx, &user.id, installation).await;
     };
     let Ok(a) = ws::load(ctx, &state.workspace).await else {
         return http::redirect("/");
@@ -407,24 +645,52 @@ pub async fn installed(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
 }
 
 /// Installed or changed from GitHub rather than from a workspace (or its
-/// state ran out): to the GitHub tab of the one workspace the person is an
-/// admin of, which connects the account from there, else home. Which
-/// account stays unsaid: anyone can send this any installation's id.
-async fn installed_elsewhere(ctx: &Ctx, user_id: &str) -> AppResult<Response> {
+/// state ran out): to the GitHub tab of the workspace the person is an
+/// admin of that works in the installation's account, or of the only one
+/// they are an admin of, else home. They sign in to GitHub from there to
+/// choose what it works in. Which account stays unsaid: anyone can send
+/// this any installation's id, and it finds only their own workspaces.
+async fn installed_elsewhere(
+    ctx: &Ctx,
+    user_id: &str,
+    installation: Option<u64>,
+) -> AppResult<Response> {
+    #[derive(Deserialize)]
+    struct Using {
+        workspace_id: String,
+    }
     let mine = ws::mine(&ctx.db, user_id).await?;
     let admin_of: Vec<&WorkspaceRow> = mine
         .iter()
         .filter(|w| w.role().is_some_and(WorkspaceRole::is_admin))
         .collect();
-    let [only] = admin_of.as_slice() else {
+    let using: Vec<Using> = match installation {
+        Some(id) => {
+            q(
+                &ctx.db,
+                "SELECT DISTINCT workspace_id FROM workspace_github WHERE installation_id = ?",
+                &[n(id as i64)],
+            )?
+            .all()
+            .await?
+        }
+        None => Vec::new(),
+    };
+    let theirs: Vec<&WorkspaceRow> = admin_of
+        .iter()
+        .copied()
+        .filter(|w| using.iter().any(|u| u.workspace_id == w.id))
+        .collect();
+    let ((&[only], _) | (&[], &[only])) = (theirs.as_slice(), admin_of.as_slice()) else {
         return http::redirect("/");
     };
     http::redirect(&back(only, "installed", None, None))
 }
 
 /// `GET /api/v1/github/authorized`: the GitHub App's callback URL, where
-/// GitHub sends people back from signing in. What GitHub says they may
-/// connect is connected to the workspace, and the browser goes back to it.
+/// GitHub sends people back from signing in. What GitHub shows they may
+/// connect waits for them to choose in the workspace, or the repositories
+/// they named are connected, and the browser goes back to it.
 pub async fn authorized(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let Some(user) = ctx.auth.as_ref().map(|a| a.user.clone()) else {
         return sign_in_first(req);
@@ -469,16 +735,15 @@ pub async fn authorized(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     else {
         return http::redirect(&back(&a.row, "failed", account, None));
     };
-    let outcome = check_and_connect(ctx, &gh, &token, &a.row, &sign_in).await;
+    let outcome = match sign_in.repos.as_deref() {
+        Some(names) => check_and_connect(ctx, &gh, &token, &a.row, &sign_in, names).await,
+        None => check_and_offer(ctx, &gh, &token, &a.row, &sign_in).await,
+    };
     let (cfg, now) = (ctx.cfg.clone(), ctx.now);
     ctx.defer(async move { github::from_config(&cfg, now)?.revoke(&token).await });
     let url = match outcome {
-        Ok(Outcome::Connected { account, narrowed }) => back(
-            &a.row,
-            if narrowed { "limited" } else { "connected" },
-            Some(&account),
-            None,
-        ),
+        Ok(Outcome::Connected { account }) => back(&a.row, "connected", Some(&account), None),
+        Ok(Outcome::Offered { account }) => back(&a.row, "choose", account.as_deref(), None),
         Ok(Outcome::Refused { account, reason }) => {
             back(&a.row, "refused", account.as_deref(), Some(reason))
         }
@@ -492,8 +757,14 @@ pub async fn authorized(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
 
 /// How a GitHub sign-in went.
 enum Outcome {
-    /// `narrowed`: to the repositories the person is an admin of.
-    Connected { account: String, narrowed: bool },
+    Connected {
+        account: String,
+    },
+    /// What they may connect waits for their choice: `account`, when there
+    /// is one.
+    Offered {
+        account: Option<String>,
+    },
     /// `account`: when they named it, or GitHub showed it to them.
     Refused {
         account: Option<String>,
@@ -501,73 +772,87 @@ enum Outcome {
     },
 }
 
-/// Asks GitHub, with the person's sign-in, what they may connect of the
-/// installation `sign_in` names, and connects that. The installation is
-/// one of those GitHub shows them, so that the answer says nothing about
-/// where else the app is installed.
+/// The installations `sign_in` is for, of those GitHub shows the person:
+/// the one it names, or every one when it names none. Never one by its id
+/// alone, so that the answer says nothing about where else the app is
+/// installed.
+fn installations_for(theirs: Vec<InstallationInfo>, sign_in: &SignIn) -> Vec<InstallationInfo> {
+    theirs
+        .into_iter()
+        .filter(|i| match (sign_in.installation, &sign_in.account) {
+            (Some(id), _) => i.id == id,
+            (None, Some(account)) => i.account.eq_ignore_ascii_case(account),
+            (None, None) => true,
+        })
+        .take(MAX_OFFERED)
+        .collect()
+}
+
+/// What GitHub says, with the person's sign-in, about them and the
+/// installation `info`. `named`: they named repositories, so how many it
+/// reaches doesn't matter.
+async fn standing(
+    gh: &Github<'_>,
+    token: &str,
+    info: &InstallationInfo,
+    viewer: &Viewer,
+    named: bool,
+) -> AppResult<Standing> {
+    let own = info.account_type.as_deref() == Some("User")
+        && match info.account_id {
+            Some(id) => id == viewer.id,
+            None => info.account.eq_ignore_ascii_case(&viewer.login),
+        };
+    let reaches_all = info.repository_selection.as_deref() == Some("all");
+    Ok(Standing {
+        own,
+        reaches_all,
+        // Only every repository of someone else's account asks how many.
+        reached: if !named && !own && reaches_all {
+            gh.reached(info.id).await?
+        } else {
+            0
+        },
+        seen: gh.seen(token, info.id).await?,
+    })
+}
+
+/// Connects the repositories the person named before signing in, as far
+/// as GitHub says they may.
 async fn check_and_connect(
     ctx: &Ctx,
     gh: &Github<'_>,
     token: &str,
     row: &WorkspaceRow,
     sign_in: &SignIn,
+    names: &[String],
 ) -> AppResult<Outcome> {
-    let theirs = gh.user_installations(token).await?;
-    let found = theirs
-        .into_iter()
-        .find(|i| match (sign_in.installation, &sign_in.account) {
-            (Some(id), _) => i.id == id,
-            (None, Some(account)) => i.account.eq_ignore_ascii_case(account),
-            (None, None) => false,
-        });
-    let Some(info) = found else {
+    let found = installations_for(gh.user_installations(token).await?, sign_in);
+    let Some(info) = found.into_iter().next() else {
         return Ok(Outcome::Refused {
             account: sign_in.account.clone(),
             reason: Refusal::NoInstallation,
         });
     };
     let viewer = gh.viewer(token).await?;
-    let own = info.account_type.as_deref() == Some("User")
-        && match info.account_id {
-            Some(id) => id == viewer.id,
-            None => info.account.eq_ignore_ascii_case(&viewer.login),
-        };
-    let asked = sign_in.repos.as_deref();
-    let reaches_all = info.repository_selection.as_deref() == Some("all");
-    let standing = Standing {
-        own,
-        reaches_all,
-        // Only every repository of someone else's account asks how many.
-        reached: if asked.is_none() && !own && reaches_all {
-            gh.reached(info.id).await?
-        } else {
-            0
-        },
-        seen: if own && asked.is_none() {
-            Vec::new()
-        } else {
-            gh.seen(token, info.id).await?
-        },
-    };
-    match fctl_domain::github::grant(&standing, asked) {
-        Ok(grant) => {
-            connect_account(ctx, row, &info, &grant.scope, &viewer.login).await?;
+    let standing = standing(gh, token, &info, &viewer, true).await?;
+    match fctl_domain::github::grant(&standing, names) {
+        Ok(scope) => {
+            connect_account(
+                ctx,
+                row,
+                &info.account,
+                info.id as i64,
+                &scope,
+                &viewer.login,
+            )
+            .await?;
             Ok(Outcome::Connected {
                 account: info.account,
-                narrowed: grant.narrowed,
             })
         }
         Err((reason, names)) => {
-            ctx.audit_in(
-                Some(&row.id),
-                "workspace.github_refused",
-                Some(&info.account),
-                Some(serde_json::json!({
-                    "reason": reason.as_str(),
-                    "repos": names,
-                    "github_user": viewer.login,
-                })),
-            );
+            refused(ctx, row, Some(&info.account), reason, &names, &viewer.login);
             Ok(Outcome::Refused {
                 account: Some(info.account),
                 reason,
@@ -576,12 +861,91 @@ async fn check_and_connect(
     }
 }
 
-/// Connects `info`'s account to a workspace with `scope`, as the caller,
-/// who signed in to GitHub as `github_user`.
+/// Keeps what GitHub says the person may connect of the installation
+/// `sign_in` names, or of every one GitHub shows them when it names none,
+/// for them to choose from.
+async fn check_and_offer(
+    ctx: &Ctx,
+    gh: &Github<'_>,
+    token: &str,
+    row: &WorkspaceRow,
+    sign_in: &SignIn,
+) -> AppResult<Outcome> {
+    let named = sign_in.installation.is_some() || sign_in.account.is_some();
+    let found = installations_for(gh.user_installations(token).await?, sign_in);
+    if found.is_empty() {
+        return Ok(Outcome::Refused {
+            account: sign_in.account.clone(),
+            reason: Refusal::NoInstallation,
+        });
+    }
+    let viewer = gh.viewer(token).await?;
+    let standings = futures::future::try_join_all(
+        found
+            .iter()
+            .map(|info| standing(gh, token, info, &viewer, false)),
+    )
+    .await?;
+    let mut offered: Vec<&str> = Vec::new();
+    for (info, standing) in found.iter().zip(&standings) {
+        if let Ok(offer) = fctl_domain::github::offer(standing) {
+            keep_offer(ctx, row, info, &viewer.login, &offer).await?;
+            offered.push(&info.account);
+        }
+    }
+    match offered.as_slice() {
+        [] => {
+            let account = found.first().filter(|_| named).map(|i| i.account.clone());
+            refused(
+                ctx,
+                row,
+                account.as_deref(),
+                Refusal::NoAdmin,
+                &[],
+                &viewer.login,
+            );
+            Ok(Outcome::Refused {
+                account,
+                reason: Refusal::NoAdmin,
+            })
+        }
+        [one] => Ok(Outcome::Offered {
+            account: Some((*one).to_owned()),
+        }),
+        _ => Ok(Outcome::Offered { account: None }),
+    }
+}
+
+/// Records in the workspace's audit log that GitHub let the person connect
+/// nothing of `account`, and why.
+fn refused(
+    ctx: &Ctx,
+    row: &WorkspaceRow,
+    account: Option<&str>,
+    reason: Refusal,
+    names: &[String],
+    github_user: &str,
+) {
+    ctx.audit_in(
+        Some(&row.id),
+        "workspace.github_refused",
+        account,
+        Some(serde_json::json!({
+            "reason": reason.as_str(),
+            "repos": names,
+            "github_user": github_user,
+        })),
+    );
+}
+
+/// Connects `account` (installation `installation_id`) to a workspace
+/// with `scope`, as the caller, who signed in to GitHub as `github_user`.
+/// What their sign-in offered of it is done with.
 async fn connect_account(
     ctx: &Ctx,
     row: &WorkspaceRow,
-    info: &InstallationInfo,
+    account: &str,
+    installation_id: i64,
     scope: &Scope,
     github_user: &str,
 ) -> AppResult<()> {
@@ -591,32 +955,41 @@ async fn connect_account(
         Scope::Repos(names) => Some(names.clone()),
     };
     let repos_json = repos.as_ref().map(serde_json::to_string).transpose()?;
-    q(
+    crate::db::batch(
         &ctx.db,
-        "INSERT INTO workspace_github (workspace_id, account, installation_id, repos, status, requested_by, approved_by, github_user, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?) ON CONFLICT (workspace_id, account) DO UPDATE SET account = excluded.account, \
-         installation_id = excluded.installation_id, repos = excluded.repos, status = 'active', \
-         requested_by = excluded.requested_by, approved_by = NULL, github_user = excluded.github_user, \
-         updated_at = excluded.updated_at",
-        &[
-            s(&row.id),
-            s(&info.account),
-            n(info.id as i64),
-            os(repos_json.as_deref()),
-            s(&user.id),
-            s(github_user),
-            n(ctx.now),
-            n(ctx.now),
+        vec![
+            q(
+                &ctx.db,
+                "INSERT INTO workspace_github (workspace_id, account, installation_id, repos, status, requested_by, approved_by, github_user, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?) ON CONFLICT (workspace_id, account) DO UPDATE SET account = excluded.account, \
+                 installation_id = excluded.installation_id, repos = excluded.repos, status = 'active', \
+                 requested_by = excluded.requested_by, approved_by = NULL, github_user = excluded.github_user, \
+                 updated_at = excluded.updated_at",
+                &[
+                    s(&row.id),
+                    s(account),
+                    n(installation_id),
+                    os(repos_json.as_deref()),
+                    s(&user.id),
+                    s(github_user),
+                    n(ctx.now),
+                    n(ctx.now),
+                ],
+            )?,
+            q(
+                &ctx.db,
+                "DELETE FROM github_offers WHERE workspace_id = ? AND user_id = ? AND account = ?",
+                &[s(&row.id), s(&user.id), s(account)],
+            )?,
         ],
-    )?
-    .run()
+    )
     .await?;
     ctx.audit_in(
         Some(&row.id),
         "workspace.github_connected",
-        Some(&info.account),
+        Some(account),
         Some(serde_json::json!({
-            "account": info.account,
+            "account": account,
             "repos": repos,
             "github_user": github_user,
         })),

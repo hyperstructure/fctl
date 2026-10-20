@@ -2,11 +2,12 @@
 
 /**
  * Where connecting an account goes on: open it in a browser signed in to
- * fctl as you. GitHub asks you to sign in, and the account is connected
- * with what GitHub says you may: every repository of your own account, or
- * of an organization whose every repository the app reaches and you are
- * an admin of; otherwise the repositories you are an admin of. The
- * browser comes back to the workspace's GitHub tab.
+ * fctl as you. GitHub asks you to sign in, which shows fctl what you may
+ * connect: every repository of your own account, or of an organization
+ * whose every repository the app reaches and you are an admin of;
+ * otherwise the repositories you are an admin of. The browser comes back
+ * to the workspace's GitHub tab, where you choose from it, unless you
+ * named the repositories.
  */
 export type ConnectGithubLink = { url: string, 
 /**
