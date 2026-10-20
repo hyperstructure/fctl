@@ -418,7 +418,7 @@ pub async fn choose(
         return Err(AppError(ApiError::new(
             ErrorCode::NotFound,
             format!(
-                "What GitHub showed you of {account} waits 10 minutes for your choice, and that ran out. Connect it again."
+                "Nothing of {account} waits for your choice: what a GitHub sign-in shows you waits 10 minutes, or until you choose. Connect it again."
             ),
         )));
     };
@@ -880,18 +880,32 @@ async fn check_and_offer(
         });
     }
     let viewer = gh.viewer(token).await?;
-    let standings = futures::future::try_join_all(
+    let standings = futures::future::join_all(
         found
             .iter()
             .map(|info| standing(gh, token, info, &viewer, false)),
     )
-    .await?;
+    .await;
     let mut offered: Vec<&str> = Vec::new();
-    for (info, standing) in found.iter().zip(&standings) {
-        if let Ok(offer) = fctl_domain::github::offer(standing) {
+    let mut unanswered = None;
+    for (info, standing) in found.iter().zip(standings) {
+        let standing = match standing {
+            Ok(s) => s,
+            // One account GitHub doesn't answer for doesn't hide the others.
+            Err(e) if !named => {
+                worker::console_error!("asking GitHub about {}: {}", info.account, e.0.message);
+                unanswered = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        if let Ok(offer) = fctl_domain::github::offer(&standing) {
             keep_offer(ctx, row, info, &viewer.login, &offer).await?;
             offered.push(&info.account);
         }
+    }
+    if let (true, Some(e)) = (offered.is_empty(), unanswered) {
+        return Err(e);
     }
     match offered.as_slice() {
         [] => {

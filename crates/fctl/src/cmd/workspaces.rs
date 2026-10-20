@@ -856,7 +856,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             }
             if g.connections.is_empty() {
                 println!(
-                    "{} works in no GitHub account yet. Connect one with `fctl workspaces connect <account>`.",
+                    "{} works in no GitHub account yet. Connect one with `fctl workspaces connect`.",
                     w.name
                 );
             }

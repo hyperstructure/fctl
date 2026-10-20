@@ -1133,7 +1133,7 @@ function Choice({
   /** `connected`: the choice is made; otherwise nothing was. */
   onDone: (g: G.WorkspaceGithub, connected: boolean) => void;
 }) {
-  const [every, setEvery] = useState(offer.all && !connection?.repos);
+  const [every, setEvery] = useState(offer.all && (!connection?.repos || offer.repos.length === 0));
   const [picked, setPicked] = useState<string[]>(() => {
     const now = connection?.repos?.map((r) => r.toLowerCase());
     if (now) return offer.repos.filter((r) => now.includes(r.toLowerCase()));
@@ -1143,6 +1143,13 @@ function Choice({
   const choose = useMutation({
     mutationFn: () => workspaces.chooseGithub(w.id, offer.account, { repos: every ? undefined : picked }),
     onSuccess: (g) => onDone(g, true),
+    onError: (e) => {
+      // It ran out: the choice goes, and the message stays.
+      if (e instanceof ApiFailure && e.status === 404) {
+        toast(e.message, "error");
+        void queryClient.invalidateQueries({ queryKey: keys.workspaceGithub(w.id) });
+      }
+    },
   });
   const dismiss = useMutation({
     mutationFn: () => workspaces.dismissGithubOffer(w.id, offer.account),
@@ -1159,15 +1166,13 @@ function Choice({
       aria-labelledby={heading}
       className="animate-rise rounded-lg border border-line-strong p-4 sm:p-5"
     >
-      <div className="flex items-center gap-3">
+      <div className="flex items-start gap-3 sm:items-center">
         <GithubAvatar account={offer.account} />
         <div className="min-w-0">
           <h3 id={heading} className="text-[14px] font-semibold text-ink [overflow-wrap:anywhere]">
             Choose what {w.name} works in on {offer.account}
           </h3>
-          <p className="text-[12.5px] text-ink-3">
-            What the {app} app reaches there, as GitHub shows you, signed in as @{offer.github_user}
-          </p>
+          <p className="text-[12.5px] text-ink-3">Signed in to GitHub as @{offer.github_user}</p>
         </div>
       </div>
       {offer.all && (
@@ -1204,8 +1209,8 @@ function Choice({
       )}
       {!offer.all && (
         <p className="mt-4 max-w-2xl text-[13px] leading-relaxed text-ink-3">
-          These are the ones you're an admin of. {w.name}'s projects may use the ones you choose; another
-          admin of the account's repositories can connect more.
+          The {app} app reaches these repositories of {offer.account} that you're an admin of. {w.name}'s
+          projects may use the ones you choose.
         </p>
       )}
       {!every && (
@@ -1257,8 +1262,9 @@ function Choice({
       )}
       {offer.others > 0 && (
         <p className="mt-3 max-w-2xl text-[12.5px] text-ink-3">
-          The app reaches {offer.others} more {offer.others === 1 ? "repository" : "repositories"} there that
-          you can see but aren't an admin of: an admin of them connects them.
+          {offer.others === 1
+            ? "It also reaches a repository there that you aren't an admin of: its admins can connect it."
+            : `It also reaches ${offer.others} repositories there that you aren't an admin of: their admins can connect them.`}
         </p>
       )}
       {choose.error && (

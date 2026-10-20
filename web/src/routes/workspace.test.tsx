@@ -304,9 +304,9 @@ describe("a workspace's GitHub tab", () => {
     chooseGithub.mockResolvedValue({ ...github, connections: [{ ...acme, repos: ["api", "web"] }] });
     const page = githubTab(side, { ...github, offers: [offer] });
     expect(page.textContent).toContain("Choose what Side project works in on acme");
-    expect(page.textContent).toContain("signed in as @ada");
+    expect(page.textContent).toContain("Signed in to GitHub as @ada");
     expect(page.textContent).toContain(
-      "The app reaches 2 more repositories there that you can see but aren't an admin of",
+      "It also reaches 2 repositories there that you aren't an admin of: their admins can connect them.",
     );
     // An organization it doesn't reach all of: no "every repository".
     expect(page.querySelector("input[type=radio]")).toBeNull();
@@ -358,6 +358,17 @@ describe("a workspace's GitHub tab", () => {
     expect(dismissGithubOffer).toHaveBeenCalledWith("ws_side", "acme");
     expect(chooseGithub).not.toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ search: { tab: "github" } }));
+  });
+
+  it("offers every repository first where the app reaches none yet", () => {
+    const page = githubTab(side, {
+      ...github,
+      connections: [{ ...acme, repos: ["web"] }],
+      offers: [{ ...offer, all: true, repos: [] }],
+    });
+    expect(page.textContent).toContain("It reaches none yet.");
+    expect(page.querySelector<HTMLInputElement>("input[type=radio]")?.checked).toBe(true);
+    expect(page.querySelector("input[type=checkbox]")).toBeNull();
   });
 
   it("says when the choice ran out", () => {
