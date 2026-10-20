@@ -107,14 +107,17 @@ a session before it publishes.
   tag from the start with
   `gh workflow run release.yml --ref main -f tag=vX.Y.Z`. If the code is
   broken, fix it and release a patch.
-- **The standalone image** (its session failed, or its Publish job did):
-  nothing is published until a session has run through the image. If it
-  was the infrastructure, run the failed jobs again, or publish the image
-  on its own:
+- **The standalone image** (its Build and run a session job failed, or its
+  Publish job did): nothing is published until a session has run through
+  the image. If it was the infrastructure, run the failed jobs again, or
+  publish the image on its own:
   `gh workflow run standalone-image.yml --ref main -f tag=vX.Y.Z`. A
   rebuild of the tag publishes it again too, under the same tags. If the
   image is broken, fix it in a pull request (one that changes
-  `deploy/standalone` runs the same session) and release a patch.
+  `deploy/standalone` runs the same session) and release a patch. If the
+  workflow is at fault, fix it in a pull request, then publish the image
+  on its own: a re-run uses the workflows of the commit its run started
+  from, so it fails the same way.
 - **The sandbox image** (hyperstructure/sandbox's Image workflow failed, or
   the release has no image after an hour): its `publish` skill says what
   to do. Start it for the release with
