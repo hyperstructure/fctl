@@ -142,7 +142,7 @@ export function MenuItem({
   className?: string;
 }) {
   const classes = cn(
-    "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors",
+    "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors pointer-coarse:py-2.5",
     danger ? "text-danger hover:bg-danger-soft" : "text-ink-2 hover:bg-line hover:text-ink",
     className,
   );

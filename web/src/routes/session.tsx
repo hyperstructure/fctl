@@ -7,6 +7,7 @@ import {
   Bell,
   BellOff,
   BellRing,
+  ChevronRight,
   Ellipsis,
   ExternalLink,
   GitBranch,
@@ -38,6 +39,7 @@ import {
   MenuItem,
   Select,
   type SelectOption,
+  Sheet,
   Skeleton,
   StatusPill,
   toast,
@@ -53,7 +55,7 @@ import { prFullRef, prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink, remoteControlUrl, remoteControlUser } from "@/lib/remote-control";
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
-import { statusReason } from "@/lib/status";
+import { type StatusNote, statusNotes, statusReason } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
 import { agentTime, turnsTaken } from "@/lib/work";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
@@ -68,6 +70,8 @@ export function SessionPage() {
   const workspaceIndex = useWorkspaceIndex();
   const stall = useStall(session, s);
   const [rail, setRail] = useState(true);
+  // The details sheet, where the rail doesn't fit.
+  const [details, setDetails] = useState(false);
   const [share, setShare] = useState(false);
   const transcript = useRef<HTMLDivElement>(null);
   // The newest work stays in view while the reader is at the bottom.
@@ -127,221 +131,292 @@ export function SessionPage() {
   const claudeUrl = session && remoteControlUrl(session.remote_control, session.created_by, me?.user.id);
   const role = s.role ?? session?.role;
   const isOwner = role === "owner";
+  const notes = session ? statusNotes(session, { reconnecting: s.connection === "reconnecting", stall }) : [];
 
   return (
     <div className="flex min-h-dvh">
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Header. On phones it holds the menu button, in place of the top bar it would cover. */}
-        <header className="sticky top-0 z-10 border-b border-line bg-canvas/80 backdrop-blur-xl">
-          <div className="flex items-center gap-4 py-3.5 pr-6 pl-2.5 md:pl-6">
-            <HeaderMenuButton className="-mr-2.5" />
-            <AgentOrb status={status} activity={s.activity} />
-            <div className="min-w-0 flex-1">
-              {session ? (
-                <>
-                  <h1 className="truncate font-display text-[21px] leading-tight font-medium tracking-[-0.012em] text-ink">
-                    {session.title}
-                  </h1>
-                  {session.description && (
-                    <p className="mt-0.5 truncate text-[13.5px] text-ink-2" title={session.description}>
-                      {session.description}
-                    </p>
-                  )}
-                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
-                    <span className="inline-flex min-w-0 items-center gap-1.5">
-                      {workspace && (
-                        <>
-                          <Link
-                            to="/w/$slug"
-                            params={{ slug: workspace.slug }}
-                            className="inline-flex min-w-0 items-center gap-1.5 text-ink-2 hover:text-ink"
-                          >
-                            <WorkspaceAvatar workspace={workspace} size={15} />
-                            <span className="max-w-[12rem] truncate">{workspace.name}</span>
-                          </Link>
-                          <span className="text-ink-4">/</span>
-                        </>
+        {/* Header. On phones it holds the menu button, in place of the top bar it would cover,
+            and has room for the title and status only: the orb and title open the rest, with
+            what the rail shows on wider screens, in a sheet. */}
+        <header className="sticky top-0 z-10 border-b border-line bg-canvas/80 backdrop-blur-xl max-md:h-14">
+          {/* On phones as tall as the top bar, with the menu button where the bar has it. */}
+          <div className="flex h-full items-center gap-3 px-2.5 md:gap-4 md:py-3.5 md:pr-6 md:pl-6">
+            {/* Over the edge of the title's button, which reaches out to it. */}
+            <HeaderMenuButton className="relative z-1 -mr-3" />
+            <div className="relative flex min-w-0 flex-1 items-center gap-3 md:gap-4">
+              <AgentOrb status={status} activity={s.activity} className="size-9 md:size-11" />
+              <div className="min-w-0 flex-1">
+                {session ? (
+                  <>
+                    <h1 className="flex items-center gap-0.5 font-display text-[16px] leading-5 font-medium tracking-[-0.011em] text-ink md:text-[21px] md:leading-tight md:tracking-[-0.012em]">
+                      <span className="truncate">{session.title}</span>
+                      <ChevronRight className="size-4 shrink-0 text-ink-4 md:hidden" />
+                    </h1>
+                    {/* Phones: the status, and what says most about it. */}
+                    <p className="mt-0.5 flex items-center gap-1.5 text-[12.5px] leading-4 md:hidden">
+                      <StatusPill status={session.status} className="shrink-0" />
+                      <span aria-hidden="true" className="text-ink-4">
+                        ·
+                      </span>
+                      {notes[0] ? (
+                        <span className={cn("truncate", notes[0].warn ? "text-amber" : "text-ink-3")}>
+                          {notes[0].text}
+                        </span>
+                      ) : (
+                        <span className="truncate font-mono text-[12px] text-ink-3">
+                          {session.project_slug}#{session.number}
+                        </span>
                       )}
-                      <Link
-                        to="/p/$slug"
-                        params={{ slug: session.project_slug }}
-                        search={{ tab: undefined }}
-                        className="font-mono text-ink-2 hover:text-ink"
-                      >
-                        {session.project_slug}#{session.number}
-                      </Link>
-                    </span>
-                    <StatusPill status={session.status} />
-                    {statusReason(session) && (
-                      <span className="truncate text-ink-4">{statusReason(session)}</span>
-                    )}
-                    {session.resume_at && (
-                      <span className="text-amber">resumes in {until(session.resume_at)}</span>
-                    )}
-                    {session.branch && (
-                      <span className="inline-flex min-w-0 items-center gap-1 font-mono text-[12px] text-ink-3">
-                        <GitBranch className="size-3 shrink-0" />
-                        <span className="[overflow-wrap:anywhere]">{session.branch}</span>
-                      </span>
-                    )}
-                    {prs.length > 0 && (
-                      // Together, so that they wrap to the next line as one list.
-                      <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-                        {prs.map((pr) => (
-                          <a
-                            key={pr.url}
-                            href={pr.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            title={prTitle(pr)}
-                            className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
+                    </p>
+                    <div className="max-md:hidden">
+                      {session.description && (
+                        <p className="mt-0.5 truncate text-[13.5px] text-ink-2" title={session.description}>
+                          {session.description}
+                        </p>
+                      )}
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
+                        <span className="inline-flex min-w-0 items-center gap-1.5">
+                          {workspace && (
+                            <>
+                              <Link
+                                to="/w/$slug"
+                                params={{ slug: workspace.slug }}
+                                className="inline-flex min-w-0 items-center gap-1.5 text-ink-2 hover:text-ink"
+                              >
+                                <WorkspaceAvatar workspace={workspace} size={15} />
+                                <span className="max-w-[12rem] truncate">{workspace.name}</span>
+                              </Link>
+                              <span className="text-ink-4">/</span>
+                            </>
+                          )}
+                          <Link
+                            to="/p/$slug"
+                            params={{ slug: session.project_slug }}
+                            search={{ tab: undefined }}
+                            className="font-mono text-ink-2 hover:text-ink"
                           >
-                            <GitPullRequest className="size-3" />
-                            {prRef(pr)}
-                          </a>
-                        ))}
-                      </span>
-                    )}
-                    {s.connection === "reconnecting" && <span className="text-amber">Reconnecting…</span>}
-                    {stall && <span className="text-amber">{stallLabel(stall)}</span>}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <Skeleton className="h-6 w-80" />
-                  <Skeleton className="mt-2 h-3.5 w-56" />
-                </>
+                            {session.project_slug}#{session.number}
+                          </Link>
+                        </span>
+                        <StatusPill status={session.status} />
+                        {statusReason(session) && (
+                          <span className="truncate text-ink-4">{statusReason(session)}</span>
+                        )}
+                        {session.resume_at && (
+                          <span className="text-amber">resumes in {until(session.resume_at)}</span>
+                        )}
+                        {session.branch && (
+                          <span className="inline-flex min-w-0 items-center gap-1 font-mono text-[12px] text-ink-3">
+                            <GitBranch className="size-3 shrink-0" />
+                            <span className="[overflow-wrap:anywhere]">{session.branch}</span>
+                          </span>
+                        )}
+                        {prs.length > 0 && (
+                          // Together, so that they wrap to the next line as one list.
+                          <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+                            {prs.map((pr) => (
+                              <a
+                                key={pr.url}
+                                href={pr.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={prTitle(pr)}
+                                className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
+                              >
+                                <GitPullRequest className="size-3" />
+                                {prRef(pr)}
+                              </a>
+                            ))}
+                          </span>
+                        )}
+                        {s.connection === "reconnecting" && <span className="text-amber">Reconnecting…</span>}
+                        {stall && <span className="text-amber">{stallLabel(stall)}</span>}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Skeleton className="h-5 w-40 md:h-6 md:w-80" />
+                    <Skeleton className="mt-1.5 h-3.5 w-24 md:mt-2 md:w-56" />
+                  </>
+                )}
+              </div>
+              {session && (
+                // Over the orb and the title, which are what people tap.
+                <button
+                  type="button"
+                  aria-label="Details"
+                  aria-haspopup="dialog"
+                  aria-expanded={details}
+                  onClick={() => setDetails(true)}
+                  className="absolute -inset-x-1.5 -inset-y-1 rounded-xl transition-colors duration-150 hover:bg-hover active:bg-hover md:hidden"
+                />
               )}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              {s.viewers.length > 1 && <AvatarStack users={s.viewers.map((v) => v.user)} />}
-              {/* On phones the buttons stack, so that the title keeps its room. */}
-              <div className="flex flex-col items-center gap-1 sm:flex-row sm:gap-1.5">
-                {claudeUrl && (
-                  <a
-                    {...claudeAppLink(claudeUrl)}
-                    className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 sm:inline-flex"
+              {s.viewers.length > 1 && (
+                // On phones the details list who watches.
+                <span className="hidden md:contents">
+                  <AvatarStack users={s.viewers.map((v) => v.user)} />
+                </span>
+              )}
+              {claudeUrl && (
+                <a
+                  {...claudeAppLink(claudeUrl)}
+                  className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 md:inline-flex"
+                >
+                  Open in Claude <ArrowUpRight className="size-3.5" />
+                </a>
+              )}
+              {session && (
+                // On phones it is in the menu, where the title keeps its room.
+                <span className="hidden md:contents">
+                  <IconButton
+                    label={
+                      following
+                        ? "Following: you get its notifications. Click to stop."
+                        : "Follow: get a notification when it waits for you, pauses or fails"
+                    }
+                    aria-pressed={following}
+                    onClick={() => follow.mutate()}
+                    disabled={follow.isPending}
+                    className={cn(following && "bg-accent-soft")}
                   >
-                    Open in Claude <ArrowUpRight className="size-3.5" />
-                  </a>
-                )}
-                {session && (
-                  // On phones it is in the menu, where the title keeps its room.
-                  <span className="hidden sm:contents">
-                    <IconButton
-                      label={
-                        following
-                          ? "Following: you get its notifications. Click to stop."
-                          : "Follow: get a notification when it waits for you, pauses or fails"
-                      }
-                      aria-pressed={following}
-                      onClick={() => follow.mutate()}
-                      disabled={follow.isPending}
-                      className={cn(following && "bg-accent-soft")}
-                    >
-                      {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
-                    </IconButton>
-                  </span>
-                )}
-                {isOwner && (
-                  <IconButton label="Share" onClick={() => setShare(true)}>
-                    <Share2 className="size-4" />
+                    {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
                   </IconButton>
-                )}
-                {/* Only where the rail shows (`hidden` would lose to IconButton's `inline-flex`). */}
+                </span>
+              )}
+              {isOwner && (
+                // Also in the menu on phones (`hidden` would lose to IconButton's `inline-flex`).
+                <IconButton label="Share" onClick={() => setShare(true)} className="max-md:hidden">
+                  <Share2 className="size-4" />
+                </IconButton>
+              )}
+              {/* The rail where it fits. */}
+              <IconButton
+                label="Details"
+                onClick={() => setRail(!rail)}
+                className={cn("max-lg:hidden", rail && "text-ink")}
+              >
+                <PanelRight className="size-4" />
+              </IconButton>
+              {session && (
+                // Narrower, the details sheet: on phones the title opens it.
                 <IconButton
                   label="Details"
-                  onClick={() => setRail(!rail)}
-                  className={cn("max-lg:hidden", rail && "text-ink")}
+                  aria-haspopup="dialog"
+                  aria-expanded={details}
+                  onClick={() => setDetails(true)}
+                  className="max-md:hidden lg:hidden"
                 >
                   <PanelRight className="size-4" />
                 </IconButton>
-                <Menu
-                  trigger={(toggle, open) => (
-                    <IconButton label="More" aria-haspopup="menu" aria-expanded={open} onClick={toggle}>
-                      <Ellipsis className="size-4" />
-                    </IconButton>
-                  )}
-                >
-                  {(close) => (
-                    <>
-                      {claudeUrl && (
-                        <>
-                          {/* The header has no room for the button on phones. */}
-                          <MenuItem
-                            icon={<ArrowUpRight />}
-                            link={claudeAppLink(claudeUrl)}
-                            onClick={close}
-                            className="sm:hidden"
-                          >
-                            Open in Claude
-                          </MenuItem>
-                          <MenuItem
-                            icon={<Globe />}
-                            link={{ href: claudeUrl, target: "_blank", rel: "noreferrer" }}
-                            onClick={close}
-                          >
-                            Open on claude.ai
-                          </MenuItem>
-                        </>
-                      )}
-                      {isOwner && status && !["stopped", "failed"].includes(status) && (
+              )}
+              <Menu
+                trigger={(toggle, open) => (
+                  <IconButton
+                    label="More"
+                    aria-haspopup="menu"
+                    aria-expanded={open}
+                    onClick={toggle}
+                    className="max-md:size-11"
+                  >
+                    <Ellipsis className="size-5 md:size-4" />
+                  </IconButton>
+                )}
+              >
+                {(close) => (
+                  <>
+                    {claudeUrl && (
+                      <>
+                        {/* The header has no room for the button on phones. */}
                         <MenuItem
-                          icon={<Square />}
-                          onClick={() => {
-                            close();
-                            stop.mutate();
-                          }}
+                          icon={<ArrowUpRight />}
+                          link={claudeAppLink(claudeUrl)}
+                          onClick={close}
+                          className="md:hidden"
                         >
-                          Stop the session
+                          Open in Claude
                         </MenuItem>
-                      )}
-                      {isOwner && (status === "stopped" || status === "failed") && (
                         <MenuItem
-                          icon={<Play />}
-                          onClick={() => {
-                            close();
-                            resume.mutate(undefined);
-                          }}
+                          icon={<Globe />}
+                          link={{ href: claudeUrl, target: "_blank", rel: "noreferrer" }}
+                          onClick={close}
                         >
-                          Resume
+                          Open on claude.ai
                         </MenuItem>
-                      )}
-                      {session && (
-                        <MenuItem
-                          icon={following ? <BellOff /> : <Bell />}
-                          onClick={() => {
-                            close();
-                            follow.mutate();
-                          }}
-                        >
-                          {following ? "Stop following" : "Follow"}
-                        </MenuItem>
-                      )}
+                      </>
+                    )}
+                    {isOwner && status && !["stopped", "failed"].includes(status) && (
                       <MenuItem
-                        icon={<Terminal />}
+                        icon={<Square />}
                         onClick={() => {
                           close();
-                          void navigator.clipboard.writeText(`fctl attach ${id}`);
-                          toast("Copied `fctl attach` command");
+                          stop.mutate();
                         }}
                       >
-                        Copy `fctl attach`
+                        Stop the session
                       </MenuItem>
+                    )}
+                    {isOwner && (status === "stopped" || status === "failed") && (
                       <MenuItem
-                        icon={<ExternalLink />}
+                        icon={<Play />}
                         onClick={() => {
                           close();
-                          void navigator.clipboard.writeText(location.href);
-                          toast("Link copied");
+                          resume.mutate(undefined);
                         }}
                       >
-                        Copy link
+                        Resume
                       </MenuItem>
-                    </>
-                  )}
-                </Menu>
-              </div>
+                    )}
+                    {session && (
+                      <MenuItem
+                        icon={following ? <BellOff /> : <Bell />}
+                        onClick={() => {
+                          close();
+                          follow.mutate();
+                        }}
+                      >
+                        {following ? "Stop following" : "Follow"}
+                      </MenuItem>
+                    )}
+                    {isOwner && (
+                      // The header has no room for its button on phones.
+                      <MenuItem
+                        icon={<Share2 />}
+                        onClick={() => {
+                          close();
+                          setShare(true);
+                        }}
+                        className="md:hidden"
+                      >
+                        Share
+                      </MenuItem>
+                    )}
+                    <MenuItem
+                      icon={<Terminal />}
+                      onClick={() => {
+                        close();
+                        void navigator.clipboard.writeText(`fctl attach ${id}`);
+                        toast("Copied `fctl attach` command");
+                      }}
+                    >
+                      Copy `fctl attach`
+                    </MenuItem>
+                    <MenuItem
+                      icon={<ExternalLink />}
+                      onClick={() => {
+                        close();
+                        void navigator.clipboard.writeText(location.href);
+                        toast("Link copied");
+                      }}
+                    >
+                      Copy link
+                    </MenuItem>
+                  </>
+                )}
+              </Menu>
             </div>
           </div>
         </header>
@@ -409,15 +484,32 @@ export function SessionPage() {
       </div>
 
       {rail && session && (
-        <Rail
-          session={session}
-          me={me?.user.id}
-          git={s.git}
-          viewers={s.viewers}
-          model={s.model}
-          runnerConnected={s.runnerConnected}
-          stall={stall}
-        />
+        <aside className="sticky top-0 hidden h-dvh w-[300px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
+          <Details
+            session={session}
+            me={me?.user.id}
+            git={s.git}
+            viewers={s.viewers}
+            model={s.model}
+            runnerConnected={s.runnerConnected}
+            stall={stall}
+          />
+        </aside>
+      )}
+      {details && session && (
+        <Sheet title={session.title} description={session.description} onClose={() => setDetails(false)}>
+          <Overview session={session} workspace={workspace} notes={notes} />
+          <Details
+            session={session}
+            me={me?.user.id}
+            git={s.git}
+            viewers={s.viewers}
+            model={s.model}
+            runnerConnected={s.runnerConnected}
+            stall={stall}
+            pullsFirst
+          />
+        </Sheet>
       )}
       {session && <ShareDialog open={share} onClose={() => setShare(false)} session={session} />}
     </div>
@@ -574,7 +666,67 @@ function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
   );
 }
 
-function Rail({
+/**
+ * What the header has no room for on phones: the status with all it says,
+ * where the session is and its branch. The details sheet starts with it.
+ */
+function Overview({
+  session,
+  workspace,
+  notes,
+}: {
+  session: G.Session;
+  workspace?: G.WorkspaceRef;
+  notes: StatusNote[];
+}) {
+  return (
+    <section className="flex flex-col gap-3 border-b border-line px-5 py-4 text-[12.5px]">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <StatusPill status={session.status} />
+        {notes.map((n) => (
+          <span key={n.text} className={n.warn ? "text-amber" : "text-ink-3"}>
+            {n.text}
+          </span>
+        ))}
+      </div>
+      <div className="flex min-w-0 items-center gap-1.5">
+        {workspace && (
+          <>
+            <Link
+              to="/w/$slug"
+              params={{ slug: workspace.slug }}
+              className="-my-1 inline-flex min-w-0 items-center gap-1.5 py-1 text-ink-2 hover:text-ink"
+            >
+              <WorkspaceAvatar workspace={workspace} size={16} />
+              <span className="truncate">{workspace.name}</span>
+            </Link>
+            <span className="text-ink-4">/</span>
+          </>
+        )}
+        <Link
+          to="/p/$slug"
+          params={{ slug: session.project_slug }}
+          search={{ tab: undefined }}
+          className="-my-1 shrink-0 py-1 font-mono text-ink-2 hover:text-ink"
+        >
+          {session.project_slug}#{session.number}
+        </Link>
+      </div>
+      {session.branch && (
+        <div className="flex items-start gap-2 text-ink-3">
+          <GitBranch className="mt-px size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 font-mono text-[12px] [overflow-wrap:anywhere]">
+            {session.branch}
+          </span>
+          <CopyButton text={session.branch} className="-my-1 -mr-2 shrink-0" />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** What the rail shows beside the transcript, and the details sheet where the rail doesn't fit. */
+function Details({
   session,
   me,
   git,
@@ -582,6 +734,7 @@ function Rail({
   model,
   runnerConnected,
   stall,
+  pullsFirst,
 }: {
   session: G.Session;
   /** The signed-in person. */
@@ -591,6 +744,8 @@ function Rail({
   model?: string;
   runnerConnected: boolean;
   stall?: Stall;
+  /** The pull requests before the changes, as the sheet has them: on phones they're what people open. */
+  pullsFirst?: boolean;
 }) {
   const st = session.stats;
   const project = useProject(session.project_slug).data;
@@ -635,8 +790,14 @@ function Rail({
       {rc?.unavailable_reason ?? "Remote Control appears here when the session's Claude login supports it."}
     </p>
   );
+  const pulls = prs.length > 0 && (
+    <RailSection title="Pull requests">
+      <PullRequests prs={prs} />
+    </RailSection>
+  );
   return (
-    <aside className="sticky top-0 hidden h-dvh w-[300px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
+    <>
+      {pullsFirst && pulls}
       <RailSection title="Changes">
         {primary && others.length === 0 ? (
           <Changes repo={primary} limit={60} showTotals={!!git} />
@@ -656,11 +817,7 @@ function Rail({
           </div>
         )}
       </RailSection>
-      {prs.length > 0 && (
-        <RailSection title="Pull requests">
-          <PullRequests prs={prs} />
-        </RailSection>
-      )}
+      {!pullsFirst && pulls}
       <RailSection title="Work">
         <Row k="Turns" v={turnsTaken(st)} />
         <Row k="Tool calls" v={st.tool_calls} />
@@ -718,7 +875,7 @@ function Rail({
           ))}
         </ul>
       </RailSection>
-    </aside>
+    </>
   );
 }
 

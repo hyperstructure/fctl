@@ -244,9 +244,11 @@ turns them off.
 
 - **Web app** — the session page streams the transcript as the agent writes
   it: tool calls, diffs, and the files changed, commits and pull requests
-  so far, seconds after the agent makes them. Type below to message the
-  agent, with files attached if you like; it reads your message at its next
-  step. **Interrupt** stops the current turn.
+  so far, seconds after the agent makes them. On a phone, tap the session's
+  title for its details: its pull requests, the files changed, its branch
+  and who else is watching. Type below to message the agent, with files
+  attached if you like; it reads your message at its next step.
+  **Interrupt** stops the current turn.
 - **Terminal** — `fctl attach my-app#12` streams the session and lets you
   type messages; `fctl send my-app#12 "Use the existing Button component"`
   sends one from a script.
