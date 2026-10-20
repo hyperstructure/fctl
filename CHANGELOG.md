@@ -2,6 +2,24 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.10.0 (2026-10-20)
+
+### Features
+
+- **cli:** Show runner ids and let add-runner default to this machine ([#113](https://github.com/hyperstructure/fctl/pull/113))
+- **cli:** Show Claude connection ids and choose connections by name ([#114](https://github.com/hyperstructure/fctl/pull/114))
+- Keep the floor's draft and count a project's other repositories ([#117](https://github.com/hyperstructure/fctl/pull/117))
+
+### Fixes
+
+- **web:** Load GitHub account avatars from the host the CSP allows ([#110](https://github.com/hyperstructure/fctl/pull/110))
+- **web:** Line up the workspace dropdown in the admin runner form ([#111](https://github.com/hyperstructure/fctl/pull/111))
+- **web:** List runners from control planes before workspaces ([#112](https://github.com/hyperstructure/fctl/pull/112))
+- **web:** Give list rows the hover arrow's room on phones ([#115](https://github.com/hyperstructure/fctl/pull/115))
+- **web:** Stop browsers filling saved logins into secret fields ([#116](https://github.com/hyperstructure/fctl/pull/116))
+- **web:** Make the floor's hero shorter on phones ([#118](https://github.com/hyperstructure/fctl/pull/118))
+- **web:** Fit the Claude plan meters on one line on phones ([#119](https://github.com/hyperstructure/fctl/pull/119))
+
 ## 0.9.0 (2026-10-20)
 
 ### Features
