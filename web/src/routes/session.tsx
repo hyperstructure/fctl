@@ -176,9 +176,9 @@ export function SessionPage() {
                       <span className="text-amber">resumes in {until(session.resume_at)}</span>
                     )}
                     {session.branch && (
-                      <span className="inline-flex items-center gap-1 font-mono text-[12px] text-ink-3">
-                        <GitBranch className="size-3" />
-                        {session.branch}
+                      <span className="inline-flex min-w-0 items-center gap-1 font-mono text-[12px] text-ink-3">
+                        <GitBranch className="size-3 shrink-0" />
+                        <span className="[overflow-wrap:anywhere]">{session.branch}</span>
                       </span>
                     )}
                     {prs.length > 0 && (

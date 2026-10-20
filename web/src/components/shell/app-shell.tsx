@@ -76,7 +76,9 @@ export function AppShell() {
           onClick={() => setDrawer(false)}
         />
       )}
-      <div className="flex min-w-0 flex-1 flex-col pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(244px+env(safe-area-inset-left))]">
+      {/* The page is never wider than the window: what is wider scrolls in its own row. The
+          clip, unlike hidden, keeps the sticky bars working. */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-x-clip pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(244px+env(safe-area-inset-left))]">
         {/* On phones: a button a thumb hits easily (44 px), its icon in line with the page's text. */}
         <div className="sticky top-0 z-10 flex h-14 items-center gap-1.5 border-b border-line bg-canvas/80 px-2.5 backdrop-blur-xl md:hidden">
           <button

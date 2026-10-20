@@ -87,15 +87,20 @@ export function ProjectPage() {
             <Link
               to="/w/$slug"
               params={{ slug: workspace.slug }}
-              className="mb-3 inline-flex items-center gap-2 text-[13px] text-ink-3 transition-colors hover:text-ink"
+              className="mb-3 inline-flex max-w-full items-center gap-2 text-[13px] text-ink-3 transition-colors hover:text-ink"
             >
               <WorkspaceAvatar workspace={workspace} size={18} />
-              {workspace.name}
+              <span className="truncate">{workspace.name}</span>
             </Link>
           )}
-          <h1 className="font-display text-[38px] leading-[1.1] font-medium tracking-[-0.022em]">{p.name}</h1>
+          {/* A name or a link with no spaces wraps on a phone instead of widening the page. */}
+          <h1 className="font-display text-[38px] leading-[1.1] font-medium tracking-[-0.022em] [overflow-wrap:anywhere]">
+            {p.name}
+          </h1>
           {p.description && (
-            <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ink-3">{p.description}</p>
+            <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ink-3 [overflow-wrap:anywhere]">
+              {p.description}
+            </p>
           )}
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-ink-3">
             {repos ? (

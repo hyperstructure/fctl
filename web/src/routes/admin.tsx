@@ -197,7 +197,7 @@ function Access() {
               {e.pattern.startsWith("*@") ? <Globe className="size-4" /> : <MailPlus className="size-4" />}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="font-mono text-[13px] text-ink">{e.pattern}</div>
+              <div className="font-mono text-[13px] text-ink [overflow-wrap:anywhere]">{e.pattern}</div>
               <div className="text-[12px] text-ink-4">
                 {e.role} ·{" "}
                 {e.user_id ? "joined" : e.pattern.startsWith("*@") ? "anyone at this domain" : "invited"} ·

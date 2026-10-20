@@ -224,8 +224,9 @@ function Addresses({ me }: { me: G.Me }) {
                     <>
                       In
                       {e.workspaces.map((w) => (
-                        <span key={w.id} className="inline-flex items-center gap-1 text-ink-3">
-                          <WorkspaceAvatar workspace={w} size={13} /> {w.name}
+                        <span key={w.id} className="inline-flex min-w-0 items-center gap-1 text-ink-3">
+                          <WorkspaceAvatar workspace={w} size={13} />
+                          <span className="truncate">{w.name}</span>
                         </span>
                       ))}
                     </>
@@ -312,7 +313,7 @@ function CommitEmail({ address, onSaved }: { address: G.EmailAddress; onSaved: (
     >
       <Field
         label="Commit email"
-        className="flex-1"
+        className="min-w-0 flex-1"
         error={save.error?.message}
         hint={
           <>

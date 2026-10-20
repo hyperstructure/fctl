@@ -396,9 +396,11 @@ function SetUp({ w, projects }: { w: G.Workspace; projects: number }) {
   const done = steps.filter((s) => s.done).length;
   return (
     <section className="animate-rise">
-      <div className="flex items-baseline justify-between">
-        <h2 className="font-display text-[22px] tracking-[-0.01em] text-ink">Set up {w.name}</h2>
-        <span className="text-[12px] text-ink-4 tabular-nums">
+      <div className="flex items-baseline justify-between gap-4">
+        <h2 className="min-w-0 font-display text-[22px] tracking-[-0.01em] text-ink [overflow-wrap:anywhere]">
+          Set up {w.name}
+        </h2>
+        <span className="shrink-0 text-[12px] text-ink-4 tabular-nums">
           {done} of {steps.length} done
         </span>
       </div>

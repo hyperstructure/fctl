@@ -130,7 +130,7 @@ export function NewWorkspace() {
           <p className="mt-0.5 text-[12.5px] text-ink-4">
             Its avatar until an admin uploads an image, so you tell your workspaces apart at a glance.
           </p>
-          <div className="mt-3 flex gap-2.5">
+          <div className="mt-3 flex flex-wrap gap-2.5">
             {(Object.keys(WORKSPACE_COLORS) as G.WorkspaceColor[]).map((c) => (
               <button
                 key={c}
