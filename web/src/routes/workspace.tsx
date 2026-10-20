@@ -1364,7 +1364,8 @@ function Github({
         <div className="mb-8 flex flex-col gap-4">
           {offers.map((o) => (
             <Choice
-              key={o.account}
+              // A new sign-in's offer starts over.
+              key={`${o.account}:${o.expires_at}`}
               w={w}
               offer={o}
               connection={connection(o.account)}
