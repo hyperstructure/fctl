@@ -79,12 +79,12 @@ pub fn with_workspaces(settings: &InstanceSettings, in_workspace: bool) -> Insta
 }
 
 /// Whether a workspace requires two-factor sign-in of its members: its
-/// admins chose that (`own`), or the instance requires it, which it then
-/// does of every workspace, and their admins can't turn it off
+/// admins chose that (`own`), or the instance requires it, and then every
+/// workspace does and their admins can't turn it off
 /// ([`crate::workspace::check_two_factor`]). The instance's requirement
-/// closes the accounts it applies to that have no second factor
-/// ([`setup_required`]), so a workspace closes to them only by its own
-/// ([`workspace_blocked`]).
+/// closes the whole account of anyone it applies to who has no second
+/// factor ([`setup_required`]), so only a workspace's own requirement
+/// closes the workspace ([`workspace_blocked`]).
 pub fn workspace_requires(settings: &InstanceSettings, own: bool) -> bool {
     own || settings.require_two_factor
 }
