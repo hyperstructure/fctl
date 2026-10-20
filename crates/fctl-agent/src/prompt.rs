@@ -153,7 +153,7 @@ pub fn system_prompt(
     s.push_str("- Work in small, verified steps: read before you change, and run the project's tests and linters.\n");
     s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn, until its pull request is merged; never force-push and never rewrite published history.\n");
     if spec.project.repo.is_some() || writable {
-        s.push_str("- For another pull request, make its branch where the repository is checked out, with `git switch -c <branch> origin/<base>`, not in a worktree or another clone: the session shows the changes on the branch checked out there, and fctl pushes its commits.\n");
+        s.push_str("- For another pull request, make its branch where the repository is checked out, with `git switch -c <branch> origin/<base>`, not in a worktree or another clone: the session shows the changes of the branch checked out there.\n");
     }
     if spec.project.settings.auto_pull_request {
         let describe = format!(

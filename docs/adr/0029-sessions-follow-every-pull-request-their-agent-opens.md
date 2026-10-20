@@ -41,8 +41,8 @@ deleted, so fctl-agent pushed it again and brought the branch back.
 - **Agents make another pull request's branch where the repository is
   checked out** (`git switch -c`), not in a worktree or another clone, as
   the system prompt tells them. fctl lists that pull request wherever it
-  came from, but shows the changes, and pushes the commits, of the branches
-  checked out in the session's checkout and in its clones in `~/repos`.
+  came from, but Changes shows only the branches checked out in the
+  session's checkout and in its clones in `~/repos`.
 
 ## Consequences
 
