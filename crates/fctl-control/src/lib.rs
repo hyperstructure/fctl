@@ -96,6 +96,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["setup"]) => api::auth::setup(ctx, req).await,
         (Get, ["invites", token]) => api::auth::invite_preview(ctx, token).await,
         (Post, ["access-requests"]) => api::early_access::request(ctx, req).await,
+        (Post, ["access-requests", "withdraw"]) => api::early_access::withdraw(ctx, req).await,
         (Post, ["invites", token, "connect"]) => api::emails::connect_invite(ctx, token).await,
         (Post, ["auth", "signup"]) => api::auth::signup(ctx, req).await,
         (Post, ["auth", "login"]) => api::auth::login(ctx, req).await,

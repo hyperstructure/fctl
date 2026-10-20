@@ -980,12 +980,31 @@ pub struct InvitePreview {
 }
 
 /// `POST /api/v1/access-requests` (public, where [`Features::early_access`]):
-/// someone without an account asks for early access. The answer is the
-/// same whether the address asked before, was invited or has an account.
+/// someone without an account asks for early access. The answer
+/// ([`AccessRequested`]) is the same whether the address asked before, was
+/// invited or has an account.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RequestAccessRequest {
     pub email: String,
+}
+
+/// The answer to [`RequestAccessRequest`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AccessRequested {
+    /// Withdraws the request ([`WithdrawAccessRequest`]) when it was the
+    /// address's first; otherwise it withdraws nothing, and looks the same.
+    pub token: String,
+}
+
+/// `POST /api/v1/access-requests/withdraw` (public): the browser that asked
+/// for early access withdraws its request. The answer is `ok` whether the
+/// token withdrew one or not.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WithdrawAccessRequest {
+    pub token: String,
 }
 
 /// Someone who asked for early access, for the instance's admins.
@@ -1011,7 +1030,8 @@ pub struct AccessRequest {
 /// `GET /api/v1/admin/access-requests`: who asked for early access and
 /// has no account yet, those still waiting first (longest waiting first),
 /// then those invited (latest first). A request goes once its address has
-/// an account, when an admin removes it, or a year after it last asked.
+/// an account, when an admin removes it or the browser that asked
+/// withdraws it, or a year after it last asked.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AccessRequestList {

@@ -2,7 +2,8 @@
 
 /**
  * `POST /api/v1/access-requests` (public, where [`Features::early_access`]):
- * someone without an account asks for early access. The answer is the
- * same whether the address asked before, was invited or has an account.
+ * someone without an account asks for early access. The answer
+ * ([`AccessRequested`]) is the same whether the address asked before, was
+ * invited or has an account.
  */
 export type RequestAccessRequest = { email: string, };

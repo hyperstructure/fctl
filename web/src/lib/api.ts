@@ -95,7 +95,9 @@ export const api = {
   setup: (b: G.SetupRequest) => request<G.AuthResponse>("POST", "/setup", b),
   invitePreview: (token: string) => request<G.InvitePreview>("GET", `/invites/${enc(token)}`),
   /** Asks for early access, without an account (where `features.early_access`). */
-  requestAccess: (b: G.RequestAccessRequest) => request<G.Ok>("POST", "/access-requests", b),
+  requestAccess: (b: G.RequestAccessRequest) => request<G.AccessRequested>("POST", "/access-requests", b),
+  /** Withdraws it, with the token its answer had. */
+  withdrawAccess: (b: G.WithdrawAccessRequest) => request<G.Ok>("POST", "/access-requests/withdraw", b),
   signup: (b: G.SignupRequest) => request<G.AuthResponse>("POST", "/auth/signup", b),
   login: (b: G.LoginRequest) => request<G.AuthResponse>("POST", "/auth/login", b),
   logout: () => request<G.Ok>("POST", "/auth/logout", {}),

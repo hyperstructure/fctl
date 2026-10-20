@@ -2,6 +2,7 @@
 export type { AccessRequest } from "./AccessRequest";
 export type { AccessRequestId } from "./AccessRequestId";
 export type { AccessRequestList } from "./AccessRequestList";
+export type { AccessRequested } from "./AccessRequested";
 export type { AccountDeletion } from "./AccountDeletion";
 export type { AddClaudeTokenRequest } from "./AddClaudeTokenRequest";
 export type { AddMemberRequest } from "./AddMemberRequest";
@@ -217,6 +218,7 @@ export type { UserStatus } from "./UserStatus";
 export type { VerifyTwoFactorRequest } from "./VerifyTwoFactorRequest";
 export type { ViewerClient } from "./ViewerClient";
 export type { ViewerServer } from "./ViewerServer";
+export type { WithdrawAccessRequest } from "./WithdrawAccessRequest";
 export type { Workspace } from "./Workspace";
 export type { WorkspaceColor } from "./WorkspaceColor";
 export type { WorkspaceGithub } from "./WorkspaceGithub";

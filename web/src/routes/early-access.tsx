@@ -5,7 +5,7 @@
 // they are on the list; the threads make way for the pointer. Then the page
 // says what to have ready for when the invitation comes. This browser
 // remembers the request (`lib/early-access`), so the page says so when they
-// come back.
+// come back, and can withdraw it.
 
 import { prefersReducedMotion } from "@hyperstructure/design/gl/core";
 import type { FoundryHandle, FoundryLane } from "@hyperstructure/design/gl/foundry";
@@ -19,7 +19,7 @@ import {
   MessageSquareText,
 } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
-import { Banner, Button, Field, Input } from "@/components/ui";
+import { Banner, Button, Dialog, Field, Input } from "@/components/ui";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { loadSent, type Sent, saveSent } from "@/lib/early-access";
@@ -62,6 +62,8 @@ export function EarlyAccessPage() {
   const [fresh, setFresh] = useState(false);
   /** Their thread runs fast for a few seconds after they're on the list. */
   const [burst, setBurst] = useState(false);
+  /** They withdrew their request: the form says so. */
+  const [withdrawn, setWithdrawn] = useState(false);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiFailure | null>(null);
@@ -112,11 +114,12 @@ export function EarlyAccessPage() {
     setBusy(true);
     setError(null);
     try {
-      await api.requestAccess({ email: email.trim() });
-      const s = { email: email.trim().toLowerCase(), at: Date.now() };
+      const { token } = await api.requestAccess({ email: email.trim() });
+      const s = { email: email.trim().toLowerCase(), at: Date.now(), token };
       saveSent(s);
       setSent(s);
       setFresh(true);
+      setWithdrawn(false);
       setBurst(true);
       scene.current?.pulse(LANE, 1000);
     } catch (err) {
@@ -133,6 +136,12 @@ export function EarlyAccessPage() {
     setFresh(false);
     setEmail("");
     setError(null);
+    setWithdrawn(false);
+  };
+  const withdraw = async (token: string) => {
+    await api.withdrawAccess({ token });
+    another();
+    setWithdrawn(true);
   };
 
   const signIn = (
@@ -180,7 +189,7 @@ export function EarlyAccessPage() {
           {fresh ? `You're on the list. We'll send your invitation to ${sent.email}.` : ""}
         </p>
         <div className="flex animate-rise flex-col gap-6">
-          <Ticket sent={sent} fresh={fresh} />
+          <Ticket sent={sent} fresh={fresh} onWithdraw={withdraw} />
           <div>
             <h2 className="text-[13.5px] font-medium text-ink">While you wait, have these ready</h2>
             <ol className="mt-3 flex flex-col gap-3">
@@ -228,6 +237,9 @@ export function EarlyAccessPage() {
       footer={<Frosted>Have an account? {signIn}</Frosted>}
     >
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+        {withdrawn && (
+          <Banner tone="ok">Your request is withdrawn, and this browser forgot your address.</Banner>
+        )}
         <Field label="Email" error={error?.field === "email" ? error.message : undefined}>
           {(id) => (
             <Input
@@ -300,9 +312,21 @@ function Points() {
 }
 
 /** Their place on the list: the address they asked with, and since when. */
-function Ticket({ sent, fresh }: { sent: Sent; fresh: boolean }) {
+function Ticket({
+  sent,
+  fresh,
+  onWithdraw,
+}: {
+  sent: Sent;
+  fresh: boolean;
+  onWithdraw: (token: string) => Promise<void>;
+}) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const token = sent.token;
   return (
-    <div className="flex items-center gap-3.5 rounded-lg border border-line-strong bg-sunken/60 px-4 py-3.5">
+    <div className="flex items-center gap-3.5 rounded-lg border border-line-strong bg-sunken/60 py-3.5 pr-2 pl-4">
       <span className={cn("relative inline-flex size-9 shrink-0", fresh && "animate-pop")}>
         {fresh && (
           <span className="absolute inset-0 animate-ping rounded-full bg-highlight/40 [animation-duration:900ms] [animation-fill-mode:forwards] [animation-iteration-count:1]" />
@@ -331,6 +355,44 @@ function Ticket({ sent, fresh }: { sent: Sent; fresh: boolean }) {
         <div className="truncate font-mono text-[13px] text-ink">{sent.email}</div>
         <div className="text-[12.5px] text-ink-3">On the list since {day(sent.at)}</div>
       </div>
+      {/* Only the browser that asked first can: its answer had the token. */}
+      {token && (
+        <Button size="sm" variant="quiet" onClick={() => setAsking(true)} className="shrink-0">
+          Withdraw
+        </Button>
+      )}
+      <Dialog
+        open={asking}
+        onClose={() => setAsking(false)}
+        title="Withdraw your request?"
+        description="You leave the list, and this browser forgets your address. You can ask again whenever you like."
+      >
+        <div className="flex flex-col gap-4">
+          {error && <Banner tone="error">{error}</Banner>}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setAsking(false)}>
+              Stay on the list
+            </Button>
+            <Button
+              variant="danger"
+              loading={busy}
+              onClick={async () => {
+                if (!token) return;
+                setBusy(true);
+                setError(null);
+                try {
+                  await onWithdraw(token);
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                  setBusy(false);
+                }
+              }}
+            >
+              Withdraw my request
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }

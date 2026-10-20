@@ -22,9 +22,9 @@ whoever runs them: a list strangers can join has no place there.
   the example's doesn't; the standalone server doesn't take the variable.
   `cargo xtask dev` turns it on, as app.fctl.sh, so that it can be tried.
 - **An address, nothing else.** The page asks for an email address only,
-  and D1 keeps it with when it first and last asked (`access_requests`):
-  no name, IP address or browser. The rate limit per client address that
-  sign-ups have applies.
+  and D1 keeps it with when it first and last asked and the hash of the
+  token that withdraws it (`access_requests`): no name, IP address or
+  browser. The rate limit per client address that sign-ups have applies.
 - **The same answer for everyone.** Whether the address asked before, was
   invited or has an account, the request succeeds, so that it tells
   nobody who uses the instance. An address with an account isn't
@@ -35,9 +35,19 @@ whoever runs them: a list strangers can join has no place there.
   address and makes a link that works once, for 14 days, and is emailed
   where email is set up. The list shows the link in place, to copy or to
   open in the admin's mail app, and any invitation to the address marks its
-  request invited. No new kind of invitation, token or sign-up.
+  request invited. No new kind of invitation or sign-up.
 - **Requests don't stay.** One goes once its address has an account, when
-  an admin removes it, or a year after it last asked.
+  an admin removes it or its asker withdraws it, or a year after it last
+  asked.
+- **People withdraw their own.** The privacy policy has people use their
+  rights themselves, in Settings, and someone who only asked has no
+  account. So the request's answer has a token, which the browser keeps,
+  and the page's Withdraw deletes the request with it. Only an address's
+  first request keeps the token's hash: asking again with someone's
+  address gets a token that looks the same and withdraws nothing, so that
+  nobody takes another's place on the list away. Without email, fctl can't
+  check that an address is the asker's, so there is no withdrawing by
+  address.
 
 ## Consequences
 
@@ -47,7 +57,10 @@ whoever runs them: a list strangers can join has no place there.
   stranger's request gets them nothing. The list shows the first 500 and
   how many there are in all.
 - The list is the admins' to work through: nothing tells them when
-  someone asks but the count on the tab.
+  someone asks but the count on the tab and on the sidebar's Admin link.
+- Someone who asked from a browser they no longer have can't withdraw the
+  request; it goes a year after they last asked, or when an admin removes
+  it.
 - [The privacy policy](https://fctl.sh/privacy) says what app.fctl.sh keeps
   for a request, who sees it and for how long, in
   hyperstructure/fctl-site.

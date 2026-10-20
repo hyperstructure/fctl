@@ -8,8 +8,12 @@ use crate::ctx::Ctx;
 use crate::db::{Count, n, os, q, s};
 use crate::error::{AppError, AppResult, not_found};
 use crate::http;
+use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
-use fctl_proto::api::{AccessRequest, AccessRequestList, Ok, RequestAccessRequest};
+use fctl_proto::api::{
+    AccessRequest, AccessRequestList, AccessRequested, Ok, RequestAccessRequest,
+    WithdrawAccessRequest,
+};
 use fctl_proto::session::UserRef;
 use fctl_proto::{AccessRequestId, ApiError, ErrorCode, UserId};
 use worker::{Request, Response};
@@ -22,7 +26,10 @@ const OPEN: &str = "NOT EXISTS (SELECT 1 FROM user_emails e WHERE e.email = r.em
 /// `POST /api/v1/access-requests` (public): someone asks for early access.
 /// The answer is the same whatever the address is, so that it tells nobody
 /// who asked, was invited or has an account: an address with an account
-/// isn't recorded, and asking again moves `asked_at`.
+/// isn't recorded, and asking again moves `asked_at`. Its token withdraws
+/// the request when it was the address's first; for the others it is kept
+/// nowhere, so that nobody withdraws someone else's request by asking with
+/// their address.
 pub async fn request(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     if !ctx.cfg.early_access {
         return Err(AppError(ApiError::new(
@@ -34,10 +41,11 @@ pub async fn request(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .await?;
     let body: RequestAccessRequest = http::body(req).await?;
     let email = validate::email(&body.email)?;
+    let token = new_secret(SecretKind::AccessRequest);
     // A SELECT with a WHERE, so that SQLite reads ON CONFLICT as the upsert.
     q(
         &ctx.db,
-        "INSERT INTO access_requests (id, email, created_at, asked_at) SELECT ?1, ?2, ?3, ?3 \
+        "INSERT INTO access_requests (id, email, created_at, asked_at, withdraw_hash) SELECT ?1, ?2, ?3, ?3, ?4 \
          WHERE NOT EXISTS (SELECT 1 FROM user_emails WHERE email = ?2) \
          AND NOT EXISTS (SELECT 1 FROM users WHERE email = ?2) \
          ON CONFLICT (email) DO UPDATE SET asked_at = excluded.asked_at",
@@ -45,7 +53,25 @@ pub async fn request(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             s(fctl_domain::ids::access_request_id(ctx.now).as_str()),
             s(&email),
             n(ctx.now),
+            s(&hash_secret(&token)),
         ],
+    )?
+    .run()
+    .await?;
+    http::ok(&AccessRequested { token })
+}
+
+/// `POST /api/v1/access-requests/withdraw` (public): the browser that asked
+/// withdraws its request with the token it got. The answer is the same
+/// whether one went, and the audit log keeps no trace of the address.
+pub async fn withdraw(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
+    ctx.rate_limit(&format!("early-access:{}", ctx.ip_key()))
+        .await?;
+    let body: WithdrawAccessRequest = http::body(req).await?;
+    q(
+        &ctx.db,
+        "DELETE FROM access_requests WHERE withdraw_hash = ?",
+        &[s(&hash_secret(body.token.trim()))],
     )?
     .run()
     .await?;

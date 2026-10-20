@@ -7,10 +7,12 @@ import { loadSent, saveSent } from "@/lib/early-access";
 import { EarlyAccessPage } from "./early-access";
 
 const requestAccess = vi.fn();
+const withdrawAccess = vi.fn();
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
   api: {
     requestAccess: (b: unknown) => requestAccess(b),
+    withdrawAccess: (b: unknown) => withdrawAccess(b),
     instance: () => new Promise(() => {}),
   },
 }));
@@ -46,6 +48,7 @@ vi.mock("@/components/ui/gl-canvas", async () => {
 const roots: (() => void)[] = [];
 beforeEach(() => {
   requestAccess.mockReset();
+  withdrawAccess.mockReset();
   lanes.mockReset();
   pulse.mockReset();
 });
@@ -88,7 +91,7 @@ function open() {
 
 describe("asking for early access", () => {
   it("puts them on the list, lights their thread and remembers it", async () => {
-    requestAccess.mockResolvedValue({ ok: true });
+    requestAccess.mockResolvedValue({ token: "fctl_acr_secret" });
     const page = open();
     expect(page.container.textContent).toContain("Request early access.");
     expect(page.lit()).toEqual([]);
@@ -102,7 +105,7 @@ describe("asking for early access", () => {
     expect(page.container.textContent).toContain("While you wait, have these ready");
     expect(pulse).toHaveBeenCalledTimes(1);
     expect(page.lit()).toHaveLength(1);
-    expect(loadSent()?.email).toBe("ada@example.com");
+    expect(loadSent()).toMatchObject({ email: "ada@example.com", token: "fctl_acr_secret" });
   });
 
   it("says what was wrong with the address, under the field", async () => {
@@ -133,5 +136,30 @@ describe("asking for early access", () => {
     act(() => another?.click());
     expect(page.container.textContent).toContain("Request early access.");
     expect(loadSent()).toBeUndefined();
+  });
+
+  it("withdraws the request this browser made, after asking", async () => {
+    withdrawAccess.mockResolvedValue({ ok: true });
+    saveSent({ email: "ada@example.com", at: Date.now(), token: "fctl_acr_secret" });
+    const page = open();
+    const button = (text: string) =>
+      [...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === text);
+    act(() => button("Withdraw")?.click());
+    expect(document.body.textContent).toContain("Withdraw your request?");
+    expect(withdrawAccess).not.toHaveBeenCalled();
+    await act(async () => button("Withdraw my request")?.click());
+    expect(withdrawAccess).toHaveBeenCalledWith({ token: "fctl_acr_secret" });
+    expect(page.container.textContent).toContain("Your request is withdrawn");
+    expect(page.container.textContent).toContain("Request early access.");
+    expect(loadSent()).toBeUndefined();
+  });
+
+  it("offers no withdrawing without the token, as when another browser asked first", () => {
+    saveSent({ email: "ada@example.com", at: Date.now() });
+    const page = open();
+    expect(page.container.textContent).toContain("You're on the list.");
+    expect([...page.container.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
+      "Withdraw",
+    );
   });
 });

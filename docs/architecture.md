@@ -122,8 +122,13 @@ and the standalone server doesn't take it), the sign-in page links to
 address asked before, was invited or has an account, so that it tells
 nobody who uses the instance: an address that has an account isn't
 recorded, and asking again moves the request's `asked_at`. A rate limit per
-client address applies, as for sign-ups. The browser keeps the address it
-asked with, so that the page says it is on the list when they come back.
+client address applies, as for sign-ups. The answer has a token, which the
+browser keeps with the address, so that the page says it is on the list
+when they come back and can withdraw the request (`POST
+/api/v1/access-requests/withdraw`): D1 keeps its SHA-256 for an address's
+first request only (`withdraw_hash`), so that nobody withdraws someone
+else's by asking with their address, and the others' tokens look the same
+and withdraw nothing.
 
 Instance admins see the requests under Admin → Early access, and with
 `fctl admin early-access` (`GET /api/v1/admin/access-requests`): those
@@ -135,7 +140,8 @@ list shows its link, to copy or to send from the admin's mail app (a
 greets them as having asked. Any invitation to the address marks its
 request invited, and by whom. A request goes once its address has an
 account (the hourly cron trigger), when an admin removes it (`DELETE
-/api/v1/admin/access-requests/{id}`, in the audit log), or a year after it
+/api/v1/admin/access-requests/{id}`, in the audit log) or the browser that
+asked withdraws it (which the audit log doesn't record), or a year after it
 last asked (`access_requests`).
 
 ### Two-factor sign-in

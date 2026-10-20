@@ -5,7 +5,8 @@ import type { AccessRequest } from "./AccessRequest";
  * `GET /api/v1/admin/access-requests`: who asked for early access and
  * has no account yet, those still waiting first (longest waiting first),
  * then those invited (latest first). A request goes once its address has
- * an account, when an admin removes it, or a year after it last asked.
+ * an account, when an admin removes it or the browser that asked
+ * withdraws it, or a year after it last asked.
  */
 export type AccessRequestList = { 
 /**

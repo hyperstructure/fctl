@@ -1,8 +1,9 @@
 // Early access (docs/architecture.md#early-access). Where the instance takes
 // requests, people without an account ask for it at /early-access; this
 // browser remembers the address it asked with, so that the page says so when
-// they come back. Admins invite them from Admin → Early access, and send the
-// link from their own mail app when the instance sends no email.
+// they come back, and the token that withdraws the request. Admins invite
+// them from Admin → Early access, and send the link from their own mail app
+// when the instance sends no email.
 
 import type * as G from "@/gen";
 
@@ -15,6 +16,8 @@ export interface Sent {
   email: string;
   /** When, in milliseconds. */
   at: number;
+  /** Withdraws it (`api.withdrawAccess`). */
+  token?: string;
 }
 
 export function loadSent(now = Date.now()): Sent | undefined {
@@ -23,7 +26,8 @@ export function loadSent(now = Date.now()): Sent | undefined {
     if (!d || typeof d !== "object") return undefined;
     const email = "email" in d && typeof d.email === "string" ? d.email : "";
     const at = "at" in d && typeof d.at === "number" ? d.at : 0;
-    return email && at > now - KEPT_MS ? { email, at } : undefined;
+    const token = "token" in d && typeof d.token === "string" ? d.token : undefined;
+    return email && at > now - KEPT_MS ? { email, at, token } : undefined;
   } catch {
     return undefined;
   }

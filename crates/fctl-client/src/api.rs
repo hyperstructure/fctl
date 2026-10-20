@@ -79,12 +79,24 @@ impl Api {
     }
 
     /// Asks for early access to the instance, without an account, where
-    /// it takes requests (`InstanceInfo.features.early_access`).
-    pub async fn request_access(&self, email: &str) -> Result<Ok> {
+    /// it takes requests (`InstanceInfo.features.early_access`). The
+    /// answer's token withdraws the request.
+    pub async fn request_access(&self, email: &str) -> Result<AccessRequested> {
         self.post(
             "/access-requests",
             &RequestAccessRequest {
                 email: email.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Withdraws a request for early access, with the token its answer had.
+    pub async fn withdraw_access_request(&self, token: &str) -> Result<Ok> {
+        self.post(
+            "/access-requests/withdraw",
+            &WithdrawAccessRequest {
+                token: token.to_owned(),
             },
         )
         .await

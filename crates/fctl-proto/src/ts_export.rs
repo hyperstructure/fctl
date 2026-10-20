@@ -103,6 +103,8 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::InviteWorkspace,
         api::InvitePreview,
         api::RequestAccessRequest,
+        api::AccessRequested,
+        api::WithdrawAccessRequest,
         api::AccessRequest,
         api::AccessRequestList,
         api::AuditEntry,

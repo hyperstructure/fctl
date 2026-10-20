@@ -14,15 +14,15 @@ afterEach(() => localStorage.clear());
 describe("the request this browser sent", () => {
   it("is remembered, and forgotten", () => {
     expect(loadSent()).toBeUndefined();
-    saveSent({ email: "ada@example.com", at: NOW });
-    expect(loadSent(NOW)).toEqual({ email: "ada@example.com", at: NOW });
+    saveSent({ email: "ada@example.com", at: NOW, token: "fctl_acr_abc" });
+    expect(loadSent(NOW)).toEqual({ email: "ada@example.com", at: NOW, token: "fctl_acr_abc" });
     saveSent(undefined);
     expect(loadSent(NOW)).toBeUndefined();
   });
 
   it("is forgotten a year on, as the control plane forgets it", () => {
     saveSent({ email: "ada@example.com", at: NOW });
-    expect(loadSent(NOW + 364 * DAY)).toEqual({ email: "ada@example.com", at: NOW });
+    expect(loadSent(NOW + 364 * DAY)).toEqual({ email: "ada@example.com", at: NOW, token: undefined });
     expect(loadSent(NOW + 366 * DAY)).toBeUndefined();
   });
 
