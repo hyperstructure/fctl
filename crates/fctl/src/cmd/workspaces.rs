@@ -120,6 +120,7 @@ pub enum WorkspacesCmd {
         #[arg(long, value_enum)]
         base_role: Option<Base>,
         /// Members need two-factor sign-in: it is closed to those without.
+        /// It stays on while the instance requires it.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         require_two_factor: Option<bool>,
         /// Leave inviting people out of the app's setup checklist, as in a
@@ -479,7 +480,9 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             );
             println!(
                 "2fa:      {}",
-                if w.require_two_factor {
+                if w.instance_requires_two_factor {
+                    "required of members, as the instance requires it"
+                } else if w.require_two_factor {
                     "required of members"
                 } else {
                     "up to each member"

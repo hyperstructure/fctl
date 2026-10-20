@@ -677,6 +677,7 @@ pub async fn workspaces(ctx: &Ctx) -> AppResult<Response> {
     )?
     .all()
     .await?;
+    let settings = ctx.settings();
     let mut workspaces = Vec::with_capacity(rows.len());
     for r in &rows {
         let needs_primary = r.needs_primary();
@@ -687,7 +688,7 @@ pub async fn workspaces(ctx: &Ctx) -> AppResult<Response> {
             projects: r.projects.max(0) as u32,
             runners: r.runner_ids().len() as u32,
             github: crate::workspaces::strings(r.github.as_deref()),
-            require_two_factor: r.require_two_factor,
+            require_two_factor: r.requires_two_factor(&settings),
             created_at: r.created_at,
             role: r.role(),
             needs_primary,

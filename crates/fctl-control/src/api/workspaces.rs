@@ -64,7 +64,7 @@ async fn free_slug(ctx: &Ctx, name: &str) -> AppResult<String> {
 async fn respond(ctx: &Ctx, id: &str) -> AppResult<Workspace> {
     let a = ws::load(ctx, id).await?;
     let live = live(ctx).await;
-    Ok(a.row.to_workspace(a.blocked, &live.online))
+    Ok(a.row.to_workspace(&ctx.settings(), a.blocked, &live.online))
 }
 
 /// `GET /api/v1/workspaces`.
@@ -73,11 +73,13 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
     let rows = ws::mine(&ctx.db, &user.id).await?;
     let live = live(ctx).await;
     let invitations = ws::invitations_for(&ctx.db, &user.id, ctx.now).await?;
+    let settings = ctx.settings();
     http::ok(&WorkspaceList {
         workspaces: rows
             .iter()
             .map(|r| {
                 r.to_workspace(
+                    &settings,
                     ws::blocked_for(ctx, user, r.require_two_factor),
                     &live.online,
                 )
@@ -231,6 +233,9 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         }
         None => None,
     };
+    if let Some(on) = body.require_two_factor {
+        policy::check_two_factor(&ctx.settings(), on)?;
+    }
     if body.require_two_factor == Some(true)
         && !a.row.require_two_factor
         && user.blocked_by(&ctx.settings(), true)

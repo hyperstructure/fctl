@@ -189,6 +189,11 @@ the instance's requirement below, except that it closes the workspace to a
 member without a second factor, not their account (`two_factor::workspace_blocked`).
 Their sign-ins ask for a passkey as the second factor too, and their last
 factor can't go while they are in it (`two_factor::with_workspaces`).
+While the instance requires it, every workspace does, and their admins
+can't turn it off (`two_factor::workspace_requires`,
+`workspace::check_two_factor`). Someone without a second factor then finds
+their whole account closed, not only the workspace; once the instance stops
+requiring it, each workspace's own choice applies again.
 
 Admins require it of everyone (Admin → Settings → Sign-in, or `fctl admin
 set --require-two-factor on`): of every account that signs in with a

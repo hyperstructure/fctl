@@ -50,6 +50,7 @@ const side: G.Workspace = {
   email: "ada@example.com",
   base_role: "editor",
   require_two_factor: false,
+  instance_requires_two_factor: false,
   blocked: false,
   primary: { id: "usr_ada", name: "Ada Lovelace" },
   members: 2,

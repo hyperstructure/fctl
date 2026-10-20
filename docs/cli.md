@@ -153,7 +153,9 @@ admits (they join when they sign up); any other address needs an instance
 invitation first (`fctl admin invite`).
 Everyone in a workspace works in its projects as their project role or its
 base role says; its admins own every project. One person can be in at most
-five workspaces.
+five workspaces. While the instance requires two-factor sign-in (`fctl admin
+set --require-two-factor on`), every workspace does, and `fctl workspaces
+set --require-two-factor off` fails.
 
 ## Projects
 

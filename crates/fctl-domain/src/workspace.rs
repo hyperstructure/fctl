@@ -7,7 +7,7 @@ use crate::files;
 use crate::naming;
 use crate::validate::{self, Result};
 use fctl_proto::ApiError;
-use fctl_proto::api::BaseRole;
+use fctl_proto::api::{BaseRole, InstanceSettings};
 use fctl_proto::session::{ProjectRole, WorkspaceRole};
 
 /// The most workspaces one person can be a member of.
@@ -124,6 +124,18 @@ pub fn check_transfer(actor: Option<WorkspaceRole>, to: Option<WorkspaceRole>) -
             "They aren't a member of this workspace",
         )),
     }
+}
+
+/// Whether a workspace's admins may set its two-factor requirement to
+/// `require`: not off while the instance requires two-factor sign-in, as
+/// every workspace then does ([`crate::two_factor::workspace_requires`]).
+pub fn check_two_factor(settings: &InstanceSettings, require: bool) -> Result<()> {
+    if !require && settings.require_two_factor {
+        return Err(ApiError::conflict(
+            "This instance requires two-factor sign-in, so every workspace does too. Instance admins can turn that off in Admin → Settings, or with `fctl admin set --require-two-factor off`.",
+        ));
+    }
+    Ok(())
 }
 
 /// Whether someone who is a member of `count` workspaces may join, or
@@ -305,6 +317,23 @@ mod tests {
         assert!(check_limit(0).is_ok());
         assert!(check_limit(MAX_WORKSPACES - 1).is_ok());
         assert!(check_limit(MAX_WORKSPACES).is_err());
+    }
+
+    #[test]
+    fn two_factor_stays_on_while_the_instance_requires_it() {
+        let optional = InstanceSettings::default();
+        assert!(check_two_factor(&optional, true).is_ok());
+        assert!(check_two_factor(&optional, false).is_ok());
+        let required = InstanceSettings {
+            require_two_factor: true,
+            ..Default::default()
+        };
+        assert!(check_two_factor(&required, true).is_ok());
+        let refused = check_two_factor(&required, false).err();
+        assert_eq!(
+            refused.map(|e| e.code),
+            Some(fctl_proto::ErrorCode::Conflict)
+        );
     }
 
     #[test]

@@ -96,7 +96,9 @@ impl UserRow {
     }
 
     /// Whether a workspace that requires two-factor sign-in is closed to
-    /// them (they haven't set it up).
+    /// them (they haven't set it up). `require_two_factor` is its admins'
+    /// choice: the instance's requirement closes their whole account
+    /// instead (`fctl_domain::two_factor::workspace_requires`).
     pub fn blocked_by(
         &self,
         settings: &fctl_proto::api::InstanceSettings,

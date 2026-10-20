@@ -1166,7 +1166,14 @@ pub struct Workspace {
     /// The role every member has in every project.
     pub base_role: BaseRole,
     /// Members need two-factor sign-in: an authenticator app or a passkey.
+    /// Its admins chose that, or the instance requires it
+    /// (`instance_requires_two_factor`).
     pub require_two_factor: bool,
+    /// The instance requires two-factor sign-in, so every workspace does
+    /// too, and its admins can't turn it off
+    /// ([`InstanceSettings::require_two_factor`]).
+    #[serde(default)]
+    pub instance_requires_two_factor: bool,
     /// It requires two-factor sign-in, which you haven't set up: until you
     /// do, its projects and sessions are closed to you.
     pub blocked: bool,
@@ -1233,6 +1240,8 @@ pub struct UpdateWorkspaceRequest {
     pub slug: Option<String>,
     pub color: Option<WorkspaceColor>,
     pub base_role: Option<BaseRole>,
+    /// Members need two-factor sign-in. Not `false` while the instance
+    /// requires it: every workspace does then.
     pub require_two_factor: Option<bool>,
     /// Leave inviting people out of the app's setup checklist, or (`false`)
     /// ask for it again.
@@ -1511,6 +1520,8 @@ pub struct AdminWorkspace {
     pub projects: u32,
     pub runners: u32,
     pub github: Vec<String>,
+    /// Members need two-factor sign-in: its admins chose that, or the
+    /// instance requires it.
     pub require_two_factor: bool,
     pub created_at: Millis,
     /// Your role in it, when you are a member.

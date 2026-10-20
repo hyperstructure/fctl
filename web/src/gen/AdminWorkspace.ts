@@ -7,7 +7,12 @@ import type { WorkspaceRole } from "./WorkspaceRole";
  * A workspace, as instance admins see it: what it is and who runs it,
  * not what is in it.
  */
-export type AdminWorkspace = { workspace: WorkspaceRef, primary?: UserRef, members: number, projects: number, runners: number, github: Array<string>, require_two_factor: boolean, created_at: number, 
+export type AdminWorkspace = { workspace: WorkspaceRef, primary?: UserRef, members: number, projects: number, runners: number, github: Array<string>, 
+/**
+ * Members need two-factor sign-in: its admins chose that, or the
+ * instance requires it.
+ */
+require_two_factor: boolean, created_at: number, 
 /**
  * Your role in it, when you are a member.
  */
