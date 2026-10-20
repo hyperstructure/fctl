@@ -266,8 +266,9 @@ pub enum WorkspacesCmd {
     },
     /// The Claude connection your sessions in a workspace run on.
     Claude {
-        /// A connection's id from `fctl claude status`, or `default` for
-        /// your default one. Without it, shows the one in use.
+        /// One of your connections, by its id or name in `fctl claude
+        /// status` (an account or a label), or `default` for your default
+        /// one. Without it, shows the one in use.
         credential: Option<String>,
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
@@ -906,12 +907,15 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             workspace,
         } => {
             let w = resolve(&api, workspace).await?;
+            let me = api.me().await?;
             let w = match credential {
                 Some(c) => {
                     let claude = if c.eq_ignore_ascii_case("default") {
                         String::new()
                     } else {
-                        c
+                        super::claude::pick_connection(&me.claude, &c, style::now_ms())?
+                            .id
+                            .to_string()
                     };
                     api.update_membership(
                         w.id.as_str(),
@@ -926,7 +930,6 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             if json {
                 return style::print_json(&w);
             }
-            let me = api.me().await?;
             let used = w
                 .claude
                 .as_ref()
@@ -946,9 +949,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                         String::new()
                     }
                 ),
-                None => println!(
-                    "You have no Claude connection yet: `fctl claude login` or `fctl claude token`."
-                ),
+                None => println!("{}", super::claude::NO_CONNECTION),
             }
         }
         WorkspacesCmd::Audit { workspace, before } => {

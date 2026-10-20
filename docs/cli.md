@@ -118,6 +118,7 @@ fctl workspaces use side-project           # the default for the commands below
 fctl workspaces join side-project          # an invitation (or decline it)
 fctl workspaces leave side-project         # your sessions there stop
 fctl workspaces claude crd_01… -w acme     # your sessions there run on this Claude connection
+fctl workspaces claude ada@acme.example -w acme   # …named by its account or label
 fctl workspaces claude default -w acme     # …or on your default one
 
 fctl workspaces members                    # its people, and the invitations nobody answered
@@ -221,7 +222,7 @@ or with `fctl attach`) aren't notified about it.
 fctl claude connect --login      # full sign-in through a host (Remote Control)
 fctl claude connect              # paste a token from `claude setup-token`
 fctl claude connect --token sk-ant-oat01-…
-fctl claude status               # your connections and how much of each plan is used
+fctl claude status               # your connections, their ids, and how much of each plan is used
 ```
 
 ## Hosts

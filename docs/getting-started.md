@@ -109,7 +109,8 @@ report it as they work, so it is as recent as your latest session.
 
 With more than one connection, say your own plan and a seat your company
 pays for, choose which one each workspace's sessions run on in **Settings
-→ Workspaces** (`fctl workspaces claude <connection> -w acme`).
+→ Workspaces** (`fctl workspaces claude <connection> -w acme`, with the
+name or id `fctl claude status` shows).
 
 ## 5. Bring a machine online
 
