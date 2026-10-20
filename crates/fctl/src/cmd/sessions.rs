@@ -75,6 +75,9 @@ pub struct ListArgs {
     /// Only this project's sessions (slug or id).
     #[arg(short, long)]
     pub project: Option<String>,
+    /// Only this workspace's sessions (slug or id).
+    #[arg(short, long, conflicts_with = "project")]
+    pub workspace: Option<String>,
     /// Only active sessions.
     #[arg(short, long)]
     pub active: bool,
@@ -208,9 +211,19 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
 
 pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()> {
     let api = config::api(server)?;
-    let project = args.project.or_else(|| config::CliConfig::load().project);
+    let project = match &args.workspace {
+        Some(_) => None,
+        None => args.project.or_else(|| config::CliConfig::load().project),
+    };
     let status = args.active.then_some("active");
-    let list = api.sessions(project.as_deref(), status, args.limit).await?;
+    let list = api
+        .sessions_in(
+            args.workspace.as_deref(),
+            project.as_deref(),
+            status,
+            args.limit,
+        )
+        .await?;
     if json {
         return style::print_json(&list);
     }

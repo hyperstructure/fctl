@@ -8,8 +8,14 @@ import type { SessionRole } from "./SessionRole";
 import type { SessionStats } from "./SessionStats";
 import type { SessionStatus } from "./SessionStatus";
 import type { UserRef } from "./UserRef";
+import type { WorkspaceRef } from "./WorkspaceRef";
 
 export type Session = { id: SessionId, project_id: ProjectId, project_slug: string, 
+/**
+ * The workspace of its project (absent from control planes before
+ * workspaces).
+ */
+workspace?: WorkspaceRef, 
 /**
  * Sequential per project (`#12`).
  */

@@ -1,7 +1,7 @@
 // React Query hooks. Keys are stable arrays so live updates can patch caches.
 import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type * as G from "@/gen";
-import { ApiFailure, api } from "./api";
+import { ApiFailure, api, workspaces } from "./api";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,7 +29,15 @@ export const keys = {
   allowlist: ["allowlist"] as const,
   tokens: ["tokens"] as const,
   github: ["github"] as const,
-  repos: ["repos"] as const,
+  repos: (workspace: string) => ["repos", workspace] as const,
+  workspaces: ["workspaces"] as const,
+  workspace: (id: string) => ["workspace", id] as const,
+  workspaceMembers: (id: string) => ["workspace", id, "members"] as const,
+  workspaceRunners: (id: string) => ["workspace", id, "runners"] as const,
+  workspaceGithub: (id: string) => ["workspace", id, "github"] as const,
+  workspaceAudit: (id: string) => ["workspace", id, "audit"] as const,
+  adminWorkspaces: ["admin", "workspaces"] as const,
+  adminGithub: ["admin", "github"] as const,
   shares: (id: string) => ["shares", id] as const,
   audit: ["audit"] as const,
   instanceSettings: ["admin", "settings"] as const,
@@ -56,6 +64,16 @@ export function useMe() {
 }
 
 export const useProjects = () => useQuery({ queryKey: keys.projects, queryFn: api.projects });
+/** Your workspaces and the invitations waiting for you. */
+export const useWorkspaces = () =>
+  useQuery({ queryKey: keys.workspaces, queryFn: workspaces.list, staleTime: 30_000 });
+/** One of your workspaces, by id or slug. */
+export const useWorkspace = (id: string | undefined) =>
+  useQuery({
+    queryKey: keys.workspace(id ?? ""),
+    queryFn: () => workspaces.get(id ?? ""),
+    enabled: !!id,
+  });
 export const useProject = (id: string) =>
   useQuery({ queryKey: keys.project(id), queryFn: () => api.project(id) });
 export const useProjectRepos = (id?: string) =>
@@ -64,8 +82,13 @@ export const useProjectRepos = (id?: string) =>
     queryFn: () => api.projectRepos(id ?? ""),
     enabled: !!id,
   });
-export const useSessions = (q: { project?: string; status?: string; limit?: number; mine?: boolean }) =>
-  useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q) });
+export const useSessions = (q: {
+  project?: string;
+  workspace?: string;
+  status?: string;
+  limit?: number;
+  mine?: boolean;
+}) => useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q) });
 export const useRunners = () =>
   useQuery({ queryKey: keys.runners, queryFn: api.runners, refetchInterval: 30_000 });
 

@@ -61,7 +61,10 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
     .first()
     .await?;
     let row = row.ok_or_else(|| internal("two-factor status: no row"))?;
-    let settings = crate::instance::parse(row.settings.as_deref());
+    let instance = crate::instance::parse(row.settings.as_deref());
+    // Workspaces that require it require it of their members as the
+    // instance would; only the instance's requirement closes the account.
+    let settings = user.two_factor_settings(&instance);
     let has_password = user.has_password();
     let factors = Factors {
         authenticator: row.since.is_some(),
@@ -74,7 +77,7 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
         google: user.two_factor_google,
         google_required: settings.two_factor_google,
         required: policy::required(&settings, has_password),
-        setup_required: policy::setup_required(&settings, has_password, factors),
+        setup_required: policy::setup_required(&instance, has_password, factors),
         on: policy::on(&settings, has_password, factors),
     })
 }
@@ -837,6 +840,8 @@ pub async fn confirm_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResul
         Some(&user.id),
         None,
     );
+    // Workspaces that require it open to them now.
+    crate::workspaces::changed(ctx, vec![user.id.clone()]);
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     if replacing {
         crate::email::notice(
@@ -874,15 +879,25 @@ pub async fn remove_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult
     let body: TwoFactorCodeRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     ctx.rate_limit(&format!("2fa-user:{}", user.id)).await?;
-    let settings = crate::instance::settings(&ctx.db).await?;
-    if !policy::can_turn_off(&settings, user.has_password(), user.factors()) {
+    let instance = crate::instance::settings(&ctx.db).await?;
+    if !policy::can_turn_off(&instance, user.has_password(), user.factors()) {
         return Err(conflict(
             "This instance requires two-factor sign-in, so it stays on. To move it to a new phone, replace the authenticator app instead.",
+        ));
+    }
+    if !policy::can_turn_off(
+        &user.two_factor_settings(&instance),
+        user.has_password(),
+        user.factors(),
+    ) {
+        return Err(conflict(
+            "A workspace you are in requires two-factor sign-in, so it stays on. Add a passkey first, or leave the workspace. To move it to a new phone, replace the authenticator app instead.",
         ));
     }
     confirm_code(ctx, &user, &body.code).await?;
     batch(&ctx.db, forget_statements(ctx, &user.id)?).await?;
     ctx.audit("two_factor.disabled", Some(&user.id), None);
+    crate::workspaces::changed(ctx, vec![user.id.clone()]);
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     crate::email::notice(
         ctx,
@@ -943,9 +958,14 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             "Turn your own two-factor sign-in off in Settings, with a code",
         ));
     }
-    if target.role() == InstanceRole::Owner && actor.role() != InstanceRole::Owner {
+    if target.role() == InstanceRole::Owner {
         return Err(forbidden(
-            "Only owners can reset an owner's two-factor sign-in",
+            "Nobody can reset the primary instance owner's two-factor sign-in: they sign in with a recovery code",
+        ));
+    }
+    if target.role() == InstanceRole::Admin && actor.role() != InstanceRole::Owner {
+        return Err(forbidden(
+            "Only the primary instance owner can reset an admin's two-factor sign-in",
         ));
     }
     let settings = crate::instance::settings(&ctx.db).await?;
@@ -985,6 +1005,8 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         Some(&target.id),
         Some(serde_json::json!({ "passkeys_removed": remove_passkeys })),
     );
+    // Workspaces that require it close to them.
+    crate::workspaces::changed(ctx, vec![target.id.clone()]);
     let name = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     let again = if required {
         format!("{name} requires two-factor sign-in, so you set it up again when you next sign in.")

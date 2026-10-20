@@ -95,6 +95,10 @@ impl ApiError {
         Self::new(ErrorCode::Forbidden, message)
     }
 
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Conflict, message)
+    }
+
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::BadRequest, message)
     }

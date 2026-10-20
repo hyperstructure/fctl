@@ -6,7 +6,7 @@ use crate::db::{n, os, q, s};
 use crate::error::{AppResult, not_found, unavailable, validation};
 use crate::http;
 use crate::internal::{self, LoginCode, LoginStart};
-use crate::model::{CredentialRow, CredentialSecret};
+use crate::model::{CredentialRow, CredentialSecret, UserRow};
 use fctl_proto::LoginJobId;
 use fctl_proto::api::*;
 use fctl_proto::runner::ClaudeCredentialKind;
@@ -177,12 +177,13 @@ pub async fn start_login(ctx: &mut Ctx) -> AppResult<Response> {
         &LoginStart {
             job_id: id.clone(),
             user: user.to_ref(),
+            runners: Some(login_runners(ctx, &user).await?),
         },
     )
     .await?;
     if started.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         return Err(unavailable(
-            "No runner is online to run the Claude sign-in. Start a host first.",
+            "None of your workspaces' runners is online to run the Claude sign-in. Start one, or connect a long-lived token instead.",
         ));
     }
     job(ctx, id.as_str()).await
@@ -233,4 +234,45 @@ pub async fn submit_code(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
 
 pub fn _kind_name(k: ClaudeCredentialKind) -> &'static str {
     k.as_str()
+}
+
+/// The runners that may run someone's Claude sign-in, which passes their
+/// tokens through the host: their own, and those of the workspaces open to
+/// them (not ones whose two-factor requirement shuts them out).
+async fn login_runners(ctx: &Ctx, user: &UserRow) -> AppResult<Vec<String>> {
+    #[derive(serde::Deserialize)]
+    struct R {
+        id: String,
+        workspace_id: Option<String>,
+        #[serde(deserialize_with = "crate::db::int_bool")]
+        mine: bool,
+    }
+    let rows: Vec<R> = q(
+        &ctx.db,
+        concat!(
+            "SELECT r.id, rw.workspace_id, (r.created_by IS ?1) AS mine FROM runners r \
+             LEFT JOIN runner_workspaces rw ON rw.runner_id = r.id \
+             LEFT JOIN workspace_members m ON m.workspace_id = rw.workspace_id AND m.user_id = ?1 \
+             WHERE r.enabled = 1 AND ((m.user_id IS NOT NULL AND ",
+            crate::serves!(),
+            ") OR r.created_by = ?1)"
+        ),
+        &[s(&user.id)],
+    )?
+    .all()
+    .await?;
+    let open: Vec<String> = crate::workspaces::mine(&ctx.db, &user.id)
+        .await?
+        .into_iter()
+        .filter(|w| !crate::workspaces::blocked_for(ctx, user, w.require_two_factor))
+        .map(|w| w.id)
+        .collect();
+    let mut ids: Vec<String> = rows
+        .into_iter()
+        .filter(|r| r.mine || r.workspace_id.as_ref().is_some_and(|w| open.contains(w)))
+        .map(|r| r.id)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
 }

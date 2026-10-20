@@ -1,15 +1,27 @@
 //! Loading resources together with the caller's role, and enforcing it.
+//! Projects and sessions are open to the members of their workspace
+//! (`fctl_domain::perm`); everyone else is told they don't exist.
 
 use crate::ctx::Ctx;
 use crate::db::{q, s};
 use crate::error::{AppResult, forbidden, not_found};
-use crate::model::{PROJECT_SELECT, ProjectRow, SESSION_SELECT, SessionRow};
+use crate::model::{PROJECT_SELECT, ProjectRow, SESSION_SELECT, SessionRow, UserRow};
 use fctl_domain::perm::{self, SessionAccess};
+use fctl_proto::api::InstanceSettings;
 use fctl_proto::session::{ProjectRole, SessionRole};
 
 pub struct ProjectAccess {
     pub row: ProjectRow,
     pub role: Option<ProjectRole>,
+}
+
+/// A project's role for `user`, the caller.
+pub fn project_role(
+    user: &UserRow,
+    settings: &InstanceSettings,
+    row: &ProjectRow,
+) -> Option<ProjectRole> {
+    perm::project_role(row.workspace.membership(user, settings), row.member_role())
 }
 
 /// A project by id or slug, with the caller's effective role. Projects the
@@ -21,7 +33,7 @@ pub async fn project(ctx: &Ctx, id_or_slug: &str) -> AppResult<ProjectAccess> {
         .first()
         .await?;
     let row = row.ok_or_else(|| not_found("Project"))?;
-    let role = perm::project_role(user.role(), row.member_role());
+    let role = project_role(user, &ctx.settings(), &row);
     if role.is_none() {
         return Err(not_found("Project"));
     }
@@ -29,6 +41,11 @@ pub async fn project(ctx: &Ctx, id_or_slug: &str) -> AppResult<ProjectAccess> {
 }
 
 impl ProjectAccess {
+    /// The project's workspace.
+    pub fn workspace_id(&self) -> &str {
+        self.row.workspace_id()
+    }
+
     pub fn require_editor(&self) -> AppResult<()> {
         if perm::can_start_sessions(self.role) {
             Ok(())
@@ -65,13 +82,18 @@ pub async fn session(ctx: &Ctx, id: &str) -> AppResult<SessionAccessRow> {
     let sql = format!("{SESSION_SELECT} WHERE s.id = ?2");
     let row: Option<SessionRow> = q(&ctx.db, &sql, &[s(&user.id), s(id)])?.first().await?;
     let row = row.ok_or_else(|| not_found("Session"))?;
-    let role = session_role(user, &row).ok_or_else(|| not_found("Session"))?;
+    let role = session_role(user, &ctx.settings(), &row).ok_or_else(|| not_found("Session"))?;
     Ok(SessionAccessRow { row, role })
 }
 
-pub fn session_role(user: &crate::model::UserRow, row: &SessionRow) -> Option<SessionRole> {
+/// A session's role for `user`, the caller of the query that read `row`.
+pub fn session_role(
+    user: &UserRow,
+    settings: &InstanceSettings,
+    row: &SessionRow,
+) -> Option<SessionRole> {
     perm::session_role(SessionAccess {
-        instance_role: user.role(),
+        membership: row.workspace.membership(user, settings),
         project_role: row.member_role.as_deref().and_then(ProjectRole::parse),
         share_role: row.share_role.as_deref().and_then(SessionRole::parse),
         is_creator: row.created_by == user.id,
@@ -79,6 +101,15 @@ pub fn session_role(user: &crate::model::UserRow, row: &SessionRow) -> Option<Se
 }
 
 impl SessionAccessRow {
+    /// The session's workspace.
+    pub fn workspace_id(&self) -> &str {
+        self.row
+            .workspace
+            .workspace_id
+            .as_deref()
+            .unwrap_or_default()
+    }
+
     pub fn require_editor(&self) -> AppResult<()> {
         if self.role.can_message() {
             Ok(())

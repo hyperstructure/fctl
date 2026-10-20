@@ -6,7 +6,7 @@ use crate::db::{n, os, q, s};
 use crate::error::{AppError, AppResult};
 use crate::http;
 use crate::model::UserRow;
-use fctl_proto::api::TokenKind;
+use fctl_proto::api::{InstanceSettings, TokenKind};
 use fctl_proto::{ApiError, ErrorCode};
 use std::future::Future;
 use worker::{D1Database, Env, Request};
@@ -24,11 +24,18 @@ pub struct Authed {
     /// The instance requires two-factor of this account and it has none
     /// yet: only setting it up works (`crate::api::two_factor::gate`).
     pub two_factor_setup_required: bool,
+    /// The instance's settings, read with the token.
+    pub settings: InstanceSettings,
 }
 
 impl Authed {
     /// The browser session `user` just signed in with.
-    pub fn signed_in(user: &UserRow, token_id: String, now: i64) -> Self {
+    pub fn signed_in(
+        user: &UserRow,
+        token_id: String,
+        now: i64,
+        settings: InstanceSettings,
+    ) -> Self {
         Self {
             user: user.clone(),
             token_id,
@@ -36,6 +43,7 @@ impl Authed {
             via_cookie: true,
             signed_in_at: now,
             two_factor_setup_required: false,
+            settings,
         }
     }
 }
@@ -110,9 +118,31 @@ impl Ctx {
         });
     }
 
-    /// Records an audit log entry (after the response).
+    /// The instance's settings, as read with the caller's token (defaults
+    /// when signed out).
+    pub fn settings(&self) -> InstanceSettings {
+        self.auth
+            .as_ref()
+            .map(|a| a.settings.clone())
+            .unwrap_or_default()
+    }
+
+    /// Records an entry in the instance's audit log (after the response).
     pub fn audit(&self, action: &str, target: Option<&str>, data: Option<serde_json::Value>) {
+        self.audit_in(None, action, target, data);
+    }
+
+    /// Records an audit log entry (after the response): in a workspace's
+    /// log, or the instance's (`None`).
+    pub fn audit_in(
+        &self,
+        workspace_id: Option<&str>,
+        action: &str,
+        target: Option<&str>,
+        data: Option<serde_json::Value>,
+    ) {
         let db = crate::db::handle(&self.db);
+        let workspace_id = workspace_id.filter(|w| !w.is_empty()).map(str::to_owned);
         let id = fctl_domain::ids::new_id("aud", self.now);
         let now = self.now;
         let actor = self.auth.as_ref().map(|a| a.user.id.clone());
@@ -123,8 +153,8 @@ impl Ctx {
         self.defer(async move {
             q(
                 &db,
-                "INSERT INTO audit_log (id, ts, actor_id, action, target, data, ip) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                &[s(&id), n(now), os(actor.as_deref()), s(&action), os(target.as_deref()), os(data.as_deref()), os(ip.as_deref())],
+                "INSERT INTO audit_log (id, ts, actor_id, action, target, data, ip, workspace_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                &[s(&id), n(now), os(actor.as_deref()), s(&action), os(target.as_deref()), os(data.as_deref()), os(ip.as_deref()), os(workspace_id.as_deref())],
             )?
             .run()
             .await?;

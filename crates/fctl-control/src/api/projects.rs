@@ -6,7 +6,8 @@ use crate::db::{Count, batch, n, os, q, s};
 use crate::error::{AppError, AppResult, conflict, forbidden, not_found, validation};
 use crate::github;
 use crate::http;
-use crate::model::{PROJECT_SELECT, ProjectRow};
+use crate::model::{PROJECT_SELECT, PROJECT_VISIBLE, ProjectRow};
+use crate::workspaces::{self as ws, ConnectionRow};
 use fctl_domain::{naming, perm, published, settings, validate};
 use fctl_proto::api::*;
 use fctl_proto::session::{ProjectRole, ProjectSettings, RepoRef, UserRef};
@@ -14,21 +15,29 @@ use fctl_proto::{ApiError, UserId};
 use serde::Deserialize;
 use worker::{Request, Response};
 
+/// `GET /api/v1/projects[?workspace=…][&archived=1]`: the projects the
+/// caller sees, in all their workspaces or one.
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let user = ctx.user()?;
+    let settings = ctx.settings();
     let include_archived = http::query(req, "archived").is_some_and(|v| v == "1" || v == "true");
-    let mut sql = format!("{PROJECT_SELECT} WHERE (m.role IS NOT NULL OR ?2 = 1)");
+    let mut sql = format!("{PROJECT_SELECT} WHERE {PROJECT_VISIBLE}");
+    let mut params = vec![s(&user.id)];
+    if let Some(w) = http::query(req, "workspace") {
+        params.push(s(&w));
+        sql.push_str(" AND (w.id = ?2 OR w.slug = ?2)");
+    }
     if !include_archived {
         sql.push_str(" AND p.archived_at IS NULL");
     }
     sql.push_str(" ORDER BY COALESCE(last_activity_at, p.created_at) DESC");
-    let rows: Vec<ProjectRow> = q(&ctx.db, &sql, &[s(&user.id), crate::db::b(user.is_admin())])?
-        .all()
-        .await?;
+    let rows: Vec<ProjectRow> = q(&ctx.db, &sql, &params)?.all().await?;
     http::ok(&ProjectList {
         projects: rows
             .iter()
-            .map(|r| r.to_project(perm::project_role(user.role(), r.member_role())))
+            .filter_map(|r| {
+                access::project_role(user, &settings, r).map(|role| r.to_project(Some(role)))
+            })
             .collect(),
     })
 }
@@ -142,9 +151,49 @@ async fn slug_taken(ctx: &Ctx, slug: &str) -> AppResult<bool> {
     Ok(c.map_or(0, |c| c.n) > 0)
 }
 
+/// The workspace a new project goes into: the one named, or the caller's
+/// only one.
+async fn target_workspace(ctx: &Ctx, named: Option<&str>) -> AppResult<ws::WorkspaceAccess> {
+    if let Some(w) = named.filter(|w| !w.trim().is_empty()) {
+        return ws::load(ctx, w.trim()).await;
+    }
+    let user = ctx.user()?;
+    let mine = ws::mine(&ctx.db, &user.id).await?;
+    match mine.as_slice() {
+        [only] => ws::load(ctx, &only.id).await,
+        [] => Err(validation(
+            "workspace",
+            "Create a workspace first, or ask to join one: projects belong to workspaces",
+        )),
+        _ => Err(validation(
+            "workspace",
+            "Choose the workspace the project belongs to",
+        )),
+    }
+}
+
+/// Checks that a workspace may use `repo`, and returns the installation
+/// that mints its tokens.
+async fn check_repo(
+    ctx: &Ctx,
+    gh: &github::Github<'_>,
+    connections: &[ConnectionRow],
+    repo: &RepoRef,
+) -> AppResult<u64> {
+    fctl_domain::repos::check_scope(
+        ws::scope(connections, &repo.owner).as_ref(),
+        &repo.owner,
+        Some(&repo.name),
+    )?;
+    ws::installation(&ctx.db, gh, connections, &repo.owner).await
+}
+
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: CreateProjectRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
+    let workspace = target_workspace(ctx, body.workspace.as_deref()).await?;
+    workspace.require_open()?;
+    let connections = ws::connections(&ctx.db, workspace.id()).await?;
     let name = validate::name("name", &body.name)?;
     let description = body
         .description
@@ -187,12 +236,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .transpose()?;
     if let Some(create) = &body.create_repo {
         let gh = github::from_config(&ctx.cfg, ctx.now)?;
-        let owner = gh.default_owner().map(str::to_owned).ok_or_else(|| {
-            validation(
-                "create_repo",
-                "Set GITHUB_DEFAULT_OWNER to create repositories",
-            )
-        })?;
+        let owner = new_repo_owner(&gh, &connections, create.owner.as_deref())?;
         let repo_name = naming::slugify(&create.name, 100);
         if repo_name.is_empty() {
             return Err(validation("create_repo.name", "Enter a repository name"));
@@ -215,6 +259,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             .ok_or_else(|| validation("repo", "Use owner/name, like hyperstructure/fctl"))?;
         if ctx.cfg.github.is_some() {
             let gh = github::from_config(&ctx.cfg, ctx.now)?;
+            check_repo(ctx, &gh, &connections, &parsed).await?;
             let found = gh.get_repo(&parsed).await?;
             default_branch = default_branch.or(Some(found.default_branch.clone()));
             repo = Some(RepoRef {
@@ -234,10 +279,11 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         vec![
             q(
                 &ctx.db,
-                "INSERT INTO projects (id, slug, name, description, repo_owner, repo_name, default_branch, settings, created_by, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO projects (id, workspace_id, slug, name, description, repo_owner, repo_name, default_branch, settings, created_by, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 &[
                     s(id.as_str()),
+                    s(workspace.id()),
                     s(&slug),
                     s(&name),
                     os(description.as_deref()),
@@ -258,7 +304,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         ],
     )
     .await?;
-    ctx.audit(
+    ctx.audit_in(
+        Some(workspace.id()),
         "project.created",
         Some(id.as_str()),
         Some(serde_json::json!({ "slug": slug })),
@@ -297,9 +344,10 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             let grants = crate::spec::grants(&ctx.db, &row.id).await?;
             fctl_domain::repos::check_primary(&parsed, &grants)?;
             if ctx.cfg.github.is_some() {
-                github::from_config(&ctx.cfg, ctx.now)?
-                    .get_repo(&parsed)
-                    .await?;
+                let gh = github::from_config(&ctx.cfg, ctx.now)?;
+                let connections = ws::connections(&ctx.db, p.workspace_id()).await?;
+                check_repo(ctx, &gh, &connections, &parsed).await?;
+                gh.get_repo(&parsed).await?;
             }
             owner = Some(parsed.owner);
             repo_name = Some(parsed.name);
@@ -359,7 +407,12 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         ],
     )
     .await?;
-    ctx.audit("project.updated", Some(&row.id), None);
+    ctx.audit_in(
+        Some(p.workspace_id()),
+        "project.updated",
+        Some(&row.id),
+        None,
+    );
     let p = access::project(ctx, &row.id).await?;
     http::ok(&p.row.to_project(p.role))
 }
@@ -403,7 +456,8 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let env = ctx.env.clone();
     let db = crate::db::handle(&ctx.db);
     ctx.defer(async move { crate::housekeeping::purge_deleted(&env, &db).await });
-    ctx.audit(
+    ctx.audit_in(
+        Some(p.workspace_id()),
         "project.deleted",
         Some(&p.row.id),
         Some(serde_json::json!({ "slug": p.row.slug })),
@@ -428,8 +482,10 @@ pub async fn members(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let p = access::project(ctx, id).await?;
     let rows: Vec<MemberRow> = q(
         &ctx.db,
-        "SELECT m.user_id, u.name, u.email, u.avatar_url, m.role, m.created_at FROM project_members m \
-         JOIN users u ON u.id = m.user_id WHERE m.project_id = ? ORDER BY m.created_at",
+        "SELECT m.user_id, u.name, COALESCE(wm.email, u.email) AS email, u.avatar_url, m.role, m.created_at FROM project_members m \
+         JOIN users u ON u.id = m.user_id JOIN projects p ON p.id = m.project_id \
+         LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = m.user_id \
+         WHERE m.project_id = ? ORDER BY m.created_at",
         &[s(&p.row.id)],
     )?
     .all()
@@ -457,12 +513,12 @@ pub async fn add_member(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult
     if !perm::can_assign_project_role(p.role, body.role) {
         return Err(forbidden("You cannot give this role"));
     }
-    let target = crate::api::auth::lookup_user_by_email(ctx, &body.email)
+    let target = crate::api::auth::member_by_email(ctx, p.workspace_id(), &body.email)
         .await?
         .ok_or_else(|| {
             validation(
                 "email",
-                "No one with this email has an account yet. Invite them to the instance first.",
+                "No one in this workspace has this address. Invite them to the workspace first.",
             )
         })?;
     q(
@@ -473,7 +529,8 @@ pub async fn add_member(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult
     )?
     .run()
     .await?;
-    ctx.audit(
+    ctx.audit_in(
+        Some(p.workspace_id()),
         "project.member_added",
         Some(&p.row.id),
         Some(serde_json::json!({ "user": target.id, "role": body.role.as_str() })),
@@ -634,7 +691,8 @@ pub async fn set_secret(
     )?
     .run()
     .await?;
-    ctx.audit(
+    ctx.audit_in(
+        Some(p.workspace_id()),
         "project.secret_set",
         Some(&p.row.id),
         Some(serde_json::json!({ "name": name })),
@@ -652,7 +710,8 @@ pub async fn delete_secret(ctx: &mut Ctx, id: &str, name: &str) -> AppResult<Res
     )?
     .run()
     .await?;
-    ctx.audit(
+    ctx.audit_in(
+        Some(p.workspace_id()),
         "project.secret_deleted",
         Some(&p.row.id),
         Some(serde_json::json!({ "name": name })),
@@ -688,8 +747,50 @@ pub async fn decrypted_secrets(
 
 // ───────────────────────────── GitHub ─────────────────────────────
 
+/// The organization a new repository goes into: the one asked for, the
+/// instance's default one, or the workspace's first organization; it must
+/// be one the workspace works in, with all its repositories.
+fn new_repo_owner(
+    gh: &github::Github<'_>,
+    connections: &[ConnectionRow],
+    asked: Option<&str>,
+) -> AppResult<String> {
+    let usable = |owner: &str| {
+        matches!(
+            ws::scope(connections, owner),
+            Some(fctl_domain::repos::Scope::All)
+        )
+    };
+    if let Some(owner) = asked.map(str::trim).filter(|o| !o.is_empty()) {
+        if !usable(owner) {
+            return Err(validation(
+                "create_repo.owner",
+                &format!(
+                    "This workspace works in only some of {owner}'s repositories, so it can't create new ones there"
+                ),
+            ));
+        }
+        return Ok(owner.to_owned());
+    }
+    if let Some(default) = gh.default_owner().filter(|o| usable(o)) {
+        return Ok(default.to_owned());
+    }
+    connections
+        .iter()
+        .find(|c| c.active() && c.repos().is_none())
+        .map(|c| c.account.clone())
+        .ok_or_else(|| {
+            validation(
+                "create_repo",
+                "To create repositories, this workspace needs a GitHub account it works in every repository of",
+            )
+        })
+}
+
+/// `GET /api/v1/github`: the instance's GitHub App and the accounts the
+/// caller's workspaces work in.
 pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
-    ctx.user()?;
+    let user = ctx.user()?;
     let Some(cfg) = ctx.cfg.github.as_ref() else {
         return http::ok(&GithubInfo {
             configured: false,
@@ -698,12 +799,18 @@ pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
             accounts: vec![],
         });
     };
-    let gh = github::from_config(&ctx.cfg, ctx.now)?;
-    let accounts = gh
-        .installations()
-        .await
-        .map(|v| v.into_iter().map(|(_, a)| a).collect())
-        .unwrap_or_default();
+    #[derive(Deserialize)]
+    struct A {
+        account: String,
+    }
+    let accounts: Vec<A> = q(
+        &ctx.db,
+        "SELECT DISTINCT g.account FROM workspace_github g JOIN workspace_members m ON m.workspace_id = g.workspace_id \
+         WHERE m.user_id = ? AND g.status = 'active' ORDER BY g.account",
+        &[s(&user.id)],
+    )?
+    .all()
+    .await?;
     http::ok(&GithubInfo {
         configured: true,
         app_slug: Some(cfg.slug.clone()),
@@ -711,14 +818,43 @@ pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
             "https://github.com/apps/{}/installations/new",
             cfg.slug
         )),
-        accounts,
+        accounts: accounts.into_iter().map(|a| a.account).collect(),
     })
 }
 
-pub async fn github_repos(ctx: &Ctx) -> AppResult<Response> {
-    ctx.user()?;
+/// `GET /api/v1/github/repos?workspace=…`: the repositories a workspace's
+/// projects may use (the caller's only workspace without one), newest
+/// push first, with the projects of it that use them.
+pub async fn github_repos(ctx: &Ctx, req: &Request) -> AppResult<Response> {
+    let workspace = target_workspace(ctx, http::query(req, "workspace").as_deref()).await?;
+    workspace.require_open()?;
     let gh = github::from_config(&ctx.cfg, ctx.now)?;
-    let mut repos = gh.list_repos().await?;
+    let connections = ws::connections(&ctx.db, workspace.id()).await?;
+    let mut repos = Vec::new();
+    for c in connections.iter().filter(|c| c.active()) {
+        let inst = match ws::installation(&ctx.db, &gh, &connections, &c.account).await {
+            Ok(i) => i,
+            Err(e) => {
+                worker::console_log!("no installation on {}: {}", c.account, e.0.message);
+                continue;
+            }
+        };
+        let scope = fctl_domain::repos::Scope::of(c.repos());
+        // One account GitHub won't list doesn't hide the others'.
+        let theirs = match gh.repos_of(inst).await {
+            Ok(r) => r,
+            Err(e) => {
+                worker::console_log!("listing {}'s repositories: {}", c.account, e.0.message);
+                continue;
+            }
+        };
+        repos.extend(
+            theirs
+                .into_iter()
+                .filter(|r| r.owner.eq_ignore_ascii_case(&c.account) && scope.allows(&r.name)),
+        );
+    }
+    repos.sort_by(|a, b| b.pushed_at.cmp(&a.pushed_at));
     #[derive(serde::Deserialize)]
     struct Linked {
         id: String,
@@ -727,8 +863,8 @@ pub async fn github_repos(ctx: &Ctx) -> AppResult<Response> {
     }
     let linked: Vec<Linked> = q(
         &ctx.db,
-        "SELECT id, repo_owner, repo_name FROM projects WHERE repo_owner IS NOT NULL AND archived_at IS NULL",
-        &[],
+        "SELECT id, repo_owner, repo_name FROM projects WHERE repo_owner IS NOT NULL AND archived_at IS NULL AND workspace_id = ?",
+        &[s(workspace.id())],
     )?
     .all()
     .await?;

@@ -12,3 +12,4 @@ pub mod publish;
 pub mod selfcmd;
 pub mod sessions;
 pub mod two_factor;
+pub mod workspaces;

@@ -59,6 +59,13 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
         .collect();
     let primary = p.row.repo();
     repos::check(primary.as_ref(), &grants, &grant)?;
+    // The workspace must work in the account, and may use the repository.
+    let connections = crate::workspaces::connections(&ctx.db, p.workspace_id()).await?;
+    repos::check_scope(
+        crate::workspaces::scope(&connections, &grant.owner).as_ref(),
+        &grant.owner,
+        grant.name.as_deref(),
+    )?;
     // With a GitHub App, the repository must exist and be reachable; GitHub's
     // spelling of the names is the one kept.
     if let Some(app) = ctx.cfg.github.as_ref() {
@@ -71,11 +78,9 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             }
             None => {
                 let login = gh
-                    .installations()
+                    .installation_on(&grant.owner)
                     .await?
-                    .into_iter()
-                    .map(|(_, login)| login)
-                    .find(|login| login.eq_ignore_ascii_case(&grant.owner))
+                    .map(|i| i.account)
                     .ok_or_else(|| {
                         validation(
                             "repo",
@@ -106,7 +111,8 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     )?
     .run()
     .await?;
-    ctx.audit(
+    ctx.audit_in(
+        Some(p.workspace_id()),
         "project.repo_added",
         Some(&p.row.id),
         Some(serde_json::json!({ "repo": grant.label(), "access": grant.access.as_str() })),
@@ -144,7 +150,8 @@ pub async fn remove(ctx: &mut Ctx, id: &str, owner: &str, name: &str) -> AppResu
     if removed == 0 {
         return Err(not_found("Repository"));
     }
-    ctx.audit(
+    ctx.audit_in(
+        Some(p.workspace_id()),
         "project.repo_removed",
         Some(&p.row.id),
         Some(serde_json::json!({ "repo": format!("{owner}/{name}") })),

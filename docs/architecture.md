@@ -82,14 +82,20 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   linked Google account (OIDC, linked from Settings or created on first
   Google sign-in when the email is allowed), or with a
   [passkey](#passkeys). With [two-factor sign-in](#two-factor-sign-in), a
-  code from an authenticator app follows the password.
+  code from an authenticator app follows the password. An account has one
+  or more [email addresses](#email-addresses), and any of them signs in.
 - **Access is an allowlist.** Admins add exact emails or `*@domain` patterns.
   Signing up requires a matching entry; removing an exact entry disables that
   user. The first account is created through a one-time setup link
-  (`/setup#token=…`, from the `FCTL_SETUP_TOKEN` secret) and becomes the owner.
-- Instance roles: `owner`, `admin`, `member`. Project roles: `owner`,
-  `maintainer`, `editor` (can start sessions and message agents), `viewer`.
-  Sessions can also be shared with individual users.
+  (`/setup#token=…`, from the `FCTL_SETUP_TOKEN` secret) and becomes the
+  primary instance owner.
+- Instance roles: `owner` (the primary instance owner, one per instance),
+  `admin`, `member`. Instance admins run the instance (people, invitations,
+  runners, GitHub, settings), not what is inside
+  [workspaces](#workspaces) they aren't members of. Workspace roles: `owner`
+  (the primary admin, one per workspace), `admin`, `member`. Project roles:
+  `owner`, `maintainer`, `editor` (can start sessions and message agents),
+  `viewer`. Sessions can also be shared with people in their workspace.
 - Credentials are opaque random tokens with a type prefix, stored as SHA-256
   hashes: `fctl_ws_` (web session cookie `__Host-fctl`), `fctl_cli_` (CLI,
   issued through the device flow), `fctl_pat_` (personal access token),
@@ -138,6 +144,13 @@ with an authenticator app: TOTP (RFC 6238) with HMAC-SHA1, six digits and
    the person gets an email (when email is set up): whoever it was knew the
    password.
 
+A workspace's admins require it of its members (the workspace's Settings,
+or `fctl workspaces set --require-two-factor on`): for them, it works as
+the instance's requirement below, except that it closes the workspace to a
+member without a second factor, not their account (`two_factor::workspace_blocked`).
+Their sign-ins ask for a passkey as the second factor too, and their last
+factor can't go while they are in it (`two_factor::with_workspaces`).
+
 Admins require it of everyone (Admin → Settings → Sign-in, or `fctl admin
 set --require-two-factor on`): of every account that signs in with a
 password and, once Google sign-ins ask for codes too
@@ -149,7 +162,8 @@ answers its other requests, from browser sessions and CLI and access tokens
 alike, with `two_factor_setup_required` (`api::two_factor::open_while_required`),
 and the web app shows the page that sets it up instead of the app. Admins
 reset it for someone who lost their phone and recovery codes (`fctl admin
-reset-two-factor`), which removes their authenticator app and recovery
+reset-two-factor`; only the primary instance owner resets an admin's, and
+nobody theirs), which removes their authenticator app and recovery
 codes, and their passkeys where those are the second factor required
 (unless a passkey is their only way in). Turning it on, replacing the app, turning it off, an
 admin's reset and a sign-in with a recovery code go in the audit log, and
@@ -203,13 +217,107 @@ the person when email is set up. A passkey that is the account's last way
 in, or the second factor the instance requires, can't be removed until
 another takes its place ([ADR 0023](adr/0023-passkeys-sign-in-on-their-own.md)).
 
+## Workspaces
+
+A workspace is the people who work together, their projects, the runners
+their sessions run on and the GitHub accounts their projects use
+([ADR 0024](adr/0024-workspaces-hold-people-projects-runners-and-github-accounts.md)).
+It has a name, an address (`/w/<slug>`), a color and an avatar image (at most
+256 KB, which the web app makes 256 px square; `GET
+/api/v1/workspaces/{id}/avatar`, at a URL that changes with it). Someone can
+be in at most five (`fctl_domain::workspace::MAX_WORKSPACES`), and anyone on
+the instance creates one, as its primary admin.
+
+- **Who sees what.** Every project belongs to one workspace, and only its
+  members see it (`fctl_domain::workspace::project_role`): its admins own
+  every project; a member has their role as the project's member or the
+  workspace's base role (`none`, `viewer`, `editor`, `maintainer`),
+  whichever is higher. New workspaces start with `editor`. Starting a
+  session, a share or a project role counts for nothing once someone leaves
+  the workspace, or while its two-factor requirement closes it to them.
+  The project and session queries join the caller's membership
+  (`model::PROJECT_SELECT`, `PROJECT_VISIBLE`).
+- **Roles.** Admins invite and remove people, change roles, choose the
+  runners and GitHub accounts, and change the settings; the primary admin
+  also deletes the workspace and hands the role to another admin. Nobody
+  else can demote or remove the primary admin, who leaves only after
+  handing the role over (`fctl_domain::workspace::check_*`).
+- **Invitations** (`workspace_invitations`) are for an address and last 30
+  days. Whoever has it (an account's, or connected to one) sees it on the
+  floor and in `fctl workspaces`, and joins as that address; one the
+  instance doesn't admit yet needs an instance invitation first, which
+  instance admins send together with their workspaces' invitations. People
+  invited before they had an account join when they make it, or connect the
+  address, as far as the limit and two-factor allow; the rest keep waiting.
+- **Your preferences.** Each member chooses the Claude connection their
+  sessions in it run on (`workspace_members.credential_id`), else their
+  default one, so that a company's seat pays for the company's work.
+- **Audit log.** What happens in a workspace (people, roles, runners, GitHub
+  accounts, settings, projects, sessions) goes in its log
+  (`audit_log.workspace_id`), which its admins read; the rest is the
+  instance's.
+- **Feeds.** A feed's identity holds the projects its person saw when it
+  opened, and the workspaces where they see every project
+  (`internal::FeedIdentity`). When someone's workspaces change, FleetDO
+  recomputes it on their sockets (`/workspaces-changed`) and sends
+  `workspaces`, after which the app fetches them again; runners and their
+  updates go only to the people of their workspaces, their owners and
+  instance admins.
+- **Deleting** a workspace (its primary admin, or an instance admin, typing
+  its name) deletes its projects with their sessions and files, as deleting
+  a project does, once none of its sessions runs.
+
+### Email addresses
+
+Each address is invited to the instance on its own. Accepting an
+invitation while signed in (`POST /api/v1/invites/{token}/connect`)
+connects its address to that account instead of making a new one
+(`user_emails`). Every address signs in, and has its own commit email
+([Commits](#commits)); the account's primary one (`users.email`) is where
+fctl writes to the person. A workspace knows its member by the address they
+joined as (`workspace_members.email`), the only one its people see:
+project members, shares and invitations look people up by it
+(`api::auth::member_by_email`). Disconnecting an address
+(`DELETE /api/v1/me/emails/{email}`) leaves the workspaces joined as it.
+
+### GitHub accounts
+
+The instance has one GitHub App. A workspace uses an account the app is
+installed on once it is connected to it (`workspace_github`), with every
+repository the app reaches there or only some. A workspace's admins ask:
+they install the app from the workspace (its setup URL,
+`GET /api/v1/github/installed`, brings them back with the installation and a
+signed state naming the workspace) or name an account it is installed on.
+An instance admin approves the request, or connects accounts directly
+(Admin → GitHub, `fctl admin github`): GitHub's setup URL can be called
+with anyone's installation id, and the app's tokens can write. Project
+repositories must be within the workspace's connections
+(`fctl_domain::repos::check_scope`), and every token a session gets is
+minted within them (`repos::narrow`), so that disconnecting an account takes
+it from running sessions at their next refresh, within the hour. New
+repositories are created in an organization the workspace uses all of.
+
+### Runners and workspaces
+
+A runner belongs to the person who registered it (`runners.created_by`) and
+runs the sessions of the workspaces it is added to (`runner_workspaces`).
+Its owner adds it to workspaces they are an admin of, since a workspace
+trusts its runners with its code, secrets and the tokens of the people who
+start its sessions; a workspace's admins take any runner out of it; its
+owner and instance admins rename, drain, disable and remove it. FleetDO
+reads which workspaces each runner serves before it dispatches, and starts
+a session only on a runner of its workspace (`Slot.serves`); a session whose
+workspace has no runner online says so. A Claude sign-in runs only on a
+runner of the person's workspaces, or their own.
+
 ## Data
 
-**D1** (`crates/fctl-control/migrations`) holds relational state: users,
-identities, two-factor sign-in (sealed authenticator secrets, hashed
-recovery codes, sign-ins waiting for a code), passkeys' public keys and
-their challenges, allowlist, auth tokens,
-device codes, projects, their members and
+**D1** (`crates/fctl-control/migrations`) holds relational state: users and
+their email addresses, identities, two-factor sign-in (sealed authenticator
+secrets, hashed recovery codes, sign-ins waiting for a code), passkeys'
+public keys and their challenges, allowlist, auth tokens, device codes,
+workspaces (with their avatar images), their members, invitations, GitHub
+accounts and runners, projects, their members and
 repositories, sessions (summary rows), shares, who follows which session,
 notification settings and browsers (push subscriptions), runners, encrypted
 credentials and project secrets, the latest plan usage of each Claude
@@ -241,9 +349,11 @@ is deleted right after. An hourly cron trigger (`src/housekeeping.rs`) retries w
 deletes expired tokens, password resets, sign-ins waiting for a code,
 passkey challenges, device codes and invites, the
 links of expired published screenshots, abandoned Claude logins, and audit
-log entries older than a year. Deleting an account
-(`src/api/account.rs`) does the same for the projects only that account is a
-member of, deletes its personal rows in the same batch, and keeps a nameless
+log entries older than a year. Deleting a workspace does the same for all
+its projects. Deleting an account (`src/api/account.rs`) does it for the
+workspaces only that account is in, passes the primary admin role of its
+other workspaces to their longest-standing admin, or member, deletes its
+personal rows (its addresses too) in the same batch, and keeps a nameless
 placeholder row only while sessions or projects it created remain.
 
 ## Sessions
@@ -260,9 +370,9 @@ queued → provisioning → preparing → running ⇄ idle → stopped
 ```
 
 1. `POST /api/v1/projects/{id}/sessions` creates the row and asks FleetDO to
-   schedule it, on a runner that runs or builds its project's image, gives
-   its sandbox the size it asks for and has the free disk its host keeps.
-   Without a free one it stays `queued`, and says why.
+   schedule it, on a runner of its workspace that runs or builds its
+   project's image, gives its sandbox the size it asks for and has the free
+   disk its host keeps. Without a free one it stays `queued`, and says why.
 2. FleetDO builds the `SessionSpec` just in time (repositories, branch, agent
    settings, secrets, fresh GitHub installation tokens, the starter's Claude
    credential) and sends `start_session` to a runner.
@@ -344,10 +454,11 @@ A runner that drains takes no new sessions, and the sessions it has carry on
 there, so that it can be taken out of rotation (for maintenance) without
 dropping anything. A host whose disk runs low takes no new sessions by
 itself, without a drain ([Sandboxes and drivers](#sandboxes-and-drivers)).
-Admins drain one from the runners list or with `fctl admin drain`; its host
-drains itself with `fctl host drain`, using the runner token
-(`POST /api/v1/runner/drain`). Both set the same state, kept in FleetDO's
-storage with who started the drain and when, and either can end it.
+Its owner and instance admins drain one from the runners list or with
+`fctl admin drain`; its host drains itself with `fctl host drain`, using
+the runner token (`POST /api/v1/runner/drain`). Both set the same state,
+kept in FleetDO's storage with who started the drain and when, and either
+can end it.
 
 - FleetDO places new sessions on runners that don't drain; a session that
   waits because every runner online drains says so.
@@ -402,13 +513,15 @@ reason that says which (`fctl_domain::reconcile`).
 A project has a primary repository and may list more of the same GitHub
 account (`project_repos`), each read only or read and write, or grant read
 access to every repository of the account the GitHub App reaches
-(`owner/*`). One installation mints a session's tokens: one that can write
-(the primary repository and the writable ones) and one that can only read.
-A token carries one set of permissions, hence two; they are refreshed
-together (`CredentialKind::Github`). A listed repository the installation no
-longer reaches is left out of them and marked unavailable in the spec, and
-the agent posts a notice; an unreachable primary repository fails the
-session.
+(`owner/*`), all within what its workspace may use
+([GitHub accounts](#github-accounts)): an owner-wide grant reads only the
+workspace's repositories of the account. One installation mints a session's
+tokens: one that can write (the primary repository and the writable ones)
+and one that can only read. A token carries one set of permissions, hence
+two; they are refreshed together (`CredentialKind::Github`). A listed
+repository the workspace may no longer use, or the installation no longer
+reaches, is left out of them and marked unavailable in the spec, and the
+agent posts a notice; a primary repository out of reach fails the session.
 
 - **Credentials.** git asks fctl-agent's credential helper, which reads the
   repository path git sends (`credential.useHttpPath`): writable
@@ -434,11 +547,12 @@ Two project settings, both on unless a maintainer turns them off, decide
 who else they credit with `Co-authored-by` trailers:
 
 - **Credit people in commits** (`credit_people`): the person who started
-  the session, with an address they chose: the commit email in Settings →
-  Profile (`fctl account set --commit-email`), kept on their user row and
-  shown only to them. FleetDO puts their name and that address in the
-  spec's `co_authored_by`; when the project credits nobody, it doesn't
-  look the address up, so it never leaves the control plane.
+  the session, with an address they chose: the commit email of the address
+  they are in the workspace as, in Settings → Email addresses (`fctl account
+  set --for <address> --commit-email …`), kept with the address and shown
+  only to them. FleetDO puts their name and that address in the spec's
+  `co_authored_by`; when the project credits nobody, it doesn't look the
+  address up, so it never leaves the control plane.
 - **Credit Claude in commits** (`credit_claude`): Claude, as Claude Code
   does by default.
 
@@ -645,7 +759,9 @@ again with the new one.
 ## Claude credentials
 
 Each user connects their own Claude subscription; a session always runs on
-the subscription of the person who started it. Two kinds are supported:
+the subscription of the person who started it: the connection they chose
+for the session's workspace, else their default one. Two kinds are
+supported:
 
 | Kind | How it is created | Remote Control |
 |---|---|---|

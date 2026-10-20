@@ -133,8 +133,47 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
             me.user.id
         ))
     );
+    let others: Vec<&str> = me
+        .emails
+        .iter()
+        .filter(|e| !e.primary)
+        .map(|e| e.email.as_str())
+        .collect();
+    if !others.is_empty() {
+        println!("Also signs in as {}", others.join(", "));
+    }
     if let Some(email) = &me.commit_email {
         println!("Commits credit you as {email}");
+    }
+    if let Ok(list) = api.workspaces().await {
+        if list.workspaces.is_empty() {
+            println!(
+                "{}",
+                style::amber("No workspace yet: create one with `fctl workspaces create <name>`.")
+            );
+        } else {
+            println!(
+                "Workspaces: {}",
+                list.workspaces
+                    .iter()
+                    .map(|w| format!("{} ({})", w.name, super::workspaces::role(w.role)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if !list.invitations.is_empty() {
+            println!(
+                "{}",
+                style::accent(&format!(
+                    "Invited to {}: join with `fctl workspaces join`",
+                    list.invitations
+                        .iter()
+                        .map(|i| i.workspace.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            );
+        }
     }
     if !me.passkeys.is_empty() {
         println!(

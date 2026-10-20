@@ -27,6 +27,12 @@ pub fn accent(s: &str) -> String {
 pub fn blue(s: &str) -> String {
     paint("38;2;125;170;255", s)
 }
+/// `n` and the noun for it: "1 runner", "2 runners".
+pub fn count(n: impl Into<u64>, one: &str, many: &str) -> String {
+    let n = n.into();
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 pub fn amber(s: &str) -> String {
     paint("38;2;245;181;68", s)
 }
@@ -51,6 +57,18 @@ pub fn status(s: fctl_proto::session::SessionStatus) -> String {
         Paused => amber(&format!("◍ {label}")),
         Stopped => dim(&format!("○ {label}")),
         Failed => red(&format!("✕ {label}")),
+    }
+}
+
+/// A runner's state: online, offline, disabled, draining or drained.
+pub fn runner_status(r: &fctl_proto::api::Runner) -> String {
+    use fctl_proto::api::RunnerStatus;
+    match (r.status, &r.drain) {
+        (RunnerStatus::Disabled, _) => red("disabled"),
+        (_, Some(_)) if r.active_sessions > 0 => amber("draining"),
+        (_, Some(_)) => amber("drained"),
+        (RunnerStatus::Online, None) => accent("online"),
+        (RunnerStatus::Offline, None) => dim("offline"),
     }
 }
 

@@ -6,8 +6,10 @@ use crate::db::{n, q, s};
 use crate::error::AppResult;
 use crate::internal::{self, Notify};
 use fctl_domain::notify::{self, Event, Follower};
-use fctl_proto::api::NotificationSettings;
-use fctl_proto::session::{InstanceRole, ProjectRole, SessionRole};
+use fctl_domain::two_factor::{self, Factors};
+use fctl_domain::workspace::Membership;
+use fctl_proto::api::{BaseRole, InstanceSettings, NotificationSettings};
+use fctl_proto::session::{ProjectRole, SessionRole, WorkspaceRole};
 use serde::Deserialize;
 use worker::{D1Database, Env};
 
@@ -86,17 +88,35 @@ pub async fn follow_own(
 #[derive(Deserialize)]
 struct FollowerRow {
     user_id: String,
-    role: String,
     member_role: Option<String>,
     share_role: Option<String>,
     created_by: String,
     settings: Option<String>,
+    /// Their role in the session's workspace, and its settings.
+    workspace_role: Option<String>,
+    base_role: Option<String>,
+    #[serde(deserialize_with = "crate::db::int_bool", default)]
+    require_two_factor: bool,
+    /// What they sign in with.
+    #[serde(deserialize_with = "crate::db::int_bool", default)]
+    has_password: bool,
+    #[serde(deserialize_with = "crate::db::int_bool", default)]
+    authenticator: bool,
+    #[serde(deserialize_with = "crate::db::int_bool", default)]
+    passkeys: bool,
 }
 
-const FOLLOWERS: &str = "SELECT f.user_id AS user_id, u.role AS role, m.role AS member_role, \
-    sh.role AS share_role, s.created_by AS created_by, ns.settings AS settings \
+const FOLLOWERS: &str = "SELECT f.user_id AS user_id, m.role AS member_role, \
+    sh.role AS share_role, s.created_by AS created_by, ns.settings AS settings, \
+    wm.role AS workspace_role, w.base_role AS base_role, w.require_two_factor AS require_two_factor, \
+    u.password_hash IS NOT NULL AS has_password, \
+    EXISTS (SELECT 1 FROM authenticator_apps a WHERE a.user_id = f.user_id) AS authenticator, \
+    EXISTS (SELECT 1 FROM passkeys pk WHERE pk.user_id = f.user_id) AS passkeys \
     FROM session_followers f \
     JOIN sessions s ON s.id = f.session_id \
+    JOIN projects pr ON pr.id = s.project_id \
+    LEFT JOIN workspaces w ON w.id = pr.workspace_id \
+    LEFT JOIN workspace_members wm ON wm.workspace_id = pr.workspace_id AND wm.user_id = f.user_id \
     JOIN users u ON u.id = f.user_id \
     LEFT JOIN project_members m ON m.project_id = s.project_id AND m.user_id = f.user_id \
     LEFT JOIN session_shares sh ON sh.session_id = f.session_id AND sh.user_id = f.user_id \
@@ -105,9 +125,26 @@ const FOLLOWERS: &str = "SELECT f.user_id AS user_id, u.role AS role, m.role AS 
     AND EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.user_id = f.user_id)";
 
 impl FollowerRow {
-    fn follower(self) -> Follower {
+    fn follower(self, instance: &InstanceSettings) -> Follower {
+        let factors = Factors {
+            authenticator: self.authenticator,
+            passkeys: self.passkeys,
+        };
         Follower {
-            instance_role: InstanceRole::parse(&self.role).unwrap_or(InstanceRole::Member),
+            membership: self
+                .workspace_role
+                .as_deref()
+                .and_then(WorkspaceRole::parse)
+                .map(|role| Membership {
+                    role,
+                    base_role: self
+                        .base_role
+                        .as_deref()
+                        .and_then(BaseRole::parse)
+                        .unwrap_or_default(),
+                    blocked: self.require_two_factor
+                        && two_factor::workspace_blocked(instance, self.has_password, factors),
+                }),
             project_role: self.member_role.as_deref().and_then(ProjectRole::parse),
             share_role: self.share_role.as_deref().and_then(SessionRole::parse),
             is_creator: self.created_by == self.user_id,
@@ -129,7 +166,8 @@ pub async fn session_changed(env: &Env, event: Event, except: Vec<String>) -> Ap
     let rows: Vec<FollowerRow> = q(&db, FOLLOWERS, &[s(event.session_id.as_str())])?
         .all()
         .await?;
-    let followers: Vec<Follower> = rows.into_iter().map(FollowerRow::follower).collect();
+    let instance = crate::instance::settings(&db).await?;
+    let followers: Vec<Follower> = rows.into_iter().map(|r| r.follower(&instance)).collect();
     for user_id in notify::recipients(&followers, event.kind, &except) {
         let posted: AppResult<serde_json::Value> = async {
             let stub = internal::notify_stub(env, user_id)?;

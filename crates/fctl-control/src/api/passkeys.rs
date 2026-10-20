@@ -444,6 +444,8 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         Some(&user.id),
         Some(serde_json::json!({ "name": name, "synced": made.backed_up })),
     );
+    // A passkey is a second factor: workspaces that require one open now.
+    crate::workspaces::changed(ctx, vec![user.id.clone()]);
     let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     crate::email::notice(
         ctx,
@@ -504,12 +506,23 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             "This passkey is your only way to sign in. Set a password or link Google first.",
         ));
     }
-    let settings = crate::instance::settings(&ctx.db).await?;
+    let instance = crate::instance::settings(&ctx.db).await?;
     if others == 0
-        && !policy::can_remove_last_passkey(&settings, user.has_password(), user.factors())
+        && !policy::can_remove_last_passkey(&instance, user.has_password(), user.factors())
     {
         return Err(conflict(
             "This instance requires two-factor sign-in, and this passkey is yours. Set up an authenticator app first, or add another passkey.",
+        ));
+    }
+    if others == 0
+        && !policy::can_remove_last_passkey(
+            &user.two_factor_settings(&instance),
+            user.has_password(),
+            user.factors(),
+        )
+    {
+        return Err(conflict(
+            "A workspace you are in requires two-factor sign-in, and this passkey is yours. Set up an authenticator app first, add another passkey, or leave the workspace.",
         ));
     }
     // The checks again, in the statement, for removals that race.
@@ -524,7 +537,10 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         &[
             s(&passkey.id),
             s(&user.id),
-            crate::db::b(policy::required(&settings, user.has_password())),
+            crate::db::b(policy::required(
+                &user.two_factor_settings(&instance),
+                user.has_password(),
+            )),
         ],
     )?
     .run()
@@ -539,6 +555,7 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         Some(&user.id),
         Some(serde_json::json!({ "name": passkey.name })),
     );
+    crate::workspaces::changed(ctx, vec![user.id.clone()]);
     me(ctx, &user.id).await
 }
 

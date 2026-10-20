@@ -9,7 +9,8 @@ use crate::crypto;
 use crate::ctx::now_ms;
 use crate::internal::{
     self, Activity, ClaudeUsage, ControlState, Drain, DrainStop, DrainStopped, FeedIdentity,
-    LiveRunners, LoginCode, LoginStart, NotifySession, Schedule, Stop,
+    LiveRunners, LoginCode, LoginStart, NotifySession, RunnerChanged, Schedule, Stop,
+    WorkspacesChanged,
 };
 use crate::spec;
 use fctl_domain::image::{HostImages, ImageWant};
@@ -78,6 +79,35 @@ fn runner_tag(id: &str) -> String {
     format!("runner:{id}")
 }
 
+/// The tag of a person's feed sockets.
+fn feed_user_tag(user_id: &str) -> String {
+    format!("feed:{user_id}")
+}
+
+/// What of runners a feed's person sees.
+fn feed_view(ident: &FeedIdentity) -> crate::model::RunnerView<'_> {
+    crate::model::RunnerView {
+        user_id: Some(&ident.user_id),
+        workspaces: (!ident.admin).then_some(ident.workspaces.as_slice()),
+    }
+}
+
+async fn user_row(
+    db: &worker::D1Database,
+    id: &str,
+) -> crate::error::AppResult<Option<crate::model::UserRow>> {
+    crate::db::q(
+        db,
+        &format!(
+            "SELECT {} FROM users u WHERE u.id = ?",
+            crate::model::user_columns("u")
+        ),
+        &[crate::db::s(id)],
+    )?
+    .first()
+    .await
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RunnerSocket {
     id: String,
@@ -133,14 +163,18 @@ struct Candidate {
     image: Option<String>,
     allowed_images: Option<Vec<String>>,
     allowed_builds: Option<Vec<String>>,
+    /// The workspaces whose sessions it runs.
+    workspaces: Vec<String>,
 }
 
 impl Candidate {
-    fn slot(&self) -> Slot<'_> {
+    /// As the scheduler sees it, for a session of `workspace_id`.
+    fn slot(&self, workspace_id: &str) -> Slot<'_> {
         Slot {
             id: &self.id,
             online: true,
             enabled: true,
+            serves: self.workspaces.iter().any(|w| w == workspace_id),
             capacity: self.capacity,
             active: self.active,
             labels: &self.labels,
@@ -178,6 +212,9 @@ pub struct FleetObject {
     /// Credentials being refreshed right now (serializes OAuth refreshes).
     refreshing: RefCell<HashSet<String>>,
     dispatching: RefCell<bool>,
+    /// runner id → the workspaces it serves, read from D1 before each
+    /// dispatch.
+    runner_workspaces: RefCell<std::collections::HashMap<String, Vec<String>>>,
 }
 
 impl DurableObject for FleetObject {
@@ -216,6 +253,7 @@ impl DurableObject for FleetObject {
             sql,
             refreshing: RefCell::new(HashSet::new()),
             dispatching: RefCell::new(false),
+            runner_workspaces: RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -233,6 +271,23 @@ impl DurableObject for FleetObject {
             },
             (worker::Method::Post, "/stop") => match req.json::<Stop>().await {
                 Ok(b) => self.stop(b).await,
+                Err(e) => Err(ApiError::bad_request(e.to_string())),
+            },
+            (worker::Method::Post, "/workspaces-changed") => {
+                match req.json::<WorkspacesChanged>().await {
+                    Ok(b) => {
+                        self.workspaces_changed(&b.user_ids).await;
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    Err(e) => Err(ApiError::bad_request(e.to_string())),
+                }
+            }
+            (worker::Method::Post, "/runner-changed") => match req.json::<RunnerChanged>().await {
+                Ok(b) => {
+                    self.feed_runner(&b.runner_id).await;
+                    self.dispatch().await;
+                    Ok(serde_json::json!({ "ok": true }))
+                }
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
             },
             (worker::Method::Post, "/notify-session") => match req.json::<NotifySession>().await {
@@ -409,10 +464,11 @@ impl FleetObject {
             ));
         };
         let pair = WebSocketPair::new()?;
+        let user_tag = feed_user_tag(&ident.user_id);
         self.state
-            .accept_websocket_with_tags(&pair.server, &[TAG_FEED]);
+            .accept_websocket_with_tags(&pair.server, &[TAG_FEED, user_tag.as_str()]);
         pair.server.serialize_attachment(&ident)?;
-        let runners = self.runner_list().await.unwrap_or_default();
+        let runners = self.runners_for(&ident).await.unwrap_or_default();
         let hello = FeedServer::Hello {
             runners,
             server_time: now_ms(),
@@ -479,12 +535,12 @@ impl FleetObject {
         out
     }
 
-    async fn runner_list(&self) -> std::result::Result<Vec<fctl_proto::api::Runner>, ApiError> {
+    async fn runner_rows(&self) -> std::result::Result<Vec<crate::model::RunnerRow>, ApiError> {
         let db = self
             .env
             .d1("DB")
             .map_err(|e| ApiError::internal(e.to_string()))?;
-        let rows: Vec<crate::model::RunnerRow> = crate::db::q(
+        crate::db::q(
             &db,
             &format!("{} ORDER BY r.created_at", crate::model::RUNNER_SELECT),
             &[],
@@ -492,9 +548,23 @@ impl FleetObject {
         .map_err(|e| e.0)?
         .all()
         .await
-        .map_err(|e| e.0)?;
+        .map_err(|e| e.0)
+    }
+
+    /// The runners a feed's person sees: those of their workspaces and
+    /// their own, or all of them for instance admins.
+    async fn runners_for(
+        &self,
+        ident: &FeedIdentity,
+    ) -> std::result::Result<Vec<fctl_proto::api::Runner>, ApiError> {
+        let rows = self.runner_rows().await?;
         let live = self.live_runners();
-        Ok(rows.iter().map(|r| r.to_runner(&live)).collect())
+        let view = feed_view(ident);
+        Ok(rows
+            .iter()
+            .filter(|r| r.visible_to(&view))
+            .map(|r| r.to_runner(&live, &view))
+            .collect())
     }
 
     async fn ensure_alarm(&self) {
@@ -1257,13 +1327,17 @@ impl FleetObject {
             worker::console_error!("FCTL_MASTER_KEY is missing: sessions cannot start");
             return;
         };
-        // What the sessions ask for, read when some runner could take one.
+        // What the sessions ask for, and the workspaces runners serve, read
+        // when some runner could take one.
         let wants = if self.candidates().is_empty() {
             None
         } else {
             let ids: Vec<&str> = queued.iter().map(|q| q.session_id.as_str()).collect();
             match spec::session_wants(&db, &ids).await {
-                Ok(w) => Some(w),
+                Ok(w) => {
+                    self.load_runner_workspaces(&db).await;
+                    Some(w)
+                }
                 Err(e) => {
                     worker::console_error!("reading queued sessions' sizes: {}", e.0.message);
                     return;
@@ -1294,9 +1368,23 @@ impl FleetObject {
                 self.home_of(&item.session_id)
             };
             let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS;
-            let picked = self.pick_runner(want.size, &want.image, home.as_deref(), wait);
+            let picked = self.pick_runner(
+                want.size,
+                &want.image,
+                home.as_deref(),
+                wait,
+                &want.workspace_id,
+            );
             let (runner_id, runner_name) = match picked {
                 Ok(r) => r,
+                Err(Wait::Workspace) if !self.has_runner(&want.workspace_id) => {
+                    self.note_waiting(
+                        &item,
+                        "Waiting for a runner: this workspace has none yet. Its admins add one in its settings.".into(),
+                    )
+                    .await;
+                    continue;
+                }
                 Err(wait) => {
                     self.note_waiting(&item, wait.reason()).await;
                     continue;
@@ -1398,7 +1486,8 @@ impl FleetObject {
         }
     }
 
-    /// Connected runners that said hello, with their assigned sessions.
+    /// Connected runners that said hello, with their assigned sessions and
+    /// the workspaces they serve (as D1 had them at the last dispatch).
     fn candidates(&self) -> Vec<Candidate> {
         #[derive(Deserialize)]
         struct C {
@@ -1422,6 +1511,12 @@ impl FleetObject {
                     .iter()
                     .find(|c| c.runner_id == r.id)
                     .map_or(0, |c| c.n as u32);
+                let workspaces = self
+                    .runner_workspaces
+                    .borrow()
+                    .get(&r.id)
+                    .cloned()
+                    .unwrap_or_default();
                 Some(Candidate {
                     id: r.id,
                     name: r.name,
@@ -1437,6 +1532,7 @@ impl FleetObject {
                     image: hello.image,
                     allowed_images: hello.allowed_images,
                     allowed_builds: hello.allowed_builds,
+                    workspaces,
                 })
             })
             .collect()
@@ -1505,9 +1601,10 @@ impl FleetObject {
         image: &ImageWant,
         home: Option<&str>,
         wait: bool,
+        workspace_id: &str,
     ) -> std::result::Result<(String, String), Wait> {
         let candidates = self.candidates();
-        let slots: Vec<Slot<'_>> = candidates.iter().map(Candidate::slot).collect();
+        let slots: Vec<Slot<'_>> = candidates.iter().map(|c| c.slot(workspace_id)).collect();
         let home = home
             .and_then(|id| candidates.iter().find(|c| c.id == id))
             .map(|c| Home {
@@ -1660,9 +1757,16 @@ impl FleetObject {
                     .map_err(|e| e.0)?
                     .ok_or_else(|| ApiError::not_found("Project"))?;
                 let grants = spec::grants(&db, &project.id).await.map_err(|e| e.0)?;
-                let tokens = spec::github_tokens(&cfg, project.repo().as_ref(), &grants, now)
-                    .await
-                    .map_err(|e| e.0)?;
+                let tokens = spec::github_tokens(
+                    &cfg,
+                    &db,
+                    project.workspace_id(),
+                    project.repo().as_ref(),
+                    &grants,
+                    now,
+                )
+                .await
+                .map_err(|e| e.0)?;
                 if tokens.write.is_none() && tokens.read.is_none() {
                     return Err(ApiError::new(
                         ErrorCode::NotConfigured,
@@ -1703,7 +1807,13 @@ impl FleetObject {
 
     fn login_start(&self, b: LoginStart) -> std::result::Result<serde_json::Value, ApiError> {
         let online = self.live_runners().online;
-        let Some(runner_id) = online.first().cloned() else {
+        // A runner of the person's workspaces, or one they registered: a
+        // login passes its tokens through the host.
+        let Some(runner_id) = online
+            .iter()
+            .find(|r| b.runners.as_ref().is_none_or(|allowed| allowed.contains(r)))
+            .cloned()
+        else {
             return Ok(serde_json::json!({ "ok": false }));
         };
         let _ = self.sql.exec(
@@ -1877,11 +1987,9 @@ impl FleetObject {
     }
 
     fn feed_session(&self, s: &fctl_proto::session::Session) {
+        let workspace = s.workspace.as_ref().map(|w| w.id.as_str());
         for (ws, ident) in self.feed_sockets() {
-            if ident.admin
-                || ident.projects.contains(&s.project_id.0)
-                || s.created_by.id.0 == ident.user_id
-            {
+            if ident.sees(s.project_id.as_str(), workspace, s.created_by.id.as_str()) {
                 let mut copy = s.clone();
                 copy.role = None;
                 if let Ok(text) = serde_json::to_string(&FeedServer::Session {
@@ -1894,6 +2002,7 @@ impl FleetObject {
     }
 
     fn feed_activity(&self, a: Activity) {
+        let workspace = a.workspace_id.clone();
         let msg = FeedServer::Activity {
             session_id: a.session_id,
             project_id: a.project_id,
@@ -1908,26 +2017,117 @@ impl FleetObject {
             _ => String::new(),
         };
         for (ws, ident) in self.feed_sockets() {
-            if ident.admin || ident.projects.contains(&project) {
+            if ident.sees(&project, workspace.as_deref(), "") {
                 let _ = ws.send_with_str(&text);
             }
         }
     }
 
     async fn feed_runner(&self, runner_id: &str) {
-        let Ok(runners) = self.runner_list().await else {
+        let Ok(rows) = self.runner_rows().await else {
             return;
         };
-        let Some(runner) = runners.into_iter().find(|r| r.id.0 == runner_id) else {
+        let Some(row) = rows.into_iter().find(|r| r.id == runner_id) else {
             return;
         };
-        let Ok(text) = serde_json::to_string(&FeedServer::Runner {
-            runner: Box::new(runner),
-        }) else {
-            return;
+        let live = self.live_runners();
+        for (ws, ident) in self.feed_sockets() {
+            let view = feed_view(&ident);
+            if !row.visible_to(&view) {
+                continue;
+            }
+            if let Ok(text) = serde_json::to_string(&FeedServer::Runner {
+                runner: Box::new(row.to_runner(&live, &view)),
+            }) {
+                let _ = ws.send_with_str(&text);
+            }
+        }
+    }
+
+    /// Whether any runner, online or not, serves `workspace_id` (as of the
+    /// last dispatch).
+    fn has_runner(&self, workspace_id: &str) -> bool {
+        self.runner_workspaces
+            .borrow()
+            .values()
+            .any(|ws| ws.iter().any(|w| w == workspace_id))
+    }
+
+    /// Reads which workspaces each runner serves, for scheduling.
+    async fn load_runner_workspaces(&self, db: &worker::D1Database) {
+        #[derive(Deserialize)]
+        struct R {
+            runner_id: String,
+            workspace_id: String,
+        }
+        let rows: Vec<R> = match crate::db::q(
+            db,
+            concat!(
+                "SELECT rw.runner_id, rw.workspace_id FROM runner_workspaces rw \
+                 JOIN runners r ON r.id = rw.runner_id WHERE ",
+                crate::serves!()
+            ),
+            &[],
+        ) {
+            Ok(q) => match q.all().await {
+                Ok(r) => r,
+                Err(e) => {
+                    worker::console_error!("reading runners' workspaces: {}", e.0.message);
+                    return;
+                }
+            },
+            Err(_) => return,
         };
-        for (ws, _) in self.feed_sockets() {
-            let _ = ws.send_with_str(&text);
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for r in rows {
+            map.entry(r.runner_id).or_default().push(r.workspace_id);
+        }
+        *self.runner_workspaces.borrow_mut() = map;
+    }
+
+    /// People's workspaces changed: their feeds show what they now may,
+    /// with the runners of their workspaces, and they fetch their
+    /// workspaces again.
+    async fn workspaces_changed(&self, user_ids: &[String]) {
+        let Ok(db) = self.env.d1("DB") else { return };
+        let settings = match crate::instance::settings(&db).await {
+            Ok(s) => s,
+            Err(e) => {
+                worker::console_error!("instance settings: {}", e.0.message);
+                return;
+            }
+        };
+        for user_id in user_ids {
+            let sockets = self.state.get_websockets_with_tag(&feed_user_tag(user_id));
+            if sockets.is_empty() {
+                continue;
+            }
+            let Ok(Some(user)) = user_row(&db, user_id).await else {
+                continue;
+            };
+            let ident = match crate::workspaces::feed_identity(&db, &user, &settings).await {
+                Ok(i) => i,
+                Err(e) => {
+                    worker::console_error!("feed identity: {}", e.0.message);
+                    continue;
+                }
+            };
+            let runners = self.runners_for(&ident).await.unwrap_or_default();
+            let hello = serde_json::to_string(&FeedServer::Hello {
+                runners,
+                server_time: now_ms(),
+            });
+            let changed = serde_json::to_string(&FeedServer::Workspaces);
+            for ws in sockets {
+                let _ = ws.serialize_attachment(&ident);
+                if let Ok(text) = &hello {
+                    let _ = ws.send_with_str(text);
+                }
+                if let Ok(text) = &changed {
+                    let _ = ws.send_with_str(text);
+                }
+            }
         }
     }
 

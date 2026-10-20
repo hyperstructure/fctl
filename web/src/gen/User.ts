@@ -23,4 +23,13 @@ two_factor: boolean,
 /**
  * How many passkeys the account signs in with.
  */
-passkeys: number, created_at: number, last_login_at?: number, };
+passkeys: number, created_at: number, last_login_at?: number, 
+/**
+ * Its other email addresses, which also sign in to it (for instance
+ * admins; empty elsewhere).
+ */
+emails: Array<string>, 
+/**
+ * How many workspaces it is a member of (for instance admins).
+ */
+workspaces: number, };

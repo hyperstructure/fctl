@@ -162,13 +162,23 @@ export const api = {
   removeProjectRepo: (id: string, owner: string, name?: string) =>
     request<G.ProjectRepoList>("DELETE", `/projects/${enc(id)}/repos/${enc(owner)}/${enc(name ?? "*")}`),
   github: () => request<G.GithubInfo>("GET", "/github"),
-  githubRepos: () => request<G.GithubRepoList>("GET", "/github/repos"),
+  /** The repositories a workspace's projects may use. */
+  githubRepos: (workspace: string) =>
+    request<G.GithubRepoList>("GET", `/github/repos?workspace=${enc(workspace)}`),
 
   sessions: (
-    q: { project?: string; status?: string; limit?: number; before?: number; mine?: boolean } = {},
+    q: {
+      project?: string;
+      workspace?: string;
+      status?: string;
+      limit?: number;
+      before?: number;
+      mine?: boolean;
+    } = {},
   ) => {
     const p = new URLSearchParams();
     if (q.project) p.set("project", q.project);
+    if (q.workspace) p.set("workspace", q.workspace);
     if (q.status) p.set("status", q.status);
     if (q.limit) p.set("limit", String(q.limit));
     if (q.before) p.set("before", String(q.before));
@@ -236,12 +246,92 @@ export const api = {
   allowlist: () => request<G.AllowList>("GET", "/admin/allowlist"),
   allow: (b: G.CreateAllowRequest) => request<G.CreatedAllow>("POST", "/admin/allowlist", b),
   disallow: (id: string) =>
-    request<{ ok: boolean; disabled: string[] }>("DELETE", `/admin/allowlist/${enc(id)}`),
+    request<{ ok: boolean; disabled: string[]; disconnected?: string[] }>(
+      "DELETE",
+      `/admin/allowlist/${enc(id)}`,
+    ),
   createInvite: (b: G.CreateInviteRequest) => request<G.Invite>("POST", "/admin/invites", b),
+  revokeInvite: (id: string) => request<G.Ok>("DELETE", `/admin/invites/${enc(id)}`),
+  transferInstance: (userId: string) => request<G.User>("POST", "/admin/transfer", { user_id: userId }),
+  adminWorkspaces: () => request<G.AdminWorkspaceList>("GET", "/admin/workspaces"),
+  adminDeleteWorkspace: (id: string, name: string) =>
+    request<G.Ok>("POST", `/admin/workspaces/${enc(id)}/delete`, { name }),
+  adminWorkspacePrimary: (id: string, userId: string) =>
+    request<G.Ok>("POST", `/admin/workspaces/${enc(id)}/primary`, { user_id: userId }),
+  adminGithub: () => request<G.GithubInstallations>("GET", "/admin/github"),
+  adminConnectGithub: (account: string, workspace: string, repos?: string[]) =>
+    request<G.GithubInstallations>(
+      "PUT",
+      `/admin/github/${enc(account)}/workspaces/${enc(workspace)}`,
+      repos ? { repos } : {},
+    ),
+  adminDisconnectGithub: (account: string, workspace: string) =>
+    request<G.GithubInstallations>("DELETE", `/admin/github/${enc(account)}/workspaces/${enc(workspace)}`),
   audit: (before?: number) => request<G.AuditList>("GET", `/admin/audit${before ? `?before=${before}` : ""}`),
   instanceSettings: () => request<G.InstanceSettings>("GET", "/admin/settings"),
   updateInstanceSettings: (b: G.UpdateInstanceSettingsRequest) =>
     request<G.InstanceSettings>("PATCH", "/admin/settings", b),
+};
+
+/** Workspaces: theirs, their people, runners, GitHub accounts and logs. */
+export const workspaces = {
+  list: () => request<G.WorkspaceList>("GET", "/workspaces"),
+  get: (id: string) => request<G.Workspace>("GET", `/workspaces/${enc(id)}`),
+  create: (b: G.CreateWorkspaceRequest) => request<G.Workspace>("POST", "/workspaces", b),
+  update: (id: string, b: G.UpdateWorkspaceRequest) =>
+    request<G.Workspace>("PATCH", `/workspaces/${enc(id)}`, b),
+  remove: (id: string, name: string) => request<G.Ok>("POST", `/workspaces/${enc(id)}/delete`, { name }),
+  /** Uploads its avatar image (already made square and small by the caller). */
+  setAvatar: async (id: string, image: Blob): Promise<G.Workspace> => {
+    const res = await fetch(`/api/v1/workspaces/${enc(id)}/avatar`, {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "Content-Type": "application/octet-stream" },
+      body: image,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiFailure(res.status, data);
+    return data as G.Workspace;
+  },
+  removeAvatar: (id: string) => request<G.Workspace>("DELETE", `/workspaces/${enc(id)}/avatar`),
+  members: (id: string) => request<G.WorkspaceMemberList>("GET", `/workspaces/${enc(id)}/members`),
+  setRole: (id: string, user: string, role: G.WorkspaceRole) =>
+    request<G.WorkspaceMemberList>("PATCH", `/workspaces/${enc(id)}/members/${enc(user)}`, { role }),
+  /** Removes someone, or leaves (your own id). */
+  removeMember: (id: string, user: string) =>
+    request<G.WorkspaceMemberList | G.Ok>("DELETE", `/workspaces/${enc(id)}/members/${enc(user)}`),
+  invite: (id: string, b: G.InviteToWorkspaceRequest) =>
+    request<G.WorkspaceInvitation>("POST", `/workspaces/${enc(id)}/invitations`, b),
+  revokeInvitation: (id: string, invitation: string) =>
+    request<G.WorkspaceMemberList>("DELETE", `/workspaces/${enc(id)}/invitations/${enc(invitation)}`),
+  transfer: (id: string, userId: string) =>
+    request<G.WorkspaceMemberList>("POST", `/workspaces/${enc(id)}/transfer`, { user_id: userId }),
+  updateMembership: (id: string, b: G.UpdateMembershipRequest) =>
+    request<G.Workspace>("PATCH", `/workspaces/${enc(id)}/membership`, b),
+  audit: (id: string, before?: number) =>
+    request<G.AuditList>("GET", `/workspaces/${enc(id)}/audit${before ? `?before=${before}` : ""}`),
+  runners: (id: string) => request<G.RunnerList>("GET", `/workspaces/${enc(id)}/runners`),
+  createRunner: (id: string, name: string) =>
+    request<G.RunnerRegistration>("POST", `/workspaces/${enc(id)}/runners`, { name }),
+  addRunner: (id: string, runner: string) =>
+    request<G.RunnerList>("PUT", `/workspaces/${enc(id)}/runners/${enc(runner)}`, {}),
+  removeRunner: (id: string, runner: string) =>
+    request<G.RunnerList>("DELETE", `/workspaces/${enc(id)}/runners/${enc(runner)}`),
+  github: (id: string) => request<G.WorkspaceGithub>("GET", `/workspaces/${enc(id)}/github`),
+  connectGithub: (id: string, b: G.ConnectGithubRequest) =>
+    request<G.WorkspaceGithub>("POST", `/workspaces/${enc(id)}/github`, b),
+  disconnectGithub: (id: string, account: string) =>
+    request<G.WorkspaceGithub>("DELETE", `/workspaces/${enc(id)}/github/${enc(account)}`),
+  accept: (invitation: string) => request<G.Workspace>("POST", `/invitations/${enc(invitation)}/accept`, {}),
+  decline: (invitation: string) => request<G.Ok>("POST", `/invitations/${enc(invitation)}/decline`, {}),
+};
+
+/** Your email addresses. */
+export const emails = {
+  update: (email: string, b: G.UpdateEmailRequest) => request<G.Me>("PATCH", `/me/emails/${enc(email)}`, b),
+  remove: (email: string) => request<G.Me>("DELETE", `/me/emails/${enc(email)}`),
+  /** Accepts an instance invitation by connecting its address to the signed-in account. */
+  connectInvite: (token: string) => request<G.Me>("POST", `/invites/${enc(token)}/connect`, {}),
 };
 
 export function wsUrl(path: string): string {

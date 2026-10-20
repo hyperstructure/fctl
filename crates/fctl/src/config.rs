@@ -13,6 +13,9 @@ use std::path::PathBuf;
 pub struct CliConfig {
     pub server: Option<String>,
     pub project: Option<String>,
+    /// The workspace commands use without `--workspace`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]

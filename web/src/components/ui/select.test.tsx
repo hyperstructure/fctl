@@ -218,6 +218,52 @@ describe("Select", () => {
     expect(label?.classList.contains("text-ink-4")).toBe(true);
   });
 
+  it("lists options in sections by their item, and shows the full label once picked", () => {
+    const options: SelectOption[] = [
+      {
+        value: "fctl",
+        label: "hyperstructure / fctl",
+        item: "fctl",
+        section: { key: "h", label: "hyperstructure" },
+      },
+      {
+        value: "design",
+        label: "hyperstructure / design",
+        item: "design",
+        section: { key: "h", label: "hyperstructure" },
+      },
+      {
+        value: "notes",
+        label: "Ada's lab / notes",
+        item: "notes",
+        section: { key: "a", label: "Ada's lab" },
+      },
+    ];
+    function Picker() {
+      const [value, setValue] = useState("fctl");
+      return <Select aria-label="Project" value={value} options={options} onChange={setValue} />;
+    }
+    const container = render(<Picker />);
+    const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]');
+    expect(shownIn(container)).toBe("hyperstructure / fctl");
+    act(() => trigger?.click());
+    const listed = [...container.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+    expect(listed).toEqual(["fctl", "design", "notes"]);
+    const headings = [...container.querySelectorAll('[role="listbox"] [role="presentation"]')].map(
+      (h) => h.textContent,
+    );
+    expect(headings).toEqual(["hyperstructure", "Ada's lab"]);
+    // Typing goes by what the list shows.
+    act(() => {
+      trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: "n", bubbles: true, cancelable: true }));
+    });
+    act(() => {
+      trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    act(() => vi.advanceTimersByTime(1000));
+    expect(shownIn(container)).toBe("Ada's lab / notes");
+  });
+
   it("shows a value none of its options has", () => {
     const container = render(
       <Select aria-label="Effort" value="ultra" options={EFFORT} onChange={() => {}} />,

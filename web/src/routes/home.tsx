@@ -1,8 +1,9 @@
 // The floor: every agent at work as a thread of light, and what to do next.
 
 import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstructure/design/gl/foundry";
+import { useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, Check, Cpu, FolderPlus, KeyRound } from "lucide-react";
+import { Check, Cpu, FolderPlus, KeyRound, Plus, ShieldCheck, Users } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { PlanUsageStrip } from "@/components/plan-usage";
 import {
@@ -12,15 +13,19 @@ import {
   useAttachments,
   useFileDrop,
 } from "@/components/session/attachments";
+import { SessionRow } from "@/components/session/row";
 import { StartButton, useStartSession } from "@/components/session/start";
-import { Avatar, Button, firstNames, GLCanvas, Select, Skeleton, StatusDot, Textarea } from "@/components/ui";
+import { Button, firstNames, GithubIcon, GLCanvas, Select, Skeleton, Textarea, toast } from "@/components/ui";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
+import { workspaces as wsApi } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { feed, useFeed } from "@/lib/feed";
-import { agoShort, lowOnDisk, stamp } from "@/lib/format";
-import { useMe, useProjects, useRunners, useSessions } from "@/lib/queries";
-import { statusReason, waitsForYou } from "@/lib/status";
+import { ago, lowOnDisk } from "@/lib/format";
+import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspaces } from "@/lib/queries";
+import { waitsForYou } from "@/lib/status";
+import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 const ACTIVE: G.SessionStatus[] = [
   "queued",
@@ -113,15 +118,42 @@ function Floor({ active, handle }: { active: G.Session[]; handle: RefObject<Foun
   );
 }
 
-function QuickStart({ projects }: { projects: G.Project[] }) {
-  const editable = projects.filter((p) => p.role !== "viewer");
-  const first = editable[0]?.slug;
+/** The project a new session goes to: picked here last time, while it is still there. */
+const LAST_TARGET = "fctl:last-target";
+
+function QuickStart({ projects, workspaces }: { projects: G.Project[]; workspaces: G.Workspace[] }) {
+  const index = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
+  // Projects where you may start sessions, under their workspaces, in your order.
+  const editable = useMemo(() => {
+    const order = new Map(workspaces.map((w, i) => [w.id, i]));
+    return projects
+      .filter((p) => p.role !== "viewer" && (!p.workspace || !index.get(p.workspace.id)?.blocked))
+      .sort(
+        (a, b) =>
+          (order.get(a.workspace?.id ?? "") ?? 99) - (order.get(b.workspace?.id ?? "") ?? 99) ||
+          (b.last_activity_at ?? b.created_at) - (a.last_activity_at ?? a.created_at),
+      );
+  }, [projects, workspaces, index]);
+  const remembered = (() => {
+    try {
+      return localStorage.getItem(LAST_TARGET) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const first = editable.find((p) => p.slug === remembered)?.slug ?? editable[0]?.slug;
   const [project, setProject] = useState(first ?? "");
   const [prompt, setPrompt] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    if (!project && first) setProject(first);
-  }, [first, project]);
+    if ((!project || !editable.some((p) => p.slug === project)) && first) setProject(first);
+  }, [first, project, editable]);
+  const pick = (slug: string) => {
+    setProject(slug);
+    try {
+      localStorage.setItem(LAST_TARGET, slug);
+    } catch {}
+  };
   const { start, starting } = useStartSession();
   const files = useAttachments(editable.length && project ? { project } : undefined);
   const attach = (f: File[], pasted?: boolean) => {
@@ -130,6 +162,9 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
   };
   const dragging = useFileDrop(attach, editable.length > 0 && !starting);
   if (!editable.length) return null;
+  const target = editable.find((p) => p.slug === project);
+  const ws = target?.workspace ? freshest(index, target.workspace) : undefined;
+  const several = workspaces.length > 1;
   return (
     <form
       onSubmit={(e) => {
@@ -163,29 +198,59 @@ function QuickStart({ projects }: { projects: G.Project[] }) {
           attach(pasted, true);
         }}
         placeholder="What should an agent build next?"
-        className="block px-5 pt-4 pb-14 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
+        className="block px-5 pt-4 pb-16 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
         aria-label="Task for a new session"
       />
       <div className="absolute right-3 bottom-3 left-2.5 flex items-center gap-2">
         <AttachButton onFiles={(f) => attach(f)} />
         <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
-          <span className="text-ink-4">in</span>
+          <span className="hidden text-ink-4 sm:inline">in</span>
           <Select
             size="sm"
-            aria-label="Project"
+            aria-label="Workspace and project"
             value={project}
             disabled={starting}
-            onChange={setProject}
-            options={editable.map((p) => ({
-              value: p.slug,
-              label: p.name,
-              description: p.repo && (
-                <span className="font-mono text-[11.5px]">
-                  {p.repo.owner}/{p.repo.name}
-                </span>
-              ),
-            }))}
+            onChange={pick}
+            options={editable.map((p) => {
+              const w = p.workspace ? freshest(index, p.workspace) : undefined;
+              return {
+                value: p.slug,
+                label: several && w ? `${w.name} / ${p.name}` : p.name,
+                item: p.name,
+                icon: w ? <WorkspaceAvatar workspace={w} size={14} title={false} /> : undefined,
+                description: p.repo ? (
+                  <span className="font-mono text-[11.5px]">
+                    {p.repo.owner}/{p.repo.name}
+                  </span>
+                ) : (
+                  "No repository"
+                ),
+                section:
+                  several && w
+                    ? {
+                        key: w.id,
+                        label: (
+                          <>
+                            <WorkspaceAvatar workspace={w} size={14} title={false} />
+                            {w.name}
+                          </>
+                        ),
+                      }
+                    : undefined,
+              };
+            })}
           />
+          {target?.repo && (
+            <span
+              className="hidden min-w-0 items-center gap-1.5 truncate font-mono text-[11.5px] text-ink-4 md:inline-flex"
+              title={`Agents work in ${target.repo.owner}/${target.repo.name}${ws ? `, in ${ws.name}` : ""}`}
+            >
+              <GithubIcon className="size-3 shrink-0" />
+              <span className="truncate">
+                {target.repo.owner}/{target.repo.name}
+              </span>
+            </span>
+          )}
         </div>
         <span className="flex-1" />
         <span className="hidden text-[11.5px] text-ink-4 sm:inline">⌘↵ to start</span>
@@ -239,17 +304,43 @@ function Step({
   );
 }
 
-function GettingStarted({ me, runners, projects }: { me: G.Me; runners: G.Runner[]; projects: G.Project[] }) {
-  const admin = me.user.role !== "member";
+function GettingStarted({
+  me,
+  runners,
+  projects,
+  workspaces,
+}: {
+  me: G.Me;
+  runners: G.Runner[];
+  projects: G.Project[];
+  workspaces: G.Workspace[];
+}) {
+  const workspace = workspaces.length > 0;
   const claude = me.claude.some((c) => c.status === "active");
   const runner = runners.some((r) => r.status === "online");
   const project = projects.length > 0;
-  if (claude && runner && project) return null;
+  if (workspace && claude && runner && project) return null;
+  // The first workspace you run, for the steps that happen in one.
+  const yours = workspaces.find((w) => w.role === "owner" || w.role === "admin");
   return (
     <section className="animate-rise">
       <h2 className="font-display text-[22px] tracking-[-0.01em] text-ink">Set up your factory</h2>
-      <p className="mt-1 text-[14px] text-ink-3">Three steps, and agents start working for you.</p>
+      <p className="mt-1 text-[14px] text-ink-3">A few steps, and agents start working for you.</p>
       <ol className="mt-3 divide-y divide-line border-y border-line">
+        <Step
+          done={workspace}
+          title="Join or create a workspace"
+          action={
+            <Link to="/w/new">
+              <Button size="sm" icon={<Plus className="size-3.5" />}>
+                Create
+              </Button>
+            </Link>
+          }
+        >
+          The people you work with, your projects, the machines that run them and the GitHub accounts they
+          work in. Or join one you are invited to.
+        </Step>
         <Step
           done={claude}
           title="Connect your Claude subscription"
@@ -267,8 +358,8 @@ function GettingStarted({ me, runners, projects }: { me: G.Me; runners: G.Runner
           done={runner}
           title="Bring a machine online"
           action={
-            admin ? (
-              <Link to="/admin" search={{ tab: "runners" }}>
+            yours ? (
+              <Link to="/w/$slug" params={{ slug: yours.slug }} search={{ tab: "runners" }}>
                 <Button size="sm" icon={<Cpu className="size-3.5" />}>
                   Add a runner
                 </Button>
@@ -276,19 +367,21 @@ function GettingStarted({ me, runners, projects }: { me: G.Me; runners: G.Runner
             ) : undefined
           }
         >
-          {admin
-            ? "Install fctl on the machine that runs agents (your spare Mac is perfect) and register it."
-            : "An admin needs to connect a machine that runs the agents."}
+          {yours
+            ? "Install fctl on the machine that runs agents (your spare Mac is perfect) and register it for your workspace."
+            : "A workspace admin connects a machine that runs its agents."}
         </Step>
         <Step
           done={project}
           title="Create a project"
           action={
-            <Link to="/new">
-              <Button size="sm" icon={<FolderPlus className="size-3.5" />}>
-                Create
-              </Button>
-            </Link>
+            workspace ? (
+              <Link to="/new">
+                <Button size="sm" icon={<FolderPlus className="size-3.5" />}>
+                  Create
+                </Button>
+              </Link>
+            ) : undefined
           }
         >
           Link a GitHub repository — or start a brand new one — and tell agents how to set it up.
@@ -298,42 +391,160 @@ function GettingStarted({ me, runners, projects }: { me: G.Me; runners: G.Runner
   );
 }
 
-function SessionRow({ s }: { s: G.Session }) {
+/** Invitations to workspaces that wait for you: join or decline them here. */
+function Invitations({ invitations }: { invitations: G.WorkspaceInvitation[] }) {
+  const done = () => {
+    for (const k of [keys.workspaces, keys.projects, ["sessions"], keys.runners, keys.me])
+      void queryClient.invalidateQueries({ queryKey: k });
+  };
+  const accept = useMutation({
+    mutationFn: (i: G.WorkspaceInvitation) => wsApi.accept(i.id),
+    onSuccess: (w) => {
+      done();
+      toast(`You joined ${w.name}`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const decline = useMutation({
+    mutationFn: (i: G.WorkspaceInvitation) => wsApi.decline(i.id),
+    onSuccess: done,
+    onError: (e) => toast(e.message, "error"),
+  });
+  if (!invitations.length) return null;
   return (
-    <Link
-      to="/s/$id"
-      params={{ id: s.id }}
-      className="group flex items-center gap-3.5 border-b border-line p-3 transition-colors last:border-b-0 hover:bg-hover/30"
+    <section className="flex animate-rise flex-col gap-2">
+      {invitations.map((i) => (
+        <div
+          key={i.id}
+          className="flex flex-wrap items-center gap-4 rounded-xl border border-accent/25 bg-accent-soft px-4 py-3.5"
+        >
+          <WorkspaceAvatar workspace={i.workspace} size={36} />
+          <div className="min-w-0 flex-1">
+            <div className="text-[14.5px] text-ink">
+              {i.invited_by ? `${i.invited_by.name} invited you to ` : "You're invited to "}
+              <span className="font-medium">{i.workspace.name}</span>
+            </div>
+            <div className="mt-0.5 text-[12.5px] text-ink-3">
+              As {i.email}, {i.role === "admin" ? "an admin" : "a member"} · {ago(i.created_at)}
+              {i.needs_two_factor && (
+                <span className="text-amber">
+                  {" "}
+                  · it requires two-factor sign-in:{" "}
+                  <Link
+                    to="/settings"
+                    search={{ linked: undefined, error: undefined }}
+                    className="underline underline-offset-2"
+                  >
+                    set it up
+                  </Link>{" "}
+                  to join
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              loading={decline.isPending && decline.variables?.id === i.id}
+              onClick={() => decline.mutate(i)}
+            >
+              Decline
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={i.needs_two_factor}
+              loading={accept.isPending && accept.variables?.id === i.id}
+              onClick={() => accept.mutate(i)}
+            >
+              Join {i.workspace.name}
+            </Button>
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/** Narrows the floor's lists to one workspace, with each one's work in progress. */
+function WorkspaceFilter({
+  workspaces,
+  active,
+  value,
+  onChange,
+}: {
+  workspaces: G.Workspace[];
+  active: G.Session[];
+  value: string | undefined;
+  onChange: (id: string | undefined) => void;
+}) {
+  if (workspaces.length < 2) return null;
+  const count = (id?: string) => active.filter((s) => !id || s.workspace?.id === id).length;
+  const chip = (id: string | undefined, label: ReactNode, n: number) => (
+    <button
+      key={id ?? "all"}
+      type="button"
+      aria-pressed={value === id}
+      onClick={() => onChange(id)}
+      className={cn(
+        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12.5px] transition-colors duration-150",
+        value === id
+          ? "border-line-strong bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
+          : "border-transparent text-ink-3 hover:bg-hover hover:text-ink",
+      )}
     >
-      <StatusDot status={s.status} />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[14.5px] text-ink transition-colors group-hover:text-ink">
-          {s.title}
-        </div>
-        <div className="mt-0.5 flex items-center gap-2 text-[12px] text-ink-4">
-          <span className="font-mono">
-            {s.project_slug}#{s.number}
-          </span>
-          {statusReason(s) && <span className="truncate">· {statusReason(s)}</span>}
-          {s.stats.files_changed > 0 && (
-            <span>
-              · <span className="text-accent/80">+{s.stats.additions}</span>{" "}
-              <span className="text-danger/80">−{s.stats.deletions}</span>
-            </span>
-          )}
-          {s.pull_request && <span>· PR #{s.pull_request.number}</span>}
-        </div>
+      {label}
+      {n > 0 && <span className="text-[11px] text-ink-4 tabular-nums">{n}</span>}
+    </button>
+  );
+  return (
+    <fieldset
+      className="-mx-1 flex gap-1 overflow-x-auto px-1 [scrollbar-width:none]"
+      aria-label="Show the work of"
+    >
+      {chip(undefined, "All workspaces", count())}
+      {workspaces
+        .filter((w) => !w.blocked)
+        .map((w) =>
+          chip(
+            w.id,
+            <>
+              <WorkspaceAvatar workspace={w} size={14} title={false} />
+              {w.name}
+            </>,
+            count(w.id),
+          ),
+        )}
+    </fieldset>
+  );
+}
+
+/** Someone who is in no workspace yet: what to do first. */
+function NoWorkspace({ invited }: { invited: boolean }) {
+  return (
+    <section className="flex animate-rise flex-col items-start gap-4 rounded-2xl border border-line bg-surface/70 p-6">
+      <span className="flex size-10 items-center justify-center rounded-xl bg-raised text-ink-3 shadow-[inset_0_0_0_1px_var(--c-line)]">
+        <Users className="size-5" />
+      </span>
+      <div>
+        <h2 className="font-display text-[22px] tracking-[-0.01em] text-ink">
+          {invited ? "Join a workspace to start" : "You aren't in a workspace yet"}
+        </h2>
+        <p className="mt-1 max-w-xl text-[14px] leading-relaxed text-ink-3">
+          Projects, the machines that run their agents and the GitHub accounts they work in all belong to
+          workspaces.{" "}
+          {invited
+            ? "Join the one you are invited to above, or create your own."
+            : "Create one for your own projects, or ask someone to invite you to theirs."}
+        </p>
       </div>
-      <Avatar user={s.created_by} size={20} />
-      <time
-        dateTime={new Date(s.last_activity_at ?? s.created_at).toISOString()}
-        title={stamp(s.last_activity_at ?? s.created_at)}
-        className="w-10 shrink-0 text-right text-[12px] whitespace-nowrap text-ink-4 tabular-nums"
-      >
-        {agoShort(s.last_activity_at ?? s.created_at)}
-      </time>
-      <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100" />
-    </Link>
+      <Link to="/w/new">
+        <Button variant="primary" icon={<Plus className="size-3.5" />}>
+          Create a workspace
+        </Button>
+      </Link>
+    </section>
   );
 }
 
@@ -341,15 +552,23 @@ export function Home() {
   const { data: me } = useMe();
   const projects = useProjects();
   const runners = useRunners();
+  const workspaces = useWorkspaces();
+  const index = useWorkspaceIndex();
   const active = useSessions({ status: "active", limit: 50 });
   const recent = useSessions({ status: "ended", limit: 12 });
   const f = useFeed();
-  const activeList = (active.data?.sessions ?? []).filter((s) => ACTIVE.includes(s.status));
+  const [only, setOnly] = useState<string>();
+  const mine = workspaces.data?.workspaces ?? [];
+  const several = mine.length > 1;
+  const activeAll = (active.data?.sessions ?? []).filter((s) => ACTIVE.includes(s.status));
+  const inFilter = (s: G.Session) => !only || s.workspace?.id === only;
+  const activeList = activeAll.filter(inFilter);
+  const recentList = (recent.data?.sessions ?? []).filter(inFilter);
   // A session that waits for its agent's background work is at work too.
-  const working = activeList.filter(
+  const working = activeAll.filter(
     (s) => s.status === "running" || (s.status === "idle" && !waitsForYou(s)),
   ).length;
-  const waiting = activeList.filter(waitsForYou).length;
+  const waiting = activeAll.filter(waitsForYou).length;
   const onlineRunners = (f.runners.length ? f.runners : (runners.data?.runners ?? [])).filter(
     (r) => r.status === "online",
   );
@@ -359,6 +578,10 @@ export function Home() {
   const floor = useRef<FoundryHandle | null>(null);
   // The plan that sessions you start run on.
   const usage = me?.claude.find((c) => c.is_default)?.usage;
+  const blocked = mine.filter((w) => w.blocked);
+  const row = (s: G.Session) => (
+    <SessionRow key={s.id} s={s} workspace={several && !only ? freshest(index, s.workspace) : undefined} />
+  );
 
   return (
     <div>
@@ -370,7 +593,7 @@ export function Home() {
         }}
         onPointerLeave={() => floor.current?.pointerLeave()}
       >
-        <Floor active={activeList} handle={floor} />
+        <Floor active={activeAll} handle={floor} />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-canvas" />
         <div className="relative z-[1] mx-auto flex h-full max-w-[920px] flex-col justify-end px-6 pb-10">
           <h1 className="animate-rise font-display text-[40px] leading-[1.08] font-medium tracking-[-0.022em] text-ink">
@@ -392,8 +615,8 @@ export function Home() {
               "The floor is quiet. Start something."
             )}
             <span className="text-ink-4">
-              {" "}
-              · {online} {online === 1 ? "runner" : "runners"} online
+              {several && ` · in ${mine.length} workspaces`} · {online} {online === 1 ? "runner" : "runners"}{" "}
+              online
               {draining > 0 && `, ${draining} draining`}
               {lowDisk > 0 && `, ${lowDisk} low on disk`}
             </span>
@@ -402,48 +625,73 @@ export function Home() {
       </div>
       <div className="mx-auto max-w-[920px] px-6">
         <div className="-mt-6 relative z-[2]">
-          {projects.data && <QuickStart projects={projects.data.projects} />}
+          {projects.data && workspaces.data && (
+            <QuickStart projects={projects.data.projects} workspaces={workspaces.data.workspaces} />
+          )}
           {usage?.length ? <PlanUsageStrip usage={usage} className="mt-3" /> : null}
         </div>
         <div className="mt-12 flex flex-col gap-12 pb-24">
-          {me && projects.data && runners.data && (
+          {workspaces.data && <Invitations invitations={workspaces.data.invitations} />}
+          {blocked.map((w) => (
+            <div
+              key={w.id}
+              className="flex items-center gap-3 rounded-xl border border-amber/25 bg-amber-soft px-4 py-3 text-[13.5px] text-ink-2"
+            >
+              <WorkspaceAvatar workspace={w} size={24} />
+              <span className="min-w-0 flex-1">
+                {w.name} requires two-factor sign-in. Until you set it up, its projects and sessions are
+                closed to you.
+              </span>
+              <Link to="/settings" search={{ linked: undefined, error: undefined }}>
+                <Button size="sm" icon={<ShieldCheck className="size-3.5" />}>
+                  Set it up
+                </Button>
+              </Link>
+            </div>
+          ))}
+          {workspaces.data && mine.length === 0 && (
+            <NoWorkspace invited={workspaces.data.invitations.length > 0} />
+          )}
+          {me && projects.data && runners.data && workspaces.data && mine.length > 0 && (
             <GettingStarted
               me={me}
               runners={f.runners.length ? f.runners : runners.data.runners}
               projects={projects.data.projects}
+              workspaces={mine}
             />
           )}
-          <section>
-            <div className="mb-2 flex items-baseline justify-between">
-              <h2 className="text-[13px] font-semibold text-ink">Working now</h2>
-              <span className="text-[12px] text-ink-4">{activeList.length} active</span>
-            </div>
-            {active.isPending ? (
-              <div className="space-y-3 py-3">
-                <Skeleton className="h-10" />
-                <Skeleton className="h-10" />
-              </div>
-            ) : activeList.length === 0 ? (
-              <p className="border-y border-line py-6 text-[13.5px] text-ink-4">
-                No agents are working. Give one a task above.
-              </p>
-            ) : (
-              <div className="border-t border-line">
-                {activeList.map((s) => (
-                  <SessionRow key={s.id} s={s} />
-                ))}
-              </div>
-            )}
-          </section>
-          {(recent.data?.sessions.length ?? 0) > 0 && (
-            <section>
-              <h2 className="mb-2 text-[13px] font-semibold text-ink">Recently</h2>
-              <div className="border-t border-line">
-                {recent.data?.sessions.map((s) => (
-                  <SessionRow key={s.id} s={s} />
-                ))}
-              </div>
-            </section>
+          {mine.length > 0 && (
+            <>
+              <section>
+                <div className="mb-3 flex flex-col gap-3">
+                  <WorkspaceFilter workspaces={mine} active={activeAll} value={only} onChange={setOnly} />
+                </div>
+                <div className="mb-2 flex items-baseline justify-between">
+                  <h2 className="text-[13px] font-semibold text-ink">Working now</h2>
+                  <span className="text-[12px] text-ink-4">{activeList.length} active</span>
+                </div>
+                {active.isPending ? (
+                  <div className="space-y-3 py-3">
+                    <Skeleton className="h-10" />
+                    <Skeleton className="h-10" />
+                  </div>
+                ) : activeList.length === 0 ? (
+                  <p className="border-y border-line py-6 text-[13.5px] text-ink-4">
+                    {only
+                      ? `No agents are working in ${index.get(only)?.name ?? "this workspace"}.`
+                      : "No agents are working. Give one a task above."}
+                  </p>
+                ) : (
+                  <div className="border-t border-line">{activeList.map(row)}</div>
+                )}
+              </section>
+              {recentList.length > 0 && (
+                <section>
+                  <h2 className="mb-2 text-[13px] font-semibold text-ink">Recently</h2>
+                  <div className="border-t border-line">{recentList.map(row)}</div>
+                </section>
+              )}
+            </>
           )}
         </div>
       </div>

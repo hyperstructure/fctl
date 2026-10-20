@@ -11,11 +11,13 @@ import { DevicePage } from "@/routes/device";
 import { ErrorPage } from "@/routes/error";
 import { Home } from "@/routes/home";
 import { NewProject } from "@/routes/new-project";
+import { NewWorkspace } from "@/routes/new-workspace";
 import { NotFound } from "@/routes/not-found";
 import { ProjectPage } from "@/routes/project";
 import { SessionPage } from "@/routes/session";
 import { SettingsPage } from "@/routes/settings";
 import { SignedInLayout } from "@/routes/two-factor";
+import { WorkspacePage, type WorkspaceTab } from "@/routes/workspace";
 
 async function me() {
   return queryClient.ensureQueryData({
@@ -35,6 +37,9 @@ async function me() {
 const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound, errorComponent: ErrorPage });
 
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+/** `v` when it is one of `values`: an old or mistyped link opens the default instead. */
+const oneOf = <T extends string>(v: unknown, values: readonly T[]): T | undefined =>
+  values.find((x) => x === v);
 // Search values arrive JSON-parsed (`?deleted=1` is the number 1).
 const flag = (v: unknown) => (v === undefined || v === null || v === false || v === "" ? undefined : true);
 
@@ -80,7 +85,27 @@ const device = createRoute({
   component: DevicePage,
   validateSearch: (s: Record<string, unknown>) => ({ code: str(s.code) }),
 });
-const newProject = createRoute({ getParentRoute: () => app, path: "/new", component: NewProject });
+const newProject = createRoute({
+  getParentRoute: () => app,
+  path: "/new",
+  component: NewProject,
+  // Optional, so links to it need no search: the workspace to create it in.
+  validateSearch: (s: Record<string, unknown>): { workspace?: string } => ({ workspace: str(s.workspace) }),
+});
+const newWorkspace = createRoute({ getParentRoute: () => app, path: "/w/new", component: NewWorkspace });
+const workspace = createRoute({
+  getParentRoute: () => app,
+  path: "/w/$slug",
+  component: WorkspacePage,
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { tab?: WorkspaceTab; github?: "connected" | "requested" | "asked_owner"; account?: string } => ({
+    tab: oneOf(s.tab, ["projects", "people", "runners", "github", "settings", "audit"] as const),
+    // Back from installing the GitHub App (api::github::installed).
+    github: oneOf(s.github, ["connected", "requested", "asked_owner"] as const),
+    account: str(s.account),
+  }),
+});
 const project = createRoute({
   getParentRoute: () => app,
   path: "/p/$slug",
@@ -101,7 +126,11 @@ const admin = createRoute({
   path: "/admin",
   component: Admin,
   validateSearch: (s: Record<string, unknown>) => ({
-    tab: str(s.tab) as "access" | "users" | "runners" | "settings" | "audit" | undefined,
+    // "users" is what the People tab was called.
+    tab:
+      s.tab === "users"
+        ? undefined
+        : oneOf(s.tab, ["people", "access", "workspaces", "github", "runners", "settings", "audit"] as const),
   }),
 });
 
@@ -111,7 +140,7 @@ const tree = root.addChildren([
   invite,
   reset,
   twoFactor,
-  app.addChildren([home, device, newProject, project, session, settings, admin]),
+  app.addChildren([home, device, newProject, newWorkspace, workspace, project, session, settings, admin]),
 ]);
 
 export const router = createRouter({

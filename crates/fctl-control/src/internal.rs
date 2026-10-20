@@ -123,16 +123,59 @@ pub struct NotifySession {
 pub struct Activity {
     pub session_id: SessionId,
     pub project_id: ProjectId,
+    /// Absent for sessions from before workspaces.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     pub kind: String,
     pub weight: u32,
 }
 
-/// Who opens a feed socket.
-#[derive(Serialize, Deserialize, Clone)]
+/// Who opens a feed socket, and what it shows them
+/// (`crate::workspaces::feed_identity`).
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct FeedIdentity {
     pub user_id: String,
+    /// An instance admin: sees every runner.
     pub admin: bool,
+    /// The projects they could see when the feed opened, or their
+    /// workspaces last changed.
     pub projects: Vec<String>,
+    /// Workspaces where they see every project: they are an admin there,
+    /// or it has a base role.
+    #[serde(default)]
+    pub sees_all: Vec<String>,
+    /// The workspaces open to them.
+    #[serde(default)]
+    pub workspaces: Vec<String>,
+}
+
+impl FeedIdentity {
+    /// Whether they see a session of `project_id` in `workspace_id` that
+    /// `created_by` started.
+    pub fn sees(&self, project_id: &str, workspace_id: Option<&str>, created_by: &str) -> bool {
+        if self.projects.iter().any(|p| p == project_id) {
+            return true;
+        }
+        let Some(w) = workspace_id else {
+            return false;
+        };
+        self.sees_all.iter().any(|x| x == w)
+            || (created_by == self.user_id && self.workspaces.iter().any(|x| x == w))
+    }
+}
+
+/// People whose workspaces changed: their feeds see what they now may
+/// (`/workspaces-changed`).
+#[derive(Serialize, Deserialize)]
+pub struct WorkspacesChanged {
+    pub user_ids: Vec<String>,
+}
+
+/// A runner's workspaces or owner changed: feeds hear about it, and queued
+/// sessions may start on it (`/runner-changed`).
+#[derive(Serialize, Deserialize)]
+pub struct RunnerChanged {
+    pub runner_id: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -158,6 +201,10 @@ pub struct Free {
 pub struct LoginStart {
     pub job_id: LoginJobId,
     pub user: UserRef,
+    /// The runners that may run it: ones that serve the person's
+    /// workspaces, or that they registered. Absent: any (older Workers).
+    #[serde(default)]
+    pub runners: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize)]

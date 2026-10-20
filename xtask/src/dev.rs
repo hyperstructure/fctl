@@ -6,8 +6,9 @@
 //! - a host with the process driver whose agents run fake-claude, a scripted
 //!   stand-in for Claude Code (no subscription, no network, deterministic).
 //!
-//! It bootstraps an owner, a Claude credential, a runner and a project the
-//! first time, and keeps its state in .fctl-dev/ (delete it to start over).
+//! It bootstraps an owner, a Claude credential, a workspace, a runner and a
+//! project the first time, and keeps its state in .fctl-dev/ (delete it to
+//! start over).
 //! With `--smoke` (CI), it runs one session to the end and stops.
 
 use crate::util::{self, run};
@@ -432,7 +433,8 @@ fn ok(what: &str, (status, body, _): &(u16, Value, Option<String>)) -> Result<()
     Ok(())
 }
 
-/// Makes sure the dev owner, a token, a Claude credential and a project exist.
+/// Makes sure the dev owner, a token, a Claude credential, a workspace and a
+/// project exist.
 /// Returns an API token for the owner.
 fn bootstrap(state: &Path) -> Result<String> {
     let token_file = state.join("token");
@@ -500,6 +502,21 @@ fn ensure_basics(token: &str) -> Result<()> {
                 Some(
                     json!({ "token": "sk-ant-oat01-fctl-dev-fake-claude-0000000000", "label": "fake-claude" }),
                 ),
+            )?,
+        )?;
+    }
+    let (_, workspaces, _) = call("GET", "/workspaces", Some(&auth), None)?;
+    if workspaces["workspaces"]
+        .as_array()
+        .is_none_or(|a| a.is_empty())
+    {
+        ok(
+            "creating the development workspace",
+            &call(
+                "POST",
+                "/workspaces",
+                Some(&auth),
+                Some(json!({ "name": "Development", "color": "yellow" })),
             )?,
         )?;
     }

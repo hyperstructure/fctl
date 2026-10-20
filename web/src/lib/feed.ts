@@ -116,6 +116,18 @@ class Feed {
           queryClient.setQueryData(["claude-login", msg.job.id], msg.job);
           if (msg.job.state === "succeeded") void queryClient.invalidateQueries({ queryKey: keys.me });
           break;
+        case "workspaces":
+          // Joined, left, invited, or an admin changed one: what you see changes.
+          for (const k of [
+            keys.workspaces,
+            keys.projects,
+            ["sessions"],
+            keys.runners,
+            ["workspace"],
+            keys.me,
+          ])
+            void queryClient.invalidateQueries({ queryKey: k });
+          break;
         case "claude_usage":
           queryClient.setQueryData<G.Me | null>(keys.me, (me) =>
             me

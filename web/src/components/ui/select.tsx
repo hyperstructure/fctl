@@ -6,6 +6,7 @@
 
 import {
   type CSSProperties,
+  Fragment,
   type KeyboardEvent,
   type ReactNode,
   useEffect,
@@ -20,10 +21,14 @@ export interface SelectOption<T extends string = string> {
   value: T;
   /** Shown in the trigger and the list; typing its first letters jumps to it. */
   label: string;
+  /** Shown in the list instead of `label`, when its section already says the rest. */
+  item?: string;
   /** A quieter second line, in the list only. */
   description?: ReactNode;
   icon?: ReactNode;
   disabled?: boolean;
+  /** Options that share a section's key sit under its label, in the list only. */
+  section?: { key: string; label: ReactNode };
 }
 
 export interface SelectProps<T extends string> {
@@ -132,7 +137,7 @@ export function Select<T extends string>({
     t.text = now - t.at > TYPEAHEAD_MS ? key : t.text + key;
     t.at = now;
     return typeahead(
-      options.map((o) => (o.disabled ? null : o.label)),
+      options.map((o) => (o.disabled ? null : (o.item ?? o.label))),
       t.text,
       from,
     );
@@ -355,49 +360,59 @@ export function Select<T extends string>({
           />
           {options.map((o, i) => {
             const checked = picked !== null ? o.value === picked : i === selected;
+            const heading = o.section && o.section.key !== options[i - 1]?.section?.key;
             return (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: the keys are handled on the trigger
-              <div
-                key={o.value}
-                ref={(el) => {
-                  items.current[i] = el;
-                }}
-                id={optionId(i)}
-                role="option"
-                aria-selected={checked}
-                aria-disabled={o.disabled || undefined}
-                tabIndex={-1}
-                style={{ "--i": i } as CSSProperties}
-                className={cn(
-                  "relative flex cursor-default items-start gap-2.5 rounded-md py-1.5 pr-2 pl-2.5 pointer-coarse:py-2.5",
-                  "transition-colors duration-150",
-                  o.disabled ? "text-ink-4" : i === active || checked ? "text-ink" : "text-ink-2",
+              <Fragment key={o.value}>
+                {heading && (
+                  <div
+                    role="presentation"
+                    className="flex items-center gap-2 px-2.5 pt-2.5 pb-1 text-[11.5px] font-medium text-ink-3 first:pt-1"
+                  >
+                    {o.section?.label}
+                  </div>
                 )}
-                onPointerMove={() => {
-                  if (!o.disabled && picked === null && i !== active) setActive(i);
-                }}
-                onPointerUp={(e) => {
-                  if (pressed.current && e.pointerType === "mouse") pick(i);
-                }}
-                onClick={() => pick(i)}
-              >
-                {o.icon && <span className="mt-0.5 shrink-0 text-ink-3 [&_svg]:size-3.5">{o.icon}</span>}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] leading-5">{o.label}</span>
-                  {o.description && (
-                    <span className="block pb-0.5 text-[12px] leading-[1.45] text-ink-3">
-                      {o.description}
-                    </span>
-                  )}
-                </span>
-                <Check
-                  draw={picked === o.value}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: the keys are handled on the trigger */}
+                <div
+                  ref={(el) => {
+                    items.current[i] = el;
+                  }}
+                  id={optionId(i)}
+                  role="option"
+                  aria-selected={checked}
+                  aria-disabled={o.disabled || undefined}
+                  tabIndex={-1}
+                  style={{ "--i": i } as CSSProperties}
                   className={cn(
-                    "mt-[3px] size-3.5 shrink-0 text-accent transition-opacity duration-150",
-                    checked ? "opacity-100" : "opacity-0",
+                    "relative flex cursor-default items-start gap-2.5 rounded-md py-1.5 pr-2 pl-2.5 pointer-coarse:py-2.5",
+                    "transition-colors duration-150",
+                    o.disabled ? "text-ink-4" : i === active || checked ? "text-ink" : "text-ink-2",
                   )}
-                />
-              </div>
+                  onPointerMove={() => {
+                    if (!o.disabled && picked === null && i !== active) setActive(i);
+                  }}
+                  onPointerUp={(e) => {
+                    if (pressed.current && e.pointerType === "mouse") pick(i);
+                  }}
+                  onClick={() => pick(i)}
+                >
+                  {o.icon && <span className="mt-0.5 shrink-0 text-ink-3 [&_svg]:size-3.5">{o.icon}</span>}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] leading-5">{o.item ?? o.label}</span>
+                    {o.description && (
+                      <span className="block pb-0.5 text-[12px] leading-[1.45] text-ink-3">
+                        {o.description}
+                      </span>
+                    )}
+                  </span>
+                  <Check
+                    draw={picked === o.value}
+                    className={cn(
+                      "mt-[3px] size-3.5 shrink-0 text-accent transition-opacity duration-150",
+                      checked ? "opacity-100" : "opacity-0",
+                    )}
+                  />
+                </div>
+              </Fragment>
             );
           })}
         </div>

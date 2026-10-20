@@ -89,6 +89,12 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 "INSERT OR IGNORE INTO allowlist (id, pattern, role, note, created_by, created_at) VALUES (?, ?, 'admin', 'Instance owner', ?, ?)",
                 &[s(allow_id.as_str()), s(&email), s(id.as_str()), n(ctx.now)],
             )?,
+            q(
+                &ctx.db,
+                "INSERT OR IGNORE INTO user_emails (email, user_id, created_at) \
+                 SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)",
+                &[s(&email), s(id.as_str()), n(ctx.now), s(id.as_str())],
+            )?,
         ],
     )
     .await?;
@@ -101,9 +107,9 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
 }
 
 #[derive(serde::Deserialize)]
-struct InviteRow {
-    id: String,
-    email: String,
+pub struct InviteRow {
+    pub id: String,
+    pub email: String,
     role: String,
     #[serde(deserialize_with = "crate::db::int")]
     expires_at: i64,
@@ -123,17 +129,34 @@ async fn find_invite(ctx: &Ctx, token: &str) -> AppResult<Option<InviteRow>> {
     .await
 }
 
+/// An invitation link that still works.
+pub async fn live_invite(ctx: &Ctx, token: &str) -> AppResult<Option<InviteRow>> {
+    Ok(find_invite(ctx, token)
+        .await?
+        .filter(|i| i.accepted_at.is_none() && i.expires_at > ctx.now))
+}
+
 /// `GET /api/v1/invites/{token}` (public).
 pub async fn invite_preview(ctx: &Ctx, token: &str) -> AppResult<Response> {
-    let invite = find_invite(ctx, token).await?;
-    let Some(invite) = invite.filter(|i| i.accepted_at.is_none() && i.expires_at > ctx.now) else {
+    let Some(invite) = live_invite(ctx, token).await? else {
         return Err(not_found("Invitation"));
     };
+    let workspaces: Vec<crate::workspaces::InvitationRow> = q(
+        &ctx.db,
+        &format!(
+            "{} WHERE i.email = ? AND i.expires_at > ? ORDER BY i.created_at",
+            crate::workspaces::INVITATION_SELECT
+        ),
+        &[s(&invite.email), n(ctx.now)],
+    )?
+    .all()
+    .await?;
     http::ok(&InvitePreview {
         email: invite.email,
-        instance: ctx.cfg.instance_name.clone(),
+        instance: crate::instance::name(&ctx.db, &ctx.cfg).await?,
         invited_by: invite.inviter,
         expires_at: invite.expires_at,
+        workspaces: workspaces.iter().map(|w| w.workspace()).collect(),
     })
 }
 
@@ -218,6 +241,11 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 "UPDATE invites SET accepted_at = ? WHERE id = ?",
                 &[n(ctx.now), s(&invite.id)],
             )?,
+            q(
+                &ctx.db,
+                "INSERT INTO user_emails (email, user_id, created_at) VALUES (?, ?, ?)",
+                &[s(&email), s(id.as_str()), n(ctx.now)],
+            )?,
         ],
     )
     .await?;
@@ -230,6 +258,7 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         Some(&user.id),
         Some(serde_json::json!({ "via": "invite" })),
     );
+    crate::api::workspaces::joined_after_sign_up(ctx, &user, &email).await?;
     http::created(&signed_in(auth::me(ctx, &user).await?))
 }
 
@@ -259,7 +288,7 @@ pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "Your account is disabled. Ask an admin for access.",
         )));
     }
-    let settings = crate::instance::settings(&ctx.db).await?;
+    let settings = user.two_factor_settings(&crate::instance::settings(&ctx.db).await?);
     if two_factor::asks(
         &settings,
         Via::Password,
@@ -342,19 +371,21 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         Some(_) => return Err(validation("avatar_url", "Use an https:// image URL")),
         None => user.avatar_url.clone(),
     };
-    let commit_email = match body.commit_email.as_deref() {
-        Some(e) => validate::commit_email(e)?,
-        None => user.commit_email.clone(),
-    };
+    // The primary address's commit email (Settings → Email addresses sets
+    // the others').
+    if let Some(e) = body.commit_email.as_deref() {
+        let commit_email = validate::commit_email(e)?;
+        crate::api::emails::set_commit_email(ctx, &user, &user.email, commit_email.as_deref())
+            .await?;
+    }
     q(
         &ctx.db,
-        "UPDATE users SET name = ?, given_name = ?, family_name = ?, avatar_url = ?, commit_email = ?, updated_at = ? WHERE id = ?",
+        "UPDATE users SET name = ?, given_name = ?, family_name = ?, avatar_url = ?, updated_at = ? WHERE id = ?",
         &[
             s(&person.full),
             os(person.given.as_deref()),
             os(person.family.as_deref()),
             os(avatar.as_deref()),
-            os(commit_email.as_deref()),
             n(ctx.now),
             s(&user.id),
         ],
@@ -418,7 +449,8 @@ pub async fn forgot_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
             "Someone asked to reset the password of your {} account.\n\nChoose a new password: {url}\n\nThe link works for one hour. If it wasn't you, ignore this email.",
             ctx.cfg.instance_name
         );
-        crate::email::send(&mail, &user.email, "Reset your password", &text).await?;
+        // To the address they typed: any of the account's.
+        crate::email::send(&mail, &email, "Reset your password", &text).await?;
     }
     http::ok(&Ok { ok: true })
 }
@@ -479,7 +511,7 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     let phc = auth::hash_password(&body.new_password)?;
     // With two-factor, the link alone changes nothing: the new password
     // takes effect once a code checks out (`api::two_factor::verify`).
-    let settings = crate::instance::settings(&ctx.db).await?;
+    let settings = user.two_factor_settings(&crate::instance::settings(&ctx.db).await?);
     if two_factor::on(&settings, user.has_password(), user.factors()) {
         let challenge = crate::api::two_factor::challenge(
             ctx,
@@ -817,19 +849,23 @@ pub async fn device_decide(ctx: &mut Ctx, req: &mut Request, code: &str) -> AppR
     http::ok(&Ok { ok: true })
 }
 
-/// Users by email for sharing and membership dialogs.
-pub async fn lookup_user_by_email(
+/// A member of a workspace by the address they are a member as, for
+/// sharing and project membership dialogs: only the workspace's people,
+/// and only by the address it knows them by.
+pub async fn member_by_email(
     ctx: &Ctx,
+    workspace_id: &str,
     email: &str,
 ) -> AppResult<Option<crate::model::UserRow>> {
     let email = validate::email(email)?;
     q(
         &ctx.db,
         &format!(
-            "SELECT {} FROM users u WHERE u.email = ? AND u.status = 'active'",
+            "SELECT {} FROM workspace_members m JOIN users u ON u.id = m.user_id \
+             WHERE m.workspace_id = ? AND m.email = ? AND u.status = 'active'",
             user_columns("u")
         ),
-        &[s(&email)],
+        &[s(workspace_id), s(&email)],
     )?
     .first()
     .await

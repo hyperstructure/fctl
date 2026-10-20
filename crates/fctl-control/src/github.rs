@@ -41,11 +41,43 @@ struct TokenResponse {
 struct Installation {
     id: u64,
     account: Option<Account>,
+    #[serde(default)]
+    repository_selection: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct Account {
     login: String,
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+}
+
+/// An installation of the GitHub App: on which account, and how much of it.
+#[derive(Clone, Debug)]
+pub struct InstallationInfo {
+    pub id: u64,
+    /// The account's login, as GitHub spells it.
+    pub account: String,
+    /// `Organization` or `User`.
+    pub account_type: Option<String>,
+    /// `all` or `selected`.
+    pub repository_selection: Option<String>,
+    pub created_at: Option<i64>,
+}
+
+impl Installation {
+    fn info(self) -> Option<InstallationInfo> {
+        let account = self.account?;
+        Some(InstallationInfo {
+            id: self.id,
+            account: account.login,
+            account_type: account.kind,
+            repository_selection: self.repository_selection,
+            created_at: self.created_at.as_deref().and_then(parse_rfc3339_ms),
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -99,6 +131,9 @@ pub struct SessionTokens {
     /// Listed repositories the installation cannot reach, left out of the
     /// tokens.
     pub unreachable: Vec<String>,
+    /// Listed repositories the session's workspace may not use, left out
+    /// too (`*` for an owner-wide grant).
+    pub refused: Vec<String>,
 }
 
 pub fn from_config(cfg: &crate::config::Config, now: i64) -> AppResult<Github<'_>> {
@@ -194,19 +229,85 @@ impl<'a> Github<'a> {
         )))
     }
 
-    /// Accounts the app is installed on.
-    pub async fn installations(&self) -> AppResult<Vec<(u64, String)>> {
-        let (status, v) = self
-            .app_call(Method::Get, "/app/installations?per_page=100", None)
-            .await?;
-        if status != 200 {
-            return Err(unavailable("GitHub did not list the app's installations"));
+    /// Every installation of the app.
+    pub async fn installation_list(&self) -> AppResult<Vec<InstallationInfo>> {
+        let mut out = Vec::new();
+        for page in 1..=10 {
+            let (status, v) = self
+                .app_call(
+                    Method::Get,
+                    &format!("/app/installations?per_page=100&page={page}"),
+                    None,
+                )
+                .await?;
+            if status != 200 {
+                return Err(unavailable("GitHub did not list the app's installations"));
+            }
+            let list: Vec<Installation> = serde_json::from_value(v)?;
+            let n = list.len();
+            out.extend(list.into_iter().filter_map(Installation::info));
+            if n < 100 {
+                break;
+            }
         }
-        let list: Vec<Installation> = serde_json::from_value(v)?;
-        Ok(list
-            .into_iter()
-            .filter_map(|i| i.account.map(|a| (i.id, a.login)))
-            .collect())
+        Ok(out)
+    }
+
+    /// One installation of the app, by its id.
+    pub async fn installation(&self, id: u64) -> AppResult<InstallationInfo> {
+        let (status, v) = self
+            .app_call(Method::Get, &format!("/app/installations/{id}"), None)
+            .await?;
+        if status == 404 {
+            return Err(AppError(ApiError::not_found("GitHub installation")));
+        }
+        if status != 200 {
+            return Err(unavailable("GitHub did not answer"));
+        }
+        let inst: Installation = serde_json::from_value(v)?;
+        inst.info()
+            .ok_or_else(|| AppError(ApiError::not_found("GitHub installation")))
+    }
+
+    /// The installation on `owner`, when the app is installed there.
+    pub async fn installation_on(&self, owner: &str) -> AppResult<Option<InstallationInfo>> {
+        for path in [
+            format!("/orgs/{owner}/installation"),
+            format!("/users/{owner}/installation"),
+        ] {
+            let (status, v) = self.app_call(Method::Get, &path, None).await?;
+            if status == 200 {
+                let inst: Installation = serde_json::from_value(v)?;
+                return Ok(inst.info());
+            }
+        }
+        Ok(None)
+    }
+
+    /// The repositories an installation reaches.
+    pub async fn repos_of(&self, inst: u64) -> AppResult<Vec<GithubRepo>> {
+        let token = self.installation_token(inst, None, None).await?;
+        let mut out = Vec::new();
+        for page in 1..=10 {
+            let (status, v) = self
+                .call(
+                    Method::Get,
+                    &format!("/installation/repositories?per_page=100&page={page}"),
+                    &format!("token {}", token.token),
+                    None,
+                )
+                .await?;
+            if status != 200 {
+                break;
+            }
+            let list: RepoList = serde_json::from_value(v)?;
+            let n = list.repositories.len();
+            out.extend(list.repositories.into_iter().map(to_repo));
+            if n < 100 {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Asks for a token; GitHub's refusal comes back as `Ok(Err((status, message)))`.
@@ -292,6 +393,7 @@ impl<'a> Github<'a> {
             write,
             read,
             unreachable: reach.unreachable,
+            refused: Vec::new(),
         })
     }
 
@@ -412,35 +514,6 @@ impl<'a> Github<'a> {
             return Err(unavailable("GitHub did not answer"));
         }
         Ok(to_repo(serde_json::from_value(v)?))
-    }
-
-    /// Repositories of every installation.
-    pub async fn list_repos(&self) -> AppResult<Vec<GithubRepo>> {
-        let mut out = Vec::new();
-        for (inst, _) in self.installations().await? {
-            let token = self.installation_token(inst, None, None).await?;
-            for page in 1..=5 {
-                let (status, v) = self
-                    .call(
-                        Method::Get,
-                        &format!("/installation/repositories?per_page=100&page={page}"),
-                        &format!("token {}", token.token),
-                        None,
-                    )
-                    .await?;
-                if status != 200 {
-                    break;
-                }
-                let list: RepoList = serde_json::from_value(v)?;
-                let n = list.repositories.len();
-                out.extend(list.repositories.into_iter().map(to_repo));
-                if n < 100 {
-                    break;
-                }
-            }
-        }
-        out.sort_by(|a, b| b.pushed_at.cmp(&a.pushed_at));
-        Ok(out)
     }
 
     /// Creates a repository in `owner` (an organization the app is installed on).

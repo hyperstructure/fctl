@@ -2,7 +2,11 @@
 import type { CreateRepoRequest } from "./CreateRepoRequest";
 import type { ProjectSettings } from "./ProjectSettings";
 
-export type CreateProjectRequest = { name: string, slug?: string, description?: string, 
+export type CreateProjectRequest = { 
+/**
+ * The workspace (id or slug). Absent: your only workspace.
+ */
+workspace?: string, name: string, slug?: string, description?: string, 
 /**
  * An existing repository, `owner/name`.
  */

@@ -299,6 +299,12 @@ impl Api {
         self.get("/projects").await
     }
 
+    /// The projects of one workspace (id or slug).
+    pub async fn workspace_projects(&self, workspace: &str) -> Result<ProjectList> {
+        self.get(&format!("/projects?workspace={}", enc(workspace)))
+            .await
+    }
+
     pub async fn project(&self, id_or_slug: &str) -> Result<Project> {
         self.get(&format!("/projects/{}", enc(id_or_slug))).await
     }
@@ -317,8 +323,16 @@ impl Api {
         self.patch(&format!("/projects/{}", enc(id)), req).await
     }
 
-    pub async fn github_repos(&self) -> Result<GithubRepoList> {
-        self.get("/github/repos").await
+    /// The repositories a workspace's projects may use (`None`: your only
+    /// workspace).
+    pub async fn github_repos(&self, workspace: Option<&str>) -> Result<GithubRepoList> {
+        match workspace {
+            Some(w) => {
+                self.get(&format!("/github/repos?workspace={}", enc(w)))
+                    .await
+            }
+            None => self.get("/github/repos").await,
+        }
     }
 
     /// The repositories a project's agents may use, the primary one first.
@@ -361,7 +375,21 @@ impl Api {
         status: Option<&str>,
         limit: u32,
     ) -> Result<SessionList> {
+        self.sessions_in(None, project, status, limit).await
+    }
+
+    /// Sessions, of one workspace when it is given.
+    pub async fn sessions_in(
+        &self,
+        workspace: Option<&str>,
+        project: Option<&str>,
+        status: Option<&str>,
+        limit: u32,
+    ) -> Result<SessionList> {
         let mut q = format!("/sessions?limit={limit}");
+        if let Some(w) = workspace {
+            q.push_str(&format!("&workspace={}", enc(w)));
+        }
         if let Some(p) = project {
             q.push_str(&format!("&project={}", enc(p)));
         }
@@ -607,11 +635,18 @@ impl Api {
         self.get("/runners").await
     }
 
-    pub async fn create_runner(&self, name: &str) -> Result<RunnerRegistration> {
+    /// Registers a runner for a workspace you are an admin of (`None`:
+    /// your only one).
+    pub async fn create_runner(
+        &self,
+        name: &str,
+        workspace: Option<&str>,
+    ) -> Result<RunnerRegistration> {
         self.post(
             "/runners",
             &CreateRunnerRequest {
                 name: name.to_owned(),
+                workspace: workspace.map(str::to_owned),
             },
         )
         .await
@@ -710,6 +745,17 @@ impl Api {
     }
 
     /// Turns off a user's two-factor sign-in (they lost their phone).
+    /// Changes someone's instance role or status (admins).
+    pub async fn update_user(&self, user_id: &str, req: &UpdateUserRequest) -> Result<User> {
+        self.patch(&format!("/admin/users/{}", enc(user_id)), req)
+            .await
+    }
+
+    /// Deletes someone's account (admins), as deleting their own would.
+    pub async fn delete_user(&self, user_id: &str) -> Result<Ok> {
+        self.delete(&format!("/admin/users/{}", enc(user_id))).await
+    }
+
     pub async fn reset_two_factor(&self, user_id: &str) -> Result<User> {
         self.delete(&format!("/admin/users/{}/two-factor", enc(user_id)))
             .await
@@ -717,6 +763,302 @@ impl Api {
 
     pub async fn instance_settings(&self) -> Result<InstanceSettings> {
         self.get("/admin/settings").await
+    }
+
+    /// Invites an address to the instance, and to workspaces you are an
+    /// admin of.
+    pub async fn invite(&self, req: &CreateInviteRequest) -> Result<Invite> {
+        self.post("/admin/invites", req).await
+    }
+
+    /// Hands the role of primary instance owner to an admin.
+    pub async fn transfer_instance(&self, user_id: &str) -> Result<User> {
+        self.post(
+            "/admin/transfer",
+            &TransferRequest {
+                user_id: fctl_proto::UserId(user_id.to_owned()),
+            },
+        )
+        .await
+    }
+
+    /// A page of the instance's audit log (what happened in workspaces is
+    /// in theirs), newest first.
+    pub async fn admin_audit(&self, before: Option<i64>) -> Result<AuditList> {
+        let mut path = "/admin/audit".to_owned();
+        if let Some(b) = before {
+            path.push_str(&format!("?before={b}"));
+        }
+        self.get(&path).await
+    }
+
+    /// Every workspace on the instance.
+    pub async fn admin_workspaces(&self) -> Result<AdminWorkspaceList> {
+        self.get("/admin/workspaces").await
+    }
+
+    /// Gives the primary admin role of a workspace whose primary admin's
+    /// account is disabled or gone to one of its members.
+    pub async fn admin_workspace_primary(&self, workspace: &str, user_id: &str) -> Result<Ok> {
+        self.post(
+            &format!("/admin/workspaces/{}/primary", enc(workspace)),
+            &TransferRequest {
+                user_id: fctl_proto::UserId(user_id.to_owned()),
+            },
+        )
+        .await
+    }
+
+    /// Deletes a workspace and everything in it.
+    pub async fn admin_delete_workspace(&self, workspace: &str, name: &str) -> Result<Ok> {
+        self.post(
+            &format!("/admin/workspaces/{}/delete", enc(workspace)),
+            &DeleteWorkspaceRequest {
+                name: name.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// The GitHub App's installations and the workspaces using them.
+    pub async fn admin_github(&self) -> Result<GithubInstallations> {
+        self.get("/admin/github").await
+    }
+
+    /// Lets a workspace use a GitHub account (approves its request).
+    pub async fn admin_connect_github(
+        &self,
+        account: &str,
+        workspace: &str,
+        repos: Option<Vec<String>>,
+    ) -> Result<GithubInstallations> {
+        self.put(
+            &format!(
+                "/admin/github/{}/workspaces/{}",
+                enc(account),
+                enc(workspace)
+            ),
+            &SetGithubConnectionRequest { repos },
+        )
+        .await
+    }
+
+    /// Takes a GitHub account from a workspace (declines its request).
+    pub async fn admin_disconnect_github(
+        &self,
+        account: &str,
+        workspace: &str,
+    ) -> Result<GithubInstallations> {
+        self.delete(&format!(
+            "/admin/github/{}/workspaces/{}",
+            enc(account),
+            enc(workspace)
+        ))
+        .await
+    }
+
+    // ── workspaces ──
+
+    /// Your workspaces, and the invitations waiting for you.
+    pub async fn workspaces(&self) -> Result<WorkspaceList> {
+        self.get("/workspaces").await
+    }
+
+    pub async fn workspace(&self, id_or_slug: &str) -> Result<Workspace> {
+        self.get(&format!("/workspaces/{}", enc(id_or_slug))).await
+    }
+
+    pub async fn create_workspace(&self, req: &CreateWorkspaceRequest) -> Result<Workspace> {
+        self.post("/workspaces", req).await
+    }
+
+    pub async fn update_workspace(
+        &self,
+        id: &str,
+        req: &UpdateWorkspaceRequest,
+    ) -> Result<Workspace> {
+        self.patch(&format!("/workspaces/{}", enc(id)), req).await
+    }
+
+    /// Deletes a workspace (its primary admin), its name typed to confirm.
+    pub async fn delete_workspace(&self, id: &str, name: &str) -> Result<Ok> {
+        self.post(
+            &format!("/workspaces/{}/delete", enc(id)),
+            &DeleteWorkspaceRequest {
+                name: name.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Uploads a workspace's avatar image.
+    pub async fn set_workspace_avatar(&self, id: &str, bytes: Vec<u8>) -> Result<Workspace> {
+        let body = self
+            .raw(
+                Method::PUT,
+                &format!("/workspaces/{}/avatar", enc(id)),
+                Some(bytes),
+                Some("application/octet-stream"),
+            )
+            .await?;
+        serde_json::from_slice(&body).map_err(|e| Error::Decode(e.to_string()))
+    }
+
+    pub async fn remove_workspace_avatar(&self, id: &str) -> Result<Workspace> {
+        self.delete(&format!("/workspaces/{}/avatar", enc(id)))
+            .await
+    }
+
+    pub async fn workspace_members(&self, id: &str) -> Result<WorkspaceMemberList> {
+        self.get(&format!("/workspaces/{}/members", enc(id))).await
+    }
+
+    pub async fn invite_to_workspace(
+        &self,
+        id: &str,
+        req: &InviteToWorkspaceRequest,
+    ) -> Result<WorkspaceInvitation> {
+        self.post(&format!("/workspaces/{}/invitations", enc(id)), req)
+            .await
+    }
+
+    pub async fn revoke_workspace_invitation(
+        &self,
+        id: &str,
+        invitation: &str,
+    ) -> Result<WorkspaceMemberList> {
+        self.delete(&format!(
+            "/workspaces/{}/invitations/{}",
+            enc(id),
+            enc(invitation)
+        ))
+        .await
+    }
+
+    pub async fn set_workspace_role(
+        &self,
+        id: &str,
+        user_id: &str,
+        role: fctl_proto::session::WorkspaceRole,
+    ) -> Result<WorkspaceMemberList> {
+        self.patch(
+            &format!("/workspaces/{}/members/{}", enc(id), enc(user_id)),
+            &UpdateWorkspaceMemberRequest { role },
+        )
+        .await
+    }
+
+    /// Removes someone from a workspace, or leaves it (your own id).
+    pub async fn remove_workspace_member(
+        &self,
+        id: &str,
+        user_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.delete(&format!("/workspaces/{}/members/{}", enc(id), enc(user_id)))
+            .await
+    }
+
+    /// Hands the primary admin role of a workspace to another admin.
+    pub async fn transfer_workspace(&self, id: &str, user_id: &str) -> Result<WorkspaceMemberList> {
+        self.post(
+            &format!("/workspaces/{}/transfer", enc(id)),
+            &TransferRequest {
+                user_id: fctl_proto::UserId(user_id.to_owned()),
+            },
+        )
+        .await
+    }
+
+    /// Your preferences in a workspace.
+    pub async fn update_membership(
+        &self,
+        id: &str,
+        req: &UpdateMembershipRequest,
+    ) -> Result<Workspace> {
+        self.patch(&format!("/workspaces/{}/membership", enc(id)), req)
+            .await
+    }
+
+    pub async fn workspace_audit(&self, id: &str, before: Option<i64>) -> Result<AuditList> {
+        let mut path = format!("/workspaces/{}/audit", enc(id));
+        if let Some(b) = before {
+            path.push_str(&format!("?before={b}"));
+        }
+        self.get(&path).await
+    }
+
+    pub async fn workspace_runners(&self, id: &str) -> Result<RunnerList> {
+        self.get(&format!("/workspaces/{}/runners", enc(id))).await
+    }
+
+    /// Lets one of your runners run a workspace's sessions.
+    pub async fn add_workspace_runner(&self, id: &str, runner: &str) -> Result<RunnerList> {
+        self.put(
+            &format!("/workspaces/{}/runners/{}", enc(id), enc(runner)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub async fn remove_workspace_runner(&self, id: &str, runner: &str) -> Result<RunnerList> {
+        self.delete(&format!("/workspaces/{}/runners/{}", enc(id), enc(runner)))
+            .await
+    }
+
+    pub async fn workspace_github(&self, id: &str) -> Result<WorkspaceGithub> {
+        self.get(&format!("/workspaces/{}/github", enc(id))).await
+    }
+
+    /// Lets a workspace use a GitHub account the app is installed on, or
+    /// asks an instance admin to.
+    pub async fn connect_github(
+        &self,
+        id: &str,
+        req: &ConnectGithubRequest,
+    ) -> Result<WorkspaceGithub> {
+        self.post(&format!("/workspaces/{}/github", enc(id)), req)
+            .await
+    }
+
+    pub async fn disconnect_github(&self, id: &str, account: &str) -> Result<WorkspaceGithub> {
+        self.delete(&format!("/workspaces/{}/github/{}", enc(id), enc(account)))
+            .await
+    }
+
+    pub async fn accept_invitation(&self, id: &str) -> Result<Workspace> {
+        self.post(
+            &format!("/invitations/{}/accept", enc(id)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub async fn decline_invitation(&self, id: &str) -> Result<Ok> {
+        self.post(
+            &format!("/invitations/{}/decline", enc(id)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    // ── email addresses ──
+
+    pub async fn update_email(&self, email: &str, req: &UpdateEmailRequest) -> Result<Me> {
+        self.patch(&format!("/me/emails/{}", enc(email)), req).await
+    }
+
+    pub async fn remove_email(&self, email: &str) -> Result<Me> {
+        self.delete(&format!("/me/emails/{}", enc(email))).await
+    }
+
+    /// Accepts an invitation to the instance by connecting its address to
+    /// your account.
+    pub async fn connect_invite(&self, token: &str) -> Result<Me> {
+        self.post(
+            &format!("/invites/{}/connect", enc(token)),
+            &serde_json::json!({}),
+        )
+        .await
     }
 
     pub async fn update_instance_settings(

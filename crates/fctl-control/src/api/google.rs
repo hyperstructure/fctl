@@ -248,7 +248,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         if !user.is_active() {
             return fail(ctx, "/login", "disabled");
         }
-        let settings = crate::instance::settings(&ctx.db).await?;
+        let settings = user.two_factor_settings(&crate::instance::settings(&ctx.db).await?);
         if fctl_domain::two_factor::asks(
             &settings,
             fctl_domain::two_factor::Via::Google,
@@ -325,6 +325,13 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     )?
     .run()
     .await?;
+    q(
+        &ctx.db,
+        "INSERT OR IGNORE INTO user_emails (email, user_id, created_at) VALUES (?, ?, ?)",
+        &[s(&email), s(id.as_str()), n(ctx.now)],
+    )?
+    .run()
+    .await?;
     insert_identity(ctx, id.as_str(), &claims, Some(&email)).await?;
     let user = auth::user_by_id(ctx, id.as_str())
         .await?
@@ -335,6 +342,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         Some(&user.id),
         Some(serde_json::json!({ "via": "google" })),
     );
+    crate::api::workspaces::joined_after_sign_up(ctx, &user, &email).await?;
     http::redirect(&st.return_to)
 }
 

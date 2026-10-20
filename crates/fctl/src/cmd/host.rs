@@ -52,6 +52,11 @@ pub enum HostCmd {
         /// more; it replaces the list, and "" builds none).
         #[arg(long = "allow-build", value_name = "REPO")]
         allow_builds: Vec<String>,
+        /// The workspace whose sessions it runs, one you are an admin of
+        /// (default from `fctl workspaces use`, or the one you administer).
+        /// Add it to more with `fctl workspaces add-runner`.
+        #[arg(short, long, conflicts_with = "token")]
+        workspace: Option<String>,
         /// Use an existing runner token instead of registering a new runner.
         #[arg(long, env = "FCTL_RUNNER_TOKEN", hide_env_values = true)]
         token: Option<String>,
@@ -139,11 +144,13 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             image,
             allow_images,
             allow_builds,
+            workspace,
             token,
             no_service,
             build_image,
         } => {
-            const SIGN_IN: &str = "Sign in as an admin first (`fctl login`), or pass --token";
+            const SIGN_IN: &str =
+                "Sign in as an admin of the workspace first (`fctl login`), or pass --token";
             let server = config::server(server)?;
             let mut cfg = HostConfig::load().unwrap_or_default();
             cfg.server = server.clone();
@@ -232,12 +239,26 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             let token = match token {
                 Some(t) => t,
                 None => {
-                    let reg = api.context(SIGN_IN)?.create_runner(&cfg.name).await?;
+                    let workspace = workspace.or_else(|| config::CliConfig::load().workspace);
+                    let reg = api
+                        .context(SIGN_IN)?
+                        .create_runner(&cfg.name, workspace.as_deref())
+                        .await?;
                     println!(
-                        "{} Registered runner {} ({})",
+                        "{} Registered runner {} ({}){}",
                         style::accent("✓"),
                         style::bold(&reg.runner.name),
-                        reg.runner.id
+                        reg.runner.id,
+                        match reg.runner.workspaces.as_slice() {
+                            [] => " for no workspace yet".to_owned(),
+                            ws => format!(
+                                " for {}",
+                                ws.iter()
+                                    .map(|w| w.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        }
                     );
                     reg.token
                 }
