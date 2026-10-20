@@ -1106,6 +1106,10 @@ pub struct Workspace {
     pub runners_online: u32,
     /// The GitHub accounts it works in.
     pub github: Vec<String>,
+    /// Its admins skipped inviting people while setting it up, as in a
+    /// workspace for one: the app's setup checklist leaves that step out.
+    #[serde(default)]
+    pub skip_invites: bool,
     pub created_at: Millis,
 }
 
@@ -1154,6 +1158,9 @@ pub struct UpdateWorkspaceRequest {
     pub color: Option<WorkspaceColor>,
     pub base_role: Option<BaseRole>,
     pub require_two_factor: Option<bool>,
+    /// Leave inviting people out of the app's setup checklist, or (`false`)
+    /// ask for it again.
+    pub skip_invites: Option<bool>,
 }
 
 /// Someone in a workspace.
@@ -2190,6 +2197,22 @@ mod tests {
         // An update from an older client changes nothing about draining.
         let update: UpdateRunnerRequest = serde_json::from_str(r#"{"enabled":true}"#)?;
         assert_eq!(update.draining, None);
+        Ok(())
+    }
+
+    #[test]
+    fn workspaces_from_older_control_planes_ask_for_invites() -> Result<(), serde_json::Error> {
+        let old: Workspace = serde_json::from_value(serde_json::json!({
+            "id": "ws_1", "slug": "side-project", "name": "Side project", "color": "pink",
+            "role": "owner", "email": "ada@example.com", "base_role": "editor",
+            "require_two_factor": false, "blocked": false, "members": 1, "projects": 0,
+            "runners": 0, "runners_online": 0, "github": [], "created_at": 1
+        }))?;
+        assert!(!old.skip_invites);
+        // An update from an older client leaves the step as it is.
+        let update: UpdateWorkspaceRequest = serde_json::from_str(r#"{"name":"Side"}"#)?;
+        assert_eq!(update.skip_invites, None);
+        assert!(!serde_json::to_string(&update)?.contains("skip_invites"));
         Ok(())
     }
 

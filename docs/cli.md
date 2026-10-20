@@ -131,6 +131,7 @@ fctl workspaces transfer grace@example.com # the primary admin hands the role to
 fctl workspaces set --name "Side project" --avatar logo.png   # or --avatar none
 fctl workspaces set --base-role editor     # every member starts sessions in every project
 fctl workspaces set --require-two-factor on   # closed to members without a second factor
+fctl workspaces set --skip-invites on      # a workspace for one: its setup stops asking for people
 
 fctl workspaces runners                    # the runners its sessions start on, with their ids
 fctl workspaces add-runner studio-mac      # one of yours runs its sessions too (its name or id)

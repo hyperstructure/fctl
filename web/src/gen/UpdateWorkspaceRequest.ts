@@ -5,4 +5,9 @@ import type { WorkspaceColor } from "./WorkspaceColor";
 /**
  * `PATCH /api/v1/workspaces/{id}` (admins): absent fields stay as they are.
  */
-export type UpdateWorkspaceRequest = { name?: string, slug?: string, color?: WorkspaceColor, base_role?: BaseRole, require_two_factor?: boolean, };
+export type UpdateWorkspaceRequest = { name?: string, slug?: string, color?: WorkspaceColor, base_role?: BaseRole, require_two_factor?: boolean, 
+/**
+ * Leave inviting people out of the app's setup checklist, or (`false`)
+ * ask for it again.
+ */
+skip_invites?: boolean, };

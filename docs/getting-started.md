@@ -74,7 +74,9 @@ shows on the floor, where you join it; or choose **New workspace** in the
 sidebar (`fctl workspaces create "Side project"`) and be its primary admin.
 Each workspace has its own people, admins, runners, GitHub accounts and
 audit log, and can require two-factor sign-in of its members. You can be in
-up to five.
+up to five. Until a new workspace has them, its page asks its admins for
+people, a runner, a GitHub account and a project; in a workspace for one,
+**Skip for now** leaves out the people.
 
 ## 4. Connect your Claude subscription
 
