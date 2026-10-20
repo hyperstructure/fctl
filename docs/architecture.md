@@ -607,6 +607,15 @@ imports so it loads in every repository
   (`crates/fctl-domain/src/journal.rs`).
 - Streaming deltas (`stream_event`) are forwarded but not stored; SessionDO
   keeps the in-progress text in memory so late viewers see it.
+- The session's counters (`SessionStats`) move as the agent works. Tool
+  calls and each API call's input and cache reads come from its stored
+  messages, which repeat them with each content block (SessionDO remembers
+  the calls it counted), and its output from the `message_delta` that ends
+  its stream. A turn is under way while the session runs
+  (`turn_started_at`), so viewers count its time up. Each turn's `result`
+  adds its duration and settles the tokens on Claude's own totals
+  (`modelUsage`), which also have the calls that stream nothing and the
+  deltas lost while the uplink was down (`crates/fctl-domain/src/events.rs`).
 - Host status (`provisioning`, `preparing`) is sent as idempotent state, not
   as sequenced events.
 - Deliveries (messages, interrupts, stops) wait in SessionDO's outbox until

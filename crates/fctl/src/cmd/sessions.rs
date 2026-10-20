@@ -298,8 +298,12 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     }
     let st = &s.stats;
     println!(
-        "work:     {} turns · {} tool calls · {} files (+{} −{})",
-        st.turns, st.tool_calls, st.files_changed, st.additions, st.deletions
+        "work:     {} · {} · {} (+{} −{})",
+        style::count(st.turns_taken(), "turn", "turns"),
+        style::count(st.tool_calls, "tool call", "tool calls"),
+        style::count(st.files_changed, "file", "files"),
+        st.additions,
+        st.deletions
     );
     if let Some(rc) = s
         .remote_control

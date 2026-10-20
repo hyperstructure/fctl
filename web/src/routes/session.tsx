@@ -52,6 +52,7 @@ import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink } from "@/lib/remote-control";
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
 import { statusReason } from "@/lib/status";
+import { agentTime, turnsTaken } from "@/lib/work";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 export function SessionPage() {
@@ -437,6 +438,22 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
+/**
+ * The agent's time so far, counting up each second while a turn is under
+ * way, up to `until` when its work stopped coming through.
+ */
+function AgentTime({ stats, until }: { stats: G.SessionStats; until?: number }) {
+  const ticking = stats.turn_started_at != null && until == null;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [ticking]);
+  return <span className="tabular-nums">{duration(agentTime(stats, now, until))}</span>;
+}
+
 /** A repository's changed files, totals and pull request. */
 function Changes({
   repo,
@@ -589,9 +606,9 @@ function Rail({
         )}
       </RailSection>
       <RailSection title="Work">
-        <Row k="Turns" v={st.turns} />
+        <Row k="Turns" v={turnsTaken(st)} />
         <Row k="Tool calls" v={st.tool_calls} />
-        <Row k="Agent time" v={duration(st.busy_ms)} />
+        <Row k="Agent time" v={<AgentTime stats={st} until={stall?.since} />} />
         <Row k="Tokens in / out" v={`${num(st.input_tokens)} / ${num(st.output_tokens)}`} />
         <Row k="Cache reads" v={num(st.cache_read_tokens)} />
       </RailSection>

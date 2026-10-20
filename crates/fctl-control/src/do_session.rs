@@ -90,6 +90,8 @@ struct RunnerView {
 #[derive(Default)]
 struct Mem {
     summary: Option<Session>,
+    /// The API calls whose tokens the summary counts (`ev::Counted`).
+    counted: Option<ev::Counted>,
     /// `stream_event`s of the block being written.
     live: Vec<String>,
     last_pulse: i64,
@@ -348,6 +350,25 @@ impl SessionObject {
             self.set_meta("summary", &text);
         }
         self.mem.borrow_mut().summary = Some(s.clone());
+    }
+
+    fn counted(&self) -> ev::Counted {
+        if let Some(c) = self.mem.borrow().counted.clone() {
+            return c;
+        }
+        let c: ev::Counted = self
+            .meta("counted")
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default();
+        self.mem.borrow_mut().counted = Some(c.clone());
+        c
+    }
+
+    fn save_counted(&self, c: ev::Counted) {
+        if let Ok(text) = serde_json::to_string(&c) {
+            self.set_meta("counted", &text);
+        }
+        self.mem.borrow_mut().counted = Some(c);
     }
 
     fn acked_agent_seq(&self) -> u64 {
@@ -868,6 +889,7 @@ impl SessionObject {
         s.status = status;
         s.status_reason = reason.clone();
         s.resume_at = resume_at;
+        ev::apply_status(&mut s.stats, status == SessionStatus::Running, now);
         if matches!(status, SessionStatus::Running | SessionStatus::Idle) && s.started_at.is_none()
         {
             s.started_at = Some(now);
@@ -1211,6 +1233,8 @@ impl SessionObject {
                 let mut summary_changed = false;
                 let mut turn_ended = false;
                 let mut usage = Vec::new();
+                let counted_before = self.counted();
+                let mut counted = counted_before.clone();
                 // Newer events that came before older ones wait for them
                 // (`fctl_domain::journal`).
                 let waiting_since = self.meta("waiting_since").and_then(|v| v.parse().ok());
@@ -1240,7 +1264,7 @@ impl SessionObject {
                     acked = e.agent_seq;
                     let mut body = e.body;
                     if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
-                        summary_changed |= Self::apply_claude(s, v, &self.mem);
+                        summary_changed |= Self::apply_claude(s, &mut counted, v, e.ts, &self.mem);
                         turn_ended |= self.remember_reply(v);
                         plan::merge(&mut usage, plan::readings(v, now));
                         ev::shape_for_storage(v);
@@ -1262,6 +1286,9 @@ impl SessionObject {
                     self.delete_meta("waiting_since");
                 }
                 self.set_meta("acked_agent_seq", &acked.to_string());
+                if counted != counted_before {
+                    self.save_counted(counted);
+                }
                 self.broadcast_events(&out);
                 self.send_uplink(&UplinkDown::Ack { agent_seq: acked });
                 self.record_usage(usage);
@@ -1286,6 +1313,14 @@ impl SessionObject {
                 self.track_live(&event, &text);
                 self.broadcast(&format!(r#"{{"type":"stream","event":{text}}}"#));
                 self.pulse_kind("delta", 1, now);
+                // An API call's output tokens come at its end.
+                if event
+                    .pointer("/event/type")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("message_delta")
+                {
+                    self.count_output(&event, now).await;
+                }
             }
             UplinkUp::State { state } => self.apply_state(state, now).await,
             UplinkUp::Log { line } => {
@@ -1407,11 +1442,19 @@ impl SessionObject {
         }
     }
 
-    /// Updates the summary from a Claude message; returns whether it changed visibly.
-    fn apply_claude(s: &mut Session, v: &serde_json::Value, mem: &RefCell<Mem>) -> bool {
+    /// Updates the summary from a Claude message sent at `ts`; returns
+    /// whether it changed visibly.
+    fn apply_claude(
+        s: &mut Session,
+        counted: &mut ev::Counted,
+        v: &serde_json::Value,
+        ts: i64,
+        mem: &RefCell<Mem>,
+    ) -> bool {
         let kind = ev::classify(v);
         let before = s.stats.clone();
-        ev::apply_stats(&mut s.stats, v);
+        let running = s.status == SessionStatus::Running;
+        ev::apply_stats(&mut s.stats, counted, v, ts, running);
         let mut changed = before != s.stats;
         match kind {
             ClaudeKind::Init => {
@@ -1429,6 +1472,19 @@ impl SessionObject {
             _ => {}
         }
         changed
+    }
+
+    /// Counts an API call's output tokens from its `message_delta`, which
+    /// comes only live: the turn's result settles what goes missing.
+    async fn count_output(&self, event: &serde_json::Value, now: i64) {
+        let Some(mut s) = self.summary() else { return };
+        let mut counted = self.counted();
+        if ev::apply_stream_stats(&mut s.stats, &mut counted, event) {
+            self.save_counted(counted);
+            self.save_summary(&s);
+            self.broadcast_summary(&s);
+            self.mark_dirty(now).await;
+        }
     }
 
     /// Counts changes in every repository; the session's pull request is the
