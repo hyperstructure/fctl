@@ -78,6 +78,13 @@ this file is the overview. Order within a section is priority.
 
 - [x] GitHub's webhook keeps sessions' pull requests current: their state,
       merge queues included, and their checks, in session lists and pages
+- [x] Project memory: each session's agent starts with the notes earlier
+      agents and people left, adds what the next one should know and marks
+      wrong ones stale; people read, change and delete them
+- [x] Retrospectives: agents record what they worked on, how, what got in
+      the way and what a future agent should know, for each piece of work
+- [ ] Learning from retrospectives: a session that reads a project's and
+      proposes notes and AGENTS.md changes
 - [ ] GitHub webhooks: agents react to CI failures and review comments on
       their pull requests (#8)
 - [ ] Scheduled and recurring sessions (nightly dependency updates, triage) (#9)

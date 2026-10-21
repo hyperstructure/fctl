@@ -64,6 +64,10 @@ session with `fctl edit` (the host's own fctl comes first on its agents'
 PATH), `screenshot` draws a small PNG and publishes it with `fctl publish`
 (allow that first: `cargo run -p fctl -- admin set --publish-screenshots
 on`, then `cargo run -p fctl -- projects set --publish-screenshots on`),
+`remember <text>` adds the rest of its line to the project's memory with
+`fctl memory add`, `recall` lists the memory with `fctl memory`, `retro`
+records a retrospective with `fctl retro` (the project's Memory and
+Retrospectives tabs, and the session page, show them),
 `slow` streams slowly, `background <seconds>` starts a shell command in
 the background that ends after that many seconds and takes its result in
 a turn of its own (the session waits for it, then runs again, as with
@@ -175,13 +179,16 @@ fails there fails the same way locally with `cargo xtask check <part>`.
 
 `cargo xtask dev --smoke` starts the local stack as `cargo xtask dev` does
 and runs `fctl run -p playground --model haiku` with a task that has
-fake-claude commit `notes.md`, push it, watch its checks for 12 seconds and
-leave a command running in the background. It waits until the session has
-shown the commit pushed before the turn ended, the turn has ended, the
-session has waited for the command and the agent has taken its result in a
-turn of its own, then stops the session, checks the model and effort level
-it reports and that the project remembers the model it asked for, and stops
-everything else. It fails when any step does. CI runs it from a fresh
+fake-claude commit `notes.md`, push it, watch its checks for 12 seconds,
+keep a note in the project's memory, record a retrospective and leave a
+command running in the background. It waits until the session has shown
+the commit pushed before the turn ended, the transcript has shown the note
+and the retrospective, the turn has ended, the session has waited for the
+command and the agent has taken its result in a turn of its own, checks
+that the project's memory has the note and the session its retrospective,
+then stops the session, checks the model and effort level it reports and
+that the project remembers the model it asked for, and stops everything
+else. It fails when any step does. CI runs it from a fresh
 checkout, so its migrations, Worker, bootstrap, host and agent all run
 before a change can deploy. Locally it uses your `.fctl-dev/` state and
 ports 8787 and 5173: stop `cargo xtask dev` first.

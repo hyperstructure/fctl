@@ -198,12 +198,25 @@ outside it except through these channels:
   until a maintainer turns them off.
 - **fctl.** No fctl credentials enter a sandbox. Through fctl-agent's
   session socket, anything the agent runs can rename its own session and
-  describe it (`fctl edit`) and, in projects that publish screenshots,
-  publish images at public links (`fctl publish`), and nothing else; the
-  control plane checks the values and the settings again. Turn publishing
-  on only where anything the agents see may be shown to anyone with a
-  link: text in a repository or on a web page can ask an agent to publish
-  a screenshot, as it can ask it to send what it sees elsewhere.
+  describe it (`fctl edit`); in projects that publish screenshots, publish
+  images at public links (`fctl publish`); and in projects that keep a
+  memory or ask for retrospectives, read the project's notes, add notes,
+  mark them stale and record retrospectives of its session (`fctl memory`,
+  `fctl retro`), and nothing else; the control plane checks the values and
+  the settings again. Turn publishing on only where anything the agents see
+  may be shown to anyone with a link: text in a repository or on a web page
+  can ask an agent to publish a screenshot, as it can ask it to send what
+  it sees elsewhere.
+- **Project memory** is text that the agent of every later session in the
+  project starts with, and anything an agent runs can add to it, so text in
+  a repository or on a web page that steers one agent can leave a note for
+  the agents after it, past any review. `~/AGENTS.md` presents the notes
+  as notes that don't override the person's request or fctl's rules; each
+  note names the session that wrote it, the transcript shows it as it is
+  kept, and the project's editors delete the ones they don't want, which
+  the workspace's audit log records. Turn it off (`fctl projects set
+  --project-memory off`) in projects whose agents read text from people
+  you don't trust.
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 - **The image and the setup script.** Whoever sets a project's image or
