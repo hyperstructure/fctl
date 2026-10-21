@@ -43,13 +43,13 @@ pub async fn build(
         Some(dir) => {
             let dir =
                 std::fs::canonicalize(dir).with_context(|| format!("finding {}", dir.display()))?;
-            build_from(driver, tag, download_base, &dir).await
+            build_from(driver, tag, download_base, &dir, info.version.as_deref()).await
         }
         None => {
             let tmp = private_dir("fctl-image")?;
             let result = async {
                 let dir = download(&tmp).await?;
-                build_from(driver, tag, download_base, &dir).await
+                build_from(driver, tag, download_base, &dir, info.version.as_deref()).await
             }
             .await;
             let _ = std::fs::remove_dir_all(&tmp);
@@ -85,7 +85,14 @@ fn private_dir(prefix: &str) -> Result<PathBuf> {
     bail!("couldn't make a directory in {}", base.display())
 }
 
-async fn build_from(driver: &Driver, tag: &str, download_base: &str, dir: &Path) -> Result<()> {
+/// `tool` is the driver's version: what `limactl --version` says, with Lima.
+async fn build_from(
+    driver: &Driver,
+    tag: &str,
+    download_base: &str,
+    dir: &Path,
+    tool: Option<&str>,
+) -> Result<()> {
     check_source(dir)?;
     let ctx = dir.display().to_string();
     // provision.sh installs the latest release when this version is not
@@ -122,7 +129,7 @@ async fn build_from(driver: &Driver, tag: &str, download_base: &str, dir: &Path)
                 &ctx,
             ],
         ),
-        "lima" => return build_lima_base(dir, &[&version, &download]).await,
+        "lima" => return build_lima_base(dir, &[&version, &download], tool).await,
         other => bail!("the {other} driver has no image to build"),
     };
     // A published image that the build replaces goes once no sandbox uses it.
@@ -172,7 +179,18 @@ fn check_source(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn build_lima_base(dir: &Path, env: &[&str]) -> Result<()> {
+/// Prepares the base VM with `provision.sh`, on Lima's Debian template for
+/// `lima` (what `limactl --version` says).
+async fn build_lima_base(dir: &Path, env: &[&str], lima: Option<&str>) -> Result<()> {
+    let template = lima_template(lima);
+    if template == DEBIAN_12 {
+        println!(
+            "This Lima has no Debian 13 template ({}; Lima 2.0 added it), so {BASE_VM} gets \
+             Debian 12, not the default image's Debian 13. Upgrade Lima (brew upgrade lima) \
+             to prepare it on Debian 13.",
+            lima.unwrap_or_default()
+        );
+    }
     run_inherit(
         "limactl",
         &[
@@ -182,7 +200,7 @@ async fn build_lima_base(dir: &Path, env: &[&str]) -> Result<()> {
             "--tty=false",
             "--set",
             crate::driver::lima::ISOLATED,
-            "template://debian-12",
+            template,
         ],
     )
     .await?;
@@ -203,6 +221,30 @@ async fn build_lima_base(dir: &Path, env: &[&str]) -> Result<()> {
     run_inherit("limactl", &["stop", BASE_VM]).await?;
     println!("The {BASE_VM} VM is ready; sessions are cloned from it.");
     Ok(())
+}
+
+const DEBIAN_12: &str = "template://debian-12";
+const DEBIAN_13: &str = "template://debian-13";
+
+/// The base VM's template: Debian 13, as the default image, with Lima 2.0
+/// and newer; older Limas have only Debian 12's. A version that can't be
+/// read gets Debian 13, and limactl's error if it lacks the template.
+fn lima_template(lima: Option<&str>) -> &'static str {
+    match lima.and_then(major_version) {
+        Some(major) if major < 2 => DEBIAN_12,
+        _ => DEBIAN_13,
+    }
+}
+
+/// 2 for `limactl version 2.2.1`.
+fn major_version(version: &str) -> Option<u64> {
+    let number = version.split_whitespace().last()?;
+    number
+        .trim_start_matches('v')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// `'…'` for sh.
@@ -229,7 +271,9 @@ async fn run_inherit(program: &str, args: &[&str]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_source, private_dir, shell_quote, unpack};
+    use super::{
+        DEBIAN_12, DEBIAN_13, check_source, lima_template, private_dir, shell_quote, unpack,
+    };
 
     #[cfg(unix)]
     #[test]
@@ -251,6 +295,16 @@ mod tests {
             "'FCTL_DOWNLOAD=https://fctl.sh/releases'"
         );
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn prepares_lima_vms_on_debian_13_from_lima_2() {
+        assert_eq!(lima_template(Some("limactl version 2.2.1")), DEBIAN_13);
+        assert_eq!(lima_template(Some("limactl version 2.0.0")), DEBIAN_13);
+        assert_eq!(lima_template(Some("limactl version 1.2.2")), DEBIAN_12);
+        assert_eq!(lima_template(Some("limactl version v1.0.7")), DEBIAN_12);
+        assert_eq!(lima_template(Some("limactl version HEAD")), DEBIAN_13);
+        assert_eq!(lima_template(None), DEBIAN_13);
     }
 
     /// An archive like GitHub's: a pax header with the commit, then one
@@ -281,7 +335,7 @@ mod tests {
     fn unpacks_the_sources_from_githubs_archive() -> anyhow::Result<()> {
         let tmp = tempfile::tempdir()?;
         let archive = github_archive(&[
-            ("Dockerfile", "FROM debian:bookworm-slim\n"),
+            ("Dockerfile", "FROM debian:trixie-slim\n"),
             ("provision.sh", "#!/usr/bin/env bash\n"),
             ("README.md", "# Sandbox\n"),
         ])?;
@@ -289,7 +343,7 @@ mod tests {
         assert_eq!(dir, tmp.path().join("sandbox-main"));
         assert_eq!(
             std::fs::read_to_string(dir.join("Dockerfile"))?,
-            "FROM debian:bookworm-slim\n"
+            "FROM debian:trixie-slim\n"
         );
         check_source(&dir)?;
         Ok(())
@@ -298,7 +352,7 @@ mod tests {
     #[test]
     fn needs_a_dockerfile_and_provision_sh() -> anyhow::Result<()> {
         let tmp = tempfile::tempdir()?;
-        let archive = github_archive(&[("Dockerfile", "FROM debian:bookworm-slim\n")])?;
+        let archive = github_archive(&[("Dockerfile", "FROM debian:trixie-slim\n")])?;
         let dir = unpack(&archive, tmp.path())?;
         let err = check_source(&dir).err().map(|e| e.to_string());
         assert!(

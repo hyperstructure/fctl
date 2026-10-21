@@ -9,10 +9,10 @@ its repository, which images a host runs, and what an image needs.
 
 `ghcr.io/hyperstructure/sandbox` is built from
 [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox), a
-public repository whose README lists the versions: Debian bookworm with
-git, the GitHub CLI, build tools, Python and uv, Rust, Node.js, TypeScript,
-Bun, Claude Code and fctl. It is published for arm64 (Apple silicon) and
-amd64.
+public repository whose README lists the versions: Debian 13 (trixie)
+with git, the GitHub CLI, build tools, Python and uv, Rust, Node.js,
+TypeScript, Bun, Claude Code and fctl. It is published for arm64 (Apple
+silicon) and amd64.
 
 | Tag | Image |
 |---|---|
@@ -77,8 +77,9 @@ pull` pulls it now. While the version's image can't be pulled, it pulls
   replaces a build with the published image, which it tells apart by its
   `org.opencontainers.image.revision` label; `fctl host image pull` does.
 - **Lima** sessions clone the `fctl-base` VM instead, which `fctl host
-  image build` prepares with the image's provisioning script. The process
-  driver uses no image.
+  image build` prepares with the image's provisioning script, on Lima's
+  Debian 13 (Debian 12 with Lima older than 2.0, which lacks it). The
+  process driver uses no image.
 - **Disk.** The host removes the default images that sessions no longer
   start from: builds that a newer one replaced, other versions' images, and
   `latest` once the version's image is there. It does that when it starts,
@@ -107,7 +108,7 @@ checks every build for it:
   start. The image sets it, and `/etc/profile.d/fctl.sh` sets it for login
   shells, which setup scripts run in. fctl itself is in `/usr/local/bin`.
 - **The tools**: git, gh, Python 3 (`python3` and `python`) with uv, Rust
-  through rustup with rustfmt and Clippy, Node.js 22 with npm and corepack,
+  through rustup with rustfmt and Clippy, Node.js 26 with npm and corepack,
   TypeScript (`tsc`), Bun, build-essential, cmake, pkg-config, OpenSSL's
   headers, ripgrep, fd, jq, ShellCheck, sqlite3, curl, wget, rsync, zip and
   tree.
@@ -120,7 +121,7 @@ An image that installs something as root switches back to `agent` at the
 end:
 
 ```dockerfile
-FROM ghcr.io/hyperstructure/sandbox:0.5
+FROM ghcr.io/hyperstructure/sandbox:0.14
 USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends postgresql-client \
@@ -138,11 +139,11 @@ home, like Rust. The PATH is set twice: `ENV` for Claude and the commands
 it runs, and `/etc/profile.d` for login shells, which setup scripts run in:
 
 ```dockerfile
-FROM ghcr.io/hyperstructure/sandbox:0.5
+FROM ghcr.io/hyperstructure/sandbox:0.14
 
 USER root
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends libicu72 \
+  && apt-get install -y --no-install-recommends libicu76 \
   && rm -rf /var/lib/apt/lists/* \
   && printf '%s\n' 'export DOTNET_ROOT="$HOME/.dotnet"' \
     'PATH="$HOME/.dotnet:$HOME/.dotnet/tools:$PATH"' > /etc/profile.d/dotnet.sh
@@ -260,7 +261,7 @@ configurations aren't built.
 
 The image still needs what every image needs ([below](#what-an-image-needs)):
 most dev container images lack Claude Code. Start the Dockerfile `FROM
-ghcr.io/hyperstructure/sandbox:0.5`, or install Claude Code in it as the
+ghcr.io/hyperstructure/sandbox:0.14`, or install Claude Code in it as the
 user sessions run as (`curl -fsSL https://claude.ai/install.sh | bash`).
 
 ## Which images a host runs
