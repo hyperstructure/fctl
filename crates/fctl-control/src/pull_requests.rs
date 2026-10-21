@@ -189,7 +189,8 @@ pub async fn refresh(
     }
     let mut told = 0;
     for (account, prs) in accounts {
-        for batch in prs.chunks(webhooks::MAX_LOOKUP) {
+        let mut batches = prs.chunks(webhooks::MAX_LOOKUP).peekable();
+        while let Some(batch) = batches.next() {
             let answer = gh.pull_requests(None, batch).await;
             let seen: Vec<Seen> = batch
                 .iter()
@@ -203,8 +204,8 @@ pub async fn refresh(
                         .and_then(|a| webhooks::looked_up(a, i, now, Hints::default())),
                 })
                 .collect();
-            // Those GitHub didn't answer for wait like the others, so that
-            // they can't hold up the rest.
+            // Those GitHub didn't answer for wait their six hours too, so
+            // that one that always fails can't hold up the others.
             told += settle(env, db, &seen, now).await?;
             let left = match &answer {
                 Ok(a) => webhooks::remaining(a),
@@ -213,7 +214,9 @@ pub async fn refresh(
                     break;
                 }
             };
-            if let Some(left) = left.filter(|left| *left < RESERVE) {
+            if batches.peek().is_some()
+                && let Some(left) = left.filter(|left| *left < RESERVE)
+            {
                 worker::console_log!(
                     "leaving {account}'s other pull requests for later: {left} points of its rate limit left"
                 );
