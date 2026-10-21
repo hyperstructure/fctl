@@ -15,7 +15,10 @@ fctl logout
 ```
 
 You approve the device in the browser, signed in there, so two-factor
-sign-in happens in the browser too.
+sign-in happens in the browser too. `fctl login` opens only a link on the
+server it signs in to: a server that sends you to approve the sign-in on
+another site could be relaying that site's code to get a token there, so
+it stops and says which site to sign in to instead.
 
 For scripts and CI, create a personal access token and pass it as
 `FCTL_TOKEN`:
