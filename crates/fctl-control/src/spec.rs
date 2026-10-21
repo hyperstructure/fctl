@@ -203,6 +203,15 @@ pub async fn build(
     let instance = crate::instance::settings(db).await?;
     settings.publish_screenshots =
         fctl_domain::published::allowed(instance.publish_screenshots, &settings);
+    // Each run starts with the project's memory as it is then. Hosts from
+    // before it leave both out of the agent's configuration, so their
+    // agents offer neither `fctl memory` nor `fctl retro`.
+    let memory = if settings.project_memory {
+        Some(crate::api::memories::for_spec(db, &project.id).await?)
+    } else {
+        None
+    };
+    let retrospectives = settings.retrospectives;
     Ok(SessionSpec {
         session_id: row.session_id(),
         number: row.number.max(0) as u32,
@@ -259,6 +268,8 @@ pub async fn build(
             .into_iter()
             .map(|pr| PullRequestRef { checks: None, ..pr })
             .collect(),
+        memory,
+        retrospectives,
     })
 }
 

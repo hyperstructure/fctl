@@ -719,6 +719,20 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         .await?,
     );
     doc.insert(
+        "memories".into(),
+        rows(
+            ctx,
+            // The notes they wrote in projects' memories, and those the
+            // agents of their sessions wrote (`session`); the sessions'
+            // retrospectives are in their transcripts.
+            "SELECT p.slug AS project, s.number AS session, m.text, m.created_at, m.edited_at, m.stale_at, m.stale_reason \
+             FROM memories m JOIN projects p ON p.id = m.project_id LEFT JOIN sessions s ON s.id = m.session_id \
+             WHERE m.created_by = ?1 AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY m.created_at",
+            &mine_open()?,
+        )
+        .await?,
+    );
+    doc.insert(
         "activity".into(),
         rows(
             ctx,

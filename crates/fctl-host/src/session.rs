@@ -12,6 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use fctl_domain::image::ImageWant;
 use fctl_domain::size::Want;
 use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES};
+use fctl_proto::api::{AgentAnswer, AgentCall};
 use fctl_proto::event::{LogLevel, LogLine, LogSource, PublishedFile};
 use fctl_proto::runner::{
     ClaudeCredential, CredentialKind, DriverInfo, GithubCredential, SandboxLimits, SandboxSize,
@@ -472,6 +473,64 @@ async fn upload(
     }
 }
 
+/// What the control plane answered an agent's call, for the agent that
+/// asked.
+type Answered = (String, std::result::Result<AgentAnswer, ApiError>);
+
+/// Sends what the agent asks about its project (`fctl memory`, `fctl
+/// retro`) to the control plane, and hands the answer back for the agent.
+fn call(
+    api: fctl_client::Api,
+    session: SessionId,
+    request_id: String,
+    call: AgentCall,
+    done: mpsc::UnboundedSender<Answered>,
+) {
+    tokio::spawn(async move {
+        let result = ask(&api, &session, &call).await;
+        if let Err(e) = &result {
+            tracing::warn!("a call of the agent of {session}: {}", e.message);
+        }
+        let _ = done.send((request_id, result));
+    });
+}
+
+/// Retries what may pass, where asking twice changes nothing: reading the
+/// memory and marking a note stale. A note or a retrospective that may have
+/// reached the control plane isn't sent again, so that none is kept twice;
+/// the agent hears what went wrong and can ask again.
+async fn ask(
+    api: &fctl_client::Api,
+    session: &SessionId,
+    call: &AgentCall,
+) -> std::result::Result<AgentAnswer, ApiError> {
+    let again = matches!(
+        call,
+        AgentCall::Memories { .. } | AgentCall::MarkStale { .. }
+    );
+    let mut delay = Duration::from_secs(1);
+    let mut attempt = 1;
+    loop {
+        match api.runner_call(session.as_str(), call).await {
+            Ok(answer) => return Ok(answer),
+            Err(e) if again && e.is_transient() && attempt < 3 => {
+                tracing::warn!("a call of the agent of {session} (attempt {attempt}): {e}");
+                tokio::time::sleep(delay).await;
+                delay *= 3;
+                attempt += 1;
+            }
+            Err(e) => {
+                return Err(e.api().cloned().unwrap_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::Unavailable,
+                        format!("The host could not reach the control plane: {e}"),
+                    )
+                }));
+            }
+        }
+    }
+}
+
 fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     uplink.log(LogLine {
         source: LogSource::Host,
@@ -554,6 +613,7 @@ async fn run(
     let api = fctl_client::Api::new(&ctx.cfg.server, Some(ctx.token.clone()));
     let (jobs, mut ready) = files::start(api.clone(), session_id.clone());
     let (published_tx, mut published_rx) = mpsc::unbounded_channel::<Published>();
+    let (answered_tx, mut answered_rx) = mpsc::unbounded_channel::<Answered>();
     let set_report = |status: SessionStatus, seq: Option<u64>| {
         if let Ok(mut r) = report.lock() {
             r.status = status;
@@ -771,6 +831,9 @@ async fn run(
                     AgentToHost::Publish { request_id, name, data } => {
                         publish(api.clone(), session_id.clone(), request_id, name, data, published_tx.clone());
                     }
+                    AgentToHost::Call { request_id, call: c } => {
+                        call(api.clone(), session_id.clone(), request_id, c, answered_tx.clone());
+                    }
                     AgentToHost::Exited { status, reason } => {
                         set_report(status, None);
                         exited = Some((status, reason));
@@ -838,6 +901,17 @@ async fn run(
                     Err(e) => (None, Some(e)),
                 };
                 let frame = HostToAgent::Published { request_id, file, error };
+                match &link {
+                    Some(l) => l.send(frame),
+                    None => queued.push(frame),
+                }
+            }
+            Some((request_id, result)) = answered_rx.recv() => {
+                let (answer, error) = match result {
+                    Ok(answer) => (Some(answer), None),
+                    Err(e) => (None, Some(e)),
+                };
+                let frame = HostToAgent::Answer { request_id, answer, error };
                 match &link {
                     Some(l) => l.send(frame),
                     None => queued.push(frame),

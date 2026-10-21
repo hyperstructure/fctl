@@ -136,6 +136,17 @@ id_type!(
     AccessRequestId,
     "acr"
 );
+id_type!(
+    /// A note in a project's memory, kept for the agents of its later
+    /// sessions.
+    MemoryId,
+    "mem"
+);
+id_type!(
+    /// A retrospective an agent recorded for a piece of its session's work.
+    RetrospectiveId,
+    "rtr"
+);
 
 #[cfg(test)]
 mod tests {

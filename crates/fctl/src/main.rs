@@ -91,6 +91,27 @@ enum Command {
         #[arg(required = true, value_name = "LINK")]
         links: Vec<String>,
     },
+    /// A project's memory: notes agents and people keep for the agents of
+    /// later sessions, which each session's agent starts with. In a
+    /// session's sandbox, the agent keeps its project's.
+    #[command(
+        after_help = "Examples:\n  fctl memory                        # the notes, newest first\n  \
+                            fctl memory -p my-app --stale      # with the stale ones\n  \
+                            fctl memory add \"The e2e tests need Chromium: run npx playwright install chromium first.\"\n  \
+                            fctl memory stale mem_01JC3V… --reason \"The script moved to xtask\"\n  \
+                            fctl memory rm mem_01JC3V…         # people who can edit the project"
+    )]
+    Memory(cmd::memory::MemoryArgs),
+    /// Record a retrospective as you finish a piece of work (agents, in a
+    /// session's sandbox), or read a project's (`fctl retro list`).
+    #[command(
+        after_help = "Examples:\n  fctl retro --outcome completed --worked-on \"Retried failed uploads (#41).\" \\\n    \
+                            --approach \"Used the existing backoff helper.\" --challenges \"The tests need MinIO.\" \\\n    \
+                            --insights \"Start MinIO with docker compose up minio first.\"\n  \
+                            fctl retro list -p my-app --outcome blocked\n  \
+                            fctl retro list my-app#12"
+    )]
+    Retro(cmd::retro::RetroArgs),
     /// Follow a session live and message the agent (Ctrl-C detaches).
     Attach {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -259,6 +280,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Edit(args) => cmd::sessions::edit(server, args, json).await,
         Command::Publish(args) => cmd::publish::publish(args, json).await,
         Command::Unpublish { links } => cmd::publish::unpublish(server, &links, json).await,
+        Command::Memory(args) => cmd::memory::run(server, args, json).await,
+        Command::Retro(args) => cmd::retro::run(server, args, json).await,
         Command::Attach { session, read_only } => {
             cmd::attach::attach(server, &session, read_only).await
         }

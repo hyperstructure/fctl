@@ -7,13 +7,14 @@
 use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, SandboxLimits};
 use crate::session::{
-    InstanceRole, Project, ProjectRole, ProjectSettings, RepoAccess, Session, SessionRole,
-    SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
+    InstanceRole, Memory, Project, ProjectRole, ProjectSettings, RepoAccess, Retrospective,
+    RetrospectiveOutcome, Session, SessionRole, SessionStatus, UserRef, WorkspaceColor,
+    WorkspaceRef, WorkspaceRole,
 };
 use crate::{
     AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId,
-    LoginJobId, Millis, PasskeyId, ProjectId, PushDeviceId, RunnerId, SessionId, TokenId, UserId,
-    WorkspaceId, WorkspaceInviteId,
+    LoginJobId, MemoryId, Millis, PasskeyId, ProjectId, PushDeviceId, RunnerId, SessionId, TokenId,
+    UserId, WorkspaceId, WorkspaceInviteId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -1984,6 +1985,125 @@ pub struct ShareList {
 pub struct CreateShareRequest {
     pub email: String,
     pub role: SessionRole,
+}
+
+// ───────────────────────────── project memory ─────────────────────────────
+
+/// `GET /api/v1/projects/{id}/memories`: the project's memory, its current
+/// notes first, newest first, then the stale ones, most recently stale
+/// first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MemoryList {
+    pub memories: Vec<Memory>,
+}
+
+/// `POST /api/v1/projects/{id}/memories` (editors): a note from a person
+/// for the project's agents.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AddMemoryRequest {
+    pub text: String,
+}
+
+/// `PATCH /api/v1/memories/{id}` (editors): absent fields stay as they
+/// are. `DELETE /api/v1/memories/{id}` deletes one.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateMemoryRequest {
+    pub text: Option<String>,
+    /// `true` marks it stale, with `reason`; `false` makes it current
+    /// again.
+    pub stale: Option<bool>,
+    pub reason: Option<String>,
+}
+
+// ───────────────────────────── retrospectives ─────────────────────────────
+
+/// `GET /api/v1/projects/{id}/retrospectives` and
+/// `GET /api/v1/sessions/{id}/retrospectives`: newest first.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct RetrospectiveList {
+    pub retrospectives: Vec<Retrospective>,
+    /// Pass as `?before=` for the next page.
+    pub next_before: Option<Millis>,
+    /// How many the project has of each outcome, whatever `?outcome=`
+    /// chose. Only in the project's list.
+    pub outcomes: Option<OutcomeCounts>,
+}
+
+/// How many retrospectives ended each way.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct OutcomeCounts {
+    pub completed: u32,
+    pub partial: u32,
+    pub blocked: u32,
+}
+
+// ───────────────────────────── what agents ask ─────────────────────────────
+
+/// What an agent asks of the control plane about its session's project,
+/// with `fctl memory` and `fctl retro` in its sandbox. fctl-agent hands it
+/// to its host, which sends it with its runner token
+/// (`POST /api/v1/runner/sessions/{id}/calls`) and hands the
+/// [`AgentAnswer`] back. Each needs the project's setting:
+/// `project_memory`, or `retrospectives`.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentCall {
+    /// The project's memory as it is now: its current notes, and with
+    /// `stale` the stale ones too.
+    Memories {
+        #[serde(default)]
+        stale: bool,
+    },
+    /// A note for the agents of later sessions. With `replaces`, it takes
+    /// the place of that note, which goes stale.
+    Remember {
+        text: String,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        replaces: Option<MemoryId>,
+    },
+    /// Marks a note stale: it turned out wrong, or out of date.
+    MarkStale { id: MemoryId, reason: String },
+    /// Records a retrospective of a piece of the session's work.
+    Retrospective {
+        outcome: RetrospectiveOutcome,
+        worked_on: String,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        approach: Option<String>,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        challenges: Option<String>,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        insights: Option<String>,
+    },
+}
+
+/// The control plane's answer to an [`AgentCall`].
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentAnswer {
+    Memories {
+        memories: Vec<Memory>,
+    },
+    /// The note as it is now: the new one, or the one marked stale. With
+    /// `replaces`, also the note it replaced.
+    Memory {
+        memory: Memory,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        replaced: Option<Memory>,
+    },
+    Retrospective {
+        retrospective: Retrospective,
+    },
 }
 
 // ───────────────────────────── GitHub ─────────────────────────────

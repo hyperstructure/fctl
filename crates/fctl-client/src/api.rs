@@ -4,7 +4,7 @@ use crate::http::{Error, HttpClient, Result};
 use fctl_proto::AttachmentId;
 use fctl_proto::api::*;
 use fctl_proto::event::{Attachment, PublishedFile};
-use fctl_proto::session::{Project, Session};
+use fctl_proto::session::{Memory, Project, Session};
 use http::Method;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -564,6 +564,73 @@ impl Api {
     /// people who manage its session).
     pub async fn unpublish(&self, token: &str) -> Result<Ok> {
         self.delete(&format!("/published/{}", enc(token))).await
+    }
+
+    // ── project memory and retrospectives ──
+
+    /// A project's memory: its current notes, newest first, then the stale
+    /// ones.
+    pub async fn memories(&self, project: &str) -> Result<MemoryList> {
+        self.get(&format!("/projects/{}/memories", enc(project)))
+            .await
+    }
+
+    /// One note of a project's memory.
+    pub async fn memory(&self, id: &str) -> Result<Memory> {
+        self.get(&format!("/memories/{}", enc(id))).await
+    }
+
+    /// A note from you for a project's agents (editors).
+    pub async fn add_memory(&self, project: &str, req: &AddMemoryRequest) -> Result<Memory> {
+        self.post(&format!("/projects/{}/memories", enc(project)), req)
+            .await
+    }
+
+    /// Changes a note's text, or whether it is stale (editors).
+    pub async fn update_memory(&self, id: &str, req: &UpdateMemoryRequest) -> Result<Memory> {
+        self.patch(&format!("/memories/{}", enc(id)), req).await
+    }
+
+    /// Deletes a note (editors).
+    pub async fn delete_memory(&self, id: &str) -> Result<Ok> {
+        self.delete(&format!("/memories/{}", enc(id))).await
+    }
+
+    /// A project's retrospectives, newest first: of one outcome when it is
+    /// given, before `before` for the next page.
+    pub async fn project_retrospectives(
+        &self,
+        project: &str,
+        outcome: Option<&str>,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<RetrospectiveList> {
+        let mut q = format!("/projects/{}/retrospectives?limit={limit}", enc(project));
+        if let Some(o) = outcome {
+            q.push_str(&format!("&outcome={}", enc(o)));
+        }
+        if let Some(b) = before {
+            q.push_str(&format!("&before={b}"));
+        }
+        self.get(&q).await
+    }
+
+    /// A session's retrospectives, newest first.
+    pub async fn session_retrospectives(&self, session: &str) -> Result<RetrospectiveList> {
+        self.get(&format!("/sessions/{}/retrospectives", enc(session)))
+            .await
+    }
+
+    /// Deletes a retrospective (for people who manage its session).
+    pub async fn delete_retrospective(&self, id: &str) -> Result<Ok> {
+        self.delete(&format!("/retrospectives/{}", enc(id))).await
+    }
+
+    /// What an agent asks about its session's project (with the runner
+    /// token): its memory, or a retrospective.
+    pub async fn runner_call(&self, session: &str, call: &AgentCall) -> Result<AgentAnswer> {
+        self.post(&format!("/runner/sessions/{}/calls", enc(session)), call)
+            .await
     }
 
     /// A request with a raw body and answer; files can be large, so it may

@@ -67,7 +67,9 @@ pub async fn publish(args: PublishArgs, json: bool) -> Result<()> {
         let file = match reply {
             SessionReply::Published { file } => file,
             SessionReply::Error { error } => bail!("{}: {}", path.display(), error.message),
-            SessionReply::Edited { .. } => bail!("fctl-agent answered another request"),
+            SessionReply::Edited { .. } | SessionReply::Answer { .. } => {
+                bail!("fctl-agent answered another request")
+            }
         };
         if !json {
             print_published(&file);

@@ -23,6 +23,7 @@ use fctl_proto::agent::{
     AgentConfig, AgentHello, AgentToHost, HostToAgent, SESSION_SOCKET_ENV, SessionReply,
     SessionRequest,
 };
+use fctl_proto::api::{AgentAnswer, AgentCall};
 use fctl_proto::event::{
     Attachment, EventBody, GitState, LogLevel, LogLine, LogSource, Notice, NoticeLevel,
     PublishedFile,
@@ -45,6 +46,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// How long `fctl publish` waits for the host to upload a screenshot.
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long `fctl memory` and `fctl retro` wait for the control plane.
+const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How long a refresh of the repositories' state may take, pushes and pull
 /// request lookups included, before the next one goes ahead without it.
@@ -156,6 +159,15 @@ pub struct Supervisor {
     /// Publishes the caller stopped waiting for: if the host publishes one
     /// after all, the transcript still says so.
     late_publishes: VecDeque<String>,
+    /// `fctl memory` and `fctl retro` calls waiting for the control plane's
+    /// answer, by request id.
+    calling: HashMap<String, (oneshot::Sender<SessionReply>, Instant)>,
+    /// Calls the caller stopped waiting for: if the control plane answers
+    /// one after all, the transcript still says what was kept.
+    late_calls: VecDeque<String>,
+    /// Said once that the sandbox's fctl cannot keep the project's memory
+    /// or record retrospectives.
+    told_old_fctl: bool,
 }
 
 impl Supervisor {
@@ -225,6 +237,9 @@ impl Supervisor {
                 claude_version: None,
                 publishing: HashMap::new(),
                 late_publishes: VecDeque::new(),
+                calling: HashMap::new(),
+                late_calls: VecDeque::new(),
+                told_old_fctl: false,
             },
             claude_rx,
             work_rx,
@@ -381,6 +396,11 @@ impl Supervisor {
                 file,
                 error,
             } => self.on_published(&request_id, file, error),
+            HostToAgent::Answer {
+                request_id,
+                answer,
+                error,
+            } => self.on_answer(&request_id, answer, error),
         }
     }
 
@@ -408,6 +428,8 @@ impl Supervisor {
             message: message.into(),
             until,
             published: None,
+            memory: None,
+            retrospective: None,
         }));
     }
 
@@ -480,6 +502,17 @@ impl Supervisor {
             } => match self.publish(session_id, name, data) {
                 Ok(request_id) => {
                     self.publishing
+                        .insert(request_id, (call.reply, Instant::now()));
+                    return;
+                }
+                Err(error) => Err(error),
+            },
+            SessionRequest::Call {
+                session_id,
+                call: what,
+            } => match self.call(session_id, what) {
+                Ok(request_id) => {
+                    self.calling
                         .insert(request_id, (call.reply, Instant::now()));
                     return;
                 }
@@ -602,6 +635,117 @@ impl Supervisor {
                 self.late_publishes.push_back(id);
                 if self.late_publishes.len() > 100 {
                     self.late_publishes.pop_front();
+                }
+            }
+        }
+    }
+
+    /// Hands what a program in the sandbox asks about the project (`fctl
+    /// memory`, `fctl retro`) to the host, if the project turned it on;
+    /// returns the request's id.
+    fn call(
+        &mut self,
+        session_id: Option<SessionId>,
+        call: AgentCall,
+    ) -> std::result::Result<String, ApiError> {
+        let spec = self.this_session(session_id.as_ref())?;
+        match call {
+            AgentCall::Retrospective { .. } if !spec.retrospectives => {
+                return Err(ApiError::forbidden(
+                    "This project doesn't ask for retrospectives: its maintainers can turn them on in the project's settings.",
+                ));
+            }
+            AgentCall::Memories { .. }
+            | AgentCall::Remember { .. }
+            | AgentCall::MarkStale { .. }
+                if spec.memory.is_none() =>
+            {
+                return Err(ApiError::forbidden(
+                    "This project keeps no memory: its maintainers can turn it on in the project's settings.",
+                ));
+            }
+            _ => {}
+        }
+        if self.host.is_none() {
+            return Err(ApiError::new(
+                fctl_proto::ErrorCode::Unavailable,
+                "fctl-agent can't reach its host right now; try again in a minute",
+            ));
+        }
+        self.next_request += 1;
+        let request_id = format!("call_{}", self.next_request);
+        self.send(&AgentToHost::Call {
+            request_id: request_id.clone(),
+            call,
+        });
+        Ok(request_id)
+    }
+
+    /// The control plane's answer to a call: the caller gets it, and the
+    /// transcript shows what the agent kept.
+    fn on_answer(
+        &mut self,
+        request_id: &str,
+        answer: Option<AgentAnswer>,
+        error: Option<ApiError>,
+    ) {
+        let Some((tx, _)) = self.calling.remove(request_id) else {
+            // Too late for the caller, not for the transcript.
+            if let Some(i) = self.late_calls.iter().position(|id| id == request_id) {
+                self.late_calls.remove(i);
+                if let Some(answer) = &answer {
+                    self.notice_kept(answer);
+                }
+            }
+            return;
+        };
+        let reply = match (answer, error) {
+            (Some(answer), _) => {
+                self.notice_kept(&answer);
+                SessionReply::Answer { answer }
+            }
+            (None, error) => SessionReply::Error {
+                error: error.unwrap_or_else(|| {
+                    ApiError::new(fctl_proto::ErrorCode::Internal, "The host answered nothing")
+                }),
+            },
+        };
+        let _ = tx.send(reply);
+    }
+
+    /// Adds to the transcript what an answer says the agent kept: a note it
+    /// remembered (and the one it replaced), a note it marked stale, a
+    /// retrospective.
+    fn notice_kept(&mut self, answer: &AgentAnswer) {
+        let notices = kept_notices(answer);
+        if notices.is_empty() {
+            return;
+        }
+        for n in notices {
+            self.emit(EventBody::Notice(n));
+        }
+        self.flush();
+    }
+
+    /// Answers the calls the host left unanswered for too long.
+    fn expire_calls(&mut self) {
+        let late: Vec<String> = self
+            .calling
+            .iter()
+            .filter(|(_, (_, since))| since.elapsed() > CALL_TIMEOUT)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in late {
+            if let Some((tx, _)) = self.calling.remove(&id) {
+                let _ = tx.send(SessionReply::Error {
+                    error: ApiError::new(
+                        fctl_proto::ErrorCode::Unavailable,
+                        "The control plane didn't answer in time; try again",
+                    ),
+                });
+                self.late_calls.push_back(id);
+                if self.late_calls.len() > 100 {
+                    self.late_calls.pop_front();
                 }
             }
         }
@@ -905,12 +1049,38 @@ impl Supervisor {
             &spec.project.settings,
             &spec.co_authored_by,
         )?;
+        // Whether the agent keeps the project's memory: then Claude Code's
+        // own, which would last only as long as the sandbox, is off.
+        let mut keeps_memory = false;
         if self.session_socket.is_some() && fctl_can(&paths, "edit").await {
             // Publishing needs the project's consent and an fctl that can.
             let screenshots =
                 spec.project.settings.publish_screenshots && fctl_can(&paths, "publish").await;
             let days = screenshots.then(|| published::days(&spec.project.settings));
-            if let Err(e) = claude::write_instructions(&paths.home, &prompt::agents_md(days)) {
+            // So do the memory and retrospectives.
+            let memory = match &spec.memory {
+                Some(m) if fctl_can(&paths, "memory").await => Some(m),
+                _ => None,
+            };
+            let retrospectives = spec.retrospectives && fctl_can(&paths, "retro").await;
+            let lacking = (spec.memory.is_some() && memory.is_none())
+                || (spec.retrospectives && !retrospectives);
+            if lacking && !self.told_old_fctl {
+                self.told_old_fctl = true;
+                self.log(
+                    LogSource::Agent,
+                    LogLevel::Info,
+                    "This sandbox's fctl has no `fctl memory` or `fctl retro`, so the agent keeps no project memory and records no retrospectives. The default image, ghcr.io/hyperstructure/sandbox, has them; an image of your own needs a recent fctl on the PATH.",
+                );
+            }
+            keeps_memory = memory.is_some();
+            let extras = prompt::Extras {
+                screenshot_days: days,
+                memory,
+                retrospectives,
+                now: now_ms(),
+            };
+            if let Err(e) = claude::write_instructions(&paths.home, &prompt::agents_md(&extras)) {
                 tracing::warn!("writing ~/AGENTS.md failed: {e:#}");
             }
         } else if !self.told_no_fctl {
@@ -963,6 +1133,9 @@ impl Supervisor {
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
         env.insert("FCTL_SESSION_ID".into(), spec.session_id.0.clone());
         env.insert("FCTL_SESSION_URL".into(), spec.web_url.clone());
+        if keeps_memory {
+            env.insert(claude::DISABLE_AUTO_MEMORY_ENV.into(), "1".into());
+        }
         if let Some(socket) = &self.session_socket {
             env.insert(SESSION_SOCKET_ENV.into(), socket.display().to_string());
         }
@@ -1580,6 +1753,7 @@ impl Supervisor {
     async fn on_tick(&mut self) {
         let now = now_ms();
         self.expire_publishes();
+        self.expire_calls();
         self.sync();
         // Usage limit reset: continue.
         if self.state.status == SessionStatus::Paused && self.resume_at.is_some_and(|t| now >= t) {
@@ -1738,6 +1912,55 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
         ),
         until: None,
         published: Some(file.clone()),
+        memory: None,
+        retrospective: None,
+    }
+}
+
+/// What the transcript says about what the agent kept: the note it
+/// remembered (and the one that took its place), or marked stale, or the
+/// retrospective it recorded. The message stands alone for clients from
+/// before the notice's `memory` and `retrospective`.
+fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
+    let notice = |code: &str, message: String| Notice {
+        level: NoticeLevel::Info,
+        code: code.into(),
+        message,
+        until: None,
+        published: None,
+        memory: None,
+        retrospective: None,
+    };
+    match answer {
+        AgentAnswer::Memories { .. } => vec![],
+        AgentAnswer::Memory { memory, replaced } => {
+            let mut notices = Vec::new();
+            if memory.stale.is_some() {
+                notices.push(Notice {
+                    memory: Some(memory.clone()),
+                    ..notice("memory_stale", fctl_domain::memory::stale_message(memory))
+                });
+            } else {
+                notices.push(Notice {
+                    memory: Some(memory.clone()),
+                    ..notice("memory_added", fctl_domain::memory::added_message(memory))
+                });
+                if let Some(old) = replaced {
+                    notices.push(Notice {
+                        memory: Some(old.clone()),
+                        ..notice("memory_stale", fctl_domain::memory::stale_message(old))
+                    });
+                }
+            }
+            notices
+        }
+        AgentAnswer::Retrospective { retrospective } => vec![Notice {
+            retrospective: Some(retrospective.clone()),
+            ..notice(
+                "retrospective",
+                fctl_domain::retrospectives::message(retrospective),
+            )
+        }],
     }
 }
 
@@ -2064,6 +2287,287 @@ mod tests {
             matches!(&events[0].body, EventBody::Notice(n) if n.message.starts_with("Published after.png for a day"))
         );
         sup.on_published(&request_id, Some(file), None);
+        assert!(host_rx.try_recv().is_err());
+        Ok(())
+    }
+
+    /// A supervisor of a project that keeps a memory and asks for
+    /// retrospectives (`memory`, `retros`), with a host link.
+    fn keeping(
+        dir: &std::path::Path,
+        memory: bool,
+        retros: bool,
+    ) -> anyhow::Result<(Supervisor, mpsc::UnboundedReceiver<String>)> {
+        let (mut sup, _claude, _work) = Supervisor::new(dir.join("state"), None)?;
+        let mut config = config(dir, false)?;
+        config.spec.memory = memory.then(fctl_proto::runner::MemorySpec::default);
+        config.spec.retrospectives = retros;
+        sup.config = Some(config);
+        let (host_tx, host_rx) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        Ok((sup, host_rx))
+    }
+
+    fn calling(call: AgentCall) -> SessionRequest {
+        SessionRequest::Call {
+            session_id: Some(SessionId("ses_test".into())),
+            call,
+        }
+    }
+
+    fn note(id: &str, text: &str, stale: Option<&str>) -> fctl_proto::session::Memory {
+        fctl_proto::session::Memory {
+            id: fctl_proto::MemoryId(id.into()),
+            project_id: fctl_proto::ProjectId("prj_test".into()),
+            text: text.into(),
+            session: None,
+            created_by: None,
+            created_at: 1,
+            edited_at: None,
+            edited_by: None,
+            stale: stale.map(|reason| fctl_proto::session::Staleness {
+                at: 2,
+                reason: Some(reason.into()),
+                session: None,
+                by: None,
+                replaced_by: None,
+            }),
+        }
+    }
+
+    /// The notices the agent sent the host.
+    fn notices(host_rx: &mut mpsc::UnboundedReceiver<String>) -> anyhow::Result<Vec<Notice>> {
+        let AgentToHost::Events { events } = serde_json::from_str(&host_rx.try_recv()?)? else {
+            panic!("expected events");
+        };
+        Ok(events
+            .into_iter()
+            .filter_map(|e| match e.body {
+                EventBody::Notice(n) => Some(n),
+                _ => None,
+            })
+            .collect())
+    }
+
+    #[tokio::test]
+    async fn keeps_the_projects_memory_through_the_host() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host_rx) = keeping(dir.path(), true, false)?;
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(AgentCall::Remember {
+                text: "Run npm ci in web/ first".into(),
+                replaces: Some(fctl_proto::MemoryId("mem_old".into())),
+            }),
+            reply: tx,
+        });
+        // The host asks the control plane; the caller waits.
+        let AgentToHost::Call { request_id, call } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a call frame");
+        };
+        assert!(
+            matches!(call, AgentCall::Remember { ref text, .. } if text == "Run npm ci in web/ first")
+        );
+        assert!(rx.try_recv().is_err());
+        let answer = AgentAnswer::Memory {
+            memory: note("mem_new", "Run npm ci in web/ first", None),
+            replaced: Some(note(
+                "mem_old",
+                "Run npm install",
+                Some("Replaced by mem_new"),
+            )),
+        };
+        sup.on_frame(HostToAgent::Answer {
+            request_id: request_id.clone(),
+            answer: Some(answer.clone()),
+            error: None,
+        })
+        .await;
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionReply::Answer { answer: ref a }) if *a == answer)
+        );
+        // The transcript says what was remembered, and what it replaced.
+        let n = notices(&mut host_rx)?;
+        assert_eq!(n.len(), 2);
+        assert_eq!(n[0].code, "memory_added");
+        assert_eq!(n[0].message, "Remembered: Run npm ci in web/ first");
+        assert_eq!(n[0].memory.as_ref().map(|m| m.id.as_str()), Some("mem_new"));
+        assert_eq!(n[1].code, "memory_stale");
+        assert_eq!(
+            n[1].message,
+            "Marked a memory stale: Run npm install (Replaced by mem_new)"
+        );
+        // A late or repeated answer goes nowhere.
+        sup.on_answer(&request_id, Some(answer), None);
+        assert!(host_rx.try_recv().is_err());
+
+        // Reading the memory says nothing in the transcript.
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(AgentCall::Memories { stale: true }),
+            reply: tx,
+        });
+        let AgentToHost::Call { request_id, .. } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a call frame");
+        };
+        sup.on_answer(
+            &request_id,
+            Some(AgentAnswer::Memories { memories: vec![] }),
+            None,
+        );
+        assert!(matches!(rx.try_recv(), Ok(SessionReply::Answer { .. })));
+        assert!(host_rx.try_recv().is_err());
+
+        // What the control plane refuses, the caller hears.
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(AgentCall::MarkStale {
+                id: fctl_proto::MemoryId("mem_gone".into()),
+                reason: "Moved".into(),
+            }),
+            reply: tx,
+        });
+        let AgentToHost::Call { request_id, .. } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a call frame");
+        };
+        sup.on_answer(&request_id, None, Some(ApiError::not_found("Memory")));
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionReply::Error { ref error }) if error.code == fctl_proto::ErrorCode::NotFound)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn records_retrospectives_through_the_host() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host_rx) = keeping(dir.path(), false, true)?;
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(AgentCall::Retrospective {
+                outcome: fctl_proto::session::RetrospectiveOutcome::Partial,
+                worked_on: "Retried failed uploads.".into(),
+                approach: None,
+                challenges: None,
+                insights: None,
+            }),
+            reply: tx,
+        });
+        let AgentToHost::Call { request_id, .. } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a call frame");
+        };
+        let retrospective = fctl_proto::session::Retrospective {
+            id: fctl_proto::RetrospectiveId("rtr_1".into()),
+            project_id: fctl_proto::ProjectId("prj_test".into()),
+            session: fctl_proto::session::SessionRef {
+                id: SessionId("ses_test".into()),
+                number: 1,
+                title: "Retry uploads".into(),
+            },
+            started_by: None,
+            created_at: 5,
+            outcome: fctl_proto::session::RetrospectiveOutcome::Partial,
+            worked_on: "Retried failed uploads.".into(),
+            approach: None,
+            challenges: None,
+            insights: None,
+        };
+        sup.on_answer(
+            &request_id,
+            Some(AgentAnswer::Retrospective {
+                retrospective: retrospective.clone(),
+            }),
+            None,
+        );
+        assert!(matches!(rx.try_recv(), Ok(SessionReply::Answer { .. })));
+        let n = notices(&mut host_rx)?;
+        assert_eq!(n[0].code, "retrospective");
+        assert_eq!(
+            n[0].message,
+            "Recorded a retrospective (partly done): Retried failed uploads."
+        );
+        assert_eq!(n[0].retrospective.as_ref(), Some(&retrospective));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn calls_only_for_what_the_project_turned_on() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host_rx) = keeping(dir.path(), false, false)?;
+        let list = ask(&mut sup, calling(AgentCall::Memories { stale: false }));
+        assert!(
+            matches!(list, Some(SessionReply::Error { ref error }) if error.message.contains("keeps no memory"))
+        );
+        let retro = ask(
+            &mut sup,
+            calling(AgentCall::Retrospective {
+                outcome: fctl_proto::session::RetrospectiveOutcome::Completed,
+                worked_on: "Work".into(),
+                approach: None,
+                challenges: None,
+                insights: None,
+            }),
+        );
+        assert!(
+            matches!(retro, Some(SessionReply::Error { ref error }) if error.message.contains("doesn't ask for retrospectives"))
+        );
+        assert!(host_rx.try_recv().is_err());
+        // Another session's sandbox can't call for this one.
+        let (mut sup, mut host_rx) = keeping(dir.path(), true, true)?;
+        let elsewhere = ask(
+            &mut sup,
+            SessionRequest::Call {
+                session_id: Some(SessionId("ses_other".into())),
+                call: AgentCall::Memories { stale: false },
+            },
+        );
+        assert!(matches!(elsewhere, Some(SessionReply::Error { .. })));
+        assert!(host_rx.try_recv().is_err());
+        // Without a host there is nobody to ask.
+        sup.host = None;
+        let alone = ask(&mut sup, calling(AgentCall::Memories { stale: false }));
+        assert!(
+            matches!(alone, Some(SessionReply::Error { ref error }) if error.code == fctl_proto::ErrorCode::Unavailable)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_late_answer_still_reaches_the_transcript() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host_rx) = keeping(dir.path(), true, false)?;
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(AgentCall::Remember {
+                text: "Deploys happen on Fridays".into(),
+                replaces: None,
+            }),
+            reply: tx,
+        });
+        let AgentToHost::Call { request_id, .. } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a call frame");
+        };
+        sup.expire_calls();
+        assert!(rx.try_recv().is_err());
+        for (_, since) in sup.calling.values_mut() {
+            *since = Instant::now() - CALL_TIMEOUT - Duration::from_secs(1);
+        }
+        sup.expire_calls();
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionReply::Error { ref error }) if error.message.contains("in time"))
+        );
+        let answer = AgentAnswer::Memory {
+            memory: note("mem_1", "Deploys happen on Fridays", None),
+            replaced: None,
+        };
+        sup.on_answer(&request_id, Some(answer.clone()), None);
+        let n = notices(&mut host_rx)?;
+        assert_eq!(n[0].message, "Remembered: Deploys happen on Fridays");
+        sup.on_answer(&request_id, Some(answer), None);
         assert!(host_rx.try_recv().is_err());
         Ok(())
     }

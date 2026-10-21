@@ -85,6 +85,21 @@ publish_screenshots: boolean,
  */
 screenshot_days?: number, 
 /**
+ * Agents keep the project's memory (`fctl memory`): each session's
+ * agent starts with the notes earlier agents and people left, adds
+ * what future agents should know, and marks notes that turned out
+ * wrong stale. On by default. Off, agents hear nothing of it, and the
+ * notes stay for people to read and delete.
+ */
+project_memory: boolean, 
+/**
+ * Agents record a retrospective when they finish a piece of work
+ * (`fctl retro`): what they worked on, how, what got in the way and
+ * what a future agent should know. On by default. Off, agents hear
+ * nothing of it, and the ones recorded stay.
+ */
+retrospectives: boolean, 
+/**
  * Non-secret environment variables for sandboxes.
  */
 env: { [key in string]: string }, };

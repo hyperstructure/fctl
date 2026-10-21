@@ -60,8 +60,8 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "image", "build", "build_context", "setup_script", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "image", "build", "build_context", "setup_script", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -91,6 +91,17 @@ pub enum ProjectsCmd {
         /// Days a published screenshot's link works, 1 to 60 (default 30).
         #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u32).range(1..=60))]
         screenshot_days: Option<u32>,
+        /// Let agents keep the project's memory (`fctl memory`): each
+        /// session's agent starts with the notes earlier agents and people
+        /// left, and adds what future agents should know (on by default).
+        /// Off, its notes stay for people to read.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        project_memory: Option<bool>,
+        /// Ask agents for a retrospective of each piece of work they finish
+        /// (`fctl retro`): what they worked on, how, what got in the way
+        /// and what a future agent should know (on by default).
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        retrospectives: Option<bool>,
         /// The image sessions start from, like ghcr.io/acme/agent:1, on
         /// runners whose owners allow it ("" for each runner's own). Only
         /// the Apple container and Docker drivers use images.
@@ -227,6 +238,17 @@ fn screenshots(s: &ProjectSettings) -> String {
         format!("publish screenshots, at links that work for {lasts}")
     } else {
         "don't publish screenshots".to_owned()
+    }
+}
+
+/// What a project's agents keep for the people and agents after them, in
+/// words.
+fn learning(s: &ProjectSettings) -> &'static str {
+    match (s.project_memory, s.retrospectives) {
+        (true, true) => "keep the project's memory and record retrospectives",
+        (true, false) => "keep the project's memory and record no retrospectives",
+        (false, true) => "keep no memory and record retrospectives",
+        (false, false) => "keep no memory and record no retrospectives",
     }
 }
 
@@ -535,6 +557,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 println!("env:     {}", keys.join(", "));
             }
             println!("idle:    sessions {}", idle(&p.settings));
+            println!("agents:  {}", learning(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
             println!("{}", style::dim(&format!("{}/p/{}", api.base(), p.slug)));
         }
@@ -586,6 +609,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             idle_timeout,
             publish_screenshots,
             screenshot_days,
+            project_memory,
+            retrospectives,
             image: new_image,
             build,
             build_context,
@@ -659,6 +684,12 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(days) = screenshot_days {
                 settings.screenshot_days = Some(days);
+            }
+            if let Some(on) = project_memory {
+                settings.project_memory = on;
+            }
+            if let Some(on) = retrospectives {
+                settings.retrospectives = on;
             }
             let p = api
                 .update_project(
@@ -743,6 +774,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                         )
                     );
                 }
+            }
+            if project_memory.is_some() || retrospectives.is_some() {
+                println!(
+                    "{} Agents in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    learning(&p.settings)
+                );
             }
             println!(
                 "{}",

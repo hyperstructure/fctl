@@ -9,11 +9,13 @@
 //! `agent_seq` the control plane acknowledged.
 //!
 //! A second socket, the session socket ([`SESSION_SOCKET_ENV`]), serves
-//! programs inside the sandbox: `fctl edit` and `fctl publish` send one
-//! [`SessionRequest`] and read one [`SessionReply`]. That is how an agent
-//! names and describes its own session, and publishes screenshots, without
-//! credentials for the control plane.
+//! programs inside the sandbox: `fctl edit`, `fctl publish`, `fctl memory`
+//! and `fctl retro` send one [`SessionRequest`] and read one
+//! [`SessionReply`]. That is how an agent names and describes its own
+//! session, publishes screenshots, keeps its project's memory and records
+//! retrospectives, without credentials for the control plane.
 
+use crate::api::{AgentAnswer, AgentCall};
 use crate::event::{Attachment, LogLine, PublishedFile};
 use crate::runner::{
     ClaudeCredential, CredentialKind, GithubCredential, SandboxSize, SessionSpec, StopReason,
@@ -118,6 +120,17 @@ pub enum HostToAgent {
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<ApiError>,
     },
+    /// The control plane's answer to [`AgentToHost::Call`], or why there is
+    /// none.
+    Answer {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        answer: Option<AgentAnswer>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        error: Option<ApiError>,
+    },
     Ping,
 }
 
@@ -183,6 +196,16 @@ pub enum AgentToHost {
         /// The bytes, base64.
         data: String,
     },
+    /// Ask the control plane something about the session's project (`fctl
+    /// memory`, `fctl retro`): the host sends it with its runner token
+    /// (`POST /api/v1/runner/sessions/{id}/calls`) and answers with
+    /// [`HostToAgent::Answer`]. Agents send it only for what the session's
+    /// spec turns on, which reaches them only through hosts that know it,
+    /// and so this frame.
+    Call {
+        request_id: String,
+        call: AgentCall,
+    },
     /// The supervisor is exiting.
     Exited {
         status: SessionStatus,
@@ -229,6 +252,15 @@ pub enum SessionRequest {
         /// The bytes, base64.
         data: String,
     },
+    /// Read or keep the project's memory (`fctl memory`), or record a
+    /// retrospective (`fctl retro`): fctl-agent asks the control plane
+    /// through its host. Only for what the project turned on.
+    Call {
+        /// The session the caller means, as for `Edit`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<SessionId>,
+        call: AgentCall,
+    },
 }
 
 /// fctl-agent's answer on the session socket.
@@ -248,6 +280,10 @@ pub enum SessionReply {
     /// The screenshot is published.
     Published {
         file: PublishedFile,
+    },
+    /// The control plane's answer to a `Call`.
+    Answer {
+        answer: AgentAnswer,
     },
     Error {
         error: ApiError,
@@ -304,6 +340,50 @@ mod tests {
             panic!("expected published");
         };
         assert_eq!(file, None);
+        assert_eq!(error.map(|e| e.code), Some(crate::ErrorCode::Forbidden));
+        Ok(())
+    }
+
+    #[test]
+    fn calls_wire_format() -> Result<(), serde_json::Error> {
+        let req: SessionRequest = serde_json::from_str(
+            r#"{"type":"call","session_id":"ses_1","call":{"type":"remember","text":"Run npm ci in web/ first"}}"#,
+        )?;
+        let SessionRequest::Call { call, .. } = req else {
+            panic!("expected a call");
+        };
+        assert_eq!(
+            call,
+            AgentCall::Remember {
+                text: "Run npm ci in web/ first".into(),
+                replaces: None,
+            }
+        );
+        // `stale` may be left out.
+        let list: AgentCall = serde_json::from_str(r#"{"type":"memories"}"#)?;
+        assert_eq!(list, AgentCall::Memories { stale: false });
+        let up = serde_json::to_value(AgentToHost::Call {
+            request_id: "call-1".into(),
+            call: AgentCall::Retrospective {
+                outcome: crate::session::RetrospectiveOutcome::Completed,
+                worked_on: "The login redirect.".into(),
+                approach: None,
+                challenges: None,
+                insights: Some("The e2e tests need Chromium.".into()),
+            },
+        })?;
+        assert_eq!(up["type"], "call");
+        assert_eq!(up["call"]["type"], "retrospective");
+        assert_eq!(up["call"]["outcome"], "completed");
+        assert!(up["call"].get("approach").is_none());
+        let refused: HostToAgent = serde_json::from_value(serde_json::json!({
+            "type": "answer", "request_id": "call-1",
+            "error": { "code": "forbidden", "message": "This project keeps no memory" }
+        }))?;
+        let HostToAgent::Answer { answer, error, .. } = refused else {
+            panic!("expected an answer");
+        };
+        assert_eq!(answer, None);
         assert_eq!(error.map(|e| e.code), Some(crate::ErrorCode::Forbidden));
         Ok(())
     }

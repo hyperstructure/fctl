@@ -38,12 +38,12 @@ pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
 /// Keeps the stored value of settings that an update leaves out. An update
 /// replaces all settings, so a client from before a setting existed (a tab
 /// opened before a deploy, an older CLI) would reset it to its default
-/// without having shown it: for `claude_ai_connectors`, `credit_people` and
-/// `credit_claude`, on; for `publish_screenshots`, off; for
-/// `screenshot_days`, 30 days (send `null` to choose the default). An
-/// `image_build` it leaves out stays unless it chooses an image instead
-/// (send `null` for none). `sent` is the update's `settings` object as it
-/// arrived.
+/// without having shown it: for `claude_ai_connectors`, `credit_people`,
+/// `credit_claude`, `project_memory` and `retrospectives`, on; for
+/// `publish_screenshots`, off; for `screenshot_days`, 30 days (send `null`
+/// to choose the default). An `image_build` it leaves out stays unless it
+/// chooses an image instead (send `null` for none). `sent` is the update's
+/// `settings` object as it arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
     if sent.get("image_build").is_none() && settings.image.is_none() {
         settings.image_build = stored.image_build.clone();
@@ -62,6 +62,12 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("screenshot_days").is_none() {
         settings.screenshot_days = stored.screenshot_days;
+    }
+    if sent.get("project_memory").is_none() {
+        settings.project_memory = stored.project_memory;
+    }
+    if sent.get("retrospectives").is_none() {
+        settings.retrospectives = stored.retrospectives;
     }
 }
 
@@ -191,6 +197,23 @@ mod tests {
         // Settings as this version sends them always say.
         let sent = serde_json::to_value(ProjectSettings::default()).unwrap_or_default();
         assert_eq!(sent.get("image_build"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn updates_without_memory_and_retrospectives_keep_them_off() {
+        let stored = ProjectSettings {
+            project_memory: false,
+            retrospectives: false,
+            ..Default::default()
+        };
+        // An older client sends settings without the fields: their defaults, on.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
+        assert!(!s.project_memory && !s.retrospectives);
+        // Each one sent counts on its own.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "project_memory": true }));
+        assert!(s.project_memory && !s.retrospectives);
     }
 
     #[test]

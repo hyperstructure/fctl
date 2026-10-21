@@ -8,8 +8,8 @@
 
 use crate::event::Attachment;
 use crate::session::{
-    ProjectSettings, PullRequestRef, RepoAccess, RepoGrant, RepoRef, RunnerRef, SessionStatus,
-    UserRef,
+    Memory, ProjectSettings, PullRequestRef, RepoAccess, RepoGrant, RepoRef, RunnerRef,
+    SessionStatus, UserRef,
 };
 use crate::{CredentialId, LoginJobId, Millis, ProjectId, SessionId};
 use serde::{Deserialize, Serialize};
@@ -319,6 +319,30 @@ pub struct SessionSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<PullRequestRef>>", optional))]
     pub pull_requests: Vec<PullRequestRef>,
+    /// The project's memory as the run starts, when the project keeps one
+    /// (`ProjectSettings::project_memory`): its agent starts with these
+    /// notes and keeps the memory with `fctl memory`. Absent otherwise, and
+    /// from older control planes; older hosts leave it out of the agent's
+    /// configuration, so their agents never offer `fctl memory`.
+    pub memory: Option<MemorySpec>,
+    /// The project asks its agents for retrospectives
+    /// (`ProjectSettings::retrospectives`), which they record with `fctl
+    /// retro`. False from older control planes, and through older hosts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub retrospectives: bool,
+}
+
+/// A project's memory, as a session's agent starts with it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MemorySpec {
+    /// Its current notes, newest first: as many as fit in what the agent
+    /// reads as it starts (`fctl_domain::memory::for_prompt`).
+    pub notes: Vec<Memory>,
+    /// How many more current notes it has, which `fctl memory` lists.
+    #[serde(default)]
+    pub more: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -6,7 +6,9 @@
 //! without a protocol change; streaming deltas (`stream_event`) are ephemeral
 //! and travel separately (see `viewer::ViewerServer::Stream`).
 
-use crate::session::{PullRequestRef, RemoteControlState, RepoAccess, SessionStatus, UserRef};
+use crate::session::{
+    Memory, PullRequestRef, RemoteControlState, RepoAccess, Retrospective, SessionStatus, UserRef,
+};
 use crate::{AttachmentId, DeliveryId, Millis};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -311,7 +313,8 @@ pub struct Notice {
     pub level: NoticeLevel,
     /// Stable identifier, for example `usage_limit`, `overage_blocked`,
     /// `api_key_refused`, `credential_expired`, `runner_lost`,
-    /// `screenshot_published`.
+    /// `screenshot_published`, `memory_added`, `memory_stale`,
+    /// `retrospective`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).
@@ -319,6 +322,12 @@ pub struct Notice {
     /// The screenshot a `screenshot_published` notice is about. Clients
     /// from before it show the message, which holds the link.
     pub published: Option<PublishedFile>,
+    /// The note a `memory_added` or `memory_stale` notice is about, as it
+    /// was then. Clients from before it show the message.
+    pub memory: Option<Memory>,
+    /// The retrospective a `retrospective` notice holds. Clients from
+    /// before it show the message.
+    pub retrospective: Option<Retrospective>,
 }
 
 /// A screenshot an agent published on the control plane (`fctl publish`):
@@ -439,14 +448,46 @@ mod tests {
                 height: Some(900),
                 expires_at: 1_800_000_000_000,
             }),
+            memory: None,
+            retrospective: None,
         };
         let json = serde_json::to_value(EventBody::Notice(shot.clone()))?;
         assert_eq!(json["kind"], "notice");
         assert_eq!(json["data"]["published"]["width"], 1440);
         assert!(json["data"].get("until").is_none());
+        assert!(json["data"].get("memory").is_none());
         assert_eq!(
             serde_json::from_value::<EventBody>(json)?,
             EventBody::Notice(shot)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn notices_carry_a_memory_or_a_retrospective() -> Result<(), serde_json::Error> {
+        let remembered: Notice = serde_json::from_value(serde_json::json!({
+            "level": "info", "code": "memory_added", "message": "Remembered: Run npm ci first",
+            "memory": {
+                "id": "mem_1", "project_id": "prj_1", "text": "Run npm ci first",
+                "created_at": 5
+            }
+        }))?;
+        assert_eq!(
+            remembered.memory.map(|m| m.text).as_deref(),
+            Some("Run npm ci first")
+        );
+        assert_eq!(remembered.retrospective, None);
+        let retro: Notice = serde_json::from_value(serde_json::json!({
+            "level": "info", "code": "retrospective", "message": "Recorded a retrospective",
+            "retrospective": {
+                "id": "rtr_1", "project_id": "prj_1",
+                "session": { "id": "ses_1", "number": 1, "title": "Build it" },
+                "created_at": 5, "outcome": "completed", "worked_on": "Built it."
+            }
+        }))?;
+        assert_eq!(
+            retro.retrospective.map(|r| r.worked_on).as_deref(),
+            Some("Built it.")
         );
         Ok(())
     }
