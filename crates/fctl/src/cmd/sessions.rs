@@ -605,6 +605,10 @@ pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> R
                 let url = s.remote_control.and_then(|r| r.session_url).context(
                     "This session has no Remote Control link (it needs a full Claude login)",
                 )?;
+                // Agents report it: nothing but a claude.ai page is opened.
+                if !fctl_domain::remote_control::is_session_url(&url) {
+                    bail!("This session's Remote Control link isn't a claude.ai page");
+                }
                 // The Claude app opens the session itself; without one, the browser does.
                 if let Some(app) = fctl_domain::remote_control::claude_app_url(&url)
                     && crate::cmd::auth::open_claude_app(&app)

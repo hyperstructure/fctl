@@ -1436,6 +1436,11 @@ impl SessionObject {
                         summary_changed = true;
                     }
                     if let (EventBody::RemoteControl(rc), Some(s)) = (&mut body, summary.as_mut()) {
+                        // A link the apps open: only claude.ai's.
+                        rc.session_url = rc
+                            .session_url
+                            .take()
+                            .filter(|u| fctl_domain::remote_control::is_session_url(u));
                         rc.user = Some(self.claude_user(s));
                         s.remote_control = Some(rc.clone());
                         summary_changed = true;
@@ -1739,6 +1744,10 @@ impl SessionObject {
             s.effort = fctl_domain::validate::effort(&e).ok();
         }
         if let Some(mut rc) = state.remote_control {
+            rc.session_url = rc
+                .session_url
+                .take()
+                .filter(|u| fctl_domain::remote_control::is_session_url(u));
             rc.user = Some(self.claude_user(&s));
             s.remote_control = Some(rc);
         }
