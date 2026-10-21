@@ -76,6 +76,8 @@ this file is the overview. Order within a section is priority.
 
 ## 0.3 — closing the loop
 
+- [x] GitHub's webhook keeps sessions' pull requests current: their state,
+      merge queues included, and their checks, in session lists and pages
 - [ ] GitHub webhooks: agents react to CI failures and review comments on
       their pull requests (#8)
 - [ ] Scheduled and recurring sessions (nightly dependency updates, triage) (#9)

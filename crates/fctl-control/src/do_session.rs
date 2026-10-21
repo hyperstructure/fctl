@@ -18,7 +18,7 @@ use fctl_domain::notify;
 use fctl_domain::usage as plan;
 use fctl_proto::api::{EventPage, PlanLimit};
 use fctl_proto::event::{EventBody, GitState, StatusChange, UserMessage};
-use fctl_proto::session::{Session, SessionRole, SessionStatus, UserRef};
+use fctl_proto::session::{PullRequestRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{
     AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown,
     UplinkUp,
@@ -218,6 +218,12 @@ impl DurableObject for SessionObject {
                 Ok(b) => self.drain_stop(b).await.map(|d| serde_json::json!(d)),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
             },
+            (worker::Method::Post, "/pull-requests") => {
+                match req.json::<internal::PullRequestsSeen>().await {
+                    Ok(b) => self.pull_requests_seen(b).await,
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
             (worker::Method::Get, "/summary") => match self.summary() {
                 Some(s) => Ok(serde_json::json!(s)),
                 None => Err(api_err(ErrorCode::NotFound, "Session not initialized")),
@@ -1381,6 +1387,8 @@ impl SessionObject {
                 let mut summary = self.summary();
                 let mut summary_changed = false;
                 let mut lists_changed = false;
+                // Pull requests the session lists from now on.
+                let mut found = Vec::new();
                 let mut turn_ended = false;
                 let mut usage = Vec::new();
                 let counted_before = self.counted();
@@ -1432,7 +1440,9 @@ impl SessionObject {
                         ev::shape_for_storage(v);
                     }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
-                        lists_changed |= Self::apply_git(s, g);
+                        let (changed, new) = Self::apply_git(s, g, now);
+                        lists_changed |= changed;
+                        found.extend(new);
                         summary_changed = true;
                     }
                     if let (EventBody::RemoteControl(rc), Some(s)) = (&mut body, summary.as_mut()) {
@@ -1472,6 +1482,9 @@ impl SessionObject {
                     // turns too (at most every ten seconds).
                     if lists_changed {
                         self.notify_fleet(&s);
+                    }
+                    if !found.is_empty() {
+                        self.track_pull_requests(&s, found);
                     }
                     // A host that reconnects reports its state before it
                     // replays the events it kept: a turn that ended meanwhile
@@ -1664,9 +1677,10 @@ impl SessionObject {
     /// Counts changes in every repository, and keeps every pull request the
     /// agent found (`fctl_domain::pulls`). The session's pull request, for
     /// older clients, is the primary repository's, or another repository's
-    /// when it has none. Returns whether what session lists show changed:
-    /// the counts or the pull requests.
-    fn apply_git(s: &mut Session, g: &GitState) -> bool {
+    /// when it has none. Returns whether what session lists show changed
+    /// (the counts or the pull requests), and the pull requests it lists
+    /// from now on.
+    fn apply_git(s: &mut Session, g: &GitState, now: i64) -> (bool, Vec<PullRequestRef>) {
         let listed = |s: &Session| {
             (
                 s.stats.files_changed,
@@ -1683,11 +1697,71 @@ impl SessionObject {
         s.stats.additions = g.all_files().filter_map(|f| f.additions).sum();
         s.stats.deletions = g.all_files().filter_map(|f| f.deletions).sum();
         let found = fctl_domain::pulls::found(g);
+        let known = s.pull_requests.len();
+        let merged = fctl_domain::pulls::merge(&mut s.pull_requests, &found, now);
         if let Some(pr) = found.first() {
-            s.pull_request = Some(pr.clone());
+            // As the list has it now, with what GitHub said of it.
+            let listed = s
+                .pull_requests
+                .iter()
+                .find(|p| p.url.eq_ignore_ascii_case(&pr.url));
+            s.pull_request = Some(listed.unwrap_or(pr).clone());
         }
-        let merged = fctl_domain::pulls::merge(&mut s.pull_requests, &found);
-        merged || listed(s) != before
+        let new = s.pull_requests.get(known..).unwrap_or_default().to_vec();
+        (merged || listed(s) != before, new)
+    }
+
+    /// Records the pull requests the session lists from now on, so that
+    /// GitHub's webhooks about them reach it, and looks them up where the
+    /// instance takes the webhook (`crate::pull_requests`).
+    fn track_pull_requests(&self, s: &Session, prs: Vec<PullRequestRef>) {
+        let env = self.env.clone();
+        let id = s.id.as_str().to_owned();
+        self.state.wait_until(async move {
+            let Ok(db) = env.d1("DB") else { return };
+            let tracked = match crate::pull_requests::track(&db, &id, &prs).await {
+                Ok(t) => t,
+                Err(e) => {
+                    worker::console_error!("tracking the pull requests of {id}: {}", e.0.message);
+                    return;
+                }
+            };
+            let cfg = crate::config::Config::from_env(&env);
+            if crate::pull_requests::enabled(&cfg)
+                && let Err(e) =
+                    crate::pull_requests::refresh(&env, &cfg, &db, &tracked, now_ms()).await
+            {
+                worker::console_error!("looking up the pull requests of {id}: {}", e.0.message);
+            }
+        });
+    }
+
+    /// GitHub says what became of pull requests the session lists: their
+    /// state, and their checks (`crate::pull_requests`).
+    async fn pull_requests_seen(
+        &self,
+        b: internal::PullRequestsSeen,
+    ) -> std::result::Result<serde_json::Value, ApiError> {
+        let Some(mut s) = self.summary() else {
+            return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        let now = now_ms();
+        if !fctl_domain::pulls::observe(&mut s.pull_requests, &b.prs, now) {
+            return Ok(serde_json::json!({ "ok": true, "changed": false }));
+        }
+        if let Some(pr) = &s.pull_request
+            && let Some(listed) = s
+                .pull_requests
+                .iter()
+                .find(|p| p.url.eq_ignore_ascii_case(&pr.url))
+        {
+            s.pull_request = Some(listed.clone());
+        }
+        self.save_summary(&s);
+        self.broadcast_summary(&s);
+        self.notify_fleet(&s);
+        self.mark_dirty(now).await;
+        Ok(serde_json::json!({ "ok": true, "changed": true }))
     }
 
     fn track_live(&self, event: &serde_json::Value, text: &str) {

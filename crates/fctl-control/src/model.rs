@@ -624,7 +624,7 @@ impl SessionRow {
                     url: url.clone(),
                     title: self.pr_title.clone(),
                     state: self.pr_state.clone(),
-                    repo: None,
+                    ..Default::default()
                 }),
                 _ => None,
             },

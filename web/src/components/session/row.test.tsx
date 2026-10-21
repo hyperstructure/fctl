@@ -77,15 +77,66 @@ describe("a session's row", () => {
     expect(first?.rel).toBe("noreferrer");
     expect(first?.title).toBe("hyperstructure/fctl#166: Add a screenshot of app.fctl.sh to the README");
     expect(second?.title).toBe("hyperstructure/homebrew-tap#7");
-    expect(el.textContent).toContain("· PRs fctl#166, homebrew-tap#7");
+    expect(el.textContent).toContain("· fctl#166 homebrew-tap#7");
   });
 
   it("names one pull request, and none without any", () => {
     const one = row({ ...session, pull_request: pr("hyperstructure/fctl", 165) });
-    expect(one.textContent).toContain("· PR fctl#165");
+    expect(one.textContent).toContain("· fctl#165");
     expect(one.querySelectorAll("a")).toHaveLength(2);
     const none = row(session);
-    expect(none.textContent).not.toContain("PR");
+    expect(none.textContent).not.toContain("#165");
     expect(none.querySelectorAll("a")).toHaveLength(1);
+  });
+
+  it("shows each one's state in GitHub's colors, and its checks until it merges", () => {
+    const el = row({
+      ...session,
+      pull_requests: [
+        {
+          ...pr("hyperstructure/fctl", 171),
+          state: "open",
+          checks: { passed: 3, failed: 1, pending: 0, at: 1 },
+        },
+        {
+          ...pr("hyperstructure/fctl", 172),
+          state: "draft",
+          checks: { passed: 1, failed: 0, pending: 2, at: 1 },
+        },
+        {
+          ...pr("hyperstructure/fctl", 173),
+          state: "queued",
+          checks: { passed: 4, failed: 0, pending: 0, at: 1 },
+        },
+        {
+          ...pr("hyperstructure/fctl", 174),
+          state: "merged",
+          checks: { passed: 4, failed: 0, pending: 0, at: 1 },
+        },
+        { ...pr("hyperstructure/fctl", 175), state: "closed" },
+        pr("hyperstructure/fctl", 176),
+      ],
+    });
+    const links = [...el.querySelectorAll("a")].slice(1);
+    const colors = (a: Element) =>
+      [...a.querySelectorAll("svg")].map((svg) => svg.getAttribute("class")?.match(/text-[a-z-]+/)?.[0]);
+    expect(links.map(colors)).toEqual([
+      ["text-pr-open", "text-checks-failed"],
+      ["text-pr-draft", "text-checks-pending"],
+      ["text-pr-queued", "text-checks-passed"],
+      ["text-pr-merged"],
+      ["text-pr-closed"],
+      ["text-pr-unknown"],
+    ]);
+    // What the icons say, said to screen readers and on hover.
+    expect(links.map((a) => a.getAttribute("aria-label"))).toEqual([
+      "fctl#171, open, 1 of 4 checks failed",
+      "fctl#172, draft, 2 of 3 checks pending",
+      "fctl#173, queued, all 4 checks passed",
+      "fctl#174, merged",
+      "fctl#175, closed",
+      "fctl#176",
+    ]);
+    expect(links[0]?.getAttribute("title")).toBe("hyperstructure/fctl#171\nOpen · 1 of 4 checks failed");
   });
 });

@@ -80,9 +80,7 @@ mod tests {
         PullRequestRef {
             number: n,
             url: format!("https://github.com/acme/widgets/pull/{n}"),
-            title: None,
-            state: None,
-            repo: None,
+            ..Default::default()
         }
     }
 

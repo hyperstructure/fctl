@@ -10,8 +10,9 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { agoShort, stamp } from "@/lib/format";
-import { prRef, prTitle, pullRequests } from "@/lib/pulls";
+import { prLabel, prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { statusReason } from "@/lib/status";
+import { PullRequestChecksIcon, PullRequestStateIcon } from "./pull-request";
 
 export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.WorkspaceRef }) {
   return (
@@ -73,26 +74,32 @@ export function SessionLink({ s }: { s: G.Session }) {
   );
 }
 
-/** "· PRs fctl#120, design#14", each a link to it on GitHub with its title on hover; nothing without any. */
+/**
+ * "· fctl#120 design#14", each a link to it on GitHub after GitHub's icon for its state, with a mark
+ * for its checks while they matter, and what they say on hover; nothing without any.
+ */
 export function PullRequestLinks({ s, className }: { s: G.Session; className?: string }) {
   const prs = pullRequests(s);
   if (prs.length === 0) return null;
   return (
     // The padding is room for the links' focus rings, which truncating would cut off.
     <span className={cn("-m-1 truncate p-1", className)}>
-      · {prs.length === 1 ? "PR" : "PRs"}{" "}
-      {prs.map((pr, i) => (
+      ·
+      {prs.map((pr) => (
         <Fragment key={pr.url}>
-          {i > 0 && ", "}
+          {" "}
           <a
             href={pr.url}
             target="_blank"
             rel="noreferrer"
             title={prTitle(pr)}
+            aria-label={prLabel(pr)}
             // Over the session's link, which covers the row.
-            className="relative z-[2] text-ink-3 underline-offset-2 transition-colors hover:text-ink hover:underline"
+            className="group/pr relative z-[2] mr-1 text-ink-3 transition-colors last:mr-0 hover:text-ink"
           >
-            {prRef(pr)}
+            <PullRequestStateIcon pr={pr} className="mr-1 inline size-3 align-[-1.5px]" />
+            <span className="underline-offset-2 group-hover/pr:underline">{prRef(pr)}</span>
+            <PullRequestChecksIcon pr={pr} className="ml-1 inline size-3 align-[-1.5px]" />
           </a>
         </Fragment>
       ))}
