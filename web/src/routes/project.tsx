@@ -4,6 +4,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ArrowRight, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { MemoryTab } from "@/components/project/memory";
+import { RetrospectivesTab } from "@/components/project/retrospectives";
 import {
   AttachButton,
   DraftTray,
@@ -65,7 +67,10 @@ import {
 import { repoLabel, repoSummary } from "@/lib/repos";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
-type Tab = "sessions" | "repositories" | "settings" | "members" | "secrets";
+type Tab = "sessions" | "memory" | "retrospectives" | "repositories" | "settings" | "members" | "secrets";
+
+/** Everyone in the project sees these; owners and maintainers the rest. */
+const OPEN_TABS: Tab[] = ["sessions", "memory", "retrospectives", "repositories", "members"];
 
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
@@ -151,8 +156,18 @@ export function ProjectPage() {
       {/* Scrolls sideways where the tabs don't fit (phones). */}
       <nav className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
         <div className="flex w-max min-w-full gap-1 border-b border-line">
-          {(["sessions", "repositories", "settings", "members", "secrets"] as Tab[])
-            .filter((t) => t === "sessions" || t === "repositories" || t === "members" || manage)
+          {(
+            [
+              "sessions",
+              "memory",
+              "retrospectives",
+              "repositories",
+              "settings",
+              "members",
+              "secrets",
+            ] as Tab[]
+          )
+            .filter((t) => OPEN_TABS.includes(t) || manage)
             .map((t) => (
               <Link
                 key={t}
@@ -174,6 +189,8 @@ export function ProjectPage() {
       </nav>
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
+        {p && tab === "memory" && <MemoryTab project={p} />}
+        {p && tab === "retrospectives" && <RetrospectivesTab project={p} />}
         {p && tab === "repositories" && <Repositories project={p} />}
         {p && tab === "settings" && manage && <Settings project={p} />}
         {p && tab === "settings" && p.role === "owner" && <ProjectDangerZone project={p} />}
@@ -894,6 +911,43 @@ function Settings({ project }: { project: G.Project }) {
               )}
             </Field>
           )}
+        </div>
+      </Section>
+      <Section
+        title="Memory and retrospectives"
+        description="What agents leave for the agents and people after them."
+      >
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Project memory
+              <span className="block text-[12.5px] text-ink-4">
+                Each session's agent starts with the notes earlier agents and people left, adds what a future
+                agent should know, and marks notes that turned out wrong stale. People read and change them
+                under Memory. Off, agents neither read nor add notes, and the ones there stay.
+              </span>
+            </span>
+            <Switch
+              checked={s.project_memory}
+              onChange={(v) => set("project_memory", v)}
+              label="Project memory"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Retrospectives
+              <span className="block text-[12.5px] text-ink-4">
+                As they finish a piece of work, agents record what they worked on, the approach they took,
+                what got in the way and what a future agent should know. People read them on the session's
+                page and under Retrospectives.
+              </span>
+            </span>
+            <Switch
+              checked={s.retrospectives}
+              onChange={(v) => set("retrospectives", v)}
+              label="Retrospectives"
+            />
+          </div>
         </div>
       </Section>
       <Section title="Sandbox" description="Where agents run.">

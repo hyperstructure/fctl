@@ -173,7 +173,10 @@ export const api = {
     request<G.Memory>("PATCH", `/memories/${enc(id)}`, b),
   deleteMemory: (id: string) => request<G.Ok>("DELETE", `/memories/${enc(id)}`),
   /** A project's retrospectives, newest first, with how many ended each way. */
-  retrospectives: (project: string, q: { outcome?: G.RetrospectiveOutcome; before?: number; limit?: number } = {}) => {
+  retrospectives: (
+    project: string,
+    q: { outcome?: G.RetrospectiveOutcome; before?: number; limit?: number } = {},
+  ) => {
     const p = new URLSearchParams();
     if (q.outcome) p.set("outcome", q.outcome);
     if (q.before) p.set("before", String(q.before));

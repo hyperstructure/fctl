@@ -28,7 +28,8 @@ export const keys = {
   /** A project's memory, by project id. */
   memories: (project: string) => ["memories", project] as const,
   /** A project's retrospectives, by project id, of one outcome or all. */
-  retrospectives: (project: string, outcome?: string) => ["retrospectives", project, outcome ?? "all"] as const,
+  retrospectives: (project: string, outcome?: string) =>
+    ["retrospectives", project, outcome ?? "all"] as const,
   sessionRetrospectives: (id: string) => ["session-retrospectives", id] as const,
   runners: ["runners"] as const,
   users: ["users"] as const,

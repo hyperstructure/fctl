@@ -21,6 +21,12 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/session/composer";
+import {
+  SessionMemory,
+  SessionRetrospectives,
+  useRetrospectives,
+  useSessionMemory,
+} from "@/components/session/kept";
 import { AgentOrb } from "@/components/session/orb";
 import { PullRequestChecksIcon, PullRequestStateIcon } from "@/components/session/pull-request";
 import { Transcript } from "@/components/session/transcript";
@@ -66,6 +72,7 @@ import { claudeAppLink, remoteControlUrl, remoteControlUser } from "@/lib/remote
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
 import { type StatusNote, statusNotes, statusReason } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
+import type { Item } from "@/lib/transcript";
 import { agentTime, turnsTaken } from "@/lib/work";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
@@ -455,6 +462,7 @@ export function SessionPage() {
               canManage={isOwner}
               startedBy={session.created_by}
               me={me?.user.id}
+              projectSlug={session.project_slug}
               onLoadOlder={() => void store.loadOlder()}
               hasMoreBefore={s.hasMoreBefore}
               loadingOlder={s.loadingOlder}
@@ -500,6 +508,7 @@ export function SessionPage() {
             session={session}
             me={me?.user.id}
             git={s.git}
+            items={s.items}
             viewers={s.viewers}
             model={s.model}
             runnerConnected={s.runnerConnected}
@@ -514,6 +523,7 @@ export function SessionPage() {
             session={session}
             me={me?.user.id}
             git={s.git}
+            items={s.items}
             viewers={s.viewers}
             model={s.model}
             runnerConnected={s.runnerConnected}
@@ -751,6 +761,7 @@ function Details({
   session,
   me,
   git,
+  items,
   viewers,
   model,
   runnerConnected,
@@ -761,6 +772,8 @@ function Details({
   /** The signed-in person. */
   me?: G.UserId;
   git?: G.GitState;
+  /** The transcript, whose retrospectives come in live. */
+  items: Item[];
   viewers: G.Presence[];
   model?: string;
   runnerConnected: boolean;
@@ -770,6 +783,8 @@ function Details({
 }) {
   const st = session.stats;
   const project = useProject(session.project_slug).data;
+  const retrospectives = useRetrospectives(session, items);
+  const memory = useSessionMemory(session, project);
   const [primary, ...others] = repoChanges(
     git ?? { ahead: 0, behind: 0, files: [], uncommitted: 0, pushed: false },
   );
@@ -839,6 +854,18 @@ function Details({
         )}
       </RailSection>
       {!pullsFirst && pulls}
+      {(retrospectives.length > 0 || project?.settings.retrospectives) && (
+        <RailSection
+          title={retrospectives.length > 1 ? `Retrospectives (${retrospectives.length})` : "Retrospective"}
+        >
+          <SessionRetrospectives list={retrospectives} project={project} />
+        </RailSection>
+      )}
+      {project && memory.shown && (
+        <RailSection title="Memory">
+          <SessionMemory project={project} memory={memory} />
+        </RailSection>
+      )}
       <RailSection title="Work">
         <Row k="Turns" v={turnsTaken(st)} />
         <Row k="Tool calls" v={st.tool_calls} />

@@ -88,7 +88,12 @@ pub enum MemoryCmd {
 /// Where `fctl memory` reads and keeps notes.
 enum Keeper {
     /// The sandbox of a session: its agent, through fctl-agent.
-    Agent { socket: PathBuf, session: String },
+    Agent {
+        socket: PathBuf,
+        session: String,
+        /// The `--server` given, for what only people do.
+        server: Option<String>,
+    },
     /// A person, through the API.
     Person { api: Api, project: Option<String> },
 }
@@ -98,7 +103,11 @@ impl Keeper {
         if project.is_none()
             && let Some((socket, session)) = super::sessions::this_sandbox(None)
         {
-            return Ok(Self::Agent { socket, session });
+            return Ok(Self::Agent {
+                socket,
+                session,
+                server: server.map(str::to_owned),
+            });
         }
         Ok(Self::Person {
             api: config::api(server)?,
@@ -108,12 +117,12 @@ impl Keeper {
 
     async fn list(&self, stale: bool) -> Result<Vec<Memory>> {
         match self {
-            Self::Agent { socket, session } => {
-                match call(socket, session, AgentCall::Memories { stale }).await? {
-                    AgentAnswer::Memories { memories } => Ok(memories),
-                    _ => bail!("fctl-agent answered another request"),
-                }
-            }
+            Self::Agent {
+                socket, session, ..
+            } => match call(socket, session, AgentCall::Memories { stale }).await? {
+                AgentAnswer::Memories { memories } => Ok(memories),
+                _ => bail!("fctl-agent answered another request"),
+            },
             Self::Person { api, project } => {
                 let project = super::sessions::project_or_default(project.clone())?;
                 let mut notes = api.memories(&project).await?.memories;
@@ -123,12 +132,16 @@ impl Keeper {
         }
     }
 
-    fn api(&self, what: &str) -> Result<&Api> {
+    /// The API, for what only people do: in a sandbox too, when a person
+    /// signed fctl in there.
+    fn api(&self, what: &str) -> Result<Api> {
         match self {
-            Self::Person { api, .. } => Ok(api),
-            Self::Agent { .. } => bail!(
-                "Agents can't {what}: people who can edit the project do that, in its Memory tab or with fctl memory outside the sandbox"
-            ),
+            Self::Person { api, .. } => Ok(api.clone()),
+            Self::Agent { server, .. } => config::api(server.as_deref()).map_err(|_| {
+                anyhow::anyhow!(
+                    "Agents can't {what}: people who can edit the project do that, in its Memory tab or with fctl memory outside the sandbox"
+                )
+            }),
         }
     }
 }
@@ -201,7 +214,9 @@ pub async fn run(server: Option<&str>, args: MemoryArgs, json: bool) -> Result<(
             let text = text_of(&text)?;
             let replaces = replaces.as_deref().map(memory_id).transpose()?;
             let (note, replaced) = match &keeper {
-                Keeper::Agent { socket, session } => {
+                Keeper::Agent {
+                    socket, session, ..
+                } => {
                     match call(
                         socket,
                         session,
@@ -264,7 +279,9 @@ pub async fn run(server: Option<&str>, args: MemoryArgs, json: bool) -> Result<(
         MemoryCmd::Stale { id, reason } => {
             let id = memory_id(&id)?;
             let note = match &keeper {
-                Keeper::Agent { socket, session } => {
+                Keeper::Agent {
+                    socket, session, ..
+                } => {
                     let Some(reason) = reason.filter(|r| !r.trim().is_empty()) else {
                         bail!("Say why the note is stale: --reason \"…\"");
                     };

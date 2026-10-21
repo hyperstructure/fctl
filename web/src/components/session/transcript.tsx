@@ -3,6 +3,8 @@
 
 import { useMutation } from "@tanstack/react-query";
 import {
+  Archive,
+  BookMarked,
   BrainCircuit,
   ChevronRight,
   CircleAlert,
@@ -12,6 +14,7 @@ import {
   ImageUp,
   Info,
   Radio,
+  ScrollText,
   Sparkles,
   Trash2,
   TriangleAlert,
@@ -19,6 +22,8 @@ import {
 } from "lucide-react";
 import { type MouseEvent, memo, type ReactNode, useMemo, useRef, useState } from "react";
 import { ImageSizes, Markdown } from "@/components/markdown";
+import { NoteLink } from "@/components/project/memory";
+import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
 import {
   Avatar,
   Button,
@@ -102,6 +107,63 @@ const UserMessage = memo(function UserMessage({
     </div>
   );
 });
+
+/**
+ * A note the agent kept in the project's memory, or marked stale, as it was
+ * then, with a link to it in the project's Memory tab.
+ */
+function MemoryNotice({
+  memory,
+  stale,
+  projectSlug,
+}: {
+  memory: G.Memory;
+  stale: boolean;
+  projectSlug?: string;
+}) {
+  return (
+    <div className="animate-rise py-1.5">
+      <Milestone icon={stale ? <Archive /> : <BookMarked />} tone={stale ? "muted" : "ok"}>
+        {stale ? "Marked a note stale" : "Remembered for later agents"}
+        {projectSlug && (
+          <>
+            {" · "}
+            <NoteLink slug={projectSlug} id={memory.id} className="text-ink-3">
+              Memory
+            </NoteLink>
+          </>
+        )}
+      </Milestone>
+      <div
+        className={cn(
+          "mt-0.5 ml-5.5 border-l border-line-strong pl-3 text-[13.5px]",
+          stale ? "text-ink-3" : "text-ink-2",
+        )}
+      >
+        <Markdown text={memory.text} className="prose-note" />
+        {stale && (memory.stale?.replaced_by || memory.stale?.reason) && (
+          <p className="mt-1 text-[12.5px] text-ink-4 [overflow-wrap:anywhere]">
+            {memory.stale.replaced_by ? "A newer note takes its place." : memory.stale.reason}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** A retrospective the agent recorded as it finished a piece of work. */
+function RetrospectiveNotice({ r }: { r: G.Retrospective }) {
+  return (
+    <div className="my-2 animate-rise rounded-xl border border-line bg-raised/30 px-4 py-3.5">
+      <div className="mb-3 flex items-center gap-2 text-[12.5px] text-ink-3">
+        <ScrollText className="size-3.5 shrink-0" />
+        <span>Retrospective</span>
+        <OutcomeBadge outcome={r.outcome} />
+      </div>
+      <RetrospectiveParts r={r} wide />
+    </div>
+  );
+}
 
 /**
  * A screenshot the agent published for a pull request: the image while its
@@ -367,6 +429,7 @@ const ItemView = memo(function ItemView({
   stalled,
   canManage,
   claudeUrl,
+  projectSlug,
 }: {
   item: Item;
   live?: LiveTurn;
@@ -379,6 +442,8 @@ const ItemView = memo(function ItemView({
   canManage?: boolean;
   /** For Remote Control: its link, when it is the viewer's to open. */
   claudeUrl?: string;
+  /** The session's project, which the notes its agent keeps link to. */
+  projectSlug?: string;
 }) {
   switch (item.kind) {
     case "user":
@@ -430,6 +495,15 @@ const ItemView = memo(function ItemView({
       return <Logs lines={item.lines} />;
     case "notice":
       if (item.notice.published) return <PublishedShot file={item.notice.published} canManage={canManage} />;
+      if (item.notice.retrospective) return <RetrospectiveNotice r={item.notice.retrospective} />;
+      if (item.notice.memory)
+        return (
+          <MemoryNotice
+            memory={item.notice.memory}
+            stale={item.notice.code === "memory_stale"}
+            projectSlug={projectSlug}
+          />
+        );
       return (
         <Milestone
           icon={
@@ -574,6 +648,7 @@ export const Transcript = memo(function Transcript({
   canManage,
   startedBy,
   me,
+  projectSlug,
   onLoadOlder,
   hasMoreBefore,
   loadingOlder,
@@ -588,6 +663,8 @@ export const Transcript = memo(function Transcript({
   /** Who started the session, and who is signed in: a Remote Control link is only for its person. */
   startedBy: G.UserRef;
   me?: G.UserId;
+  /** The session's project, which the notes its agent keeps link to. */
+  projectSlug?: string;
   onLoadOlder: () => void;
   hasMoreBefore: boolean;
   loadingOlder: boolean;
@@ -638,6 +715,7 @@ export const Transcript = memo(function Transcript({
                 stalled={it.kind === "setup" ? !!stall : undefined}
                 canManage={canManage}
                 claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}
+                projectSlug={projectSlug}
               />
             </div>
           ))}

@@ -1,0 +1,170 @@
+// What a session's agent kept for the people and agents after it, as the
+// session page's rail and details sheet show it: its retrospectives, and
+// the notes it left in the project's memory.
+
+import { useQuery } from "@tanstack/react-query";
+import { Archive, BookMarked } from "lucide-react";
+import { useState } from "react";
+import { NoteLine, NoteLink } from "@/components/project/memory";
+import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
+import { Dialog } from "@/components/ui";
+import type * as G from "@/gen";
+import { api } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import { ago, stamp } from "@/lib/format";
+import { canEditMemory, headline, ofSession } from "@/lib/memory";
+import { keys, useMemories } from "@/lib/queries";
+import { merged } from "@/lib/retrospectives";
+import type { Item } from "@/lib/transcript";
+
+/**
+ * The session's retrospectives: the latest one's outcome and what it
+ * worked on, and all of them in full a click away. `null` where there are
+ * none and the project asks for none.
+ */
+export function useRetrospectives(session: G.Session, items: Item[]) {
+  const listed = useQuery({
+    queryKey: keys.sessionRetrospectives(session.id),
+    queryFn: () => api.sessionRetrospectives(session.id),
+  });
+  return merged(listed.data?.retrospectives, items);
+}
+
+export function SessionRetrospectives({ list, project }: { list: G.Retrospective[]; project?: G.Project }) {
+  const [open, setOpen] = useState(false);
+  const latest = list[0];
+  if (!latest)
+    return (
+      <p className="text-[12.5px] leading-relaxed text-ink-4">
+        The agent records one as it finishes a piece of work: what it worked on, how, what got in the way and
+        what a future agent should know.
+      </p>
+    );
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="-mx-2 -my-1.5 block w-[calc(100%+1rem)] rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover"
+      >
+        <span className="flex items-center justify-between gap-2">
+          <OutcomeBadge outcome={latest.outcome} />
+          <time
+            dateTime={new Date(latest.created_at).toISOString()}
+            title={stamp(latest.created_at)}
+            className="text-[12px] text-ink-4"
+          >
+            {ago(latest.created_at)}
+          </time>
+        </span>
+        <span className="mt-2 line-clamp-4 block text-[12.5px] leading-relaxed text-ink-2 [overflow-wrap:anywhere]">
+          {latest.worked_on}
+        </span>
+        <span className="mt-1.5 block text-[12px] text-ink-3">
+          {list.length > 1 ? `Read all ${list.length}` : "Read it"}
+        </span>
+      </button>
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        wide
+        title={list.length > 1 ? `${list.length} retrospectives` : "Retrospective"}
+        description={
+          list.length > 1
+            ? "What the agent recorded as it finished each piece of work, newest first."
+            : "What the agent recorded as it finished the work."
+        }
+      >
+        <ol className="-mx-6 max-h-[70dvh] overflow-y-auto border-t border-line px-6">
+          {list.map((r) => (
+            <li key={r.id} className="border-b border-line py-4 last:border-b-0">
+              <div className="mb-3 flex items-center gap-2">
+                <OutcomeBadge outcome={r.outcome} />
+                <time
+                  dateTime={new Date(r.created_at).toISOString()}
+                  title={stamp(r.created_at)}
+                  className="text-[12px] text-ink-4"
+                >
+                  {ago(r.created_at)}
+                </time>
+              </div>
+              <RetrospectiveParts
+                r={r}
+                wide
+                remember={project && canEditMemory(project.role) ? project : undefined}
+              />
+            </li>
+          ))}
+        </ol>
+      </Dialog>
+    </div>
+  );
+}
+
+/**
+ * The project's memory as the session page shows it: the notes its agent
+ * left and those it marked stale, if there is anything to show: notes it
+ * left, or a project that keeps a memory.
+ */
+export function useSessionMemory(session: G.Session, project?: G.Project) {
+  const memories = useMemories(project?.id);
+  const all = memories.data?.memories ?? [];
+  const kept = ofSession(all, session.id);
+  const shown = !!project && (project.settings.project_memory || kept.added.length + kept.staled.length > 0);
+  return { ...kept, current: all.filter((m) => !m.stale).length, shown };
+}
+
+/** The notes the session's agent left in the project's memory, and those it marked stale. */
+export function SessionMemory({
+  project,
+  memory: { added, staled, current },
+}: {
+  project: G.Project;
+  memory: ReturnType<typeof useSessionMemory>;
+}) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      {added.length + staled.length === 0 ? (
+        <p className="text-[12.5px] leading-relaxed text-ink-4">
+          Its agent left no notes yet. What it learns that a future agent should know goes in the project's
+          memory.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {added.map((m) => (
+            <li key={m.id} className="flex items-start gap-2 text-[12.5px] leading-relaxed text-ink-2">
+              <BookMarked className="mt-[3px] size-3.5 shrink-0 text-accent" />
+              <NoteLink
+                slug={project.slug}
+                id={m.id}
+                arrow={false}
+                className={cn(
+                  "line-clamp-3 min-w-0 [overflow-wrap:anywhere]",
+                  m.stale && "text-ink-4 line-through",
+                )}
+              >
+                <NoteLine text={headline(m.text, 400)} />
+              </NoteLink>
+            </li>
+          ))}
+          {staled.map((m) => (
+            <li key={m.id} className="flex items-start gap-2 text-[12.5px] leading-relaxed text-ink-3">
+              <Archive className="mt-[3px] size-3.5 shrink-0 text-ink-4" />
+              <NoteLink
+                slug={project.slug}
+                id={m.id}
+                arrow={false}
+                className="line-clamp-3 min-w-0 [overflow-wrap:anywhere]"
+              >
+                <span className="text-ink-4">Marked stale:</span> <NoteLine text={headline(m.text, 400)} />
+              </NoteLink>
+            </li>
+          ))}
+        </ul>
+      )}
+      <NoteLink slug={project.slug} className="self-start text-[12px] text-ink-3">
+        {current === 1 ? "The project's 1 note" : `The project's ${current} notes`}
+      </NoteLink>
+    </div>
+  );
+}
