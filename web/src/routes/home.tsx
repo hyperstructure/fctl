@@ -6,6 +6,7 @@ import { Link } from "@tanstack/react-router";
 import { Check, Cpu, FolderPlus, KeyRound, Plus, ShieldCheck, Users } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { PlanUsageStrip } from "@/components/plan-usage";
+import { RunnerUpdate } from "@/components/runner-update";
 import {
   AttachButton,
   DraftTray,
@@ -719,6 +720,7 @@ export function Home() {
               </Link>
             </div>
           ))}
+          {me && <RunnerUpdate user={me.user.id} />}
           {workspaces.data && mine.length === 0 && (
             <NoWorkspace invited={workspaces.data.invitations.length > 0} />
           )}

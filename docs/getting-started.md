@@ -172,6 +172,13 @@ status` shows. For a Mac that runs around the clock, keep it plugged in
 and turn on automatic login, so the host starts again after a reboot or a
 power cut.
 
+Keep it on the version of fctl the app runs. While a runner of yours is
+online with an older one, your home page says so, and **How to update**
+shows what to run on it: `fctl self update`, which restarts the host
+service while its sessions carry on (or `brew upgrade fctl`, then `fctl
+host restart`, where Homebrew installed fctl). **Skip this version** hides
+the notice in that browser until the app runs a newer version.
+
 ## 6. Create a project
 
 In the app, choose **New project** (or the **+** beside a workspace in the
