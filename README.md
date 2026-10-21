@@ -34,6 +34,8 @@ fctl run -p my-app "Add a dark mode toggle"
 Prefer Homebrew? `brew install hyperstructure/tap/fctl` installs the same
 release.
 
+![app.fctl.sh](https://github.com/user-attachments/assets/4c150cf3-9a98-4c03-8bc9-fd80e79584d1)
+
 ## How it works
 
 ```
