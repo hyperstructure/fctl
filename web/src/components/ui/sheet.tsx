@@ -231,9 +231,12 @@ export function Sheet({
           </button>
         </div>
       </div>
+      {/* flex-auto, not flex-1: on phones the dialog is as tall as its contents
+          (fit-content), and Safari 26 takes flex-1's 0% basis for 0 there (WebKit bug
+          289876): the contents got no height, and the sheet showed its title only. */}
       <div
         ref={body}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]"
+        className="min-h-0 flex-auto overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]"
       >
         {children}
       </div>

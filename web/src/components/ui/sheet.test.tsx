@@ -79,6 +79,15 @@ describe("Sheet", () => {
     expect(dialog.textContent).toContain("Changes");
   });
 
+  it("is as tall as what it holds, up to most of the screen, and scrolls the rest", () => {
+    const { body } = open();
+    const classes = body.className.split(" ");
+    // happy-dom lays nothing out: the classes that do. With flex-1's 0% basis, Safari 26
+    // gave the contents no height, and the sheet showed its title only.
+    expect(classes).toEqual(expect.arrayContaining(["flex-auto", "min-h-0", "overflow-y-auto"]));
+    expect(classes).not.toContain("flex-1");
+  });
+
   it("focuses itself as it opens, and holds the page still", () => {
     const html = document.documentElement;
     const { dialog } = open();
