@@ -191,13 +191,14 @@ that the two cargo builds don't wait for each other), and the web app and
 the local D1's migrations at once; the lines of the last two come after
 `worker │` and `web │`.
 
-CI keeps dependencies, not the workspace's own crates, in its caches
+CI caches the dependencies, not the workspace's own crates
 ([Swatinem/rust-cache](https://github.com/Swatinem/rust-cache), set up by
-`.github/actions/rust` with the toolchain), and builds them without debug
-info. Only `main` saves caches; pull requests use `main`'s. On `main`, the
-web app, the release Worker and xtask build for the deploy beside the
-checks; the Worker's build is cached by the files it is built from, so a
-push that leaves them as they were deploys the Worker built before.
+`.github/actions/rust` with the toolchain), and builds without debug info.
+Two builds of the workspace are cached by the files they are built from
+instead: xtask's binary (`.github/actions/xtask`), which the jobs run as
+`xtask check lint` and the like, and on `main` the Worker's release build,
+which runs beside the checks for the deploy. Only `main` saves caches;
+pull requests use `main`'s.
 
 The Standalone image workflow (`.github/workflows/standalone-image.yml`)
 builds the standalone control plane's image, starts it and runs `cargo
