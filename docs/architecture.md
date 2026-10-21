@@ -1027,7 +1027,8 @@ why and who marked it (`fctl_domain::memory`).
    they are now, those other sessions added since the run started too;
    `fctl memory add` writes one, in place of another that goes stale with
    `--replaces`; and `fctl memory stale` marks one stale, with the reason
-   agents must give. Agents can't change or delete notes. fctl reaches
+   agents must give (not one someone else marked stale already). Agents
+   can't change or delete notes. fctl reaches
    fctl-agent over the session socket, which hands the call to its host
    (`AgentToHost::Call`); the host sends it with its runner token (`POST
    /api/v1/runner/sessions/{id}/calls`, an `AgentCall`), and the control
@@ -1040,12 +1041,15 @@ why and who marked it (`fctl_domain::memory`).
    control plane may have kept already.
 3. **What people do.** Everyone who sees the project reads its memory (its
    Memory tab, `fctl memory -p …`, `GET /api/v1/projects/{id}/memories`);
-   editors and up add notes, change them, mark them stale or current again
-   and delete them (`POST /api/v1/projects/{id}/memories`, `PATCH` and
-   `DELETE /api/v1/memories/{id}`), which the workspace's audit log
-   records. A project keeps at most 500 notes, stale ones included. The web
-   app reads the memory again when a session of the project changes status,
-   as when a turn ends.
+   editors and up add notes, in place of others too, change them, mark
+   them stale or current again and delete them (`POST
+   /api/v1/projects/{id}/memories`, `PATCH` and `DELETE
+   /api/v1/memories/{id}`), which the workspace's audit log records. A
+   project keeps at most 500 notes, stale ones included. Session pages ask
+   for the notes their agent wrote or marked stale (`?session=`), and the
+   web app reads the memory again when a session of the project changes
+   status, as when a turn ends. Deleting a note leaves the transcripts that
+   showed it as they are.
 
 The **Project memory** setting (`project_memory`, on by default) decides
 whether agents keep it. Off, the spec has no memory, agents hear nothing
@@ -1073,11 +1077,13 @@ The session page shows the newest beside the transcript and all of them a
 click away, and the project's Retrospectives tab lists the project's,
 newest first, with how many ended each way and a filter by outcome,
 leaving out those of archived sessions (`GET
-/api/v1/projects/{id}/retrospectives`, `GET
-/api/v1/sessions/{id}/retrospectives`, `fctl retro list`). Editors put an
+/api/v1/projects/{id}/retrospectives`, a page at a time after the id of
+the last one, which sort as they were recorded; `GET
+/api/v1/sessions/{id}/retrospectives`; `fctl retro list`). Editors put an
 insight in the project's memory from there. People who manage a session
 delete its retrospectives (`DELETE /api/v1/retrospectives/{id}`), which the
-workspace's audit log records.
+workspace's audit log records; the transcript keeps what the agent
+recorded.
 
 ## Notifications
 

@@ -221,6 +221,7 @@ fctl memory -p my-app                  # the current notes, newest first, with w
 fctl memory -p my-app --stale          # the stale ones too
 fctl memory show mem_01JC3V…
 fctl memory add -p my-app "Deploys happen on Fridays: merge migrations by Wednesday."
+fctl memory add -p my-app "Deploys happen on Thursdays." --replaces mem_01JC3V…   # the old one goes stale
 fctl memory edit mem_01JC3V… "Deploys happen on Thursdays."
 fctl memory stale mem_01JC3V… --reason "We deploy every day now"   # agents no longer start with it
 fctl memory restore mem_01JC3V…        # current again
