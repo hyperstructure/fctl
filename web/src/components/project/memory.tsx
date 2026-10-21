@@ -459,18 +459,13 @@ function Note({
           </Menu>
         )}
       </div>
-      <MarkStale
-        note={note}
-        project={project}
-        open={dialog === "stale"}
-        onClose={() => setDialog(undefined)}
-      />
-      <DeleteNote
-        note={note}
-        project={project}
-        open={dialog === "delete"}
-        onClose={() => setDialog(undefined)}
-      />
+      {/* Only while open: a memory can hold hundreds of notes. */}
+      {dialog === "stale" && (
+        <MarkStale note={note} project={project} open onClose={() => setDialog(undefined)} />
+      )}
+      {dialog === "delete" && (
+        <DeleteNote note={note} project={project} open onClose={() => setDialog(undefined)} />
+      )}
     </li>
   );
 }

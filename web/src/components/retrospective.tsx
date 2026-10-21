@@ -91,7 +91,7 @@ export function RetrospectiveParts({
           </dd>
         </div>
       ))}
-      {remember && (
+      {remember && noting && (
         <RememberDialog
           project={remember}
           open={noting}

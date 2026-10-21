@@ -246,24 +246,26 @@ function Entry({
         )}
       </div>
       <RetrospectiveParts r={r} wide remember={remember} className="sm:pl-6.5" />
-      <Dialog
-        open={confirm}
-        onClose={() => setConfirm(false)}
-        title="Delete this retrospective?"
-        description={`It goes from #${r.session.number}'s page and from this list for good.`}
-      >
-        <div className="flex flex-col gap-5">
-          {del.error && <Banner tone="error">{del.error.message}</Banner>}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setConfirm(false)}>
-              Cancel
-            </Button>
-            <Button variant="danger" loading={del.isPending} onClick={() => del.mutate()}>
-              Delete
-            </Button>
+      {confirm && (
+        <Dialog
+          open={confirm}
+          onClose={() => setConfirm(false)}
+          title="Delete this retrospective?"
+          description={`It goes from #${r.session.number}'s page and from this list for good.`}
+        >
+          <div className="flex flex-col gap-5">
+            {del.error && <Banner tone="error">{del.error.message}</Banner>}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfirm(false)}>
+                Cancel
+              </Button>
+              <Button variant="danger" loading={del.isPending} onClick={() => del.mutate()}>
+                Delete
+              </Button>
+            </div>
           </div>
-        </div>
-      </Dialog>
+        </Dialog>
+      )}
     </li>
   );
 }
