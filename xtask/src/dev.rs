@@ -6,8 +6,9 @@
 //! - a host with the process driver whose agents run fake-claude, a scripted
 //!   stand-in for Claude Code (no subscription, no network, deterministic).
 //!
-//! It bootstraps an owner, a Claude credential, a workspace, a runner and a
-//! project the first time, and keeps its state in .fctl-dev/ (delete it to
+//! It builds the CLI, the host and the agent, the Worker and the web app at
+//! once, bootstraps an owner, a Claude credential, a workspace, a runner and
+//! a project the first time, and keeps its state in .fctl-dev/ (delete it to
 //! start over).
 //! With `--smoke` (CI), it runs one session to the end and stops.
 //! With `--server <url>`, the host and the smoke test use a control plane
@@ -20,7 +21,7 @@ use fctl_proto::api::EventPage;
 use fctl_proto::event::{CommitInfo, EventBody, SessionEvent, StatusChange};
 use fctl_proto::session::{Session, SessionStatus};
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -106,20 +107,10 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
         let _ = SERVER.set(server.trim_end_matches('/').to_owned());
     }
     std::fs::create_dir_all(&state)?;
-    run(Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "fctl",
-            "-p",
-            "fctl-agent",
-            "-p",
-            "fake-claude",
-        ])
-        .current_dir(root))?;
+    build(root, opts.server.is_none(), no_vite)?;
     let mut children = Children(Vec::new());
     if opts.server.is_none() {
-        wrangler_dev(root, no_vite, &mut children)?;
+        wrangler_dev(root, &mut children)?;
     }
     wait_for(
         &format!("{}/api/v1/health", api()),
@@ -131,11 +122,13 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     if !no_vite {
         // Vite itself, not `npm run dev`: npm doesn't pass SIGINT on, and
         // stopping npm leaves Vite serving.
-        let vite = Command::new(root.join("node_modules/.bin/vite"))
-            .args(["--host", "localhost"])
-            .current_dir(root.join("web"))
-            .spawn()
-            .context("starting vite")?;
+        let vite = util::without_package_env(
+            Command::new(root.join("node_modules/.bin/vite"))
+                .args(["--host", "localhost"])
+                .current_dir(root.join("web")),
+        )
+        .spawn()
+        .context("starting vite")?;
         children.0.push(("vite", vite));
     }
     if !opts.no_host {
@@ -180,39 +173,83 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     }
 }
 
-/// The control plane under `wrangler dev`, with the web app it serves built
-/// and the D1 migrations applied.
-fn wrangler_dev(root: &Path, no_vite: bool, children: &mut Children) -> Result<()> {
+/// Builds the CLI, the host and the agent, and without `--server` what
+/// `wrangler dev` runs, all at once: the Worker, the web app it serves, and
+/// the local D1 with the migrations applied. The Worker builds in a target
+/// directory of its own, so neither cargo waits for the other's lock.
+fn build(root: &Path, local: bool, no_vite: bool) -> Result<()> {
+    let bins = || {
+        run(Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "fctl",
+                "-p",
+                "fctl-agent",
+                "-p",
+                "fake-claude",
+            ])
+            .current_dir(root))
+    };
+    if !local {
+        return bins();
+    }
+    std::thread::scope(|s| {
+        let worker = util::beside(s, "worker", || build_worker(root));
+        let web = util::beside(s, "web", || web_and_d1(root, no_vite));
+        bins().and(util::join(worker)).and(util::join(web))
+    })
+}
+
+/// The Worker, as `wrangler dev` builds it as it starts (`worker-build
+/// --dev`, wrangler.toml), in the target directory it builds in: wrangler
+/// then only has to bind it again.
+fn build_worker(root: &Path) -> Result<()> {
+    run(util::worker_build()?
+        .arg("--dev")
+        .env("CARGO_TARGET_DIR", worker_target(root))
+        .current_dir(root.join("crates/fctl-control")))
+}
+
+/// Where `wrangler dev` builds the Worker, beside the host's builds.
+fn worker_target(root: &Path) -> PathBuf {
+    util::target_dir(root).join("worker")
+}
+
+/// The web app `wrangler dev` serves (Vite serves the live sources on top),
+/// and the local D1 with the migrations applied.
+fn web_and_d1(root: &Path, no_vite: bool) -> Result<()> {
     if !root.join("node_modules").exists() {
         util::npm_install(root)?;
     }
-    // wrangler dev builds the Worker with `worker-build --dev` (wrangler.toml):
-    // this installs it when it is missing.
-    util::worker_build()?;
-    dev_vars(root)?;
-    // wrangler serves web/dist; Vite serves the live sources on top.
     if !root.join("web/dist/index.html").exists() || no_vite {
         util::build_web(root)?;
     }
-
     // CI=1: apply without asking (they are local and recorded in d1_migrations).
     run(util::wrangler(root)?
         .args(["d1", "migrations", "apply", "DB", "--local"])
         .env("CI", "1")
-        .current_dir(root.join("crates/fctl-control")))?;
+        .current_dir(root.join("crates/fctl-control")))
+}
 
-    let wrangler = util::wrangler(root)?
-        .args([
-            "dev",
-            "--port",
-            "8787",
-            "--ip",
-            "127.0.0.1",
-            "--test-scheduled",
-        ])
-        .current_dir(root.join("crates/fctl-control"))
-        .spawn()
-        .context("starting wrangler dev")?;
+/// The control plane under `wrangler dev`, once `build` built what it runs.
+fn wrangler_dev(root: &Path, children: &mut Children) -> Result<()> {
+    dev_vars(root)?;
+    let wrangler = util::without_package_env(
+        util::wrangler(root)?
+            .args([
+                "dev",
+                "--port",
+                "8787",
+                "--ip",
+                "127.0.0.1",
+                "--test-scheduled",
+            ])
+            .env("CARGO_TARGET_DIR", worker_target(root))
+            .current_dir(root.join("crates/fctl-control")),
+    )
+    .spawn()
+    .context("starting wrangler dev")?;
     children.0.push(("wrangler", wrangler));
     Ok(())
 }
@@ -640,16 +677,18 @@ fn host(root: &Path, state: &Path, token: &str) -> Result<Child> {
         data = toml_str(&state.join("data")),
     );
     std::fs::write(config.join("host.toml"), toml)?;
-    Command::new(bin.join("fctl"))
-        .args(["host", "run"])
-        .env("FCTL_CONFIG_DIR", &config)
-        .env("FCTL_DATA_DIR", state.join("data"))
-        .env(
-            "RUST_LOG",
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
-        )
-        .spawn()
-        .context("starting the dev host")
+    util::without_package_env(
+        Command::new(bin.join("fctl"))
+            .args(["host", "run"])
+            .env("FCTL_CONFIG_DIR", &config)
+            .env("FCTL_DATA_DIR", state.join("data"))
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+            ),
+    )
+    .spawn()
+    .context("starting the dev host")
 }
 
 fn toml_str(p: &Path) -> String {
