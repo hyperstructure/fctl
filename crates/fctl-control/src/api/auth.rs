@@ -576,7 +576,25 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     .await?;
     auth::start_web_session(ctx, &user).await?;
     ctx.audit("user.password_reset", Some(&user.id), None);
+    password_reset_notice(ctx, &user).await?;
     http::ok(&signed_in(auth::me(ctx, &user).await?))
+}
+
+/// Emails `user` that a reset link changed their password: links come by
+/// email, and from admins.
+pub async fn password_reset_notice(ctx: &Ctx, user: &crate::model::UserRow) -> AppResult<()> {
+    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+    crate::email::notice(
+        ctx,
+        user,
+        "Your password was reset",
+        format!(
+            "A password reset link set a new password for your {instance} account ({}), and its other sessions were signed out.\n\nIf you didn't do this, reset your password from the sign-in page now, and tell the instance's admins: {}",
+            user.email,
+            ctx.cfg.url("/login")
+        ),
+    );
+    Ok(())
 }
 
 // ───────────────────────────── tokens ─────────────────────────────

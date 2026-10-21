@@ -162,6 +162,17 @@ pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     }
     let url = crate::api::auth::create_reset_link(ctx, &target.id, Some(&actor.id)).await?;
     ctx.audit("user.reset_link", Some(&target.id), None);
+    // Whoever has the link sets their password: they hear of it.
+    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+    crate::email::notice(
+        ctx,
+        &target,
+        "An admin made a link to reset your password",
+        format!(
+            "{} made a link that sets a new password for your {instance} account ({}). It works for an hour.\n\nIf you didn't ask for it, tell another admin of the instance.",
+            actor.name, target.email
+        ),
+    );
     http::ok(&serde_json::json!({ "url": url, "expires_in": 3600 }))
 }
 

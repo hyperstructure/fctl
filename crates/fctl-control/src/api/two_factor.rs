@@ -356,6 +356,7 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let used = use_code(ctx, &user, valid).await?;
     if reason == ChallengeReason::PasswordReset {
         apply_reset(ctx, &user, &row).await?;
+        crate::api::auth::password_reset_notice(ctx, &user).await?;
     }
     auth::start_web_session(ctx, &user).await?;
     let (factor, passkey) = match &used {
