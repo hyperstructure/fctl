@@ -118,7 +118,7 @@ jobs:
   # were deploys the Worker built for an earlier one.
   worker:
     name: Build the Worker
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || github.head_ref == 'fctl/106-what-kind-of-optimisations-can-we-do-to'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -185,6 +185,33 @@ jobs:
         run: |
           curl -fsS https://app.fctl.sh/api/v1/health
           curl -fsS -o /dev/null https://app.fctl.sh/login
+
+  # TEMPORARY, for this pull request only: what deploy does, without deploying.
+  deploy-dry-run:
+    name: Deploy dry run (temporary)
+    needs: [check, dev, worker]
+    if: github.head_ref == 'fctl/106-what-kind-of-optimisations-can-we-do-to'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/xtask
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build --workspace web
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: worker
+          path: crates/fctl-control/build
+      - name: Deploy (dry run)
+        run: |
+          xtask deploy fctl-sh --skip-build --dry-run
+          cd crates/fctl-control
+          ../../node_modules/.bin/wrangler deploy --dry-run --outdir "$RUNNER_TEMP/out" --config wrangler.deploy.toml
+          ls -la "$RUNNER_TEMP/out" build build/worker
 
   site-docs:
     name: Pin fctl.sh to these docs
