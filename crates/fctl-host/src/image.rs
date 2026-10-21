@@ -39,19 +39,50 @@ pub async fn build(
             info.detail.unwrap_or_default()
         );
     }
-    let tmp = std::env::temp_dir().join(format!("fctl-image-{}", std::process::id()));
-    let result = async {
-        let dir = match source {
-            Some(dir) => {
-                std::fs::canonicalize(dir).with_context(|| format!("finding {}", dir.display()))?
+    match source {
+        Some(dir) => {
+            let dir =
+                std::fs::canonicalize(dir).with_context(|| format!("finding {}", dir.display()))?;
+            build_from(driver, tag, download_base, &dir, info.version.as_deref()).await
+        }
+        None => {
+            let tmp = private_dir("fctl-image")?;
+            let result = async {
+                let dir = download(&tmp).await?;
+                build_from(driver, tag, download_base, &dir, info.version.as_deref()).await
             }
-            None => download(&tmp).await?,
-        };
-        build_from(driver, tag, download_base, &dir, info.version.as_deref()).await
+            .await;
+            let _ = std::fs::remove_dir_all(&tmp);
+            result
+        }
     }
-    .await;
-    let _ = std::fs::remove_dir_all(&tmp);
-    result
+}
+
+/// A new directory for the image's sources that only this user can use.
+/// In the shared temporary directory, one of a name another user made
+/// first would be theirs, with the sources they put in it.
+fn private_dir(prefix: &str) -> Result<PathBuf> {
+    let base = std::env::temp_dir();
+    for _ in 0..16 {
+        let name = format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            hex::encode(fctl_domain::random_bytes::<8>())
+        );
+        let path = base.join(name);
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("making {}", path.display())),
+        }
+    }
+    bail!("couldn't make a directory in {}", base.display())
 }
 
 /// `tool` is the driver's version: what `limactl --version` says, with Lima.
@@ -162,7 +193,15 @@ async fn build_lima_base(dir: &Path, env: &[&str], lima: Option<&str>) -> Result
     }
     run_inherit(
         "limactl",
-        &["create", "--name", BASE_VM, "--tty=false", template],
+        &[
+            "create",
+            "--name",
+            BASE_VM,
+            "--tty=false",
+            "--set",
+            crate::driver::lima::ISOLATED,
+            template,
+        ],
     )
     .await?;
     run_inherit("limactl", &["start", "--tty=false", BASE_VM]).await?;
@@ -232,7 +271,22 @@ async fn run_inherit(program: &str, args: &[&str]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEBIAN_12, DEBIAN_13, check_source, lima_template, shell_quote, unpack};
+    use super::{
+        DEBIAN_12, DEBIAN_13, check_source, lima_template, private_dir, shell_quote, unpack,
+    };
+
+    #[cfg(unix)]
+    #[test]
+    fn sources_download_into_a_new_directory_of_this_users() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let a = private_dir("fctl-image-test")?;
+        let b = private_dir("fctl-image-test")?;
+        assert_ne!(a, b);
+        assert_eq!(std::fs::metadata(&a)?.permissions().mode() & 0o777, 0o700);
+        std::fs::remove_dir(&a)?;
+        std::fs::remove_dir(&b)?;
+        Ok(())
+    }
 
     #[test]
     fn quotes_values_for_sh() {

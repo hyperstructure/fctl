@@ -10,8 +10,8 @@ use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash}
 use fctl_domain::cookies::Cookie;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_proto::ApiError;
-use fctl_proto::api::{Me, TokenKind};
-use worker::Request;
+use fctl_proto::api::{InstanceSettings, Me, TokenKind};
+use worker::{D1Database, Request};
 
 pub const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// Web sessions expire this long after their last use.
@@ -157,6 +157,47 @@ pub fn presented_secret(req: &Request, secure: bool) -> Option<(String, bool)> {
     http::cookie(req, Cookie::Session, secure).map(|c| (c, true))
 }
 
+/// The token whose `column` (`hash` or `id`) is `?`, its user, and the
+/// instance's settings, which say whether the user may do anything before
+/// setting up two-factor: one query.
+fn token_lookup_sql(column: &str) -> String {
+    format!(
+        "SELECT t.id AS token_id, t.kind AS kind, t.created_at AS token_created_at, t.expires_at AS expires_at, \
+         t.last_used_at AS last_used_at, (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
+         FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.{column} = ?",
+        crate::instance::KEY,
+        user_columns("u")
+    )
+}
+
+/// The account behind the token `token_id`, with the instance's settings,
+/// while the token still lets it in as [`authenticate`] does: it exists and
+/// hasn't expired, the account is active, and it may do more than set up
+/// two-factor sign-in. For sockets opened with the token, which check again
+/// while they stay open, so that signing out, revoking the token or
+/// disabling the account closes them too.
+pub async fn by_token_id(
+    db: &D1Database,
+    token_id: &str,
+    now: i64,
+) -> AppResult<Option<(UserRow, InstanceSettings)>> {
+    let found: Option<TokenLookup> = q(db, &token_lookup_sql("id"), &[s(token_id)])?
+        .first()
+        .await?;
+    Ok(found.and_then(|f| {
+        if f.expires_at.is_some_and(|e| e <= now) || !f.user.is_active() {
+            return None;
+        }
+        let settings = crate::instance::parse(f.instance_settings.as_deref());
+        let setup_required = fctl_domain::two_factor::setup_required(
+            &settings,
+            f.user.has_password(),
+            f.user.factors(),
+        );
+        (!setup_required).then_some((f.user, settings))
+    }))
+}
+
 /// Resolves the caller from the bearer token or the session cookie. Invalid
 /// or expired credentials are treated as signed out (and the cookie cleared).
 pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
@@ -176,18 +217,13 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     ) {
         return Err(AppError(ApiError::unauthorized()));
     }
-    // One query: the token, its user, and the instance's settings, which
-    // say whether the user may do anything before setting up two-factor.
-    let sql = format!(
-        "SELECT t.id AS token_id, t.kind AS kind, t.created_at AS token_created_at, t.expires_at AS expires_at, \
-         t.last_used_at AS last_used_at, (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
-         FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?",
-        crate::instance::KEY,
-        user_columns("u")
-    );
-    let found: Option<TokenLookup> = q(&ctx.db, &sql, &[s(&hash_secret(&secret))])?
-        .first()
-        .await?;
+    let found: Option<TokenLookup> = q(
+        &ctx.db,
+        &token_lookup_sql("hash"),
+        &[s(&hash_secret(&secret))],
+    )?
+    .first()
+    .await?;
     let Some(found) = found else {
         if via_cookie {
             clear_session_cookie(ctx);

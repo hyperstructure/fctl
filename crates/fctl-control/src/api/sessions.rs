@@ -555,6 +555,7 @@ pub async fn websocket(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response
     let ident = ViewerIdentity {
         user: ctx.user()?.to_ref(),
         role: a.role,
+        token_id: ctx.auth.as_ref().map(|t| t.token_id.clone()),
     };
     let mut path = String::from("/viewer");
     if let Some(after) = http::query(req, "after").filter(|v| v.bytes().all(|b| b.is_ascii_digit()))

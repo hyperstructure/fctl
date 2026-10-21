@@ -10,7 +10,7 @@ use fctl_client::Api;
 use fctl_domain::{files, pulls};
 use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
 use fctl_proto::api::{CreateSessionRequest, UpdateSessionRequest};
-use fctl_proto::session::Session;
+use fctl_proto::session::{PullRequestRef, Session};
 use fctl_proto::{AttachmentId, SessionId};
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
@@ -253,9 +253,10 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 /// `fctl show`'s lines for a session's pull requests, each with the name of
-/// its repository: `pr:       fctl#120 <url>`. Control planes from before
-/// `pull_requests` have the one, and leave its repository to its URL.
-fn pull_request_lines(s: &Session) -> Vec<String> {
+/// its repository, its state and its checks:
+/// `pr:       fctl#120 open, checks passed <url>`. Control planes from
+/// before `pull_requests` have the one, and leave its repository to its URL.
+fn pull_request_lines(s: &Session, now: i64) -> Vec<String> {
     let prs: Vec<_> = if s.pull_requests.is_empty() {
         s.pull_request.iter().collect()
     } else {
@@ -268,9 +269,53 @@ fn pull_request_lines(s: &Session) -> Vec<String> {
             let repo = pr.repo.clone().or_else(|| pulls::repo_of(&pr.url));
             let name = repo.as_ref().map_or("", |r| r.name.as_str());
             let label = if i == 0 { label } else { "" };
-            format!("{label:<10}{name}#{} {}", pr.number, pr.url)
+            let state = pull_request_state(pr, now)
+                .map(|st| format!(" {st}"))
+                .unwrap_or_default();
+            format!(
+                "{label:<10}{name}#{}{state} {}",
+                pr.number,
+                style::terminal_safe(&pr.url)
+            )
         })
         .collect()
+}
+
+/// A pull request's state as `fctl show` says it: `merged 2h ago`, `open,
+/// checks passed`, `draft, 1 of 4 checks failed`. Nothing while nobody
+/// looked it up.
+fn pull_request_state(pr: &PullRequestRef, now: i64) -> Option<String> {
+    let state = style::terminal_safe(pr.state.as_deref()?);
+    if matches!(state.as_ref(), "merged" | "closed") {
+        let when = pr
+            .state_changed_at
+            .map(|t| format!(" {}", style::ago_from(t, now)));
+        return Some(style::dim(&format!("{state}{}", when.unwrap_or_default())));
+    }
+    let Some(c) = pr
+        .checks
+        .as_ref()
+        .filter(|c| c.passed + c.failed + c.pending > 0)
+    else {
+        return Some(style::dim(&state));
+    };
+    let total = c.passed + c.failed + c.pending;
+    let some = |n: u32, what: &str| match n == total {
+        true => style::count(n, &format!("check {what}"), &format!("checks {what}")),
+        false => format!("{n} of {total} checks {what}"),
+    };
+    let checks = if c.failed > 0 {
+        style::red(&some(c.failed, "failed"))
+    } else if c.pending > 0 {
+        style::amber(&some(c.pending, "pending"))
+    } else {
+        style::accent("checks passed")
+    };
+    Some(format!(
+        "{}{} {checks}",
+        style::dim(&state),
+        style::dim(",")
+    ))
 }
 
 pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<()> {
@@ -292,7 +337,7 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         style::status(s.status),
         s.status_reason
             .as_deref()
-            .map(|r| style::dim(&format!(" — {r}")))
+            .map(|r| style::dim(&format!(" — {}", style::terminal_safe(r))))
             .unwrap_or_default()
     );
     println!("by:       {}", s.created_by.name);
@@ -305,7 +350,7 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
                 .unwrap_or_default()
         );
     }
-    for line in pull_request_lines(&s) {
+    for line in pull_request_lines(&s, style::now_ms()) {
         println!("{line}");
     }
     if let Some(r) = &s.runner {
@@ -605,6 +650,10 @@ pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> R
                 let url = s.remote_control.and_then(|r| r.session_url).context(
                     "This session has no Remote Control link (it needs a full Claude login)",
                 )?;
+                // Agents report it: nothing but a claude.ai page is opened.
+                if !fctl_domain::remote_control::is_session_url(&url) {
+                    bail!("This session's Remote Control link isn't a claude.ai page");
+                }
                 // The Claude app opens the session itself; without one, the browser does.
                 if let Some(app) = fctl_domain::remote_control::claude_app_url(&url)
                     && crate::cmd::auth::open_claude_app(&app)
@@ -672,7 +721,7 @@ mod tests {
         }))?;
         // From a control plane before `pull_requests`.
         assert_eq!(
-            pull_request_lines(&s),
+            pull_request_lines(&s, 0),
             ["pr:       app#12 https://github.com/acme/app/pull/12"]
         );
         s.pull_requests = serde_json::from_value(serde_json::json!([
@@ -682,7 +731,7 @@ mod tests {
               "repo": { "owner": "acme", "name": "lib" } }
         ]))?;
         assert_eq!(
-            pull_request_lines(&s),
+            pull_request_lines(&s, 0),
             [
                 "prs:      app#12 https://github.com/acme/app/pull/12",
                 "          lib#3 https://github.com/acme/lib/pull/3"
@@ -690,7 +739,43 @@ mod tests {
         );
         s.pull_request = None;
         s.pull_requests.clear();
-        assert!(pull_request_lines(&s).is_empty());
+        assert!(pull_request_lines(&s, 0).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn show_says_the_state_and_checks_of_each_pull_request() -> Result<()> {
+        let hour = 3_600_000;
+        let prs: Vec<PullRequestRef> = serde_json::from_value(serde_json::json!([
+            { "number": 1, "url": "u1", "state": "merged", "state_changed_at": 0 },
+            { "number": 2, "url": "u2", "state": "closed" },
+            { "number": 3, "url": "u3", "state": "open",
+              "checks": { "passed": 5, "failed": 0, "pending": 0, "at": 1 } },
+            { "number": 4, "url": "u4", "state": "draft",
+              "checks": { "passed": 2, "failed": 1, "pending": 1, "at": 1 } },
+            { "number": 5, "url": "u5", "state": "queued",
+              "checks": { "passed": 0, "failed": 0, "pending": 1, "at": 1 } },
+            { "number": 6, "url": "u6", "state": "open",
+              "checks": { "passed": 0, "failed": 0, "pending": 0, "at": 1 } },
+            { "number": 7, "url": "u7" }
+        ]))?;
+        let said: Vec<_> = prs
+            .iter()
+            .map(|p| pull_request_state(p, 2 * hour))
+            .collect();
+        let at = |s: &str| Some(s.to_owned());
+        assert_eq!(
+            said,
+            [
+                at("merged 2h ago"),
+                at("closed"),
+                at("open, checks passed"),
+                at("draft, 1 of 4 checks failed"),
+                at("queued, 1 check pending"),
+                at("open"),
+                None
+            ]
+        );
         Ok(())
     }
 }

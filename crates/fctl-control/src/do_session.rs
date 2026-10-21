@@ -9,7 +9,8 @@
 
 use crate::ctx::now_ms;
 use crate::internal::{
-    self, ControlState, Deliver, Delivered, DrainStop, DrainStopped, InitSession, ViewerIdentity,
+    self, CloseUplink, ControlState, Deliver, Delivered, DrainStop, DrainStopped, InitSession,
+    ViewerIdentity,
 };
 use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_domain::journal::{self, Take};
@@ -17,7 +18,7 @@ use fctl_domain::notify;
 use fctl_domain::usage as plan;
 use fctl_proto::api::{EventPage, PlanLimit};
 use fctl_proto::event::{EventBody, GitState, StatusChange, UserMessage};
-use fctl_proto::session::{Session, SessionRole, SessionStatus, UserRef};
+use fctl_proto::session::{PullRequestRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{
     AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown,
     UplinkUp,
@@ -49,6 +50,20 @@ const REASON_MAX_CHARS: usize = 300;
 /// How long a session on a draining runner waits for a message before it
 /// stops, so that quick replies still reach the running agent.
 const DRAIN_IDLE_MS: i64 = 60_000;
+/// How often an open viewer's access is checked again, on its pings: once
+/// its person left the workspace, lost their role or share, or signed out,
+/// the socket closes within this long. Messages and interrupts check it
+/// every time.
+const VIEWER_CHECK_MS: i64 = 60_000;
+/// A viewer whose access hasn't been checked for this long (it stopped
+/// pinging, which the apps do every 25 seconds) is closed at the next
+/// broadcast, and reconnects through the Worker, which checks it.
+const VIEWER_STALE_MS: i64 = 5 * 60_000;
+/// Close codes for viewers: their person can't see the session any more
+/// (the apps stop reconnecting), and their access changed or wasn't
+/// checked for a while (they reconnect).
+const CLOSE_NO_ACCESS: u16 = 4403;
+const CLOSE_RECHECK: u16 = 4000;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct SocketInfo {
@@ -72,11 +87,18 @@ struct SocketInfo {
     /// An uplink: its host can't reach the agent, as it last said.
     #[serde(default)]
     agent_unreachable: Option<AgentUnreachable>,
+    /// A viewer: when its access was last checked.
+    #[serde(default)]
+    checked_at: Option<i64>,
 }
 
 impl SocketInfo {
     fn heard(&self) -> i64 {
         self.heard_at.unwrap_or(self.since)
+    }
+
+    fn checked(&self) -> i64 {
+        self.checked_at.unwrap_or(self.since)
     }
 }
 
@@ -196,6 +218,12 @@ impl DurableObject for SessionObject {
                 Ok(b) => self.drain_stop(b).await.map(|d| serde_json::json!(d)),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
             },
+            (worker::Method::Post, "/pull-requests") => {
+                match req.json::<internal::PullRequestsSeen>().await {
+                    Ok(b) => self.pull_requests_seen(b).await,
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
             (worker::Method::Get, "/summary") => match self.summary() {
                 Some(s) => Ok(serde_json::json!(s)),
                 None => Err(api_err(ErrorCode::NotFound, "Session not initialized")),
@@ -204,6 +232,10 @@ impl DurableObject for SessionObject {
             (worker::Method::Get, "/viewer") => return self.accept_viewer(&req),
             (worker::Method::Get, "/uplink") => return self.accept_uplink(&req),
             (worker::Method::Post, "/purge") => self.purge().await,
+            (worker::Method::Post, "/close-uplink") => match req.json::<CloseUplink>().await {
+                Ok(b) => Ok(self.close_uplink(&b.runner_id)),
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
             _ => Err(api_err(ErrorCode::NotFound, "Unknown session endpoint")),
         };
         match result {
@@ -468,8 +500,27 @@ impl SessionObject {
 
     // ───────────────────────────── broadcasting ─────────────────────────────
 
-    fn broadcast(&self, text: &str) {
+    /// The viewers' sockets with what they hold. Those whose access wasn't
+    /// checked for [`VIEWER_STALE_MS`] close instead: their person may have
+    /// lost it meanwhile.
+    fn viewers(&self) -> Vec<(WebSocket, SocketInfo)> {
+        let now = now_ms();
+        let mut out = Vec::new();
         for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
+            let Ok(Some(info)) = ws.deserialize_attachment::<SocketInfo>() else {
+                continue;
+            };
+            if now - info.checked() > VIEWER_STALE_MS {
+                let _ = ws.close(Some(CLOSE_RECHECK), Some("checking your access again"));
+                continue;
+            }
+            out.push((ws, info));
+        }
+        out
+    }
+
+    fn broadcast(&self, text: &str) {
+        for (ws, _) in self.viewers() {
             let _ = ws.send_with_str(text);
         }
     }
@@ -548,7 +599,7 @@ impl SessionObject {
         if let Ok(text) =
             serde_json::to_string(&fctl_proto::viewer::ViewerServer::Presence { viewers })
         {
-            for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
+            for (ws, _) in self.viewers() {
                 if exclude.is_some_and(|x| x == &ws) {
                     continue;
                 }
@@ -559,19 +610,18 @@ impl SessionObject {
 
     fn broadcast_summary(&self, s: &Session) {
         // Each viewer gets the summary with their own role.
-        for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
-            let role = ws
-                .deserialize_attachment::<SocketInfo>()
-                .ok()
-                .flatten()
-                .and_then(|i| i.viewer.map(|v| v.role));
-            let mut copy = s.clone();
-            copy.role = role;
-            if let Ok(text) = serde_json::to_string(&fctl_proto::viewer::ViewerServer::Session {
-                session: Box::new(copy),
-            }) {
-                let _ = ws.send_with_str(&text);
-            }
+        for (ws, info) in self.viewers() {
+            Self::send_summary(&ws, s, info.viewer.map(|v| v.role));
+        }
+    }
+
+    fn send_summary(ws: &WebSocket, s: &Session, role: Option<SessionRole>) {
+        let mut copy = s.clone();
+        copy.role = role;
+        if let Ok(text) = serde_json::to_string(&fctl_proto::viewer::ViewerServer::Session {
+            session: Box::new(copy),
+        }) {
+            let _ = ws.send_with_str(&text);
         }
     }
 
@@ -984,9 +1034,11 @@ impl SessionObject {
         let now = now_ms();
         self.check_quiet(now);
         let role = ident.role;
+        // The Worker checked its access just now.
         let info = SocketInfo {
             viewer: Some(ident),
             since: now,
+            checked_at: Some(now),
             ..Default::default()
         };
         self.state
@@ -1047,9 +1099,9 @@ impl SessionObject {
         let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() else {
             return;
         };
-        let Some(viewer) = info.viewer.clone() else {
+        if info.viewer.is_none() {
             return;
-        };
+        }
         let reply = |client_id: &str, result: std::result::Result<(), ApiError>| {
             let msg = match result {
                 Ok(()) => fctl_proto::viewer::ViewerServer::Result {
@@ -1070,7 +1122,12 @@ impl SessionObject {
         match msg {
             ViewerClient::Ping => {
                 let _ = ws.send_with_str(r#"{"type":"pong"}"#);
-                self.check_quiet(now_ms());
+                let now = now_ms();
+                self.check_quiet(now);
+                if now - info.checked() >= VIEWER_CHECK_MS {
+                    // A failed check leaves it for the next ping.
+                    let _ = self.recheck_viewer(ws, &mut info, now).await;
+                }
             }
             ViewerClient::Typing => {
                 info.typing_at = Some(now_ms());
@@ -1086,9 +1143,15 @@ impl SessionObject {
                 text,
                 attachments,
             } => {
-                let r = self
-                    .viewer_send(&viewer, &client_id, text, attachments)
-                    .await;
+                // What a message does is checked as the Worker would now.
+                let r = match self.recheck_viewer(ws, &mut info, now_ms()).await {
+                    Ok(Some(viewer)) => {
+                        self.viewer_send(&viewer, &client_id, text, attachments)
+                            .await
+                    }
+                    Ok(None) => return,
+                    Err(e) => Err(e),
+                };
                 if r.is_ok() {
                     info.typing_at = None;
                     let _ = ws.serialize_attachment(&info);
@@ -1096,10 +1159,72 @@ impl SessionObject {
                 reply(&client_id, r);
             }
             ViewerClient::Interrupt { client_id } => {
-                let r = self.viewer_interrupt(&viewer).await;
+                let r = match self.recheck_viewer(ws, &mut info, now_ms()).await {
+                    Ok(Some(viewer)) => self.viewer_interrupt(&viewer).await,
+                    Ok(None) => return,
+                    Err(e) => Err(e),
+                };
                 reply(&client_id, r);
             }
         }
+    }
+
+    /// Checks again what an open viewer may do, as the Worker checked it
+    /// when it opened: the token it opened with still signs its person in,
+    /// and they still see the session. A viewer whose person lost access
+    /// (they left the workspace or were removed, their role or share went,
+    /// they signed out or the account was disabled) closes, and `None` says
+    /// so; one whose role changed gets the new one. `Err` when D1 didn't
+    /// answer, which changes nothing.
+    async fn recheck_viewer(
+        &self,
+        ws: &WebSocket,
+        info: &mut SocketInfo,
+        now: i64,
+    ) -> std::result::Result<Option<ViewerIdentity>, ApiError> {
+        let Some(viewer) = info.viewer.clone() else {
+            return Ok(None);
+        };
+        let Some(summary) = self.summary() else {
+            return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        // Opened through an older Worker: through this one, it says.
+        let Some(token_id) = viewer.token_id.as_deref() else {
+            let _ = ws.close(Some(CLOSE_RECHECK), Some("checking your access again"));
+            return Ok(None);
+        };
+        let db = self
+            .env
+            .d1("DB")
+            .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
+        let role = match crate::auth::by_token_id(&db, token_id, now)
+            .await
+            .map_err(|e| e.0)?
+        {
+            Some((user, settings)) if user.id == viewer.user.id.0 => {
+                crate::access::session_role_now(&db, &user, &settings, summary.id.as_str())
+                    .await
+                    .map_err(|e| e.0)?
+            }
+            _ => None,
+        };
+        let Some(role) = role else {
+            let _ = ws.close(
+                Some(CLOSE_NO_ACCESS),
+                Some("You no longer have access to this session"),
+            );
+            self.broadcast_presence(Some(ws));
+            return Ok(None);
+        };
+        let changed = role != viewer.role;
+        let viewer = ViewerIdentity { role, ..viewer };
+        info.viewer = Some(viewer.clone());
+        info.checked_at = Some(now);
+        let _ = ws.serialize_attachment(&*info);
+        if changed {
+            Self::send_summary(ws, &summary, Some(role));
+        }
+        Ok(Some(viewer))
     }
 
     async fn viewer_send(
@@ -1186,6 +1311,21 @@ impl SessionObject {
 
     // ───────────────────────────── uplink ─────────────────────────────
 
+    /// Closes `runner_id`'s uplinks (`internal::CloseUplink`).
+    fn close_uplink(&self, runner_id: &str) -> serde_json::Value {
+        for ws in self.state.get_websockets_with_tag(TAG_UPLINK) {
+            let theirs = ws
+                .deserialize_attachment::<SocketInfo>()
+                .ok()
+                .flatten()
+                .is_some_and(|i| i.runner_id.as_deref() == Some(runner_id));
+            if theirs {
+                let _ = ws.close(Some(4003), Some("this runner no longer runs this session"));
+            }
+        }
+        serde_json::json!({ "ok": true })
+    }
+
     fn accept_uplink(&self, req: &Request) -> Result<Response> {
         let Some(runner_id) = crate::http::header(req, internal::HDR_RUNNER) else {
             return internal::do_error(&api_err(ErrorCode::Unauthorized, "No runner identity"));
@@ -1247,6 +1387,8 @@ impl SessionObject {
                 let mut summary = self.summary();
                 let mut summary_changed = false;
                 let mut lists_changed = false;
+                // Pull requests the session lists from now on.
+                let mut found = Vec::new();
                 let mut turn_ended = false;
                 let mut usage = Vec::new();
                 let counted_before = self.counted();
@@ -1279,6 +1421,18 @@ impl SessionObject {
                     }
                     acked = e.agent_seq;
                     let mut body = e.body;
+                    // People's messages, interrupts and status changes are
+                    // the control plane's to record, never an agent's: from
+                    // an uplink (a host, or what runs in its sandbox posing
+                    // as the agent) they are acknowledged and dropped, so
+                    // that nobody's words can be put in the transcript.
+                    if matches!(
+                        body,
+                        EventBody::UserMessage(_) | EventBody::Status(_) | EventBody::Interrupt(_)
+                    ) {
+                        worker::console_error!("dropping a {} event from an uplink", body.kind());
+                        continue;
+                    }
                     if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
                         summary_changed |= Self::apply_claude(s, &mut counted, v, e.ts, &self.mem);
                         turn_ended |= self.remember_reply(v);
@@ -1286,10 +1440,17 @@ impl SessionObject {
                         ev::shape_for_storage(v);
                     }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
-                        lists_changed |= Self::apply_git(s, g);
+                        let (changed, new) = Self::apply_git(s, g, now);
+                        lists_changed |= changed;
+                        found.extend(new);
                         summary_changed = true;
                     }
                     if let (EventBody::RemoteControl(rc), Some(s)) = (&mut body, summary.as_mut()) {
+                        // A link the apps open: only claude.ai's.
+                        rc.session_url = rc
+                            .session_url
+                            .take()
+                            .filter(|u| fctl_domain::remote_control::is_session_url(u));
                         rc.user = Some(self.claude_user(s));
                         s.remote_control = Some(rc.clone());
                         summary_changed = true;
@@ -1321,6 +1482,9 @@ impl SessionObject {
                     // turns too (at most every ten seconds).
                     if lists_changed {
                         self.notify_fleet(&s);
+                    }
+                    if !found.is_empty() {
+                        self.track_pull_requests(&s, found);
                     }
                     // A host that reconnects reports its state before it
                     // replays the events it kept: a turn that ended meanwhile
@@ -1513,9 +1677,10 @@ impl SessionObject {
     /// Counts changes in every repository, and keeps every pull request the
     /// agent found (`fctl_domain::pulls`). The session's pull request, for
     /// older clients, is the primary repository's, or another repository's
-    /// when it has none. Returns whether what session lists show changed:
-    /// the counts or the pull requests.
-    fn apply_git(s: &mut Session, g: &GitState) -> bool {
+    /// when it has none. Returns whether what session lists show changed
+    /// (the counts or the pull requests), and the pull requests it lists
+    /// from now on.
+    fn apply_git(s: &mut Session, g: &GitState, now: i64) -> (bool, Vec<PullRequestRef>) {
         let listed = |s: &Session| {
             (
                 s.stats.files_changed,
@@ -1532,11 +1697,71 @@ impl SessionObject {
         s.stats.additions = g.all_files().filter_map(|f| f.additions).sum();
         s.stats.deletions = g.all_files().filter_map(|f| f.deletions).sum();
         let found = fctl_domain::pulls::found(g);
+        let known = s.pull_requests.len();
+        let merged = fctl_domain::pulls::merge(&mut s.pull_requests, &found, now);
         if let Some(pr) = found.first() {
-            s.pull_request = Some(pr.clone());
+            // As the list has it now, with what GitHub said of it.
+            let listed = s
+                .pull_requests
+                .iter()
+                .find(|p| p.url.eq_ignore_ascii_case(&pr.url));
+            s.pull_request = Some(listed.unwrap_or(pr).clone());
         }
-        let merged = fctl_domain::pulls::merge(&mut s.pull_requests, &found);
-        merged || listed(s) != before
+        let new = s.pull_requests.get(known..).unwrap_or_default().to_vec();
+        (merged || listed(s) != before, new)
+    }
+
+    /// Records the pull requests the session lists from now on, so that
+    /// GitHub's webhooks about them reach it, and looks them up where the
+    /// instance takes the webhook (`crate::pull_requests`).
+    fn track_pull_requests(&self, s: &Session, prs: Vec<PullRequestRef>) {
+        let env = self.env.clone();
+        let id = s.id.as_str().to_owned();
+        self.state.wait_until(async move {
+            let Ok(db) = env.d1("DB") else { return };
+            let tracked = match crate::pull_requests::track(&db, &id, &prs).await {
+                Ok(t) => t,
+                Err(e) => {
+                    worker::console_error!("tracking the pull requests of {id}: {}", e.0.message);
+                    return;
+                }
+            };
+            let cfg = crate::config::Config::from_env(&env);
+            if crate::pull_requests::enabled(&cfg)
+                && let Err(e) =
+                    crate::pull_requests::refresh(&env, &cfg, &db, &tracked, now_ms()).await
+            {
+                worker::console_error!("looking up the pull requests of {id}: {}", e.0.message);
+            }
+        });
+    }
+
+    /// GitHub says what became of pull requests the session lists: their
+    /// state, and their checks (`crate::pull_requests`).
+    async fn pull_requests_seen(
+        &self,
+        b: internal::PullRequestsSeen,
+    ) -> std::result::Result<serde_json::Value, ApiError> {
+        let Some(mut s) = self.summary() else {
+            return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        let now = now_ms();
+        if !fctl_domain::pulls::observe(&mut s.pull_requests, &b.prs, now) {
+            return Ok(serde_json::json!({ "ok": true, "changed": false }));
+        }
+        if let Some(pr) = &s.pull_request
+            && let Some(listed) = s
+                .pull_requests
+                .iter()
+                .find(|p| p.url.eq_ignore_ascii_case(&pr.url))
+        {
+            s.pull_request = Some(listed.clone());
+        }
+        self.save_summary(&s);
+        self.broadcast_summary(&s);
+        self.notify_fleet(&s);
+        self.mark_dirty(now).await;
+        Ok(serde_json::json!({ "ok": true, "changed": true }))
     }
 
     fn track_live(&self, event: &serde_json::Value, text: &str) {
@@ -1593,6 +1818,10 @@ impl SessionObject {
             s.effort = fctl_domain::validate::effort(&e).ok();
         }
         if let Some(mut rc) = state.remote_control {
+            rc.session_url = rc
+                .session_url
+                .take()
+                .filter(|u| fctl_domain::remote_control::is_session_url(u));
             rc.user = Some(self.claude_user(&s));
             s.remote_control = Some(rc);
         }

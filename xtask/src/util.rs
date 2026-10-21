@@ -1,10 +1,17 @@
 //! Running commands, finding tools, and making secrets.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
-use std::io::Write;
+use std::cell::Cell;
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+
+thread_local! {
+    /// The name `run` puts before each line of a command's output, on a
+    /// thread `beside` started.
+    static TAG: Cell<Option<&'static str>> = const { Cell::new(None) };
+}
 
 /// Prints a command the way a shell would show it.
 fn show(cmd: &Command) {
@@ -18,25 +25,107 @@ fn show(cmd: &Command) {
             line.push_str(&a);
         }
     }
-    eprintln!("\x1b[2m$ {line}\x1b[0m");
+    eprintln!("{}\x1b[2m$ {line}\x1b[0m", tag());
 }
 
-/// Runs a command with inherited stdio; fails on a non-zero exit.
+fn tag() -> String {
+    TAG.get()
+        .map(|name| format!("\x1b[2m{name} │\x1b[0m "))
+        .unwrap_or_default()
+}
+
+/// Leaves out of a command's environment what `cargo run` tells xtask
+/// about its own package (`CARGO_PKG_*`, `CARGO_MANIFEST_*`). Build scripts
+/// read some of it (ring's does), and cargo builds a crate again when its
+/// build script would see other values: ring and the TLS crates on it would
+/// build again whenever cargo ran with and without xtask in turn, and with
+/// each new version, which the CI caches' keys leave out.
+pub fn without_package_env(cmd: &mut Command) -> &mut Command {
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy();
+        if name.starts_with("CARGO_PKG_") || name.starts_with("CARGO_MANIFEST_") {
+            cmd.env_remove(&key);
+        }
+    }
+    cmd
+}
+
+/// Runs `f` on a thread of its own, beside others, with each line the
+/// commands it runs (`run`) print after `name`; `join` waits for it.
+pub fn beside<'scope>(
+    s: &'scope std::thread::Scope<'scope, '_>,
+    name: &'static str,
+    f: impl FnOnce() -> Result<()> + Send + 'scope,
+) -> std::thread::ScopedJoinHandle<'scope, Result<()>> {
+    s.spawn(move || {
+        TAG.set(Some(name));
+        f()
+    })
+}
+
+/// Waits for what `beside` runs.
+pub fn join(handle: std::thread::ScopedJoinHandle<'_, Result<()>>) -> Result<()> {
+    handle
+        .join()
+        .unwrap_or_else(|_| Err(anyhow!("a thread of xtask panicked")))
+}
+
+/// Runs a command with inherited stdio; fails on a non-zero exit. On a
+/// thread `beside` started, its output comes line by line after the
+/// thread's name instead.
 pub fn run(cmd: &mut Command) -> Result<()> {
     show(cmd);
-    let status = cmd
-        .status()
-        .with_context(|| format!("starting {:?}", cmd.get_program()))?;
+    without_package_env(cmd);
+    let status = match TAG.get() {
+        None => cmd.status(),
+        Some(_) => relayed(cmd),
+    }
+    .with_context(|| format!("starting {:?}", cmd.get_program()))?;
     if !status.success() {
         bail!("{:?} failed ({status})", cmd.get_program());
     }
     Ok(())
 }
 
+/// Runs a command with its stdout and stderr copied to stderr line by
+/// line, after the thread's name. Colors stay on when stderr is a terminal.
+fn relayed(cmd: &mut Command) -> std::io::Result<ExitStatus> {
+    if std::io::stderr().is_terminal() {
+        for (name, value) in [("CARGO_TERM_COLOR", "always"), ("FORCE_COLOR", "1")] {
+            if std::env::var_os(name).is_none() {
+                cmd.env(name, value);
+            }
+        }
+    }
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let tag = tag();
+    let (out, err) = (child.stdout.take(), child.stderr.take());
+    std::thread::scope(|s| {
+        if let Some(out) = out {
+            s.spawn(|| relay(&tag, out));
+        }
+        if let Some(err) = err {
+            s.spawn(|| relay(&tag, err));
+        }
+    });
+    child.wait()
+}
+
+fn relay(tag: &str, from: impl Read) {
+    for line in BufReader::new(from).split(b'\n').map_while(Result::ok) {
+        let line = String::from_utf8_lossy(&line);
+        eprintln!("{tag}{}", line.trim_end_matches('\r'));
+    }
+}
+
 /// Runs a command and returns its stdout; stderr passes through.
 pub fn output(cmd: &mut Command) -> Result<String> {
     show(cmd);
-    let out = cmd
+    let out = without_package_env(cmd)
         .stderr(Stdio::inherit())
         .output()
         .with_context(|| format!("starting {:?}", cmd.get_program()))?;
@@ -49,7 +138,7 @@ pub fn output(cmd: &mut Command) -> Result<String> {
 /// Runs a command with `input` on stdin (for secrets: never on the command line).
 pub fn run_with_stdin(cmd: &mut Command, input: &str) -> Result<()> {
     show(cmd);
-    let mut child = cmd
+    let mut child = without_package_env(cmd)
         .stdin(Stdio::piped())
         .spawn()
         .with_context(|| format!("starting {:?}", cmd.get_program()))?;

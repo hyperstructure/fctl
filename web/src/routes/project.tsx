@@ -11,7 +11,7 @@ import {
   useAttachments,
   useFileDrop,
 } from "@/components/session/attachments";
-import { PullRequestsLabel } from "@/components/session/row";
+import { PullRequestLinks, SessionLink } from "@/components/session/row";
 import { StartButton, useStartSession } from "@/components/session/start";
 import {
   Avatar,
@@ -287,19 +287,17 @@ function Sessions({ project }: { project: G.Project }) {
         ) : (
           <div className="border-t border-line">
             {list.data?.sessions.map((s) => (
-              <Link
+              <div
                 key={s.id}
-                to="/s/$id"
-                params={{ id: s.id }}
-                className="group flex items-center gap-3.5 border-b border-line p-3 transition-colors hover:bg-hover/30"
+                className="group relative isolate flex items-center gap-3.5 border-b border-line p-3 transition-colors hover:bg-hover/30"
               >
                 <span className="w-9 shrink-0 text-right font-mono text-[12px] text-ink-4">#{s.number}</span>
                 <StatusDot status={s.status} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[14.5px] text-ink">{s.title}</div>
+                  <SessionLink s={s} />
                   <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
                     {s.branch && <span className="truncate font-mono">{s.branch}</span>}
-                    <PullRequestsLabel s={s} />
+                    <PullRequestLinks s={s} />
                   </div>
                 </div>
                 <Avatar user={s.created_by} size={20} />
@@ -311,7 +309,7 @@ function Sessions({ project }: { project: G.Project }) {
                   {agoShort(s.last_activity_at ?? s.created_at)}
                 </time>
                 <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all group-hover:opacity-100 max-sm:hidden" />
-              </Link>
+              </div>
             ))}
           </div>
         )}

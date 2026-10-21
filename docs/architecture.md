@@ -314,11 +314,14 @@ the instance creates one, as its primary admin.
   instance's.
 - **Feeds.** A feed's identity holds the projects its person saw when it
   opened, and the workspaces where they see every project
-  (`internal::FeedIdentity`). When someone's workspaces change, FleetDO
-  recomputes it on their sockets (`/workspaces-changed`) and sends
-  `workspaces`, after which the app fetches them again; runners and their
-  updates go only to the people of their workspaces, their owners and
-  instance admins.
+  (`internal::FeedIdentity`). When someone's workspaces or project roles
+  change, FleetDO recomputes it on their sockets (`/workspaces-changed`)
+  and sends `workspaces`, after which the app fetches them again; runners
+  and their updates go only to the people of their workspaces, their owners
+  and instance admins. It also checks a feed's token and recomputes what it
+  shows on its pings, at most once a minute (`recheck_feed`), and closes a
+  feed whose token no longer signs anyone in, as SessionDO does with
+  [viewers](#viewers).
 - **Deleting** a workspace (its primary admin, or an instance admin, typing
   its name) deletes its projects with their sessions and files, as deleting
   a project does, once none of its sessions runs.
@@ -328,7 +331,11 @@ the instance creates one, as its primary admin.
 Each address is invited to the instance on its own. Accepting an
 invitation while signed in (`POST /api/v1/invites/{token}/connect`)
 connects its address to that account instead of making a new one
-(`user_emails`). Every address signs in, and has its own commit email
+(`user_emails`). That takes a browser sign-in from the last 15 minutes,
+and the account's primary address is emailed about it, since the address
+then signs in and receives password reset links: an invitation link
+forwarded to someone else would otherwise give its holder their account.
+Every address signs in, and has its own commit email
 ([Commits](#commits)); the account's primary one (`users.email`) is where
 fctl writes to the person. A workspace knows its member by the address they
 joined as (`workspace_members.email`), the only one its people see:
@@ -405,8 +412,16 @@ start its sessions; a workspace's admins take any runner out of it; its
 owner and instance admins rename, drain, disable and remove it. FleetDO
 reads which workspaces each runner serves before it dispatches, and starts
 a session only on a runner of its workspace (`Slot.serves`); a session whose
-workspace has no runner online says so. A Claude sign-in runs only on a
-runner of the person's workspaces, or their own.
+workspace has no runner online says so. A runner serves a workspace while
+its owner is an active member there (`serves!`). Once it stops serving one
+(taken out of it, its owner left, was demoted from admin or disabled), the
+sessions it runs there stop and resume on another runner, whatever its host
+does: FleetDO stops them (`/runner-changed`), closes the runner's uplinks
+to them, and the runner gets no credentials, uplinks, files or screenshots
+for them any more (`spec::runner_serves`). Disabling a runner or replacing
+its token closes its control connection and its sessions' uplinks. A
+Claude sign-in runs only on a runner of the person's workspaces, or their
+own.
 
 ## Data
 
@@ -418,7 +433,8 @@ tokens, device codes, workspaces (with their avatar images), their members,
 invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
 and runners, projects, their members and
-repositories, sessions (summary rows), shares, who follows which session,
+repositories, sessions (summary rows), which sessions list which pull
+request, shares, who follows which session,
 notification settings and browsers (push subscriptions), runners, encrypted
 credentials and project secrets, the latest plan usage of each Claude
 credential, the links of published screenshots, the instance's settings
@@ -451,9 +467,12 @@ deletes expired tokens, password resets, sign-ins waiting for a code,
 passkey challenges, device codes and invites, early access requests whose
 address has an account or that are a year old, the links of expired
 published screenshots, abandoned Claude logins, and audit
-log entries older than a year. Deleting a workspace does the same for all
-its projects. Deleting an account (`src/api/account.rs`) does it for the
-workspaces only that account is in, passes the primary admin role of its
+log entries older than a year. It also looks up pull requests that GitHub
+hasn't told about for a while
+([Pull request state and checks](#pull-request-state-and-checks)).
+Deleting a workspace does the same for all its projects. Deleting an
+account (`src/api/account.rs`) does it for the workspaces only that
+account is in, passes the primary admin role of its
 other workspaces to their longest-standing admin, or member, deletes its
 personal rows (its addresses too) in the same batch, and keeps a nameless
 placeholder row only while sessions or projects it created remain.
@@ -650,9 +669,11 @@ agent posts a notice; a primary repository out of reach fails the session.
   (the spec's `pull_requests`). It keeps them in its state file, reports
   them all in the `git` event's `pull_requests`, and looks each up again
   when a turn ends until it is merged, so the session lists them with their
-  state (`fctl_domain::pulls`). The system prompt tells agents to make
-  another pull request's branch where the repository is checked out, not in
-  a worktree, since Changes shows the checked-out branches.
+  state (`fctl_domain::pulls`), and GitHub keeps that current
+  ([Pull request state and checks](#pull-request-state-and-checks)). The
+  system prompt tells agents to make another pull request's branch where
+  the repository is checked out, not in a worktree, since Changes shows
+  the checked-out branches.
 - **Merged branches** aren't pushed again: GitHub deletes a merged pull
   request's branch in repositories set up to, and a push would bring it
   back. Before it pushes a
@@ -680,6 +701,55 @@ agent posts a notice; a primary repository out of reach fails the session.
 Older hosts and agents ignore the list and the second token, and work on the
 primary repository alone
 ([ADR 0009](adr/0009-projects-span-an-accounts-repositories.md)).
+
+### Pull request state and checks
+
+Session lists, the session page and `fctl show` give each pull request its
+state, `open`, `draft`, `queued` (in a merge queue), `merged` or `closed`,
+since when, and the checks of its head commit: how many passed, failed and
+are still to finish. Agents look their pull requests up as turns end, but a
+session that stopped looks up nothing, so GitHub tells the control plane
+([ADR 0032](adr/0032-githubs-webhook-keeps-sessions-pull-requests-current.md)):
+
+1. **The webhook.** Where the GitHub App's webhook is on, with its secret
+   in `GITHUB_WEBHOOK_SECRET` ([Self-hosting](self-hosting.md#connect-github-optional-recommended)),
+   GitHub posts to `/api/v1/github/webhook` when a pull request changes
+   (`pull_request`: opened, pushed to, marked ready or a draft, queued,
+   merged, closed…) and when the checks of a commit do (`check_run`,
+   `check_suite`, `status`). A delivery counts only with the signature of
+   that secret (`fctl_domain::webhooks::signed`); without the secret the
+   instance takes none and sessions show what their agents last looked up.
+2. **Which sessions.** D1 keeps which sessions list which pull request
+   (`pull_request_sessions`), by repository and number, with its head
+   commit, which commit statuses name instead of a pull request. SessionDO
+   adds a session's rows as its agent finds pull requests.
+3. **A lookup.** For each pull request a session lists that a delivery
+   concerns, the control plane asks GitHub with one GraphQL query
+   (`fctl_domain::webhooks::QUERY`, with a token of the installation that
+   sent it): its title, state, merge queue entry, times and its head
+   commit's checks counted by state. Deliveries come out of order and some
+   never come; a lookup says how things are. A pull request is queued when
+   the delivery's action is `enqueued` (or `queued`), GitHub lists its entry
+   in the merge queue, or its merge state status (else its
+   `mergeable_state`) is `queued` or `in_merge_queue`. When the lookup
+   fails, a `pull_request` delivery's own payload gives the state.
+4. **The sessions.** The control plane sends what it found to the
+   SessionDO of each session that lists the pull request
+   (`/pull-requests`), which takes what is newer (`fctl_domain::pulls::update`):
+   GitHub's `updatedAt` orders what GitHub and agents say of its title and
+   state, an agent's `open` leaves a queued one queued (`gh` can't see merge
+   queues), and checks go by when the control plane asked. It keeps when
+   the state changed (`state_changed_at`): when GitHub says it merged,
+   closed or joined the queue, or else when fctl saw it change. Viewers and
+   the dashboards hear of it at once, and D1 within seconds.
+
+The control plane also looks up the pull requests a session finds as it
+finds them, and the hourly job those that aren't merged or closed and that
+nobody asked GitHub about for six hours (`pull_requests::sweep`, 30 a run),
+in case a delivery went missing: that also brings the pull requests of
+sessions from before the webhook up to date. The web app shows the states
+and checks with GitHub's octicons and colors (the design system's `pr-*`
+and `checks-*` tokens).
 
 ### Commits
 
@@ -759,7 +829,10 @@ no effort level.
   the sandbox. The host forwards events in batches; SessionDO stores them,
   assigns the canonical `seq`, broadcasts them, and acknowledges `agent_seq`.
   After any reconnect SessionDO announces the last acknowledged `agent_seq`
-  and the host replays the journal from there.
+  and the host replays the journal from there. People's messages,
+  interrupts and status changes are SessionDO's own to record: from an
+  uplink, where a host or what runs in its sandbox could send them as
+  anyone, they are acknowledged and dropped.
 - SessionDO stores events in `agent_seq` order. After a reconnect, newer
   events can arrive before the replay of older ones, which went over a link
   to the agent or an uplink that closed: they wait for it, for at most a
@@ -789,6 +862,16 @@ no effort level.
 Browsers and the CLI open `GET /api/v1/sessions/{id}/ws`. The first frame is a
 snapshot (summary, recent events, presence, in-progress text); after that
 frames are incremental. Older history is paged over HTTP.
+
+The Worker checks access as the socket opens, and SessionDO checks it again
+while it stays open: the token it was opened with and the role it gives,
+on the viewer's pings at most once a minute and before every message or
+interrupt (`recheck_viewer`). A viewer whose person can no longer see the
+session (they left the workspace or were removed, their role or share went,
+they signed out or were disabled) closes with 4403, after which the apps
+stop reconnecting; one whose role changed gets it in its next `session`
+frame. A viewer that stopped pinging closes after five minutes at the next
+broadcast and reconnects through the Worker.
 
 The snapshot and `runner_connected` frames say whether the agent's work can
 come through:

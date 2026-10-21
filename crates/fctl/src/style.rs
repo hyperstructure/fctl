@@ -1,7 +1,45 @@
 //! Terminal output: a small palette, respecting NO_COLOR and pipes.
 
+use std::borrow::Cow;
 use std::io::IsTerminal;
 use std::sync::OnceLock;
+
+/// `s` as it is safe to print to a terminal: the control characters
+/// terminals act on are dropped, save newlines, tabs and color codes
+/// (`ESC [ … m`, as fctl writes them). What sessions say (an agent's text, a
+/// setup script's output, a pull request's link) could otherwise move the
+/// cursor and rewrite what is on screen, or set the clipboard or the title.
+pub fn terminal_safe(s: &str) -> Cow<'_, str> {
+    if !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' | '\t' => out.push(c),
+            '\x1b' => {
+                let mut rest = chars.clone();
+                if rest.next() == Some('[') {
+                    let mut params = String::new();
+                    while let Some(&p) = rest.peek().filter(|p| p.is_ascii_digit() || **p == ';') {
+                        params.push(p);
+                        rest.next();
+                    }
+                    if rest.next() == Some('m') {
+                        out.push_str("\x1b[");
+                        out.push_str(&params);
+                        out.push('m');
+                        chars = rest;
+                    }
+                }
+            }
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    Cow::Owned(out)
+}
 
 fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
@@ -119,4 +157,25 @@ pub fn now_ms() -> i64 {
 pub fn print_json<T: serde::Serialize>(v: &T) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(v)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_colors_and_line_breaks_reach_the_terminal() {
+        assert_eq!(terminal_safe("plain\ttext\n"), "plain\ttext\n");
+        assert_eq!(terminal_safe("\x1b[1mbold\x1b[0m"), "\x1b[1mbold\x1b[0m");
+        // The clipboard (OSC 52), the title, the screen, the cursor.
+        assert_eq!(
+            terminal_safe("\x1b]52;c;ZXZpbA==\x07ok"),
+            "]52;c;ZXZpbA==ok"
+        );
+        assert_eq!(terminal_safe("\x1b]0;title\x1b\\"), "]0;title\\");
+        assert_eq!(terminal_safe("a\x1b[2Jb\x1b[1A"), "a[2Jb[1A");
+        assert_eq!(terminal_safe("done\rfake"), "donefake");
+        assert_eq!(terminal_safe("x\u{9b}31my"), "x31my");
+        assert_eq!(terminal_safe("bell\x07\x08"), "bell");
+    }
 }

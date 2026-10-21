@@ -9,6 +9,7 @@ use crate::model::{PROJECT_SELECT, ProjectRow, SESSION_SELECT, SessionRow, UserR
 use fctl_domain::perm::{self, SessionAccess};
 use fctl_proto::api::InstanceSettings;
 use fctl_proto::session::{ProjectRole, SessionRole};
+use worker::D1Database;
 
 pub struct ProjectAccess {
     pub row: ProjectRow,
@@ -84,6 +85,20 @@ pub async fn session(ctx: &Ctx, id: &str) -> AppResult<SessionAccessRow> {
     let row = row.ok_or_else(|| not_found("Session"))?;
     let role = session_role(user, &ctx.settings(), &row).ok_or_else(|| not_found("Session"))?;
     Ok(SessionAccessRow { row, role })
+}
+
+/// The role `user` has in session `id` now (`settings`: the instance's), or
+/// `None` once they can't see it: for sockets that stay open after the
+/// Worker checked them (`SessionObject`).
+pub async fn session_role_now(
+    db: &D1Database,
+    user: &UserRow,
+    settings: &InstanceSettings,
+    id: &str,
+) -> AppResult<Option<SessionRole>> {
+    let sql = format!("{SESSION_SELECT} WHERE s.id = ?2");
+    let row: Option<SessionRow> = q(db, &sql, &[s(&user.id), s(id)])?.first().await?;
+    Ok(row.and_then(|r| session_role(user, settings, &r)))
 }
 
 /// A session's role for `user`, the caller of the query that read `row`.

@@ -29,7 +29,13 @@ const WEB: &str = "https://github.com";
 thread_local! {
     /// owner (lowercase) → installation id, per isolate.
     static INSTALLATIONS: RefCell<HashMap<String, (u64, i64)>> = RefCell::new(HashMap::new());
+    /// installation id → the token the control plane looks pull requests up
+    /// with, per isolate, while it has a while left.
+    static LOOKUP_TOKENS: RefCell<HashMap<u64, GithubCredential>> = RefCell::new(HashMap::new());
 }
+
+/// How long a cached lookup token must still be valid to be used.
+const TOKEN_MARGIN_MS: i64 = 5 * 60 * 1000;
 
 pub struct Github<'a> {
     cfg: &'a GithubConfig,
@@ -707,6 +713,66 @@ impl<'a> Github<'a> {
             }
         }
         Ok(found)
+    }
+
+    /// A token of installation `inst` for the control plane's own lookups,
+    /// minted once while it stays valid.
+    async fn lookup_token(&self, inst: u64) -> AppResult<String> {
+        let cached = LOOKUP_TOKENS.with(|m| {
+            m.borrow()
+                .get(&inst)
+                .filter(|t| t.expires_at - self.now > TOKEN_MARGIN_MS)
+                .map(|t| t.token.clone())
+        });
+        if let Some(token) = cached {
+            return Ok(token);
+        }
+        let fresh = self.installation_token(inst, None, None).await?;
+        let token = fresh.token.clone();
+        LOOKUP_TOKENS.with(|m| m.borrow_mut().insert(inst, fresh));
+        Ok(token)
+    }
+
+    /// Looks a pull request up (`fctl_domain::webhooks::QUERY`) through
+    /// installation `inst`, or else the one on its repository's owner, and
+    /// returns GitHub's answer.
+    pub async fn pull_request(
+        &self,
+        inst: Option<u64>,
+        repo: &RepoRef,
+        number: u64,
+    ) -> AppResult<Value> {
+        let inst = match inst {
+            Some(i) => i,
+            None => self.installation_id(&repo.owner).await?,
+        };
+        let token = self.lookup_token(inst).await?;
+        let body = json!({
+            "query": fctl_domain::webhooks::QUERY,
+            "variables": { "owner": repo.owner, "name": repo.name, "number": number },
+        });
+        let (status, answer) = self
+            .call(
+                Method::Post,
+                "/graphql",
+                &format!("token {token}"),
+                Some(body),
+            )
+            .await?;
+        if status == 401 {
+            LOOKUP_TOKENS.with(|m| m.borrow_mut().remove(&inst));
+        }
+        if status != 200 {
+            worker::console_error!(
+                "looking up {}#{number}: GitHub answered {status}",
+                repo.full_name()
+            );
+            return Err(unavailable("GitHub did not answer"));
+        }
+        if let Some(errors) = answer.get("errors") {
+            worker::console_error!("looking up {}#{number}: {errors}", repo.full_name());
+        }
+        Ok(answer)
     }
 
     async fn installation_call(

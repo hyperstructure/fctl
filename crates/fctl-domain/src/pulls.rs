@@ -9,9 +9,16 @@
 //! branches' latest one per repository. The control plane keeps the
 //! others: a session that opened one in each of three repositories, or a
 //! second one after the first was merged, lists them all.
+//!
+//! GitHub tells the control plane when they change, through its GitHub
+//! App's webhook (`crate::webhooks`): their state, merge queues included,
+//! and their checks. What the agent and GitHub say comes together in
+//! [`update`]: a lookup older than the one a pull request's state came from
+//! doesn't undo it.
 
+use fctl_proto::Millis;
 use fctl_proto::event::GitState;
-use fctl_proto::session::{PullRequestRef, RepoRef, Session};
+use fctl_proto::session::{PullRequestChecks, PullRequestRef, RepoRef, Session};
 
 /// Most pull requests a session lists: the first its agent found.
 pub const MAX_PULL_REQUESTS: usize = 20;
@@ -39,9 +46,8 @@ pub fn named_by(url: &str) -> Option<PullRequestRef> {
     Some(PullRequestRef {
         number,
         url: format!("{}/pull/{number}", repo.html_url()),
-        title: None,
-        state: None,
         repo: Some(repo),
+        ..Default::default()
     })
 }
 
@@ -98,23 +104,220 @@ pub fn found(git: &GitState) -> Vec<PullRequestRef> {
     out
 }
 
+/// Whether two URLs name the same pull request: GitHub's names don't care
+/// about case.
+fn same(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
 /// Adds the pull requests an agent found to those its session lists, after
-/// them, and takes the newer title and state of the ones it lists already.
+/// them, and takes what it says of the ones it lists already ([`update`]).
 /// Returns whether the list changed.
-pub fn merge(known: &mut Vec<PullRequestRef>, found: &[PullRequestRef]) -> bool {
+pub fn merge(known: &mut Vec<PullRequestRef>, found: &[PullRequestRef], now: Millis) -> bool {
     let mut changed = false;
     for pr in found {
-        if let Some(k) = known.iter_mut().find(|k| k.url == pr.url) {
-            if k != pr {
-                *k = pr.clone();
-                changed = true;
-            }
+        if let Some(k) = known.iter_mut().find(|k| same(&k.url, &pr.url)) {
+            changed |= update(k, pr, Source::Agent, now);
         } else if known.len() < MAX_PULL_REQUESTS {
             known.push(pr.clone());
             changed = true;
         }
     }
     changed
+}
+
+/// Takes what GitHub says of pull requests into those a session lists, and
+/// leaves the others out: a session lists what its agent found. Returns
+/// whether any changed.
+pub fn observe(known: &mut [PullRequestRef], seen: &[PullRequestRef], now: Millis) -> bool {
+    let mut changed = false;
+    for s in seen {
+        for k in known.iter_mut().filter(|k| same(&k.url, &s.url)) {
+            changed |= update(k, s, Source::Github, now);
+        }
+    }
+    changed
+}
+
+/// Who says what of a pull request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// The session's agent, from `gh pr view`, which doesn't say whether
+    /// it is in a merge queue: it reports a queued one as `open`.
+    Agent,
+    /// GitHub, to the control plane: a lookup after a webhook, or the
+    /// webhook's payload.
+    Github,
+}
+
+/// Takes what `seen` says of the pull request a session lists as `k`, at
+/// `now`, and returns whether `k` changed:
+///
+/// - its title and state, unless `k`'s come from a newer lookup (by
+///   GitHub's `updated_at`; a lookup without one counts as older than one
+///   with it, as agents before it report what they last looked up). An
+///   agent's `open` leaves a `queued` one queued: agents can't see merge
+///   queues.
+/// - when its state changed: the time GitHub gives for the new state (when
+///   it merged, closed or joined the queue), unless that is from before
+///   the old state's, as when it is reopened or marked ready (GitHub gives
+///   when it was opened); then when fctl saw it change.
+/// - its checks, unless `k`'s are from a later lookup.
+pub fn update(k: &mut PullRequestRef, seen: &PullRequestRef, source: Source, now: Millis) -> bool {
+    let before = k.clone();
+    if k.repo.is_none() {
+        k.repo = seen.repo.clone();
+    }
+    let newer = match (k.updated_at, seen.updated_at) {
+        (Some(known), Some(seen)) => seen >= known,
+        (Some(_), None) => false,
+        (None, _) => true,
+    };
+    if newer {
+        if seen.title.is_some() {
+            k.title = seen.title.clone();
+        }
+        if seen.updated_at.is_some() {
+            k.updated_at = seen.updated_at;
+        }
+        if let Some(state) = seen.state.as_deref() {
+            let unseen_queue =
+                source == Source::Agent && state == "open" && k.state.as_deref() == Some("queued");
+            if k.state.as_deref() == Some(state) || unseen_queue {
+                k.state_changed_at = k.state_changed_at.or(seen.state_changed_at);
+            } else {
+                k.state_changed_at = match (seen.state_changed_at, k.state_changed_at) {
+                    (Some(at), Some(was)) if at > was => Some(at),
+                    (Some(_), Some(_)) => Some(now),
+                    (Some(at), None) => Some(at),
+                    (None, _) if k.state.is_none() => None,
+                    (None, _) => Some(now),
+                };
+                k.state = Some(state.to_owned());
+            }
+        }
+    }
+    if let Some(checks) = &seen.checks
+        && k.checks.as_ref().is_none_or(|c| checks.at >= c.at)
+    {
+        k.checks = Some(checks.clone());
+    }
+    *k != before
+}
+
+/// A pull request's state as fctl names it, from what GitHub says of it.
+pub fn state_of(merged: bool, closed: bool, queued: bool, draft: bool) -> &'static str {
+    if merged {
+        "merged"
+    } else if closed {
+        "closed"
+    } else if queued {
+        "queued"
+    } else if draft {
+        "draft"
+    } else {
+        "open"
+    }
+}
+
+/// Whether a pull request is in a merge queue: the webhook's `action` is
+/// `enqueued` (or `queued`), GitHub has its entry in the queue
+/// (`merge_queue_entry`), or its merge state (`merge_state_status`, else
+/// `mergeable_state`) is `queued` or `in_merge_queue`.
+pub fn queued(
+    action: Option<&str>,
+    merge_queue_entry: bool,
+    merge_state_status: Option<&str>,
+    mergeable_state: Option<&str>,
+) -> bool {
+    let in_queue =
+        |s: &str| s.eq_ignore_ascii_case("queued") || s.eq_ignore_ascii_case("in_merge_queue");
+    action.is_some_and(|a| a == "enqueued" || a == "queued")
+        || merge_queue_entry
+        || merge_state_status.or(mergeable_state).is_some_and(in_queue)
+}
+
+/// When GitHub says a pull request took each state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Times {
+    pub created: Option<Millis>,
+    pub merged: Option<Millis>,
+    pub closed: Option<Millis>,
+    pub queued: Option<Millis>,
+}
+
+impl Times {
+    /// When it took `state`: for an open one or a draft, when it was opened,
+    /// which [`update`] doesn't take for one marked ready or reopened.
+    pub fn of(&self, state: &str) -> Option<Millis> {
+        match state {
+            "merged" => self.merged,
+            "closed" => self.closed,
+            "queued" => self.queued,
+            _ => self.created,
+        }
+    }
+}
+
+/// A time as GitHub writes them (`2026-10-21T15:43:25Z`, RFC 3339), in
+/// milliseconds since the epoch.
+pub fn github_time(s: &str) -> Option<Millis> {
+    let num = |s: &str| -> Option<i64> {
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse().ok())
+            .flatten()
+    };
+    let (date, rest) = s.trim().split_once(['T', 't', ' '])?;
+    let mut d = date.splitn(3, '-');
+    let (y, m, day) = (num(d.next()?)?, num(d.next()?)?, num(d.next()?)?);
+    // The offset: `Z`, or `+hh:mm` / `-hh:mm`.
+    let i = rest.find(['Z', 'z', '+', '-'])?;
+    let (clock, offset) = (&rest[..i], &rest[i..]);
+    let offset_min = match offset {
+        "Z" | "z" => 0,
+        o => {
+            let sign = if o.starts_with('-') { -1 } else { 1 };
+            let (h, m) = o.get(1..)?.split_once(':')?;
+            sign * (num(h)? * 60 + num(m)?)
+        }
+    };
+    let (hms, frac) = clock.split_once('.').unwrap_or((clock, ""));
+    let mut t = hms.splitn(3, ':');
+    let (h, min, sec) = (num(t.next()?)?, num(t.next()?)?, num(t.next()?)?);
+    let ms = match frac {
+        "" => 0,
+        f => num(&format!("{f:0<3}")[..3])?,
+    };
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) || h > 23 || min > 59 || sec > 60 {
+        return None;
+    }
+    let days = days_from_civil(y, m, day);
+    Some(((days * 86_400 + h * 3600 + min * 60 + sec - offset_min * 60) * 1000) + ms)
+}
+
+/// Days since 1970-01-01 of a date, after Howard Hinnant's
+/// `days_from_civil`.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Whether a pull request's checks all passed (`Some(true)`), any failed
+/// (`Some(false)`), or neither yet (`None`): some still run, or there are
+/// none.
+pub fn checks_passed(c: &PullRequestChecks) -> Option<bool> {
+    if c.failed > 0 {
+        Some(false)
+    } else if c.pending > 0 || c.passed == 0 {
+        None
+    } else {
+        Some(true)
+    }
 }
 
 /// Gives a session from before `pull_requests` its one pull request in the
@@ -144,9 +347,11 @@ mod tests {
             url: format!("https://github.com/{repo}/pull/{number}"),
             title: Some(format!("Change {number}")),
             state: Some("open".into()),
-            repo: None,
+            ..Default::default()
         }
     }
+
+    const NOW: Millis = 1_000_000;
 
     fn repo(full: &str) -> Option<RepoRef> {
         RepoRef::parse(full)
@@ -284,7 +489,7 @@ mod tests {
         // The session keeps the merged one's state current, and lists the
         // one from another branch.
         let mut known = vec![pr("acme/app", 12)];
-        assert!(merge(&mut known, &super::found(&git)));
+        assert!(merge(&mut known, &super::found(&git), NOW));
         assert_eq!(known[0].state.as_deref(), Some("merged"));
         assert_eq!(known.len(), 3);
     }
@@ -296,8 +501,8 @@ mod tests {
             pull_request: Some(pr("acme/app", 12)),
             ..Default::default()
         });
-        assert!(merge(&mut known, &first));
-        assert!(!merge(&mut known, &first), "nothing new");
+        assert!(merge(&mut known, &first, NOW));
+        assert!(!merge(&mut known, &first, NOW), "nothing new");
         // The next turn: merged, and a follow-up in another repository.
         let mut merged = pr("acme/app", 12);
         merged.state = Some("merged".into());
@@ -311,14 +516,14 @@ mod tests {
             }]),
             ..Default::default()
         });
-        assert!(merge(&mut known, &next));
+        assert!(merge(&mut known, &next, NOW));
         // Then a second one in the primary repository, from a new branch:
         // the agent no longer reports the first.
         let later = found(&GitState {
             pull_request: Some(pr("acme/app", 13)),
             ..Default::default()
         });
-        assert!(merge(&mut known, &later));
+        assert!(merge(&mut known, &later, NOW));
         let listed: Vec<_> = known
             .iter()
             .map(|p| (p.url.as_str(), p.state.as_deref()))
@@ -364,14 +569,271 @@ mod tests {
         let mut known: Vec<_> = (1..=MAX_PULL_REQUESTS as u64)
             .map(|n| pr("acme/app", n))
             .collect();
-        assert!(!merge(&mut known, &[pr("acme/app", 100)]));
+        assert!(!merge(&mut known, &[pr("acme/app", 100)], NOW));
         let mut closed = pr("acme/app", 1);
         closed.state = Some("closed".into());
         assert!(
-            merge(&mut known, &[closed]),
+            merge(&mut known, &[closed], NOW),
             "the ones it lists still change"
         );
         assert_eq!(known.len(), MAX_PULL_REQUESTS);
         assert_eq!(known[0].state.as_deref(), Some("closed"));
+    }
+
+    /// What GitHub or an agent says of a pull request: its state, when
+    /// GitHub last changed it, and when it took that state.
+    fn said(
+        n: u64,
+        state: &str,
+        updated_at: Option<Millis>,
+        since: Option<Millis>,
+    ) -> PullRequestRef {
+        PullRequestRef {
+            state: Some(state.into()),
+            updated_at,
+            state_changed_at: since,
+            ..pr("acme/app", n)
+        }
+    }
+
+    fn state(known: &[PullRequestRef]) -> (Option<&str>, Option<Millis>) {
+        (known[0].state.as_deref(), known[0].state_changed_at)
+    }
+
+    #[test]
+    fn github_says_what_agents_cannot() {
+        // An agent from before `updated_at` found it open.
+        let mut known = vec![said(12, "open", None, None)];
+        // GitHub: it joined the merge queue at 9.
+        assert!(observe(
+            &mut known,
+            &[said(12, "queued", Some(10), Some(9))],
+            NOW
+        ));
+        assert_eq!(state(&known), (Some("queued"), Some(9)));
+        // The agent looks it up after someone labels it: `gh pr view` says
+        // open, as it can't see the queue.
+        merge(&mut known, &[said(12, "open", Some(11), None)], NOW);
+        assert_eq!(state(&known), (Some("queued"), Some(9)));
+        // The queue merges it.
+        assert!(observe(
+            &mut known,
+            &[said(12, "merged", Some(13), Some(12))],
+            NOW
+        ));
+        assert_eq!(state(&known), (Some("merged"), Some(12)));
+        // What agents last looked up doesn't undo it: an older lookup, or
+        // one from an agent before `updated_at`.
+        assert!(!merge(&mut known, &[said(12, "open", Some(11), None)], NOW));
+        assert!(!merge(&mut known, &[said(12, "open", None, None)], NOW));
+        assert_eq!(state(&known), (Some("merged"), Some(12)));
+        // Nor does a webhook that comes late.
+        assert!(!observe(
+            &mut known,
+            &[said(12, "queued", Some(10), Some(9))],
+            NOW
+        ));
+        assert_eq!(known[0].updated_at, Some(13));
+    }
+
+    #[test]
+    fn agents_still_say_what_changed() {
+        // Where GitHub's webhook is off, agents' lookups are all there is.
+        let mut known = vec![said(12, "draft", None, None)];
+        assert!(merge(&mut known, &[said(12, "open", None, None)], 20));
+        assert_eq!(state(&known), (Some("open"), Some(20)), "when fctl saw it");
+        // Agents that say when it merged.
+        assert!(merge(
+            &mut known,
+            &[said(12, "merged", Some(30), Some(29))],
+            40
+        ));
+        assert_eq!(state(&known), (Some("merged"), Some(29)));
+        // One that GitHub took out of the queue.
+        let mut known = vec![said(13, "queued", Some(10), Some(9))];
+        assert!(observe(
+            &mut known,
+            &[said(13, "open", Some(11), Some(1))],
+            12
+        ));
+        assert_eq!(state(&known), (Some("open"), Some(12)));
+    }
+
+    #[test]
+    fn it_says_when_the_state_changed() {
+        // Named by `gh pr create`: no state yet, so no time either.
+        let mut known = vec![PullRequestRef {
+            title: None,
+            state: None,
+            ..pr("acme/app", 12)
+        }];
+        assert!(observe(
+            &mut known,
+            &[said(12, "draft", Some(5), Some(5))],
+            NOW
+        ));
+        assert_eq!(
+            state(&known),
+            (Some("draft"), Some(5)),
+            "opened as a draft at 5"
+        );
+        // Marked ready: GitHub still gives when it was opened.
+        assert!(observe(
+            &mut known,
+            &[said(12, "open", Some(7), Some(5))],
+            7
+        ));
+        assert_eq!(state(&known), (Some("open"), Some(7)));
+        // Closed at 20, reopened at 25, merged at 30.
+        assert!(observe(
+            &mut known,
+            &[said(12, "closed", Some(20), Some(20))],
+            21
+        ));
+        assert_eq!(state(&known), (Some("closed"), Some(20)));
+        assert!(observe(
+            &mut known,
+            &[said(12, "open", Some(25), Some(5))],
+            25
+        ));
+        assert_eq!(state(&known), (Some("open"), Some(25)));
+        assert!(observe(
+            &mut known,
+            &[said(12, "merged", Some(31), Some(30))],
+            32
+        ));
+        assert_eq!(state(&known), (Some("merged"), Some(30)));
+        // The same state again keeps its time, or gets one it lacked.
+        assert!(!observe(
+            &mut known,
+            &[said(12, "merged", Some(31), Some(40))],
+            50
+        ));
+        let mut known = vec![said(13, "merged", None, None)];
+        assert!(observe(
+            &mut known,
+            &[said(13, "merged", Some(31), Some(30))],
+            50
+        ));
+        assert_eq!(state(&known), (Some("merged"), Some(30)));
+    }
+
+    #[test]
+    fn checks_come_from_the_latest_lookup() {
+        let checks = |at: Millis, passed: u32, pending: u32| PullRequestChecks {
+            passed,
+            failed: 0,
+            pending,
+            sha: Some("abc".into()),
+            at,
+        };
+        let mut known = vec![pr("acme/app", 12)];
+        let with = |c: PullRequestChecks| PullRequestRef {
+            checks: Some(c),
+            ..pr("acme/app", 12)
+        };
+        assert!(observe(&mut known, &[with(checks(10, 1, 2))], NOW));
+        // An answer to an earlier lookup that came late.
+        assert!(!observe(&mut known, &[with(checks(8, 3, 0))], NOW));
+        // Agents don't report checks: the session keeps them.
+        assert!(!merge(&mut known, &[pr("acme/app", 12)], NOW));
+        assert_eq!(known[0].checks, Some(checks(10, 1, 2)));
+        assert!(observe(&mut known, &[with(checks(12, 3, 0))], NOW));
+        assert_eq!(known[0].checks, Some(checks(12, 3, 0)));
+    }
+
+    #[test]
+    fn github_changes_only_what_sessions_list() {
+        let mut known = vec![pr("acme/app", 12)];
+        let other = said(13, "merged", Some(10), Some(10));
+        assert!(!observe(&mut known, &[other], NOW));
+        assert_eq!(known, [pr("acme/app", 12)]);
+        // GitHub's names don't care about case.
+        let merged = PullRequestRef {
+            url: "https://github.com/Acme/App/pull/12".into(),
+            ..said(12, "merged", Some(10), Some(10))
+        };
+        assert!(observe(&mut known, &[merged], NOW));
+        assert_eq!(known[0].state.as_deref(), Some("merged"));
+        assert_eq!(known[0].url, "https://github.com/acme/app/pull/12");
+    }
+
+    #[test]
+    fn states_as_github_says_them() {
+        assert_eq!(state_of(true, true, false, false), "merged");
+        assert_eq!(state_of(false, true, false, false), "closed");
+        assert_eq!(state_of(false, false, true, false), "queued");
+        assert_eq!(state_of(false, false, false, true), "draft");
+        assert_eq!(state_of(false, false, false, false), "open");
+    }
+
+    #[test]
+    fn merge_queues_show_in_any_of_their_signs() {
+        assert!(queued(Some("enqueued"), false, None, None));
+        assert!(queued(Some("queued"), false, None, None));
+        assert!(!queued(Some("dequeued"), false, None, None));
+        assert!(queued(None, true, None, None));
+        assert!(queued(None, false, Some("QUEUED"), None));
+        assert!(queued(None, false, Some("in_merge_queue"), None));
+        assert!(queued(None, false, None, Some("in_merge_queue")));
+        assert!(queued(None, false, None, Some("queued")));
+        // `mergeable_state` only counts without `merge_state_status`.
+        assert!(!queued(None, false, Some("BLOCKED"), Some("queued")));
+        assert!(!queued(
+            Some("synchronize"),
+            false,
+            Some("CLEAN"),
+            Some("clean")
+        ));
+    }
+
+    #[test]
+    fn checks_pass_once_every_one_did() {
+        let c = |passed, failed, pending| PullRequestChecks {
+            passed,
+            failed,
+            pending,
+            ..Default::default()
+        };
+        assert_eq!(checks_passed(&c(3, 0, 0)), Some(true));
+        assert_eq!(
+            checks_passed(&c(3, 1, 2)),
+            Some(false),
+            "a failure shows at once"
+        );
+        assert_eq!(checks_passed(&c(3, 0, 2)), None);
+        assert_eq!(checks_passed(&c(0, 0, 0)), None, "no checks");
+    }
+
+    #[test]
+    fn times_read_as_github_writes_them() {
+        use crate::account::iso8601;
+        let at = |s: &str| github_time(s).map(iso8601);
+        assert_eq!(
+            at("2026-10-21T15:43:25Z").as_deref(),
+            Some("2026-10-21T15:43:25.000Z")
+        );
+        assert_eq!(
+            at("2026-10-21T15:43:25.5Z").as_deref(),
+            Some("2026-10-21T15:43:25.500Z")
+        );
+        assert_eq!(
+            at("2026-10-21T17:43:25+02:00").as_deref(),
+            Some("2026-10-21T15:43:25.000Z")
+        );
+        assert_eq!(
+            at("2024-02-29T00:00:00Z").as_deref(),
+            Some("2024-02-29T00:00:00.000Z")
+        );
+        assert_eq!(github_time("1970-01-01T00:00:00Z"), Some(0));
+        for bad in [
+            "",
+            "2026-10-21",
+            "2026-13-01T00:00:00Z",
+            "2026-10-21T15:43:25",
+            "yesterday",
+        ] {
+            assert_eq!(github_time(bad), None, "{bad}");
+        }
     }
 }
