@@ -249,12 +249,18 @@ function Sessions({ project }: { project: G.Project }) {
               className="block px-5 pt-4 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
             />
             {/* More room above the pickers where they take a line of their own. */}
-            <TextareaControls textarea={ref} className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 max-lg:pt-3">
+            <TextareaControls textarea={ref} className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 sm:max-lg:pt-3">
               <AttachButton onFiles={(f) => attach(f)} />
               <span className="flex-1" />
               <StartChoices project={project} choice={choice} onPick={pick} disabled={starting} />
-              <span className="text-[11.5px] text-ink-4">⌘↵</span>
-              <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
+              {/* On a phone, as on the home page, its room goes to the button. */}
+              <span className="text-[11.5px] text-ink-4 max-sm:hidden">⌘↵</span>
+              {/* On a phone it can take a line of its own, at its end. */}
+              <StartButton
+                starting={starting}
+                disabled={!prompt.trim() && !files.drafts.length}
+                className="max-sm:ml-auto"
+              >
                 Start a session
               </StartButton>
             </TextareaControls>
