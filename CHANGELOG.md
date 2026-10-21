@@ -2,6 +2,31 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.15.0 (2026-10-21)
+
+### Features
+
+- **web:** Link the pull requests in session lists to GitHub ([#169](https://github.com/hyperstructure/fctl/pull/169))
+- Show pull requests' state and checks, as GitHub's webhook says ([#176](https://github.com/hyperstructure/fctl/pull/176))
+- **web:** Step through a session's images with arrow keys and swipes ([#177](https://github.com/hyperstructure/fctl/pull/177))
+- **host:** Prepare Lima sandboxes on Debian 13, like the sandbox image ([#168](https://github.com/hyperstructure/fctl/pull/168))
+
+### Fixes
+
+- **control:** Keep people out of workspaces and accounts not theirs ([#171](https://github.com/hyperstructure/fctl/pull/171))
+- **host:** Keep the host's home directory out of Lima sandboxes ([#172](https://github.com/hyperstructure/fctl/pull/172))
+- **host:** Keep Docker sandboxes apart, and a host's files to its owner ([#173](https://github.com/hyperstructure/fctl/pull/173))
+- **cli:** Open only the server's sign-in links and print sessions safely ([#174](https://github.com/hyperstructure/fctl/pull/174))
+
+### Documentation
+
+- Replace the README screenshot of app.fctl.sh ([#167](https://github.com/hyperstructure/fctl/pull/167))
+
+### Other changes
+
+- Run the checks in parallel jobs and deploy main sooner ([#170](https://github.com/hyperstructure/fctl/pull/170))
+- Publish the standalone image sooner ([#175](https://github.com/hyperstructure/fctl/pull/175))
+
 ## 0.14.1 (2026-10-21)
 
 ### Fixes
