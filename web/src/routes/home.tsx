@@ -18,7 +18,6 @@ import { StartButton, StartChoices, useStartChoice, useStartSession } from "@/co
 import {
   Button,
   firstNames,
-  GithubIcon,
   GLCanvas,
   Select,
   Skeleton,
@@ -37,7 +36,7 @@ import { feed, useFeed } from "@/lib/feed";
 import { ago, lowOnDisk } from "@/lib/format";
 import { asked } from "@/lib/models";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspaces } from "@/lib/queries";
-import { repoSummary, repoTitle } from "@/lib/repos";
+import { repoSummary } from "@/lib/repos";
 import { waitsForYou } from "@/lib/status";
 import { useTaskBoxFocus } from "@/lib/task-box";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
@@ -223,7 +222,6 @@ function QuickStart({
   }, [kept]);
   const dragging = useFileDrop(attach, editable.length > 0 && !starting);
   if (!editable.length) return null;
-  const ws = target?.workspace ? freshest(index, target.workspace) : undefined;
   const go = () => start(project, prompt, files, target && asked(target, choice));
   const several = workspaces.length > 1;
   return (
@@ -302,15 +300,6 @@ function QuickStart({
                 };
               })}
             />
-            {target && repoSummary(target) && (
-              <span
-                className="hidden shrink-[100] items-center gap-1.5 font-mono text-[11.5px] text-ink-4 md:inline-flex"
-                title={repoTitle(target, ws?.name)}
-              >
-                <GithubIcon className="size-3 shrink-0" />
-                <RepoText project={target} />
-              </span>
-            )}
           </div>
           <span className="flex-1" />
           {target && (
