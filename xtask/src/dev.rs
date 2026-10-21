@@ -17,7 +17,7 @@
 
 use crate::util::{self, run};
 use anyhow::{Context, Result, bail};
-use fctl_proto::api::EventPage;
+use fctl_proto::api::{EventPage, MemoryList, RetrospectiveList};
 use fctl_proto::event::{CommitInfo, EventBody, SessionEvent, StatusChange};
 use fctl_proto::session::{Project, Session, SessionStatus};
 use serde_json::{Value, json};
@@ -257,11 +257,12 @@ fn wrangler_dev(root: &Path, children: &mut Children) -> Result<()> {
 /// `--smoke`: starts a session with the CLI as a person would, on Haiku,
 /// and fails unless the agent commits and pushes a file and the session
 /// shows both while the turn still runs (the agent watches its checks
-/// meanwhile), the agent finishes its turn, the session waits for the
-/// command the agent left running in the background and the agent takes its
-/// result in a turn of its own, the session stops when asked, it says which
-/// model and effort level Claude worked at, and the project remembers the
-/// model it asked for.
+/// meanwhile), keeps a note in the project's memory and records a
+/// retrospective (`fctl memory add`, `fctl retro`), the agent finishes its
+/// turn, the session waits for the command the agent left running in the
+/// background and the agent takes its result in a turn of its own, the
+/// session stops when asked, it says which model and effort level Claude
+/// worked at, and the project remembers the model it asked for.
 fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
     let fctl = || {
         let mut cmd = Command::new(util::target_dir(root).join("debug/fctl"));
@@ -276,7 +277,9 @@ fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
         "--model",
         "haiku",
         "--detach",
-        "write notes.md, push it, watch 12 seconds of checks, then run the checks in the background 3",
+        &format!(
+            "write notes.md, push it, watch 12 seconds of checks, record a retro, then run the checks in the background 3\nremember {SMOKE_NOTE}"
+        ),
     ]))?;
     let session: Session =
         serde_json::from_str(&out).context("reading the session `fctl run` started")?;
@@ -289,6 +292,9 @@ fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
     res
 }
 
+/// What the smoke test's agent keeps in the playground's memory.
+const SMOKE_NOTE: &str = "The smoke test's agent writes notes.md and pushes it.";
+
 fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
     let auth = Auth::Bearer(token.to_owned());
     let mut seen = Seen::default();
@@ -297,15 +303,44 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
         &auth,
         children,
         Duration::from_secs(60),
-        "show its commit and push, finish its turn and wait for its background task",
+        "show its commit and push, keep a note and a retrospective, finish its turn and wait for its background task",
         |s| match s.status() {
             Some(SessionStatus::Stopped) => bail!("the session stopped before its turn ended"),
-            Some(SessionStatus::Idle) => {
-                Ok(s.turn_ok && s.commit.is_some() && s.waited_for_background)
-            }
+            Some(SessionStatus::Idle) => Ok(s.turn_ok
+                && s.commit.is_some()
+                && s.waited_for_background
+                && s.remembered
+                && s.retrospective),
             _ => Ok(false),
         },
     )?;
+    // The control plane keeps them for the people and the agents after it.
+    let read = call("GET", "/projects/playground/memories", Some(&auth), None)?;
+    ok("reading the project's memory", &read)?;
+    let notes: MemoryList =
+        serde_json::from_value(read.1).context("reading the project's memory")?;
+    if !notes
+        .memories
+        .iter()
+        .any(|m| m.text == SMOKE_NOTE && m.session.as_ref().is_some_and(|s| s.id.0 == id))
+    {
+        bail!("the project's memory has no note from the session that says {SMOKE_NOTE:?}");
+    }
+    let read = call(
+        "GET",
+        &format!("/sessions/{id}/retrospectives"),
+        Some(&auth),
+        None,
+    )?;
+    ok("reading the session's retrospectives", &read)?;
+    let retros: RetrospectiveList =
+        serde_json::from_value(read.1).context("reading the session's retrospectives")?;
+    if retros.retrospectives.len() != 1 {
+        bail!(
+            "the session has {} retrospectives, not the one its agent recorded",
+            retros.retrospectives.len()
+        );
+    }
     seen.until(
         id,
         &auth,
@@ -364,6 +399,7 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
     eprintln!(
         "\n\x1b[1msmoke test passed\x1b[0m: the agent committed \"{subject}\" and \
          pushed it, the session showed both before the turn ended, the agent \
+         kept a note in the project's memory and recorded a retrospective, \
          finished its turn, the session waited for its background task and \
          the agent took its result in a turn of its own, the session stopped, \
          it said Claude worked with haiku at medium effort, and the project \
@@ -384,6 +420,9 @@ struct Seen {
     commit: Option<CommitInfo>,
     /// The session showed the agent's commit pushed before the turn ended.
     pushed_in_turn: bool,
+    /// The transcript showed a note the agent kept, and a retrospective.
+    remembered: bool,
+    retrospective: bool,
 }
 
 impl Seen {
@@ -463,6 +502,10 @@ impl Seen {
             EventBody::Git(g) if g.ahead > 0 => {
                 self.commit = g.last_commit.clone();
                 self.pushed_in_turn |= self.results == 0 && g.pushed;
+            }
+            EventBody::Notice(n) => {
+                self.remembered |= n.code == "memory_added" && n.memory.is_some();
+                self.retrospective |= n.code == "retrospective" && n.retrospective.is_some();
             }
             _ => {}
         }
