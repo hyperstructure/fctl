@@ -42,6 +42,15 @@ pub struct ImageInfo {
     pub labels: BTreeMap<String, String>,
 }
 
+/// The network Docker sandboxes join: a bridge whose containers reach the
+/// internet but not each other (`enable_icc=false`). On Docker's default
+/// network a session reaches what other sessions on the host serve, which
+/// may be another workspace's.
+pub const SANDBOX_NETWORK: &str = "fctl-sandboxes";
+/// Whether a network lets its containers reach each other, as `docker
+/// network inspect --format` prints it.
+const ICC_FORMAT: &str = r#"{{index .Options "com.docker.network.bridge.enable_icc"}}"#;
+
 /// Why a sandbox wasn't created.
 enum Create {
     /// Its image isn't on this host and pulling it failed.
@@ -323,24 +332,14 @@ impl ContainerDriver {
             Flavor::Docker => format!("{}m", spec.memory_mb.max(512)),
         };
         let label = "sh.fctl.sandbox=1".to_owned();
-        let args: Vec<&str> = vec![
-            "run",
-            "-d",
-            "--name",
-            &spec.name,
-            "--label",
-            &label,
-            "--cpus",
-            &cpus,
-            "--memory",
-            &memory,
-            "--init",
-            "--entrypoint",
-            "tail",
-            image,
-            "-f",
-            "/dev/null",
+        let mut args: Vec<&str> = vec![
+            "run", "-d", "--name", &spec.name, "--label", &label, "--cpus", &cpus, "--memory",
+            &memory, "--init",
         ];
+        if let Some(network) = self.sandbox_network().await {
+            args.extend(["--network", network]);
+        }
+        args.extend(["--entrypoint", "tail", image, "-f", "/dev/null"]);
         let failed =
             |e: anyhow::Error| Create::Failed(e.context(format!("starting {}", spec.name)));
         let Err(e) = self.run(&args).await else {
@@ -353,6 +352,59 @@ impl ContainerDriver {
         log(format!("Pulling {image}"));
         self.pull(image, false).await.map_err(Create::NoImage)?;
         self.run(&args).await.map(drop).map_err(failed)
+    }
+
+    /// The network a new Docker sandbox joins ([`SANDBOX_NETWORK`]), made
+    /// the first time. `None` with Apple's `container`, and with a runtime
+    /// that can't make one, which leaves sandboxes on its default network:
+    /// the host says so in its log.
+    async fn sandbox_network(&self) -> Option<&'static str> {
+        if self.flavor != Flavor::Docker {
+            return None;
+        }
+        let apart = || async {
+            self.run(&[
+                "network",
+                "inspect",
+                "--format",
+                ICC_FORMAT,
+                SANDBOX_NETWORK,
+            ])
+            .await
+            .map(|out| out.trim() == "false")
+        };
+        match apart().await {
+            Ok(true) => return Some(SANDBOX_NETWORK),
+            Ok(false) => {
+                tracing::warn!(
+                    "the {SANDBOX_NETWORK} network lets its containers reach each other: new sandboxes start on Docker's default network, where they reach each other too. Remove it (`docker network rm {SANDBOX_NETWORK}`) and fctl makes it again."
+                );
+                return None;
+            }
+            Err(_) => {}
+        }
+        let made = self
+            .run(&[
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--opt",
+                "com.docker.network.bridge.enable_icc=false",
+                SANDBOX_NETWORK,
+            ])
+            .await;
+        match made {
+            Ok(_) => Some(SANDBOX_NETWORK),
+            // Made meanwhile, for another sandbox.
+            Err(_) if matches!(apart().await, Ok(true)) => Some(SANDBOX_NETWORK),
+            Err(e) => {
+                tracing::warn!(
+                    "sandboxes start on Docker's default network, where they reach each other: making the {SANDBOX_NETWORK} network failed: {e:#}"
+                );
+                None
+            }
+        }
     }
 
     /// Whether the sandbox `name` exists. An error only when the runtime
@@ -1032,6 +1084,56 @@ mod tests {
         let platform = format!("linux/{}", linux_arch(std::env::consts::ARCH));
         let pull = format!("image pull --platform {platform} {VERSION_IMAGE}");
         assert!(cli.calls().contains(&pull), "{:?}", cli.calls());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docker_sandboxes_join_a_network_that_keeps_them_apart() -> Result<()> {
+        let default = spec(VERSION_IMAGE, None);
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.ensure(Flavor::Docker, &default).await?;
+        let calls = cli.calls();
+        let create = format!(
+            "network create --driver bridge --opt com.docker.network.bridge.enable_icc=false {SANDBOX_NETWORK}"
+        );
+        assert!(calls.contains(&create), "{calls:?}");
+        let run = calls.iter().find(|c| c.starts_with("run ")).cloned();
+        assert!(
+            run.as_deref()
+                .is_some_and(|r| r.contains(&format!(" --network {SANDBOX_NETWORK} "))),
+            "{run:?}"
+        );
+        // The next sandbox finds it.
+        let other = SandboxSpec {
+            name: "fctl-ses-2".into(),
+            ..default.clone()
+        };
+        cli.ensure(Flavor::Docker, &other).await?;
+        assert_eq!(
+            cli.calls().iter().filter(|c| **c == create).count(),
+            1,
+            "{:?}",
+            cli.calls()
+        );
+
+        // A runtime that can't make it still starts sandboxes, as before.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.no_networks()?;
+        cli.ensure(Flavor::Docker, &default).await?;
+        let run = cli.calls().into_iter().find(|c| c.starts_with("run "));
+        assert!(
+            run.as_deref().is_some_and(|r| !r.contains("--network")),
+            "{run:?}"
+        );
+
+        // Apple's VMs don't take Docker's networks.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.ensure(Flavor::Apple, &default).await?;
+        assert!(
+            !cli.calls().iter().any(|c| c.contains("network")),
+            "{:?}",
+            cli.calls()
+        );
         Ok(())
     }
 

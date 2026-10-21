@@ -17,6 +17,8 @@ use std::sync::{Mutex, PoisonError};
 /// `build` lists its context in `context`, copies its Dockerfile to
 /// `dockerfile` and makes a build without labels, and with `fail_build` it
 /// fails; `size` holds the size images have (1000 bytes without it).
+/// `network create` makes `network`, which holds whether its containers
+/// reach each other, unless `no_networks` is there.
 const SCRIPT: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -83,6 +85,13 @@ case "$1 $2" in
     cat "$5" > "$d/dockerfile"
     echo "x" >> "$d/builds"
     echo "sha256:build$(wc -l < "$d/builds" | tr -d ' ') - - $3" > "$(file "$3")" ;;
+  "network inspect")
+    [ -e "$d/network" ] || { echo "Error response from daemon: network $last not found" >&2; exit 1; }
+    cat "$d/network" ;;
+  "network create")
+    [ ! -e "$d/no_networks" ] || { echo "Error response from daemon: not supported" >&2; exit 1; }
+    case " $* " in *" com.docker.network.bridge.enable_icc=false "*) echo false ;; *) echo true ;; esac > "$d/network"
+    echo "f00d" ;;
   "inspect "*) exit 1 ;;
   "run "*)
     [ ! -e "$d/fail_run" ] || { echo "no room for it" >&2; exit 1; }
@@ -156,6 +165,12 @@ impl FakeCli {
     /// Removes the container `name`.
     pub fn drop_container(&self, name: &str) -> Result<()> {
         std::fs::remove_file(self.dir.path().join("containers").join(name))?;
+        Ok(())
+    }
+
+    /// Makes `network create` fail, as a runtime that can't make networks.
+    pub fn no_networks(&self) -> Result<()> {
+        std::fs::write(self.dir.path().join("no_networks"), "")?;
         Ok(())
     }
 

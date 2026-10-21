@@ -133,6 +133,15 @@ outside it except through these channels:
 - **Network.** Sandboxes have outbound network access (to install
   dependencies and reach GitHub and Claude). Do not run hosts on networks
   where an outbound connection from an untrusted process is a problem.
+  Docker sandboxes join a network of their own, `fctl-sandboxes`, on which
+  they reach the internet but not each other, so a session can't reach
+  what another session on the host serves, which may be another
+  workspace's; a Docker that can't make the network leaves them on its
+  default one, and the host says so in its log. With Docker Desktop and
+  OrbStack, containers still reach the host's loopback
+  (`host.docker.internal`). Apple's `container` VMs share its network: on
+  a runner that serves more than one workspace, keep to Docker where that
+  matters.
 - **GitHub.** Installation tokens for the project's repositories and no
   others, within the GitHub accounts and repositories its workspace may use,
   valid for an hour and refreshed on demand
