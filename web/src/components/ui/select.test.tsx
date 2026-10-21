@@ -304,19 +304,19 @@ describe("Select", () => {
 });
 
 describe("Select on a phone", () => {
-  /** What a phone shows in a `narrow="short"` trigger, for the eyes only. */
+  /** What a phone shows in a `narrow` trigger instead of the label, for the eyes only. */
   const shortIn = (el: Element) =>
     el.querySelector('[role="combobox"] > span[aria-hidden] > span:not([aria-hidden])');
   const has = (el: Element | null | undefined, cls: string) => !!el?.classList.contains(cls);
 
-  it("shows short labels, without the chevron, and the labels to screen readers", () => {
+  it("shows short labels, without the chevron when bare, and the labels to screen readers", () => {
     const options: SelectOption[] = [
       { value: "", label: "Default model", short: "Default" },
       { value: "opus", label: "Opus" },
     ];
     function Model() {
       const [value, setValue] = useState("");
-      return <Select aria-label="Model" narrow="short" value={value} options={options} onChange={setValue} />;
+      return <Select aria-label="Model" narrow="bare" value={value} options={options} onChange={setValue} />;
     }
     const container = render(<Model />);
     const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]');
@@ -332,22 +332,38 @@ describe("Select on a phone", () => {
     act(() => trigger?.click());
     act(() => container.querySelectorAll<HTMLElement>('[role="option"]')[1]?.click());
     act(() => vi.advanceTimersByTime(1000));
-    expect(shortIn(container)?.textContent).toBe("Opus");
+    expect(shortIn(container)).toBeNull();
+    expect(has(label, "max-sm:sr-only")).toBe(false);
     expect(shownIn(container)).toBe("Opus");
+  });
+
+  it("shows short labels beside the chevron with fit", () => {
+    const options: SelectOption[] = [
+      { value: "fctl", label: "hyperstructure / fctl", short: "fctl", icon: <svg /> },
+      { value: "notes", label: "Ada's lab / notes", short: "notes", icon: <svg /> },
+    ];
+    const container = render(
+      <Select aria-label="Project" narrow="fit" value="fctl" options={options} onChange={() => {}} />,
+    );
+    const trigger = container.querySelector('[role="combobox"]');
+    expect(shortIn(container)?.textContent).toBe("fctl");
+    expect(has(trigger?.querySelector(":scope > .grid:not([aria-hidden])"), "max-sm:sr-only")).toBe(true);
+    expect(has(trigger?.querySelector(":scope > svg"), "max-sm:hidden")).toBe(false);
+    expect(shownIn(container)).toBe("hyperstructure / fctl");
   });
 
   it("leaves the icon alone for an empty short label", () => {
     const options: SelectOption[] = [{ value: "max", label: "Max effort", short: "", icon: <svg /> }];
     const container = render(
-      <Select aria-label="Effort" narrow="short" value="max" options={options} onChange={() => {}} />,
+      <Select aria-label="Effort" narrow="bare" value="max" options={options} onChange={() => {}} />,
     );
     expect(shortIn(container)).toBeNull();
     expect(container.querySelector('[role="combobox"] > span > svg')).not.toBeNull();
     expect(shownIn(container)).toBe("Max effort");
   });
 
-  it("is as wide as its value with fit, not as its widest option", () => {
-    const sizers = (narrow?: "fit") => {
+  it("is as wide as its value when narrow, not as its widest option", () => {
+    const sizers = (narrow?: "fit" | "bare") => {
       const container = render(
         <Select aria-label="Effort" narrow={narrow} value="low" options={EFFORT} onChange={() => {}} />,
       );
@@ -355,6 +371,7 @@ describe("Select on a phone", () => {
       return [spans.length, [...spans].every((s) => has(s, "max-sm:hidden"))];
     };
     expect(sizers("fit")).toEqual([EFFORT.length, true]);
+    expect(sizers("bare")).toEqual([EFFORT.length, true]);
     expect(sizers()).toEqual([EFFORT.length, false]);
   });
 });

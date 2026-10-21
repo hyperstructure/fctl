@@ -216,10 +216,10 @@ The two lists by the Start button choose the model the session runs on
 (Opus, Sonnet, Haiku or Fable, each the latest of its family) and its
 effort level. They start on what you chose when you last started a session
 in the project, else on the project's settings (its **Settings** tab sets
-them for everyone). On a phone they show the model's name and the effort
-level's symbol, the one Claude Code shows for it: ○ low, ◐ medium, ● high,
-◉ extra high, ◈ max. In the terminal: `fctl run --model haiku --effort low
-"…"`.
+them for everyone). On a phone, Start is an arrow (↑), and the lists show
+the model's name and the effort level's symbol, the one Claude Code shows
+for it: ○ low, ◐ medium, ● high, ◉ extra high, ◈ max. In the terminal:
+`fctl run --model haiku --effort low "…"`.
 
 To show the agent what you mean, attach screenshots and files: with the
 paperclip, by pasting them into the message box, or by dropping them on the
