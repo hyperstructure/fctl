@@ -157,6 +157,18 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     if let Err(e) = crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await {
         worker::console_error!("following a new session failed: {}", e.0.message);
     }
+    // Nor is remembering what it asked for.
+    if let Err(e) = remember_choice(
+        ctx,
+        &p.row.id,
+        &user.id,
+        model.as_deref(),
+        effort.as_deref(),
+    )
+    .await
+    {
+        worker::console_error!("remembering a session's model failed: {}", e.0.message);
+    }
     let created = access::session(ctx, id.as_str()).await?;
     let session = created.row.to_session(Some(created.role));
     let stub = internal::session_stub(&ctx.env, id.as_str())?;
@@ -192,6 +204,28 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         Some(serde_json::json!({ "project": p.row.slug, "number": number })),
     );
     http::created(&session)
+}
+
+/// Keeps the model and effort level a session in project `project_id` asked
+/// for as `user_id`'s last ones there (`Project::last_model`), where the
+/// web app's composer starts next time. `None`: the project's.
+async fn remember_choice(
+    ctx: &Ctx,
+    project_id: &str,
+    user_id: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> AppResult<()> {
+    q(
+        &ctx.db,
+        "INSERT INTO project_choices (project_id, user_id, model, effort, updated_at) VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT (project_id, user_id) DO UPDATE SET model = excluded.model, effort = excluded.effort, \
+         updated_at = excluded.updated_at",
+        &[s(project_id), s(user_id), os(model), os(effort), n(ctx.now)],
+    )?
+    .run()
+    .await?;
+    Ok(())
 }
 
 fn source_of(ctx: &Ctx) -> MessageSource {

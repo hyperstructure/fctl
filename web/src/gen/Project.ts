@@ -36,4 +36,15 @@ role?: ProjectRole, created_by: UserRef, created_at: number, updated_at: number,
 /**
  * Sessions currently provisioning, preparing, running, idle or paused.
  */
-active_sessions: number, total_sessions: number, last_activity_at?: number, };
+active_sessions: number, total_sessions: number, last_activity_at?: number, 
+/**
+ * The model the caller asked for when they last started a session in
+ * it (`CreateSessionRequest::model`), which the web app's composer
+ * starts on. Absent when they took the project's (`settings.model`)
+ * or never started one, and from control planes before it.
+ */
+last_model?: string, 
+/**
+ * The effort level they asked for then, as `last_model`.
+ */
+last_effort?: string, };

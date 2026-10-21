@@ -279,6 +279,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "password_resets",
         "device_codes",
         "project_members",
+        "project_choices",
         "session_shares",
         "session_followers",
         "notification_settings",
@@ -700,6 +701,19 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             "SELECT p.slug, p.name, p.description, p.repo_owner, p.repo_name, m.role, m.created_at AS joined_at \
              FROM project_members m JOIN projects p ON p.id = m.project_id WHERE m.user_id = ?1 \
              AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY p.name",
+            &mine_open()?,
+        )
+        .await?,
+    );
+    doc.insert(
+        "last_model_and_effort".into(),
+        rows(
+            ctx,
+            // What they asked for when they last started a session in each
+            // project (none: the project's), where its composers start.
+            "SELECT p.slug AS project, c.model, c.effort, c.updated_at AS asked_at FROM project_choices c \
+             JOIN projects p ON p.id = c.project_id WHERE c.user_id = ?1 \
+             AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY p.slug",
             &mine_open()?,
         )
         .await?,
