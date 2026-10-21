@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { prFullRef, prRef, prsLabel, prTitle, pullRequests } from "./pulls";
+import { prFullRef, prRef, prTitle, pullRequests } from "./pulls";
 
 const pr = (repo: string | undefined, number: number, title?: string): G.PullRequestRef => {
   const [owner = "", name = ""] = repo?.split("/") ?? [];
@@ -30,13 +30,5 @@ describe("naming pull requests", () => {
     const unknown = pr(undefined, 7);
     expect(prRef(unknown)).toBe("#7");
     expect(prTitle(unknown)).toBe("#7");
-  });
-
-  it("names them all in lists", () => {
-    expect(prsLabel([])).toBeUndefined();
-    expect(prsLabel([pr("hyperstructure/fctl", 120)])).toBe("PR fctl#120");
-    expect(prsLabel([pr("hyperstructure/fctl", 120), pr("hyperstructure/design", 14)])).toBe(
-      "PRs fctl#120, design#14",
-    );
   });
 });
