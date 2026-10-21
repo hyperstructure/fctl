@@ -95,8 +95,9 @@ owner and purpose), so a value copied between rows does not decrypt.
   send cross-site without asking first, and pass the same origin check.
   Attached files are served with `nosniff` and a sandboxing
   Content-Security-Policy; only PNG, JPEG, GIF and WebP display in place,
-  everything else downloads, so an uploaded HTML or SVG file never runs as
-  part of the app.
+  everything else downloads, and only those and the videos the app plays
+  keep their type, the rest being `application/octet-stream`, so an
+  uploaded HTML, SVG or JavaScript file never runs as part of the app.
 - Screenshots agents publish for pull requests are public to anyone who
   has a link, which is how GitHub's image proxy fetches them. A link holds
   256 random bits, of which D1 keeps only the SHA-256. The control plane

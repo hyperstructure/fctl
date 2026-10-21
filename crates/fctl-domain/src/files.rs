@@ -255,6 +255,21 @@ pub fn shows_inline(media_type: &str) -> bool {
     )
 }
 
+/// The `Content-Type` a file of `media_type` is served with: its own for
+/// the images shown in place and the videos the app plays, else
+/// `application/octet-stream`. Files come from the app's origin, so none
+/// may pass for a script or a style sheet of the app, whatever type its
+/// uploader said it has.
+pub fn served_type(media_type: &str) -> &str {
+    if shows_inline(media_type)
+        || matches!(media_type, "video/mp4" | "video/webm" | "video/quicktime")
+    {
+        media_type
+    } else {
+        "application/octet-stream"
+    }
+}
+
 /// A `Content-Disposition` value: an ASCII fallback name and the UTF-8 one
 /// (RFC 6266).
 pub fn content_disposition(name: &str, inline: bool) -> String {
@@ -374,6 +389,33 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_images_and_videos_are_served_as_what_they_are() {
+        for kept in [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "video/mp4",
+            "video/webm",
+            "video/quicktime",
+        ] {
+            assert_eq!(served_type(kept), kept);
+        }
+        for other in [
+            "text/javascript",
+            "text/html",
+            "image/svg+xml",
+            "text/css",
+            "application/xml",
+            "text/plain",
+            "application/pdf",
+            "application/wasm",
+        ] {
+            assert_eq!(served_type(other), "application/octet-stream", "{other}");
+        }
+    }
 
     fn png_bytes(w: u32, h: u32) -> Vec<u8> {
         let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
