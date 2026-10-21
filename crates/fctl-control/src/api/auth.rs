@@ -334,6 +334,9 @@ fn waits_for(challenge: TwoFactorChallenge) -> AuthResponse {
 }
 
 pub async fn logout(ctx: &mut Ctx) -> AppResult<Response> {
+    // Signed in, the request came from the app (the origin check), so the
+    // cookie goes; without the cookie, as from a page of another site, it
+    // stays. One that no longer signs anyone in is cleared already.
     if let Some(a) = ctx.auth.clone() {
         q(
             &ctx.db,
@@ -342,8 +345,10 @@ pub async fn logout(ctx: &mut Ctx) -> AppResult<Response> {
         )?
         .run()
         .await?;
+        if a.via_cookie {
+            auth::clear_session_cookie(ctx);
+        }
     }
-    auth::clear_session_cookie(ctx);
     http::ok(&Ok { ok: true })
 }
 
