@@ -54,7 +54,12 @@ impl RunnerSession {
             id: session_id.to_owned(),
             project_id: row.project_id,
             created_by: row.created_by,
-            settings: serde_json::from_str(&row.settings).unwrap_or_default(),
+            // Settings that don't read as settings turn both off.
+            settings: serde_json::from_str(&row.settings).unwrap_or(ProjectSettings {
+                project_memory: false,
+                retrospectives: false,
+                ..Default::default()
+            }),
         })
     }
 
@@ -98,8 +103,19 @@ pub async fn runner_call(
         }
         AgentCall::Remember { text, replaces } => {
             session.require_memory()?;
-            let (memory, replaced) =
-                memories::remember(&ctx.db, &session, &text, replaces.as_ref(), ctx.now).await?;
+            let writer = memories::Writer::Agent {
+                session: &session.id,
+                started_by: &session.created_by,
+            };
+            let (memory, replaced) = memories::remember(
+                &ctx.db,
+                &session.project_id,
+                &writer,
+                &text,
+                replaces.as_ref(),
+                ctx.now,
+            )
+            .await?;
             AgentAnswer::Memory { memory, replaced }
         }
         AgentCall::MarkStale { id, reason } => {

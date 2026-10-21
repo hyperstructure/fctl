@@ -123,7 +123,7 @@ pub async fn session_list(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let a = access::session(ctx, id).await?;
     let rows: Vec<Row> = q(
         &ctx.db,
-        &format!("{SELECT} WHERE r.session_id = ? ORDER BY r.created_at DESC, r.id DESC"),
+        &format!("{SELECT} WHERE r.session_id = ? ORDER BY r.id DESC"),
         &[s(&a.row.id)],
     )?
     .all()
@@ -144,7 +144,9 @@ struct OutcomeRow {
 
 /// `GET /api/v1/projects/{id}/retrospectives?outcome=&before=&limit=`: for
 /// everyone who sees the project, newest first, those of archived sessions
-/// left out, with how many ended each way.
+/// left out. `before` is the id of the last one of the page before: ids
+/// sort as retrospectives were recorded, without ties. The first page says
+/// how many ended each way.
 pub async fn project_list(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
     let p = access::project(ctx, id).await?;
     let limit = http::query(req, "limit")
@@ -159,28 +161,43 @@ pub async fn project_list(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Respo
         params.push(s(retros::outcome_name(outcome)));
         sql.push_str(&format!(" AND r.outcome = ?{}", params.len()));
     }
-    if let Some(before) = http::query(req, "before").and_then(|b| b.parse::<i64>().ok()) {
-        params.push(n(before));
-        sql.push_str(&format!(" AND r.created_at < ?{}", params.len()));
+    let before = http::query(req, "before");
+    if let Some(before) = &before {
+        let before = RetrospectiveId::parse(before)
+            .ok_or_else(|| validation("before", "Give the id of a retrospective"))?;
+        params.push(s(before.as_str()));
+        sql.push_str(&format!(" AND r.id < ?{}", params.len()));
     }
     params.push(n(limit + 1));
-    sql.push_str(&format!(
-        " ORDER BY r.created_at DESC, r.id DESC LIMIT ?{}",
-        params.len()
-    ));
+    sql.push_str(&format!(" ORDER BY r.id DESC LIMIT ?{}", params.len()));
     let mut rows: Vec<Row> = q(&ctx.db, &sql, &params)?.all().await?;
     let more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
     let next_before = if more {
-        rows.last().map(|r| r.created_at)
+        rows.last().map(|r| RetrospectiveId(r.id.clone()))
     } else {
         None
     };
+    let outcomes = if before.is_none() {
+        Some(outcome_counts(&ctx.db, &p.row.id).await?)
+    } else {
+        None
+    };
+    http::ok(&RetrospectiveList {
+        retrospectives: rows.into_iter().map(Row::into_retrospective).collect(),
+        next_before,
+        outcomes,
+    })
+}
+
+/// How many of a project's retrospectives ended each way, those of
+/// archived sessions left out.
+async fn outcome_counts(db: &D1Database, project_id: &str) -> AppResult<OutcomeCounts> {
     let counts: Vec<OutcomeRow> = q(
-        &ctx.db,
+        db,
         "SELECT r.outcome, COUNT(*) AS n FROM retrospectives r JOIN sessions s ON s.id = r.session_id \
          WHERE r.project_id = ? AND s.archived = 0 GROUP BY r.outcome",
-        &[s(&p.row.id)],
+        &[s(project_id)],
     )?
     .all()
     .await?;
@@ -194,11 +211,7 @@ pub async fn project_list(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Respo
             None => {}
         }
     }
-    http::ok(&RetrospectiveList {
-        retrospectives: rows.into_iter().map(Row::into_retrospective).collect(),
-        next_before,
-        outcomes: Some(outcomes),
-    })
+    Ok(outcomes)
 }
 
 /// `DELETE /api/v1/retrospectives/{id}`: for people who manage its

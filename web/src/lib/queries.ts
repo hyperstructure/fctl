@@ -25,8 +25,11 @@ export const keys = {
   members: (id: string) => ["members", id] as const,
   secrets: (id: string) => ["secrets", id] as const,
   projectRepos: (id: string) => ["project-repos", id] as const,
-  /** A project's memory, by project id. */
+  /** A project's memory, by project id; a session's notes under it. */
   memories: (project: string) => ["memories", project] as const,
+  sessionMemories: (project: string, session: string) => ["memories", project, "session", session] as const,
+  /** A project's retrospectives, by project id: all its lists. */
+  projectRetrospectives: (project: string) => ["retrospectives", project] as const,
   /** A project's retrospectives, by project id, of one outcome or all. */
   retrospectives: (project: string, outcome?: string) =>
     ["retrospectives", project, outcome ?? "all"] as const,

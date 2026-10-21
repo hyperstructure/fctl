@@ -233,20 +233,18 @@ pub async fn run(server: Option<&str>, args: MemoryArgs, json: bool) -> Result<(
                 }
                 Keeper::Person { api, project } => {
                     let project = super::sessions::project_or_default(project.clone())?;
-                    let note = api.add_memory(&project, &AddMemoryRequest { text }).await?;
-                    // A person replaces a note by marking it stale with a pointer.
+                    let note = api
+                        .add_memory(
+                            &project,
+                            &AddMemoryRequest {
+                                text,
+                                replaces: replaces.clone(),
+                            },
+                        )
+                        .await?;
+                    // The control plane marked it stale with the new note.
                     let replaced = match &replaces {
-                        Some(old) => Some(
-                            api.update_memory(
-                                old.as_str(),
-                                &UpdateMemoryRequest {
-                                    stale: Some(true),
-                                    reason: Some(format!("Replaced by {}", note.id)),
-                                    ..Default::default()
-                                },
-                            )
-                            .await?,
-                        ),
+                        Some(old) => Some(api.memory(old.as_str()).await?),
                         None => None,
                     };
                     (note, replaced)

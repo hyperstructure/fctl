@@ -4,7 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Archive, BookMarked } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NoteLine, NoteLink } from "@/components/project/memory";
 import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
 import { Dialog } from "@/components/ui";
@@ -13,22 +13,38 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, stamp } from "@/lib/format";
 import { canEditMemory, headline, ofSession } from "@/lib/memory";
-import { keys, useMemories } from "@/lib/queries";
-import { merged } from "@/lib/retrospectives";
+import { keys } from "@/lib/queries";
+import { unlisted } from "@/lib/retrospectives";
 import type { Item } from "@/lib/transcript";
 
 /**
- * The session's retrospectives: the latest one's outcome and what it
- * worked on, and all of them in full a click away. `null` where there are
- * none and the project asks for none.
+ * The session's retrospectives, newest first, as the control plane lists
+ * them. One that comes in the transcript, which the list doesn't have yet,
+ * reads the list again, once; a deleted one stays in the transcript and
+ * out of the list.
  */
 export function useRetrospectives(session: G.Session, items: Item[]) {
   const listed = useQuery({
     queryKey: keys.sessionRetrospectives(session.id),
     queryFn: () => api.sessionRetrospectives(session.id),
   });
-  return merged(listed.data?.retrospectives, items);
+  const missing = listed.isSuccess ? unlisted(listed.data.retrospectives, items) : [];
+  const asked = useRef(new Set<string>());
+  const refetch = listed.refetch;
+  const key = missing.join(" ");
+  useEffect(() => {
+    const unasked = key.split(" ").filter((id) => id && !asked.current.has(id));
+    if (!unasked.length) return;
+    for (const id of unasked) asked.current.add(id);
+    void refetch();
+  }, [key, refetch]);
+  return listed.data?.retrospectives ?? [];
 }
+
+/**
+ * The session's retrospectives: the latest one's outcome and what it
+ * worked on, and all of them in full a click away.
+ */
 
 export function SessionRetrospectives({ list, project }: { list: G.Retrospective[]; project?: G.Project }) {
   const [open, setOpen] = useState(false);
@@ -107,11 +123,14 @@ export function SessionRetrospectives({ list, project }: { list: G.Retrospective
  * left, or a project that keeps a memory.
  */
 export function useSessionMemory(session: G.Session, project?: G.Project) {
-  const memories = useMemories(project?.id);
-  const all = memories.data?.memories ?? [];
-  const kept = ofSession(all, session.id);
+  const memories = useQuery({
+    queryKey: keys.sessionMemories(project?.id ?? "", session.id),
+    queryFn: () => api.memories(project?.id ?? "", { session: session.id }),
+    enabled: !!project,
+  });
+  const kept = ofSession(memories.data?.memories ?? [], session.id);
   const shown = !!project && (project.settings.project_memory || kept.added.length + kept.staled.length > 0);
-  return { ...kept, current: all.filter((m) => !m.stale).length, shown };
+  return { ...kept, current: memories.data?.current ?? 0, shown };
 }
 
 /** The notes the session's agent left in the project's memory, and those it marked stale. */

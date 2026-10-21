@@ -13,8 +13,8 @@ use crate::session::{
 };
 use crate::{
     AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId,
-    LoginJobId, MemoryId, Millis, PasskeyId, ProjectId, PushDeviceId, RunnerId, SessionId, TokenId,
-    UserId, WorkspaceId, WorkspaceInviteId,
+    LoginJobId, MemoryId, Millis, PasskeyId, ProjectId, PushDeviceId, RetrospectiveId, RunnerId,
+    SessionId, TokenId, UserId, WorkspaceId, WorkspaceInviteId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -1991,19 +1991,26 @@ pub struct CreateShareRequest {
 
 /// `GET /api/v1/projects/{id}/memories`: the project's memory, its current
 /// notes first, newest first, then the stale ones, most recently stale
-/// first.
+/// first. With `?session=`, only the notes that session's agent wrote or
+/// marked stale.
+#[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct MemoryList {
     pub memories: Vec<Memory>,
+    /// How many current notes the project has, `?session=` or not.
+    pub current: Option<u32>,
 }
 
 /// `POST /api/v1/projects/{id}/memories` (editors): a note from a person
-/// for the project's agents.
+/// for the project's agents; with `replaces`, in place of that note, which
+/// goes stale.
+#[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct AddMemoryRequest {
     pub text: String,
+    pub replaces: Option<MemoryId>,
 }
 
 /// `PATCH /api/v1/memories/{id}` (editors): absent fields stay as they
@@ -2028,10 +2035,11 @@ pub struct UpdateMemoryRequest {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct RetrospectiveList {
     pub retrospectives: Vec<Retrospective>,
-    /// Pass as `?before=` for the next page.
-    pub next_before: Option<Millis>,
+    /// Pass as `?before=` for the next page: the id of the last one, which
+    /// sort as they were recorded.
+    pub next_before: Option<RetrospectiveId>,
     /// How many the project has of each outcome, whatever `?outcome=`
-    /// chose. Only in the project's list.
+    /// chose. Only in the first page of the project's list.
     pub outcomes: Option<OutcomeCounts>,
 }
 

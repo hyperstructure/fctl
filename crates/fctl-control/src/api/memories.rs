@@ -198,12 +198,39 @@ fn full() -> crate::error::AppError {
     ))
 }
 
-/// What an agent remembers (`fctl memory add`): a note from its session,
-/// in place of `replaces` when it names one, which goes stale. Returns the
-/// new note, and the one it replaced.
+/// Who writes a note: the agent of a session, which names who started it
+/// too, or a person.
+pub enum Writer<'a> {
+    Agent {
+        session: &'a str,
+        started_by: &'a str,
+    },
+    Person(&'a str),
+}
+
+impl Writer<'_> {
+    fn session(&self) -> Option<&str> {
+        match self {
+            Self::Agent { session, .. } => Some(session),
+            Self::Person(_) => None,
+        }
+    }
+
+    fn person(&self) -> &str {
+        match self {
+            Self::Agent { started_by, .. } => started_by,
+            Self::Person(id) => id,
+        }
+    }
+}
+
+/// Adds a note to a project's memory (`fctl memory add`), in place of
+/// `replaces` when it names one, which goes stale and points at it, in one
+/// batch. Returns the new note, and the one it replaced.
 pub async fn remember(
     db: &D1Database,
-    session: &RunnerSession,
+    project_id: &str,
+    writer: &Writer<'_>,
     text: &str,
     replaces: Option<&MemoryId>,
     now: i64,
@@ -211,7 +238,7 @@ pub async fn remember(
     let text = memory::text(text)?;
     let replaced = match replaces {
         Some(old) => Some(
-            one(db, old.as_str(), Some(&session.project_id))
+            one(db, old.as_str(), Some(project_id))
                 .await?
                 .ok_or_else(|| not_found("Memory"))?,
         ),
@@ -221,10 +248,10 @@ pub async fn remember(
     let mut statements = vec![insert(
         db,
         id.as_str(),
-        &session.project_id,
+        project_id,
         &text,
-        Some(&session.id),
-        Some(&session.created_by),
+        writer.session(),
+        Some(writer.person()),
         now,
     )?];
     if let Some(old) = &replaced {
@@ -239,8 +266,8 @@ pub async fn remember(
             &[
                 n(now),
                 s(&format!("Replaced by {id}")),
-                s(&session.id),
-                s(&session.created_by),
+                os(writer.session()),
+                s(writer.person()),
                 s(id.as_str()),
                 s(old.id.as_str()),
             ],
@@ -255,8 +282,9 @@ pub async fn remember(
     Ok((memory, replaced))
 }
 
-/// An agent marks a note stale (`fctl memory stale`), saying why. A note
-/// that is stale already stays as it is.
+/// An agent marks a note stale (`fctl memory stale`), saying why. One its
+/// session marked stale already stays as it is (the host may ask again);
+/// one marked by someone else is refused, with their reason.
 pub async fn mark_stale(
     db: &D1Database,
     session: &RunnerSession,
@@ -269,8 +297,20 @@ pub async fn mark_stale(
     let note = one(db, id.as_str(), Some(&session.project_id))
         .await?
         .ok_or_else(|| not_found("Memory"))?;
-    if note.stale.is_some() {
-        return Ok(note);
+    if let Some(stale) = &note.stale {
+        if stale
+            .session
+            .as_ref()
+            .is_some_and(|s| s.id.as_str() == session.id)
+        {
+            return Ok(note);
+        }
+        let why = stale
+            .reason
+            .as_deref()
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default();
+        return Err(conflict(&format!("{id} is stale already{why}")));
     }
     q(
         db,
@@ -315,12 +355,25 @@ async fn editable(ctx: &Ctx, id: &str) -> AppResult<(Memory, ProjectAccess)> {
     Ok((note, p))
 }
 
-/// `GET /api/v1/projects/{id}/memories`: for everyone who sees the
-/// project, whether or not its agents keep the memory now.
-pub async fn project_list(ctx: &Ctx, id: &str) -> AppResult<Response> {
+/// `GET /api/v1/projects/{id}/memories[?session=ses_…]`: for everyone who
+/// sees the project, whether or not its agents keep the memory now; with
+/// `session`, the notes that session's agent wrote or marked stale.
+pub async fn project_list(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
     let p = access::project(ctx, id).await?;
+    let mut memories = list(&ctx.db, &p.row.id, true).await?;
+    let current = memories.iter().filter(|m| m.stale.is_none()).count();
+    if let Some(session) = http::query(req, "session") {
+        memories.retain(|m| {
+            m.session.as_ref().is_some_and(|s| s.id.as_str() == session)
+                || m.stale
+                    .as_ref()
+                    .and_then(|st| st.session.as_ref())
+                    .is_some_and(|s| s.id.as_str() == session)
+        });
+    }
     http::ok(&MemoryList {
-        memories: list(&ctx.db, &p.row.id, true).await?,
+        memories,
+        current: Some(current.try_into().unwrap_or(u32::MAX)),
     })
 }
 
@@ -341,35 +394,26 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     let body: AddMemoryRequest = http::body(req).await?;
     let p = access::project(ctx, id).await?;
     require_editor(&p)?;
-    let text = memory::text(&body.text)?;
     let user = ctx.user()?.id.clone();
-    let memory_id = fctl_domain::ids::memory_id(ctx.now);
-    let added = insert(
+    let (note, replaced) = remember(
         &ctx.db,
-        memory_id.as_str(),
         &p.row.id,
-        &text,
-        None,
-        Some(&user),
+        &Writer::Person(&user),
+        &body.text,
+        body.replaces.as_ref(),
         ctx.now,
-    )?
-    .run()
+    )
     .await?;
-    if added == 0 {
-        return Err(full());
-    }
     ctx.audit_in(
         Some(p.workspace_id()),
         "memory.added",
-        Some(memory_id.as_str()),
+        Some(note.id.as_str()),
         Some(serde_json::json!({
             "project_id": p.row.id,
-            "text": memory::headline(&text, 80),
+            "text": memory::headline(&note.text, 80),
+            "replaces": replaced.map(|m| m.id),
         })),
     );
-    let note = one(&ctx.db, memory_id.as_str(), None)
-        .await?
-        .ok_or_else(|| not_found("Memory"))?;
     http::created(&note)
 }
 
@@ -393,11 +437,13 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         }
     }
     match body.stale {
+        // A stale note keeps when, why and who.
+        Some(true) if note.stale.is_some() => {}
         Some(true) => {
             let reason = memory::reason(body.reason.as_deref())?;
             statements.push(q(
                 &ctx.db,
-                "UPDATE memories SET stale_at = COALESCE(stale_at, ?), stale_reason = ?, stale_session_id = NULL, stale_by = ? WHERE id = ?",
+                "UPDATE memories SET stale_at = ?, stale_reason = ?, stale_session_id = NULL, stale_by = ? WHERE id = ? AND stale_at IS NULL",
                 &[n(ctx.now), os(reason.as_deref()), s(&user), s(note.id.as_str())],
             )?);
             changed.push("stale");

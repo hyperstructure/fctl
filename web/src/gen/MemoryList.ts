@@ -4,6 +4,11 @@ import type { Memory } from "./Memory";
 /**
  * `GET /api/v1/projects/{id}/memories`: the project's memory, its current
  * notes first, newest first, then the stale ones, most recently stale
- * first.
+ * first. With `?session=`, only the notes that session's agent wrote or
+ * marked stale.
  */
-export type MemoryList = { memories: Array<Memory>, };
+export type MemoryList = { memories: Array<Memory>, 
+/**
+ * How many current notes the project has, `?session=` or not.
+ */
+current?: number, };

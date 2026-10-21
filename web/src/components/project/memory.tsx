@@ -641,11 +641,14 @@ function DeleteNote({
       open={open}
       onClose={onClose}
       title="Delete this note?"
-      description={
+      description={[
         note.stale
-          ? "It goes for good."
-          : "Agents no longer start with it, and it goes for good. To keep it for the record, mark it stale instead."
-      }
+          ? "It goes from the project's memory for good."
+          : "Agents no longer start with it, and it goes from the project's memory for good. To keep it for the record, mark it stale instead.",
+        note.session ? `#${note.session.number}'s transcript keeps what its agent wrote.` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       <div className="flex flex-col gap-5">
         <blockquote className="border-l-2 border-line-strong pl-3 text-[13.5px] leading-relaxed text-ink-2 [overflow-wrap:anywhere]">

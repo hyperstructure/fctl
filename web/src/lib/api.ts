@@ -165,8 +165,12 @@ export const api = {
   /** `name` absent: the owner-wide grant. */
   removeProjectRepo: (id: string, owner: string, name?: string) =>
     request<G.ProjectRepoList>("DELETE", `/projects/${enc(id)}/repos/${enc(owner)}/${enc(name ?? "*")}`),
-  /** A project's memory: its current notes, newest first, then the stale ones. */
-  memories: (project: string) => request<G.MemoryList>("GET", `/projects/${enc(project)}/memories`),
+  /** A project's memory: its current notes, newest first, then the stale ones; with `session`, only its agent's. */
+  memories: (project: string, q: { session?: string } = {}) =>
+    request<G.MemoryList>(
+      "GET",
+      `/projects/${enc(project)}/memories${q.session ? `?session=${enc(q.session)}` : ""}`,
+    ),
   addMemory: (project: string, b: G.AddMemoryRequest) =>
     request<G.Memory>("POST", `/projects/${enc(project)}/memories`, b),
   updateMemory: (id: string, b: G.UpdateMemoryRequest) =>
@@ -175,11 +179,11 @@ export const api = {
   /** A project's retrospectives, newest first, with how many ended each way. */
   retrospectives: (
     project: string,
-    q: { outcome?: G.RetrospectiveOutcome; before?: number; limit?: number } = {},
+    q: { outcome?: G.RetrospectiveOutcome; before?: string; limit?: number } = {},
   ) => {
     const p = new URLSearchParams();
     if (q.outcome) p.set("outcome", q.outcome);
-    if (q.before) p.set("before", String(q.before));
+    if (q.before) p.set("before", q.before);
     if (q.limit) p.set("limit", String(q.limit));
     return request<G.RetrospectiveList>("GET", `/projects/${enc(project)}/retrospectives?${p}`);
   },

@@ -23,16 +23,16 @@ export function parts(r: G.Retrospective): { key: string; label: string; text: s
 }
 
 /**
- * A session's retrospectives, newest first and each once: those the
- * control plane listed, and those its transcript has that came since.
+ * The retrospectives a session's transcript has that its list doesn't: new
+ * ones the list doesn't have yet, or deleted ones.
  */
-export function merged(listed: G.Retrospective[] | undefined, items: Item[]): G.Retrospective[] {
-  const byId = new Map<string, G.Retrospective>();
-  for (const r of listed ?? []) byId.set(r.id, r);
-  for (const it of items)
-    if (it.kind === "notice" && it.notice.retrospective && !byId.has(it.notice.retrospective.id))
-      byId.set(it.notice.retrospective.id, it.notice.retrospective);
-  return [...byId.values()].sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
+export function unlisted(listed: G.Retrospective[] | undefined, items: Item[]): string[] {
+  const known = new Set((listed ?? []).map((r) => r.id));
+  return items.flatMap((it) =>
+    it.kind === "notice" && it.notice.retrospective && !known.has(it.notice.retrospective.id)
+      ? [it.notice.retrospective.id]
+      : [],
+  );
 }
 
 /**

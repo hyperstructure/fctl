@@ -104,7 +104,7 @@ class Feed {
           if (before && before.status !== msg.session.status)
             for (const k of [
               keys.memories(msg.session.project_id),
-              ["retrospectives", msg.session.project_id],
+              keys.projectRetrospectives(msg.session.project_id),
               keys.sessionRetrospectives(msg.session.id),
             ])
               void queryClient.invalidateQueries({ queryKey: k, refetchType: "active" });

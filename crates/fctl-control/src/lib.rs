@@ -264,7 +264,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::repos::remove(ctx, id, owner, name).await
         }
         (Post, ["projects", id, "sessions"]) => api::sessions::create(ctx, req, id).await,
-        (Get, ["projects", id, "memories"]) => api::memories::project_list(ctx, id).await,
+        (Get, ["projects", id, "memories"]) => api::memories::project_list(ctx, req, id).await,
         (Post, ["projects", id, "memories"]) => api::memories::add(ctx, req, id).await,
         (Get, ["memories", id]) => api::memories::get(ctx, id).await,
         (Patch, ["memories", id]) => api::memories::update(ctx, req, id).await,

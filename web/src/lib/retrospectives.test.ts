@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { canDelete, merged, outcomeLabel, parts, total } from "./retrospectives";
+import { canDelete, outcomeLabel, parts, total, unlisted } from "./retrospectives";
 import type { Item } from "./transcript";
 
 const retro = (over: Partial<G.Retrospective> = {}): G.Retrospective => ({
@@ -30,15 +30,15 @@ describe("parts", () => {
   });
 });
 
-describe("merged", () => {
-  it("adds what the transcript has to what was listed, newest first, once each", () => {
+describe("unlisted", () => {
+  it("names the transcript's retrospectives the list doesn't have", () => {
     const listed = [retro({ id: "rtr_1", created_at: 10 })];
     const items = [
       notice(retro({ id: "rtr_1", created_at: 10 }), 1),
       notice(retro({ id: "rtr_2", created_at: 20 }), 2),
     ];
-    expect(merged(listed, items).map((r) => r.id)).toEqual(["rtr_2", "rtr_1"]);
-    expect(merged(undefined, []).length).toBe(0);
+    expect(unlisted(listed, items)).toEqual(["rtr_2"]);
+    expect(unlisted(undefined, [])).toEqual([]);
   });
 });
 

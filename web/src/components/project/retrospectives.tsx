@@ -33,7 +33,7 @@ export function RetrospectivesTab({ project }: { project: G.Project }) {
   const list = useInfiniteQuery({
     queryKey: keys.retrospectives(project.id, outcome),
     queryFn: ({ pageParam }) => api.retrospectives(project.id, { outcome, before: pageParam, limit: 20 }),
-    initialPageParam: undefined as number | undefined,
+    initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.next_before ?? undefined,
   });
   const pages = list.data?.pages ?? [];
@@ -187,7 +187,7 @@ function Entry({
     onSuccess: () => {
       setConfirm(false);
       toast("Deleted the retrospective");
-      void queryClient.invalidateQueries({ queryKey: ["retrospectives", project.id] });
+      void queryClient.invalidateQueries({ queryKey: keys.projectRetrospectives(project.id) });
       void queryClient.invalidateQueries({ queryKey: keys.sessionRetrospectives(r.session.id) });
     },
   });
@@ -251,7 +251,7 @@ function Entry({
           open={confirm}
           onClose={() => setConfirm(false)}
           title="Delete this retrospective?"
-          description={`It goes from #${r.session.number}'s page and from this list for good.`}
+          description={`It goes from this list and from #${r.session.number}'s page for good. The session's transcript keeps what the agent recorded.`}
         >
           <div className="flex flex-col gap-5">
             {del.error && <Banner tone="error">{del.error.message}</Banner>}

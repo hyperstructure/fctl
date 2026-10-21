@@ -597,12 +597,12 @@ impl Api {
     }
 
     /// A project's retrospectives, newest first: of one outcome when it is
-    /// given, before `before` for the next page.
+    /// given, after the one `before` names for the next page.
     pub async fn project_retrospectives(
         &self,
         project: &str,
         outcome: Option<&str>,
-        before: Option<i64>,
+        before: Option<&str>,
         limit: u32,
     ) -> Result<RetrospectiveList> {
         let mut q = format!("/projects/{}/retrospectives?limit={limit}", enc(project));
@@ -610,7 +610,7 @@ impl Api {
             q.push_str(&format!("&outcome={}", enc(o)));
         }
         if let Some(b) = before {
-            q.push_str(&format!("&before={b}"));
+            q.push_str(&format!("&before={}", enc(b)));
         }
         self.get(&q).await
     }
