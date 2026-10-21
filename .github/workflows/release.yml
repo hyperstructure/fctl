@@ -9,8 +9,10 @@
 # redeploys app.fctl.sh. The "Build" jobs then cross-compile the release
 # binaries, all at once (`cargo xtask dist build`), and "Publish" makes the
 # archives from them, makes the GitHub release with the notes and publishes to
-# https://fctl.sh/releases. "Standalone image" (standalone-image.yml) runs a
-# session through the control plane without Cloudflare and publishes it,
+# https://fctl.sh/releases. "Homebrew tap" then starts the brew bump workflow
+# of hyperstructure/homebrew-tap, which proposes the new formula in a pull
+# request there. "Standalone image" (standalone-image.yml) runs a session
+# through the control plane without Cloudflare and publishes it,
 # ghcr.io/hyperstructure/fctl-control:<version>. Within the hour,
 # hyperstructure/sandbox publishes the release's sandbox image,
 # ghcr.io/hyperstructure/sandbox:<version>.
@@ -234,3 +236,27 @@ jobs:
           test "$(curl -fsS https://fctl.sh/releases/latest)" = "${TAG#v}"
           curl -fsSL https://fctl.sh/install | FCTL_INSTALL_DIR="$RUNNER_TEMP/bin" sh
           "$RUNNER_TEMP/bin/fctl" --version
+
+  # hyperstructure/homebrew-tap's brew bump workflow runs every day, and GitHub
+  # starts it hours late at times, so this starts it with the version. It
+  # waits until livecheck finds that version on fctl.sh, then opens a pull
+  # request with the formula's URLs and checksums for every platform, which a
+  # code owner of the tap merges.
+  homebrew:
+    name: Homebrew tap
+    needs: [prepare, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    # HOMEBREW_TAP_TOKEN, a fine-grained token with Actions write access to
+    # hyperstructure/homebrew-tap alone, is a secret of the production
+    # environment, which only main may use.
+    environment: production
+    steps:
+      - name: Start the tap's brew bump
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::HOMEBREW_TAP_TOKEN is not set in the production environment"; exit 1; }
+          gh workflow run autobump.yml -R hyperstructure/homebrew-tap -f version="${TAG#v}"

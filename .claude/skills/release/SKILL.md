@@ -1,6 +1,6 @@
 ---
 name: release
-description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases and the standalone control plane's image to GHCR, updates the CHANGELOG and redeploys app.fctl.sh; hyperstructure/sandbox then publishes the release's sandbox image to GHCR. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
+description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases and the standalone control plane's image to GHCR, updates the CHANGELOG and redeploys app.fctl.sh; hyperstructure/sandbox then publishes the release's sandbox image to GHCR, and hyperstructure/homebrew-tap proposes the release's Homebrew formula. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
 ---
 
 # Releasing fctl
@@ -46,7 +46,7 @@ or GitHub → Actions → Release → Run workflow. With the GitHub App API:
 `POST /repos/hyperstructure/fctl/actions/workflows/release.yml/dispatches`
 with `{"ref": "main", "inputs": {"bump": "auto"}}`.
 
-It runs in three steps, and a fourth beside them:
+It runs in four steps, and a fifth beside them:
 
 1. **Version and notes**: `cargo xtask release` sets the version in
    `Cargo.toml` and `Cargo.lock`, adds the notes to `CHANGELOG.md`, commits
@@ -62,7 +62,13 @@ It runs in three steps, and a fourth beside them:
    package`), creates the GitHub release with the notes, publishes the
    files to https://fctl.sh/releases (moving `latest`), and installs it
    with the installer as a check.
-4. **Standalone image**, beside Build and Publish: the Standalone image
+4. **Homebrew tap**: starts the brew bump workflow of
+   [hyperstructure/homebrew-tap](https://github.com/hyperstructure/homebrew-tap)
+   with the version, using `HOMEBREW_TAP_TOKEN`. That workflow waits until
+   livecheck finds the release on fctl.sh, then opens a pull request,
+   `fctl X.Y.Z`, with the formula's new URLs and checksums for every
+   platform.
+5. **Standalone image**, beside Build and Publish: the Standalone image
    workflow (`.github/workflows/standalone-image.yml`) builds the control
    plane without Cloudflare (`deploy/standalone`) at the tag, runs a
    session through it, and only then publishes
@@ -93,6 +99,10 @@ a session before it publishes.
   ghcr.io/hyperstructure/sandbox:X.Y.Z` lists linux/amd64 and linux/arm64
   (`gh run list -R hyperstructure/sandbox --workflow image.yml` shows the
   runs).
+- Within minutes, hyperstructure/homebrew-tap has a pull request,
+  `fctl X.Y.Z` (`gh pr list -R hyperstructure/homebrew-tap`). Select
+  **Approve workflows to run** on it to start its checks; once a code owner
+  merges it, `brew upgrade fctl` installs the release.
 - Hosts update with `fctl self update` (it restarts the host service;
   running sessions keep going).
 
@@ -124,6 +134,15 @@ a session before it publishes.
   `gh workflow run image.yml -R hyperstructure/sandbox -f version=X.Y.Z`.
   The image is built from that repository's `main`, so fixing it takes a
   pull request there, not an fctl release.
+- **The Homebrew tap** (the Homebrew tap job failed, or the tap has no
+  pull request for the release): the release itself is out, and the tap's
+  daily run proposes it anyway. If `HOMEBREW_TAP_TOKEN` is missing or
+  expired, a person with admin access replaces it: a fine-grained token
+  for hyperstructure/homebrew-tap alone, with Actions read and write. Then
+  run the failed job again, or start the bump with
+  `gh workflow run autobump.yml -R hyperstructure/homebrew-tap -f version=X.Y.Z`.
+  When the bump itself failed, its run in the tap says why
+  (`gh run list -R hyperstructure/homebrew-tap --workflow autobump.yml`).
 - Never move or delete a published tag or its files on fctl.sh: installed
   CLIs and hosts download releases by version.
 
@@ -134,3 +153,5 @@ a session before it publishes.
 - **hyperstructure/fctl-site** deploys from `main` and has no releases.
 - **hyperstructure/sandbox** publishes the sandbox image from `main`, for
   every fctl release; see its AGENTS.md and publish skill.
+- **hyperstructure/homebrew-tap** has the Homebrew formula, which its
+  brew bump workflow updates in a pull request for every fctl release.

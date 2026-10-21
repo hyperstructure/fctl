@@ -341,10 +341,11 @@ build <fctl|fctl-agent> --target <triple>` for each binary, into
 `main` deploys `app.fctl.sh` from CI (fctl.sh deploys from
 hyperstructure/fctl-site). The jobs that deploy, make and publish releases
 or pin fctl.sh's docs run in the `production` environment, which holds
-their secrets (the Cloudflare token, and the deploy keys that push release
-commits here and docs pins to fctl-site) and which only `main` may use, so
-workflows on other branches cannot read them. Rulesets keep everything else
-off `main` and off the `v*` tags
+their secrets (the Cloudflare token, the deploy keys that push release
+commits here and docs pins to fctl-site, and the token that starts the
+Homebrew tap's bump) and which only `main` may use, so workflows on other
+branches cannot read them. Rulesets keep everything else off `main` and
+off the `v*` tags
 ([ADR 0021](adr/0021-rulesets-protect-main-and-release-tags.md)). By hand:
 
 ```sh

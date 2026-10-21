@@ -132,8 +132,14 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   workflow sets (hosts pull again over, and remove, only images that have
   it): change those there, together with `docs/sandbox-images.md` here.
   Its Rust is the one in `rust-toolchain.toml`; bump the two together.
+- [hyperstructure/homebrew-tap](https://github.com/hyperstructure/homebrew-tap):
+  the Homebrew formula, `brew install hyperstructure/tap/fctl`. The Release
+  workflow starts its brew bump workflow, which proposes each release's
+  formula in a pull request. The formula relies on the archives' names and
+  contents on fctl.sh/releases, on `fctl completions` and on
+  `fctl --version`: a change to any of those needs one to the formula.
 
-All four repositories are public. `npm ci` downloads the design package
+All five repositories are public. `npm ci` downloads the design package
 from GitHub at the tag `web/package.json` pins, without signing in.
 
 ## Commits, pull requests and releases
