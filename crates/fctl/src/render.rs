@@ -24,9 +24,11 @@ pub struct Renderer {
     pub json: bool,
 }
 
+/// Prints what a session said, without what a terminal would act on
+/// (`style::terminal_safe`).
 fn out(s: &str) {
     let mut o = std::io::stdout().lock();
-    let _ = o.write_all(s.as_bytes());
+    let _ = o.write_all(style::terminal_safe(s).as_bytes());
     let _ = o.flush();
 }
 

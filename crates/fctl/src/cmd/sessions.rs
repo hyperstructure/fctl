@@ -268,7 +268,11 @@ fn pull_request_lines(s: &Session) -> Vec<String> {
             let repo = pr.repo.clone().or_else(|| pulls::repo_of(&pr.url));
             let name = repo.as_ref().map_or("", |r| r.name.as_str());
             let label = if i == 0 { label } else { "" };
-            format!("{label:<10}{name}#{} {}", pr.number, pr.url)
+            format!(
+                "{label:<10}{name}#{} {}",
+                pr.number,
+                style::terminal_safe(&pr.url)
+            )
         })
         .collect()
 }
@@ -292,7 +296,7 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         style::status(s.status),
         s.status_reason
             .as_deref()
-            .map(|r| style::dim(&format!(" — {r}")))
+            .map(|r| style::dim(&format!(" — {}", style::terminal_safe(r))))
             .unwrap_or_default()
     );
     println!("by:       {}", s.created_by.name);
