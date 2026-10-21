@@ -3,6 +3,7 @@ export * from "./code-input";
 export * from "./danger-zone";
 export * from "./feedback";
 export * from "./form";
+export * from "./gallery";
 export * from "./gl-canvas";
 export * from "./icons";
 export * from "./lightbox";

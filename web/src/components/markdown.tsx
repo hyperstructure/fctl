@@ -3,7 +3,7 @@
 
 import { lexer, type Token, type Tokens } from "marked";
 import { createContext, memo, type ReactNode, useContext, useEffect, useState } from "react";
-import { CopyButton, Lightbox } from "@/components/ui";
+import { CopyButton, useLightbox } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { highlight } from "@/lib/highlight";
 
@@ -27,18 +27,19 @@ function Picture({ src, alt }: { src: string; alt: string }) {
 
 /** An image in the agent's answer, which a click shows at full size. */
 function ZoomImage({ src, alt }: { src: string; alt: string }) {
-  const [open, setOpen] = useState(false);
+  const { ref, open, lightbox } = useLightbox<HTMLButtonElement>({ file: { name: alt || "Image" }, src });
   return (
     <>
       <button
+        ref={ref}
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={open}
         aria-label={`View ${alt || "image"}`}
         className="max-w-full cursor-zoom-in"
       >
         <Picture src={src} alt={alt} />
       </button>
-      {open && <Lightbox file={{ name: alt || "Image" }} src={src} onClose={() => setOpen(false)} />}
+      {lightbox}
     </>
   );
 }

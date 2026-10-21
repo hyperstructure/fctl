@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { IconButton, Lightbox, toast } from "@/components/ui";
+import { IconButton, Lightbox, toast, useLightbox } from "@/components/ui";
 import type * as G from "@/gen";
 import { api, type UploadScope } from "@/lib/api";
 import {
@@ -476,6 +476,36 @@ function DraftChip({ d, onRemove, onRetry }: { d: Draft; onRemove: () => void; o
   );
 }
 
+/**
+ * An image a message carries, which a click shows at full size, among the
+ * other pictures of the transcript.
+ */
+function ImageFile({ file, src, download }: { file: G.Attachment; src?: string; download: boolean }) {
+  const { ref, open, lightbox } = useLightbox<HTMLButtonElement>(src ? { file, src, download } : undefined);
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        onClick={open}
+        aria-label={`View ${file.name}`}
+        className="cursor-zoom-in overflow-hidden rounded-lg border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
+      >
+        <img
+          src={src}
+          alt={file.name}
+          width={file.width}
+          height={file.height}
+          loading="lazy"
+          decoding="async"
+          className="h-36 w-auto max-w-[min(100%,20rem)] object-cover"
+        />
+      </button>
+      {lightbox}
+    </>
+  );
+}
+
 /** The files a message carries, in the transcript. */
 export function MessageFiles({
   sessionId,
@@ -488,14 +518,15 @@ export function MessageFiles({
   previews?: Record<string, string>;
   pending?: boolean;
 }) {
-  const [open, setOpen] = useState<G.Attachment>();
+  const [playing, setPlaying] = useState<G.Attachment>();
   const src = (f: G.Attachment) =>
     previews?.[f.id] ?? (sessionId ? attachmentUrl(sessionId, f.id) : undefined);
-  const openSrc = open && src(open);
+  const playingSrc = playing && src(playing);
   // The session that has the files, once the message is sent.
   const sent = pending ? undefined : sessionId;
   const images = files.filter((f) => previews?.[f.id] || showsInline(f.media_type));
-  // Videos play in the lightbox once they are sent.
+  // Videos play in a lightbox of their own once they are sent: the arrow
+  // keys and fingers in it are the player's, not steps to other pictures.
   const videos = sent ? files.filter((f) => !images.includes(f) && playable(f.media_type)) : [];
   const others = files.filter((f) => !images.includes(f) && !videos.includes(f));
   const chip =
@@ -514,29 +545,13 @@ export function MessageFiles({
   return (
     <div className="flex flex-wrap items-start gap-2">
       {images.map((f) => (
-        <button
-          key={f.id}
-          type="button"
-          onClick={() => setOpen(f)}
-          aria-label={`View ${f.name}`}
-          className="cursor-zoom-in overflow-hidden rounded-lg border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
-        >
-          <img
-            src={src(f)}
-            alt={f.name}
-            width={f.width}
-            height={f.height}
-            loading="lazy"
-            decoding="async"
-            className="h-36 w-auto max-w-[min(100%,20rem)] object-cover"
-          />
-        </button>
+        <ImageFile key={f.id} file={f} src={src(f)} download={!pending} />
       ))}
       {videos.map((f) => (
         <button
           key={f.id}
           type="button"
-          onClick={() => setOpen(f)}
+          onClick={() => setPlaying(f)}
           aria-label={`Play ${f.name}`}
           title={`Play ${f.name}`}
           className={cn(
@@ -566,8 +581,11 @@ export function MessageFiles({
           </div>
         ),
       )}
-      {open && openSrc && (
-        <Lightbox file={open} src={openSrc} download={!pending} onClose={() => setOpen(undefined)} />
+      {playing && playingSrc && (
+        <Lightbox
+          items={[{ file: playing, src: playingSrc, download: !pending }]}
+          onClose={() => setPlaying(undefined)}
+        />
       )}
     </div>
   );

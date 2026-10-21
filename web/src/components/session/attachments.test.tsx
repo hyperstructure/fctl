@@ -1,6 +1,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Gallery } from "@/components/ui/gallery";
 import type * as G from "@/gen";
 import type { DraftFile } from "@/lib/draft";
 import { MessageFiles, useAttachments } from "./attachments";
@@ -11,11 +12,10 @@ const { uploadAttachment, stored, onPage } = vi.hoisted(() => ({
   onPage: new Map<string, DraftFile[]>(),
 }));
 vi.mock("@/lib/api", () => ({ api: { uploadAttachment } }));
-vi.mock("@/components/ui", () => ({
+vi.mock("@/components/ui", async () => ({
+  ...(await vi.importActual<typeof import("@/components/ui/lightbox")>("@/components/ui/lightbox")),
+  ...(await vi.importActual<typeof import("@/components/ui/gallery")>("@/components/ui/gallery")),
   IconButton: () => null,
-  Lightbox: ({ file, src }: { file: { name: string }; src: string }) => (
-    <dialog open aria-label={file.name} data-src={src} />
-  ),
   toast: vi.fn(),
 }));
 // The browser's storage, in memory.
@@ -191,7 +191,7 @@ describe("files in the transcript", () => {
       />,
     );
     act(() => c.querySelector<HTMLButtonElement>('button[aria-label="Play bug.mov"]')?.click());
-    expect(c.querySelector('dialog[aria-label="bug.mov"]')?.getAttribute("data-src")).toBe(
+    expect(document.querySelector('dialog[aria-label="bug.mov"] video')?.getAttribute("src")).toBe(
       "/api/v1/sessions/ses_1/attachments/att_1",
     );
     expect(c.querySelector('a[download="notes.txt"]')?.getAttribute("href")).toBe(
@@ -202,7 +202,37 @@ describe("files in the transcript", () => {
   it("shows images over the page", () => {
     const c = show(<MessageFiles sessionId="ses_1" files={[file("att_1", "after.png", "image/png")]} />);
     act(() => c.querySelector<HTMLButtonElement>('button[aria-label="View after.png"]')?.click());
-    expect(c.querySelector('dialog[aria-label="after.png"]')).not.toBeNull();
+    expect(document.querySelector('dialog[aria-label="after.png"] img')?.getAttribute("src")).toBe(
+      "/api/v1/sessions/ses_1/attachments/att_1",
+    );
+  });
+
+  it("steps from one image to the next in the gallery around them, and plays videos on their own", () => {
+    const c = show(
+      <Gallery>
+        <MessageFiles
+          sessionId="ses_1"
+          files={[
+            file("att_1", "before.png", "image/png"),
+            file("att_2", "bug.mov", "video/quicktime"),
+            file("att_3", "after.png", "image/png"),
+          ]}
+        />
+      </Gallery>,
+    );
+    act(() => c.querySelector<HTMLButtonElement>('button[aria-label="View before.png"]')?.click());
+    const images = document.querySelector("dialog") as HTMLDialogElement;
+    expect(images.querySelector("p[aria-live]")?.textContent).toBe("before.png: 1 of 2");
+    act(() => {
+      images.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    expect(images.getAttribute("aria-label")).toBe("after.png");
+    act(() => images.close());
+    // Its arrow keys seek, and fingers on it are the player's.
+    act(() => c.querySelector<HTMLButtonElement>('button[aria-label="Play bug.mov"]')?.click());
+    const video = document.querySelector("dialog") as HTMLDialogElement;
+    expect(video.getAttribute("aria-label")).toBe("bug.mov");
+    expect(video.querySelector("p[aria-live]")).toBeNull();
   });
 
   it("plays a video once it is sent", () => {

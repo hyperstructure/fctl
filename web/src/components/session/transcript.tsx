@@ -19,7 +19,17 @@ import {
 } from "lucide-react";
 import { type MouseEvent, memo, type ReactNode, useMemo, useRef, useState } from "react";
 import { ImageSizes, Markdown } from "@/components/markdown";
-import { Avatar, Button, CopyButton, Dialog, Lightbox, plainClick, Spinner, toast } from "@/components/ui";
+import {
+  Avatar,
+  Button,
+  CopyButton,
+  Dialog,
+  Gallery,
+  plainClick,
+  Spinner,
+  toast,
+  useLightbox,
+} from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -103,12 +113,14 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
     file.expires_at > Date.now() ? "shown" : "offline",
   );
   const [confirm, setConfirm] = useState(false);
-  const [viewing, setViewing] = useState(false);
+  const { ref, open, lightbox } = useLightbox<HTMLAnchorElement>(
+    state === "shown" ? { file, src: file.url, download: true } : undefined,
+  );
   // With a modifier key, the browser opens the link in a new tab instead.
   const view = (e: MouseEvent) => {
     if (!plainClick(e)) return;
     e.preventDefault();
-    setViewing(true);
+    open();
   };
   const token = linkToken(file.url);
   const del = useMutation({
@@ -149,6 +161,7 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
       {state === "shown" && (
         <div className="mt-1 ml-5.5 flex flex-wrap items-end gap-3">
           <a
+            ref={ref}
             href={file.url}
             target="_blank"
             rel="noreferrer"
@@ -183,7 +196,7 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
           </div>
         </div>
       )}
-      {viewing && <Lightbox file={file} src={file.url} download onClose={() => setViewing(false)} />}
+      {lightbox}
       <Dialog
         open={confirm}
         onClose={() => setConfirm(false)}
@@ -596,37 +609,41 @@ export const Transcript = memo(function Transcript({
   // biome-ignore lint/correctness/useExhaustiveDependencies: shotUrls stands for shots
   const sizes = useMemo(() => new Map(shots.map((f) => [f.url, f])), [shotUrls]);
   // Tool rows sit in a quiet column; everything else spans the reading width.
+  // The pictures people attach, the agent publishes and its answers show
+  // open in one lightbox, which steps through them all.
   return (
     <ImageSizes value={sizes}>
-      <div ref={list} className="flex flex-col">
-        {hasMoreBefore && (
-          <button
-            type="button"
-            onClick={() => {
-              keepPlace();
-              onLoadOlder();
-            }}
-            className="mx-auto mb-4 flex items-center gap-2 rounded-full border border-line px-3 py-1 text-[12px] text-ink-3 hover:text-ink"
-          >
-            {loadingOlder && <Spinner className="size-3" />}
-            Show earlier activity
-          </button>
-        )}
-        {items.map((it, i) => (
-          <div key={it.key} data-item>
-            <ItemView
-              item={it}
-              live={it.kind === "tool" ? live : undefined}
-              sessionId={sessionId}
-              running={it.kind === "tool" ? running && i > turnStart : undefined}
-              stalled={it.kind === "setup" ? !!stall : undefined}
-              canManage={canManage}
-              claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}
-            />
-          </div>
-        ))}
-        <LiveTurnView live={live} status={status} stall={stall} />
-      </div>
+      <Gallery>
+        <div ref={list} className="flex flex-col">
+          {hasMoreBefore && (
+            <button
+              type="button"
+              onClick={() => {
+                keepPlace();
+                onLoadOlder();
+              }}
+              className="mx-auto mb-4 flex items-center gap-2 rounded-full border border-line px-3 py-1 text-[12px] text-ink-3 hover:text-ink"
+            >
+              {loadingOlder && <Spinner className="size-3" />}
+              Show earlier activity
+            </button>
+          )}
+          {items.map((it, i) => (
+            <div key={it.key} data-item>
+              <ItemView
+                item={it}
+                live={it.kind === "tool" ? live : undefined}
+                sessionId={sessionId}
+                running={it.kind === "tool" ? running && i > turnStart : undefined}
+                stalled={it.kind === "setup" ? !!stall : undefined}
+                canManage={canManage}
+                claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}
+              />
+            </div>
+          ))}
+          <LiveTurnView live={live} status={status} stall={stall} />
+        </div>
+      </Gallery>
     </ImageSizes>
   );
 });
