@@ -4,26 +4,21 @@
 
 import { Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
+import { Fragment } from "react";
 import { Avatar, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { agoShort, stamp } from "@/lib/format";
-import { prsLabel, prTitle, pullRequests } from "@/lib/pulls";
+import { prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { statusReason } from "@/lib/status";
 
 export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.WorkspaceRef }) {
   return (
-    <Link
-      to="/s/$id"
-      params={{ id: s.id }}
-      className="group flex items-center gap-3.5 border-b border-line p-3 transition-colors last:border-b-0 hover:bg-hover/30"
-    >
+    <div className="group relative isolate flex items-center gap-3.5 border-b border-line p-3 transition-colors last:border-b-0 hover:bg-hover/30">
       <StatusDot status={s.status} />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[14.5px] text-ink transition-colors group-hover:text-ink">
-          {s.title}
-        </div>
+        <SessionLink s={s} />
         <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[12px] text-ink-4">
           {workspace && (
             // On a phone its avatar says which one, and the reference keeps the room.
@@ -44,7 +39,7 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
               <span className="text-danger/80">−{s.stats.deletions}</span>
             </span>
           )}
-          <PullRequestsLabel s={s} className="max-sm:hidden" />
+          <PullRequestLinks s={s} className="max-sm:hidden" />
         </div>
       </div>
       <Avatar user={s.created_by} size={20} />
@@ -57,18 +52,50 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
       </time>
       {/* It appears on hover; on a phone its room goes to the title. */}
       <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100 max-sm:hidden" />
+    </div>
+  );
+}
+
+/**
+ * The session's title, as the link that opens it from anywhere on its row: a link can't hold the
+ * pull requests' links, so its ::after covers the row (`relative isolate`) and they lie over that.
+ * Its focus ring goes around the row.
+ */
+export function SessionLink({ s }: { s: G.Session }) {
+  return (
+    <Link
+      to="/s/$id"
+      params={{ id: s.id }}
+      className="block truncate text-[14.5px] text-ink outline-none after:absolute after:inset-0 after:z-[1] after:rounded focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-accent"
+    >
+      {s.title}
     </Link>
   );
 }
 
-/** "· PRs fctl#120, design#14", with their titles on hover; nothing without any. */
-export function PullRequestsLabel({ s, className }: { s: G.Session; className?: string }) {
+/** "· PRs fctl#120, design#14", each a link to it on GitHub with its title on hover; nothing without any. */
+export function PullRequestLinks({ s, className }: { s: G.Session; className?: string }) {
   const prs = pullRequests(s);
-  const label = prsLabel(prs);
-  if (!label) return null;
+  if (prs.length === 0) return null;
   return (
-    <span className={cn("truncate", className)} title={prs.map(prTitle).join("\n")}>
-      · {label}
+    // The padding is room for the links' focus rings, which truncating would cut off.
+    <span className={cn("-m-1 truncate p-1", className)}>
+      · {prs.length === 1 ? "PR" : "PRs"}{" "}
+      {prs.map((pr, i) => (
+        <Fragment key={pr.url}>
+          {i > 0 && ", "}
+          <a
+            href={pr.url}
+            target="_blank"
+            rel="noreferrer"
+            title={prTitle(pr)}
+            // Over the session's link, which covers the row.
+            className="relative z-[2] text-ink-3 underline-offset-2 transition-colors hover:text-ink hover:underline"
+          >
+            {prRef(pr)}
+          </a>
+        </Fragment>
+      ))}
     </span>
   );
 }

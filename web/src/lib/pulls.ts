@@ -24,9 +24,3 @@ export function prFullRef(pr: G.PullRequestRef): string {
 export function prTitle(pr: G.PullRequestRef): string {
   return pr.title ? `${prFullRef(pr)}: ${pr.title}` : prFullRef(pr);
 }
-
-/** What session lists say: "PR fctl#120", "PRs fctl#120, design#14"; undefined without any. */
-export function prsLabel(prs: G.PullRequestRef[]): string | undefined {
-  if (prs.length === 0) return undefined;
-  return `${prs.length === 1 ? "PR" : "PRs"} ${prs.map(prRef).join(", ")}`;
-}
