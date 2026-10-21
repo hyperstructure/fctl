@@ -132,10 +132,9 @@ export function Lightbox({
   latest.current = { index, count: items.length, onIndex };
   const several = items.length > 1;
   // The dialog focuses itself as it opens, not the X: Safari shows a focus
-  // ring on what a dialog focuses, even when a tap opened it, and Chrome
-  // rings it once the arrow keys step through the pictures. Tab reaches the
-  // X. React doesn't set the `autofocus` attribute from `autoFocus`, and
-  // Chrome focuses the X anyway.
+  // ring on what a dialog focuses, even when a tap opened it, and Chrome,
+  // which focuses the X anyway, rings it at the first arrow key. Tab reaches
+  // the X. React doesn't set the `autofocus` attribute from `autoFocus`.
   useEffect(() => {
     ref.current?.setAttribute("autofocus", "");
     ref.current?.showModal();
@@ -209,9 +208,9 @@ export function Lightbox({
       e.preventDefault();
       swipe.moved(f.clientX, e.timeStamp);
       const { index, count } = latest.current;
-      const by = swipe.distance;
-      const more = by > 0 ? index > 0 : index < count - 1;
-      t.style.translate = `${more ? by : by * RESIST}px 0`;
+      const dx = swipe.distance;
+      const more = dx > 0 ? index > 0 : index < count - 1;
+      t.style.translate = `${more ? dx : dx * RESIST}px 0`;
     };
     const end = (e: TouchEvent) => {
       const s = swipe;
