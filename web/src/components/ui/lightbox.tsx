@@ -132,12 +132,14 @@ export function Lightbox({
   latest.current = { index, count: items.length, onIndex };
   const several = items.length > 1;
   // The dialog focuses itself as it opens, not the X: Safari shows a focus
-  // ring on what a dialog focuses, even when a tap opened it. Tab reaches
-  // the X. (Chrome focuses the X anyway, with a ring only for the keyboard.)
-  // React doesn't set the `autofocus` attribute from `autoFocus`.
+  // ring on what a dialog focuses, even when a tap opened it, and Chrome
+  // rings it once the arrow keys step through the pictures. Tab reaches the
+  // X. React doesn't set the `autofocus` attribute from `autoFocus`, and
+  // Chrome focuses the X anyway.
   useEffect(() => {
     ref.current?.setAttribute("autofocus", "");
     ref.current?.showModal();
+    ref.current?.focus();
   }, []);
   useHoldPage();
 
@@ -228,6 +230,9 @@ export function Lightbox({
       off.abort();
       clearTimeout(timer);
       sliding.current = undefined;
+      // Back in place, for a picture that stays alone.
+      delete t.dataset.sliding;
+      t.style.removeProperty("translate");
     };
   }, [several]);
 
@@ -244,6 +249,7 @@ export function Lightbox({
   return createPortal(
     <dialog
       ref={ref}
+      tabIndex={-1}
       aria-label={current.file.name}
       onClose={onClose}
       onPointerDown={(e) => {

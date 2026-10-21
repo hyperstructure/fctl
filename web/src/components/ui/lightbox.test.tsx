@@ -20,6 +20,7 @@ function render(node: ReactNode) {
     act(() => root.unmount());
     container.remove();
   });
+  return (next: ReactNode) => act(() => root.render(next));
 }
 
 const shot: LightboxFile = {
@@ -56,9 +57,11 @@ describe("Lightbox", () => {
   });
 
   it("focuses itself as it opens, not the X, and shows no ring", () => {
-    // Safari rings what a dialog focuses as it opens, even after a tap.
+    // Safari rings what a dialog focuses as it opens, even after a tap, and
+    // Chrome rings the X it focuses once the arrow keys are pressed.
     const { dialog } = open();
     expect(dialog.hasAttribute("autofocus")).toBe(true);
+    expect(document.activeElement).toBe(dialog);
     // The dialog fills the window: a ring around it would only show at the edges.
     expect(dialog.className).toMatch(/\boutline-none\b/);
   });
@@ -403,6 +406,19 @@ describe("Lightbox with several pictures", () => {
     act(() => vi.advanceTimersByTime(400));
     expect(sliding()).toBe(false);
     expect(shown()).toBe("after-dark.png");
+  });
+
+  it("puts the picture back in place when the others go as it slides", () => {
+    const show = (items: LightboxItem[]) => <Lightbox items={items} onIndex={() => {}} onClose={() => {}} />;
+    const rerender = render(show(pictures));
+    const dialog = document.querySelector("dialog") as HTMLDialogElement;
+    const track = dialog.querySelector(".lightbox-track") as HTMLElement;
+    Object.defineProperty(track, "offsetWidth", { value: 400 });
+    finger(dialog, [300, 290, 100]);
+    expect(track.style.translate).toBe("-100% 0");
+    rerender(show(pictures.slice(0, 1)));
+    expect(track.style.translate).toBe("");
+    expect(track.hasAttribute("data-sliding")).toBe(false);
   });
 
   it("doesn't step after it closes mid-slide", () => {
