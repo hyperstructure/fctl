@@ -1,11 +1,11 @@
 // The task being written on the home page, kept in this browser until a session
 // starts with it: leaving the page, reloading it or closing the tab loses
-// none of it. The words, the project and the caret are in localStorage,
-// which the page reads as it opens. The files are in IndexedDB, which keeps
-// them as they are and has room for them (localStorage holds a few
-// megabytes of text); one that doesn't fit there stays while the page is
-// open. Each person who signs in here has their own draft, and signing out
-// forgets them all.
+// none of it. The words, the project, the model and effort level picked and
+// the caret are in localStorage, which the page reads as it opens. The files
+// are in IndexedDB, which keeps them as they are and has room for them
+// (localStorage holds a few megabytes of text); one that doesn't fit there
+// stays while the page is open. Each person who signs in here has their own
+// draft, and signing out forgets them all.
 
 const TEXT = "fctl:draft:";
 const DB = "fctl-drafts";
@@ -17,6 +17,9 @@ export interface DraftText {
   project?: string;
   /** Where the caret was, or what was selected. */
   selection?: [number, number];
+  /** The model and effort level picked for it ("" is Claude's default). */
+  model?: string;
+  effort?: string;
 }
 
 /** A file attached to the draft. */
@@ -30,11 +33,12 @@ export function loadText(user: string): DraftText | undefined {
   try {
     const d: unknown = JSON.parse(localStorage.getItem(TEXT + user) ?? "null");
     if (!d || typeof d !== "object" || !("prompt" in d) || typeof d.prompt !== "string") return undefined;
-    const project = "project" in d && typeof d.project === "string" ? d.project : undefined;
+    const { project, model, effort } = d as Record<string, unknown>;
+    const text = (v: unknown) => (typeof v === "string" ? v : undefined);
     const s = "selection" in d && Array.isArray(d.selection) ? d.selection : [];
     const selection =
       s.length === 2 && s.every((n) => Number.isInteger(n) && n >= 0) ? (s as [number, number]) : undefined;
-    return { prompt: d.prompt, project, selection };
+    return { prompt: d.prompt, project: text(project), selection, model: text(model), effort: text(effort) };
   } catch {
     return undefined;
   }

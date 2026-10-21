@@ -2,7 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { StartButton, useStartSession } from "./start";
+import type * as G from "@/gen";
+import { StartButton, StartChoices, useStartChoice, useStartSession } from "./start";
 
 const { createSession, navigate, toast } = vi.hoisted(() => ({
   createSession: vi.fn(),
@@ -11,7 +12,11 @@ const { createSession, navigate, toast } = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/api", () => ({ api: { createSession } }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
-vi.mock("@/components/ui", () => ({ Spinner: () => null, toast }));
+vi.mock("@/components/ui", async (actual) => ({
+  ...(await actual<typeof import("@/components/ui")>()),
+  Spinner: () => null,
+  toast,
+}));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -29,18 +34,20 @@ function render(node: ReactNode) {
     act(() => root.render(<QueryClientProvider client={client}>{n}</QueryClientProvider>));
   rerender(node);
   roots.push(() => act(() => root.unmount()));
-  return { container, rerender };
+  return { container, rerender, client };
 }
 
-function mount(onStarted?: Parameters<typeof useStartSession>[0]) {
+function mountWithClient(onStarted?: Parameters<typeof useStartSession>[0]) {
   let current: ReturnType<typeof useStartSession> | undefined;
   function Probe() {
     current = useStartSession(onStarted);
     return null;
   }
-  render(<Probe />);
-  return () => current as ReturnType<typeof useStartSession>;
+  const { client } = render(<Probe />);
+  return { client, get: () => current as ReturnType<typeof useStartSession> };
 }
+
+const mount = (onStarted?: Parameters<typeof useStartSession>[0]) => mountWithClient(onStarted).get;
 
 /** Lets the request, React Query's notifications (a setTimeout) and React's render run. */
 const settle = () => act(() => new Promise((r) => setTimeout(r, 10)));
@@ -139,6 +146,20 @@ describe("starting a session", () => {
     expect(s().starting).toBe(false);
   });
 
+  it("asks for the model and effort level picked, and refreshes what the project remembers", async () => {
+    createSession.mockResolvedValue({ id: "ses_1", project_id: "prj_1", project_slug: "web" });
+    navigate.mockResolvedValue(undefined);
+    const { client, get } = mountWithClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    act(() => get().start("web", "Rename the button", undefined, { model: "haiku", effort: undefined }));
+    await settle();
+    expect(createSession).toHaveBeenCalledWith("web", { prompt: "Rename the button", model: "haiku" });
+    const refreshed = invalidate.mock.calls.map(([f]) => f?.queryKey);
+    expect(refreshed).toEqual(
+      expect.arrayContaining([["projects"], ["project", "web"], ["project", "prj_1"]]),
+    );
+  });
+
   it("ignores a blank prompt", async () => {
     const s = mount();
     act(() => s().start("web", "  \n"));
@@ -173,5 +194,40 @@ describe("StartButton", () => {
       </StartButton>,
     );
     expect((container.querySelector("button") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("StartChoices", () => {
+  const project = (settings: Partial<G.ProjectSettings>, last: Partial<G.Project> = {}) => ({
+    settings: settings as G.ProjectSettings,
+    ...last,
+  });
+  function Choices({ p, kept }: { p: ReturnType<typeof project>; kept?: { model?: string } }) {
+    const { choice, pick } = useStartChoice(p, kept);
+    return <StartChoices project={p} choice={choice} onPick={pick} />;
+  }
+  const shown = (container: HTMLElement) =>
+    [...container.querySelectorAll("[role=combobox]")].map((b) => [
+      b.getAttribute("aria-label"),
+      // The trigger's value, beside the copies that size it.
+      b.querySelector(":scope > .grid > span:not([aria-hidden])")?.textContent,
+    ]);
+
+  it("names what the session asks for, or Claude's default", () => {
+    const { container, rerender } = render(<Choices p={project({})} />);
+    expect(shown(container)).toEqual([
+      ["Model", "Default model"],
+      ["Effort", "Default effort"],
+    ]);
+    rerender(<Choices p={project({ model: "opus", effort: "high" }, { last_model: "haiku" })} />);
+    expect(shown(container)).toEqual([
+      ["Model", "Haiku"],
+      ["Effort", "High effort"],
+    ]);
+  });
+
+  it("starts on what the draft kept", () => {
+    const { container } = render(<Choices p={project({ model: "opus" })} kept={{ model: "fable" }} />);
+    expect(shown(container)[0]).toEqual(["Model", "Fable"]);
   });
 });
