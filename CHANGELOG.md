@@ -2,6 +2,25 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.16.0 (2026-10-21)
+
+### Features
+
+- Choose the model and effort level as you start a session ([#179](https://github.com/hyperstructure/fctl/pull/179))
+- Let agents keep a project memory and record retrospectives ([#185](https://github.com/hyperstructure/fctl/pull/185))
+
+### Fixes
+
+- **control:** Bring old sessions' pull requests up to date in one run ([#178](https://github.com/hyperstructure/fctl/pull/178))
+- **web:** Drop the repositories beside the home composer's project list ([#180](https://github.com/hyperstructure/fctl/pull/180))
+- **web:** Fit the model and effort lists beside the project on phones ([#182](https://github.com/hyperstructure/fctl/pull/182))
+- **web:** Fit the home composer's controls on one line on phones ([#183](https://github.com/hyperstructure/fctl/pull/183))
+
+### Documentation
+
+- Explain which Claude sessions agents can list and message ([#181](https://github.com/hyperstructure/fctl/pull/181))
+- Explain pull requests that merge while the webhook misses events ([#184](https://github.com/hyperstructure/fctl/pull/184))
+
 ## 0.15.0 (2026-10-21)
 
 ### Features
