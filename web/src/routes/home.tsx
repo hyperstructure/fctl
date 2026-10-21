@@ -269,12 +269,14 @@ function QuickStart({
         />
         <TextareaControls textarea={ref} className="flex-wrap gap-2 pt-4 pr-3 pb-3 pl-2.5">
           <AttachButton onFiles={(f) => attach(f)} />
-          {/* It takes the room left on its line, which puts what follows at the end. */}
-          <div className="flex min-w-0 grow items-center gap-2 text-[12.5px]">
+          {/* It takes the room left on its line, which puts what follows at the end. On a phone what
+              follows shares its line as long as the project keeps room for the start of its name. */}
+          <div className="flex min-w-0 grow items-center gap-2 text-[12.5px] max-sm:basis-24">
             <span className="hidden text-ink-4 sm:inline">in</span>
             <Select
               size="sm"
-              // On a phone the model and effort level fit beside the project more often.
+              // On a phone it shows the project's name, after its workspace's avatar, as wide as it
+              // is, so that the model, the effort level and Start fit beside it.
               narrow="fit"
               aria-label="Workspace and project"
               value={project}
@@ -285,6 +287,7 @@ function QuickStart({
                 return {
                   value: p.slug,
                   label: several && w ? `${w.name} / ${p.name}` : p.name,
+                  short: p.name,
                   item: p.name,
                   icon: w ? <WorkspaceAvatar workspace={w} size={14} title={false} /> : undefined,
                   description: <RepoText project={p} />,

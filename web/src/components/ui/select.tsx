@@ -24,7 +24,7 @@ export interface SelectOption<T extends string = string> {
   label: string;
   /** Shown in the list instead of `label`, when its section already says the rest. */
   item?: string;
-  /** Shown in the trigger instead of `label` on a phone, with `narrow="short"`; "" leaves the icon alone. */
+  /** Shown in the trigger instead of `label` on a phone, with `narrow`; "" leaves the icon alone. */
   short?: string;
   /** A quieter second line, in the list only. */
   description?: ReactNode;
@@ -42,10 +42,10 @@ export interface SelectProps<T extends string> {
   size?: "sm" | "md";
   /**
    * How the trigger leaves its row more room on a phone (below `sm`): `fit` makes it as wide as its
-   * value rather than its widest option; `short` shows the options' `short` labels instead, as wide
-   * as they are, without the chevron. Screen readers still read the labels.
+   * value rather than its widest option, and shows the options' `short` labels where they have
+   * them; `bare` does that without the chevron. Screen readers still read the labels.
    */
-  narrow?: "fit" | "short";
+  narrow?: "fit" | "bare";
   id?: string;
   disabled?: boolean;
   /** Shown when no option has the value. */
@@ -109,7 +109,7 @@ export function Select<T extends string>({
   const selected = options.findIndex((o) => o.value === value);
   const current = options[selected];
   const shown = current?.label ?? (value || placeholder || "");
-  const short = narrow === "short" ? (current?.short ?? shown) : undefined;
+  const short = narrow ? current?.short : undefined;
   const mounted = phase !== "closed";
   const open = phase === "open";
 
@@ -341,14 +341,14 @@ export function Select<T extends string>({
           // An empty value is a placeholder, as an option with value="" is in HTML.
           muted={!value}
           sizes={placeholder ? [...options.map((o) => o.label), placeholder] : options.map((o) => o.label)}
-          fit={narrow === "fit"}
+          fit={!!narrow}
           // On a phone the short label takes its place on screen.
           className={short !== undefined ? "max-sm:sr-only" : undefined}
         />
         {short && (
           <Value text={short} index={selected} muted={!value} sizes={[]} hidden className="sm:hidden" />
         )}
-        <Chevron className={short !== undefined ? "max-sm:hidden" : undefined} />
+        <Chevron className={narrow === "bare" ? "max-sm:hidden" : undefined} />
       </button>
       {mounted && (
         <div

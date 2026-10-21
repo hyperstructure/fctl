@@ -172,7 +172,7 @@ describe("starting a session", () => {
 describe("StartButton", () => {
   /** What the button says to assistive technology: the label that is not hidden. */
   const said = (button: HTMLButtonElement) =>
-    [...button.querySelectorAll("span > span")]
+    [...button.querySelectorAll(":scope > span > span")]
       .filter((el) => el.getAttribute("aria-hidden") !== "true")
       .map((el) => el.textContent?.trim())
       .join("");
@@ -194,6 +194,18 @@ describe("StartButton", () => {
       </StartButton>,
     );
     expect((container.querySelector("button") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows the arrow alone on a phone, and its words to screen readers", () => {
+    const { container } = render(<StartButton starting={false}>Start</StartButton>);
+    const button = container.querySelector("button") as HTMLButtonElement;
+    const words = [...button.querySelectorAll(":scope > span > span > span")];
+    expect(words.map((w) => [w.textContent, w.classList.contains("max-sm:sr-only")])).toEqual([
+      ["Start", true],
+      ["Starting", true],
+    ]);
+    expect(button.querySelector(":scope > span > span > svg")).not.toBeNull();
+    expect(said(button)).toBe("Start");
   });
 });
 

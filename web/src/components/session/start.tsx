@@ -133,7 +133,7 @@ export function StartChoices({
     <div className="flex min-w-0 items-center gap-2 max-sm:gap-0 sm:max-lg:order-first sm:max-lg:w-full">
       <Select
         size="sm"
-        narrow="short"
+        narrow="bare"
         // On a phone a model named by its ID shows the start of it.
         className={cn("max-sm:max-w-32 max-sm:rounded-r-none", joined)}
         aria-label="Model"
@@ -151,7 +151,7 @@ export function StartChoices({
       />
       <Select
         size="sm"
-        narrow="short"
+        narrow="bare"
         className={cn("max-sm:-ml-px max-sm:rounded-l-none", joined)}
         aria-label="Effort"
         value={choice.effort}
@@ -176,10 +176,13 @@ const label =
   "absolute inset-y-0 right-0 flex w-max items-center gap-2 transition-[opacity,translate,filter] ease-out";
 const shown = "delay-50 duration-300 motion-reduce:delay-0";
 const gone = "opacity-0 blur-[2px] duration-150";
+/** On a phone the words are for screen readers: the arrow and the spinner stand for them. */
+const words = "max-sm:sr-only";
 
 /**
  * A start form's submit button. When `starting`, its label rises away, "Starting" and a spinner
- * rise in, and the button eases to its new width and stops taking presses.
+ * rise in, and the button eases to its new width and stops taking presses. On a phone it is a
+ * circle around the arrow, or the spinner, so that it fits in the row with the form's lists.
  */
 export function StartButton({
   starting,
@@ -214,7 +217,7 @@ export function StartButton({
       type="submit"
       disabled={disabled || starting}
       className={cn(
-        "flex h-9 shrink-0 items-center overflow-hidden rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all duration-200 ease-[var(--ease-spring)]",
+        "flex h-9 shrink-0 items-center overflow-hidden rounded-full pr-3 pl-4 text-[13.5px] font-medium transition-all duration-200 ease-[var(--ease-spring)] max-sm:px-2.5",
         disabled ? "bg-raised text-ink-4" : "bg-ink text-canvas",
         starting && "cursor-progress",
         className,
@@ -229,14 +232,16 @@ export function StartButton({
           aria-hidden={starting}
           className={cn(label, starting ? cn(gone, "-translate-y-1.5") : shown)}
         >
-          {children} <ArrowUp className="size-4" />
+          <span className={words}>{children}</span>
+          <ArrowUp className="size-4" />
         </span>
         <span
           ref={busy}
           aria-hidden={!starting}
           className={cn(label, starting ? shown : cn(gone, "translate-y-1.5"))}
         >
-          Starting <Spinner className={cn("size-4", !starting && "[animation-play-state:paused]")} />
+          <span className={words}>Starting</span>
+          <Spinner className={cn("size-4", !starting && "[animation-play-state:paused]")} />
         </span>
       </span>
     </button>
