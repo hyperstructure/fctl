@@ -417,6 +417,9 @@ pub async fn uplink(ctx: &Ctx, req: &Request, session_id: &str) -> AppResult<Res
     if assigned.runner_id.as_deref() != Some(r.id.as_str()) {
         return Err(forbidden("This session is not assigned to this runner"));
     }
+    if !crate::spec::runner_serves(&ctx.db, &r.id, session_id).await? {
+        return Err(crate::spec::not_served());
+    }
     let stub = internal::session_stub(&ctx.env, session_id)?;
     internal::upgrade(&stub, "/uplink", &[(internal::HDR_RUNNER, &r.id)]).await
 }

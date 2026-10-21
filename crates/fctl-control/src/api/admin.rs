@@ -101,6 +101,9 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
     if body.status == Some(UserStatus::Disabled) {
         auth::revoke_tokens(ctx, &target.id, None).await?;
     }
+    if body.status.is_some() {
+        crate::api::workspaces::owner_runners_changed(ctx, &target.id).await?;
+    }
     ctx.audit(
         "user.updated",
         Some(&target.id),
@@ -354,6 +357,7 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             .run()
             .await?;
             auth::revoke_tokens(ctx, &u.id, None).await?;
+            crate::api::workspaces::owner_runners_changed(ctx, &u.id).await?;
             disabled.push(u.email.clone());
             continue;
         };

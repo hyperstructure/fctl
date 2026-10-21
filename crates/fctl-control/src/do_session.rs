@@ -9,7 +9,8 @@
 
 use crate::ctx::now_ms;
 use crate::internal::{
-    self, ControlState, Deliver, Delivered, DrainStop, DrainStopped, InitSession, ViewerIdentity,
+    self, CloseUplink, ControlState, Deliver, Delivered, DrainStop, DrainStopped, InitSession,
+    ViewerIdentity,
 };
 use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_domain::journal::{self, Take};
@@ -225,6 +226,10 @@ impl DurableObject for SessionObject {
             (worker::Method::Get, "/viewer") => return self.accept_viewer(&req),
             (worker::Method::Get, "/uplink") => return self.accept_uplink(&req),
             (worker::Method::Post, "/purge") => self.purge().await,
+            (worker::Method::Post, "/close-uplink") => match req.json::<CloseUplink>().await {
+                Ok(b) => Ok(self.close_uplink(&b.runner_id)),
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
             _ => Err(api_err(ErrorCode::NotFound, "Unknown session endpoint")),
         };
         match result {
@@ -1299,6 +1304,21 @@ impl SessionObject {
     }
 
     // ───────────────────────────── uplink ─────────────────────────────
+
+    /// Closes `runner_id`'s uplinks (`internal::CloseUplink`).
+    fn close_uplink(&self, runner_id: &str) -> serde_json::Value {
+        for ws in self.state.get_websockets_with_tag(TAG_UPLINK) {
+            let theirs = ws
+                .deserialize_attachment::<SocketInfo>()
+                .ok()
+                .flatten()
+                .is_some_and(|i| i.runner_id.as_deref() == Some(runner_id));
+            if theirs {
+                let _ = ws.close(Some(4003), Some("this runner no longer runs this session"));
+            }
+        }
+        serde_json::json!({ "ok": true })
+    }
 
     fn accept_uplink(&self, req: &Request) -> Result<Response> {
         let Some(runner_id) = crate::http::header(req, internal::HDR_RUNNER) else {

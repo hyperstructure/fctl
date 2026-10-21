@@ -76,6 +76,14 @@ pub struct DrainStop {
     pub runner_name: String,
 }
 
+/// Closes a runner's uplink to a session (`/close-uplink`): the runner was
+/// disabled or its token replaced, or it no longer serves the session's
+/// workspace.
+#[derive(Serialize, Deserialize)]
+pub struct CloseUplink {
+    pub runner_id: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DrainStopped {
     /// Whether the session is stopping now (its host should stop it).

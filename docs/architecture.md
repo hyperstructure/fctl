@@ -405,8 +405,16 @@ start its sessions; a workspace's admins take any runner out of it; its
 owner and instance admins rename, drain, disable and remove it. FleetDO
 reads which workspaces each runner serves before it dispatches, and starts
 a session only on a runner of its workspace (`Slot.serves`); a session whose
-workspace has no runner online says so. A Claude sign-in runs only on a
-runner of the person's workspaces, or their own.
+workspace has no runner online says so. A runner serves a workspace while
+its owner is an active member there (`serves!`). Once it stops serving one
+(taken out of it, its owner left, was demoted from admin or disabled), the
+sessions it runs there stop and resume on another runner, whatever its host
+does: FleetDO stops them (`/runner-changed`), closes the runner's uplinks
+to them, and the runner gets no credentials, uplinks, files or screenshots
+for them any more (`spec::runner_serves`). Disabling a runner or replacing
+its token closes its control connection and its sessions' uplinks. A
+Claude sign-in runs only on a runner of the person's workspaces, or their
+own.
 
 ## Data
 

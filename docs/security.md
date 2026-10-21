@@ -234,7 +234,10 @@ but their runner token (`~/.config/fctl/host-token`, mode 0600).
 A runner takes only the sessions of the workspaces it is added to, and so
 sees their code, secrets and the tokens of the people who start them. Its
 owner adds it only to workspaces they are an admin of, and a workspace's
-admins take any runner out of it. A Claude sign-in through a host runs only
+admins take any runner out of it. Once a runner no longer serves a
+workspace (taken out of it, or its owner left it or was disabled), its
+sessions there stop, and it gets no more tokens, messages or files for
+them, whatever its host does. A Claude sign-in through a host runs only
 on a runner of the person's workspaces, or one they registered.
 
 Sessions run in their project's sandbox image or, without one, the host's:

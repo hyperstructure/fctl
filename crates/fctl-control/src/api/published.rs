@@ -60,6 +60,9 @@ pub async fn runner_publish(
     if row.runner_id.as_deref() != Some(r.id.as_str()) {
         return Err(forbidden("This session is not assigned to this runner"));
     }
+    if !crate::spec::runner_serves(&ctx.db, &r.id, session_id).await? {
+        return Err(crate::spec::not_served());
+    }
     let settings: ProjectSettings = serde_json::from_str(&row.settings).unwrap_or_default();
     if !crate::instance::settings(&ctx.db)
         .await?

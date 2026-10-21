@@ -296,6 +296,7 @@ impl DurableObject for FleetObject {
             }
             (worker::Method::Post, "/runner-changed") => match req.json::<RunnerChanged>().await {
                 Ok(b) => {
+                    self.stop_unserved(&b.runner_id).await;
                     self.feed_runner(&b.runner_id).await;
                     self.dispatch().await;
                     Ok(serde_json::json!({ "ok": true }))
@@ -342,6 +343,11 @@ impl DurableObject for FleetObject {
                             "UPDATE runners SET connected = 0 WHERE id = ?",
                             Some(vec![sv(&id)]),
                         );
+                        // Its sessions' uplinks too: they connect again with
+                        // a token that works, or not at all.
+                        for a in self.assigned_to_runner(&id) {
+                            self.close_uplink(&a.session_id, &id).await;
+                        }
                         Ok(serde_json::json!({ "ok": true }))
                     }
                     Err(e) => Err(ApiError::bad_request(e.to_string())),
@@ -705,7 +711,18 @@ impl FleetObject {
                     }),
                 );
                 let queued_again = self.queued(session_id.as_str());
-                if stale {
+                // Unassigned, it ends only a run of this runner's: another
+                // runner's report about it changes nothing.
+                let theirs = current.is_some()
+                    || match self.env.d1("DB") {
+                        Ok(db) => spec::session_row(&db, session_id.as_str())
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some_and(|row| row.runner_id.as_deref() == Some(rs.id.as_str())),
+                        Err(_) => false,
+                    };
+                if stale || !theirs {
                     worker::console_log!("ignoring the end of an earlier run of {session_id}");
                 } else {
                     let _ = self.sql.exec(
@@ -842,7 +859,18 @@ impl FleetObject {
                 status: row.status(),
                 archived: row.archived,
             });
-            match reconcile::unassigned(runner_id, known, self.stopped_away(id, runner_id)) {
+            let mut verdict =
+                reconcile::unassigned(runner_id, known, self.stopped_away(id, runner_id));
+            // A runner that stopped serving the session's workspace while it
+            // was away doesn't carry on with it there.
+            if matches!(verdict, Unassigned::Keep | Unassigned::CarryOn)
+                && let Ok(db) = &db
+                && matches!(spec::runner_serves(db, runner_id, id).await, Ok(false))
+            {
+                self.unserved(runner_id, id).await;
+                verdict = Unassigned::Stop(StopReason::Shutdown);
+            }
+            match verdict {
                 Unassigned::Keep => {
                     let _ = self.sql.exec(
                         "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted) VALUES (?, ?, ?, 1)",
@@ -946,6 +974,95 @@ impl FleetObject {
             }
         }
         worker::console_log!("{id} carries on: {} is back", rs.name);
+    }
+
+    fn assigned_to_runner(&self, runner_id: &str) -> Vec<AssignRow> {
+        self.sql
+            .exec(
+                "SELECT session_id, runner_id, accepted FROM assignments WHERE runner_id = ?",
+                Some(vec![sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<AssignRow>())
+            .unwrap_or_default()
+    }
+
+    /// Stops the sessions `runner_id` runs in workspaces it no longer serves
+    /// (it was taken out of one, its owner left it or was disabled), so that
+    /// they resume on a runner of their workspace.
+    async fn stop_unserved(&self, runner_id: &str) {
+        let Ok(db) = self.env.d1("DB") else { return };
+        for a in self.assigned_to_runner(runner_id) {
+            match spec::runner_serves(&db, runner_id, &a.session_id).await {
+                Ok(false) => {}
+                Ok(true) => continue,
+                Err(e) => {
+                    worker::console_error!(
+                        "checking {} on {runner_id}: {}",
+                        a.session_id,
+                        e.0.message
+                    );
+                    continue;
+                }
+            }
+            self.unserved(runner_id, &a.session_id).await;
+            self.send_runner(
+                runner_id,
+                &FleetToHost::StopSession {
+                    session_id: SessionId(a.session_id.clone()),
+                    reason: StopReason::Shutdown,
+                    destroy: false,
+                },
+            );
+        }
+    }
+
+    /// Takes a session from a runner that no longer serves its workspace:
+    /// it stops now, whatever the host does, and resumes elsewhere; the
+    /// runner's uplink to it closes. Its host is asked to stop the run.
+    async fn unserved(&self, runner_id: &str, session_id: &str) {
+        let _ = self.sql.exec(
+            "DELETE FROM assignments WHERE session_id = ? AND runner_id = ?",
+            Some(vec![sv(session_id), sv(runner_id)]),
+        );
+        let _ = self.sql.exec(
+            "DELETE FROM sandboxes WHERE session_id = ? AND runner_id = ?",
+            Some(vec![sv(session_id), sv(runner_id)]),
+        );
+        let _ = self.sql.exec(
+            "DELETE FROM stopped_away WHERE session_id = ?",
+            Some(vec![sv(session_id)]),
+        );
+        let id = SessionId(session_id.to_owned());
+        if !self.queued(session_id) {
+            self.session_control(
+                &id,
+                Some(SessionStatus::Stopped),
+                Some(
+                    "Its runner no longer runs this workspace's sessions. A message or a resume starts it on another one."
+                        .into(),
+                ),
+                true,
+            )
+            .await;
+        }
+        self.close_uplink(session_id, runner_id).await;
+    }
+
+    /// Closes `runner_id`'s uplink to a session.
+    async fn close_uplink(&self, session_id: &str, runner_id: &str) {
+        if let Ok(stub) = internal::session_stub(&self.env, session_id) {
+            let r: std::result::Result<serde_json::Value, _> = internal::post(
+                &stub,
+                "/close-uplink",
+                &internal::CloseUplink {
+                    runner_id: runner_id.to_owned(),
+                },
+            )
+            .await;
+            if let Err(e) = r {
+                worker::console_error!("closing the uplink of {session_id}: {}", e.0.message);
+            }
+        }
     }
 
     async fn on_start_result(
@@ -1796,6 +1913,14 @@ impl FleetObject {
             return Err(ApiError::forbidden(
                 "This session is not assigned to this runner",
             ));
+        }
+        // Nor once the runner stopped serving its workspace, whatever its
+        // host says about the session.
+        if !spec::runner_serves(&db, runner_id, session_id.as_str())
+            .await
+            .map_err(|e| e.0)?
+        {
+            return Err(spec::not_served().0);
         }
         match kind {
             CredentialKind::Github => {
