@@ -269,10 +269,13 @@ function QuickStart({
         />
         <TextareaControls textarea={ref} className="flex-wrap gap-2 pt-4 pr-3 pb-3 pl-2.5">
           <AttachButton onFiles={(f) => attach(f)} />
-          <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
+          {/* It takes the room left on its line, which puts what follows at the end. */}
+          <div className="flex min-w-0 grow items-center gap-2 text-[12.5px]">
             <span className="hidden text-ink-4 sm:inline">in</span>
             <Select
               size="sm"
+              // On a phone the model and effort level fit beside the project more often.
+              narrow="fit"
               aria-label="Workspace and project"
               value={project}
               disabled={starting}
@@ -301,16 +304,16 @@ function QuickStart({
               })}
             />
           </div>
-          <span className="flex-1" />
           {target && (
             <StartChoices project={target} choice={choice} onPick={pickChoice} disabled={starting} />
           )}
           {/* From lg the pickers share its row, which has room for it again from xl. */}
           <span className="hidden text-[11.5px] text-ink-4 sm:inline lg:hidden xl:inline">⌘↵ to start</span>
+          {/* On a phone it can take a line of its own, at its end. */}
           <StartButton
             starting={starting}
             disabled={!prompt.trim() && !files.drafts.length}
-            className="enabled:hover:scale-[1.03]"
+            className="enabled:hover:scale-[1.03] max-sm:ml-auto"
           >
             Start
           </StartButton>

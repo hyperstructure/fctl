@@ -105,9 +105,18 @@ const EFFORT = { key: "effort", label: "Effort" };
 const theirs = (o: Offer) => (o.own ? "The project's default" : undefined);
 
 /**
+ * On a phone the two pickers make one control, joined where their borders meet. The one in use
+ * comes to the front, so its border shows whole; it doesn't shrink as it is pressed, which would
+ * open a gap between them.
+ */
+const joined =
+  "max-sm:hover:z-10 max-sm:focus-visible:z-10 max-sm:aria-expanded:z-10 max-sm:active:scale-100";
+
+/**
  * The model and effort level pickers of a start form, in its row of controls. Where the row is
- * narrow (below `lg`, with the sidebar beside it from `md`), they take a line of their own above
- * it, which needs the row to wrap.
+ * narrow (from `sm` to `lg`, with the sidebar beside it from `md`), they take a line of their own
+ * above it, which needs the row to wrap. On a phone they show just the model's name and the effort
+ * level's symbol, in one control, so that they fit in the row with the others.
  */
 export function StartChoices({
   project,
@@ -121,9 +130,12 @@ export function StartChoices({
   disabled?: boolean;
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2 max-lg:order-first max-lg:w-full">
+    <div className="flex min-w-0 items-center gap-2 max-sm:gap-0 sm:max-lg:order-first sm:max-lg:w-full">
       <Select
         size="sm"
+        narrow="short"
+        // On a phone a model named by its ID shows the start of it.
+        className={cn("max-sm:max-w-32 max-sm:rounded-r-none", joined)}
         aria-label="Model"
         value={choice.model}
         disabled={disabled}
@@ -131,6 +143,7 @@ export function StartChoices({
         options={modelOffers(project, choice.model).map((o) => ({
           value: o.value,
           label: o.value ? o.label : "Default model",
+          short: o.value ? o.label : "Default",
           item: o.label,
           description: theirs(o),
           section: MODEL,
@@ -138,6 +151,8 @@ export function StartChoices({
       />
       <Select
         size="sm"
+        narrow="short"
+        className={cn("max-sm:-ml-px max-sm:rounded-l-none", joined)}
         aria-label="Effort"
         value={choice.effort}
         disabled={disabled}
@@ -145,6 +160,7 @@ export function StartChoices({
         options={effortOffers(project, choice.effort).map((o) => ({
           value: o.value,
           label: o.value ? `${o.label} effort` : "Default effort",
+          short: "",
           item: o.label,
           icon: <EffortIcon level={o.value} />,
           description: theirs(o),

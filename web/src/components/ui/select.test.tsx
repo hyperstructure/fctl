@@ -302,3 +302,59 @@ describe("Select", () => {
     expect(shownIn(container)).toBe("ultra");
   });
 });
+
+describe("Select on a phone", () => {
+  /** What a phone shows in a `narrow="short"` trigger, for the eyes only. */
+  const shortIn = (el: Element) =>
+    el.querySelector('[role="combobox"] > span[aria-hidden] > span:not([aria-hidden])');
+  const has = (el: Element | null | undefined, cls: string) => !!el?.classList.contains(cls);
+
+  it("shows short labels, without the chevron, and the labels to screen readers", () => {
+    const options: SelectOption[] = [
+      { value: "", label: "Default model", short: "Default" },
+      { value: "opus", label: "Opus" },
+    ];
+    function Model() {
+      const [value, setValue] = useState("");
+      return <Select aria-label="Model" narrow="short" value={value} options={options} onChange={setValue} />;
+    }
+    const container = render(<Model />);
+    const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]');
+    const label = trigger?.querySelector(":scope > span:not([aria-hidden])");
+    expect(shownIn(container)).toBe("Default model");
+    expect(has(label, "max-sm:sr-only")).toBe(true);
+    const short = shortIn(container);
+    expect(short?.textContent).toBe("Default");
+    expect(has(short, "text-ink-4")).toBe(true);
+    expect(has(short?.parentElement, "sm:hidden")).toBe(true);
+    expect(has(trigger?.querySelector(":scope > svg"), "max-sm:hidden")).toBe(true);
+    // An option without a short label shows its label.
+    act(() => trigger?.click());
+    act(() => container.querySelectorAll<HTMLElement>('[role="option"]')[1]?.click());
+    act(() => vi.advanceTimersByTime(1000));
+    expect(shortIn(container)?.textContent).toBe("Opus");
+    expect(shownIn(container)).toBe("Opus");
+  });
+
+  it("leaves the icon alone for an empty short label", () => {
+    const options: SelectOption[] = [{ value: "max", label: "Max effort", short: "", icon: <svg /> }];
+    const container = render(
+      <Select aria-label="Effort" narrow="short" value="max" options={options} onChange={() => {}} />,
+    );
+    expect(shortIn(container)).toBeNull();
+    expect(container.querySelector('[role="combobox"] > span > svg')).not.toBeNull();
+    expect(shownIn(container)).toBe("Max effort");
+  });
+
+  it("is as wide as its value with fit, not as its widest option", () => {
+    const sizers = (narrow?: "fit") => {
+      const container = render(
+        <Select aria-label="Effort" narrow={narrow} value="low" options={EFFORT} onChange={() => {}} />,
+      );
+      const spans = container.querySelectorAll('[role="combobox"] .invisible');
+      return [spans.length, [...spans].every((s) => has(s, "max-sm:hidden"))];
+    };
+    expect(sizers("fit")).toEqual([EFFORT.length, true]);
+    expect(sizers()).toEqual([EFFORT.length, false]);
+  });
+});

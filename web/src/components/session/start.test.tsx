@@ -230,4 +230,27 @@ describe("StartChoices", () => {
     const { container } = render(<Choices p={project({ model: "opus" })} kept={{ model: "fable" }} />);
     expect(shown(container)[0]).toEqual(["Model", "Fable"]);
   });
+
+  it("shows the model's name and the effort level's symbol on a phone", () => {
+    // What a phone shows, for the eyes only: screen readers read the labels above.
+    const short = (container: HTMLElement) =>
+      [...container.querySelectorAll("[role=combobox]")].map((b) => [
+        b.querySelector(":scope > .grid[aria-hidden] > span:not([aria-hidden])")?.textContent,
+        !!b.querySelector(":scope > span:not(.grid) > svg"),
+      ]);
+    const { container, rerender } = render(<Choices p={project({ model: "opus", effort: "max" })} />);
+    expect(short(container)).toEqual([
+      ["Opus", false],
+      [undefined, true],
+    ]);
+    expect(shown(container)).toEqual([
+      ["Model", "Opus"],
+      ["Effort", "Max effort"],
+    ]);
+    rerender(<Choices p={project({})} />);
+    expect(short(container)).toEqual([
+      ["Default", false],
+      [undefined, true],
+    ]);
+  });
 });

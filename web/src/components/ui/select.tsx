@@ -24,6 +24,8 @@ export interface SelectOption<T extends string = string> {
   label: string;
   /** Shown in the list instead of `label`, when its section already says the rest. */
   item?: string;
+  /** Shown in the trigger instead of `label` on a phone, with `narrow="short"`; "" leaves the icon alone. */
+  short?: string;
   /** A quieter second line, in the list only. */
   description?: ReactNode;
   icon?: ReactNode;
@@ -38,6 +40,12 @@ export interface SelectProps<T extends string> {
   onChange: (value: T) => void;
   /** `md` is a form field beside an Input; `sm` sits in a row or a toolbar. */
   size?: "sm" | "md";
+  /**
+   * How the trigger leaves its row more room on a phone (below `sm`): `fit` makes it as wide as its
+   * value rather than its widest option; `short` shows the options' `short` labels instead, as wide
+   * as they are, without the chevron. Screen readers still read the labels.
+   */
+  narrow?: "fit" | "short";
   id?: string;
   disabled?: boolean;
   /** Shown when no option has the value. */
@@ -75,6 +83,7 @@ export function Select<T extends string>({
   options,
   onChange,
   size = "md",
+  narrow,
   id,
   disabled,
   placeholder,
@@ -99,6 +108,8 @@ export function Select<T extends string>({
   const optionId = (i: number) => `${uid}-${i}`;
   const selected = options.findIndex((o) => o.value === value);
   const current = options[selected];
+  const shown = current?.label ?? (value || placeholder || "");
+  const short = narrow === "short" ? (current?.short ?? shown) : undefined;
   const mounted = phase !== "closed";
   const open = phase === "open";
 
@@ -325,13 +336,19 @@ export function Select<T extends string>({
         {/* A flex box, so that an inline icon (an avatar) is centered rather than on the baseline. */}
         {current?.icon && <span className="flex shrink-0 text-ink-3 [&_svg]:size-3.5">{current.icon}</span>}
         <Value
-          text={current?.label ?? (value || placeholder || "")}
+          text={shown}
           index={selected}
           // An empty value is a placeholder, as an option with value="" is in HTML.
           muted={!value}
           sizes={placeholder ? [...options.map((o) => o.label), placeholder] : options.map((o) => o.label)}
+          fit={narrow === "fit"}
+          // On a phone the short label takes its place on screen.
+          className={short !== undefined ? "max-sm:sr-only" : undefined}
         />
-        <Chevron />
+        {short && (
+          <Value text={short} index={selected} muted={!value} sizes={[]} hidden className="sm:hidden" />
+        )}
+        <Chevron className={short !== undefined ? "max-sm:hidden" : undefined} />
       </button>
       {mounted && (
         <div
@@ -431,17 +448,26 @@ export function Select<T extends string>({
   );
 }
 
-/** The trigger's text: as wide as the longest of `sizes`, rolling up or down to a new value. */
+/**
+ * The trigger's text: as wide as the longest of `sizes` (as itself on a phone, with `fit`),
+ * rolling up or down to a new value. A `hidden` one is for the eyes only.
+ */
 function Value({
   text,
   index,
   muted,
   sizes,
+  fit,
+  hidden,
+  className,
 }: {
   text: string;
   index: number;
   muted: boolean;
   sizes: string[];
+  fit?: boolean;
+  hidden?: boolean;
+  className?: string;
 }) {
   const [shown, setShown] = useState({ text, index, muted });
   const [roll, setRoll] = useState<{ from: string; muted: boolean; dir: 1 | -1 } | null>(null);
@@ -451,9 +477,16 @@ function Value({
   }
   const dir = roll ? ({ "--roll": roll.dir } as CSSProperties) : undefined;
   return (
-    <span className="grid min-w-0 flex-1 grid-cols-1 overflow-hidden">
+    <span
+      aria-hidden={hidden || undefined}
+      className={cn("grid min-w-0 flex-1 grid-cols-1 overflow-hidden", className)}
+    >
       {sizes.map((l, i) => (
-        <span key={i} aria-hidden="true" className="invisible col-start-1 row-start-1 truncate">
+        <span
+          key={i}
+          aria-hidden="true"
+          className={cn("invisible col-start-1 row-start-1 truncate", fit && "max-sm:hidden")}
+        >
           {l}
         </span>
       ))}
@@ -480,14 +513,17 @@ function Value({
 }
 
 /** A chevron whose arms swing from pointing down to pointing up while the list is open. */
-function Chevron() {
+function Chevron({ className }: { className?: string }) {
   const arm =
     "origin-center transition-[rotate] duration-300 ease-[var(--ease-spring)] [transform-box:fill-box]";
   return (
     <svg
       viewBox="0 0 16 16"
       aria-hidden="true"
-      className="ml-auto size-3.5 shrink-0 overflow-visible text-ink-4 transition-colors duration-150 group-hover/select:text-ink-3 group-aria-expanded/select:text-ink-2"
+      className={cn(
+        "ml-auto size-3.5 shrink-0 overflow-visible text-ink-4 transition-colors duration-150 group-hover/select:text-ink-3 group-aria-expanded/select:text-ink-2",
+        className,
+      )}
     >
       <g fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
         <path d="M4 6.5l4 4" className={cn(arm, "group-aria-expanded/select:-rotate-90")} />
