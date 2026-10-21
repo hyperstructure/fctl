@@ -11,7 +11,6 @@ import {
   Ellipsis,
   ExternalLink,
   GitBranch,
-  GitPullRequest,
   Globe,
   PanelRight,
   Play,
@@ -23,6 +22,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/session/composer";
 import { AgentOrb } from "@/components/session/orb";
+import { PullRequestChecksIcon, PullRequestStateIcon } from "@/components/session/pull-request";
 import { Transcript } from "@/components/session/transcript";
 import { HeaderMenuButton } from "@/components/shell/menu-button";
 import {
@@ -51,7 +51,16 @@ import { cn } from "@/lib/cn";
 import { ago, duration, num, until } from "@/lib/format";
 import { hasChanges, type RepoChanges, repoChanges, whereCommits } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
-import { prFullRef, prRef, prTitle, pullRequests } from "@/lib/pulls";
+import {
+  checksText,
+  prFullRef,
+  prLabel,
+  prRef,
+  prState,
+  prStateText,
+  prTitle,
+  pullRequests,
+} from "@/lib/pulls";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink, remoteControlUrl, remoteControlUser } from "@/lib/remote-control";
 import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
@@ -222,10 +231,12 @@ export function SessionPage() {
                                 target="_blank"
                                 rel="noreferrer"
                                 title={prTitle(pr)}
+                                aria-label={prLabel(pr)}
                                 className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
                               >
-                                <GitPullRequest className="size-3" />
+                                <PullRequestStateIcon pr={pr} className="size-3" />
                                 {prRef(pr)}
+                                <PullRequestChecksIcon pr={pr} className="size-3" />
                               </a>
                             ))}
                           </span>
@@ -634,28 +645,41 @@ function Changes({
   );
 }
 
-/** Every pull request of the session, with the repository of each. */
+/** Every pull request of the session, with the repository of each, its state and its checks. */
 function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
   return (
     <ul className="flex flex-col gap-1.5">
-      {prs.map((pr) => (
-        <li key={pr.url}>
-          <a
-            href={pr.url}
-            target="_blank"
-            rel="noreferrer"
-            title={prTitle(pr)}
-            className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
-          >
-            <GitPullRequest className="size-3.5 shrink-0 text-accent" />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate">{pr.title ?? `Pull request #${pr.number}`}</span>
-              <span className="block truncate font-mono text-[11.5px] text-ink-4">{prFullRef(pr)}</span>
-            </span>
-            <ArrowUpRight className="size-3.5 shrink-0 text-ink-4" />
-          </a>
-        </li>
-      ))}
+      {prs.map((pr) => {
+        const checks = checksText(pr);
+        return (
+          <li key={pr.url}>
+            <a
+              href={pr.url}
+              target="_blank"
+              rel="noreferrer"
+              title={prTitle(pr)}
+              className="flex items-start gap-2.5 rounded-md border border-line px-3 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
+            >
+              <PullRequestStateIcon pr={pr} className="mt-px size-4" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{pr.title ?? `Pull request #${pr.number}`}</span>
+                <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-ink-4">
+                  <span className="truncate font-mono">{prFullRef(pr)}</span>
+                  {prState(pr) !== "unknown" && <span>· {prStateText(pr)}</span>}
+                  {checks && (
+                    <span className="inline-flex items-center gap-1">
+                      ·
+                      <PullRequestChecksIcon pr={pr} className="size-3" />
+                      {checks}
+                    </span>
+                  )}
+                </span>
+              </span>
+              <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-ink-4" />
+            </a>
+          </li>
+        );
+      })}
     </ul>
   );
 }
