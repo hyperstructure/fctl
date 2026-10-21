@@ -723,14 +723,14 @@ session that stopped looks up nothing, so GitHub tells the control plane
    (`pull_request_sessions`), by repository and number, with its head
    commit, which commit statuses name instead of a pull request. SessionDO
    adds a session's rows as its agent finds pull requests.
-3. **A lookup.** For each pull request a session lists that a delivery
+3. **A lookup.** For the pull requests sessions list that a delivery
    concerns, the control plane asks GitHub with one GraphQL query
-   (`fctl_domain::webhooks::QUERY`, with a token of the installation that
-   sent it): its title, state, merge queue entry, times and its head
-   commit's checks counted by state. Deliveries come out of order and some
-   never come; a lookup says how things are. A pull request is queued when
-   the delivery's action is `enqueued` (or `queued`), GitHub lists its entry
-   in the merge queue, or its merge state status (else its
+   (`fctl_domain::webhooks::query`, with a token of the installation that
+   sent it): for each, its title, state, merge queue entry, times and its
+   head commit's checks counted by state. Deliveries come out of order and
+   some never come; a lookup says how things are. A pull request is queued
+   when the delivery's action is `enqueued` (or `queued`), GitHub lists its
+   entry in the merge queue, or its merge state status (else its
    `mergeable_state`) is `queued` or `in_merge_queue`. When the lookup
    fails, a `pull_request` delivery's own payload gives the state.
 4. **The sessions.** The control plane sends what it found to the
@@ -744,12 +744,21 @@ session that stopped looks up nothing, so GitHub tells the control plane
    the dashboards hear of it at once, and D1 within seconds.
 
 The control plane also looks up the pull requests a session finds as it
-finds them, and the hourly job those that aren't merged or closed and that
-nobody asked GitHub about for six hours (`pull_requests::sweep`, 30 a run),
-in case a delivery went missing: that also brings the pull requests of
-sessions from before the webhook up to date. The web app shows the states
-and checks with GitHub's octicons and colors (the design system's `pr-*`
-and `checks-*` tokens).
+finds them, and the hourly job up to 500 that aren't merged or closed and
+that nobody asked GitHub about for six hours (`pull_requests::sweep`), in
+case a delivery went missing: that also brings the pull requests of
+sessions from before the webhook up to date, all in its first run. One
+query asks about up to 50 pull requests of an account, for one point of
+the rate limit of the app's installation there (5,000 an hour), which the
+agents of its sessions share
+([ADR 0033](adr/0033-the-control-plane-looks-pull-requests-up-50-at-a-time.md)):
+the job leaves an account's other pull requests to its next run when
+GitHub doesn't answer or the installation has fewer than 1,000 points left.
+Each session hears of all of its pull requests at once, and
+`pull_request_sessions` keeps a pull request's old state until every
+session that lists it heard, so that the job asks again for one that
+didn't. The web app shows the states and checks with GitHub's octicons and
+colors (the design system's `pr-*` and `checks-*` tokens).
 
 ### Commits
 

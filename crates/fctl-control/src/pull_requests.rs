@@ -7,6 +7,10 @@
 //! Only an instance that takes the webhook (`GITHUB_WEBHOOK_SECRET`) looks
 //! pull requests up: elsewhere their checks would stay as they were when a
 //! session first listed them.
+//!
+//! One query asks GitHub about up to 50 pull requests of an account
+//! (`webhooks::MAX_LOOKUP`), for one point of the rate limit of the app's
+//! installation there, which the agents of its sessions share.
 
 use crate::config::Config;
 use crate::db::{int, n, os, q, s};
@@ -17,6 +21,8 @@ use fctl_domain::pulls;
 use fctl_domain::webhooks::{self, Hints, Hook, Looked};
 use fctl_proto::session::{PullRequestRef, RepoRef};
 use serde::Deserialize;
+use serde_json::json;
+use std::collections::BTreeMap;
 use worker::{D1Database, Env};
 
 /// Most pull requests one webhook delivery looks up: those a commit heads.
@@ -24,11 +30,17 @@ const MAX_LOOKUPS: usize = 10;
 /// Most pull request numbers of a delivery that D1 is asked about (it takes
 /// 100 parameters a query).
 const MAX_NUMBERS: usize = 50;
-/// Most pull requests the hourly sweep looks up.
-const SWEEP_LOOKUPS: i64 = 30;
+/// Most pull requests the hourly sweep looks up, in queries of 50: enough
+/// for those of all of an instance's sessions from before the webhook.
+const SWEEP_LOOKUPS: i64 = 500;
 /// How long what GitHub said of a pull request that isn't merged or closed
 /// stands before the sweep asks again, in case a delivery went missing.
 const SWEEP_AFTER_MS: i64 = 6 * 60 * 60 * 1000;
+/// The points of an installation's GraphQL rate limit (5,000 an hour or
+/// more) that lookups of many pull requests leave to its sessions' agents:
+/// they stop for an account whose installation has fewer left, and the
+/// next sweep carries on.
+const RESERVE: u64 = 1_000;
 
 /// Whether the instance takes GitHub's webhook, and so looks pull requests up.
 pub fn enabled(cfg: &Config) -> bool {
@@ -77,7 +89,6 @@ pub async fn track(
 struct Listed {
     #[serde(deserialize_with = "int")]
     number: i64,
-    session_id: String,
 }
 
 /// Does what a webhook delivery asks: looks up the pull requests it
@@ -111,49 +122,56 @@ pub async fn hook(
     let listed: Vec<Listed> = q(
         db,
         &format!(
-            "SELECT number, session_id FROM pull_request_sessions WHERE repo = ? AND ({})",
+            "SELECT DISTINCT number FROM pull_request_sessions WHERE repo = ? AND ({}) LIMIT {MAX_LOOKUPS}",
             which.join(" OR ")
         ),
         &params,
     )?
     .all()
     .await?;
-    let mut numbers: Vec<i64> = Vec::new();
-    for l in &listed {
-        if !numbers.contains(&l.number) && numbers.len() < MAX_LOOKUPS {
-            numbers.push(l.number);
-        }
+    let prs: Vec<(RepoRef, u64)> = listed
+        .iter()
+        .filter_map(|l| Some((hook.repo.clone(), u64::try_from(l.number).ok()?)))
+        .collect();
+    if prs.is_empty() {
+        return Ok(0);
     }
-    let mut told = 0;
-    for number in numbers {
-        let number = number as u64;
+    let answer = match github::from_config(cfg, now) {
+        Ok(gh) => gh.pull_requests(hook.installation, &prs).await.ok(),
+        Err(_) => None,
+    };
+    let mut seen = Vec::new();
+    for (i, (repo, number)) in prs.into_iter().enumerate() {
         // The pull request a `pull_request` event is about: what it says
         // helps the lookup, and stands in for it when it fails.
         let payload = hook.payload.as_ref().filter(|p| p.seen.number == number);
         let hints = payload.map(webhooks::Payload::hints).unwrap_or_default();
-        let looked = match look_up(cfg, hook.installation, &hook.repo, number, hints, now).await {
-            Some(l) => l,
-            None => match payload {
-                Some(p) => Looked {
+        let looked = answer
+            .as_ref()
+            .and_then(|a| webhooks::looked_up(a, i, now, hints))
+            .or_else(|| {
+                payload.map(|p| Looked {
                     pr: p.seen.clone(),
                     head: p.head.clone(),
-                },
-                None => continue,
-            },
-        };
-        record(db, &repo, number, Some(&looked), now).await?;
-        let sessions = listed
-            .iter()
-            .filter(|l| l.number as u64 == number)
-            .map(|l| l.session_id.as_str());
-        told += tell(env, sessions, &looked.pr).await;
+                })
+            });
+        if looked.is_some() {
+            seen.push(Seen {
+                repo,
+                number,
+                looked,
+            });
+        }
     }
-    Ok(told)
+    settle(env, db, &seen, now).await
 }
 
 /// Looks up pull requests sessions list and tells those sessions what
 /// GitHub says: those a session just found, and those the sweep picks.
-/// Returns how many sessions heard.
+/// Asks about those of each account 50 at a time, and leaves the rest of
+/// an account's to the next sweep when GitHub doesn't answer or its
+/// installation has less than [`RESERVE`] of its rate limit left. Returns
+/// how many times sessions heard.
 pub async fn refresh(
     env: &Env,
     cfg: &Config,
@@ -161,24 +179,50 @@ pub async fn refresh(
     prs: &[(RepoRef, u64)],
     now: i64,
 ) -> AppResult<usize> {
-    let mut told = 0;
+    let gh = github::from_config(cfg, now)?;
+    let mut accounts: BTreeMap<String, Vec<(RepoRef, u64)>> = BTreeMap::new();
     for (repo, number) in prs {
-        let looked = look_up(cfg, None, repo, *number, Hints::default(), now).await;
-        record(db, &key(repo), *number, looked.as_ref(), now).await?;
-        let Some(looked) = looked else { continue };
-        let sessions: Vec<Listed> = q(
-            db,
-            "SELECT number, session_id FROM pull_request_sessions WHERE repo = ? AND number = ?",
-            &[s(&key(repo)), n(*number as i64)],
-        )?
-        .all()
-        .await?;
-        told += tell(
-            env,
-            sessions.iter().map(|l| l.session_id.as_str()),
-            &looked.pr,
-        )
-        .await;
+        accounts
+            .entry(repo.owner.to_ascii_lowercase())
+            .or_default()
+            .push((repo.clone(), *number));
+    }
+    let mut told = 0;
+    for (account, prs) in accounts {
+        let mut batches = prs.chunks(webhooks::MAX_LOOKUP).peekable();
+        while let Some(batch) = batches.next() {
+            let answer = gh.pull_requests(None, batch).await;
+            let seen: Vec<Seen> = batch
+                .iter()
+                .enumerate()
+                .map(|(i, (repo, number))| Seen {
+                    repo: repo.clone(),
+                    number: *number,
+                    looked: answer
+                        .as_ref()
+                        .ok()
+                        .and_then(|a| webhooks::looked_up(a, i, now, Hints::default())),
+                })
+                .collect();
+            // Those GitHub didn't answer for wait their six hours too, so
+            // that one that always fails can't hold up the others.
+            told += settle(env, db, &seen, now).await?;
+            let left = match &answer {
+                Ok(a) => webhooks::remaining(a),
+                Err(e) => {
+                    worker::console_error!("looking up {account}'s pull requests: {}", e.0.message);
+                    break;
+                }
+            };
+            if batches.peek().is_some()
+                && let Some(left) = left.filter(|left| *left < RESERVE)
+            {
+                worker::console_log!(
+                    "leaving {account}'s other pull requests for later: {left} points of its rate limit left"
+                );
+                break;
+            }
+        }
     }
     Ok(told)
 }
@@ -214,73 +258,112 @@ pub async fn sweep(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
     refresh(env, &cfg, db, &prs, now).await
 }
 
-/// Looks a pull request up on GitHub; `None` when that fails, or GitHub
-/// has none.
-async fn look_up(
-    cfg: &Config,
-    installation: Option<u64>,
-    repo: &RepoRef,
+/// What GitHub said of a pull request sessions list: nothing when it didn't
+/// answer, or has none.
+struct Seen {
+    repo: RepoRef,
     number: u64,
-    hints: Hints<'_>,
-    now: i64,
-) -> Option<Looked> {
-    let gh = github::from_config(cfg, now).ok()?;
-    let answer = gh.pull_request(installation, repo, number).await.ok()?;
-    let looked = webhooks::looked_up(&answer, now, hints);
-    if looked.is_none() {
-        worker::console_log!("GitHub has no pull request {}#{number}", repo.full_name());
+    looked: Option<Looked>,
+}
+
+#[derive(Deserialize)]
+struct Listing {
+    repo: String,
+    #[serde(deserialize_with = "int")]
+    number: i64,
+    session_id: String,
+}
+
+/// Tells the sessions that list pull requests what GitHub said of them,
+/// each session all of its at once, and then notes what it said and when
+/// the control plane asked: their head commits, which commit statuses
+/// name, and their states, which the sweep goes by. A pull request keeps
+/// its old state there until every session that lists it heard, so that
+/// the sweep asks again for those that didn't. Returns how many heard.
+async fn settle(env: &Env, db: &D1Database, seen: &[Seen], now: i64) -> AppResult<usize> {
+    if seen.is_empty() {
+        return Ok(0);
     }
-    looked
-}
-
-/// Notes what GitHub said of a pull request, and when the control plane
-/// asked: its head commit, which commit statuses name, and its state, which
-/// the sweep goes by.
-async fn record(
-    db: &D1Database,
-    repo: &str,
-    number: u64,
-    looked: Option<&Looked>,
-    now: i64,
-) -> AppResult<()> {
-    q(
-        db,
-        "UPDATE pull_request_sessions SET head_sha = COALESCE(?, head_sha), state = COALESCE(?, state), checked_at = ? \
-         WHERE repo = ? AND number = ?",
-        &[
-            os(looked.and_then(|l| l.head.as_deref())),
-            os(looked.and_then(|l| l.pr.state.as_deref())),
-            n(now),
-            s(repo),
-            n(number as i64),
-        ],
-    )?
-    .run()
-    .await?;
-    Ok(())
-}
-
-/// Tells sessions what GitHub says of a pull request they list. Returns how
-/// many heard.
-async fn tell<'a>(
-    env: &Env,
-    sessions: impl Iterator<Item = &'a str>,
-    pr: &PullRequestRef,
-) -> usize {
+    let found: Vec<_> = seen
+        .iter()
+        .filter(|x| x.looked.is_some())
+        .map(|x| json!([key(&x.repo), x.number]))
+        .collect();
+    let listing: Vec<Listing> = if found.is_empty() {
+        Vec::new()
+    } else {
+        q(
+            db,
+            "SELECT repo, number, session_id FROM pull_request_sessions WHERE (repo, number) IN \
+             (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?))",
+            &[s(&json!(found).to_string())],
+        )?
+        .all()
+        .await?
+    };
+    let of = |l: &Listing| {
+        seen.iter()
+            .find(|x| x.number as i64 == l.number && key(&x.repo) == l.repo)
+            .and_then(|x| x.looked.as_ref())
+    };
+    let mut sessions: BTreeMap<&str, Vec<PullRequestRef>> = BTreeMap::new();
+    for l in &listing {
+        if let Some(looked) = of(l) {
+            sessions
+                .entry(&l.session_id)
+                .or_default()
+                .push(looked.pr.clone());
+        }
+    }
     let mut told = 0;
-    for id in sessions {
-        let result: AppResult<serde_json::Value> = async {
-            let stub = internal::session_stub(env, id)?;
-            let seen = internal::PullRequestsSeen {
-                prs: vec![pr.clone()],
-            };
-            internal::post(&stub, "/pull-requests", &seen).await
-        }
-        .await;
-        match result {
-            Ok(_) => told += 1,
-            Err(e) => worker::console_error!("telling session {id} of {}: {}", pr.url, e.0.message),
+    let mut unheard = Vec::new();
+    for (id, prs) in sessions {
+        if tell(env, id, prs).await {
+            told += 1;
+        } else {
+            unheard.push(id);
         }
     }
-    told
+    let mut statements = Vec::new();
+    for x in seen {
+        let repo = key(&x.repo);
+        let heard = !listing.iter().any(|l| {
+            l.number == x.number as i64
+                && l.repo == repo
+                && unheard.contains(&l.session_id.as_str())
+        });
+        let state = x
+            .looked
+            .as_ref()
+            .filter(|_| heard)
+            .and_then(|l| l.pr.state.as_deref());
+        statements.push(q(
+            db,
+            "UPDATE pull_request_sessions SET head_sha = COALESCE(?, head_sha), state = COALESCE(?, state), checked_at = ? \
+             WHERE repo = ? AND number = ?",
+            &[
+                os(x.looked.as_ref().and_then(|l| l.head.as_deref())),
+                os(state),
+                n(now),
+                s(&repo),
+                n(x.number as i64),
+            ],
+        )?);
+    }
+    crate::db::batch(db, statements).await?;
+    Ok(told)
+}
+
+/// Tells a session what GitHub says of pull requests it lists. Returns
+/// whether it heard.
+async fn tell(env: &Env, id: &str, prs: Vec<PullRequestRef>) -> bool {
+    let result: AppResult<serde_json::Value> = async {
+        let stub = internal::session_stub(env, id)?;
+        internal::post(&stub, "/pull-requests", &internal::PullRequestsSeen { prs }).await
+    }
+    .await;
+    if let Err(e) = &result {
+        worker::console_error!("telling session {id} of its pull requests: {}", e.0.message);
+    }
+    result.is_ok()
 }

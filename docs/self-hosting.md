@@ -366,10 +366,13 @@ GitHub signs with it, and answers others with 401 (without the secret,
 GitHub what became of it, so session lists and pages show its state (open,
 draft, queued, merged or closed) and its checks as they change, whatever
 the session is doing. It also asks about each pull request a session
-finds, and once an hour about up to 30 open ones it hasn't heard of for six
-hours, which brings sessions from before the webhook up to date. Without
-the secret, sessions show what their agents last looked up, without
-checks.
+finds, and once an hour about up to 500 open ones it hasn't heard of for six
+hours, which brings sessions from before the webhook up to date at the
+first run after you set the secret. It asks about 50 at a time, for one
+point of the installation's GraphQL rate limit (5,000 an hour, which your
+agents share), and leaves the rest for the next hour while the
+installation has fewer than 1,000 points left. Without the secret,
+sessions show what their agents last looked up, without checks.
 
 To turn the webhook on for an app made before, edit it on GitHub: under
 **General**, tick **Active** under **Webhook** and fill in its URL and

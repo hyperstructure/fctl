@@ -38,3 +38,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0030](0030-sessions-follow-every-pull-request-their-agent-opens.md) | Sessions follow every pull request their agent opens |
 | [0031](0031-admins-choose-a-github-accounts-repositories-after-signing-in.md) | Admins choose a GitHub account's repositories after signing in, and installing the app comes back to the workspace |
 | [0032](0032-githubs-webhook-keeps-sessions-pull-requests-current.md) | GitHub's webhook keeps sessions' pull requests current, with their checks |
+| [0033](0033-the-control-plane-looks-pull-requests-up-50-at-a-time.md) | The control plane looks pull requests up 50 at a time |
