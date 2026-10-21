@@ -453,9 +453,11 @@ passkey challenges, device codes and invites, early access requests whose
 address has an account or that are a year old, the links of expired
 published screenshots, abandoned Claude logins, and audit
 log entries older than a year. It also looks up pull requests that GitHub
-hasn't told about for a while ([Pull requests' state](#pull-requests-state)).
-Deleting a workspace does the same for all its projects. Deleting an account (`src/api/account.rs`) does it for the
-workspaces only that account is in, passes the primary admin role of its
+hasn't told about for a while
+([Pull request state and checks](#pull-request-state-and-checks)).
+Deleting a workspace does the same for all its projects. Deleting an
+account (`src/api/account.rs`) does it for the workspaces only that
+account is in, passes the primary admin role of its
 other workspaces to their longest-standing admin, or member, deletes its
 personal rows (its addresses too) in the same batch, and keeps a nameless
 placeholder row only while sessions or projects it created remain.
@@ -653,10 +655,10 @@ agent posts a notice; a primary repository out of reach fails the session.
   them all in the `git` event's `pull_requests`, and looks each up again
   when a turn ends until it is merged, so the session lists them with their
   state (`fctl_domain::pulls`), and GitHub keeps that current
-  ([Pull requests' state](#pull-requests-state)). The system prompt tells
-  agents to make another pull request's branch where the repository is
-  checked out, not in a worktree, since Changes shows the checked-out
-  branches.
+  ([Pull request state and checks](#pull-request-state-and-checks)). The
+  system prompt tells agents to make another pull request's branch where
+  the repository is checked out, not in a worktree, since Changes shows
+  the checked-out branches.
 - **Merged branches** aren't pushed again: GitHub deletes a merged pull
   request's branch in repositories set up to, and a push would bring it
   back. Before it pushes a
@@ -685,7 +687,7 @@ Older hosts and agents ignore the list and the second token, and work on the
 primary repository alone
 ([ADR 0009](adr/0009-projects-span-an-accounts-repositories.md)).
 
-### Pull requests' state
+### Pull request state and checks
 
 Session lists, the session page and `fctl show` give each pull request its
 state, `open`, `draft`, `queued` (in a merge queue), `merged` or `closed`,

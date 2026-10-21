@@ -358,7 +358,7 @@ and the server convert it); it never reaches a host or a sandbox. Without
 the client secret, a workspace keeps the accounts it has but can't connect
 a new one, and its GitHub tab says so.
 
-### Pull requests' state
+### Pull request state and checks
 
 With the webhook's secret set, the control plane takes the deliveries
 GitHub signs with it, and answers others with 401 (without the secret,
