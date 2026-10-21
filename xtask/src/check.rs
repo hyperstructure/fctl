@@ -157,3 +157,5 @@ mod tests {
         }
     }
 }
+
+fn   badly_formatted ( ) { }
