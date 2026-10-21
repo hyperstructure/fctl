@@ -1071,6 +1071,19 @@ spec, which every fctl-agent passes to Claude, and fctl-agent writes
 repository settings can undo. An update that leaves the field out keeps
 the stored value, so a client from before it can't turn connectors back on.
 
+Claude Code's [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
+(the `ListAgents` and `SendMessage` tools) reaches only the Claude sessions
+in an agent's own sandbox, such as its subagents: Claude Code lists the
+sessions registered in its own `~/.claude/sessions`, and every sandbox has
+its own home directory. It lists sessions on other machines and in the
+cloud only while connected to Remote Control, so a session on a long-lived
+token can't list, read or message any of the person's other sessions,
+whether in fctl, on their own machines or at claude.ai/code. A session on a
+full login joins Remote Control unless its project turns it off, and its
+agent may then be able to list the person's other Remote Control and cloud
+sessions and send them messages. The `process` driver isolates nothing:
+there an agent can reach whatever the host's user can.
+
 Guards against API billing: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 `ANTHROPIC_BASE_URL`, Bedrock/Vertex/Foundry switches and `apiKeyHelper` never
 reach Claude; the `system/init` message must report no API key source; a
