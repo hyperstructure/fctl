@@ -74,12 +74,28 @@ const side: G.Workspace = {
   created_at: 0,
 };
 
-/** The workspace's Runners tab, without runners, as `workspace` sees it. */
-function runnersTab(workspace: G.Workspace) {
+const runner = (r: Partial<G.Runner> & { id: string }): G.Runner => ({
+  name: r.id,
+  status: "online",
+  drivers: [],
+  capacity: 4,
+  active_sessions: 0,
+  labels: [],
+  created_at: 0,
+  workspaces: [{ id: side.id, slug: side.slug, name: side.name, color: side.color }],
+  yours: true,
+  ...r,
+});
+
+/**
+ * The workspace's Runners tab as `workspace` sees it, with these runners (`null`: they haven't loaded),
+ * and these in the list of every runner they see.
+ */
+function runnersTab(workspace: G.Workspace, runners: G.Runner[] | null = [], all = runners ?? []) {
   const client = new QueryClient();
   client.setQueryData(keys.workspace(workspace.slug), workspace);
-  client.setQueryData<G.RunnerList>(keys.workspaceRunners(workspace.id), { runners: [] });
-  client.setQueryData<G.RunnerList>(keys.runners, { runners: [] });
+  if (runners) client.setQueryData<G.RunnerList>(keys.workspaceRunners(workspace.id), { runners });
+  client.setQueryData<G.RunnerList>(keys.runners, { runners: all });
   const container = document.createElement("div");
   const root = createRoot(container);
   act(() =>
@@ -90,12 +106,13 @@ function runnersTab(workspace: G.Workspace) {
     ),
   );
   roots.push(() => act(() => root.unmount()));
-  return container.textContent ?? "";
+  return container;
 }
 
 describe("a workspace without runners", () => {
   it("shows its admins how to bring a machine online", () => {
-    const text = runnersTab(side);
+    const text = runnersTab(side).textContent;
+    expect(text).toContain("No runners yet");
     expect(text).toContain("Side project's sessions wait until one of its runners is online.");
     expect(text).toContain("Choose a machine that stays on");
     expect(text).toContain(
@@ -111,10 +128,61 @@ describe("a workspace without runners", () => {
   });
 
   it("tells members whom to ask for one", () => {
-    const text = runnersTab({ ...side, role: "member", email: "grace@example.com" });
+    const text = runnersTab({ ...side, role: "member", email: "grace@example.com" }).textContent;
     expect(text).toContain("No runners yet");
     expect(text).toContain("Ask Ada Lovelace, its primary admin, to add one.");
+    expect(text).not.toContain("To add another");
     expect(text).not.toContain("Choose a machine that stays on");
+  });
+
+  it("says nothing about adding one before its runners load", () => {
+    const text = runnersTab(side, null).textContent;
+    expect(text).not.toContain("No runners yet");
+    expect(text).not.toContain("Add another runner");
+    expect(text).not.toContain("Choose a machine that stays on");
+  });
+});
+
+describe("a workspace with runners", () => {
+  const mini = runner({ id: "mini" });
+
+  it("shows its admins how to add another, under them", () => {
+    const page = runnersTab(side, [mini]);
+    expect(page.textContent).toContain("Add another runner");
+    expect(page.textContent).toContain(
+      "With more runners, more of Side project's sessions run at once. To bring another machine online:",
+    );
+    expect(page.textContent).not.toContain("No runners yet");
+    const steps = page.querySelector("ol");
+    expect(steps?.textContent).toContain("Choose a machine that stays on");
+    expect(steps?.textContent).toContain("curl -fsSL https://fctl.sh/install | sh");
+    expect(steps?.textContent).toContain("Register it for Side project");
+    expect(steps?.textContent).toContain("fctl host install --workspace side-project");
+    expect(steps && page.querySelector("ul")?.compareDocumentPosition(steps)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("offers its admins their own runners first", () => {
+    const studio = runner({ id: "studio", workspaces: [] });
+    const text = runnersTab(side, [mini], [mini, studio]).textContent;
+    expect(text).toContain("Or add one of yours");
+    expect(text).toContain(
+      "With more runners, more of Side project's sessions run at once. Add one of yours above, or bring another machine online:",
+    );
+  });
+
+  it("tells members whom to ask for another", () => {
+    const member: G.Workspace = { ...side, role: "member", email: "grace@example.com" };
+    const adas = { ...mini, yours: false };
+    const text = runnersTab(member, [adas]).textContent;
+    expect(text).toContain(
+      "Only Side project's admins add runners. To add another, ask Ada Lovelace, its primary admin.",
+    );
+    expect(text).not.toContain("Choose a machine that stays on");
+    expect(runnersTab({ ...member, primary: undefined }, [adas]).textContent).toContain(
+      "Only Side project's admins add runners. To add another, ask one of them.",
+    );
   });
 });
 
