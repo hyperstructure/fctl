@@ -93,7 +93,7 @@ pub async fn hook(
     let repo = key(&hook.repo);
     let mut which = Vec::new();
     let mut params = vec![s(&repo)];
-    let numbers = &hook.numbers[..hook.numbers.len().min(MAX_NUMBERS)];
+    let numbers: Vec<u64> = hook.numbers.iter().copied().take(MAX_NUMBERS).collect();
     if !numbers.is_empty() {
         which.push(format!(
             "number IN ({})",
