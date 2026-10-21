@@ -539,7 +539,8 @@ export function InvitePage() {
           </div>
           <p className="text-[13.5px] leading-relaxed text-ink-3">
             Connect <span className="text-ink">{email}</span> to this account: it signs in to it too, has its
-            own commit email, and the workspaces you join as it see only it.
+            own commit email, and the workspaces you join as it see only it. Connect it only if the address is
+            yours: whoever has it can reset this account's password.
           </p>
           {connect.error && <Banner tone="error">{connect.error.message}</Banner>}
           <Button

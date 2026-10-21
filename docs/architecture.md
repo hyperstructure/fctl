@@ -331,7 +331,11 @@ the instance creates one, as its primary admin.
 Each address is invited to the instance on its own. Accepting an
 invitation while signed in (`POST /api/v1/invites/{token}/connect`)
 connects its address to that account instead of making a new one
-(`user_emails`). Every address signs in, and has its own commit email
+(`user_emails`). That takes a browser sign-in from the last 15 minutes,
+and the account's primary address is emailed about it, since the address
+then signs in and receives password reset links: an invitation link
+forwarded to someone else would otherwise give its holder their account.
+Every address signs in, and has its own commit email
 ([Commits](#commits)); the account's primary one (`users.email`) is where
 fctl writes to the person. A workspace knows its member by the address they
 joined as (`workspace_members.email`), the only one its people see:
