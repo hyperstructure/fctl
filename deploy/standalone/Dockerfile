@@ -16,7 +16,7 @@
 # components to it, and the layers before the Worker's build stay cached until
 # the toolchain changes. rust:1-slim-bookworm moved with every Rust and Debian
 # release, and each move built worker-build again, which takes two minutes.
-FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99.0-slim-bookworm AS worker
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99.1-slim-bookworm AS worker
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates pkg-config libssl-dev \
   && rm -rf /var/lib/apt/lists/*
