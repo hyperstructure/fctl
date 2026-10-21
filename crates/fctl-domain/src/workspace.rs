@@ -217,6 +217,21 @@ pub fn check_add_runner(registered_it: bool, role: Option<WorkspaceRole>) -> Res
     Ok(())
 }
 
+/// Whether someone may replace a runner's token, which they then hold: only
+/// the person who registered it. The token runs the sessions of the
+/// workspaces the runner serves, with their code, secrets and tokens, and
+/// an instance admin need not be a member of those; they disable, drain or
+/// remove the runner instead.
+pub fn check_replace_runner_token(registered_it: bool) -> Result<()> {
+    if registered_it {
+        Ok(())
+    } else {
+        Err(denied(
+            "Only the person who registered a runner can replace its token, since the new token runs its workspaces' sessions. Instance admins can disable or remove it.",
+        ))
+    }
+}
+
 /// Whether someone may take a runner out of a workspace: they registered
 /// it, they are an admin of the workspace, or of the instance.
 pub fn can_remove_runner(
@@ -379,5 +394,13 @@ mod tests {
         assert!(can_remove_runner(false, Some(Admin), false));
         assert!(can_remove_runner(false, None, true));
         assert!(!can_remove_runner(false, Some(Member), false));
+    }
+
+    #[test]
+    fn only_a_runners_owner_holds_its_new_token() {
+        assert!(check_replace_runner_token(true).is_ok());
+        // An instance admin who didn't register it would run the sessions
+        // of workspaces they may not be in.
+        assert!(check_replace_runner_token(false).is_err());
     }
 }
