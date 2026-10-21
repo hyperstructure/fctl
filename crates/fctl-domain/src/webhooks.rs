@@ -6,7 +6,7 @@
 //! pushed to, queued, merged or closed (`pull_request`), or the checks of a
 //! commit moved on (`check_run`, `check_suite`, `status`). For each pull
 //! request a session lists among those, the control plane looks it up
-//! ([`QUERY`]), which tells its state and all of its checks at once, and
+//! ([`query`]), which tells its state and all of its checks at once, and
 //! the sessions take that in (`crate::pulls::observe`). When the lookup
 //! fails, a `pull_request` event's payload tells the state.
 
@@ -14,7 +14,7 @@ use crate::pulls::{self, Times, github_time as time};
 use fctl_proto::Millis;
 use fctl_proto::session::{PullRequestChecks, PullRequestRef, RepoRef};
 use hmac::{Hmac, KeyInit, Mac};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 use sha2::Sha256;
 
 /// Whether `signature`, a delivery's `X-Hub-Signature-256` (`sha256=` and
@@ -192,31 +192,68 @@ fn seen_in(pr: &Value, action: &str) -> Option<PullRequestRef> {
     })
 }
 
-/// The GraphQL query that looks a pull request up: its title, state and
-/// times, whether it is in a merge queue, and the checks of its head commit
-/// counted by their state. Its variables are `owner`, `name` and `number`.
-pub const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      number url title state isDraft createdAt updatedAt mergedAt closedAt headRefOid
-      mergeStateStatus
-      mergeQueueEntry { enqueuedAt }
-      commits(last: 1) {
-        nodes {
-          commit {
-            oid
-            statusCheckRollup {
-              contexts {
-                checkRunCountsByState { state count }
-                statusContextCountsByState { state count }
-              }
-            }
+/// The most pull requests one lookup asks about. GitHub counts a query of
+/// up to 100 as one point of the installation's rate limit (5,000 an hour),
+/// and answers one of 50 in about two seconds; it gives up after ten.
+pub const MAX_LOOKUP: usize = 50;
+
+/// What a lookup asks of each pull request: its title, state and times,
+/// whether it is in a merge queue, and the checks of its head commit
+/// counted by their state.
+const FIELDS: &str = "fragment pr on PullRequest {
+  number url title state isDraft createdAt updatedAt mergedAt closedAt headRefOid
+  mergeStateStatus
+  mergeQueueEntry { enqueuedAt }
+  commits(last: 1) {
+    nodes {
+      commit {
+        oid
+        statusCheckRollup {
+          contexts {
+            checkRunCountsByState { state count }
+            statusContextCountsByState { state count }
           }
         }
       }
     }
   }
 }";
+
+/// The GraphQL request, its `query` and `variables`, that looks up `prs`
+/// (one to [`MAX_LOOKUP`]) at once: [`looked_up`] reads each by its place
+/// in `prs`, and [`remaining`] what is left of the rate limit.
+pub fn query(prs: &[(RepoRef, u64)]) -> Value {
+    let mut params = Vec::new();
+    let mut fields = vec!["rateLimit { remaining }".to_owned()];
+    let mut variables = Map::new();
+    for (i, (repo, number)) in prs.iter().enumerate() {
+        params.push(format!(
+            "$owner{i}: String!, $name{i}: String!, $number{i}: Int!"
+        ));
+        fields.push(format!(
+            "pr{i}: repository(owner: $owner{i}, name: $name{i}) {{ pullRequest(number: $number{i}) {{ ...pr }} }}"
+        ));
+        variables.insert(format!("owner{i}"), json!(repo.owner));
+        variables.insert(format!("name{i}"), json!(repo.name));
+        // GraphQL's Int has 32 bits: a larger number, which no pull request
+        // has, asks for one GitHub doesn't have instead of failing them all.
+        variables.insert(format!("number{i}"), json!((*number).min(i32::MAX as u64)));
+    }
+    json!({
+        "query": format!(
+            "query({}) {{\n  {}\n}}\n{FIELDS}",
+            params.join(", "),
+            fields.join("\n  ")
+        ),
+        "variables": variables,
+    })
+}
+
+/// How many points of the installation's rate limit are left, as GitHub's
+/// answer to [`query`] says.
+pub fn remaining(answer: &Value) -> Option<u64> {
+    answer.pointer("/data/rateLimit/remaining")?.as_u64()
+}
 
 /// A pull request as a lookup found it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,11 +264,11 @@ pub struct Looked {
     pub head: Option<String>,
 }
 
-/// What GitHub's answer to [`QUERY`], asked at `at`, says of the pull
-/// request, with what the webhook that asked says (`hints`); `None` when
-/// it found none.
-pub fn looked_up(answer: &Value, at: Millis, hints: Hints<'_>) -> Option<Looked> {
-    let pr = answer.pointer("/data/repository/pullRequest")?;
+/// What GitHub's answer to [`query`], asked at `at`, says of the `i`th pull
+/// request it asked about, with what the webhook that asked says (`hints`);
+/// `None` when GitHub has none.
+pub fn looked_up(answer: &Value, i: usize, at: Millis, hints: Hints<'_>) -> Option<Looked> {
+    let pr = answer.pointer(&format!("/data/pr{i}/pullRequest"))?;
     let text = |key: &str| pr.get(key).and_then(Value::as_str);
     let url = text("url")?;
     let state = text("state")?;
@@ -503,10 +540,10 @@ mod tests {
         );
     }
 
-    /// GitHub's answer to `QUERY` for hyperstructure/fctl#170 while its
-    /// checks ran, as GitHub gave it (trimmed of states with no checks).
+    /// GitHub's answer to a [`query`] of hyperstructure/fctl#170 alone,
+    /// while its checks ran (trimmed of states with no checks).
     fn answer() -> Value {
-        json!({ "data": { "repository": { "pullRequest": {
+        json!({ "data": { "rateLimit": { "remaining": 4990 }, "pr0": { "pullRequest": {
             "number": 170,
             "url": "https://github.com/hyperstructure/fctl/pull/170",
             "title": "ci: run the checks in parallel jobs and deploy main sooner",
@@ -540,7 +577,7 @@ mod tests {
     #[test]
     fn lookups_say_the_state_and_count_the_checks() {
         let looked =
-            looked_up(&answer(), 1_000, Hints::default()).unwrap_or_else(|| panic!("no found"));
+            looked_up(&answer(), 0, 1_000, Hints::default()).unwrap_or_else(|| panic!("no found"));
         assert_eq!(looked.head.as_deref(), Some("9f8e7d"));
         let pr = looked.pr;
         assert_eq!((pr.number, pr.state.as_deref()), (170, Some("draft")));
@@ -559,60 +596,95 @@ mod tests {
         );
         // Without checks: none counted, still for that commit.
         let mut none = answer();
-        none["data"]["repository"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"] =
+        none["data"]["pr0"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"] =
             Value::Null;
-        let c = looked_up(&none, 1_000, Hints::default())
+        let c = looked_up(&none, 0, 1_000, Hints::default())
             .and_then(|l| l.pr.checks)
             .unwrap_or_else(|| panic!("no checks"));
         assert_eq!(
             (c.passed, c.failed, c.pending, c.sha.as_deref()),
             (0, 0, 0, Some("9f8e7d"))
         );
-        // Nothing found.
+        // Nothing found: no such pull request, or repository, or answer.
+        for nothing in [
+            json!({ "data": { "pr0": { "pullRequest": null } } }),
+            json!({ "data": { "pr0": null } }),
+            json!({ "errors": [{ "message": "Bad credentials" }] }),
+        ] {
+            assert_eq!(looked_up(&nothing, 0, 1, Hints::default()), None);
+        }
+    }
+
+    #[test]
+    fn one_lookup_asks_about_many_pull_requests() {
+        let repo = |s| RepoRef::parse(s).unwrap_or_else(|| panic!("{s}"));
+        let body = query(&[
+            (repo("acme/app"), 12),
+            (repo("acme/site"), 3),
+            (repo("acme/app"), 1 << 40),
+        ]);
         assert_eq!(
-            looked_up(
-                &json!({ "data": { "repository": { "pullRequest": null } } }),
-                1,
-                Hints::default()
-            ),
-            None
+            body["variables"],
+            json!({
+                "owner0": "acme", "name0": "app", "number0": 12,
+                "owner1": "acme", "name1": "site", "number1": 3,
+                // Larger than GraphQL's Int: no pull request is numbered so.
+                "owner2": "acme", "name2": "app", "number2": i32::MAX,
+            })
         );
+        let q = body["query"].as_str().unwrap_or_default();
+        assert!(q.starts_with(
+            "query($owner0: String!, $name0: String!, $number0: Int!, $owner1: String!, "
+        ));
+        assert!(q.contains("\n  rateLimit { remaining }\n"));
+        for i in 0..3 {
+            assert!(q.contains(&format!(
+                "\n  pr{i}: repository(owner: $owner{i}, name: $name{i}) {{ pullRequest(number: $number{i}) {{ ...pr }} }}"
+            )));
+        }
+        assert!(q.ends_with(FIELDS));
+        // The answer says each by its place, and what is left of the limit.
+        let mut a = answer();
+        a["data"]["pr1"] = json!({ "pullRequest": null });
+        a["data"]["pr2"] = a["data"]["pr0"].clone();
+        a["data"]["pr2"]["pullRequest"]["number"] = json!(171);
+        a["data"]["pr2"]["pullRequest"]["url"] =
+            json!("https://github.com/hyperstructure/fctl/pull/171");
+        let number = |i| looked_up(&a, i, 1, Hints::default()).map(|l| l.pr.number);
         assert_eq!(
-            looked_up(
-                &json!({ "errors": [{ "message": "Bad credentials" }] }),
-                1,
-                Hints::default()
-            ),
-            None
+            [number(0), number(1), number(2), number(3)],
+            [Some(170), None, Some(171), None]
         );
+        assert_eq!(remaining(&a), Some(4990));
+        assert_eq!(remaining(&json!({ "errors": [] })), None);
     }
 
     #[test]
     fn lookups_see_merge_queues() {
         let mut queued = answer();
-        let pr = &mut queued["data"]["repository"]["pullRequest"];
+        let pr = &mut queued["data"]["pr0"]["pullRequest"];
         pr["isDraft"] = json!(false);
         pr["mergeQueueEntry"] = json!({ "enqueuedAt": "2026-10-21T16:45:00Z" });
-        let looked = looked_up(&queued, 1, Hints::default())
+        let looked = looked_up(&queued, 0, 1, Hints::default())
             .unwrap_or_else(|| panic!("no found"))
             .pr;
         assert_eq!(looked.state.as_deref(), Some("queued"));
         assert_eq!(looked.state_changed_at, ms("2026-10-21T16:45:00Z"));
         // The webhook says it was queued, before GitHub lists its entry.
         let mut open = answer();
-        open["data"]["repository"]["pullRequest"]["isDraft"] = json!(false);
+        open["data"]["pr0"]["pullRequest"]["isDraft"] = json!(false);
         let hints = |action| Hints {
             action: Some(action),
             mergeable_state: None,
         };
-        let state = |v: &Value, h| looked_up(v, 1, h).and_then(|l| l.pr.state);
+        let state = |v: &Value, h| looked_up(v, 0, 1, h).and_then(|l| l.pr.state);
         assert_eq!(state(&open, hints("enqueued")).as_deref(), Some("queued"));
         assert_eq!(state(&open, hints("dequeued")).as_deref(), Some("open"));
         // Merged beats queued.
         let mut merged = queued.clone();
-        merged["data"]["repository"]["pullRequest"]["state"] = json!("MERGED");
-        merged["data"]["repository"]["pullRequest"]["mergedAt"] = json!("2026-10-21T16:50:00Z");
-        let pr = looked_up(&merged, 1, hints("enqueued"))
+        merged["data"]["pr0"]["pullRequest"]["state"] = json!("MERGED");
+        merged["data"]["pr0"]["pullRequest"]["mergedAt"] = json!("2026-10-21T16:50:00Z");
+        let pr = looked_up(&merged, 0, 1, hints("enqueued"))
             .unwrap_or_else(|| panic!("no found"))
             .pr;
         assert_eq!(
@@ -620,7 +692,7 @@ mod tests {
             (Some("merged"), ms("2026-10-21T16:50:00Z"))
         );
         // `mergeable_state` counts only when GitHub gives no `mergeStateStatus`.
-        open["data"]["repository"]["pullRequest"]["mergeStateStatus"] = Value::Null;
+        open["data"]["pr0"]["pullRequest"]["mergeStateStatus"] = Value::Null;
         let h = Hints {
             action: Some("edited"),
             mergeable_state: Some("in_merge_queue"),
@@ -632,10 +704,10 @@ mod tests {
     fn checks_that_fail_or_wait_count_as_such() {
         let counts = |runs: Value, statuses: Value| {
             let mut a = answer();
-            a["data"]["repository"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
+            a["data"]["pr0"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
                 ["contexts"] =
                 json!({ "checkRunCountsByState": runs, "statusContextCountsByState": statuses });
-            let c = looked_up(&a, 1, Hints::default())
+            let c = looked_up(&a, 0, 1, Hints::default())
                 .and_then(|l| l.pr.checks)
                 .unwrap_or_else(|| panic!("no checks"));
             (c.passed, c.failed, c.pending)

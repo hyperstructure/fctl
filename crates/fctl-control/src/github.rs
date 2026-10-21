@@ -733,44 +733,49 @@ impl<'a> Github<'a> {
         Ok(token)
     }
 
-    /// Looks a pull request up (`fctl_domain::webhooks::QUERY`) through
-    /// installation `inst`, or else the one on its repository's owner, and
-    /// returns GitHub's answer.
-    pub async fn pull_request(
+    /// Looks pull requests up, one to `fctl_domain::webhooks::MAX_LOOKUP`
+    /// of one account, with one query (`fctl_domain::webhooks::query`)
+    /// through installation `inst`, or else the one on that account, and
+    /// returns GitHub's answer. Fails when GitHub gives none: it refused or
+    /// failed, or the installation's rate limit ran out.
+    pub async fn pull_requests(
         &self,
         inst: Option<u64>,
-        repo: &RepoRef,
-        number: u64,
+        prs: &[(RepoRef, u64)],
     ) -> AppResult<Value> {
+        let Some((repo, number)) = prs.first() else {
+            return Err(internal("no pull requests to look up"));
+        };
+        let which = match prs.len() {
+            1 => format!("{}#{number}", repo.full_name()),
+            n => format!("{}#{number} and {} more", repo.full_name(), n - 1),
+        };
         let inst = match inst {
             Some(i) => i,
             None => self.installation_id(&repo.owner).await?,
         };
         let token = self.lookup_token(inst).await?;
-        let body = json!({
-            "query": fctl_domain::webhooks::QUERY,
-            "variables": { "owner": repo.owner, "name": repo.name, "number": number },
-        });
         let (status, answer) = self
             .call(
                 Method::Post,
                 "/graphql",
                 &format!("token {token}"),
-                Some(body),
+                Some(fctl_domain::webhooks::query(prs)),
             )
             .await?;
         if status == 401 {
             LOOKUP_TOKENS.with(|m| m.borrow_mut().remove(&inst));
         }
         if status != 200 {
-            worker::console_error!(
-                "looking up {}#{number}: GitHub answered {status}",
-                repo.full_name()
-            );
+            worker::console_error!("looking up {which}: GitHub answered {status}");
             return Err(unavailable("GitHub did not answer"));
         }
+        // NOT_FOUND names a pull request or repository GitHub doesn't have.
         if let Some(errors) = answer.get("errors") {
-            worker::console_error!("looking up {}#{number}: {errors}", repo.full_name());
+            worker::console_error!("looking up {which}: {errors}");
+        }
+        if answer.get("data").is_none_or(Value::is_null) {
+            return Err(unavailable("GitHub did not answer"));
         }
         Ok(answer)
     }
