@@ -107,7 +107,7 @@ checks every build for it:
   start. The image sets it, and `/etc/profile.d/fctl.sh` sets it for login
   shells, which setup scripts run in. fctl itself is in `/usr/local/bin`.
 - **The tools**: git, gh, Python 3 (`python3` and `python`) with uv, Rust
-  through rustup with rustfmt and Clippy, Node.js 22 with npm and corepack,
+  through rustup with rustfmt and Clippy, Node.js 26 with npm and corepack,
   TypeScript (`tsc`), Bun, build-essential, cmake, pkg-config, OpenSSL's
   headers, ripgrep, fd, jq, ShellCheck, sqlite3, curl, wget, rsync, zip and
   tree.
