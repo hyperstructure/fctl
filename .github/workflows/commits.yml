@@ -16,6 +16,13 @@ concurrency:
 permissions:
   contents: read
 
+# As in ci.yml, so that the xtask build shares its cache (rust-cache's keys
+# hash these).
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
 jobs:
   conventional:
     name: Conventional Commits
@@ -25,10 +32,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/rust
         with:
-          key: xtask
+          shared-key: xtask
       - name: The pull request title (it becomes the commit on main)
         if: github.event_name == 'pull_request'
         env:

@@ -4,6 +4,12 @@
 # (hyperstructure/fctl-site) to the new docs when docs/ changed. Pull request
 # titles are checked in commits.yml; the standalone control plane's image in
 # standalone-image.yml, on pull requests that change it and for each release.
+#
+# The parts of `cargo xtask check` run at once, each in a job of its own, and
+# "cargo xtask check" passes once they all have: that check and "cargo xtask
+# dev --smoke" are the ones main's ruleset requires (.github/rulesets). On
+# main, what the deploy ships builds beside them, and the deploy waits for
+# all three.
 name: CI
 
 on:
@@ -22,23 +28,63 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # No debug info in dev and test builds: they build and link in half the
+  # time, and their caches are a third of the size. Panics still say where.
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
-  check:
-    name: cargo xtask check
+  lint:
+    name: Formatting, generated types and Clippy
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Rust toolchain (from rust-toolchain.toml)
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/rust
+      - run: cargo xtask check lint
+
+  test:
+    name: Rust tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/rust
+      - run: cargo xtask check test
+
+  web:
+    name: Web app and standalone server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Rust only for xtask, as in the jobs that build nothing else.
+      - uses: ./.github/actions/rust
+        with:
+          shared-key: xtask
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - run: cargo xtask check
+      - run: cargo xtask check web
+
+  # A skipped job would count as passed, so this one runs whatever the parts
+  # did, and fails unless they all passed.
+  check:
+    name: cargo xtask check
+    needs: [lint, test, web]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every part passed
+        env:
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+          WEB: ${{ needs.web.result }}
+        run: |
+          echo "lint: $LINT, test: $TEST, web: $WEB"
+          [ "$LINT" = success ] && [ "$TEST" = success ] && [ "$WEB" = success ]
 
   # Nothing else runs the control plane before it deploys: this applies the
   # migrations to a fresh local D1, starts the Worker, bootstraps an owner,
@@ -50,9 +96,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Rust toolchain (from rust-toolchain.toml)
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/rust
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -60,9 +104,62 @@ jobs:
       # No npm ci: like a fresh clone, cargo xtask dev installs what it needs.
       - run: cargo xtask dev --smoke
 
+  # What the deploy ships, built beside the checks: the web app, the Worker,
+  # and xtask, which deploys them. The Worker's release build takes a minute
+  # and a half, so it is cached by what it is built from: a push that leaves
+  # its crates, the manifests, the toolchain and this workflow as they were
+  # deploys the Worker built for the last one that changed them.
+  build:
+    name: Build app.fctl.sh
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      WORKER_BUILD: 0.8.7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The Worker, if one was built from the same sources
+        id: worker
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: crates/fctl-control/build
+          key: worker-${{ env.WORKER_BUILD }}-${{ hashFiles('crates/fctl-control/**', 'crates/fctl-domain/**', 'crates/fctl-proto/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', '.github/workflows/ci.yml') }}
+      - uses: ./.github/actions/rust
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build --workspace web
+      - name: The Worker
+        if: steps.worker.outputs.cache-hit != 'true'
+        run: |
+          command -v worker-build || cargo install worker-build --version "$WORKER_BUILD" --locked
+          cd crates/fctl-control && worker-build --release
+      - if: steps.worker.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: crates/fctl-control/build
+          key: ${{ steps.worker.outputs.cache-primary-key }}
+      # In a tarball, which keeps it executable; the deploy runs it from the
+      # same path as here, where it finds the repository.
+      - name: xtask
+        run: |
+          cargo build --locked -p xtask
+          tar -cf xtask.tar -C target/debug xtask
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app.fctl.sh
+          path: |
+            crates/fctl-control/build
+            web/dist
+            xtask.tar
+          if-no-files-found: error
+          retention-days: 1
+
   deploy:
     name: Deploy app.fctl.sh
-    needs: [check, dev]
+    needs: [check, dev, build]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -74,20 +171,18 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Rust toolchain (from rust-toolchain.toml)
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-bin: true
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: worker-build
-        run: command -v worker-build || cargo install worker-build --version 0.8.7 --locked
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app.fctl.sh
       - name: Deploy
-        run: cargo xtask deploy fctl-sh
+        run: |
+          tar -xf xtask.tar
+          ./xtask deploy fctl-sh --skip-build
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
