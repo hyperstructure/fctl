@@ -37,7 +37,7 @@ pub struct RunArgs {
     /// Branch to start from (default: the project's default branch).
     #[arg(long)]
     pub base: Option<String>,
-    /// Claude model (opus, sonnet, fable, or a full model name).
+    /// Claude model (opus, sonnet, haiku, fable, or a full model name).
     #[arg(long)]
     pub model: Option<String>,
     /// Effort: low, medium, high, xhigh or max.

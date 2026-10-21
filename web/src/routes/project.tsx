@@ -12,13 +12,14 @@ import {
   useFileDrop,
 } from "@/components/session/attachments";
 import { PullRequestLinks, SessionLink } from "@/components/session/row";
-import { StartButton, useStartSession } from "@/components/session/start";
+import { StartButton, StartChoices, useStartChoice, useStartSession } from "@/components/session/start";
 import {
   Avatar,
   Banner,
   Button,
   DangerZone,
   Dialog,
+  EffortIcon,
   Empty,
   Field,
   GithubIcon,
@@ -49,7 +50,7 @@ import {
   type Typed,
   withSource,
 } from "@/lib/images";
-import { chosenModel, type ModelChoice, modelChoice } from "@/lib/models";
+import { ALIASES, asked, chosenModel, EFFORTS, type ModelChoice, modelChoice } from "@/lib/models";
 import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
 import {
   keys,
@@ -194,8 +195,10 @@ function Sessions({ project }: { project: G.Project }) {
   const [prompt, setPrompt] = useState("");
   const canStart = project.role !== "viewer";
   const { start, starting } = useStartSession();
+  const { choice, pick } = useStartChoice(project);
   const ref = useRef<HTMLTextAreaElement>(null);
   const files = useAttachments(canStart ? { project: project.slug } : undefined);
+  const go = () => start(project.slug, prompt, files, asked(project, choice));
   const attach = (f: File[], pasted?: boolean) => {
     files.add(f, { pasted });
     ref.current?.focus();
@@ -209,7 +212,7 @@ function Sessions({ project }: { project: G.Project }) {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              start(project.slug, prompt, files);
+              go();
             }}
             className={cn(
               "relative rounded-2xl border border-line-strong bg-surface/80 transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-[0_0_0_4px_var(--c-accent-soft)]",
@@ -233,7 +236,7 @@ function Sessions({ project }: { project: G.Project }) {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();
-                  start(project.slug, prompt, files);
+                  go();
                 }
               }}
               onPaste={(e) => {
@@ -245,14 +248,15 @@ function Sessions({ project }: { project: G.Project }) {
               placeholder={`What should an agent do in ${project.name}?`}
               className="block px-5 pt-4 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
             />
-            <TextareaControls textarea={ref} className="justify-between gap-3 pt-2 pr-3 pb-3 pl-2.5">
+            {/* More room above the pickers where they take a line of their own. */}
+            <TextareaControls textarea={ref} className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 max-lg:pt-3">
               <AttachButton onFiles={(f) => attach(f)} />
-              <div className="flex items-center gap-3">
-                <span className="text-[11.5px] text-ink-4">⌘↵</span>
-                <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
-                  Start a session
-                </StartButton>
-              </div>
+              <span className="flex-1" />
+              <StartChoices project={project} choice={choice} onPick={pick} disabled={starting} />
+              <span className="text-[11.5px] text-ink-4">⌘↵</span>
+              <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
+                Start a session
+              </StartButton>
             </TextareaControls>
             <DropHint show={dragging} />
           </form>
@@ -606,16 +610,14 @@ function BuildFields({
 /** The models a project can choose; the empty value leaves it to Claude. */
 const MODELS: SelectOption<ModelChoice>[] = [
   { value: "", label: "Claude's default" },
-  { value: "opus", label: "Opus" },
-  { value: "sonnet", label: "Sonnet" },
-  { value: "fable", label: "Fable" },
+  ...ALIASES,
   { value: "id", label: "Model ID" },
 ];
 
 /** Claude's effort levels; the empty value leaves it to Claude. */
-const EFFORTS: SelectOption[] = [
-  { value: "", label: "Claude's default" },
-  ...["low", "medium", "high", "xhigh", "max"].map((x) => ({ value: x, label: x })),
+const EFFORT_LEVELS: SelectOption[] = [
+  { value: "", label: "Claude's default", icon: <EffortIcon level="" /> },
+  ...EFFORTS.map((e) => ({ ...e, icon: <EffortIcon level={e.value} /> })),
 ];
 
 /** How long screenshot links may work, with a project's own choice among them. */
@@ -748,7 +750,7 @@ function Settings({ project }: { project: G.Project }) {
                   id={id}
                   value={s.effort ?? ""}
                   onChange={(v) => set("effort", v || undefined)}
-                  options={EFFORTS}
+                  options={EFFORT_LEVELS}
                   className="w-full"
                 />
               )}

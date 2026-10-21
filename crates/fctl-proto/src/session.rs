@@ -586,6 +586,13 @@ pub struct Project {
     pub active_sessions: u32,
     pub total_sessions: u32,
     pub last_activity_at: Option<Millis>,
+    /// The model the caller asked for when they last started a session in
+    /// it (`CreateSessionRequest::model`), which the web app's composer
+    /// starts on. Absent when they took the project's (`settings.model`)
+    /// or never started one, and from control planes before it.
+    pub last_model: Option<String>,
+    /// The effort level they asked for then, as `last_model`.
+    pub last_effort: Option<String>,
 }
 
 /// A pull request of a session, as its agent last looked it up and as

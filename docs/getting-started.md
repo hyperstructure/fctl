@@ -212,14 +212,21 @@ On a computer, the home page opens with the cursor in its task box. From
 anywhere in the app, ⌘K and then Enter take you there (Ctrl+K and Enter on
 Linux and Windows), and ⌘Enter (Ctrl+Enter) starts the session.
 
+The two lists by the Start button choose the model the session runs on
+(Opus, Sonnet, Haiku or Fable, each the latest of its family) and its
+effort level. They start on what you chose when you last started a session
+in the project, else on the project's settings (its **Settings** tab sets
+them for everyone). In the terminal: `fctl run --model haiku --effort low
+"…"`.
+
 To show the agent what you mean, attach screenshots and files: with the
 paperclip, by pasting them into the message box, or by dropping them on the
 page (`fctl run -a screenshot.png "…"` in the terminal). The agent sees
 them in its sandbox and gets screenshots in the message itself.
 
-A task you write on the home page stays in your browser, with its project
-and files, until a session starts with it: leave the page, and it is there
-when you come back.
+A task you write on the home page stays in your browser, with its project,
+model, effort level and files, until a session starts with it: leave the
+page, and it is there when you come back.
 
 `fctl run` follows the session live in your terminal; Ctrl-C detaches and the
 agent keeps working. The agent works on a branch named

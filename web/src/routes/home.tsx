@@ -14,7 +14,7 @@ import {
   useFileDrop,
 } from "@/components/session/attachments";
 import { SessionRow } from "@/components/session/row";
-import { StartButton, useStartSession } from "@/components/session/start";
+import { StartButton, StartChoices, useStartChoice, useStartSession } from "@/components/session/start";
 import {
   Button,
   firstNames,
@@ -35,6 +35,7 @@ import { cn } from "@/lib/cn";
 import { forgetDraft, loadText, saveText } from "@/lib/draft";
 import { feed, useFeed } from "@/lib/feed";
 import { ago, lowOnDisk } from "@/lib/format";
+import { asked } from "@/lib/models";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspaces } from "@/lib/queries";
 import { repoSummary, repoTitle } from "@/lib/repos";
 import { waitsForYou } from "@/lib/status";
@@ -180,6 +181,8 @@ function QuickStart({
   const first = here(kept?.project) ?? here(remembered) ?? editable[0]?.slug;
   const [project, setProject] = useState(first ?? "");
   const [prompt, setPrompt] = useState(kept?.prompt ?? "");
+  const target = editable.find((p) => p.slug === project);
+  const { choice, picked, pick: pickChoice } = useStartChoice(target, kept);
   const ref = useRef<HTMLTextAreaElement>(null);
   useTaskBoxFocus(ref, editable.length > 0);
   useEffect(() => {
@@ -209,10 +212,10 @@ function QuickStart({
     if (sent.current) return;
     if (ref.current) caret.current = [ref.current.selectionStart, ref.current.selectionEnd];
     const empty = !prompt.trim() && !files.drafts.length;
-    saveText(user, empty ? undefined : { prompt, project, selection: caret.current });
+    saveText(user, empty ? undefined : { prompt, project, selection: caret.current, ...picked });
   };
   // biome-ignore lint/correctness/useExhaustiveDependencies: saves when the draft changes
-  useEffect(() => save.current(), [prompt, project, files.drafts.length]);
+  useEffect(() => save.current(), [prompt, project, files.drafts.length, picked]);
   useEffect(() => () => save.current(), []);
   useLayoutEffect(() => {
     const s = kept?.selection;
@@ -220,15 +223,15 @@ function QuickStart({
   }, [kept]);
   const dragging = useFileDrop(attach, editable.length > 0 && !starting);
   if (!editable.length) return null;
-  const target = editable.find((p) => p.slug === project);
   const ws = target?.workspace ? freshest(index, target.workspace) : undefined;
+  const go = () => start(project, prompt, files, target && asked(target, choice));
   const several = workspaces.length > 1;
   return (
     <>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          start(project, prompt, files);
+          go();
         }}
         className={cn(
           "group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]",
@@ -253,7 +256,7 @@ function QuickStart({
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
-              start(project, prompt, files);
+              go();
             }
           }}
           onPaste={(e) => {
@@ -266,7 +269,7 @@ function QuickStart({
           className="block px-5 pt-4 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
           aria-label="Task for a new session"
         />
-        <TextareaControls textarea={ref} className="gap-2 pt-4 pr-3 pb-3 pl-2.5">
+        <TextareaControls textarea={ref} className="flex-wrap gap-2 pt-4 pr-3 pb-3 pl-2.5">
           <AttachButton onFiles={(f) => attach(f)} />
           <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
             <span className="hidden text-ink-4 sm:inline">in</span>
@@ -310,7 +313,11 @@ function QuickStart({
             )}
           </div>
           <span className="flex-1" />
-          <span className="hidden text-[11.5px] text-ink-4 sm:inline">⌘↵ to start</span>
+          {target && (
+            <StartChoices project={target} choice={choice} onPick={pickChoice} disabled={starting} />
+          )}
+          {/* From lg the pickers share its row, which has room for it again from xl. */}
+          <span className="hidden text-[11.5px] text-ink-4 sm:inline lg:hidden xl:inline">⌘↵ to start</span>
           <StartButton
             starting={starting}
             disabled={!prompt.trim() && !files.drafts.length}

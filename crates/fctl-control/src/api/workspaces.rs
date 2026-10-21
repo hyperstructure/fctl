@@ -630,9 +630,10 @@ async fn stop_sessions_of(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRe
     Ok(running.len() as u32)
 }
 
-/// Takes someone out of a workspace, with their project memberships and
-/// shares there, their runners and the invitations of their other
-/// addresses; their sessions in it stop, and its sessions on their runners.
+/// Takes someone out of a workspace, with their project memberships,
+/// shares and last choices there, their runners and the invitations of
+/// their other addresses; their sessions in it stop, and its sessions on
+/// their runners.
 pub async fn remove_from(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppResult<()> {
     stop_sessions_of(ctx, workspace_id, user_id).await?;
     #[derive(Deserialize)]
@@ -668,6 +669,11 @@ pub async fn remove_from(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRes
             q(
                 &ctx.db,
                 "DELETE FROM project_members WHERE user_id = ? AND project_id IN (SELECT id FROM projects WHERE workspace_id = ?)",
+                &[s(user_id), s(workspace_id)],
+            )?,
+            q(
+                &ctx.db,
+                "DELETE FROM project_choices WHERE user_id = ? AND project_id IN (SELECT id FROM projects WHERE workspace_id = ?)",
                 &[s(user_id), s(workspace_id)],
             )?,
             q(

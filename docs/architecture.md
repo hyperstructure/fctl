@@ -815,6 +815,22 @@ imports so it loads in every repository
 
 ### Model and effort
 
+A project's settings name the model its sessions run on (Claude's
+default; `opus`, `sonnet`, `haiku` or `fable`, Claude Code's aliases for
+the latest model of each family; or a model's ID) and the effort level
+(Claude's default, or `low` … `max`), which fctl-agent passes to Claude as
+`--model` and `--effort`. A session can ask for others as it starts
+(`CreateSessionRequest`, `fctl run --model … --effort …`), and the
+composers on the home page and a project's page have a list for each.
+They start on what the person asked for when they last started a session
+in the project, else on the project's settings, and a session asks only
+for what differs from those, so that where it takes the project's it
+follows them, when it resumes too, and the next composer starts on them
+again (`web/src/lib/models.ts`). D1 keeps what each person's last session
+in a project asked for (`project_choices`, written as sessions start), and
+projects return the caller's as `last_model` and `last_effort`. A person's
+rows go when they leave the project's workspace or delete their account.
+
 The session page and `fctl show` show the model and the effort level
 Claude works at. The model comes in Claude's `system/init` message, which
 in `-p` mode has no effort level, so fctl-agent asks Claude for it with

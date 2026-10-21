@@ -19,7 +19,7 @@ use crate::util::{self, run};
 use anyhow::{Context, Result, bail};
 use fctl_proto::api::EventPage;
 use fctl_proto::event::{CommitInfo, EventBody, SessionEvent, StatusChange};
-use fctl_proto::session::{Session, SessionStatus};
+use fctl_proto::session::{Project, Session, SessionStatus};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -254,13 +254,14 @@ fn wrangler_dev(root: &Path, children: &mut Children) -> Result<()> {
     Ok(())
 }
 
-/// `--smoke`: starts a session with the CLI as a person would, and fails
-/// unless the agent commits and pushes a file and the session shows both
-/// while the turn still runs (the agent watches its checks meanwhile), the
-/// agent finishes its turn, the session waits for the command the agent
-/// left running in the background and the agent takes its result in a turn
-/// of its own, the session stops when asked, and it says which effort level
-/// Claude worked at.
+/// `--smoke`: starts a session with the CLI as a person would, on Haiku,
+/// and fails unless the agent commits and pushes a file and the session
+/// shows both while the turn still runs (the agent watches its checks
+/// meanwhile), the agent finishes its turn, the session waits for the
+/// command the agent left running in the background and the agent takes its
+/// result in a turn of its own, the session stops when asked, it says which
+/// model and effort level Claude worked at, and the project remembers the
+/// model it asked for.
 fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
     let fctl = || {
         let mut cmd = Command::new(util::target_dir(root).join("debug/fctl"));
@@ -272,6 +273,8 @@ fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
         "run",
         "--project",
         "playground",
+        "--model",
+        "haiku",
         "--detach",
         "write notes.md, push it, watch 12 seconds of checks, then run the checks in the background 3",
     ]))?;
@@ -339,13 +342,32 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
             session.effort
         );
     }
+    // fake-claude says it runs the model it was given.
+    if session.model.as_deref() != Some("haiku") {
+        bail!(
+            "the session says Claude worked with {:?}, not the haiku it asked for",
+            session.model
+        );
+    }
+    // The composer starts on it in the project next time.
+    let read = call("GET", "/projects/playground", Some(&auth), None)?;
+    ok("reading the project", &read)?;
+    let project: Project = serde_json::from_value(read.1).context("reading the project")?;
+    if project.last_model.as_deref() != Some("haiku") || project.last_effort.is_some() {
+        bail!(
+            "the project remembers model {:?} and effort {:?}, not haiku and none",
+            project.last_model,
+            project.last_effort
+        );
+    }
     let subject = seen.commit.map(|c| c.subject).unwrap_or_default();
     eprintln!(
         "\n\x1b[1msmoke test passed\x1b[0m: the agent committed \"{subject}\" and \
          pushed it, the session showed both before the turn ended, the agent \
          finished its turn, the session waited for its background task and \
          the agent took its result in a turn of its own, the session stopped, \
-         and it said Claude worked at medium effort\n"
+         it said Claude worked with haiku at medium effort, and the project \
+         remembers haiku\n"
     );
     Ok(())
 }

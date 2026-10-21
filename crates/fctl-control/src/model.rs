@@ -358,6 +358,12 @@ pub struct ProjectRow {
     /// The account of an owner-wide grant in `project_repos`.
     #[serde(default)]
     pub all_repos_of: Option<String>,
+    /// What the caller asked for when they last started a session in it
+    /// (`project_choices`, a LEFT JOIN).
+    #[serde(default)]
+    pub last_model: Option<String>,
+    #[serde(default)]
+    pub last_effort: Option<String>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
@@ -411,6 +417,8 @@ impl ProjectRow {
             active_sessions: self.active_sessions.max(0) as u32,
             total_sessions: self.total_sessions.max(0) as u32,
             last_activity_at: self.last_activity_at,
+            last_model: self.last_model.clone(),
+            last_effort: self.last_effort.clone(),
         }
     }
 }
@@ -466,8 +474,9 @@ impl RepoRow {
     }
 }
 
-/// SELECT for projects with their workspace, the caller's roles, session
-/// counts and their other repositories. Bind: `?1` = caller user id.
+/// SELECT for projects with their workspace, the caller's roles and what
+/// they last started a session with, session counts and their other
+/// repositories. Bind: `?1` = caller user id.
 pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.repo_owner, p.repo_name, \
     p.default_branch, p.settings, p.session_counter, p.created_by, cu.name AS creator_name, \
     cu.avatar_url AS creator_avatar, p.created_at, p.updated_at, p.archived_at, m.role AS member_role, \
@@ -478,12 +487,14 @@ pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.
     (SELECT r.owner FROM project_repos r WHERE r.project_id = p.id AND r.name = '*' LIMIT 1) AS all_repos_of, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
-    w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \
+    w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role, \
+    c.model AS last_model, c.effort AS last_effort \
     FROM projects p \
     LEFT JOIN users cu ON cu.id = p.created_by \
     LEFT JOIN workspaces w ON w.id = p.workspace_id \
     LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
-    LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1";
+    LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1 \
+    LEFT JOIN project_choices c ON c.project_id = p.id AND c.user_id = ?1";
 
 /// What lets the caller see a project, for `WHERE` clauses with
 /// [`PROJECT_SELECT`] (or [`SESSION_SELECT`]): they are in its workspace,

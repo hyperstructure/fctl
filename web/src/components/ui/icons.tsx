@@ -76,3 +76,42 @@ export function PullRequestIcon({
 export function ChecksIcon({ state, className }: { state: keyof typeof CHECKS_PATHS; className?: string }) {
   return <Octicon path={CHECKS_PATHS[state]} className={className} />;
 }
+
+/**
+ * An effort level by the symbol Claude Code shows for it: ○ low, ◐ medium, ● high, ◉ extra high,
+ * ◈ max, and a dotted circle for Claude's default (`""`).
+ */
+export function EffortIcon({ level, className }: { level: string; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "size-4"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {level === "max" ? (
+        <>
+          <path d="m12 3 9 9-9 9-9-9Z" />
+          <path d="m12 8.5 3.5 3.5-3.5 3.5-3.5-3.5Z" fill="currentColor" />
+        </>
+      ) : (
+        <>
+          <circle
+            cx="12"
+            cy="12"
+            r="8"
+            fill={level === "high" ? "currentColor" : "none"}
+            // Ten round dots around it.
+            strokeDasharray={level ? undefined : "0 5.0265"}
+          />
+          {level === "medium" && <path d="M12 4a8 8 0 0 0 0 16Z" fill="currentColor" />}
+          {level === "xhigh" && <circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none" />}
+        </>
+      )}
+    </svg>
+  );
+}
