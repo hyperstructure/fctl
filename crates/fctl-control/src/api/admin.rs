@@ -218,11 +218,22 @@ pub async fn add_allow(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     if inserted == 0 {
         return Err(conflict("This email or domain is already allowed"));
     }
-    // Re-enable an existing account that was disabled by an earlier removal.
+    // Re-enable an existing account that was disabled by an earlier removal:
+    // an admin's only for the primary instance owner, who alone enables and
+    // disables admins.
     if let AllowPattern::Email(email) = &pattern {
-        q(&ctx.db, "UPDATE users SET status = 'active', updated_at = ? WHERE email = ? AND status = 'disabled'", &[n(ctx.now), s(email)])?
-            .run()
-            .await?;
+        q(
+            &ctx.db,
+            "UPDATE users SET status = 'active', updated_at = ? WHERE email = ? AND status = 'disabled' \
+             AND (role = 'member' OR ?)",
+            &[
+                n(ctx.now),
+                s(email),
+                crate::db::b(actor.role() == InstanceRole::Owner),
+            ],
+        )?
+        .run()
+        .await?;
     }
     let invite = match (&pattern, body.invite.unwrap_or(true)) {
         (AllowPattern::Email(email), true) if auth::user_by_email(ctx, email).await?.is_none() => {
@@ -256,17 +267,14 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if row.pattern == actor.email {
         return Err(conflict("You cannot remove your own access"));
     }
-    q(&ctx.db, "DELETE FROM allowlist WHERE id = ?", &[s(id)])?
-        .run()
-        .await?;
     // An account none of whose addresses an entry admits any more is
     // disabled (never the primary instance owner's, which may predate the
     // allowlist). Of the others, the addresses no entry admits are
     // disconnected, and the primary address moves to one that still is.
     let remaining: Vec<AllowRow> = q(
         &ctx.db,
-        &format!("{ALLOW_SELECT} ORDER BY a.created_at"),
-        &[],
+        &format!("{ALLOW_SELECT} WHERE a.id != ? ORDER BY a.created_at"),
+        &[s(id)],
     )?
     .all()
     .await?;
@@ -296,6 +304,34 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let admitted = |email: &str| {
         fctl_domain::allowlist::best_match(&remaining, email, |r| r.pattern.as_str()).is_some()
     };
+    // Only the primary instance owner disables admins, or takes their
+    // addresses (`update_user`).
+    if actor.role() != InstanceRole::Owner {
+        let admins: Vec<&str> = users
+            .iter()
+            .filter(|u| u.is_admin())
+            .filter(|u| {
+                std::iter::once(u.email.as_str())
+                    .chain(
+                        addresses
+                            .iter()
+                            .filter(|a| a.user_id == u.id)
+                            .map(|a| a.email.as_str()),
+                    )
+                    .any(|e| !admitted(e))
+            })
+            .map(|u| u.email.as_str())
+            .collect();
+        if !admins.is_empty() {
+            return Err(forbidden(&format!(
+                "Removing this entry would take access from admins ({}). Only the primary instance owner can.",
+                admins.join(", ")
+            )));
+        }
+    }
+    q(&ctx.db, "DELETE FROM allowlist WHERE id = ?", &[s(id)])?
+        .run()
+        .await?;
     let mut disabled = Vec::new();
     let mut disconnected = Vec::new();
     let mut changed = Vec::new();
