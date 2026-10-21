@@ -54,6 +54,10 @@ release.
 - **Nothing is lost.** Agents journal every event until the control plane
   acknowledges it; links reconnect and replay; hosts recover running sessions
   after a restart.
+- **Agents that learn.** Each project keeps a memory: every session's agent
+  starts with the notes earlier agents left and adds what the next one
+  should know. As they finish work, agents record what they did, how, and
+  what got in the way, for the people who follow along.
 - **Follow along anywhere.** With a full Claude login, sessions join Remote
   Control and show up in the Claude apps.
 - **Yours.** Deploy your own instance to your Cloudflare account with

@@ -437,8 +437,9 @@ repositories, sessions (summary rows), which sessions list which pull
 request, shares, who follows which session,
 notification settings and browsers (push subscriptions), runners, encrypted
 credentials and project secrets, the latest plan usage of each Claude
-credential, the links of published screenshots, the instance's settings
-and sealed Web Push key, and the audit log.
+credential, the links of published screenshots, projects' memories and
+sessions' retrospectives, the instance's settings and sealed Web Push key,
+and the audit log.
 
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
@@ -457,8 +458,9 @@ they expire (see [Published screenshots](#published-screenshots)).
 while they wait to go out, and forgets them once sent (see
 [Notifications](#notifications)).
 
-**Deletion.** Deleting a project deletes its rows (sessions, members, secrets
-and shares cascade) and, in the same batch, queues its sessions in
+**Deletion.** Deleting a project deletes its rows (sessions, members, secrets,
+shares, its memory and its sessions' retrospectives cascade) and, in the
+same batch, queues its sessions in
 `session_purges` and the project in `file_purges`; their Durable Object
 storage, the event logs and the attached files and published screenshots,
 is deleted right after. An hourly cron trigger (`src/housekeeping.rs`; the
@@ -998,6 +1000,91 @@ of the agent's configuration, so its agents never offer `fctl publish`.
 When it is on, and the sandbox's fctl has the command, `~/AGENTS.md` tells
 Claude to try `--attach` and publish when GitHub refuses.
 
+### Project memory
+
+Every session starts in a new conversation, most in a new sandbox, so what
+an agent learned that the repository doesn't say went with it. A project
+keeps a memory instead: notes its agents, and its people, write for the
+agents of its later sessions, such as a command that works, a trap, how its
+tests or deploys really behave, or a decision people made in conversation
+([ADR 0034](adr/0034-agents-keep-a-project-memory-and-record-retrospectives.md)).
+D1 keeps them (`memories`): the text (Markdown, at most 2,000 characters),
+the session whose agent wrote it and the person who started that session,
+or the person who wrote it, who last changed it, and for a stale note when,
+why and who marked it (`fctl_domain::memory`).
+
+1. **What agents start with.** As FleetDO builds a run's spec, it adds the
+   project's current notes, newest first, as many as fit in 24 KB and 200
+   notes, and how many more there are (`SessionSpec.memory`,
+   `memory::for_prompt`): about what Claude Code loads of its own memory.
+   fctl-agent lists them in `~/AGENTS.md`, each with its id, where it came
+   from and how old it is, as notes that don't override the person's
+   request or the rules, and says how to keep them. A resumed run starts
+   with the memory as it is then. It also sets
+   `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`: Claude Code's own memory would live
+   in the sandbox's `~/.claude/projects/` and go with it.
+2. **What agents do.** In the sandbox, `fctl memory` lists the notes as
+   they are now, those other sessions added since the run started too;
+   `fctl memory add` writes one, in place of another that goes stale with
+   `--replaces`; and `fctl memory stale` marks one stale, with the reason
+   agents must give (not one someone else marked stale already). Agents
+   can't change or delete notes. fctl reaches
+   fctl-agent over the session socket, which hands the call to its host
+   (`AgentToHost::Call`); the host sends it with its runner token (`POST
+   /api/v1/runner/sessions/{id}/calls`, an `AgentCall`), and the control
+   plane checks that the session is assigned to that runner, that the
+   runner still serves its workspace and that the project keeps a memory,
+   as for published screenshots. The answer comes back the same way, and
+   fctl-agent adds a `memory_added` or `memory_stale` notice with the note
+   to the transcript. The host retries reading the memory and marking a
+   note stale on errors that may pass, and not a new note, which the
+   control plane may have kept already.
+3. **What people do.** Everyone who sees the project reads its memory (its
+   Memory tab, `fctl memory -p …`, `GET /api/v1/projects/{id}/memories`);
+   editors and up add notes, in place of others too, change them, mark
+   them stale or current again and delete them (`POST
+   /api/v1/projects/{id}/memories`, `PATCH` and `DELETE
+   /api/v1/memories/{id}`), which the workspace's audit log records. A
+   project keeps at most 500 notes, stale ones included. Session pages ask
+   for the notes their agent wrote or marked stale (`?session=`), and the
+   web app reads the memory again when a session of the project changes
+   status, as when a turn ends. Deleting a note leaves the transcripts that
+   showed it as they are.
+
+The **Project memory** setting (`project_memory`, on by default) decides
+whether agents keep it. Off, the spec has no memory, agents hear nothing
+of it and the control plane refuses their calls; the notes stay for
+people. An update that leaves the field out keeps the stored value. Hosts
+and agents from before it never offer `fctl memory`, nor does a sandbox
+whose fctl lacks the command (fctl-agent asks `fctl memory --help` and
+says so once in the transcript's log).
+
+### Retrospectives
+
+As an agent finishes a piece of work (it opened or updated a pull request,
+answered what was asked, or stops because it is blocked), `~/AGENTS.md`
+asks it to record a retrospective for the project's people: how the work
+ended (`completed`, `partial` or `blocked`), what it worked on, the
+approach it took, what got in the way and what a future agent should know
+(`fctl retro --outcome … --worked-on … --approach … --challenges …
+--insights …`). The call travels as the memory's do, under the
+**Retrospectives** setting (`retrospectives`, on by default). D1 keeps it
+with its session (`retrospectives`), at most 50 a session
+(`fctl_domain::retrospectives`), and the transcript shows it as a
+`retrospective` notice.
+
+The session page shows the newest beside the transcript and all of them a
+click away, and the project's Retrospectives tab lists the project's,
+newest first, with how many ended each way and a filter by outcome,
+leaving out those of archived sessions (`GET
+/api/v1/projects/{id}/retrospectives`, a page at a time after the id of
+the last one, which sort as they were recorded; `GET
+/api/v1/sessions/{id}/retrospectives`; `fctl retro list`). Editors put an
+insight in the project's memory from there. People who manage a session
+delete its retrospectives (`DELETE /api/v1/retrospectives/{id}`), which the
+workspace's audit log records; the transcript keeps what the agent
+recorded.
+
 ## Notifications
 
 A session notifies the people who follow it when it waits for a reply (a
@@ -1235,8 +1322,9 @@ or taking a sandbox it couldn't stop or remove for gone.
 A second socket beside
 it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
 serves programs in the sandbox: `fctl edit` names and describes the session
-there, and `fctl publish` publishes screenshots, with no fctl credentials
-in the sandbox.
+there, `fctl publish` publishes screenshots, and `fctl memory` and `fctl
+retro` keep the project's memory and record retrospectives, with no fctl
+credentials in the sandbox.
 
 A stopped session keeps its sandbox, so resuming it on the same host
 continues Claude's conversation ([Idle sessions](#idle-sessions)). The host
@@ -1280,7 +1368,8 @@ All protocols are JSON with a `type` tag and live in `fctl-proto`:
 - `runner` — FleetDO ⇄ host (control connection).
 - `uplink` — SessionDO ⇄ host (one per session).
 - `agent` — host ⇄ fctl-agent (attachments' bytes travel here as `file`
-  frames, published screenshots' as `publish` frames), and `fctl` ⇄
+  frames, published screenshots' as `publish` frames, what agents ask of
+  the control plane about their project as `call` frames), and `fctl` ⇄
   fctl-agent in the sandbox (the session socket).
 - `event` — the session event model shared by all of them.
 

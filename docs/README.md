@@ -36,6 +36,12 @@ Three pieces make up a factory:
 - **Session** — one agent working on one task: one Claude conversation in
   one sandbox, on its own branch. Sessions are numbered per project
   (`my-app#12`).
+- **Memory** — a project's notes for its agents: what earlier agents and
+  people learned that the repository doesn't say. Each session's agent
+  starts with them.
+- **Retrospective** — what an agent records as it finishes a piece of
+  work: how it ended, what it worked on, the approach it took, what got in
+  the way and what a future agent should know.
 - **Runner** — a host registered with the control plane.
 - **Home page** — where the web app opens: the box for your next task, and
   every active session as a thread of light.

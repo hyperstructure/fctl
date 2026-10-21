@@ -92,6 +92,7 @@ class Feed {
           break;
         }
         case "session": {
+          const before = this.state.sessions.get(msg.session.id);
           const sessions = new Map(this.state.sessions);
           sessions.set(msg.session.id, msg.session);
           this.set({ sessions });
@@ -99,6 +100,14 @@ class Feed {
           // New sessions and status changes may move lists; refresh them lazily.
           void queryClient.invalidateQueries({ queryKey: ["sessions"], refetchType: "active" });
           void queryClient.invalidateQueries({ queryKey: keys.projects, refetchType: "active" });
+          // Agents keep the memory and record retrospectives as turns end.
+          if (before && before.status !== msg.session.status)
+            for (const k of [
+              keys.memories(msg.session.project_id),
+              keys.projectRetrospectives(msg.session.project_id),
+              keys.sessionRetrospectives(msg.session.id),
+            ])
+              void queryClient.invalidateQueries({ queryKey: k, refetchType: "active" });
           break;
         }
         case "activity": {

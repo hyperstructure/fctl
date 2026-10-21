@@ -270,6 +270,12 @@ fn co_author_trailer(person: &GitIdentity) -> Option<String> {
     Some(format!("Co-authored-by: {name} <{email}>"))
 }
 
+/// Turns Claude Code's auto memory off. It lives in the sandbox's
+/// `~/.claude/projects/`, so it would last only as long as the sandbox: in
+/// projects that keep a memory, the agent keeps that one instead (`fctl
+/// memory`), and Claude Code's system prompt doesn't offer another.
+pub const DISABLE_AUTO_MEMORY_ENV: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
+
 /// The line in `~/.claude/CLAUDE.md`, Claude's user memory, that loads
 /// fctl's `~/AGENTS.md`. User memory loads in every repository (also when
 /// fctl ignores the repository's settings), and unlike a CLAUDE.md beside

@@ -71,6 +71,13 @@ pub fn can_start_sessions(role: Option<ProjectRole>) -> bool {
     role.is_some_and(|r| r.at_least(ProjectRole::Editor))
 }
 
+/// Adding to a project's memory, changing its notes, marking them stale and
+/// deleting them needs at least `editor`, as steering its agents does.
+/// Everyone who sees the project reads it.
+pub fn can_edit_memory(role: Option<ProjectRole>) -> bool {
+    can_start_sessions(role)
+}
+
 /// Changing settings, secrets and members needs at least `maintainer`.
 pub fn can_manage_project(role: Option<ProjectRole>) -> bool {
     role.is_some_and(|r| r.at_least(ProjectRole::Maintainer))

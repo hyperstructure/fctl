@@ -1,7 +1,9 @@
 //! Summaries of the main resources (users, projects, sessions, runners) as
 //! they appear in API responses and live updates.
 
-use crate::{Millis, ProjectId, RunnerId, SessionId, UserId, WorkspaceId};
+use crate::{
+    MemoryId, Millis, ProjectId, RetrospectiveId, RunnerId, SessionId, UserId, WorkspaceId,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -522,6 +524,17 @@ pub struct ProjectSettings {
     pub publish_screenshots: bool,
     /// Days a published screenshot's link works, 1 to 60. Absent: 30.
     pub screenshot_days: Option<u32>,
+    /// Agents keep the project's memory (`fctl memory`): each session's
+    /// agent starts with the notes earlier agents and people left, adds
+    /// what future agents should know, and marks notes that turned out
+    /// wrong stale. On by default. Off, agents hear nothing of it, and the
+    /// notes stay for people to read and delete.
+    pub project_memory: bool,
+    /// Agents record a retrospective when they finish a piece of work
+    /// (`fctl retro`): what they worked on, how, what got in the way and
+    /// what a future agent should know. On by default. Off, agents hear
+    /// nothing of it, and the ones recorded stay.
+    pub retrospectives: bool,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
 }
@@ -545,6 +558,8 @@ impl Default for ProjectSettings {
             credit_claude: true,
             publish_screenshots: false,
             screenshot_days: None,
+            project_memory: true,
+            retrospectives: true,
             env: Default::default(),
         }
     }
@@ -758,6 +773,97 @@ pub struct Session {
     pub following: Option<bool>,
 }
 
+/// A session, as a memory or a retrospective names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SessionRef {
+    pub id: SessionId,
+    /// Sequential per project (`#12`).
+    pub number: u32,
+    pub title: String,
+}
+
+/// A note in a project's memory: something an agent, or a person, wants the
+/// agents of later sessions to know that the repository doesn't say. Each
+/// session's agent starts with the project's current notes
+/// (`ProjectSettings::project_memory`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct Memory {
+    pub id: MemoryId,
+    pub project_id: ProjectId,
+    /// Markdown; its first line says what it is about.
+    pub text: String,
+    /// The session whose agent wrote it; absent when a person did.
+    pub session: Option<SessionRef>,
+    /// The person who wrote it, or who started the session whose agent
+    /// did. Absent once their account is gone.
+    pub created_by: Option<UserRef>,
+    pub created_at: Millis,
+    /// When a person last changed its text, and who.
+    pub edited_at: Option<Millis>,
+    pub edited_by: Option<UserRef>,
+    /// Set once it is marked stale: wrong, or out of date. Agents no longer
+    /// start with it.
+    pub stale: Option<Staleness>,
+}
+
+/// When a memory went stale, why, and who said so.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct Staleness {
+    pub at: Millis,
+    pub reason: Option<String>,
+    /// The session whose agent marked it; absent when a person did.
+    pub session: Option<SessionRef>,
+    /// The person who marked it, or who started the session whose agent
+    /// did.
+    pub by: Option<UserRef>,
+    /// The memory that took its place (`fctl memory add --replaces`).
+    pub replaced_by: Option<MemoryId>,
+}
+
+/// How a piece of work ended, as the agent that did it sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum RetrospectiveOutcome {
+    /// What was asked is done: a pull request is open, a question answered.
+    Completed,
+    /// Part of it is done; the rest is left for later.
+    Partial,
+    /// It can't go on without a person: a decision, access, an answer.
+    Blocked,
+}
+
+/// What an agent recorded as it finished a piece of its session's work
+/// (`fctl retro`), for the project's people: what it worked on, the
+/// approach it took, what got in the way and what a future agent should
+/// know (`ProjectSettings::retrospectives`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct Retrospective {
+    pub id: RetrospectiveId,
+    pub project_id: ProjectId,
+    pub session: SessionRef,
+    /// Who started the session. Absent once their account is gone.
+    pub started_by: Option<UserRef>,
+    pub created_at: Millis,
+    pub outcome: RetrospectiveOutcome,
+    /// What it worked on.
+    pub worked_on: String,
+    /// The approach it took, and why.
+    pub approach: Option<String>,
+    /// What got in the way.
+    pub challenges: Option<String>,
+    /// What a future agent should know: what it learned, or wishes it had
+    /// known when it started.
+    pub insights: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,6 +898,35 @@ mod tests {
                 ..Default::default()
             }
         );
+        // Projects from before memory and retrospectives keep them.
+        assert!(old.project_memory && old.retrospectives);
+        let off: ProjectSettings =
+            serde_json::from_str(r#"{"project_memory":false,"retrospectives":false}"#)?;
+        assert!(!off.project_memory && !off.retrospectives);
+        Ok(())
+    }
+
+    #[test]
+    fn memories_and_retrospectives_on_the_wire() -> Result<(), serde_json::Error> {
+        let memory: Memory = serde_json::from_value(serde_json::json!({
+            "id": "mem_1", "project_id": "prj_1",
+            "text": "The web app's tests need `npm ci` in web/ first.",
+            "session": { "id": "ses_1", "number": 12, "title": "Fix the login redirect" },
+            "created_by": { "id": "usr_1", "name": "Ada" },
+            "created_at": 5
+        }))?;
+        assert_eq!(memory.stale, None);
+        let json = serde_json::to_value(&memory)?;
+        assert!(json.get("stale").is_none() && json.get("edited_at").is_none());
+        assert_eq!(json["session"]["number"], 12);
+        let retro: Retrospective = serde_json::from_value(serde_json::json!({
+            "id": "rtr_1", "project_id": "prj_1",
+            "session": { "id": "ses_1", "number": 12, "title": "Fix the login redirect" },
+            "created_at": 5, "outcome": "blocked",
+            "worked_on": "The login redirect."
+        }))?;
+        assert_eq!(retro.outcome, RetrospectiveOutcome::Blocked);
+        assert_eq!(retro.insights, None);
         Ok(())
     }
 }

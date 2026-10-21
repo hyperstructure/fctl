@@ -25,6 +25,15 @@ export const keys = {
   members: (id: string) => ["members", id] as const,
   secrets: (id: string) => ["secrets", id] as const,
   projectRepos: (id: string) => ["project-repos", id] as const,
+  /** A project's memory, by project id; a session's notes under it. */
+  memories: (project: string) => ["memories", project] as const,
+  sessionMemories: (project: string, session: string) => ["memories", project, "session", session] as const,
+  /** A project's retrospectives, by project id: all its lists. */
+  projectRetrospectives: (project: string) => ["retrospectives", project] as const,
+  /** A project's retrospectives, by project id, of one outcome or all. */
+  retrospectives: (project: string, outcome?: string) =>
+    ["retrospectives", project, outcome ?? "all"] as const,
+  sessionRetrospectives: (id: string) => ["session-retrospectives", id] as const,
   runners: ["runners"] as const,
   users: ["users"] as const,
   allowlist: ["allowlist"] as const,
@@ -89,6 +98,13 @@ export const useProjectRepos = (id?: string) =>
     queryKey: keys.projectRepos(id ?? ""),
     queryFn: () => api.projectRepos(id ?? ""),
     enabled: !!id,
+  });
+/** A project's memory, by project id. */
+export const useMemories = (project?: string) =>
+  useQuery({
+    queryKey: keys.memories(project ?? ""),
+    queryFn: () => api.memories(project ?? ""),
+    enabled: !!project,
   });
 export const useSessions = (q: {
   project?: string;

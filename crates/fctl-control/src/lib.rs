@@ -234,6 +234,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["runner", "sessions", id, "published"]) => {
             api::published::runner_publish(ctx, req, id).await
         }
+        (Post, ["runner", "sessions", id, "calls"]) => api::calls::runner_call(ctx, req, id).await,
         (Get, ["feed", "ws"]) => api::runners::feed(ctx, req).await,
 
         // Projects
@@ -263,6 +264,15 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::repos::remove(ctx, id, owner, name).await
         }
         (Post, ["projects", id, "sessions"]) => api::sessions::create(ctx, req, id).await,
+        (Get, ["projects", id, "memories"]) => api::memories::project_list(ctx, req, id).await,
+        (Post, ["projects", id, "memories"]) => api::memories::add(ctx, req, id).await,
+        (Get, ["memories", id]) => api::memories::get(ctx, id).await,
+        (Patch, ["memories", id]) => api::memories::update(ctx, req, id).await,
+        (Delete, ["memories", id]) => api::memories::delete(ctx, id).await,
+        (Get, ["projects", id, "retrospectives"]) => {
+            api::retrospectives::project_list(ctx, req, id).await
+        }
+        (Delete, ["retrospectives", id]) => api::retrospectives::delete(ctx, id).await,
         (Post, ["projects", id, "attachments"]) => api::attachments::upload(ctx, req, id).await,
         (Get, ["github"]) => api::projects::github_info(ctx).await,
         (Get, ["github", "repos"]) => api::projects::github_repos(ctx, req).await,
@@ -276,6 +286,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["sessions", id, "stop"]) => api::sessions::stop(ctx, id).await,
         (Post, ["sessions", id, "resume"]) => api::sessions::resume(ctx, req, id).await,
         (Get, ["sessions", id, "events"]) => api::sessions::events(ctx, req, id).await,
+        (Get, ["sessions", id, "retrospectives"]) => {
+            api::retrospectives::session_list(ctx, id).await
+        }
         (Get, ["sessions", id, "ws"]) => api::sessions::websocket(ctx, req, id).await,
         (Post, ["sessions", id, "attachments"]) => {
             api::attachments::upload_to_session(ctx, req, id).await

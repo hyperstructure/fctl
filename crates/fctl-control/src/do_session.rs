@@ -866,6 +866,8 @@ impl SessionObject {
             ),
             until: None,
             published: None,
+            memory: None,
+            retrospective: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -1529,6 +1531,8 @@ impl SessionObject {
                             .unwrap_or_else(|| "The agent could not take a message".into()),
                         until: None,
                         published: None,
+                        memory: None,
+                        retrospective: None,
                     };
                     if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                         self.broadcast_events(&[json]);

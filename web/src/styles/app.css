@@ -106,6 +106,21 @@
   border: 0;
   border-top: 1px solid var(--c-line);
 }
+/* Notes in a project's memory and the parts of a retrospective: short
+   prose at the size and color of the text around it (with .prose-fctl,
+   which it follows). */
+.prose-note {
+  font-size: inherit;
+  line-height: 1.6;
+  color: inherit;
+}
+.prose-note > * + * {
+  margin-top: 0.5em;
+}
+.prose-note :is(h1, h2, h3, h4) {
+  font-size: 1em;
+  margin-top: 0.8em;
+}
 
 /* Shiki: dual themes through CSS variables. */
 .shiki,

@@ -180,6 +180,7 @@ fctl projects set -p my-app --build Dockerfile --build-context app    # a Docker
 fctl projects set -p my-app --setup-script 'npm ci'   # or @setup.sh, or - to read it from stdin
 fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
+fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
 fctl projects use my-app
 fctl projects order my-app site        # these first in their workspace, the others after them
 fctl projects delete my-app            # with its sessions; asks you to type the slug
@@ -206,6 +207,60 @@ them ([Sandbox images](sandbox-images.md#which-images-a-host-runs)); a
 session that no runner allows stays queued and says why. `fctl projects
 show` says where the project's sessions start from, their size, setup
 script and variables.
+
+### Memory and retrospectives
+
+A project keeps a memory: notes its agents, and its people, write for the
+agents of its later sessions, about what the repository doesn't say. Each
+session's agent starts with the current notes, adds what a future agent
+should know and marks the notes that turned out wrong stale; everyone in
+the project reads them, and editors change and delete them:
+
+```sh
+fctl memory -p my-app                  # the current notes, newest first, with where each came from
+fctl memory -p my-app --stale          # the stale ones too
+fctl memory show mem_01JC3V…
+fctl memory add -p my-app "Deploys happen on Fridays: merge migrations by Wednesday."
+fctl memory add -p my-app "Deploys happen on Thursdays." --replaces mem_01JC3V…   # the old one goes stale
+fctl memory edit mem_01JC3V… "Deploys happen on Thursdays."
+fctl memory stale mem_01JC3V… --reason "We deploy every day now"   # agents no longer start with it
+fctl memory restore mem_01JC3V…        # current again
+fctl memory rm mem_01JC3V…             # for good
+```
+
+As agents finish a piece of work, they record a retrospective of it: how
+it ended, what they worked on, the approach they took, what got in the way
+and what a future agent should know. Session pages show them, and the
+project's Retrospectives tab lists them all:
+
+```sh
+fctl retro list -p my-app              # newest first, with how many ended each way
+fctl retro list -p my-app --outcome blocked
+fctl retro list my-app#12              # one session's
+fctl retro rm rtr_01JC3W…              # people who manage the session
+```
+
+In a session's sandbox, the same commands without `-p` are the agent's,
+through fctl-agent and without a sign-in, as for `fctl edit`. `~/AGENTS.md`
+lists the project's notes and says how to keep them and when to record a
+retrospective:
+
+```sh
+fctl memory                            # the notes as they are now, other sessions' new ones too
+fctl memory add "The e2e tests need Chromium: run npx playwright install chromium first."
+fctl memory add "Run cargo xtask check before pushing." --replaces mem_01JC3V…   # the old one goes stale
+fctl memory stale mem_01JC3V… --reason "The script moved to xtask"
+fctl retro --outcome completed --worked-on "Retried failed uploads (#41)." \
+  --approach "Used the existing backoff helper." --challenges "The tests need MinIO." \
+  --insights "Start MinIO with docker compose up minio before the tests."
+```
+
+Agents can't change or delete notes, only mark them stale with a reason.
+Both are on in new projects and projects from before them; `fctl projects
+set --project-memory off` and `--retrospectives off` turn them off, and the
+notes and retrospectives stay for people to read. A project keeps at most
+500 notes of 2,000 characters, stale ones included, and a session at most
+50 retrospectives.
 
 ## Notifications
 

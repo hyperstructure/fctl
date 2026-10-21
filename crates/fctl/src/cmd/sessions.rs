@@ -473,7 +473,9 @@ async fn edit_here(socket: &Path, id: String, args: EditArgs, json: bool) -> Res
             Ok(())
         }
         SessionReply::Error { error } => bail!("{}", error.message),
-        SessionReply::Published { .. } => bail!("fctl-agent answered another request"),
+        SessionReply::Published { .. } | SessionReply::Answer { .. } => {
+            bail!("fctl-agent answered another request")
+        }
     }
 }
 

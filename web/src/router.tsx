@@ -134,7 +134,15 @@ const project = createRoute({
   path: "/p/$slug",
   component: ProjectPage,
   validateSearch: (s: Record<string, unknown>) => ({
-    tab: str(s.tab) as "sessions" | "repositories" | "settings" | "members" | "secrets" | undefined,
+    tab: str(s.tab) as
+      | "sessions"
+      | "memory"
+      | "retrospectives"
+      | "repositories"
+      | "settings"
+      | "members"
+      | "secrets"
+      | undefined,
   }),
 });
 const session = createRoute({ getParentRoute: () => app, path: "/s/$id", component: SessionPage });

@@ -331,8 +331,10 @@ An image that doesn't start from the default one needs:
   missing or older.
 - **`gh`**, which fctl-agent asks for the pull request of the session's
   branch. Without it, sessions show no pull request.
-- **fctl** on the PATH, for agents to name their sessions and publish
-  screenshots. Without it, sessions keep the title they start with.
+- **fctl** on the PATH, for agents to name their sessions, publish
+  screenshots, keep their project's memory and record retrospectives
+  (`fctl memory` and `fctl retro` need an fctl that has them). Without it,
+  sessions keep the title they start with, and their agents keep no memory.
 - **A non-root user with a writable home.** fctl copies its supervisor into
   `/opt/fctl/bin` as root at session start, and runs it as the image's
   user (its `USER`), in `~/workspace`.
@@ -369,6 +371,7 @@ it as the image's user, which writes:
 Claude's environment has the project's variables and secrets,
 `CLAUDE_CODE_OAUTH_TOKEN` and its scopes, `IS_SANDBOX=1`,
 `DISABLE_AUTOUPDATER=1`, `GIT_TERMINAL_PROMPT=0`, `FCTL_SESSION_ID`,
-`FCTL_SESSION_URL`, and the sandbox's size in `FCTL_SANDBOX_CPUS` and
-`FCTL_SANDBOX_MEMORY_MB`. `ANTHROPIC_*` variables and the Bedrock, Vertex
-and Foundry switches never reach it.
+`FCTL_SESSION_URL`, `FCTL_SESSION_SOCKET`, the sandbox's size in
+`FCTL_SANDBOX_CPUS` and `FCTL_SANDBOX_MEMORY_MB`, and in projects that keep
+a memory `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. `ANTHROPIC_*` variables and
+the Bedrock, Vertex and Foundry switches never reach it.

@@ -170,6 +170,38 @@ impl Renderer {
                     out(&format!("{}\n", style::dim(&format!("  {}", l.text))));
                 }
             }
+            EventBody::Notice(n) if n.retrospective.is_some() => {
+                self.end_text();
+                if let Some(r) = &n.retrospective {
+                    out(&format!(
+                        "{} {}\n",
+                        style::accent("◆"),
+                        style::bold(&format!(
+                            "Retrospective: {}",
+                            fctl_domain::retrospectives::outcome_label(r.outcome).to_lowercase()
+                        ))
+                    ));
+                    for (label, text) in [
+                        ("Worked on", Some(&r.worked_on)),
+                        ("Approach", r.approach.as_ref()),
+                        ("Challenges", r.challenges.as_ref()),
+                        ("Insights", r.insights.as_ref()),
+                    ] {
+                        if let Some(text) = text {
+                            out(&format!("  {} {text}\n", style::dim(&format!("{label}:"))));
+                        }
+                    }
+                }
+            }
+            EventBody::Notice(n) if n.memory.is_some() => {
+                self.end_text();
+                let line = if n.code == "memory_stale" {
+                    style::dim(&format!("◇ {}", n.message))
+                } else {
+                    format!("{} {}", style::accent("◆"), n.message)
+                };
+                out(&format!("{line}\n"));
+            }
             EventBody::Notice(n) => {
                 self.end_text();
                 let text = format!("! {}", n.message);
