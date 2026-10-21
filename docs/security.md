@@ -120,6 +120,8 @@ outside it except through these channels:
   each VM the home directory of whoever runs the host (read only) and a
   `/tmp/lima` every VM writes to, and none of their port forwards, which
   put a VM's services on the host's loopback, where other VMs reach them.
+  A VM still reaches the host's own loopback services
+  (`host.lima.internal`), as Docker Desktop's containers do theirs.
   Lima hosts of fctl 0.14.1 and earlier cloned VMs that could read that
   home directory, with the host's runner token and the CLI's credentials.
   On such a host, remove its runner and install the host again (`fctl
