@@ -73,12 +73,12 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: xtask check web
 
-  # A skipped job would count as passed, so this one runs whatever the parts
-  # did, and fails unless they all passed.
+  # A skipped job would count as passed, so this one runs when a part fails
+  # too (unless the run was cancelled), and fails unless they all passed.
   check:
     name: cargo xtask check
     needs: [lint, test, web]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
