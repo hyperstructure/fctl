@@ -407,9 +407,7 @@ mod tests {
             pull_request: Some(PullRequestRef {
                 number: 7,
                 url: "https://github.com/acme/lib/pull/7".into(),
-                title: None,
-                state: None,
-                repo: None,
+                ..Default::default()
             }),
             ..Default::default()
         }]);

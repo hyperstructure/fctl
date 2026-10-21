@@ -15,7 +15,7 @@ use fctl_proto::runner::{
     ClaudeCredential, ClaudeCredentialKind, GitIdentity, ProjectSpec, SessionCredentials,
     SessionRepo, SessionSpec,
 };
-use fctl_proto::session::{ProjectSettings, RepoGrant, RepoRef};
+use fctl_proto::session::{ProjectSettings, PullRequestRef, RepoGrant, RepoRef};
 use fctl_proto::{ApiError, CredentialId, ErrorCode, ProjectId};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -226,7 +226,13 @@ pub async fn build(
         web_url: cfg.url(&format!("/s/{}", row.id)),
         idle_timeout_secs: fctl_domain::settings::idle_timeout_secs(&project.settings()),
         run_id: None,
-        pull_requests: row.to_session(None).pull_requests,
+        // Agents follow them; their checks are for the session's viewers.
+        pull_requests: row
+            .to_session(None)
+            .pull_requests
+            .into_iter()
+            .map(|pr| PullRequestRef { checks: None, ..pr })
+            .collect(),
     })
 }
 

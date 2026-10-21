@@ -141,6 +141,7 @@ export type { ProjectRole } from "./ProjectRole";
 export type { ProjectSettings } from "./ProjectSettings";
 export type { ProjectSpec } from "./ProjectSpec";
 export type { PublishedFile } from "./PublishedFile";
+export type { PullRequestChecks } from "./PullRequestChecks";
 export type { PullRequestRef } from "./PullRequestRef";
 export type { PushDevice } from "./PushDevice";
 export type { PushDeviceId } from "./PushDeviceId";

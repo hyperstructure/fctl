@@ -34,6 +34,7 @@ pub mod two_factor;
 pub mod usage;
 pub mod validate;
 pub mod webauthn;
+pub mod webhooks;
 pub mod webpush;
 pub mod workspace;
 

@@ -16,7 +16,8 @@ use serde_json::Value;
 use std::path::Path;
 
 /// What fctl-agent asks `gh pr view` for.
-const FIELDS: &str = "number,url,title,state,isDraft,headRefName,headRefOid,baseRefOid";
+const FIELDS: &str = "number,url,title,state,isDraft,headRefName,headRefOid,baseRefOid,\
+    createdAt,updatedAt,mergedAt,closedAt";
 
 /// The fields every gh that fctl-agent supports has.
 const OLD_FIELDS: &str = "number,url,title,state,isDraft";
@@ -178,6 +179,11 @@ pub async fn look_up(p: &Paths, dir: &Path, selector: &str) -> Option<Followed> 
 fn parse(json: &str, branch: Option<&str>) -> Option<Followed> {
     let v: Value = serde_json::from_str(json).ok()?;
     let text = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_owned);
+    let time = |key: &str| {
+        v.get(key)
+            .and_then(Value::as_str)
+            .and_then(pulls::github_time)
+    };
     let draft = v.get("isDraft").and_then(Value::as_bool).unwrap_or(false);
     let state = text("state").map(|s| {
         if draft && s == "OPEN" {
@@ -186,13 +192,21 @@ fn parse(json: &str, branch: Option<&str>) -> Option<Followed> {
             s.to_lowercase()
         }
     });
+    let times = pulls::Times {
+        created: time("createdAt"),
+        merged: time("mergedAt"),
+        closed: time("closedAt"),
+        queued: None,
+    };
     Some(Followed {
         pr: PullRequestRef {
             number: v.get("number").and_then(Value::as_u64)?,
             url: text("url")?,
             title: text("title"),
+            state_changed_at: state.as_deref().and_then(|s| times.of(s)),
             state,
-            repo: None,
+            updated_at: time("updatedAt"),
+            ..Default::default()
         },
         branch: text("headRefName").or(branch.map(str::to_owned)),
         head: text("headRefOid"),
@@ -211,9 +225,8 @@ mod tests {
             pr: PullRequestRef {
                 number,
                 url: format!("https://github.com/{repo}/pull/{number}"),
-                title: None,
                 state: Some(state.into()),
-                repo: None,
+                ..Default::default()
             },
             branch: Some(branch.into()),
             head: None,
@@ -310,6 +323,37 @@ mod tests {
             Some((Some("draft".into()), Some("fctl/1-draft".into())))
         );
         assert_eq!(parse("not json", None), None);
+    }
+
+    #[test]
+    fn lookups_say_when_github_last_changed_it_and_when_it_took_its_state() {
+        let looked = |state: &str| {
+            let json = format!(
+                r#"{{"number":1,"url":"https://github.com/acme/widgets/pull/1","state":"{state}","isDraft":false,
+                "createdAt":"2026-10-21T10:00:00Z","updatedAt":"2026-10-21T12:00:01Z",
+                "mergedAt":{merged},"closedAt":{closed}}}"#,
+                merged = if state == "MERGED" {
+                    r#""2026-10-21T12:00:00Z""#
+                } else {
+                    "null"
+                },
+                closed = if state == "OPEN" {
+                    "null"
+                } else {
+                    r#""2026-10-21T12:00:00Z""#
+                },
+            );
+            let pr = parse(&json, None).map(|f| f.pr).unwrap_or_default();
+            (
+                pr.state_changed_at.map(fctl_domain::account::iso8601),
+                pr.updated_at,
+            )
+        };
+        let at = |s: &str| Some(s.to_owned());
+        let updated = pulls::github_time("2026-10-21T12:00:01Z");
+        assert_eq!(looked("OPEN"), (at("2026-10-21T10:00:00.000Z"), updated));
+        assert_eq!(looked("MERGED"), (at("2026-10-21T12:00:00.000Z"), updated));
+        assert_eq!(looked("CLOSED"), (at("2026-10-21T12:00:00.000Z"), updated));
     }
 
     #[test]

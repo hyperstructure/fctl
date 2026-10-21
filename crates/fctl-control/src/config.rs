@@ -11,6 +11,7 @@
 //! | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID` | var | The GitHub App |
 //! | `GITHUB_APP_PRIVATE_KEY` | secret | Its private key (PKCS#8 PEM) |
 //! | `GITHUB_CLIENT_SECRET` | secret | Its client secret: signing in to GitHub to connect accounts |
+//! | `GITHUB_WEBHOOK_SECRET` | secret | Its webhook's secret: GitHub tells the control plane when pull requests and their checks change |
 //! | `GITHUB_DEFAULT_OWNER` | var | Organization new repositories are created in |
 //! | `GOOGLE_CLIENT_ID` | var | Google OAuth client (optional) |
 //! | `GOOGLE_CLIENT_SECRET` | secret | Its secret |
@@ -30,6 +31,10 @@ pub struct GithubConfig {
     pub client_secret: Option<String>,
     pub private_key_pem: String,
     pub default_owner: Option<String>,
+    /// The secret GitHub signs the app's webhook deliveries with: with it,
+    /// the control plane takes them (`api::webhooks`), and keeps sessions'
+    /// pull requests current from GitHub (`pull_requests`).
+    pub webhook_secret: Option<String>,
 }
 
 impl GithubConfig {
@@ -100,6 +105,7 @@ impl Config {
                 client_secret: var(env, "GITHUB_CLIENT_SECRET"),
                 private_key_pem,
                 default_owner: var(env, "GITHUB_DEFAULT_OWNER"),
+                webhook_secret: var(env, "GITHUB_WEBHOOK_SECRET"),
             }),
             _ => None,
         };

@@ -68,6 +68,13 @@ pub struct ControlState {
     pub claude_user: Option<UserRef>,
 }
 
+/// What GitHub says of pull requests a session lists (`/pull-requests`,
+/// from `crate::pull_requests`).
+#[derive(Serialize, Deserialize)]
+pub struct PullRequestsSeen {
+    pub prs: Vec<fctl_proto::session::PullRequestRef>,
+}
+
 /// FleetObject asks a session on a draining runner whether it stops now: it
 /// does when it has waited for a message for a while and none is on its way.
 #[derive(Serialize, Deserialize)]

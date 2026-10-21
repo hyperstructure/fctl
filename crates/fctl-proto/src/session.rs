@@ -588,18 +588,54 @@ pub struct Project {
     pub last_activity_at: Option<Millis>,
 }
 
+/// A pull request of a session, as its agent last looked it up and as
+/// GitHub last told the control plane about it (`fctl_domain::pulls`).
 #[skip_serializing_none]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct PullRequestRef {
     pub number: u64,
     pub url: String,
     pub title: Option<String>,
-    /// `open`, `closed`, `merged` or `draft`.
+    /// `open`, `draft`, `queued` (in a merge queue), `merged` or `closed`;
+    /// absent until someone looked it up. Only the control plane says
+    /// `queued`, from GitHub: agents report a queued one as `open`.
     pub state: Option<String>,
     /// The repository it was opened in. A session's pull requests have it;
     /// agents leave it out of their git state, where its URL says it.
     pub repo: Option<RepoRef>,
+    /// When it took its state: when it was opened, merged or closed, or
+    /// joined a merge queue, as GitHub says, or else when fctl saw it
+    /// change. Absent from agents and control planes before it.
+    pub state_changed_at: Option<Millis>,
+    /// When GitHub last changed it (`updatedAt`), as of the lookup its
+    /// title and state come from: an older lookup doesn't undo a newer
+    /// one. Absent from agents and control planes before it.
+    pub updated_at: Option<Millis>,
+    /// The checks of its head commit, as GitHub last told the control plane
+    /// about them (its GitHub App's webhook). Absent until then, and where
+    /// the webhook is off.
+    pub checks: Option<PullRequestChecks>,
+}
+
+/// The checks of a pull request's head commit, check runs and commit
+/// statuses, counted as GitHub counts them in a pull request's checks.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PullRequestChecks {
+    /// Succeeded, or were skipped or neutral.
+    pub passed: u32,
+    /// Failed, errored, timed out or were cancelled, or wait for someone
+    /// to act.
+    pub failed: u32,
+    /// Queued or running, or expected and not reported yet.
+    pub pending: u32,
+    /// The commit they are for.
+    pub sha: Option<String>,
+    /// When the control plane asked GitHub: a later answer replaces an
+    /// earlier one.
+    pub at: Millis,
 }
 
 #[skip_serializing_none]

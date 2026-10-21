@@ -21,6 +21,7 @@ mod instance;
 mod internal;
 mod model;
 mod notify;
+mod pull_requests;
 mod push;
 mod spec;
 mod usage;
@@ -214,6 +215,8 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["github", "installed"]) => api::github::installed(ctx, req).await,
         (Get, ["github", "connect"]) => api::github::connect_link(ctx, req).await,
         (Get, ["github", "authorized"]) => api::github::authorized(ctx, req).await,
+        // GitHub's webhook: signed with its secret, not by a person.
+        (Post, ["github", "webhook"]) => api::webhooks::receive(ctx, req).await,
 
         // Runners (admin) and hosts
         (Get, ["runners"]) => api::runners::list(ctx).await,
