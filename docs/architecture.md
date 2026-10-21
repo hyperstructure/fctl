@@ -314,11 +314,14 @@ the instance creates one, as its primary admin.
   instance's.
 - **Feeds.** A feed's identity holds the projects its person saw when it
   opened, and the workspaces where they see every project
-  (`internal::FeedIdentity`). When someone's workspaces change, FleetDO
-  recomputes it on their sockets (`/workspaces-changed`) and sends
-  `workspaces`, after which the app fetches them again; runners and their
-  updates go only to the people of their workspaces, their owners and
-  instance admins.
+  (`internal::FeedIdentity`). When someone's workspaces or project roles
+  change, FleetDO recomputes it on their sockets (`/workspaces-changed`)
+  and sends `workspaces`, after which the app fetches them again; runners
+  and their updates go only to the people of their workspaces, their owners
+  and instance admins. It also checks a feed's token and recomputes what it
+  shows on its pings, at most once a minute (`recheck_feed`), and closes a
+  feed whose token no longer signs anyone in, as SessionDO does with
+  [viewers](#viewers).
 - **Deleting** a workspace (its primary admin, or an instance admin, typing
   its name) deletes its projects with their sessions and files, as deleting
   a project does, once none of its sessions runs.
@@ -797,6 +800,16 @@ no effort level.
 Browsers and the CLI open `GET /api/v1/sessions/{id}/ws`. The first frame is a
 snapshot (summary, recent events, presence, in-progress text); after that
 frames are incremental. Older history is paged over HTTP.
+
+The Worker checks access as the socket opens, and SessionDO checks it again
+while it stays open: the token it was opened with and the role it gives,
+on the viewer's pings at most once a minute and before every message or
+interrupt (`recheck_viewer`). A viewer whose person can no longer see the
+session (they left the workspace or were removed, their role or share went,
+they signed out or were disabled) closes with 4403, after which the apps
+stop reconnecting; one whose role changed gets it in its next `session`
+frame. A viewer that stopped pinging closes after five minutes at the next
+broadcast and reconnects through the Worker.
 
 The snapshot and `runner_connected` frames say whether the agent's work can
 come through:
