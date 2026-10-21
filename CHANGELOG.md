@@ -2,6 +2,21 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.14.1 (2026-10-21)
+
+### Fixes
+
+- **web:** Scroll the search list, not the page, on iPhones and iPads ([#163](https://github.com/hyperstructure/fctl/pull/163))
+- **web:** Show the whole details sheet on iPhones, and let it scroll ([#165](https://github.com/hyperstructure/fctl/pull/165))
+
+### Documentation
+
+- Add a screenshot of app.fctl.sh to the README ([#166](https://github.com/hyperstructure/fctl/pull/166))
+
+### Other changes
+
+- **release:** Start the Homebrew tap's bump as soon as a release is out ([#164](https://github.com/hyperstructure/fctl/pull/164))
+
 ## 0.14.0 (2026-10-20)
 
 ### Features
