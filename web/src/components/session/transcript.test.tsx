@@ -10,15 +10,18 @@ import { Transcript } from "./transcript";
 vi.mock("@/components/ui", async () => {
   const { plainClick } =
     await vi.importActual<typeof import("@/components/ui/lightbox")>("@/components/ui/lightbox");
+  const { Gallery, useLightbox } =
+    await vi.importActual<typeof import("@/components/ui/gallery")>("@/components/ui/gallery");
   return {
     Avatar: () => null,
     Button: () => null,
     CopyButton: () => null,
     Dialog: () => null,
-    Lightbox: ({ file }: { file: { name: string } }) => <dialog open aria-label={file.name} />,
+    Gallery,
     plainClick,
     Spinner: () => <svg className="animate-spin" />,
     toast: vi.fn(),
+    useLightbox,
   };
 });
 vi.mock("@/components/markdown", async () => {
@@ -68,7 +71,7 @@ const tool = (result?: string): Item => ({
 });
 const turn = (): Item => ({ kind: "turn", key: `turn-${++seq}`, seq, ts: 0, durationMs: 1000, ok: true });
 const prose = (text: string): Item => ({ kind: "prose", key: `prose-${++seq}`, seq, ts: 0, text });
-const published = (): Item => ({
+const published = (name = "after.png"): Item => ({
   kind: "notice",
   key: `notice-${++seq}`,
   seq,
@@ -76,10 +79,10 @@ const published = (): Item => ({
   notice: {
     level: "info",
     code: "screenshot_published",
-    message: "Published after.png",
+    message: `Published ${name}`,
     published: {
-      url: `https://app.fctl.test/api/v1/published/${"a".repeat(43)}/after.png`,
-      name: "after.png",
+      url: `https://app.fctl.test/api/v1/published/${"a".repeat(43)}/${name}`,
+      name,
       media_type: "image/png",
       size: 245_300,
       width: 1440,
@@ -207,21 +210,33 @@ describe("a published screenshot", () => {
     });
     return e;
   };
-  const viewer = (c: HTMLElement) => c.querySelector('dialog[aria-label="after.png"]');
+  const viewer = () => document.querySelector("dialog");
 
   it("opens over the page, not in a new tab, from its picture and its name", () => {
     const c = transcript([published()], "idle");
     const picture = c.querySelector('a[aria-label="View after.png"]') as HTMLAnchorElement;
     expect(picture.target).toBe("_blank");
-    expect(viewer(c)).toBeNull();
+    expect(viewer()).toBeNull();
     expect(click(picture).defaultPrevented).toBe(true);
-    expect(viewer(c)).not.toBeNull();
+    expect(viewer()?.getAttribute("aria-label")).toBe("after.png");
+    for (const unmount of roots.splice(0)) unmount();
     const c2 = transcript([published()], "idle");
     const name = [...c2.querySelectorAll("a")].find(
       (a) => a.textContent === "after.png",
     ) as HTMLAnchorElement;
     expect(click(name).defaultPrevented).toBe(true);
-    expect(viewer(c2)).not.toBeNull();
+    expect(viewer()?.getAttribute("aria-label")).toBe("after.png");
+  });
+
+  it("steps on to the session's next picture", () => {
+    const c = transcript([published("before.png"), prose("Pushed."), published("after.png")], "idle");
+    click(c.querySelector('a[aria-label="View before.png"]') as HTMLAnchorElement);
+    const dialog = viewer() as HTMLDialogElement;
+    expect(dialog.querySelector("p[aria-live]")?.textContent).toBe("before.png: 1 of 2");
+    act(() => {
+      dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    expect(dialog.getAttribute("aria-label")).toBe("after.png");
   });
 
   it("takes its room in the agent's answers before it loads", () => {
@@ -236,6 +251,6 @@ describe("a published screenshot", () => {
     const picture = c.querySelector('a[aria-label="View after.png"]') as HTMLAnchorElement;
     expect(click(picture, { metaKey: true }).defaultPrevented).toBe(false);
     expect(click(picture, { ctrlKey: true }).defaultPrevented).toBe(false);
-    expect(viewer(c)).toBeNull();
+    expect(viewer()).toBeNull();
   });
 });
