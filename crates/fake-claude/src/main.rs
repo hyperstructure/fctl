@@ -21,6 +21,9 @@
 //! | `watch <seconds>` | watches the pull request's checks in one tool call that lasts that many seconds (at most ten minutes), as agents wait for CI before they end their turn |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `screenshot` | draws a small PNG and publishes it with `fctl publish`, as agents do for pull requests |
+//! | `remember <text>` | adds `<text>` (to the end of its line) to the project's memory with `fctl memory add`, as agents do |
+//! | `recall` | lists the project's memory with `fctl memory` |
+//! | `retro` | records a retrospective of the turn's work with `fctl retro`, as agents do when they finish a piece of work |
 //! | `slow` | streams for about ten seconds (try interrupting) |
 //! | `background <seconds>` | starts a shell command in the background that ends after that many seconds (`system/task_started`), and ends its turn; when the command ends (`system/task_notification`), takes its result in a turn of its own, as Claude Code does |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds, unless the turn also says `reset`, as fctl-agent's message that continues the session does |
@@ -268,6 +271,35 @@ impl Session {
         }
         out(
             &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": output, "is_error": is_error}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+    }
+
+    /// Runs the sandbox's `fctl` with `args` in a `Bash` tool call, as
+    /// agents do.
+    fn fctl(&mut self, args: &[&str], description: &str) {
+        let (output, failed) = match std::process::Command::new("fctl").args(args).output() {
+            Ok(o) => (
+                String::from_utf8_lossy(&o.stdout).into_owned()
+                    + &String::from_utf8_lossy(&o.stderr),
+                !o.status.success(),
+            ),
+            Err(e) => (format!("fctl: {e}"), true),
+        };
+        let command = std::iter::once("fctl".to_owned())
+            .chain(args.iter().map(|a| {
+                if a.contains(' ') {
+                    format!("{a:?}")
+                } else {
+                    (*a).to_owned()
+                }
+            }))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.tool(
+            "Bash",
+            json!({"command": command, "description": description}),
+            &output,
+            failed,
         );
     }
 
@@ -543,6 +575,32 @@ impl Session {
                 failed,
             );
         }
+        if let Some(note) = after_word(text, "remember ") {
+            let note =
+                note.unwrap_or_else(|| "fake-claude remembers this for later sessions.".into());
+            self.fctl(&["memory", "add", &note], "Remember it for later sessions");
+        }
+        if says(&lower, "recall") {
+            self.fctl(&["memory"], "Read the project's memory");
+        }
+        if says(&lower, "retro") {
+            self.fctl(
+                &[
+                    "retro",
+                    "--outcome",
+                    "completed",
+                    "--worked-on",
+                    "What the message asked, in fake-claude's sandbox.",
+                    "--approach",
+                    "Did the steps the message named, one tool call each.",
+                    "--challenges",
+                    "None: fake-claude knows its script.",
+                    "--insights",
+                    "fake-claude reacts to words in a message; docs/development.md lists them.",
+                ],
+                "Record a retrospective",
+            );
+        }
         if let Some(secs) = watch_for(text)
             && self.watch(secs)
         {
@@ -736,6 +794,18 @@ fn effort_in(lower: &str) -> Option<Option<String>> {
         }
     }
     None
+}
+
+/// What follows `word` (any case) to the end of its line: `None` inside
+/// when nothing does, and `None` without the word.
+fn after_word(text: &str, word: &str) -> Option<Option<String>> {
+    let at = text.char_indices().find_map(|(i, _)| {
+        text.get(i..i + word.len())
+            .filter(|w| w.eq_ignore_ascii_case(word))
+            .map(|_| i + word.len())
+    })?;
+    let rest = text[at..].lines().next().unwrap_or_default().trim();
+    Some((!rest.is_empty()).then(|| rest.to_owned()))
 }
 
 /// The title after `rename` (any case), to the end of its line.

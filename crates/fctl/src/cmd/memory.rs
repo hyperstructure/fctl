@@ -242,8 +242,13 @@ pub async fn run(server: Option<&str>, args: MemoryArgs, json: bool) -> Result<(
                     &serde_json::json!({ "memory": note, "replaced": replaced }),
                 );
             }
+            let done = if note.session.is_some() {
+                "Remembered"
+            } else {
+                "Added"
+            };
             println!(
-                "{} Remembered {}",
+                "{} {done} {}",
                 style::accent("✓"),
                 style::bold(note.id.as_str())
             );

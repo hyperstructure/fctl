@@ -198,14 +198,21 @@ fn print_list(list: &RetrospectiveList) {
     if let Some(o) = &list.outcomes {
         let total = o.completed + o.partial + o.blocked;
         if total > 0 {
+            let parts: Vec<String> = [
+                (o.completed, "completed"),
+                (o.partial, "partly done"),
+                (o.blocked, "blocked"),
+            ]
+            .iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, label)| format!("{n} {label}"))
+            .collect();
             println!(
                 "{}",
                 style::dim(&format!(
-                    "{}: {} completed, {} partly done, {} blocked",
+                    "{}: {}",
                     style::count(total, "retrospective", "retrospectives"),
-                    o.completed,
-                    o.partial,
-                    o.blocked
+                    parts.join(", ")
                 ))
             );
             println!();
