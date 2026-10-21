@@ -32,7 +32,7 @@ runs:
         mkdir -p ~/.xtask/bin
         cp target/debug/xtask ~/.xtask/bin/
     - name: Save xtask
-      if: steps.cache.outputs.cache-hit != 'true' && (github.ref == 'refs/heads/main' || github.head_ref == 'fctl/106-what-kind-of-optimisations-can-we-do-to')
+      if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.xtask/bin
