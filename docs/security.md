@@ -117,6 +117,19 @@ Each session runs in its own Linux VM (Apple container or Lima) or container
 sandbox is the boundary: it can do anything inside its VM, and nothing
 outside it except through these channels:
 
+- **Lima VMs** get none of the mounts of Lima's templates, which give
+  each VM the home directory of whoever runs the host (read only) and a
+  `/tmp/lima` every VM writes to, and none of their port forwards, which
+  put a VM's services on the host's loopback, where other VMs reach them.
+  A VM still reaches the host's own loopback services
+  (`host.lima.internal`), as Docker Desktop's containers do theirs.
+  Lima hosts of fctl 0.14.1 and earlier cloned VMs that could read that
+  home directory, with the host's runner token and the CLI's credentials.
+  On such a host, remove its runner and install the host again (`fctl
+  host uninstall`, `fctl host install`), sign the CLI in again (`fctl
+  login`) and revoke its old tokens in Settings, and replace any other
+  keys kept in that home directory.
+
 - **Network.** Sandboxes have outbound network access (to install
   dependencies and reach GitHub and Claude). Do not run hosts on networks
   where an outbound connection from an untrusted process is a problem.

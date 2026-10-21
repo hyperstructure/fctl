@@ -149,6 +149,8 @@ async fn build_lima_base(dir: &Path, env: &[&str]) -> Result<()> {
             "--name",
             BASE_VM,
             "--tty=false",
+            "--set",
+            crate::driver::lima::ISOLATED,
             "template://debian-12",
         ],
     )
