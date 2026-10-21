@@ -19,6 +19,7 @@ trusts.
 | Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
 | Published screenshots | the project's Durable Object, found by the SHA-256 of their links' tokens in D1 | anyone with a link, until it expires |
 | GitHub App key | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to mint short-lived tokens |
+| GitHub webhook secret | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to check that deliveries come from GitHub |
 | Web Push (VAPID) key | encrypted in D1 | the control plane, to sign notifications |
 | Master key | a Worker secret (outside Cloudflare, the server's environment, or a file it made in its data directory) | the control plane |
 
@@ -97,6 +98,11 @@ owner and purpose), so a value copied between rows does not decrypt.
   Content-Security-Policy; only PNG, JPEG, GIF and WebP display in place,
   everything else downloads, so an uploaded HTML or SVG file never runs as
   part of the app.
+- GitHub's webhook (`POST /api/v1/github/webhook`) takes only deliveries
+  signed with the webhook's secret (HMAC-SHA256, checked in constant time),
+  and none without the secret. It takes from them only which pull requests
+  or commits changed, then asks GitHub itself what became of the pull
+  requests sessions list, so a replayed delivery changes nothing.
 - Screenshots agents publish for pull requests are public to anyone who
   has a link, which is how GitHub's image proxy fetches them. A link holds
   256 random bits, of which D1 keeps only the SHA-256. The control plane

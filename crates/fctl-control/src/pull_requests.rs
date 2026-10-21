@@ -21,6 +21,9 @@ use worker::{D1Database, Env};
 
 /// Most pull requests one webhook delivery looks up: those a commit heads.
 const MAX_LOOKUPS: usize = 10;
+/// Most pull request numbers of a delivery that D1 is asked about (it takes
+/// 100 parameters a query).
+const MAX_NUMBERS: usize = 50;
 /// Most pull requests the hourly sweep looks up.
 const SWEEP_LOOKUPS: i64 = 30;
 /// How long what GitHub said of a pull request that isn't merged or closed
@@ -90,12 +93,13 @@ pub async fn hook(
     let repo = key(&hook.repo);
     let mut which = Vec::new();
     let mut params = vec![s(&repo)];
-    if !hook.numbers.is_empty() {
+    let numbers = &hook.numbers[..hook.numbers.len().min(MAX_NUMBERS)];
+    if !numbers.is_empty() {
         which.push(format!(
             "number IN ({})",
-            vec!["?"; hook.numbers.len()].join(", ")
+            vec!["?"; numbers.len()].join(", ")
         ));
-        params.extend(hook.numbers.iter().map(|x| n(*x as i64)));
+        params.extend(numbers.iter().map(|x| n(*x as i64)));
     }
     if let Some(sha) = &hook.sha {
         which.push("head_sha = ?".to_owned());

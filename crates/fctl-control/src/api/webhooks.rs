@@ -8,7 +8,7 @@ use crate::ctx::Ctx;
 use crate::error::{AppError, AppResult, not_configured};
 use crate::{http, pull_requests};
 use fctl_domain::webhooks::{self, Delivery};
-use fctl_proto::ApiError;
+use fctl_proto::{ApiError, ErrorCode};
 use serde_json::{Value, json};
 use worker::{Request, Response};
 
@@ -33,7 +33,10 @@ pub async fn receive(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     }
     let signature = http::header(req, "X-Hub-Signature-256").unwrap_or_default();
     if !webhooks::signed(&secret, &body, &signature) {
-        return Err(AppError(ApiError::unauthorized()));
+        return Err(AppError(ApiError::new(
+            ErrorCode::Unauthorized,
+            "The delivery isn't signed with the webhook's secret",
+        )));
     }
     let event = http::header(req, "X-GitHub-Event").unwrap_or_default();
     let delivery = http::header(req, "X-GitHub-Delivery").unwrap_or_default();

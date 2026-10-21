@@ -112,7 +112,7 @@ Docker and Kubernetes secrets do.
 | `FCTL_DATA_DIR` | `/data` in the image | Where the state lives |
 | `FCTL_PORT`, `FCTL_LISTEN` | `8787` (or `PORT`), `0.0.0.0` | Where it listens |
 | `FCTL_TRUST_PROXY` | `0` | How many [reverse proxies](#https-and-reverse-proxies) in front add `X-Forwarded-For` |
-| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | | [Google sign-in](#google-sign-in-optional) |
 | `RESEND_API_KEY`, `FCTL_EMAIL_FROM` | | [Email](#email-optional) |
 
@@ -282,7 +282,12 @@ An instance has one app; each workspace works in the accounts it is
 installed on that are connected to the workspace.
 
 1. Create an app under your organization: **Settings → Developer settings →
-   GitHub Apps → New GitHub App**. Turn the webhook off. Set its **Setup
+   GitHub Apps → New GitHub App**. Leave its webhook on, with the **Webhook
+   URL** `https://fctl.acme.dev/api/v1/github/webhook` (your
+   `FCTL_PUBLIC_URL` followed by `/api/v1/github/webhook`) and a **Webhook
+   secret** of your own (`openssl rand -hex 32`), which you give the
+   control plane too (step 3): GitHub then tells fctl when pull requests
+   and their checks change, and sessions show them as they are. Set its **Setup
    URL** to `https://fctl.acme.dev/api/v1/github/installed` (your
    `FCTL_PUBLIC_URL` followed by `/api/v1/github/installed`) and tick
    **Redirect on update**, so that people who install it from a workspace,
@@ -305,6 +310,9 @@ installed on that are connected to the workspace.
    | Administration | Read and write | only for **New repository** |
    | Metadata | Read | required |
 
+   Under **Subscribe to events**, tick **Pull request**, **Check run**,
+   **Check suite** and **Status**: the webhook's deliveries.
+
 2. Install it on the organization (all repositories, or the ones agents may
    touch, including those they only read, such as private dependencies).
    To let workspaces use other accounts (someone's own, a friend's
@@ -322,8 +330,9 @@ installed on that are connected to the workspace.
    `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER` (the organization **New
    repository** creates repositories in), `GITHUB_APP_PRIVATE_KEY` (the key
    as GitHub gives it; with Kubernetes, in the `fctl` Secret:
-   `--from-file=GITHUB_APP_PRIVATE_KEY=acme-fctl.private-key.pem`) and
-   `GITHUB_CLIENT_SECRET`, and start the server again.
+   `--from-file=GITHUB_APP_PRIVATE_KEY=acme-fctl.private-key.pem`),
+   `GITHUB_CLIENT_SECRET` and `GITHUB_WEBHOOK_SECRET` (the webhook's
+   secret), and start the server again.
 
    On Cloudflare, fill in the instance file:
 
@@ -340,6 +349,7 @@ installed on that are connected to the workspace.
    ```sh
    cargo xtask secrets acme --github-key ~/Downloads/acme-fctl.private-key.pem
    echo "$GITHUB_CLIENT_SECRET" | cargo xtask secrets acme --set GITHUB_CLIENT_SECRET
+   echo "$GITHUB_WEBHOOK_SECRET" | cargo xtask secrets acme --set GITHUB_WEBHOOK_SECRET
    cargo xtask deploy acme
    ```
 
@@ -347,6 +357,27 @@ The key is stored as PKCS#8, which WebCrypto imports (`cargo xtask secrets`
 and the server convert it); it never reaches a host or a sandbox. Without
 the client secret, a workspace keeps the accounts it has but can't connect
 a new one, and its GitHub tab says so.
+
+### Pull requests' state
+
+With the webhook's secret set, the control plane takes the deliveries
+GitHub signs with it, and answers others with 401 (without the secret,
+501). For each pull request a session lists that one concerns, it asks
+GitHub what became of it, so session lists and pages show its state (open,
+draft, queued, merged or closed) and its checks as they change, whatever
+the session is doing. It also asks about each pull request a session
+finds, and once an hour about up to 30 open ones it hasn't heard of for six
+hours, which brings sessions from before the webhook up to date. Without
+the secret, sessions show what their agents last looked up, without
+checks.
+
+To turn the webhook on for an app made before, edit it on GitHub: under
+**General**, tick **Active** under **Webhook** and fill in its URL and
+secret; under **Permissions & events**, subscribe to the four events
+above. Installations accept nothing new: the app reads pull requests,
+checks and commit statuses already. **Advanced → Recent Deliveries** shows
+each delivery and the control plane's answer: `{"ok":true,"sessions":1}`
+when a session heard of it.
 
 ### Which workspace uses which account
 

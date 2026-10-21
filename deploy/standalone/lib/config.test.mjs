@@ -47,6 +47,7 @@ test("the Worker gets the variables that are set, and a setup token", () => {
   assert.equal(cfg.vars.FCTL_SETUP_TOKEN, cfg.setupToken);
   assert.ok(cfg.setupToken.length >= 32);
   assert.equal(cfg.vars.GITHUB_APP_ID, undefined);
+  assert.equal(readConfig({ GITHUB_WEBHOOK_SECRET: "hook" }).vars.GITHUB_WEBHOOK_SECRET, "hook");
   assert.equal(readConfig({ FCTL_SETUP_TOKEN: "given" }).setupToken, "given");
   assert.throws(() => readConfig({ FCTL_PORT: "http" }), ConfigError);
   assert.throws(() => readConfig({ FCTL_TRUST_PROXY: "-1" }), ConfigError);

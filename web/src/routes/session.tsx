@@ -650,6 +650,7 @@ function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
   return (
     <ul className="flex flex-col gap-1.5">
       {prs.map((pr) => {
+        const known = prState(pr) !== "unknown";
         const checks = checksText(pr);
         return (
           <li key={pr.url}>
@@ -663,17 +664,19 @@ function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
               <PullRequestStateIcon pr={pr} className="mt-px size-4" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate">{pr.title ?? `Pull request #${pr.number}`}</span>
-                <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-ink-4">
-                  <span className="truncate font-mono">{prFullRef(pr)}</span>
-                  {prState(pr) !== "unknown" && <span>· {prStateText(pr)}</span>}
-                  {checks && (
-                    <span className="inline-flex items-center gap-1">
-                      ·
-                      <PullRequestChecksIcon pr={pr} className="size-3" />
-                      {checks}
-                    </span>
-                  )}
-                </span>
+                <span className="block truncate font-mono text-[11.5px] text-ink-4">{prFullRef(pr)}</span>
+                {(known || checks) && (
+                  // The checks' icon sets them apart, and leads their line when they wrap.
+                  <span className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11.5px] text-ink-3">
+                    {known && <span>{prStateText(pr)}</span>}
+                    {checks && (
+                      <span className="inline-flex items-center gap-1">
+                        <PullRequestChecksIcon pr={pr} className="size-3" />
+                        {checks}
+                      </span>
+                    )}
+                  </span>
+                )}
               </span>
               <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-ink-4" />
             </a>
