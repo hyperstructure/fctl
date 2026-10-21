@@ -11,6 +11,29 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
+/// Whether `link` is on the site of `server`: the same origin, or both on
+/// this machine (a development control plane and its web app run on
+/// different ports). A server that sends people elsewhere to approve a
+/// sign-in may be relaying another server's code, to get a token there.
+pub fn same_site(server: &str, link: &str) -> bool {
+    let (Ok(server), Ok(link)) = (url::Url::parse(server), url::Url::parse(link)) else {
+        return false;
+    };
+    let local = |u: &url::Url| match u.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    server.origin() == link.origin() || (local(&server) && local(&link))
+}
+
+/// The origin of a URL, as it can be shown: `https://app.fctl.sh`.
+pub fn origin(link: &str) -> Option<String> {
+    let origin = url::Url::parse(link).ok()?.origin();
+    origin.is_tuple().then(|| origin.ascii_serialization())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The server answered with an fctl error body.
@@ -349,4 +372,43 @@ fn error_chain(e: &dyn std::error::Error) -> String {
         cur = c.source();
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sign_in_links_stay_on_the_server() {
+        assert!(same_site(
+            "https://app.fctl.sh",
+            "https://app.fctl.sh/device?code=AB"
+        ));
+        assert!(same_site(
+            "http://127.0.0.1:8787",
+            "http://localhost:5173/device?code=AB"
+        ));
+        assert!(!same_site(
+            "https://evil.example",
+            "https://app.fctl.sh/device"
+        ));
+        assert!(!same_site(
+            "https://app.fctl.sh",
+            "http://app.fctl.sh/device"
+        ));
+        assert!(!same_site(
+            "https://app.fctl.sh",
+            "https://app.fctl.sh.evil.example/device"
+        ));
+        assert!(!same_site(
+            "http://127.0.0.1:8787",
+            "https://app.fctl.sh/device"
+        ));
+        assert!(!same_site("https://app.fctl.sh", "javascript:alert(1)"));
+        assert_eq!(
+            origin("https://app.fctl.sh/device?code=AB").as_deref(),
+            Some("https://app.fctl.sh")
+        );
+        assert_eq!(origin("javascript:alert(1)"), None);
+    }
 }
