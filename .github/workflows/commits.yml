@@ -16,8 +16,7 @@ concurrency:
 permissions:
   contents: read
 
-# As in ci.yml, so that the xtask build shares its cache (rust-cache's keys
-# hash these).
+# As in ci.yml, so that xtask comes from the same cache.
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -32,19 +31,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: ./.github/actions/rust
-        with:
-          shared-key: xtask
+      - uses: ./.github/actions/xtask
       - name: The pull request title (it becomes the commit on main)
         if: github.event_name == 'pull_request'
         env:
           TITLE: ${{ github.event.pull_request.title }}
-        run: cargo xtask lint-commit "$TITLE"
+        run: xtask lint-commit "$TITLE"
       - name: Commits pushed to main
         if: github.event_name == 'push'
         env:
           BEFORE: ${{ github.event.before }}
         run: |
           git cat-file -e "$BEFORE^{commit}" 2>/dev/null || exit 0
-          cargo xtask lint-commit --range "$BEFORE..$GITHUB_SHA" ||
+          xtask lint-commit --range "$BEFORE..$GITHUB_SHA" ||
             echo "::warning::Commits on main should be Conventional Commits; see .claude/skills/commit/SKILL.md"

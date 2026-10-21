@@ -146,14 +146,14 @@ mod tests {
         assert!(Part::parse("clippy").is_err());
     }
 
-    /// CI runs each part in a job of its own: one it left out would be
-    /// checked by nothing.
+    /// CI runs each part in a job of its own (with xtask's binary, from
+    /// .github/actions/xtask): one it left out would be checked by nothing.
     #[test]
     fn ci_runs_every_part() {
         let workflow = include_str!("../../.github/workflows/ci.yml");
         for part in Part::ALL {
-            let step = format!("run: cargo xtask check {}", part.name());
-            assert!(workflow.contains(&step), "ci.yml has no `{step}`");
+            let step = format!("run: xtask check {}\n", part.name());
+            assert!(workflow.contains(&step), "ci.yml has no `{}`", step.trim());
         }
     }
 }
