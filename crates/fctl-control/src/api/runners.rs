@@ -432,8 +432,10 @@ pub async fn feed(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         http::check_same_origin(req, ctx.cfg.origin(), ctx.cfg.dev)?;
     }
     let user = ctx.user()?;
-    let ident: FeedIdentity =
+    let mut ident: FeedIdentity =
         crate::workspaces::feed_identity(&ctx.db, user, &ctx.settings()).await?;
+    ident.token_id = ctx.auth.as_ref().map(|a| a.token_id.clone());
+    ident.checked_at = Some(ctx.now);
     let stub = internal::fleet_stub(&ctx.env)?;
     let json = serde_json::to_string(&ident)?;
     internal::upgrade(&stub, "/feed", &[(internal::HDR_VIEWER, &json)]).await
