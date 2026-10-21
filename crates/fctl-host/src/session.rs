@@ -26,7 +26,7 @@ use fctl_proto::{ApiError, ErrorCode, Millis, RunnerId, SessionId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 /// What every session task shares.
@@ -288,7 +288,11 @@ impl AgentLink {
             let mut line = String::new();
             loop {
                 line.clear();
-                match reader.read_line(&mut line).await {
+                // What runs in the sandbox can write to the link: a line
+                // without an end mustn't fill the host's memory, where other
+                // sessions run.
+                let mut frame = (&mut reader).take(MAX_FRAME_BYTES as u64 + 1);
+                match frame.read_line(&mut line).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) if n > MAX_FRAME_BYTES => break,
                     Ok(_) => {}
