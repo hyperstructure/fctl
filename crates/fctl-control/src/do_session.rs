@@ -1413,6 +1413,18 @@ impl SessionObject {
                     }
                     acked = e.agent_seq;
                     let mut body = e.body;
+                    // People's messages, interrupts and status changes are
+                    // the control plane's to record, never an agent's: from
+                    // an uplink (a host, or what runs in its sandbox posing
+                    // as the agent) they are acknowledged and dropped, so
+                    // that nobody's words can be put in the transcript.
+                    if matches!(
+                        body,
+                        EventBody::UserMessage(_) | EventBody::Status(_) | EventBody::Interrupt(_)
+                    ) {
+                        worker::console_error!("dropping a {} event from an uplink", body.kind());
+                        continue;
+                    }
                     if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
                         summary_changed |= Self::apply_claude(s, &mut counted, v, e.ts, &self.mem);
                         turn_ended |= self.remember_reply(v);

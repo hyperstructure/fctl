@@ -774,7 +774,10 @@ no effort level.
   the sandbox. The host forwards events in batches; SessionDO stores them,
   assigns the canonical `seq`, broadcasts them, and acknowledges `agent_seq`.
   After any reconnect SessionDO announces the last acknowledged `agent_seq`
-  and the host replays the journal from there.
+  and the host replays the journal from there. People's messages,
+  interrupts and status changes are SessionDO's own to record: from an
+  uplink, where a host or what runs in its sandbox could send them as
+  anyone, they are acknowledged and dropped.
 - SessionDO stores events in `agent_seq` order. After a reconnect, newer
   events can arrive before the replay of older ones, which went over a link
   to the agent or an uplink that closed: they wait for it, for at most a
