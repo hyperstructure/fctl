@@ -111,7 +111,7 @@ jobs:
   # deploys the Worker built for the last one that changed them.
   build:
     name: Build app.fctl.sh
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || github.head_ref == 'fctl/106-what-kind-of-optimisations-can-we-do-to'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -136,7 +136,7 @@ jobs:
         run: |
           command -v worker-build || cargo install worker-build --version "$WORKER_BUILD" --locked
           cd crates/fctl-control && worker-build --release
-      - if: steps.worker.outputs.cache-hit != 'true'
+      - if: steps.worker.outputs.cache-hit != 'true' && (github.ref == 'refs/heads/main' || github.head_ref == 'fctl/106-what-kind-of-optimisations-can-we-do-to')
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: crates/fctl-control/build
@@ -190,6 +190,32 @@ jobs:
         run: |
           curl -fsS https://app.fctl.sh/api/v1/health
           curl -fsS -o /dev/null https://app.fctl.sh/login
+
+  # TEMPORARY, for this pull request only: what deploy does with the
+  # artifact, without deploying.
+  deploy-dry-run:
+    name: Deploy dry run (temporary)
+    needs: [check, dev, build]
+    if: github.head_ref == 'fctl/106-what-kind-of-optimisations-can-we-do-to'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app.fctl.sh
+      - name: Deploy (dry run)
+        run: |
+          tar -xf xtask.tar
+          ./xtask deploy fctl-sh --skip-build --dry-run
+          cd crates/fctl-control
+          ../../node_modules/.bin/wrangler deploy --dry-run --outdir "$RUNNER_TEMP/out" --config wrangler.deploy.toml
+          ls -la "$RUNNER_TEMP/out"
 
   site-docs:
     name: Pin fctl.sh to these docs
