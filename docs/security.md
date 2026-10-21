@@ -312,8 +312,10 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   trailers in them. The primary instance owner hands the role over
   before they can delete their account.
 - Settings → Your data (or `fctl account export`) downloads everything the
-  instance keeps about you, as JSON. Files you attached are listed in the
-  transcripts there; each downloads from its session.
+  instance keeps about you, as JSON, with the sessions you started in the
+  workspaces open to you: not those of workspaces you left. Files you
+  attached are listed in the transcripts there; each downloads from its
+  session.
 - Hosts keep a stopped session's sandbox so it can resume, and remove it
   once it has been stopped for `keep_stopped_hours` (72 by default; 0 keeps
   them), or sooner when their disk has less free than `min_free_disk_gb`
