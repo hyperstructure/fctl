@@ -40,6 +40,11 @@ vi.mock("@/components/markdown", async () => {
   };
 });
 vi.mock("./attachments", () => ({ MessageFiles: () => null }));
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, hash }: { children: ReactNode; hash?: string }) => (
+    <a href={`/p/app?tab=memory${hash ? `#${hash}` : ""}`}>{children}</a>
+  ),
+}));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -252,5 +257,80 @@ describe("a published screenshot", () => {
     expect(click(picture, { metaKey: true }).defaultPrevented).toBe(false);
     expect(click(picture, { ctrlKey: true }).defaultPrevented).toBe(false);
     expect(viewer()).toBeNull();
+  });
+});
+
+const memory = (over: Partial<G.Memory> = {}): G.Memory => ({
+  id: "mem_1",
+  project_id: "prj_1",
+  text: "The e2e tests need Chromium: run npx playwright install chromium first.",
+  session: { id: "ses_1", number: 3, title: "Fix the login redirect" },
+  created_at: 0,
+  ...over,
+});
+const kept = (code: string, m: G.Memory): Item => ({
+  kind: "notice",
+  key: `notice-${++seq}`,
+  seq,
+  ts: 0,
+  notice: { level: "info", code, message: `Remembered: ${m.text}`, memory: m },
+});
+
+describe("what the agent keeps", () => {
+  it("shows a note it remembered, with a link to it in the project's memory", () => {
+    const c = render(
+      <Transcript
+        sessionId="ses_1"
+        startedBy={ada}
+        items={[kept("memory_added", memory())]}
+        live={emptyLive()}
+        status="idle"
+        projectSlug="app"
+        onLoadOlder={() => {}}
+        hasMoreBefore={false}
+        loadingOlder={false}
+      />,
+    );
+    expect(c.textContent).toContain("Remembered for later agents");
+    expect(c.textContent).toContain("The e2e tests need Chromium");
+    expect(c.querySelector("a")?.getAttribute("href")).toBe("/p/app?tab=memory#note-mem_1");
+  });
+
+  it("says a note it marked stale gave way to a newer one, without its id", () => {
+    const old = memory({ stale: { at: 1, reason: "Replaced by mem_2", replaced_by: "mem_2" } });
+    const c = transcript([kept("memory_stale", old)], "idle");
+    expect(c.textContent).toContain("Marked a note stale");
+    expect(c.textContent).toContain("A newer note takes its place.");
+    expect(c.textContent).not.toContain("mem_2");
+  });
+
+  it("shows a retrospective with its outcome and the parts that say something", () => {
+    const r: G.Retrospective = {
+      id: "rtr_1",
+      project_id: "prj_1",
+      session: { id: "ses_1", number: 3, title: "Fix the login redirect" },
+      created_at: 0,
+      outcome: "blocked",
+      worked_on: "Moving the uploads to the new bucket.",
+      challenges: "The sandbox has no credentials for it.",
+      approach: " ",
+    };
+    const c = transcript(
+      [
+        {
+          kind: "notice",
+          key: "n-retro",
+          seq: 99,
+          ts: 0,
+          notice: { level: "info", code: "retrospective", message: "Recorded", retrospective: r },
+        },
+      ],
+      "idle",
+    );
+    expect(c.textContent).toContain("Retrospective");
+    expect(c.textContent).toContain("Blocked");
+    expect(c.textContent).toContain("Worked onMoving the uploads to the new bucket.");
+    expect(c.textContent).toContain("ChallengesThe sandbox has no credentials for it.");
+    expect(c.textContent).not.toContain("Approach");
   });
 });
