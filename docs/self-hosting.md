@@ -382,6 +382,30 @@ checks and commit statuses already. **Advanced → Recent Deliveries** shows
 each delivery and the control plane's answer: `{"ok":true,"sessions":1}`
 when a session heard of it.
 
+Subscribe to all four events before you rely on the webhook. When a pull
+request merges or closes while **Pull request** isn't subscribed, or the
+webhook is off, GitHub sends nothing about it, and its sessions keep
+showing it as it was until the hourly job looks it up again. The job skips
+pull requests the control plane looked up in the last six hours, and a
+delivery about a pull request's checks counts as a lookup: one that merges
+soon after its last check run shows as open for six to seven hours after
+that run.
+
+To bring such a pull request up to date at once, make GitHub send a
+delivery that names it, which makes the control plane look it up: add a
+label to the pull request and remove the label again (with **Pull request**
+subscribed), or redeliver an earlier delivery under
+**Advanced → Recent Deliveries** (GitHub keeps them for three days). On
+Cloudflare you can also have the next hourly run look up every pull
+request that isn't merged or closed, by clearing when the control plane
+last did (`fctl` is the `database_name` in your instance file):
+
+```sh
+npx wrangler d1 execute fctl --remote --command \
+  "UPDATE pull_request_sessions SET checked_at = NULL
+   WHERE state IS NULL OR state NOT IN ('merged', 'closed')"
+```
+
 ### Which workspace uses which account
 
 A workspace's admins connect accounts under the workspace's **GitHub** tab,
