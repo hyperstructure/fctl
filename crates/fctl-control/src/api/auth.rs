@@ -413,6 +413,14 @@ pub async fn change_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
                 "That isn't your current password",
             ));
         }
+    } else if !crate::api::two_factor::fresh_sign_in(ctx) {
+        // A password is a new way in: without one to confirm, only a browser
+        // that signed in within the last 15 minutes sets it, so that a
+        // stolen session or token can't.
+        return Err(validation(
+            "new_password",
+            "Setting a password takes a sign-in from the last 15 minutes. Sign out and in again, then set it.",
+        ));
     }
     validate::password(&body.new_password, Some(&user.email))?;
     let hash = auth::hash_password(&body.new_password)?;
@@ -434,6 +442,22 @@ pub async fn change_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     .run()
     .await?;
     ctx.audit("user.password_changed", Some(&user.id), None);
+    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+    crate::email::notice(
+        ctx,
+        &user,
+        "Your password was changed",
+        format!(
+            "The password of your {instance} account ({}) was {}, and its other sessions were signed out.\n\nIf you didn't do this, reset your password from the sign-in page now: {}",
+            user.email,
+            if user.has_password() {
+                "changed"
+            } else {
+                "set"
+            },
+            ctx.cfg.url("/login")
+        ),
+    );
     http::ok(&Ok { ok: true })
 }
 
