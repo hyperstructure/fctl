@@ -1,0 +1,41 @@
+name: xtask
+description: >
+  Puts xtask, the program behind `cargo xtask`, on PATH as `xtask`. It takes
+  nine seconds to build, the same in every job, so it comes from a cache
+  when a run of main built it from the same files: its crate, fctl-proto,
+  the manifests, the lockfile and the toolchain. Otherwise it builds here,
+  with Rust set up by ../rust unless the job did that already.
+inputs:
+  setup-rust:
+    description: Set up Rust (../rust) when xtask has to be built; false when the job set it up already
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: xtask from the cache
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.xtask/bin
+        # The environment matters too: the dev profile's settings come from it.
+        key: xtask-${{ runner.os }}-${{ runner.arch }}-debug${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ hashFiles('xtask/**', 'crates/fctl-proto/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', '.github/actions/xtask/action.yml') }}
+    - if: steps.cache.outputs.cache-hit != 'true' && inputs.setup-rust == 'true'
+      uses: ./.github/actions/rust
+      with:
+        shared-key: xtask
+    - name: Build xtask
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cargo build --locked -p xtask
+        mkdir -p ~/.xtask/bin
+        cp target/debug/xtask ~/.xtask/bin/
+    - name: Save xtask
+      if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.xtask/bin
+        key: ${{ steps.cache.outputs.cache-primary-key }}
+    - shell: bash
+      run: echo "$HOME/.xtask/bin" >> "$GITHUB_PATH"

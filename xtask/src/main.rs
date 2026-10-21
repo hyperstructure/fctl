@@ -21,8 +21,12 @@ Develop
                                 and a host whose agents run fake-claude; --smoke runs one
                                 session to the end and stops (CI); --server uses the control
                                 plane running there (started with FCTL_SETUP_TOKEN=dev-setup-token)
-  check [--quick]               What CI checks (fmt, types, lint, tests, builds); CI also
-                                runs dev --smoke
+  check [--quick] [lint|test|web]...
+                                What CI checks (fmt, types, lint, tests, builds): lint is
+                                rustfmt, web/src/gen and Clippy; test is cargo test; web is
+                                Biome, TypeScript, Vitest, node --test and the web app's
+                                build (--quick leaves it out). No part: all of them. CI runs
+                                each part in a job of its own, and dev --smoke
   gen                           Regenerate web/src/gen from crates/fctl-proto
 
 Self-host without Cloudflare (deploy/standalone)
@@ -71,8 +75,12 @@ fn main() -> Result<()> {
         }
         "check" => {
             let quick = a.flag("--quick");
+            let mut parts = Vec::new();
+            while let Some(part) = a.optional() {
+                parts.push(check::Part::parse(&part)?);
+            }
             a.done()?;
-            check::check(&root, quick)
+            check::check(&root, &parts, quick)
         }
         "dev" => {
             let opts = dev::DevOpts {
