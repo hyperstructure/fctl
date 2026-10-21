@@ -362,6 +362,17 @@ pub async fn connect(ctx: &Ctx, user: &UserRow, email: &str) -> AppResult<Vec<Wo
         Some(&user.id),
         Some(serde_json::json!({ "email": email })),
     );
+    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+    crate::email::notice(
+        ctx,
+        user,
+        "An address was connected to your account",
+        format!(
+            "{email} now signs in to your {instance} account ({}), and password reset links can go to it.\n\nIf you didn't connect it, disconnect it in Settings now and change your password: {}",
+            user.email,
+            ctx.cfg.url("/settings")
+        ),
+    );
     crate::api::workspaces::joined_after_sign_up(ctx, user, email).await
 }
 
@@ -370,6 +381,15 @@ pub async fn connect(ctx: &Ctx, user: &UserRow, email: &str) -> AppResult<Vec<Wo
 pub async fn connect_invite(ctx: &mut Ctx, token: &str) -> AppResult<Response> {
     let user = ctx.user()?.clone();
     ctx.rate_limit(&format!("connect:{}", user.id)).await?;
+    // The address signs in to the account from then on, and a password
+    // reset link can go to it: only a browser that signed in within the
+    // last 15 minutes connects one, so that a stolen session or token can't.
+    if !crate::api::two_factor::fresh_sign_in(ctx) {
+        return Err(AppError(ApiError::new(
+            fctl_proto::ErrorCode::Forbidden,
+            "Connecting an address takes a sign-in from the last 15 minutes. Sign out and in again, then open the invitation again.",
+        )));
+    }
     let invite = crate::api::auth::live_invite(ctx, token)
         .await?
         .ok_or_else(|| not_found("Invitation"))?;

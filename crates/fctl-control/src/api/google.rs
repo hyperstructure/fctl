@@ -52,11 +52,10 @@ struct Claims {
     picture: Option<String>,
 }
 
+/// `path` when it is a path of the app, else the home page.
 fn safe_return(path: Option<String>) -> String {
-    match path {
-        Some(p) if p.starts_with('/') && !p.starts_with("//") && !p.contains("\\") => p,
-        _ => "/".to_owned(),
-    }
+    path.filter(|p| fctl_domain::validate::is_app_path(p))
+        .unwrap_or_else(|| "/".to_owned())
 }
 
 fn redirect_uri(ctx: &Ctx) -> String {
@@ -71,7 +70,17 @@ pub async fn start(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         .ok_or_else(|| not_configured("Google sign-in is not configured"))?;
     let intent = http::query(req, "intent").unwrap_or_else(|| "login".into());
     let user_id = match intent.as_str() {
-        "link" => Some(ctx.user()?.id.clone()),
+        "link" => {
+            let user_id = ctx.user()?.id.clone();
+            // A linked Google account signs in without the password, and
+            // usually without a code: only a browser that signed in within
+            // the last 15 minutes links one, so that a stolen session or
+            // token can't add a way in.
+            if !crate::api::two_factor::fresh_sign_in(ctx) {
+                return fail(ctx, "/settings", "google_reauth");
+            }
+            Some(user_id)
+        }
         "login" => None,
         _ => {
             return Err(AppError(ApiError::bad_request(
@@ -217,6 +226,12 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         let Some(user_id) = st.user_id.as_deref() else {
             return fail(ctx, "/settings", "google_state");
         };
+        let Some(user) = auth::user_by_id(ctx, user_id)
+            .await?
+            .filter(UserRow::is_active)
+        else {
+            return fail(ctx, "/settings", "google_state");
+        };
         if let Some(other) = &linked {
             if other.id != user_id {
                 return fail(ctx, "/settings", "google_linked_elsewhere");
@@ -224,6 +239,18 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
             return http::redirect(&format!("{}?linked=google", st.return_to));
         }
         insert_identity(ctx, user_id, &claims, email.as_deref()).await?;
+        let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+        crate::email::notice(
+            ctx,
+            &user,
+            "A Google account was linked to your account",
+            format!(
+                "The Google account {} now signs in to your {instance} account ({}).\n\nIf you didn't link it, unlink it in Settings now and change your password: {}",
+                email.as_deref().unwrap_or("without an email address"),
+                user.email,
+                ctx.cfg.url("/settings")
+            ),
+        );
         if let Some(pic) = claims.picture.as_deref() {
             q(
                 &ctx.db,

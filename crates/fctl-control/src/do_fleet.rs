@@ -34,6 +34,18 @@ use worker::{
 };
 
 const TAG_FEED: &str = "feed";
+/// How often an open feed's access is checked again, on its pings: once
+/// its person signed out, was disabled, or lost a workspace, project or
+/// instance role, it shows what they see now within this long.
+const FEED_CHECK_MS: i64 = 60_000;
+/// A feed whose access wasn't checked for this long (it stopped pinging,
+/// which the app does every 25 seconds) closes at the next message to it,
+/// and reconnects through the Worker, which checks it.
+const FEED_STALE_MS: i64 = 5 * 60_000;
+/// Close codes for feeds: their token no longer signs anyone in, and their
+/// access wasn't checked for a while.
+const CLOSE_NO_ACCESS: u16 = 4403;
+const CLOSE_RECHECK: u16 = 4000;
 
 /// The answer to a host's credential request.
 struct Credentials {
@@ -284,6 +296,7 @@ impl DurableObject for FleetObject {
             }
             (worker::Method::Post, "/runner-changed") => match req.json::<RunnerChanged>().await {
                 Ok(b) => {
+                    self.stop_unserved(&b.runner_id).await;
                     self.feed_runner(&b.runner_id).await;
                     self.dispatch().await;
                     Ok(serde_json::json!({ "ok": true }))
@@ -330,6 +343,11 @@ impl DurableObject for FleetObject {
                             "UPDATE runners SET connected = 0 WHERE id = ?",
                             Some(vec![sv(&id)]),
                         );
+                        // Its sessions' uplinks too: they connect again with
+                        // a token that works, or not at all.
+                        for a in self.assigned_to_runner(&id) {
+                            self.close_uplink(&a.session_id, &id).await;
+                        }
                         Ok(serde_json::json!({ "ok": true }))
                     }
                     Err(e) => Err(ApiError::bad_request(e.to_string())),
@@ -359,13 +377,21 @@ impl DurableObject for FleetObject {
         let WebSocketIncomingMessage::String(text) = message else {
             return Ok(());
         };
-        if let Ok(Some(rs)) = ws.deserialize_attachment::<RunnerSocket>() {
+        if self.state.get_tags(&ws).iter().any(|t| t == TAG_FEED) {
+            if text.contains("\"ping\"") {
+                let _ = ws.send_with_str(r#"{"type":"pong"}"#);
+                if let Ok(Some(ident)) = ws.deserialize_attachment::<FeedIdentity>() {
+                    let now = now_ms();
+                    if now - ident.checked_at.unwrap_or_default() >= FEED_CHECK_MS {
+                        self.recheck_feed(&ws, ident, now).await;
+                    }
+                }
+            }
+        } else if let Ok(Some(rs)) = ws.deserialize_attachment::<RunnerSocket>() {
             match serde_json::from_str::<HostToFleet>(&text) {
                 Ok(msg) => self.on_runner(&ws, &rs, msg).await,
                 Err(e) => worker::console_error!("bad runner message: {e}"),
             }
-        } else if text.contains("\"ping\"") {
-            let _ = ws.send_with_str(r#"{"type":"pong"}"#);
         }
         Ok(())
     }
@@ -685,7 +711,18 @@ impl FleetObject {
                     }),
                 );
                 let queued_again = self.queued(session_id.as_str());
-                if stale {
+                // Unassigned, it ends only a run of this runner's: another
+                // runner's report about it changes nothing.
+                let theirs = current.is_some()
+                    || match self.env.d1("DB") {
+                        Ok(db) => spec::session_row(&db, session_id.as_str())
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some_and(|row| row.runner_id.as_deref() == Some(rs.id.as_str())),
+                        Err(_) => false,
+                    };
+                if stale || !theirs {
                     worker::console_log!("ignoring the end of an earlier run of {session_id}");
                 } else {
                     let _ = self.sql.exec(
@@ -822,7 +859,18 @@ impl FleetObject {
                 status: row.status(),
                 archived: row.archived,
             });
-            match reconcile::unassigned(runner_id, known, self.stopped_away(id, runner_id)) {
+            let mut verdict =
+                reconcile::unassigned(runner_id, known, self.stopped_away(id, runner_id));
+            // A runner that stopped serving the session's workspace while it
+            // was away doesn't carry on with it there.
+            if matches!(verdict, Unassigned::Keep | Unassigned::CarryOn)
+                && let Ok(db) = &db
+                && matches!(spec::runner_serves(db, runner_id, id).await, Ok(false))
+            {
+                self.unserved(runner_id, id).await;
+                verdict = Unassigned::Stop(StopReason::Shutdown);
+            }
+            match verdict {
                 Unassigned::Keep => {
                     let _ = self.sql.exec(
                         "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted) VALUES (?, ?, ?, 1)",
@@ -926,6 +974,95 @@ impl FleetObject {
             }
         }
         worker::console_log!("{id} carries on: {} is back", rs.name);
+    }
+
+    fn assigned_to_runner(&self, runner_id: &str) -> Vec<AssignRow> {
+        self.sql
+            .exec(
+                "SELECT session_id, runner_id, accepted FROM assignments WHERE runner_id = ?",
+                Some(vec![sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<AssignRow>())
+            .unwrap_or_default()
+    }
+
+    /// Stops the sessions `runner_id` runs in workspaces it no longer serves
+    /// (it was taken out of one, its owner left it or was disabled), so that
+    /// they resume on a runner of their workspace.
+    async fn stop_unserved(&self, runner_id: &str) {
+        let Ok(db) = self.env.d1("DB") else { return };
+        for a in self.assigned_to_runner(runner_id) {
+            match spec::runner_serves(&db, runner_id, &a.session_id).await {
+                Ok(false) => {}
+                Ok(true) => continue,
+                Err(e) => {
+                    worker::console_error!(
+                        "checking {} on {runner_id}: {}",
+                        a.session_id,
+                        e.0.message
+                    );
+                    continue;
+                }
+            }
+            self.unserved(runner_id, &a.session_id).await;
+            self.send_runner(
+                runner_id,
+                &FleetToHost::StopSession {
+                    session_id: SessionId(a.session_id.clone()),
+                    reason: StopReason::Shutdown,
+                    destroy: false,
+                },
+            );
+        }
+    }
+
+    /// Takes a session from a runner that no longer serves its workspace:
+    /// it stops now, whatever the host does, and resumes elsewhere; the
+    /// runner's uplink to it closes. Its host is asked to stop the run.
+    async fn unserved(&self, runner_id: &str, session_id: &str) {
+        let _ = self.sql.exec(
+            "DELETE FROM assignments WHERE session_id = ? AND runner_id = ?",
+            Some(vec![sv(session_id), sv(runner_id)]),
+        );
+        let _ = self.sql.exec(
+            "DELETE FROM sandboxes WHERE session_id = ? AND runner_id = ?",
+            Some(vec![sv(session_id), sv(runner_id)]),
+        );
+        let _ = self.sql.exec(
+            "DELETE FROM stopped_away WHERE session_id = ?",
+            Some(vec![sv(session_id)]),
+        );
+        let id = SessionId(session_id.to_owned());
+        if !self.queued(session_id) {
+            self.session_control(
+                &id,
+                Some(SessionStatus::Stopped),
+                Some(
+                    "Its runner no longer runs this workspace's sessions. A message or a resume starts it on another one."
+                        .into(),
+                ),
+                true,
+            )
+            .await;
+        }
+        self.close_uplink(session_id, runner_id).await;
+    }
+
+    /// Closes `runner_id`'s uplink to a session.
+    async fn close_uplink(&self, session_id: &str, runner_id: &str) {
+        if let Ok(stub) = internal::session_stub(&self.env, session_id) {
+            let r: std::result::Result<serde_json::Value, _> = internal::post(
+                &stub,
+                "/close-uplink",
+                &internal::CloseUplink {
+                    runner_id: runner_id.to_owned(),
+                },
+            )
+            .await;
+            if let Err(e) = r {
+                worker::console_error!("closing the uplink of {session_id}: {}", e.0.message);
+            }
+        }
     }
 
     async fn on_start_result(
@@ -1777,6 +1914,14 @@ impl FleetObject {
                 "This session is not assigned to this runner",
             ));
         }
+        // Nor once the runner stopped serving its workspace, whatever its
+        // host says about the session.
+        if !spec::runner_serves(&db, runner_id, session_id.as_str())
+            .await
+            .map_err(|e| e.0)?
+        {
+            return Err(spec::not_served().0);
+        }
         match kind {
             CredentialKind::Github => {
                 let project = spec::project_row(&db, &row.project_id)
@@ -2012,15 +2157,80 @@ impl FleetObject {
 
     // ───────────────────────────── feed ─────────────────────────────
 
+    /// The feeds with who they are for. Those whose access wasn't checked
+    /// for [`FEED_STALE_MS`] close instead: their person may have lost it
+    /// meanwhile.
     fn feed_sockets(&self) -> Vec<(WebSocket, FeedIdentity)> {
+        let now = now_ms();
         self.state
             .get_websockets_with_tag(TAG_FEED)
             .into_iter()
             .filter_map(|ws| {
                 let ident = ws.deserialize_attachment::<FeedIdentity>().ok().flatten()?;
+                if now - ident.checked_at.unwrap_or_default() > FEED_STALE_MS {
+                    let _ = ws.close(Some(CLOSE_RECHECK), Some("checking your access again"));
+                    return None;
+                }
                 Some((ws, ident))
             })
             .collect()
+    }
+
+    /// Checks again who an open feed is for, as the Worker did when it
+    /// opened: its token still signs its person in, and it shows what they
+    /// see now (`crate::workspaces::feed_identity`). A feed whose token no
+    /// longer works closes; one whose view changed is told, as when their
+    /// workspaces change. A check D1 doesn't answer is left for the next.
+    async fn recheck_feed(&self, ws: &WebSocket, ident: FeedIdentity, now: i64) {
+        // Opened through an older Worker: through this one, it says.
+        let Some(token_id) = ident.token_id.clone() else {
+            let _ = ws.close(Some(CLOSE_RECHECK), Some("checking your access again"));
+            return;
+        };
+        let Ok(db) = self.env.d1("DB") else { return };
+        let user = match crate::auth::by_token_id(&db, &token_id, now).await {
+            Ok(Some((user, settings))) if user.id == ident.user_id => Some((user, settings)),
+            Ok(_) => None,
+            Err(e) => {
+                worker::console_error!("checking a feed: {}", e.0.message);
+                return;
+            }
+        };
+        let Some((user, settings)) = user else {
+            let _ = ws.close(Some(CLOSE_NO_ACCESS), Some("signed out"));
+            return;
+        };
+        let mut fresh = match crate::workspaces::feed_identity(&db, &user, &settings).await {
+            Ok(i) => i,
+            Err(e) => {
+                worker::console_error!("feed identity: {}", e.0.message);
+                return;
+            }
+        };
+        fresh.token_id = Some(token_id);
+        fresh.checked_at = Some(now);
+        let _ = ws.serialize_attachment(&fresh);
+        if !fresh.same_view(&ident) {
+            for text in self.view_changed(&fresh).await {
+                let _ = ws.send_with_str(&text);
+            }
+        }
+    }
+
+    /// What tells a feed what its person now sees: the runners, and that
+    /// their workspaces changed, after which the app fetches them again.
+    async fn view_changed(&self, ident: &FeedIdentity) -> Vec<String> {
+        let runners = self.runners_for(ident).await.unwrap_or_default();
+        [
+            serde_json::to_string(&FeedServer::Hello {
+                runners,
+                server_time: now_ms(),
+            }),
+            serde_json::to_string(&FeedServer::Workspaces),
+        ]
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .collect()
     }
 
     fn feed_session(&self, s: &fctl_proto::session::Session) {
@@ -2150,18 +2360,15 @@ impl FleetObject {
                     continue;
                 }
             };
-            let runners = self.runners_for(&ident).await.unwrap_or_default();
-            let hello = serde_json::to_string(&FeedServer::Hello {
-                runners,
-                server_time: now_ms(),
-            });
-            let changed = serde_json::to_string(&FeedServer::Workspaces);
+            let messages = self.view_changed(&ident).await;
             for ws in sockets {
+                // Each keeps the token it was opened with, checked as before.
+                let old = ws.deserialize_attachment::<FeedIdentity>().ok().flatten();
+                let mut ident = ident.clone();
+                ident.token_id = old.as_ref().and_then(|o| o.token_id.clone());
+                ident.checked_at = old.and_then(|o| o.checked_at);
                 let _ = ws.serialize_attachment(&ident);
-                if let Ok(text) = &hello {
-                    let _ = ws.send_with_str(text);
-                }
-                if let Ok(text) = &changed {
+                for text in &messages {
                     let _ = ws.send_with_str(text);
                 }
             }

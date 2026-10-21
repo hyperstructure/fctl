@@ -347,14 +347,27 @@ impl Images {
     }
 }
 
+/// Writes a secret (a token) that only its owner may read. The file is
+/// made that way: written first and restricted after, it could be read in
+/// between.
 pub fn write_private(path: &Path, contents: &str) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, contents)?;
+    // `mode` applies only to a file it creates.
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let mut file = options.open(&tmp)?;
+    std::io::Write::write_all(&mut file, contents.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -362,6 +375,29 @@ pub fn write_private(path: &Path, contents: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn private_files_are_never_readable_by_others() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("fctl-private-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("host-token");
+        // A leftover temporary file with looser permissions changes nothing.
+        std::fs::write(path.with_extension("tmp"), "old")?;
+        std::fs::set_permissions(
+            path.with_extension("tmp"),
+            std::fs::Permissions::from_mode(0o644),
+        )?;
+        write_private(&path, "fctl_rt_secret")?;
+        let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read_to_string(&path)?, "fctl_rt_secret");
+        write_private(&path, "fctl_rt_new")?;
+        assert_eq!(std::fs::read_to_string(&path)?, "fctl_rt_new");
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
 
     fn size(cpus: u32, memory_mb: u32) -> SandboxSize {
         SandboxSize { cpus, memory_mb }

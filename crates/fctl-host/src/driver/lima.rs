@@ -14,6 +14,25 @@ use std::process::Stdio;
 
 pub const BASE_VM: &str = "fctl-base";
 
+/// What every VM fctl makes gets over Lima's template: none of its mounts,
+/// which give the VM the host's home directory (with its fctl tokens and
+/// SSH keys) and a `/tmp/lima` every VM writes to, and no port forwards,
+/// which would put a session's services on the host's loopback, where the
+/// other VMs reach them (`host.lima.internal`). The agent comes in with
+/// `limactl copy` and runs through `limactl shell`, over SSH, which these
+/// leave alone. A yq expression for `--set`: `limactl` takes only the last
+/// `--set` it is given, so one expression holds them all.
+pub const ISOLATED: &str = r#".mounts = [] | .portForwards = [{"guestIP": "0.0.0.0", "guestPortRange": [1, 65535], "proto": "any", "ignore": true}]"#;
+
+/// The settings of a session's VM: its size, and [`ISOLATED`].
+fn session_settings(cpus: u32, memory_mb: u32) -> String {
+    format!(
+        ".cpus = {} | .memory = \"{}MiB\" | {ISOLATED}",
+        cpus.max(1),
+        memory_mb.max(1024)
+    )
+}
+
 /// Where Lima keeps its VMs and their disks: `$LIMA_HOME`, or `~/.lima`.
 pub fn home() -> Option<PathBuf> {
     std::env::var_os("LIMA_HOME")
@@ -95,9 +114,26 @@ impl LimaDriver {
         match all.iter().find(|(n, _)| n == &spec.name) {
             Some((_, status)) if status == "Running" => return Ok(sb),
             Some(_) => {
-                log(format!("Starting VM {}", spec.name));
-                self.run(&["start", "--tty=false", &spec.name]).await?;
-                return Ok(sb);
+                // A VM cloned before fctl cleared Lima's mounts would boot
+                // with the host's home directory: it boots without them, or
+                // a new one takes its place.
+                match self
+                    .run(&["edit", "--tty=false", "--set", ISOLATED, &spec.name])
+                    .await
+                {
+                    Ok(_) => {
+                        log(format!("Starting VM {}", spec.name));
+                        self.run(&["start", "--tty=false", &spec.name]).await?;
+                        return Ok(sb);
+                    }
+                    Err(e) => {
+                        log(format!(
+                            "Replacing VM {}, whose mounts couldn't be removed: {e:#}",
+                            spec.name
+                        ));
+                        self.run(&["delete", "--force", &spec.name]).await?;
+                    }
+                }
             }
             None => {}
         }
@@ -107,15 +143,12 @@ impl LimaDriver {
             );
         }
         log(format!("Cloning {BASE_VM} into {}", spec.name));
-        let cpus = format!(".cpus = {}", spec.cpus.max(1));
-        let mem = format!(".memory = \"{}MiB\"", spec.memory_mb.max(1024));
+        let settings = session_settings(spec.cpus, spec.memory_mb);
         self.run(&[
             "clone",
             "--tty=false",
             "--set",
-            &cpus,
-            "--set",
-            &mem,
+            &settings,
             BASE_VM,
             &spec.name,
         ])
@@ -218,5 +251,19 @@ impl LimaDriver {
 impl Default for LimaDriver {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_vms_get_their_size_and_no_mounts_in_one_expression() {
+        assert_eq!(
+            session_settings(2, 4096),
+            r#".cpus = 2 | .memory = "4096MiB" | .mounts = [] | .portForwards = [{"guestIP": "0.0.0.0", "guestPortRange": [1, 65535], "proto": "any", "ignore": true}]"#
+        );
+        assert!(session_settings(0, 0).starts_with(r#".cpus = 1 | .memory = "1024MiB" | "#));
     }
 }

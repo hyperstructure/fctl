@@ -12,6 +12,7 @@ that crosses a component boundary.
 cargo xtask dev            # the whole system locally; agents run fake-claude
 cargo xtask check          # what CI checks; run it before you push
 cargo xtask check --quick  # the same without production builds
+cargo xtask check lint     # one part (lint, test, web), as one CI job runs it
 cargo xtask dev --smoke    # CI's other check: one session through the local stack
 cargo xtask serve          # the control plane without Cloudflare, as its container runs it
 cargo xtask gen            # regenerate web/src/gen after changing crates/fctl-proto
@@ -61,8 +62,9 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
 
 ## Conventions
 
-- Rust 2024, the toolchain in `rust-toolchain.toml`, `cargo fmt` (max width
-  100). `anyhow` in binaries, typed errors at API boundaries
+- Rust 2024, the toolchain in `rust-toolchain.toml` (the standalone image
+  builds the Worker in the `rust` image of the same version; a test checks),
+  `cargo fmt` (max width 100). `anyhow` in binaries, typed errors at API boundaries
   (`fctl_proto::error::ApiError`), `tracing` for logs. Pure logic goes in
   `fctl-domain` with unit tests; I/O stays at the edges.
 - The web app: React 19, TanStack Router (routes in `web/src/router.tsx`) and

@@ -328,7 +328,7 @@ impl FilesObject {
             return internal::do_error(&api_err(ErrorCode::Internal, "The file is incomplete"));
         };
         let inline = files::shows_inline(&att.media_type);
-        h.set("Content-Type", &att.media_type)?;
+        h.set("Content-Type", files::served_type(&att.media_type))?;
         h.set("Content-Length", &bytes.len().to_string())?;
         h.set(
             "Content-Disposition",

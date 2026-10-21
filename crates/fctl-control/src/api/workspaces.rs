@@ -1205,8 +1205,30 @@ async fn runner_owner(ctx: &Ctx, runner_id: &str) -> AppResult<RunnerOwner> {
     .ok_or_else(|| not_found("Runner"))
 }
 
-/// Tells FleetObject that a runner's workspaces changed: feeds update and
-/// queued sessions may start on it.
+/// Tells FleetObject that the runners `user_id` registered changed: they
+/// serve no workspace while the account is disabled, so their sessions stop
+/// (`runner_changed`).
+pub(crate) async fn owner_runners_changed(ctx: &Ctx, user_id: &str) -> AppResult<()> {
+    #[derive(Deserialize)]
+    struct R {
+        id: String,
+    }
+    let runners: Vec<R> = q(
+        &ctx.db,
+        "SELECT id FROM runners WHERE created_by = ?",
+        &[s(user_id)],
+    )?
+    .all()
+    .await?;
+    for r in runners {
+        runner_changed(ctx, &r.id);
+    }
+    Ok(())
+}
+
+/// Tells FleetObject that a runner's workspaces changed: feeds update,
+/// queued sessions may start on it, and the sessions it runs in workspaces
+/// it no longer serves stop.
 fn runner_changed(ctx: &Ctx, runner_id: &str) {
     let env = ctx.env.clone();
     let runner_id = runner_id.to_owned();

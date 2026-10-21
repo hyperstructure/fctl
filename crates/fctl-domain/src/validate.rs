@@ -528,9 +528,50 @@ pub fn device_name(input: &str) -> Result<Option<String>> {
     Ok((!s.is_empty()).then_some(s))
 }
 
+/// Whether `path` is a path of the app, for redirects after a sign-in: it
+/// starts with one `/`. Browsers read `\` as `/` and drop tabs and
+/// newlines, so `/\evil.example` and `/<tab>/evil.example` would leave the
+/// app: paths with a backslash, whitespace or control character aren't.
+pub fn is_app_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.starts_with("//")
+        && !path
+            .chars()
+            .any(|c| c == '\\' || c.is_whitespace() || c.is_control())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_paths() {
+        for ok in [
+            "/",
+            "/settings",
+            "/s/ses_1?x=1#y",
+            "/invite",
+            "/.//x",
+            "/%5Cx",
+        ] {
+            assert!(is_app_path(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "settings",
+            "//evil.example",
+            "/\\evil.example",
+            "/\t/evil.example",
+            "/\n/evil.example",
+            "/\r/evil.example",
+            "/ /evil.example",
+            "/\u{3000}/evil.example",
+            "https://evil.example",
+            "javascript:alert(1)",
+        ] {
+            assert!(!is_app_path(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn commit_emails() {

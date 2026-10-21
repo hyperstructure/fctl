@@ -314,11 +314,14 @@ the instance creates one, as its primary admin.
   instance's.
 - **Feeds.** A feed's identity holds the projects its person saw when it
   opened, and the workspaces where they see every project
-  (`internal::FeedIdentity`). When someone's workspaces change, FleetDO
-  recomputes it on their sockets (`/workspaces-changed`) and sends
-  `workspaces`, after which the app fetches them again; runners and their
-  updates go only to the people of their workspaces, their owners and
-  instance admins.
+  (`internal::FeedIdentity`). When someone's workspaces or project roles
+  change, FleetDO recomputes it on their sockets (`/workspaces-changed`)
+  and sends `workspaces`, after which the app fetches them again; runners
+  and their updates go only to the people of their workspaces, their owners
+  and instance admins. It also checks a feed's token and recomputes what it
+  shows on its pings, at most once a minute (`recheck_feed`), and closes a
+  feed whose token no longer signs anyone in, as SessionDO does with
+  [viewers](#viewers).
 - **Deleting** a workspace (its primary admin, or an instance admin, typing
   its name) deletes its projects with their sessions and files, as deleting
   a project does, once none of its sessions runs.
@@ -328,7 +331,11 @@ the instance creates one, as its primary admin.
 Each address is invited to the instance on its own. Accepting an
 invitation while signed in (`POST /api/v1/invites/{token}/connect`)
 connects its address to that account instead of making a new one
-(`user_emails`). Every address signs in, and has its own commit email
+(`user_emails`). That takes a browser sign-in from the last 15 minutes,
+and the account's primary address is emailed about it, since the address
+then signs in and receives password reset links: an invitation link
+forwarded to someone else would otherwise give its holder their account.
+Every address signs in, and has its own commit email
 ([Commits](#commits)); the account's primary one (`users.email`) is where
 fctl writes to the person. A workspace knows its member by the address they
 joined as (`workspace_members.email`), the only one its people see:
@@ -405,8 +412,16 @@ start its sessions; a workspace's admins take any runner out of it; its
 owner and instance admins rename, drain, disable and remove it. FleetDO
 reads which workspaces each runner serves before it dispatches, and starts
 a session only on a runner of its workspace (`Slot.serves`); a session whose
-workspace has no runner online says so. A Claude sign-in runs only on a
-runner of the person's workspaces, or their own.
+workspace has no runner online says so. A runner serves a workspace while
+its owner is an active member there (`serves!`). Once it stops serving one
+(taken out of it, its owner left, was demoted from admin or disabled), the
+sessions it runs there stop and resume on another runner, whatever its host
+does: FleetDO stops them (`/runner-changed`), closes the runner's uplinks
+to them, and the runner gets no credentials, uplinks, files or screenshots
+for them any more (`spec::runner_serves`). Disabling a runner or replacing
+its token closes its control connection and its sessions' uplinks. A
+Claude sign-in runs only on a runner of the person's workspaces, or their
+own.
 
 ## Data
 
@@ -759,7 +774,10 @@ no effort level.
   the sandbox. The host forwards events in batches; SessionDO stores them,
   assigns the canonical `seq`, broadcasts them, and acknowledges `agent_seq`.
   After any reconnect SessionDO announces the last acknowledged `agent_seq`
-  and the host replays the journal from there.
+  and the host replays the journal from there. People's messages,
+  interrupts and status changes are SessionDO's own to record: from an
+  uplink, where a host or what runs in its sandbox could send them as
+  anyone, they are acknowledged and dropped.
 - SessionDO stores events in `agent_seq` order. After a reconnect, newer
   events can arrive before the replay of older ones, which went over a link
   to the agent or an uplink that closed: they wait for it, for at most a
@@ -789,6 +807,16 @@ no effort level.
 Browsers and the CLI open `GET /api/v1/sessions/{id}/ws`. The first frame is a
 snapshot (summary, recent events, presence, in-progress text); after that
 frames are incremental. Older history is paged over HTTP.
+
+The Worker checks access as the socket opens, and SessionDO checks it again
+while it stays open: the token it was opened with and the role it gives,
+on the viewer's pings at most once a minute and before every message or
+interrupt (`recheck_viewer`). A viewer whose person can no longer see the
+session (they left the workspace or were removed, their role or share went,
+they signed out or were disabled) closes with 4403, after which the apps
+stop reconnecting; one whose role changed gets it in its next `session`
+frame. A viewer that stopped pinging closes after five minutes at the next
+broadcast and reconnects through the Worker.
 
 The snapshot and `runner_connected` frames say whether the agent's work can
 come through:

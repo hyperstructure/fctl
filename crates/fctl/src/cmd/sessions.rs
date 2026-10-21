@@ -268,7 +268,11 @@ fn pull_request_lines(s: &Session) -> Vec<String> {
             let repo = pr.repo.clone().or_else(|| pulls::repo_of(&pr.url));
             let name = repo.as_ref().map_or("", |r| r.name.as_str());
             let label = if i == 0 { label } else { "" };
-            format!("{label:<10}{name}#{} {}", pr.number, pr.url)
+            format!(
+                "{label:<10}{name}#{} {}",
+                pr.number,
+                style::terminal_safe(&pr.url)
+            )
         })
         .collect()
 }
@@ -292,7 +296,7 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         style::status(s.status),
         s.status_reason
             .as_deref()
-            .map(|r| style::dim(&format!(" — {r}")))
+            .map(|r| style::dim(&format!(" — {}", style::terminal_safe(r))))
             .unwrap_or_default()
     );
     println!("by:       {}", s.created_by.name);
@@ -605,6 +609,10 @@ pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> R
                 let url = s.remote_control.and_then(|r| r.session_url).context(
                     "This session has no Remote Control link (it needs a full Claude login)",
                 )?;
+                // Agents report it: nothing but a claude.ai page is opened.
+                if !fctl_domain::remote_control::is_session_url(&url) {
+                    bail!("This session's Remote Control link isn't a claude.ai page");
+                }
                 // The Claude app opens the session itself; without one, the browser does.
                 if let Some(app) = fctl_domain::remote_control::claude_app_url(&url)
                     && crate::cmd::auth::open_claude_app(&app)

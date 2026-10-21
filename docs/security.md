@@ -95,8 +95,9 @@ owner and purpose), so a value copied between rows does not decrypt.
   send cross-site without asking first, and pass the same origin check.
   Attached files are served with `nosniff` and a sandboxing
   Content-Security-Policy; only PNG, JPEG, GIF and WebP display in place,
-  everything else downloads, so an uploaded HTML or SVG file never runs as
-  part of the app.
+  everything else downloads, and only those and the videos the app plays
+  keep their type, the rest being `application/octet-stream`, so an
+  uploaded HTML, SVG or JavaScript file never runs as part of the app.
 - Screenshots agents publish for pull requests are public to anyone who
   has a link, which is how GitHub's image proxy fetches them. A link holds
   256 random bits, of which D1 keeps only the SHA-256. The control plane
@@ -116,9 +117,31 @@ Each session runs in its own Linux VM (Apple container or Lima) or container
 sandbox is the boundary: it can do anything inside its VM, and nothing
 outside it except through these channels:
 
+- **Lima VMs** get none of the mounts of Lima's templates, which give
+  each VM the home directory of whoever runs the host (read only) and a
+  `/tmp/lima` every VM writes to, and none of their port forwards, which
+  put a VM's services on the host's loopback, where other VMs reach them.
+  A VM still reaches the host's own loopback services
+  (`host.lima.internal`), as Docker Desktop's containers do theirs.
+  Lima hosts of fctl 0.14.1 and earlier cloned VMs that could read that
+  home directory, with the host's runner token and the CLI's credentials.
+  On such a host, remove its runner and install the host again (`fctl
+  host uninstall`, `fctl host install`), sign the CLI in again (`fctl
+  login`) and revoke its old tokens in Settings, and replace any other
+  keys kept in that home directory.
+
 - **Network.** Sandboxes have outbound network access (to install
   dependencies and reach GitHub and Claude). Do not run hosts on networks
   where an outbound connection from an untrusted process is a problem.
+  Docker sandboxes join a network of their own, `fctl-sandboxes`, on which
+  they reach the internet but not each other, so a session can't reach
+  what another session on the host serves, which may be another
+  workspace's; a Docker that can't make the network leaves them on its
+  default one, and the host says so in its log. With Docker Desktop and
+  OrbStack, containers still reach the host's loopback
+  (`host.docker.internal`). Apple's `container` VMs share its network: on
+  a runner that serves more than one workspace, keep to Docker where that
+  matters.
 - **GitHub.** Installation tokens for the project's repositories and no
   others, within the GitHub accounts and repositories its workspace may use,
   valid for an hour and refreshed on demand
@@ -234,7 +257,10 @@ but their runner token (`~/.config/fctl/host-token`, mode 0600).
 A runner takes only the sessions of the workspaces it is added to, and so
 sees their code, secrets and the tokens of the people who start them. Its
 owner adds it only to workspaces they are an admin of, and a workspace's
-admins take any runner out of it. A Claude sign-in through a host runs only
+admins take any runner out of it. Once a runner no longer serves a
+workspace (taken out of it, or its owner left it or was disabled), its
+sessions there stop, and it gets no more tokens, messages or files for
+them, whatever its host does. A Claude sign-in through a host runs only
 on a runner of the person's workspaces, or one they registered.
 
 Sessions run in their project's sandbox image or, without one, the host's:
@@ -312,8 +338,10 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   trailers in them. The primary instance owner hands the role over
   before they can delete their account.
 - Settings → Your data (or `fctl account export`) downloads everything the
-  instance keeps about you, as JSON. Files you attached are listed in the
-  transcripts there; each downloads from its session.
+  instance keeps about you, as JSON, with the sessions you started in the
+  workspaces open to you: not those of workspaces you left. Files you
+  attached are listed in the transcripts there; each downloads from its
+  session.
 - Hosts keep a stopped session's sandbox so it can resume, and remove it
   once it has been stopped for `keep_stopped_hours` (72 by default; 0 keeps
   them), or sooner when their disk has less free than `min_free_disk_gb`
