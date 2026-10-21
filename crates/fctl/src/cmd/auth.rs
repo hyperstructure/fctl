@@ -50,6 +50,17 @@ pub async fn login(url: Option<&str>, no_browser: bool, json: bool) -> Result<()
     }
     let client = format!("fctl on {}", fctl_host::config::hostname());
     let start = api.device_start(&client).await?;
+    // The code is approved where the server sends people: on another site,
+    // it would sign this machine's user in there, and give that site the
+    // token, not this fctl.
+    if !fctl_client::http::same_site(&server, &start.verification_uri_complete) {
+        match fctl_client::http::origin(&start.verification_uri_complete) {
+            Some(elsewhere) => bail!(
+                "{server} asks you to approve this sign-in on another site ({elsewhere}), which would sign you in there for it. To sign in to {elsewhere}, run `fctl login {elsewhere}`."
+            ),
+            None => bail!("{server} sent a sign-in link that isn't a web address"),
+        }
+    }
     if !json {
         println!("{}", style::bold(&format!("Sign in to {}", info.name)));
         println!();

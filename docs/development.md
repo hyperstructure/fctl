@@ -158,14 +158,20 @@ docker stop fctl
 ```sh
 cargo xtask check          # what CI runs
 cargo xtask check --quick  # without the production builds
-cargo xtask dev --smoke    # and CI's other job: a session through the local stack
+cargo xtask check test     # one part: lint, test or web
+cargo xtask dev --smoke    # and CI's other check: a session through the local stack
 ```
 
 That is `cargo fmt --check`, a check that `web/src/gen` matches the Rust
 types, Biome and TypeScript for the web app, Biome for the standalone
 server, Clippy (native and wasm) with warnings as errors, `cargo test`, the
 web app's Vitest suite, the standalone server's tests (`node --test`), and
-a production build of the web app.
+a production build of the web app. It comes in three parts: `lint`
+(formatting, the generated types and Clippy), `test` (`cargo test`) and
+`web` (the rest), and runs all three, in the order that fails fastest,
+when you name none. CI runs each part in a job of its own, at once, and
+its `cargo xtask check` check passes once all three have; a part that
+fails there fails the same way locally with `cargo xtask check <part>`.
 
 `cargo xtask dev --smoke` starts the local stack as `cargo xtask dev` does
 and runs `fctl run -p playground` with a task that has fake-claude commit
@@ -178,6 +184,21 @@ everything else. It fails when any step does. CI runs it from a fresh
 checkout, so its migrations, Worker, bootstrap, host and agent all run
 before a change can deploy. Locally it uses your `.fctl-dev/` state and
 ports 8787 and 5173: stop `cargo xtask dev` first.
+
+`cargo xtask dev`, with `--smoke` or without, builds the CLI, the host
+and the agent, the Worker (`worker-build --dev`, in `target/worker`, so
+that the two cargo builds don't wait for each other), and the web app and
+the local D1's migrations at once; the lines of the last two come after
+`worker │` and `web │`.
+
+CI caches the dependencies, not the workspace's own crates
+([Swatinem/rust-cache](https://github.com/Swatinem/rust-cache), set up by
+`.github/actions/rust` with the toolchain), and builds without debug info.
+Two builds of the workspace are cached by the files they are built from
+instead: xtask's binary (`.github/actions/xtask`), which the jobs run as
+`xtask check lint` and the like, and on `main` the Worker's release build,
+which runs beside the checks for the deploy. Only `main` saves caches;
+pull requests use `main`'s.
 
 The Standalone image workflow (`.github/workflows/standalone-image.yml`)
 builds the standalone control plane's image, starts it and runs `cargo

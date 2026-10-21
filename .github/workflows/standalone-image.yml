@@ -50,6 +50,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # The session's CLI, host and agent build in half the time without debug
+  # info, as in ci.yml.
+  CARGO_PROFILE_DEV_DEBUG: "0"
   IMAGE: ghcr.io/hyperstructure/fctl-control
 
 jobs:
@@ -158,7 +161,9 @@ jobs:
         with:
           ref: ${{ env.TAG }}
       # The Worker and the web app build once, natively; QEMU runs the last
-      # stage for arm64.
+      # stage for arm64, whose apt-get and npm ci take a minute and a half
+      # there: its layers go to a cache of their own, so they build again
+      # only when the base image or the lockfile changes.
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Sign in to GHCR
@@ -174,6 +179,9 @@ jobs:
           provenance: false
           tags: ${{ env.TAGS }}
           labels: ${{ needs.image.outputs.labels }}
-          cache-from: type=gha,scope=standalone
+          cache-from: |
+            type=gha,scope=standalone
+            type=gha,scope=standalone-publish
+          cache-to: type=gha,scope=standalone-publish,ignore-error=true
       - name: Summary
         run: echo "Published \`${TAGS//,/\`, \`}\`." >> "$GITHUB_STEP_SUMMARY"

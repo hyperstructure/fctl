@@ -1,58 +1,102 @@
 //! `cargo xtask check`: what CI checks, in the order that fails fastest. CI
-//! also runs `cargo xtask dev --smoke`, in a job of its own.
+//! runs each part in a job of its own, at once, and `cargo xtask dev
+//! --smoke` in another.
 
 use crate::util::{self, run};
 use anyhow::{Result, bail};
 use std::path::Path;
 use std::process::Command;
 
-pub fn check(root: &Path, quick: bool) -> Result<()> {
-    run(Command::new("cargo")
-        .args(["fmt", "--all", "--check"])
-        .current_dir(root))?;
-    types_are_current(root)?;
-    if !root.join("node_modules").exists() {
-        util::npm_install(root)?;
+/// A part of `cargo xtask check`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    /// Formatting, the generated types, and Clippy for the host and the Worker.
+    Lint,
+    /// `cargo test`.
+    Test,
+    /// Biome, TypeScript and the tests of the web app and the standalone
+    /// server, and the web app's production build.
+    Web,
+}
+
+impl Part {
+    const ALL: [Self; 3] = [Self::Lint, Self::Test, Self::Web];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Lint => "lint",
+            Self::Test => "test",
+            Self::Web => "web",
+        }
     }
-    for workspace in ["web", "deploy/standalone"] {
-        run(Command::new("npm")
-            .args(["run", "check", "--workspace", workspace])
+
+    pub fn parse(name: &str) -> Result<Self> {
+        match Self::ALL.into_iter().find(|p| p.name() == name) {
+            Some(part) => Ok(part),
+            None => bail!("unknown part `{name}`: lint, test or web"),
+        }
+    }
+}
+
+/// Runs `parts`, or all of them when it is empty.
+pub fn check(root: &Path, parts: &[Part], quick: bool) -> Result<()> {
+    let has = |part| parts.is_empty() || parts.contains(&part);
+    if has(Part::Lint) {
+        run(Command::new("cargo")
+            .args(["fmt", "--all", "--check"])
+            .current_dir(root))?;
+        types_are_current(root)?;
+    }
+    if has(Part::Web) {
+        if !root.join("node_modules").exists() {
+            util::npm_install(root)?;
+        }
+        for workspace in ["web", "deploy/standalone"] {
+            run(Command::new("npm")
+                .args(["run", "check", "--workspace", workspace])
+                .current_dir(root))?;
+        }
+    }
+    if has(Part::Lint) {
+        run(Command::new("cargo")
+            .args([
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--locked",
+                "--",
+                "-D",
+                "warnings",
+            ])
+            .current_dir(root))?;
+        run(Command::new("cargo")
+            .args([
+                "clippy",
+                "-p",
+                "fctl-control",
+                "--target",
+                "wasm32-unknown-unknown",
+                "--locked",
+                "--",
+                "-D",
+                "warnings",
+            ])
             .current_dir(root))?;
     }
-    run(Command::new("cargo")
-        .args([
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--locked",
-            "--",
-            "-D",
-            "warnings",
-        ])
-        .current_dir(root))?;
-    run(Command::new("cargo")
-        .args([
-            "clippy",
-            "-p",
-            "fctl-control",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--locked",
-            "--",
-            "-D",
-            "warnings",
-        ])
-        .current_dir(root))?;
-    run(Command::new("cargo")
-        .args(["test", "--workspace", "--locked"])
-        .current_dir(root))?;
-    for workspace in ["web", "deploy/standalone"] {
-        run(Command::new("npm")
-            .args(["test", "--workspace", workspace])
+    if has(Part::Test) {
+        run(Command::new("cargo")
+            .args(["test", "--workspace", "--locked"])
             .current_dir(root))?;
     }
-    if !quick {
-        util::build_web(root)?;
+    if has(Part::Web) {
+        for workspace in ["web", "deploy/standalone"] {
+            run(Command::new("npm")
+                .args(["test", "--workspace", workspace])
+                .current_dir(root))?;
+        }
+        if !quick {
+            util::build_web(root)?;
+        }
     }
     eprintln!("\nall checks passed");
     Ok(())
@@ -88,4 +132,28 @@ fn types_are_current(root: &Path) -> Result<()> {
 /// Ignores formatting differences (biome may reflow generated files).
 fn normalize(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parts_have_names() {
+        assert_eq!(Part::parse("lint").unwrap(), Part::Lint);
+        assert_eq!(Part::parse("test").unwrap(), Part::Test);
+        assert_eq!(Part::parse("web").unwrap(), Part::Web);
+        assert!(Part::parse("clippy").is_err());
+    }
+
+    /// CI runs each part in a job of its own (with xtask's binary, from
+    /// .github/actions/xtask): one it left out would be checked by nothing.
+    #[test]
+    fn ci_runs_every_part() {
+        let workflow = include_str!("../../.github/workflows/ci.yml");
+        for part in Part::ALL {
+            let step = format!("run: xtask check {}\n", part.name());
+            assert!(workflow.contains(&step), "ci.yml has no `{}`", step.trim());
+        }
+    }
 }

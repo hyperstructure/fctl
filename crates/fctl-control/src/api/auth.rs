@@ -334,6 +334,9 @@ fn waits_for(challenge: TwoFactorChallenge) -> AuthResponse {
 }
 
 pub async fn logout(ctx: &mut Ctx) -> AppResult<Response> {
+    // Signed in, the request came from the app (the origin check), so the
+    // cookie goes; without the cookie, as from a page of another site, it
+    // stays. One that no longer signs anyone in is cleared already.
     if let Some(a) = ctx.auth.clone() {
         q(
             &ctx.db,
@@ -342,8 +345,10 @@ pub async fn logout(ctx: &mut Ctx) -> AppResult<Response> {
         )?
         .run()
         .await?;
+        if a.via_cookie {
+            auth::clear_session_cookie(ctx);
+        }
     }
-    auth::clear_session_cookie(ctx);
     http::ok(&Ok { ok: true })
 }
 
@@ -413,6 +418,14 @@ pub async fn change_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
                 "That isn't your current password",
             ));
         }
+    } else if !crate::api::two_factor::fresh_sign_in(ctx) {
+        // A password is a new way in: without one to confirm, only a browser
+        // that signed in within the last 15 minutes sets it, so that a
+        // stolen session or token can't.
+        return Err(validation(
+            "new_password",
+            "Setting a password takes a sign-in from the last 15 minutes. Sign out and in again, then set it.",
+        ));
     }
     validate::password(&body.new_password, Some(&user.email))?;
     let hash = auth::hash_password(&body.new_password)?;
@@ -434,6 +447,22 @@ pub async fn change_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     .run()
     .await?;
     ctx.audit("user.password_changed", Some(&user.id), None);
+    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+    crate::email::notice(
+        ctx,
+        &user,
+        "Your password was changed",
+        format!(
+            "The password of your {instance} account ({}) was {}, and its other sessions were signed out.\n\nIf you didn't do this, reset your password from the sign-in page now: {}",
+            user.email,
+            if user.has_password() {
+                "changed"
+            } else {
+                "set"
+            },
+            ctx.cfg.url("/login")
+        ),
+    );
     http::ok(&Ok { ok: true })
 }
 
@@ -552,7 +581,25 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     .await?;
     auth::start_web_session(ctx, &user).await?;
     ctx.audit("user.password_reset", Some(&user.id), None);
+    password_reset_notice(ctx, &user).await?;
     http::ok(&signed_in(auth::me(ctx, &user).await?))
+}
+
+/// Emails `user` that a reset link changed their password: links come by
+/// email, and from admins.
+pub async fn password_reset_notice(ctx: &Ctx, user: &crate::model::UserRow) -> AppResult<()> {
+    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+    crate::email::notice(
+        ctx,
+        user,
+        "Your password was reset",
+        format!(
+            "A password reset link set a new password for your {instance} account ({}), and its other sessions were signed out.\n\nIf you didn't do this, reset your password from the sign-in page now, and tell the instance's admins: {}",
+            user.email,
+            ctx.cfg.url("/login")
+        ),
+    );
+    Ok(())
 }
 
 // ───────────────────────────── tokens ─────────────────────────────

@@ -83,6 +83,14 @@ pub struct DrainStop {
     pub runner_name: String,
 }
 
+/// Closes a runner's uplink to a session (`/close-uplink`): the runner was
+/// disabled or its token replaced, or it no longer serves the session's
+/// workspace.
+#[derive(Serialize, Deserialize)]
+pub struct CloseUplink {
+    pub runner_id: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DrainStopped {
     /// Whether the session is stopping now (its host should stop it).
@@ -94,6 +102,10 @@ pub struct DrainStopped {
 pub struct ViewerIdentity {
     pub user: UserRef,
     pub role: SessionRole,
+    /// The token it was opened with, which SessionObject checks again,
+    /// with the role, while the socket stays open.
+    #[serde(default)]
+    pub token_id: Option<String>,
 }
 
 // ───────────────────────────── FleetObject ─────────────────────────────
@@ -158,9 +170,25 @@ pub struct FeedIdentity {
     /// The workspaces open to them.
     #[serde(default)]
     pub workspaces: Vec<String>,
+    /// The token the feed was opened with, which FleetObject checks again,
+    /// with what they see, while the socket stays open.
+    #[serde(default)]
+    pub token_id: Option<String>,
+    /// When that was last checked.
+    #[serde(default)]
+    pub checked_at: Option<i64>,
 }
 
 impl FeedIdentity {
+    /// Whether it shows the same as `other`.
+    pub fn same_view(&self, other: &FeedIdentity) -> bool {
+        self.user_id == other.user_id
+            && self.admin == other.admin
+            && self.projects == other.projects
+            && self.sees_all == other.sees_all
+            && self.workspaces == other.workspaces
+    }
+
     /// Whether they see a session of `project_id` in `workspace_id` that
     /// `created_by` started.
     pub fn sees(&self, project_id: &str, workspace_id: Option<&str>, created_by: &str) -> bool {

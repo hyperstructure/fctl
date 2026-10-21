@@ -248,10 +248,13 @@ export class LiveSession {
         this.set({ live: applyStream(this.state.live, m.event), activity: this.deltaTimes.length / 3 });
         return;
       }
-      case "session":
-        this.set({ session: { ...m.session, role: this.state.role } });
+      case "session": {
+        // Each viewer's summary has their role, which changes when their access does.
+        const role = m.session.role ?? this.state.role;
+        this.set({ session: { ...m.session, role }, role });
         patchSession(queryClient, m.session);
         return;
+      }
       case "presence":
         this.set({ viewers: m.viewers });
         return;

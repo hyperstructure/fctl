@@ -52,6 +52,32 @@ pub async fn project_row(db: &D1Database, id: &str) -> AppResult<Option<ProjectR
     .await
 }
 
+/// Whether runner `runner_id` runs the sessions of session `session_id`'s
+/// workspace now: it is enabled, was added to the workspace, and its owner
+/// is still an active member there (`serves!`). A runner taken out of a
+/// workspace, or whose owner left it, gets nothing more for the sessions it
+/// still has there: no credentials, uplinks, files or screenshots.
+pub async fn runner_serves(db: &D1Database, runner_id: &str, session_id: &str) -> AppResult<bool> {
+    let c: Option<crate::db::Count> = q(
+        db,
+        concat!(
+            "SELECT COUNT(*) AS n FROM sessions s JOIN projects p ON p.id = s.project_id \
+             JOIN runner_workspaces rw ON rw.workspace_id = p.workspace_id AND rw.runner_id = ?1 \
+             JOIN runners r ON r.id = rw.runner_id WHERE s.id = ?2 AND r.enabled = 1 AND ",
+            crate::serves!()
+        ),
+        &[s(runner_id), s(session_id)],
+    )?
+    .first()
+    .await?;
+    Ok(c.is_some_and(|c| c.n > 0))
+}
+
+/// The error for a runner that doesn't serve a session's workspace.
+pub fn not_served() -> AppError {
+    crate::error::forbidden("This runner no longer runs this workspace's sessions")
+}
+
 /// The repositories a project's agents may use besides its primary one.
 pub async fn grants(db: &D1Database, project_id: &str) -> AppResult<Vec<RepoGrant>> {
     let rows: Vec<RepoRow> = q(db, REPO_SELECT, &[s(project_id)])?.all().await?;

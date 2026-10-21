@@ -515,6 +515,18 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     let user = ctx.user()?.clone();
     ctx.rate_limit(&format!("export:{}", user.id)).await?;
     let me = || [s(&user.id)];
+    // What they made in workspaces is theirs to export while those are
+    // open to them, as it is theirs to see: not once they left one, or
+    // while its two-factor requirement closes it to them.
+    let settings = ctx.settings();
+    let open: Vec<String> = crate::workspaces::mine(&ctx.db, &user.id)
+        .await?
+        .into_iter()
+        .filter(|w| !user.blocked_by(&settings, w.require_two_factor))
+        .map(|w| w.id)
+        .collect();
+    let mine_open =
+        || -> AppResult<[Val; 2]> { Ok([s(&user.id), s(&serde_json::to_string(&open)?)]) };
     let mut doc = Map::new();
     doc.insert("format".into(), json!("fctl-export/1"));
     doc.insert("exported_at".into(), json!(iso8601(ctx.now)));
@@ -686,8 +698,9 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         rows(
             ctx,
             "SELECT p.slug, p.name, p.description, p.repo_owner, p.repo_name, m.role, m.created_at AS joined_at \
-             FROM project_members m JOIN projects p ON p.id = m.project_id WHERE m.user_id = ? ORDER BY p.name",
-            &me(),
+             FROM project_members m JOIN projects p ON p.id = m.project_id WHERE m.user_id = ?1 \
+             AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY p.name",
+            &mine_open()?,
         )
         .await?,
     );
@@ -695,7 +708,10 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "activity".into(),
         rows(
             ctx,
-            "SELECT ts, action, target, data, ip FROM audit_log WHERE actor_id = ?1 OR target = ?1 ORDER BY ts",
+            // The addresses of their own requests, not of others' that
+            // concerned them (an admin's, say).
+            "SELECT ts, action, target, data, CASE WHEN actor_id = ?1 THEN ip END AS ip FROM audit_log \
+             WHERE actor_id = ?1 OR target = ?1 ORDER BY ts",
             &me(),
         )
         .await?,
@@ -704,8 +720,9 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         &ctx.db,
         "SELECT s.id, p.slug AS project, s.number, s.title, s.description, s.prompt, s.status, s.branch, s.base_branch, \
          s.model, s.effort, s.claude_effort, s.pr_url AS pull_request, s.pull_requests, s.created_at, s.started_at, s.ended_at \
-         FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.created_by = ? ORDER BY s.created_at",
-        &me(),
+         FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.created_by = ?1 \
+         AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY s.created_at",
+        &mine_open()?,
     )?
     .all()
     .await?;

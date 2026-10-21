@@ -272,7 +272,11 @@ fn pull_request_lines(s: &Session, now: i64) -> Vec<String> {
             let state = pull_request_state(pr, now)
                 .map(|st| format!(" {st}"))
                 .unwrap_or_default();
-            format!("{label:<10}{name}#{}{state} {}", pr.number, pr.url)
+            format!(
+                "{label:<10}{name}#{}{state} {}",
+                pr.number,
+                style::terminal_safe(&pr.url)
+            )
         })
         .collect()
 }
@@ -281,8 +285,8 @@ fn pull_request_lines(s: &Session, now: i64) -> Vec<String> {
 /// checks passed`, `draft, 1 of 4 checks failed`. Nothing while nobody
 /// looked it up.
 fn pull_request_state(pr: &PullRequestRef, now: i64) -> Option<String> {
-    let state = pr.state.as_deref()?;
-    if matches!(state, "merged" | "closed") {
+    let state = style::terminal_safe(pr.state.as_deref()?);
+    if matches!(state.as_ref(), "merged" | "closed") {
         let when = pr
             .state_changed_at
             .map(|t| format!(" {}", style::ago_from(t, now)));
@@ -293,7 +297,7 @@ fn pull_request_state(pr: &PullRequestRef, now: i64) -> Option<String> {
         .as_ref()
         .filter(|c| c.passed + c.failed + c.pending > 0)
     else {
-        return Some(style::dim(state));
+        return Some(style::dim(&state));
     };
     let total = c.passed + c.failed + c.pending;
     let some = |n: u32, what: &str| match n == total {
@@ -307,7 +311,11 @@ fn pull_request_state(pr: &PullRequestRef, now: i64) -> Option<String> {
     } else {
         style::accent("checks passed")
     };
-    Some(format!("{}{} {checks}", style::dim(state), style::dim(",")))
+    Some(format!(
+        "{}{} {checks}",
+        style::dim(&state),
+        style::dim(",")
+    ))
 }
 
 pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<()> {
@@ -329,7 +337,7 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         style::status(s.status),
         s.status_reason
             .as_deref()
-            .map(|r| style::dim(&format!(" — {r}")))
+            .map(|r| style::dim(&format!(" — {}", style::terminal_safe(r))))
             .unwrap_or_default()
     );
     println!("by:       {}", s.created_by.name);
@@ -642,6 +650,10 @@ pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> R
                 let url = s.remote_control.and_then(|r| r.session_url).context(
                     "This session has no Remote Control link (it needs a full Claude login)",
                 )?;
+                // Agents report it: nothing but a claude.ai page is opened.
+                if !fctl_domain::remote_control::is_session_url(&url) {
+                    bail!("This session's Remote Control link isn't a claude.ai page");
+                }
                 // The Claude app opens the session itself; without one, the browser does.
                 if let Some(app) = fctl_domain::remote_control::claude_app_url(&url)
                     && crate::cmd::auth::open_claude_app(&app)

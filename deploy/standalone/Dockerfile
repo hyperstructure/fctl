@@ -11,20 +11,29 @@
 # The Worker and the web app are the same on every platform, so they build on
 # the build machine's (BUILDPLATFORM); only the last stage is the target's.
 
-FROM --platform=$BUILDPLATFORM docker.io/library/rust:1-slim-bookworm AS worker
+# The image of the Rust rust-toolchain.toml pins (a test in xtask/src/serve.rs
+# checks): `rustup toolchain install` only adds the wasm32 target and the
+# components to it, and the layers before the Worker's build stay cached until
+# the toolchain changes. rust:1-slim-bookworm moved with every Rust and Debian
+# release, and each move built worker-build again, which takes two minutes.
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99.0-slim-bookworm AS worker
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates pkg-config libssl-dev \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-# The toolchain rust-toolchain.toml pins, with the wasm32 target.
 COPY rust-toolchain.toml ./
 RUN rustup toolchain install
-# The version of the worker crate (xtask/src/util.rs installs the same).
-RUN cargo install worker-build --version 0.8.7 --locked
+# The version of the worker crate (xtask/src/util.rs installs the same),
+# without the sources cargo fetched for it.
+RUN cargo install worker-build --version 0.8.7 --locked \
+  && rm -rf "$CARGO_HOME/registry"
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY xtask xtask
-RUN cd crates/fctl-control && worker-build --release
+# Only the Worker stays in the layer: with the target directory and the
+# fetched sources, it was a gigabyte that every build wrote to the cache.
+RUN cd crates/fctl-control && worker-build --release \
+  && rm -rf /src/target "$CARGO_HOME/registry"
 
 FROM --platform=$BUILDPLATFORM docker.io/library/node:22-bookworm-slim AS web
 WORKDIR /src

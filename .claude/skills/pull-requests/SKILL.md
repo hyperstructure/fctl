@@ -23,7 +23,10 @@ for stays unnoticed.
 The checks: **Commits** checks the title, and **CI** runs
 `cargo xtask check` (formatting, generated types, Biome and TypeScript,
 Clippy, tests and builds) and `cargo xtask dev --smoke` (one fake-claude
-session through the local stack, from a fresh checkout). A pull request
+session through the local stack, from a fresh checkout). The three parts
+of `cargo xtask check` run in jobs of their own (`lint`, `test`, `web`),
+and the check named `cargo xtask check` passes once they all have: when
+it fails, the part that failed says why. A pull request
 that changes `.claude/skills` also runs **Skills**, which validates every
 skill against the [Agent Skills specification](https://agentskills.io/specification);
 its log names the file, the line and the rule.
@@ -37,8 +40,9 @@ its log names the file, the line and the rule.
    gh run view ID --log-failed
    ```
 
-2. Reproduce it locally (`cargo xtask check`, or the one command that
-   failed), fix it, commit, push, and watch again.
+2. Reproduce it locally (`cargo xtask check <part>` for the part that
+   failed, or the one command that failed), fix it, commit, push, and
+   watch again.
 3. The title check fails on the title, not the code:
    `gh pr edit N --title "fix(cli): …"`. Only the Commits workflow reruns.
 4. If it looks like infrastructure (a timeout, a registry or network error),
