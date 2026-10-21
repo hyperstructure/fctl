@@ -66,6 +66,8 @@ const LINK_ERRORS: Record<string, string> = {
   google_cancelled: "Linking was cancelled.",
   google_state: "Linking could not be verified. Try again.",
   google_expired: "Linking took too long. Try again.",
+  google_reauth:
+    "Linking Google takes a sign-in from the last 15 minutes. Sign out and in again, then link it.",
 };
 
 export function SettingsPage() {

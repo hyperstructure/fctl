@@ -467,9 +467,10 @@ next start or resume; `fctl whoami` shows the address.
 The export holds your account, sign-in methods and two-factor sign-in
 (without the authenticator app's secret or the recovery codes), passkeys,
 devices and tokens, Claude connections (without their secrets),
-notification settings and browsers, addresses, workspaces, projects, the
-sessions you started with their transcripts, the sessions you follow, and
-your activity log. Deleting your account deletes all of that and the
+notification settings and browsers, addresses, workspaces, and from the
+workspaces open to you the projects you are a member of, the sessions you
+started with their transcripts and the sessions you follow, and your
+activity log. Deleting your account deletes all of that and the
 workspaces only you are in; sessions you started in shared workspaces stay
 there, credited to a deleted user, and the workspaces you are the primary
 admin of pass to their longest-standing admin. Settings in the web app has

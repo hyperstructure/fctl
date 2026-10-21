@@ -521,6 +521,11 @@ pub async fn add_member(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult
                 "No one in this workspace has this address. Invite them to the workspace first.",
             )
         })?;
+    // Adding someone who is a member already changes their role: the same
+    // checks as changing it.
+    if let Some(current) = member_role(ctx, &p.row.id, &target.id).await? {
+        check_role_change(ctx, &p, current, body.role).await?;
+    }
     q(
         &ctx.db,
         "INSERT INTO project_members (project_id, user_id, role, added_by, created_at) VALUES (?, ?, ?, ?, ?) \
@@ -535,7 +540,29 @@ pub async fn add_member(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult
         Some(&p.row.id),
         Some(serde_json::json!({ "user": target.id, "role": body.role.as_str() })),
     );
+    crate::workspaces::changed(ctx, vec![target.id.clone()]);
     members(ctx, &p.row.id).await
+}
+
+/// Whether the caller may make a member whose role is `current` a `to`:
+/// they may give both roles, and a project keeps an owner.
+async fn check_role_change(
+    ctx: &Ctx,
+    p: &access::ProjectAccess,
+    current: ProjectRole,
+    to: ProjectRole,
+) -> AppResult<()> {
+    if !perm::can_assign_project_role(p.role, to) || !perm::can_assign_project_role(p.role, current)
+    {
+        return Err(forbidden("You cannot change this member's role"));
+    }
+    if current == ProjectRole::Owner
+        && to != ProjectRole::Owner
+        && owner_count(ctx, &p.row.id).await? <= 1
+    {
+        return Err(conflict("A project needs at least one owner"));
+    }
+    Ok(())
 }
 
 async fn owner_count(ctx: &Ctx, project_id: &str) -> AppResult<i64> {
@@ -575,17 +602,7 @@ pub async fn set_member_role(
     let current = member_role(ctx, &p.row.id, user_id)
         .await?
         .ok_or_else(|| not_found("Member"))?;
-    if !perm::can_assign_project_role(p.role, body.role)
-        || !perm::can_assign_project_role(p.role, current)
-    {
-        return Err(forbidden("You cannot change this member's role"));
-    }
-    if current == ProjectRole::Owner
-        && body.role != ProjectRole::Owner
-        && owner_count(ctx, &p.row.id).await? <= 1
-    {
-        return Err(conflict("A project needs at least one owner"));
-    }
+    check_role_change(ctx, &p, current, body.role).await?;
     q(
         &ctx.db,
         "UPDATE project_members SET role = ? WHERE project_id = ? AND user_id = ?",
@@ -593,6 +610,7 @@ pub async fn set_member_role(
     )?
     .run()
     .await?;
+    crate::workspaces::changed(ctx, vec![user_id.to_owned()]);
     members(ctx, &p.row.id).await
 }
 
@@ -616,6 +634,7 @@ pub async fn remove_member(ctx: &mut Ctx, id: &str, user_id: &str) -> AppResult<
     )?
     .run()
     .await?;
+    crate::workspaces::changed(ctx, vec![user_id.to_owned()]);
     if leaving {
         return http::ok(&Ok { ok: true });
     }
