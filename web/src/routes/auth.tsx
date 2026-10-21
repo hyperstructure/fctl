@@ -15,6 +15,7 @@ import { ApiFailure, api, emails } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { saveSent } from "@/lib/early-access";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
+import { appPath } from "@/lib/paths";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
 import { RECOVERY_LEFT } from "@/lib/two-factor";
 
@@ -138,16 +139,11 @@ function useSubmit<T>(fn: () => Promise<T>, done: (r: T) => void) {
   return { busy, error, submit, fieldError: (f: string) => (error?.field === f ? error.message : undefined) };
 }
 
-/** Where a sign-in goes: `next` when it is a path of the app, else the home page. */
-function safeNext(next?: string) {
-  return next?.startsWith("/") && !next.startsWith("//") ? next : "/";
-}
-
 /** Into the app. Unless a passkey did it, the app then offers to make one (`components/passkeys/offer`). */
 function signedIn(me: G.Me, next?: string, { passkey = false } = {}) {
   queryClient.setQueryData(keys.me, me);
   if (!passkey) sessionStorage.setItem(OFFER_PASSKEY, "1");
-  window.location.assign(safeNext(next));
+  window.location.assign(appPath(next));
 }
 
 /** Signs in with what the second step answered, and remembers to say how many recovery codes are left. */
@@ -159,7 +155,7 @@ function finished(r: G.AuthResponse, next?: string) {
 }
 
 function GoogleButton({ label, next }: { label: string; next?: string }) {
-  const back = next && safeNext(next) !== "/" ? `&return_to=${encodeURIComponent(safeNext(next))}` : "";
+  const back = appPath(next) !== "/" ? `&return_to=${encodeURIComponent(appPath(next))}` : "";
   return (
     <a
       href={`/api/v1/auth/google/start?intent=login${back}`}

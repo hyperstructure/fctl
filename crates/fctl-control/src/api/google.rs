@@ -52,11 +52,10 @@ struct Claims {
     picture: Option<String>,
 }
 
+/// `path` when it is a path of the app, else the home page.
 fn safe_return(path: Option<String>) -> String {
-    match path {
-        Some(p) if p.starts_with('/') && !p.starts_with("//") && !p.contains("\\") => p,
-        _ => "/".to_owned(),
-    }
+    path.filter(|p| fctl_domain::validate::is_app_path(p))
+        .unwrap_or_else(|| "/".to_owned())
 }
 
 fn redirect_uri(ctx: &Ctx) -> String {
