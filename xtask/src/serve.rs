@@ -98,6 +98,20 @@ fn is_local(url: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// The image's Worker builds with the Rust rust-toolchain.toml pins, in
+    /// an image that has it already (deploy/standalone/Dockerfile).
+    #[test]
+    fn the_image_builds_with_the_pinned_rust() {
+        let toolchain: toml::Table =
+            toml::from_str(include_str!("../../rust-toolchain.toml")).unwrap();
+        let channel = toolchain["toolchain"]["channel"].as_str().unwrap();
+        let image = format!("docker.io/library/rust:{channel}-slim-bookworm AS worker");
+        assert!(
+            include_str!("../../deploy/standalone/Dockerfile").contains(&image),
+            "deploy/standalone/Dockerfile doesn't build the Worker in {image}"
+        );
+    }
+
     #[test]
     fn local_urls() {
         assert!(is_local("http://localhost:8787"));
