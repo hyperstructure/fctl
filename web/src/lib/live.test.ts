@@ -209,6 +209,26 @@ describe("earlier activity", () => {
     const store = open();
     await settle();
     expect(events).toHaveBeenCalledTimes(2);
-    expect(store.state).toMatchObject({ loadingOlder: false, hasMoreBefore: true, firstSeq: seq - 799 });
+    expect(store.state).toMatchObject({
+      loadingOlder: false,
+      hasMoreBefore: true,
+      firstSeq: seq - 799,
+      // What came in shows: the page may go on.
+      olderFailed: false,
+    });
+  });
+
+  it("says when a load brought nothing, until the next one", async () => {
+    history = [said("Tidy up"), ...working(SCREENFUL), ...commands(400, 2)];
+    events.mockRejectedValueOnce(new Error("You appear to be offline."));
+    const store = open();
+    await settle();
+    // The page doesn't ask again by itself, which would go on as fast as it fails.
+    expect(store.state).toMatchObject({ loadingOlder: false, hasMoreBefore: true, olderFailed: true });
+
+    void store.loadOlder();
+    expect(store.state).toMatchObject({ loadingOlder: true, olderFailed: false });
+    await settle();
+    expect(store.state).toMatchObject({ loadingOlder: false, olderFailed: false, firstSeq: 1 });
   });
 });

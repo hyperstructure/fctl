@@ -1,10 +1,10 @@
 // Earlier activity loads above what the reader is looking at, and that stays
 // where it is, as in a chat. Browsers wouldn't keep it there: Safari has no
-// scroll anchoring, and the others anchor to the first thing in view, the
-// "Show earlier activity" button the older items go in under. Either way the
-// reader would land on the oldest of them, far above their place. So the
-// transcript keeps it, with the browser's anchoring off in it meanwhile, so
-// that only one of them moves the page.
+// scroll anchoring, and the others anchor to the first thing in view, which
+// can be the "Show earlier activity" button the older items go in under.
+// Either way the reader would land on the oldest of them, far above their
+// place. So the transcript keeps it, with the browser's anchoring off in it
+// meanwhile, so that only one of them moves the page.
 
 import { type RefObject, useCallback, useLayoutEffect, useRef } from "react";
 
@@ -27,10 +27,14 @@ export function useKeepPlace(list: RefObject<HTMLElement | null>, loading: boole
     const held = marks.current;
     if (loading || !held) return;
     marks.current = undefined;
-    list.current?.style.removeProperty("overflow-anchor");
+    // Measured with the browser's anchoring still off in the list: measuring
+    // lays the page out, and anchored to an item rather than the button (out
+    // of view, as the reader scrolls), Chrome would move the page by what went
+    // in above it too.
     const mark = held.find((m) => m.el.isConnected);
     const moved = mark ? pageTop(mark.el) - mark.top : 0;
     if (moved) window.scrollBy({ top: moved, behavior: "instant" });
+    list.current?.style.removeProperty("overflow-anchor");
   });
   return useCallback(() => {
     const el = list.current;

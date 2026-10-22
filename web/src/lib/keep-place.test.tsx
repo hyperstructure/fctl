@@ -14,7 +14,8 @@ afterEach(() => {
 /**
  * A page 800 px tall with a list of items 100 px tall each, under a 50 px
  * button, scrolled to `top`. `show` lays out the list again: older items
- * push the others down, as the browser would.
+ * push the others down, as the browser would. Measuring lays the page out,
+ * and the browser's scroll anchoring moves it, roughly as Chrome's does.
  */
 function transcriptPage() {
   let top = 0;
@@ -26,13 +27,26 @@ function transcriptPage() {
   const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(((o: ScrollToOptions) => {
     top += o.top ?? 0;
   }) as typeof window.scrollBy);
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-    const y = Number((this as HTMLElement).dataset.y ?? 0) - top;
-    return { top: y, bottom: y + 100, left: 0, right: 0, width: 0, height: 100 } as DOMRect;
-  });
-
   const container = document.createElement("div");
   document.body.append(container);
+  const y = (el: Element) => Number((el as HTMLElement).dataset.y ?? 0);
+  // What the browser anchors to: the first thing in view in the list (the
+  // button or an item), where it was at the layout before.
+  let anchor: { el: Element; y: number } | undefined;
+  const layOut = () => {
+    const l = container.firstElementChild as HTMLElement | null;
+    if (!l) return;
+    // With the list's anchoring on, the page moves with what it anchors to.
+    if (anchor?.el.isConnected && l.style.overflowAnchor !== "none") top += y(anchor.el) - anchor.y;
+    const first = [...l.children].find((c) => y(c) - top + 100 > 0);
+    anchor = first && { el: first, y: y(first) };
+  };
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    layOut();
+    const at = y(this) - top;
+    return { top: at, bottom: at + 100, left: 0, right: 0, width: 0, height: 100 } as DOMRect;
+  });
+
   const root = createRoot(container);
   let keep: () => void = () => {};
   function List({ items, loading }: { items: string[]; loading: boolean }) {
@@ -98,6 +112,20 @@ describe("keeping the reader's place", () => {
     const before = p.at("item 405");
     p.show(items(0, 800));
     expect(p.at("item 405")).toBe(before);
+  });
+
+  it("keeps it when the button is out of view, as when the load starts ahead of the reader", () => {
+    const p = transcriptPage();
+    p.show(items(400, 800));
+    // The button is 200 px above the view: the browser anchors to an item.
+    p.scroll(250);
+    const before = p.at("item 402");
+    p.keep();
+    p.show(items(400, 800), true);
+    p.show(items(0, 800));
+    // Not twice what went in above, once by the browser and once by the list.
+    expect(p.at("item 402")).toBe(before);
+    expect(p.scrollBy).toHaveBeenCalledTimes(1);
   });
 
   it("measures from an item that is still there when the first ones merge with older ones", () => {

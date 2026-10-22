@@ -41,6 +41,7 @@ import { cn } from "@/lib/cn";
 import { bytes, clock, day, duration, until } from "@/lib/format";
 import { repoChanges } from "@/lib/git";
 import { useKeepPlace } from "@/lib/keep-place";
+import { useLoadInView } from "@/lib/load-in-view";
 import { isPublishedLink, linkToken, markdown } from "@/lib/published";
 import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
 import { callsIn, lastRun, parts } from "@/lib/runs";
@@ -617,6 +618,38 @@ export function LiveTurnView({
   );
 }
 
+/**
+ * The button that loads earlier activity, which it also does by itself as the
+ * reader scrolls up to it (`useLoadInView`).
+ */
+function EarlierActivity({
+  onLoad,
+  loading,
+  failed,
+}: {
+  onLoad: () => void;
+  loading: boolean;
+  failed: boolean;
+}) {
+  const button = useRef<HTMLButtonElement>(null);
+  useLoadInView(button, onLoad, loading, failed);
+  return (
+    <button
+      ref={button}
+      type="button"
+      onClick={onLoad}
+      className="mx-auto mb-4 flex items-center gap-2 rounded-full border border-line px-3 py-1 text-[12px] text-ink-3 hover:text-ink"
+    >
+      {loading && <Spinner className="size-3" />}
+      {loading
+        ? "Loading earlier activity"
+        : failed
+          ? "Earlier activity didn't load. Try again"
+          : "Show earlier activity"}
+    </button>
+  );
+}
+
 export const Transcript = memo(function Transcript({
   sessionId,
   items,
@@ -630,6 +663,7 @@ export const Transcript = memo(function Transcript({
   onLoadOlder,
   hasMoreBefore,
   loadingOlder,
+  olderFailed = false,
 }: {
   sessionId: string;
   items: Item[];
@@ -646,6 +680,8 @@ export const Transcript = memo(function Transcript({
   onLoadOlder: () => void;
   hasMoreBefore: boolean;
   loadingOlder: boolean;
+  /** The last load of earlier activity brought nothing: a page failed. */
+  olderFailed?: boolean;
 }) {
   // A tool call without a result runs only in the turn the agent works on,
   // while its work comes through. One from a turn that ended (with a result,
@@ -687,17 +723,14 @@ export const Transcript = memo(function Transcript({
       <Gallery>
         <div ref={list} className="flex flex-col">
           {hasMoreBefore && (
-            <button
-              type="button"
-              onClick={() => {
+            <EarlierActivity
+              onLoad={() => {
                 keepPlace();
                 onLoadOlder();
               }}
-              className="mx-auto mb-4 flex items-center gap-2 rounded-full border border-line px-3 py-1 text-[12px] text-ink-3 hover:text-ink"
-            >
-              {loadingOlder && <Spinner className="size-3" />}
-              Show earlier activity
-            </button>
+              loading={loadingOlder}
+              failed={olderFailed}
+            />
           )}
           <WorkDir value={cwd}>
             {ps.map((p) => (
