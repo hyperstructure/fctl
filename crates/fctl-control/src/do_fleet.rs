@@ -2065,7 +2065,16 @@ impl FleetObject {
         let Ok(db) = self.env.d1("DB") else { return };
         let state = match update {
             ClaudeLoginUpdate::Starting => ClaudeLoginState::Starting,
-            ClaudeLoginUpdate::AwaitingCode { url } => ClaudeLoginState::AwaitingCode { url },
+            // The host may be another member's: only Claude's own page is
+            // shown and opened as the place to approve the sign-in.
+            ClaudeLoginUpdate::AwaitingCode { url }
+                if fctl_domain::remote_control::is_login_url(&url) =>
+            {
+                ClaudeLoginState::AwaitingCode { url }
+            }
+            ClaudeLoginUpdate::AwaitingCode { .. } => ClaudeLoginState::Failed {
+                error: "The runner sent a sign-in link that isn't on claude.ai. Start the sign-in again, or connect a long-lived token instead.".into(),
+            },
             ClaudeLoginUpdate::Verifying => ClaudeLoginState::Verifying,
             ClaudeLoginUpdate::Failed { error } => ClaudeLoginState::Failed { error },
             ClaudeLoginUpdate::Succeeded { bundle } => {
