@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { canEditMemory, headline, matches, ofSession, replacement } from "./memory";
+import { canEditMemory, headline, matches, ofSession, original, replacement } from "./memory";
 
 const note = (over: Partial<G.Memory> = {}): G.Memory => ({
   id: "mem_1",
@@ -56,6 +56,16 @@ describe("replacement", () => {
     expect(replacement([next, old], old)?.id).toBe("mem_new");
     expect(replacement([old], old)).toBeUndefined();
     expect(replacement([next], next)).toBeUndefined();
+  });
+});
+
+describe("original", () => {
+  it("finds the note a duplicate repeats", () => {
+    const kept = note({ id: "mem_kept" });
+    const copy = note({ id: "mem_copy", stale: { at: 2, duplicate_of: "mem_kept" } });
+    expect(original([kept, copy], copy)?.id).toBe("mem_kept");
+    expect(original([copy], copy)).toBeUndefined();
+    expect(original([kept], kept)).toBeUndefined();
   });
 });
 

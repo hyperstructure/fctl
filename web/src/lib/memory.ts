@@ -55,6 +55,10 @@ export function ofSession(memories: G.Memory[], session: string) {
 export const replacement = (memories: G.Memory[], m: G.Memory) =>
   m.stale?.replaced_by ? memories.find((x) => x.id === m.stale?.replaced_by) : undefined;
 
+/** The note a duplicate repeats, when the list has it. */
+export const original = (memories: G.Memory[], m: G.Memory) =>
+  m.stale?.duplicate_of ? memories.find((x) => x.id === m.stale?.duplicate_of) : undefined;
+
 /** The element id of a note in the project's Memory tab, which links to it scroll to. */
 export const noteAnchor = (id: string) => `note-${id}`;
 

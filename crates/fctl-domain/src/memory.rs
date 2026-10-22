@@ -3,12 +3,13 @@
 //! project's current notes, adds what a future agent should know, and marks
 //! the notes that turned out wrong stale; people read them, change them and
 //! delete them. How long notes are, how many a project keeps, which ones an
-//! agent starts with, and how lists order them.
+//! agent starts with, how lists order them, and which notes a note may
+//! replace or repeat.
 
 use crate::validate;
-use fctl_proto::ApiError;
 use fctl_proto::runner::MemorySpec;
 use fctl_proto::session::Memory;
+use fctl_proto::{ApiError, MemoryId};
 
 /// The longest note, in characters: a fact or two, not a document.
 pub const MAX_CHARS: usize = 2_000;
@@ -16,6 +17,8 @@ pub const MAX_CHARS: usize = 2_000;
 pub const MAX_REASON_CHARS: usize = 500;
 /// The most notes a project keeps, stale ones included.
 pub const MAX_PER_PROJECT: u32 = 500;
+/// The most notes one note takes the place of: those it sums up.
+pub const MAX_REPLACED: usize = 20;
 /// How much of the notes' text an agent starts with, in bytes: about as
 /// much as Claude Code loads of its own memory as it starts (25 KB).
 pub const PROMPT_BYTES: usize = 24_000;
@@ -43,6 +46,62 @@ pub fn reason(input: Option<&str>) -> Result<Option<String>, ApiError> {
     };
     let reason = validate::text("reason", input, MAX_REASON_CHARS)?;
     Ok((!reason.is_empty()).then_some(reason))
+}
+
+/// The notes a new note takes the place of: `replaces`, then
+/// `also_replaces`, each once, at most [`MAX_REPLACED`].
+pub fn replaced(
+    replaces: Option<&MemoryId>,
+    also_replaces: &[MemoryId],
+) -> Result<Vec<MemoryId>, ApiError> {
+    let mut ids: Vec<MemoryId> = Vec::new();
+    for id in replaces.into_iter().chain(also_replaces) {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    if ids.len() > MAX_REPLACED {
+        return Err(ApiError::validation(
+            "replaces",
+            format!("A note takes the place of at most {MAX_REPLACED} others"),
+        ));
+    }
+    Ok(ids)
+}
+
+/// Why a duplicate is stale, unless someone says otherwise.
+pub fn duplicate_reason(of: &MemoryId) -> String {
+    format!("Duplicate of {of}")
+}
+
+/// Whether `note` may be marked a duplicate of `of`, a note of its project:
+/// another one, and current, so that agents still start with what it says.
+/// A stale `of` points at the note that took its place, or that it repeats.
+pub fn check_duplicate(note: &Memory, of: &Memory) -> Result<(), ApiError> {
+    if note.id == of.id {
+        return Err(ApiError::validation(
+            "duplicate_of",
+            "A note can't be a duplicate of itself",
+        ));
+    }
+    let Some(stale) = &of.stale else {
+        return Ok(());
+    };
+    let instead = match (&stale.replaced_by, &stale.duplicate_of) {
+        (Some(next), _) => format!(
+            "{next} took its place, so mark {} a duplicate of that one",
+            note.id
+        ),
+        (None, Some(first)) => format!(
+            "it repeats {first}, so mark {} a duplicate of that one",
+            note.id
+        ),
+        (None, None) => format!(
+            "mark {} a duplicate of a current note, or stale with a reason",
+            note.id
+        ),
+    };
+    Err(ApiError::conflict(format!("{} is stale: {instead}", of.id)))
 }
 
 /// What a note is about, on one line: its first line that has text, without
@@ -130,12 +189,19 @@ pub fn added_message(m: &Memory) -> String {
     format!("Remembered: {}", headline(&m.text, 140))
 }
 
-/// What the transcript says when an agent marks a note stale.
+/// What the transcript says when an agent marks a note stale, or a
+/// duplicate of another.
 pub fn stale_message(m: &Memory) -> String {
     let what = headline(&m.text, 120);
-    match m.stale.as_ref().and_then(|s| s.reason.as_deref()) {
-        Some(reason) => format!("Marked a memory stale: {what} ({})", headline(reason, 120)),
-        None => format!("Marked a memory stale: {what}"),
+    let Some(stale) = &m.stale else {
+        return format!("Marked a memory stale: {what}");
+    };
+    match (&stale.duplicate_of, stale.reason.as_deref()) {
+        (Some(of), _) => format!("Marked a memory a duplicate of {of}: {what}"),
+        (None, Some(reason)) => {
+            format!("Marked a memory stale: {what} ({})", headline(reason, 120))
+        }
+        (None, None) => format!("Marked a memory stale: {what}"),
     }
 }
 
@@ -166,8 +232,13 @@ mod tests {
             session: None,
             by: None,
             replaced_by: None,
+            duplicate_of: None,
         });
         m
+    }
+
+    fn ids(ids: &[&str]) -> Vec<MemoryId> {
+        ids.iter().map(|id| MemoryId((*id).into())).collect()
     }
 
     #[test]
@@ -237,6 +308,63 @@ mod tests {
     }
 
     #[test]
+    fn a_note_replaces_each_note_once_and_a_few_at_most() {
+        let first = MemoryId("mem_a".into());
+        assert_eq!(
+            replaced(Some(&first), &ids(&["mem_b", "mem_a", "mem_c", "mem_b"])).ok(),
+            Some(ids(&["mem_a", "mem_b", "mem_c"]))
+        );
+        assert_eq!(replaced(None, &[]).ok(), Some(vec![]));
+        let many: Vec<MemoryId> = (0..=MAX_REPLACED)
+            .map(|i| MemoryId(format!("mem_{i}")))
+            .collect();
+        assert!(replaced(None, &many[..MAX_REPLACED]).is_ok());
+        let err = replaced(None, &many).err();
+        assert_eq!(
+            err.as_ref().and_then(|e| e.field.as_deref()),
+            Some("replaces")
+        );
+    }
+
+    #[test]
+    fn a_duplicate_repeats_another_current_note() {
+        let original = note("mem_a", "Run npm ci first", 1);
+        let copy = note("mem_b", "Run npm ci before the tests", 2);
+        assert!(check_duplicate(&copy, &original).is_ok());
+        let itself = check_duplicate(&copy, &copy).err();
+        assert_eq!(
+            itself.as_ref().and_then(|e| e.field.as_deref()),
+            Some("duplicate_of")
+        );
+        // A stale note points at what agents start with instead.
+        let mut gone = stale(original.clone(), 5);
+        assert_eq!(
+            check_duplicate(&copy, &gone).err().map(|e| e.message),
+            Some(
+                "mem_a is stale: mark mem_b a duplicate of a current note, or stale with a reason"
+                    .into()
+            )
+        );
+        if let Some(s) = gone.stale.as_mut() {
+            s.duplicate_of = Some(MemoryId("mem_0".into()));
+        }
+        assert_eq!(
+            check_duplicate(&copy, &gone).err().map(|e| e.message),
+            Some("mem_a is stale: it repeats mem_0, so mark mem_b a duplicate of that one".into())
+        );
+        if let Some(s) = gone.stale.as_mut() {
+            s.replaced_by = Some(MemoryId("mem_c".into()));
+        }
+        let err = check_duplicate(&copy, &gone).err();
+        assert_eq!(
+            err.as_ref().map(|e| e.message.as_str()),
+            Some("mem_a is stale: mem_c took its place, so mark mem_b a duplicate of that one")
+        );
+        assert_eq!(err.map(|e| e.code), Some(fctl_proto::ErrorCode::Conflict));
+        assert_eq!(duplicate_reason(&original.id), "Duplicate of mem_a");
+    }
+
+    #[test]
     fn ages_read_as_people_say_them() {
         let day = 24 * 60 * 60 * 1000;
         assert_eq!(age(day / 2, 0), "today");
@@ -262,6 +390,15 @@ mod tests {
         assert_eq!(
             stale_message(&m),
             "Marked a memory stale: Tests need npm ci (The script moved to xtask)"
+        );
+        let mut copy = stale(note("mem_3", "## Tests need npm ci first", 1), 5);
+        if let Some(s) = copy.stale.as_mut() {
+            s.reason = Some("Duplicate of mem_1".into());
+            s.duplicate_of = Some(MemoryId("mem_1".into()));
+        }
+        assert_eq!(
+            stale_message(&copy),
+            "Marked a memory a duplicate of mem_1: Tests need npm ci first"
         );
         let mut by_person = note("mem_2", "Deploys happen on Fridays", 1);
         by_person.created_by = Some(UserRef {

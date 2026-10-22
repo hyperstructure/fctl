@@ -132,8 +132,9 @@ const UserMessage = memo(function UserMessage({
 });
 
 /**
- * A note the agent kept in the project's memory, or marked stale, as it was
- * then, with a link to it in the project's Memory tab.
+ * A note the agent kept in the project's memory, or marked stale (a
+ * duplicate too), as it was then, with a link to it in the project's Memory
+ * tab.
  */
 function MemoryNotice({
   memory,
@@ -144,10 +145,15 @@ function MemoryNotice({
   stale: boolean;
   projectSlug?: string;
 }) {
+  const duplicateOf = stale ? memory.stale?.duplicate_of : undefined;
   return (
     <div className="animate-rise py-1.5">
       <Milestone icon={stale ? <Archive /> : <BookMarked />} tone={stale ? "muted" : "ok"}>
-        {stale ? "Marked a note stale" : "Remembered for later agents"}
+        {duplicateOf
+          ? "Marked a note a duplicate"
+          : stale
+            ? "Marked a note stale"
+            : "Remembered for later agents"}
         {projectSlug && (
           <>
             {" · "}
@@ -164,9 +170,30 @@ function MemoryNotice({
         )}
       >
         <Markdown text={memory.text} className="prose-note" />
-        {stale && (memory.stale?.replaced_by || memory.stale?.reason) && (
+        {stale && (memory.stale?.replaced_by || duplicateOf || memory.stale?.reason) && (
           <p className="mt-1 text-[12.5px] text-ink-4 [overflow-wrap:anywhere]">
-            {memory.stale.replaced_by ? "A newer note takes its place." : memory.stale.reason}
+            {memory.stale?.replaced_by ? (
+              "A newer note takes its place."
+            ) : duplicateOf ? (
+              <>
+                It repeats{" "}
+                {projectSlug ? (
+                  <NoteLink
+                    slug={projectSlug}
+                    id={duplicateOf}
+                    arrow={false}
+                    className="underline underline-offset-2"
+                  >
+                    another note
+                  </NoteLink>
+                ) : (
+                  "another note"
+                )}
+                .
+              </>
+            ) : (
+              memory.stale?.reason
+            )}
           </p>
         )}
       </div>

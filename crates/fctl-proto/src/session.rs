@@ -823,6 +823,9 @@ pub struct Staleness {
     pub by: Option<UserRef>,
     /// The memory that took its place (`fctl memory add --replaces`).
     pub replaced_by: Option<MemoryId>,
+    /// The memory it repeats, which was current when it was marked
+    /// (`fctl memory duplicate`).
+    pub duplicate_of: Option<MemoryId>,
 }
 
 /// How a piece of work ended, as the agent that did it sees it.
@@ -919,6 +922,23 @@ mod tests {
         let json = serde_json::to_value(&memory)?;
         assert!(json.get("stale").is_none() && json.get("edited_at").is_none());
         assert_eq!(json["session"]["number"], 12);
+        // A duplicate links the note it repeats; other stale notes, and
+        // those from before duplicates, don't.
+        let duplicate: Staleness = serde_json::from_value(serde_json::json!({
+            "at": 6, "reason": "Duplicate of mem_0", "duplicate_of": "mem_0"
+        }))?;
+        assert_eq!(
+            duplicate.duplicate_of.as_ref().map(|m| m.as_str()),
+            Some("mem_0")
+        );
+        let replaced: Staleness =
+            serde_json::from_value(serde_json::json!({ "at": 6, "replaced_by": "mem_2" }))?;
+        assert_eq!(replaced.duplicate_of, None);
+        assert!(
+            serde_json::to_value(&replaced)?
+                .get("duplicate_of")
+                .is_none()
+        );
         let retro: Retrospective = serde_json::from_value(serde_json::json!({
             "id": "rtr_1", "project_id": "prj_1",
             "session": { "id": "ses_1", "number": 12, "title": "Fix the login redirect" },

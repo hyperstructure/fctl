@@ -205,12 +205,12 @@ outside it except through these channels:
   describe it (`fctl edit`); in projects that publish screenshots, publish
   images at public links (`fctl publish`); and in projects that keep a
   memory or ask for retrospectives, read the project's notes, add notes,
-  mark them stale and record retrospectives of its session (`fctl memory`,
-  `fctl retro`), and nothing else; the control plane checks the values and
-  the settings again. Turn publishing on only where anything the agents see
-  may be shown to anyone with a link: text in a repository or on a web page
-  can ask an agent to publish a screenshot, as it can ask it to send what
-  it sees elsewhere.
+  mark them stale or duplicates of other notes and record retrospectives
+  of its session (`fctl memory`, `fctl retro`), and nothing else; the
+  control plane checks the values and the settings again. Turn publishing
+  on only where anything the agents see may be shown to anyone with a
+  link: text in a repository or on a web page can ask an agent to publish
+  a screenshot, as it can ask it to send what it sees elsewhere.
 - **Project memory** is text that the agent of every later session in the
   project starts with, and anything an agent runs can add to it, so text in
   a repository or on a web page that steers one agent can leave a note for

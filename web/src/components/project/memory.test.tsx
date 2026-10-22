@@ -118,6 +118,45 @@ describe("the Memory tab", () => {
     expect(c.textContent).not.toContain("Deploys happen on Fridays.");
   });
 
+  it("links a duplicate to the note it repeats, which it shows", () => {
+    const copy: G.Memory = {
+      id: "mem_3",
+      project_id: "prj_1",
+      text: "Deploys go out on Fridays.",
+      session: { id: "ses_4", number: 4, title: "Tidy the memory" },
+      created_by: ada,
+      created_at: 3,
+      stale: {
+        at: 6,
+        reason: "Duplicate of mem_2",
+        session: { id: "ses_4", number: 4, title: "Tidy the memory" },
+        by: ada,
+        duplicate_of: "mem_2",
+      },
+    };
+    const c = memoryTab(project(), [...notes, copy]);
+    act(() => button(c, "Stale").click());
+    expect(c.textContent).toContain("Deploys go out on Fridays.");
+    expect(c.textContent).toContain("marked by the agent in #4 Tidy the memory: a duplicate of another note");
+    expect(c.textContent).not.toContain("Duplicate of mem_2");
+    act(() => button(c, "a duplicate of another note").click());
+    expect(c.textContent).toContain("Deploys happen on Fridays.");
+    expect(c.textContent).not.toContain("Deploys go out on Fridays.");
+  });
+
+  it("gives a duplicate's reason when the note it repeats is gone", () => {
+    const copy: G.Memory = {
+      id: "mem_3",
+      project_id: "prj_1",
+      text: "Deploys go out on Fridays.",
+      created_at: 3,
+      stale: { at: 6, reason: "Duplicate of mem_9", by: ada, duplicate_of: "mem_9" },
+    };
+    const c = memoryTab(project(), [...notes, copy]);
+    act(() => button(c, "Stale").click());
+    expect(c.textContent).toContain("marked by Ada: Duplicate of mem_9");
+  });
+
   it("lets editors add notes, and not viewers", () => {
     expect(
       memoryTab(project()).querySelector('textarea[aria-label="A note for the project\'s agents"]'),
