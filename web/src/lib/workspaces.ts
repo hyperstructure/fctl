@@ -162,17 +162,30 @@ export function useFolded(): [Set<string>, (id: string) => void] {
 }
 
 /**
- * How many runners of a list serve a workspace, and how many of those are online. The list is
- * what someone sees: every runner for instance admins, those of their workspaces for others.
- * Undefined when it can't tell: control planes before workspaces don't say whose runners are whose.
+ * How many runners of a list run your sessions in a workspace, and how many of those are online: the
+ * ones that serve it, but not those another member added for their own sessions, and only yours
+ * while you keep your sessions there on your own runners (`own_runners`). `others`: the ones that
+ * serve it but don't run your sessions. The list is what someone sees: every runner for instance
+ * admins, those of their workspaces for others. Undefined when it can't tell: control planes before
+ * workspaces don't say whose runners are whose.
  */
 export function runnersOf(
   runners: readonly G.Runner[],
-  workspace: string,
-): { total: number; online: number } | undefined {
+  w: Pick<G.Workspace, "id" | "own_runners">,
+): { total: number; online: number; others: number } | undefined {
   if (runners.some((r) => !r.workspaces)) return undefined;
-  const serving = runners.filter((r) => r.workspaces?.some((w) => w.id === workspace));
-  return { total: serving.length, online: serving.filter((r) => r.status === "online").length };
+  const serving = runners.filter((r) => r.workspaces?.some((x) => x.id === w.id));
+  const mine = serving.filter((r) => runsMine(r, w));
+  return {
+    total: mine.length,
+    online: mine.filter((r) => r.status === "online").length,
+    others: serving.length - mine.length,
+  };
+}
+
+/** Whether a runner of the workspace runs your sessions there (`fctl_domain::schedule::runs_for`). */
+export function runsMine(r: G.Runner, w: Pick<G.Workspace, "id" | "own_runners">): boolean {
+  return r.yours || (!w.own_runners && !r.personal?.includes(w.id));
 }
 
 /** "Primary admin", "Admin", "Member". */

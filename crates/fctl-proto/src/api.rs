@@ -1194,6 +1194,11 @@ pub struct Workspace {
     /// workspace for one: the app's setup checklist leaves that step out.
     #[serde(default)]
     pub skip_invites: bool,
+    /// Your sessions in it run only on runners you registered: not on the
+    /// ones of its other people, which see a session's Claude token. False
+    /// from control planes before it.
+    #[serde(default)]
+    pub own_runners: bool,
     pub created_at: Millis,
 }
 
@@ -1335,6 +1340,10 @@ pub struct UpdateMembershipRequest {
     /// and the app's sidebar: the ones named first, then the others as
     /// they were.
     pub project_order: Option<Vec<String>>,
+    /// Run your sessions there only on runners you registered
+    /// ([`Workspace::own_runners`]). Turning it on stops the ones running
+    /// on other people's runners; they resume on yours.
+    pub own_runners: Option<bool>,
 }
 
 /// `PUT /api/v1/me/workspace-order`: your workspaces in the order you want
@@ -1659,6 +1668,12 @@ pub struct Runner {
     /// you registered it.
     #[serde(default)]
     pub yours: bool,
+    /// Of `workspaces`, the ones where it runs only its owner's sessions:
+    /// they added it for their own. In the others it runs everyone's.
+    /// Absent from control planes before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<WorkspaceId>>", optional))]
+    pub personal: Vec<WorkspaceId>,
 }
 
 /// A runner that drains.
@@ -1683,9 +1698,25 @@ pub struct RunnerList {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct CreateRunnerRequest {
     pub name: String,
-    /// The workspace (id or slug) whose sessions it runs; you must be one of
-    /// its admins. Absent: the one workspace you are an admin of.
+    /// The workspace (id or slug) whose sessions it runs. Absent: the one
+    /// workspace you are an admin of, else the one you are a member of.
     pub workspace: Option<String>,
+    /// It runs only your sessions in `workspace`. Absent: only yours when
+    /// you are a member there, everyone's when you are an admin; only
+    /// admins add runners for everyone's.
+    pub personal: Option<bool>,
+}
+
+/// `PUT /api/v1/workspaces/{id}/runners/{runner}`: whose sessions there
+/// your runner runs. Without a body, as with `personal` absent.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AddRunnerRequest {
+    /// Only your sessions there. Absent: only yours when you are a member,
+    /// everyone's when you are an admin; only admins add runners for
+    /// everyone's.
+    pub personal: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

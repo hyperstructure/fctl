@@ -10,6 +10,7 @@ export type { AddMemoryRequest } from "./AddMemoryRequest";
 export type { AddPasskeyRequest } from "./AddPasskeyRequest";
 export type { AddProjectRepoRequest } from "./AddProjectRepoRequest";
 export type { AddPushDeviceRequest } from "./AddPushDeviceRequest";
+export type { AddRunnerRequest } from "./AddRunnerRequest";
 export type { AdminWorkspace } from "./AdminWorkspace";
 export type { AdminWorkspaceList } from "./AdminWorkspaceList";
 export type { AgentConfig } from "./AgentConfig";

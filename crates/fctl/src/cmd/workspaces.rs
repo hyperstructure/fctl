@@ -224,9 +224,11 @@ pub enum WorkspacesCmd {
         #[arg(short, long)]
         workspace: Option<String>,
     },
-    /// Let one of your runners run a workspace's sessions (its admins).
+    /// Let one of your runners run a workspace's sessions: everyone's, if
+    /// you are one of its admins, or only yours. Adding it again changes
+    /// whose.
     #[command(
-        after_help = "Examples:\n  fctl workspaces add-runner -w side-project              # on the runner: this machine\n  fctl workspaces add-runner studio-mac -w side-project\n  fctl workspaces add-runner rnr_01… -w side-project      # an id from `fctl admin runners`"
+        after_help = "Examples:\n  fctl workspaces add-runner -w side-project              # on the runner: this machine\n  fctl workspaces add-runner studio-mac -w side-project\n  fctl workspaces add-runner studio-mac -w acme --personal   # only your sessions in acme\n  fctl workspaces add-runner rnr_01… -w side-project      # an id from `fctl admin runners`"
     )]
     AddRunner {
         /// The runner's name or id (default: this machine's, on a runner).
@@ -235,8 +237,13 @@ pub enum WorkspacesCmd {
         /// else your only one.
         #[arg(short, long)]
         workspace: Option<String>,
+        /// Run only your sessions there. A member's runner always does; an
+        /// admin's runs everyone's without it.
+        #[arg(long)]
+        personal: bool,
     },
-    /// Stop a runner from taking a workspace's sessions. Running ones carry on.
+    /// Stop a runner from taking a workspace's sessions. The ones running
+    /// there stop, and resume on another runner.
     RemoveRunner {
         /// The runner's name or id (default: this machine's, on a runner).
         runner: Option<String>,
@@ -283,6 +290,22 @@ pub enum WorkspacesCmd {
     Disconnect {
         /// The GitHub account (organization or user).
         account: String,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
+        #[arg(short, long)]
+        workspace: Option<String>,
+    },
+    /// Run your sessions in a workspace only on runners you registered,
+    /// not on its other people's, which see a session's Claude token.
+    /// Turning it on stops the ones running on others' runners; they
+    /// resume on yours.
+    #[command(
+        after_help = "Examples:\n  fctl workspaces own-runners on -w acme    # only on your runners\n  fctl workspaces own-runners off -w acme   # on any of acme's runners\n  fctl workspaces own-runners -w acme       # which it is"
+    )]
+    OwnRunners {
+        /// on or off. Without it, shows which it is.
+        #[arg(value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        on: Option<bool>,
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
         #[arg(short, long)]
@@ -471,7 +494,16 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             }
             println!("members:  {} — they {}", w.members, base(w.base_role));
             println!("projects: {}", w.projects);
-            println!("runners:  {} ({} online)", w.runners, w.runners_online);
+            println!(
+                "runners:  {} ({} online){}",
+                w.runners,
+                w.runners_online,
+                if w.own_runners {
+                    style::dim(" — your sessions run only on yours")
+                } else {
+                    String::new()
+                }
+            );
             println!(
                 "github:   {}",
                 if w.github.is_empty() {
@@ -803,7 +835,13 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 let about: Vec<String> = r
                     .created_by
                     .as_ref()
-                    .map(|u| format!("{}'s", u.name))
+                    .map(|u| {
+                        if r.personal.contains(&w.id) {
+                            format!("{}'s, only their sessions", u.name)
+                        } else {
+                            format!("{}'s", u.name)
+                        }
+                    })
                     .into_iter()
                     .chain([r.id.to_string()])
                     .collect();
@@ -817,21 +855,38 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 );
             }
         }
-        WorkspacesCmd::AddRunner { runner, workspace } => {
+        WorkspacesCmd::AddRunner {
+            runner,
+            workspace,
+            personal,
+        } => {
             let w = resolve(&api, workspace).await?;
             let r = runner_or_this(&api, runner.as_deref()).await?;
             let list = api
-                .add_workspace_runner(w.id.as_str(), r.id.as_str())
+                .add_workspace_runner(w.id.as_str(), r.id.as_str(), personal.then_some(true))
                 .await?;
             if json {
                 return style::print_json(&list);
             }
-            println!(
-                "{} {} runs {}'s sessions too",
-                style::accent("✓"),
-                style::bold(&r.name),
-                w.name
-            );
+            let only_yours = list
+                .runners
+                .iter()
+                .any(|x| x.id == r.id && x.personal.contains(&w.id));
+            if only_yours {
+                println!(
+                    "{} {} runs your sessions in {}, and nobody else's",
+                    style::accent("✓"),
+                    style::bold(&r.name),
+                    w.name
+                );
+            } else {
+                println!(
+                    "{} {} runs {}'s sessions too",
+                    style::accent("✓"),
+                    style::bold(&r.name),
+                    w.name
+                );
+            }
         }
         WorkspacesCmd::RemoveRunner { runner, workspace } => {
             let w = resolve(&api, workspace).await?;
@@ -978,6 +1033,46 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 style::accent("✓"),
                 w.name
             );
+        }
+        WorkspacesCmd::OwnRunners { on, workspace } => {
+            let w = resolve(&api, workspace).await?;
+            let w = match on {
+                Some(on) => {
+                    api.update_membership(
+                        w.id.as_str(),
+                        &UpdateMembershipRequest {
+                            own_runners: Some(on),
+                            ..Default::default()
+                        },
+                    )
+                    .await?
+                }
+                None => w,
+            };
+            if json {
+                return style::print_json(&w);
+            }
+            if w.own_runners {
+                println!(
+                    "Your sessions in {} run only on runners you registered",
+                    style::bold(&w.name)
+                );
+                let runners = api.workspace_runners(w.id.as_str()).await?;
+                if !runners.runners.iter().any(|r| r.yours) {
+                    println!(
+                        "{}",
+                        style::dim(&format!(
+                            "None of yours runs its sessions yet, so they wait. Add one with `fctl workspaces add-runner -w {}` on it, or register a machine with `fctl host install --workspace {}`.",
+                            w.slug, w.slug
+                        ))
+                    );
+                }
+            } else {
+                println!(
+                    "Your sessions in {} run on any of its runners for everyone's sessions, and on yours",
+                    style::bold(&w.name)
+                );
+            }
         }
         WorkspacesCmd::Claude {
             credential,

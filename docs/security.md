@@ -292,13 +292,22 @@ session's credentials only while it runs, and keep nothing secret on disk
 but their runner token (`~/.config/fctl/host-token`, mode 0600).
 
 A runner takes only the sessions of the workspaces it is added to, and so
-sees their code, secrets and the tokens of the people who start them. Its
-owner adds it only to workspaces they are an admin of, and a workspace's
-admins take any runner out of it. Once a runner no longer serves a
-workspace (taken out of it, or its owner left it or was disabled), its
-sessions there stop, and it gets no more tokens, messages or files for
-them, whatever its host does. A Claude sign-in through a host runs only
-on a runner of the person's workspaces, or one they registered.
+sees their code, secrets and the tokens of the people who start them: the
+session's GitHub tokens and the Claude token of the person it runs as. Its
+owner adds it to a workspace for everyone's sessions there only as one of
+its admins; a member adds theirs for their own sessions alone, which show
+the machine nothing they couldn't read in the session, and a demoted
+admin's runners run only their own from then on. A workspace's admins take
+any runner out of it. Each member chooses, per workspace, to run their
+sessions only on runners they registered (**Only on my runners**, `fctl
+workspaces own-runners on`), so that no one else's machine sees their
+Claude token or their sessions' work. Once a runner no longer runs a
+session (taken out of the workspace, its owner left it or was disabled,
+or the session's person keeps theirs on their own runners), the session
+stops, and the runner gets no more tokens, messages or files for it,
+whatever its host does. A Claude sign-in through a host, which passes the
+full login's long-lived tokens through it, runs on one of the person's own
+runners when one is online, else on a runner that runs their sessions.
 
 Sessions run in their project's sandbox image or, without one, the host's:
 by default `ghcr.io/hyperstructure/sandbox`, which the Image workflow of

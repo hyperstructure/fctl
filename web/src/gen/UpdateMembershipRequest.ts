@@ -14,4 +14,10 @@ claude?: string,
  * and the app's sidebar: the ones named first, then the others as
  * they were.
  */
-project_order?: Array<string>, };
+project_order?: Array<string>, 
+/**
+ * Run your sessions there only on runners you registered
+ * ([`Workspace::own_runners`]). Turning it on stops the ones running
+ * on other people's runners; they resume on yours.
+ */
+own_runners?: boolean, };

@@ -2,7 +2,13 @@
 
 export type CreateRunnerRequest = { name: string, 
 /**
- * The workspace (id or slug) whose sessions it runs; you must be one of
- * its admins. Absent: the one workspace you are an admin of.
+ * The workspace (id or slug) whose sessions it runs. Absent: the one
+ * workspace you are an admin of, else the one you are a member of.
  */
-workspace?: string, };
+workspace?: string, 
+/**
+ * It runs only your sessions in `workspace`. Absent: only yours when
+ * you are a member there, everyone's when you are an admin; only
+ * admins add runners for everyone's.
+ */
+personal?: boolean, };

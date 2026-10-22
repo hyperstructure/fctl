@@ -124,6 +124,8 @@ fctl workspaces leave side-project         # your sessions there stop
 fctl workspaces claude crd_01… -w acme     # your sessions there run on this Claude connection
 fctl workspaces claude ada@acme.example -w acme   # …named by its account or label
 fctl workspaces claude default -w acme     # …or on your default one
+fctl workspaces own-runners on -w acme     # your sessions there run only on runners you registered
+fctl workspaces own-runners off -w acme    # …or on any of its runners for everyone's sessions too
 
 fctl workspaces members                    # its people, and the invitations nobody answered
 fctl workspaces invite grace@example.com --admin
@@ -140,7 +142,8 @@ fctl workspaces set --skip-invites on      # a workspace for one: its setup stop
 fctl workspaces runners                    # the runners its sessions start on, with their ids
 fctl workspaces add-runner studio-mac      # one of yours runs its sessions too (its name or id)
 fctl workspaces add-runner                 # on a runner: this machine
-fctl workspaces remove-runner studio-mac   # the ones running there carry on
+fctl workspaces add-runner studio-mac --personal   # only your sessions there (a member's always)
+fctl workspaces remove-runner studio-mac   # the ones running there stop and resume elsewhere
 
 fctl workspaces github                     # the GitHub accounts it works in
 fctl workspaces connect                    # opens a GitHub sign-in; you choose what it works in on its GitHub tab
@@ -160,6 +163,13 @@ base role says; its admins own every project. One person can be in at most
 five workspaces. While the instance requires two-factor sign-in (`fctl admin
 set --require-two-factor on`), every workspace does, and `fctl workspaces
 set --require-two-factor off` fails.
+
+A runner its admins add runs everyone's sessions there; one a member adds,
+and one an admin adds with `--personal`, runs only its owner's. With
+`own-runners on`, your sessions in the workspace run only on runners you
+registered, not on its other people's, which see a session's code, secrets
+and Claude token; turning it on stops the ones running elsewhere, and they
+resume on yours.
 
 ## Projects
 
@@ -301,7 +311,8 @@ fctl host install                # register this machine and start the service
 fctl host install --driver lima --capacity 2 --build-image
 fctl host install --cpus 4 --memory 8g --max-memory 12g   # sandbox sizes
 fctl host install --allow-image 'ghcr.io/acme/*' --allow-build 'acme/*'   # what projects may run and build
-fctl host install --workspace acme   # for a workspace you are an admin of (default: your only one)
+fctl host install --workspace acme   # for a workspace you are in (default: the one you administer, or your only one)
+fctl host install --workspace acme --personal   # only your sessions there (a member's always)
 fctl host install --token fctl_rt_…   # with a runner token from a workspace's Runners tab
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host run                    # run in the foreground (what the service runs)

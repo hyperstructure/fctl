@@ -786,85 +786,92 @@ function Runners({ w }: { w: G.Workspace }) {
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
-        Sessions in {w.name} start only on these machines, which see its code and secrets while they work.
-        Each runner belongs to the person who registered it, who can let it work for several workspaces.
+        Sessions in {w.name} start only on these machines, which see their code, secrets and Claude tokens
+        while they work. Each runner belongs to the person who registered it, who can let it work for several
+        workspaces. The ones its admins add run everyone's sessions; one a member adds runs only theirs.
+        {w.own_runners && (
+          <>
+            {" "}
+            You run your sessions here only on your own runners (
+            <Link
+              to="/w/$slug"
+              params={{ slug: w.slug }}
+              search={{ tab: "settings" }}
+              className="underline underline-offset-2"
+            >
+              Settings
+            </Link>
+            ).
+          </>
+        )}
       </p>
-      {admin && (
-        // The two line up by their labels, so an error under the name moves nothing.
-        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-start">
-          <form
-            className="sm:flex-1"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (name.trim()) create.mutate();
-            }}
+      {/* The two line up by their labels, so an error under the name moves nothing. */}
+      <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-start">
+        <form
+          className="sm:flex-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (name.trim()) create.mutate();
+          }}
+        >
+          <Field
+            label={admin ? "Register a machine" : "Register a machine for your sessions"}
+            error={create.error?.message}
           >
-            <Field label="Register a machine" error={create.error?.message}>
-              {(id) => (
-                <div className="flex gap-2">
-                  <Input
-                    id={id}
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="studio mac"
-                    className="min-w-0 flex-1"
-                  />
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    size="field"
-                    icon={<Plus className="size-3.5" />}
-                    loading={create.isPending}
-                    disabled={!name.trim()}
-                  >
-                    Register
-                  </Button>
-                </div>
-              )}
-            </Field>
-          </form>
-          {yours.length > 0 && (
-            <Field label="Or add one of yours">
-              {(id) => (
-                <div className="flex gap-2">
-                  <Select
-                    id={id}
-                    value={adding}
-                    placeholder="Your runners"
-                    onChange={setAdding}
-                    options={yours.map((r) => ({
-                      value: r.id,
-                      label: r.name,
-                      description: r.workspaces?.length
-                        ? `Also runs ${r.workspaces.map((x) => x.name).join(", ")}`
-                        : "Runs no workspace yet",
-                    }))}
-                  />
-                  <Button
-                    size="field"
-                    disabled={!adding}
-                    loading={add.isPending}
-                    onClick={() => adding && add.mutate(adding)}
-                  >
-                    Add
-                  </Button>
-                </div>
-              )}
-            </Field>
-          )}
-        </div>
-      )}
-      {list.data?.runners.length === 0 ? (
-        !admin && (
-          <Empty icon={<Cpu className="size-6" />} title="No runners yet">
-            {w.name}'s sessions wait until an admin adds a runner: a machine that runs its agents in
-            sandboxes.{" "}
-            {w.primary
-              ? `Ask ${w.primary.name}, its primary admin, to add one.`
-              : "Ask one of its admins to add one."}
-          </Empty>
-        )
-      ) : (
+            {(id) => (
+              <div className="flex gap-2">
+                <Input
+                  id={id}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="studio mac"
+                  className="min-w-0 flex-1"
+                />
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="field"
+                  icon={<Plus className="size-3.5" />}
+                  loading={create.isPending}
+                  disabled={!name.trim()}
+                >
+                  Register
+                </Button>
+              </div>
+            )}
+          </Field>
+        </form>
+        {yours.length > 0 && (
+          <Field label="Or add one of yours">
+            {(id) => (
+              <div className="flex gap-2">
+                <Select
+                  id={id}
+                  value={adding}
+                  placeholder="Your runners"
+                  onChange={setAdding}
+                  options={yours.map((r) => ({
+                    value: r.id,
+                    label: r.name,
+                    description: r.workspaces?.length
+                      ? `Also runs ${r.workspaces.map((x) => x.name).join(", ")}`
+                      : "Runs no workspace yet",
+                  }))}
+                />
+                <Button
+                  size="field"
+                  disabled={!adding}
+                  loading={add.isPending}
+                  onClick={() => adding && add.mutate(adding)}
+                >
+                  Add
+                </Button>
+              </div>
+            )}
+          </Field>
+        )}
+      </div>
+      {list.data && list.data.runners.length > 0 && (
         <ul className="mt-6 border-t border-line">
           {list.data?.runners.map((r) => {
             const others = (r.workspaces ?? []).filter((x) => x.id !== w.id);
@@ -888,6 +895,13 @@ function Runners({ w }: { w: G.Workspace }) {
                     <span className="ml-1 text-[12px] text-ink-4">
                       {r.status === "online" && r.drain ? "draining" : r.status}
                     </span>
+                    {r.personal?.includes(w.id) && (
+                      <span className="ml-2 inline-block whitespace-nowrap rounded-full border border-line px-2 py-px text-[11.5px] text-ink-3">
+                        {r.yours
+                          ? "Only your sessions"
+                          : `Only ${r.created_by?.name ?? "its owner"}'s sessions`}
+                      </span>
+                    )}
                   </div>
                   <div className="mt-0.5 truncate text-[12px] text-ink-4">
                     {r.created_by ? `${r.created_by.name}'s` : "A"}{" "}
@@ -915,27 +929,17 @@ function Runners({ w }: { w: G.Workspace }) {
           })}
         </ul>
       )}
-      {list.data &&
-        (admin ? (
-          <AddRunner w={w} first={list.data.runners.length === 0} yours={yours.length > 0} />
-        ) : (
-          list.data.runners.length > 0 && (
-            <p className="mt-4 max-w-2xl text-[13.5px] leading-relaxed text-ink-3">
-              Only {w.name}'s admins add runners.{" "}
-              {w.primary
-                ? `To add another, ask ${w.primary.name}, its primary admin.`
-                : "To add another, ask one of them."}
-            </p>
-          )
-        ))}
+      {list.data && (
+        <AddRunner w={w} first={list.data.runners.length === 0} yours={yours.length > 0} admin={admin} />
+      )}
       <Dialog
         open={!!takingOut}
         onClose={() => setTakingOut(null)}
         title={`Take ${takingOut?.name ?? ""} out of ${w.name}?`}
         description={
           takingOut?.yours
-            ? `It stops taking ${w.name}'s sessions; the ones running there carry on. You can add it again.`
-            : `It stops taking ${w.name}'s sessions; the ones running there carry on. Only its owner can add it again.`
+            ? `It stops taking ${w.name}'s sessions, and the ones running there stop. You can add it again.`
+            : `It stops taking ${w.name}'s sessions, and the ones running there stop. Only its owner can add it again.`
         }
       >
         <div className="flex justify-end gap-2">
@@ -956,7 +960,7 @@ function Runners({ w }: { w: G.Workspace }) {
         onClose={() => setReg(null)}
         wide
         title={`Bring ${reg?.runner.name ?? "it"} online`}
-        description={`Run these on the machine. It runs ${w.name}'s sessions. The token is shown once and lets the machine run sessions: keep it private.`}
+        description={`Run these on the machine. It runs ${reg?.runner.personal?.includes(w.id) ? `your sessions in ${w.name}` : `${w.name}'s sessions`}. The token is shown once and lets the machine run sessions: keep it private.`}
       >
         {reg && (
           <div className="flex flex-col gap-3">
@@ -976,10 +980,21 @@ function Runners({ w }: { w: G.Workspace }) {
 }
 
 /**
- * For a workspace's admins: what bringing a machine online takes, under its runners, or under the form
- * while it has none (`first`). `yours`: the form offers runners of theirs to add instead.
+ * What bringing a machine online takes, under its runners, or under the form while it has none
+ * (`first`). `yours`: the form offers runners of theirs to add instead. One a member (not `admin`)
+ * brings online runs only their sessions.
  */
-function AddRunner({ w, first, yours }: { w: G.Workspace; first: boolean; yours: boolean }) {
+function AddRunner({
+  w,
+  first,
+  yours,
+  admin,
+}: {
+  w: G.Workspace;
+  first: boolean;
+  yours: boolean;
+  admin: boolean;
+}) {
   const steps: { title: string; body: ReactNode }[] = [
     {
       title: "Choose a machine that stays on",
@@ -998,7 +1013,7 @@ function AddRunner({ w, first, yours }: { w: G.Workspace; first: boolean; yours:
       ),
     },
     {
-      title: `Register it for ${w.name}`,
+      title: admin ? `Register it for ${w.name}` : `Register it for your sessions in ${w.name}`,
       body: (
         <>
           <p>
@@ -1016,11 +1031,15 @@ function AddRunner({ w, first, yours }: { w: G.Workspace; first: boolean; yours:
   ];
   return (
     <section className="mt-10 animate-rise">
-      <h3 className="font-display text-xl text-ink">{first ? "No runners yet" : "Add another runner"}</h3>
+      <h3 className="font-display text-xl text-ink">
+        {first ? "No runners yet" : admin ? "Add another runner" : "Add a runner of yours"}
+      </h3>
       <p className="mt-1 max-w-2xl text-[14px] leading-relaxed text-ink-3">
-        {first
-          ? `${w.name}'s sessions wait until one of its runners is online.`
-          : `With more runners, more of ${w.name}'s sessions run at once.`}{" "}
+        {admin
+          ? first
+            ? `${w.name}'s sessions wait until one of its runners is online.`
+            : `With more runners, more of ${w.name}'s sessions run at once.`
+          : `${first ? `${w.name}'s sessions wait until one of its runners is online. ` : ""}Its admins add runners for everyone's sessions${w.primary ? ` (${w.primary.name} is its primary admin)` : ""}; one you add runs only yours, on a machine you control.`}{" "}
         {yours
           ? "Add one of yours above, or bring another machine online:"
           : `To bring ${first ? "a" : "another"} machine online:`}
@@ -1618,7 +1637,7 @@ function Leave({ w }: { w: G.Workspace }) {
   );
 }
 
-/** Your own place in the workspace: the address, the Claude connection, leaving. */
+/** Your own place in the workspace: the address, the Claude connection, where your sessions run, leaving. */
 function You({ w }: { w: G.Workspace }) {
   const { data: me } = useMe();
   const membership = useMutation({
@@ -1627,6 +1646,19 @@ function You({ w }: { w: G.Workspace }) {
       queryClient.setQueryData(keys.workspace(w.slug), x);
       refresh();
       toast("Saved: sessions take it when they next start or resume");
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const ownRunners = useMutation({
+    mutationFn: (own: boolean) => workspaces.updateMembership(w.id, { own_runners: own }),
+    onSuccess: (x) => {
+      queryClient.setQueryData(keys.workspace(w.slug), x);
+      refresh();
+      toast(
+        x.own_runners
+          ? "Your sessions here run only on your runners now"
+          : "Your sessions here run on any of its runners for everyone's sessions now",
+      );
     },
     onError: (e) => toast(e.message, "error"),
   });
@@ -1662,6 +1694,31 @@ function You({ w }: { w: G.Workspace }) {
             />
           )}
         </Field>
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Only on my runners
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              Your sessions here run only on runners you registered, not on other people's, which see their
+              code, secrets and your Claude token while they work. Turning it on stops the ones running on
+              other people's runners; they resume on yours.{" "}
+              <Link
+                to="/w/$slug"
+                params={{ slug: w.slug }}
+                search={{ tab: "runners" }}
+                className="underline underline-offset-2"
+              >
+                Runners
+              </Link>{" "}
+              shows whose each is.
+            </span>
+          </span>
+          <Switch
+            checked={w.own_runners}
+            onChange={(v) => ownRunners.mutate(v)}
+            disabled={ownRunners.isPending}
+            label="Only on my runners"
+          />
+        </div>
         <div>
           <Leave w={w} />
         </div>

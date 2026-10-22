@@ -5,6 +5,7 @@ import type { RunnerId } from "./RunnerId";
 import type { RunnerStatus } from "./RunnerStatus";
 import type { SandboxLimits } from "./SandboxLimits";
 import type { UserRef } from "./UserRef";
+import type { WorkspaceId } from "./WorkspaceId";
 import type { WorkspaceRef } from "./WorkspaceRef";
 
 export type Runner = { id: RunnerId, name: string, status: RunnerStatus, version?: string, hostname?: string, os?: string, arch?: string, driver?: string, drivers: Array<DriverInfo>, capacity: number, active_sessions: number, 
@@ -58,4 +59,10 @@ workspaces?: Array<WorkspaceRef>,
  * Whether you may add it to your workspaces and remove it from any:
  * you registered it.
  */
-yours: boolean, };
+yours: boolean, 
+/**
+ * Of `workspaces`, the ones where it runs only its owner's sessions:
+ * they added it for their own. In the others it runs everyone's.
+ * Absent from control planes before it.
+ */
+personal?: Array<WorkspaceId>, };

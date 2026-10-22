@@ -240,8 +240,9 @@ pub struct Free {
 pub struct LoginStart {
     pub job_id: LoginJobId,
     pub user: UserRef,
-    /// The runners that may run it: ones that serve the person's
-    /// workspaces, or that they registered. Absent: any (older Workers).
+    /// The runners that may run it, in the order to try them: the ones
+    /// the person registered, then ones that run their sessions in their
+    /// workspaces. Absent: any (older Workers).
     #[serde(default)]
     pub runners: Option<Vec<String>>,
 }

@@ -339,10 +339,16 @@ export const workspaces = {
   audit: (id: string, before?: number) =>
     request<G.AuditList>("GET", `/workspaces/${enc(id)}/audit${before ? `?before=${before}` : ""}`),
   runners: (id: string) => request<G.RunnerList>("GET", `/workspaces/${enc(id)}/runners`),
-  createRunner: (id: string, name: string) =>
-    request<G.RunnerRegistration>("POST", `/workspaces/${enc(id)}/runners`, { name }),
-  addRunner: (id: string, runner: string) =>
-    request<G.RunnerList>("PUT", `/workspaces/${enc(id)}/runners/${enc(runner)}`, {}),
+  // Without `personal`: only your sessions as a member, everyone's as an admin.
+  createRunner: (id: string, name: string, personal?: boolean) =>
+    request<G.RunnerRegistration>("POST", `/workspaces/${enc(id)}/runners`, {
+      name,
+      personal,
+    } satisfies G.CreateRunnerRequest),
+  addRunner: (id: string, runner: string, personal?: boolean) =>
+    request<G.RunnerList>("PUT", `/workspaces/${enc(id)}/runners/${enc(runner)}`, {
+      personal,
+    } satisfies G.AddRunnerRequest),
   removeRunner: (id: string, runner: string) =>
     request<G.RunnerList>("DELETE", `/workspaces/${enc(id)}/runners/${enc(runner)}`),
   github: (id: string) => request<G.WorkspaceGithub>("GET", `/workspaces/${enc(id)}/github`),

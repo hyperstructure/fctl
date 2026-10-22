@@ -71,6 +71,7 @@ const side: G.Workspace = {
   runners_online: 0,
   github: [],
   skip_invites: false,
+  own_runners: false,
   created_at: 0,
 };
 
@@ -127,12 +128,15 @@ describe("a workspace without runners", () => {
     expect(text).toContain("Name it above and choose Register for a command with a token.");
   });
 
-  it("tells members whom to ask for one", () => {
+  it("shows members how to bring one of theirs online, for their own sessions", () => {
     const text = runnersTab({ ...side, role: "member", email: "grace@example.com" }).textContent;
     expect(text).toContain("No runners yet");
-    expect(text).toContain("Ask Ada Lovelace, its primary admin, to add one.");
-    expect(text).not.toContain("To add another");
-    expect(text).not.toContain("Choose a machine that stays on");
+    expect(text).toContain(
+      "Side project's sessions wait until one of its runners is online. Its admins add runners for everyone's sessions (Ada Lovelace is its primary admin); one you add runs only yours, on a machine you control. To bring a machine online:",
+    );
+    expect(text).toContain("Register a machine for your sessions");
+    expect(text).toContain("Register it for your sessions in Side project");
+    expect(text).toContain("fctl host install --workspace side-project");
   });
 
   it("says nothing about adding one before its runners load", () => {
@@ -172,17 +176,38 @@ describe("a workspace with runners", () => {
     );
   });
 
-  it("tells members whom to ask for another", () => {
+  it("tells members that a runner they add runs only their sessions", () => {
     const member: G.Workspace = { ...side, role: "member", email: "grace@example.com" };
     const adas = { ...mini, yours: false };
     const text = runnersTab(member, [adas]).textContent;
+    expect(text).toContain("Add a runner of yours");
     expect(text).toContain(
-      "Only Side project's admins add runners. To add another, ask Ada Lovelace, its primary admin.",
+      "Its admins add runners for everyone's sessions (Ada Lovelace is its primary admin); one you add runs only yours, on a machine you control. To bring another machine online:",
     );
-    expect(text).not.toContain("Choose a machine that stays on");
+    expect(text).toContain("Register it for your sessions in Side project");
     expect(runnersTab({ ...member, primary: undefined }, [adas]).textContent).toContain(
-      "Only Side project's admins add runners. To add another, ask one of them.",
+      "Its admins add runners for everyone's sessions; one you add runs only yours",
     );
+  });
+
+  it("marks the runners that run only their owners' sessions", () => {
+    const bos = runner({
+      id: "bos-laptop",
+      yours: false,
+      personal: [side.id],
+      created_by: { id: "usr_bo", name: "Bo Diddley" },
+    });
+    const mine = runner({ id: "grace-mini", personal: [side.id] });
+    const text = runnersTab(side, [mini, bos, mine]).textContent;
+    expect(text).toContain("bos-laptop onlineOnly Bo Diddley's sessions");
+    expect(text).toContain("grace-mini onlineOnly your sessions");
+    // The one for everyone's sessions carries no mark.
+    expect(text).toContain("mini onlineA runner");
+  });
+
+  it("says when your sessions run only on your runners", () => {
+    const text = runnersTab({ ...side, own_runners: true }, [mini]).textContent;
+    expect(text).toContain("You run your sessions here only on your own runners (Settings).");
   });
 });
 

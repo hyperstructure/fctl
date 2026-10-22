@@ -3,7 +3,7 @@
 //! (docs/architecture.md#workspaces). GitHub accounts are in `api::github`.
 
 use crate::ctx::Ctx;
-use crate::db::{Count, batch, n, os, q, s};
+use crate::db::{Count, b, batch, n, os, q, s};
 use crate::error::{AppError, AppResult, conflict, forbidden, not_found, validation};
 use crate::http;
 use crate::internal::{self, LiveRunners};
@@ -556,32 +556,23 @@ pub async fn set_member_role(
         ));
     }
     if from.is_admin() && !body.role.is_admin() {
-        // Adding runners takes being an admin: theirs stop taking its
-        // sessions (the ones running there carry on).
+        // Runners for everyone's sessions take an admin: theirs run only
+        // their own sessions from now on, as a member's do, and the others'
+        // sessions on them stop and resume elsewhere.
         #[derive(Deserialize)]
         struct R {
             runner_id: String,
         }
         let runners: Vec<R> = q(
             &ctx.db,
-            "SELECT rw.runner_id FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id \
-             WHERE rw.workspace_id = ? AND r.created_by = ?",
+            "UPDATE runner_workspaces SET personal = 1 WHERE workspace_id = ? AND personal = 0 \
+             AND runner_id IN (SELECT id FROM runners WHERE created_by = ?) RETURNING runner_id",
             &[s(a.id()), s(user_id)],
         )?
         .all()
         .await?;
-        if !runners.is_empty() {
-            q(
-                &ctx.db,
-                "DELETE FROM runner_workspaces WHERE workspace_id = ? AND runner_id IN \
-                 (SELECT id FROM runners WHERE created_by = ?)",
-                &[s(a.id()), s(user_id)],
-            )?
-            .run()
-            .await?;
-            for r in &runners {
-                runner_changed(ctx, &r.runner_id);
-            }
+        for r in &runners {
+            runner_changed(ctx, &r.runner_id);
         }
     }
     ctx.audit_in(
@@ -878,6 +869,40 @@ pub async fn update_membership(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
         )?
         .run()
         .await?;
+    }
+    if let Some(own) = body.own_runners
+        && own != a.row.own_runners
+    {
+        q(
+            &ctx.db,
+            "UPDATE workspace_members SET own_runners = ? WHERE workspace_id = ? AND user_id = ?",
+            &[b(own), s(a.id()), s(&user.id)],
+        )?
+        .run()
+        .await?;
+        ctx.audit_in(
+            Some(a.id()),
+            "workspace.own_runners",
+            None,
+            Some(serde_json::json!({ "own_runners": own })),
+        );
+        // Their sessions on the others' runners stop, and resume on theirs;
+        // or the ones waiting for theirs may start on the others'.
+        #[derive(Deserialize)]
+        struct R {
+            runner_id: String,
+        }
+        let others: Vec<R> = q(
+            &ctx.db,
+            "SELECT rw.runner_id FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id \
+             WHERE rw.workspace_id = ? AND r.created_by IS NOT ?",
+            &[s(a.id()), s(&user.id)],
+        )?
+        .all()
+        .await?;
+        for r in others {
+            runner_changed(ctx, &r.runner_id);
+        }
     }
     http::ok(&respond(ctx, a.id()).await?)
 }
@@ -1200,11 +1225,13 @@ pub async fn runners(ctx: &Ctx, id: &str) -> AppResult<Response> {
     })
 }
 
-/// Registers a runner for `workspace_id`: the caller owns it.
+/// Registers a runner for `workspace_id`, where with `personal` it runs
+/// only the caller's sessions: the caller owns it.
 pub async fn register_runner(
     ctx: &Ctx,
     name: &str,
     workspace_id: Option<&str>,
+    personal: bool,
 ) -> AppResult<RunnerRegistration> {
     let actor = ctx.user()?;
     let name = validate::name("name", name)?;
@@ -1224,8 +1251,8 @@ pub async fn register_runner(
     if let Some(w) = workspace_id {
         statements.push(q(
             &ctx.db,
-            "INSERT INTO runner_workspaces (runner_id, workspace_id, added_by, created_at) VALUES (?, ?, ?, ?)",
-            &[s(id.as_str()), s(w), s(&actor.id), n(ctx.now)],
+            "INSERT INTO runner_workspaces (runner_id, workspace_id, added_by, created_at, personal) VALUES (?, ?, ?, ?, ?)",
+            &[s(id.as_str()), s(w), s(&actor.id), n(ctx.now), b(personal)],
         )?);
     }
     batch(&ctx.db, statements).await?;
@@ -1239,7 +1266,7 @@ pub async fn register_runner(
             Some(w),
             "workspace.runner_added",
             Some(id.as_str()),
-            Some(serde_json::json!({ "name": name })),
+            Some(serde_json::json!({ "name": name, "personal": personal })),
         );
     }
     let row: Option<RunnerRow> = q(
@@ -1256,13 +1283,25 @@ pub async fn register_runner(
     Ok(RunnerRegistration { runner, token })
 }
 
-/// `POST /api/v1/workspaces/{id}/runners` (admins): registers a runner
-/// for it, which the caller then installs (`fctl host install`).
+/// `POST /api/v1/workspaces/{id}/runners`: registers a runner for it,
+/// which the caller then installs (`fctl host install`): for everyone's
+/// sessions (its admins), or for the caller's own.
 pub async fn create_runner(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: CreateRunnerRequest = http::body(req).await?;
     let a = ws::load(ctx, id).await?;
-    a.require_admin()?;
-    http::created(&register_runner(ctx, &body.name, Some(a.id())).await?)
+    let personal = runs_whose(&a, body.personal)?;
+    http::created(&register_runner(ctx, &body.name, Some(a.id()), personal).await?)
+}
+
+/// Whether a runner the caller adds to workspace `a` runs only their
+/// sessions there: as they ask, else only theirs when they are a member
+/// and everyone's when they are an admin. Only admins add runners for
+/// everyone's (`fctl_domain::workspace::check_add_runner`).
+pub fn runs_whose(a: &ws::WorkspaceAccess, personal: Option<bool>) -> AppResult<bool> {
+    let role = a.require_open()?;
+    let personal = personal.unwrap_or(!role.is_admin());
+    policy::check_add_runner(true, Some(role), personal)?;
+    Ok(personal)
 }
 
 #[derive(Deserialize)]
@@ -1321,18 +1360,35 @@ fn runner_changed(ctx: &Ctx, runner_id: &str) {
     });
 }
 
-/// `PUT /api/v1/workspaces/{id}/runners/{runner}`: its owner, an admin of
-/// the workspace, lets it run the workspace's sessions.
-pub async fn add_runner(ctx: &mut Ctx, id: &str, runner_id: &str) -> AppResult<Response> {
+/// `PUT /api/v1/workspaces/{id}/runners/{runner}`: its owner, a member of
+/// the workspace, lets it run the workspace's sessions: everyone's (its
+/// admins), or only their own. Adding it again changes whose.
+pub async fn add_runner(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    id: &str,
+    runner_id: &str,
+) -> AppResult<Response> {
+    let body: AddRunnerRequest = if http::header(req, "Content-Type").is_some() {
+        http::body(req).await?
+    } else {
+        AddRunnerRequest::default()
+    };
     let a = ws::load(ctx, id).await?;
     let role = a.require_open()?;
     let me = ctx.user()?.id.clone();
     let owner = runner_owner(ctx, runner_id).await?;
-    policy::check_add_runner(owner.created_by.as_deref() == Some(me.as_str()), Some(role))?;
+    let personal = body.personal.unwrap_or(!role.is_admin());
+    policy::check_add_runner(
+        owner.created_by.as_deref() == Some(me.as_str()),
+        Some(role),
+        personal,
+    )?;
     q(
         &ctx.db,
-        "INSERT OR IGNORE INTO runner_workspaces (runner_id, workspace_id, added_by, created_at) VALUES (?, ?, ?, ?)",
-        &[s(runner_id), s(a.id()), s(&me), n(ctx.now)],
+        "INSERT INTO runner_workspaces (runner_id, workspace_id, added_by, created_at, personal) VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT (runner_id, workspace_id) DO UPDATE SET personal = excluded.personal",
+        &[s(runner_id), s(a.id()), s(&me), n(ctx.now), b(personal)],
     )?
     .run()
     .await?;
@@ -1340,14 +1396,14 @@ pub async fn add_runner(ctx: &mut Ctx, id: &str, runner_id: &str) -> AppResult<R
         Some(a.id()),
         "workspace.runner_added",
         Some(runner_id),
-        Some(serde_json::json!({ "name": owner.name })),
+        Some(serde_json::json!({ "name": owner.name, "personal": personal })),
     );
     runner_changed(ctx, runner_id);
     runners(ctx, a.id()).await
 }
 
 /// `DELETE /api/v1/workspaces/{id}/runners/{runner}`: the workspace's
-/// sessions no longer start on it (the ones running there carry on).
+/// sessions no longer start on it, and the ones running there stop.
 pub async fn remove_runner(ctx: &mut Ctx, id: &str, runner_id: &str) -> AppResult<Response> {
     let a = ws::load(ctx, id).await?;
     let role = a.require_open()?;

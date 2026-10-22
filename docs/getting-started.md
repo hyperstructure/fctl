@@ -121,8 +121,8 @@ name or id `fctl claude status` shows).
 
 A workspace's sessions run only on its runners: until one is online, they
 wait in the queue, and the app says so under the task box. Its **Runners**
-tab shows its admins how to add a runner, under the ones it has, and its
-members whom to ask.
+tab shows how to add a runner, under the ones it has. A runner its admins
+add runs everyone's sessions; one a member adds runs only theirs.
 
 Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
 
@@ -137,9 +137,10 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
    On older macOS, install [Lima](https://lima-vm.io) (`brew install lima`)
    instead; on Linux, Docker.
 
-2. Register the machine for a workspace you are an admin of, and start the
-   host service (otherwise ask one of its admins for a runner token, from
-   the workspace's **Runners** tab, and pass `--token`):
+2. Register the machine for a workspace you are in, and start the host
+   service (or pass `--token` with a runner token from the workspace's
+   **Runners** tab). As one of its admins you register it for everyone's
+   sessions there (`--personal`: only yours); as a member, for yours:
 
    ```sh
    fctl host install --workspace acme
@@ -171,6 +172,13 @@ Elsewhere, that command takes the runner's name or the id `fctl host
 status` shows. For a Mac that runs around the clock, keep it plugged in
 and turn on automatic login, so the host starts again after a reboot or a
 power cut.
+
+A runner sees the code, secrets and Claude token of each session it runs.
+To keep yours on machines you control, turn on **Only on my runners** in
+the workspace's **Settings** (`fctl workspaces own-runners on -w acme`):
+your sessions there then run only on runners you registered, and wait
+while none of those is online. A Claude sign-in through a host runs on one
+of your runners when one is online.
 
 Keep it on the version of fctl the app runs. While a runner of yours is
 online with an older one, your home page says so, and **How to update**

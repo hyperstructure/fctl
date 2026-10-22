@@ -13,10 +13,9 @@ use crate::internal::{
     WorkspacesChanged,
 };
 use crate::spec;
-use fctl_domain::image::{HostImages, ImageWant};
+use fctl_domain::image::HostImages;
 use fctl_domain::reconcile::{self, Known, Unassigned};
 use fctl_domain::schedule::{Home, Slot, Wait};
-use fctl_domain::size::Want;
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
@@ -176,17 +175,48 @@ struct Candidate {
     allowed_images: Option<Vec<String>>,
     allowed_builds: Option<Vec<String>>,
     /// The workspaces whose sessions it runs.
-    workspaces: Vec<String>,
+    serves: Serves,
+}
+
+/// Whose sessions a runner runs, as D1 had it at the last dispatch.
+#[derive(Clone, Debug, Default)]
+struct Serves {
+    /// Who registered it.
+    owner: Option<String>,
+    /// The workspaces it runs sessions of, each with whether it runs only
+    /// its owner's there.
+    workspaces: Vec<(String, bool)>,
+}
+
+impl Serves {
+    /// Whether it takes a session that wants `want`: one of its workspace
+    /// that runs as someone it runs sessions for there.
+    fn takes(&self, want: &spec::SessionWants) -> bool {
+        self.workspaces.iter().any(|(w, personal)| {
+            *w == want.workspace_id
+                && fctl_domain::schedule::runs_for(
+                    self.owner.as_deref(),
+                    *personal,
+                    want.person.as_deref(),
+                    want.own_runners,
+                )
+        })
+    }
+
+    /// Whether it runs any sessions of `workspace_id`.
+    fn runs(&self, workspace_id: &str) -> bool {
+        self.workspaces.iter().any(|(w, _)| w == workspace_id)
+    }
 }
 
 impl Candidate {
-    /// As the scheduler sees it, for a session of `workspace_id`.
-    fn slot(&self, workspace_id: &str) -> Slot<'_> {
+    /// As the scheduler sees it, for a session that wants `want`.
+    fn slot(&self, want: &spec::SessionWants) -> Slot<'_> {
         Slot {
             id: &self.id,
             online: true,
             enabled: true,
-            serves: self.workspaces.iter().any(|w| w == workspace_id),
+            serves: self.serves.takes(want),
             capacity: self.capacity,
             active: self.active,
             labels: &self.labels,
@@ -226,7 +256,7 @@ pub struct FleetObject {
     dispatching: RefCell<bool>,
     /// runner id → the workspaces it serves, read from D1 before each
     /// dispatch.
-    runner_workspaces: RefCell<std::collections::HashMap<String, Vec<String>>>,
+    runner_workspaces: RefCell<std::collections::HashMap<String, Serves>>,
 }
 
 impl DurableObject for FleetObject {
@@ -988,9 +1018,10 @@ impl FleetObject {
             .unwrap_or_default()
     }
 
-    /// Stops the sessions `runner_id` runs in workspaces it no longer serves
-    /// (it was taken out of one, its owner left it or was disabled), so that
-    /// they resume on a runner of their workspace.
+    /// Stops the sessions `runner_id` runs that it no longer may (it was
+    /// taken out of their workspace, its owner left it or was disabled, or
+    /// their person keeps their sessions there on their own runners), so
+    /// that they resume on a runner that runs them.
     async fn stop_unserved(&self, runner_id: &str) {
         let Ok(db) = self.env.d1("DB") else { return };
         for a in self.assigned_to_runner(runner_id) {
@@ -1018,9 +1049,10 @@ impl FleetObject {
         }
     }
 
-    /// Takes a session from a runner that no longer serves its workspace:
-    /// it stops now, whatever the host does, and resumes elsewhere; the
-    /// runner's uplink to it closes. Its host is asked to stop the run.
+    /// Takes a session from a runner that no longer runs it
+    /// (`spec::runner_serves`): it stops now, whatever the host does, and
+    /// resumes elsewhere; the runner's uplink to it closes. Its host is
+    /// asked to stop the run.
     async fn unserved(&self, runner_id: &str, session_id: &str) {
         let _ = self.sql.exec(
             "DELETE FROM assignments WHERE session_id = ? AND runner_id = ?",
@@ -1040,7 +1072,7 @@ impl FleetObject {
                 &id,
                 Some(SessionStatus::Stopped),
                 Some(
-                    "Its runner no longer runs this workspace's sessions. A message or a resume starts it on another one."
+                    "Its runner no longer runs this session. A message or a resume starts it on another one."
                         .into(),
                 ),
                 true,
@@ -1513,21 +1545,11 @@ impl FleetObject {
                 self.home_of(&item.session_id)
             };
             let wait = now - (item.enqueued_at as i64) < HOME_WAIT_MS;
-            let picked = self.pick_runner(
-                want.size,
-                &want.image,
-                home.as_deref(),
-                wait,
-                &want.workspace_id,
-            );
+            let picked = self.pick_runner(&want, home.as_deref(), wait);
             let (runner_id, runner_name) = match picked {
                 Ok(r) => r,
-                Err(Wait::Workspace) if !self.has_runner(&want.workspace_id) => {
-                    self.note_waiting(
-                        &item,
-                        "Waiting for a runner: this workspace has none yet. Its admins add one on its Runners tab.".into(),
-                    )
-                    .await;
+                Err(Wait::Workspace) => {
+                    self.note_waiting(&item, self.no_runner_takes(&want)).await;
                     continue;
                 }
                 Err(wait) => {
@@ -1656,7 +1678,7 @@ impl FleetObject {
                     .iter()
                     .find(|c| c.runner_id == r.id)
                     .map_or(0, |c| c.n as u32);
-                let workspaces = self
+                let serves = self
                     .runner_workspaces
                     .borrow()
                     .get(&r.id)
@@ -1677,7 +1699,7 @@ impl FleetObject {
                     image: hello.image,
                     allowed_images: hello.allowed_images,
                     allowed_builds: hello.allowed_builds,
-                    workspaces,
+                    serves,
                 })
             })
             .collect()
@@ -1747,20 +1769,19 @@ impl FleetObject {
             .any(|reports| reports.iter().any(|r| r.session_id.as_str() == session_id))
     }
 
-    /// The least loaded connected runner with a free slot that runs the
-    /// session's image and gives its sandbox what it wants, or why there is
-    /// none. `home`, the runner that has the session's sandbox, comes first,
-    /// and with `wait` the session waits for it while it is busy.
+    /// The least loaded connected runner with a free slot that takes the
+    /// session, runs its image and gives its sandbox what it wants, or why
+    /// there is none. `home`, the runner that has the session's sandbox,
+    /// comes first, and with `wait` the session waits for it while it is
+    /// busy.
     fn pick_runner(
         &self,
-        want: Want,
-        image: &ImageWant,
+        want: &spec::SessionWants,
         home: Option<&str>,
         wait: bool,
-        workspace_id: &str,
     ) -> std::result::Result<(String, String), Wait> {
         let candidates = self.candidates();
-        let slots: Vec<Slot<'_>> = candidates.iter().map(|c| c.slot(workspace_id)).collect();
+        let slots: Vec<Slot<'_>> = candidates.iter().map(|c| c.slot(want)).collect();
         let home = home
             .and_then(|id| candidates.iter().find(|c| c.id == id))
             .map(|c| Home {
@@ -1768,7 +1789,7 @@ impl FleetObject {
                 name: &c.name,
                 wait,
             });
-        let chosen = fctl_domain::schedule::pick(&slots, &[], want, image, home)?;
+        let chosen = fctl_domain::schedule::pick(&slots, &[], want.size, &want.image, home)?;
         let name = candidates
             .iter()
             .find(|c| c.id == chosen.id)
@@ -1988,13 +2009,14 @@ impl FleetObject {
 
     fn login_start(&self, b: LoginStart) -> std::result::Result<serde_json::Value, ApiError> {
         let online = self.live_runners().online;
-        // A runner of the person's workspaces, or one they registered: a
-        // login passes its tokens through the host.
-        let Some(runner_id) = online
-            .iter()
-            .find(|r| b.runners.as_ref().is_none_or(|allowed| allowed.contains(r)))
-            .cloned()
-        else {
+        // The first online of the runners that may run it, in their order
+        // (the person's own first): a login passes its tokens through the
+        // host.
+        let picked = match &b.runners {
+            Some(allowed) => allowed.iter().find(|r| online.contains(r)),
+            None => online.first(),
+        };
+        let Some(runner_id) = picked.cloned() else {
             return Ok(serde_json::json!({ "ok": false }));
         };
         let _ = self.sql.exec(
@@ -2309,27 +2331,39 @@ impl FleetObject {
         }
     }
 
-    /// Whether any runner, online or not, serves `workspace_id` (as of the
-    /// last dispatch).
-    fn has_runner(&self, workspace_id: &str) -> bool {
-        self.runner_workspaces
-            .borrow()
-            .values()
-            .any(|ws| ws.iter().any(|w| w == workspace_id))
+    /// Why a session waits that no online runner takes
+    /// ([`Wait::Workspace`]), by the runners, online or not, of its
+    /// workspace (as of the last dispatch).
+    fn no_runner_takes(&self, want: &spec::SessionWants) -> String {
+        let others_online = self
+            .candidates()
+            .iter()
+            .any(|c| c.serves.runs(&want.workspace_id) && !c.serves.takes(want));
+        let runners = self.runner_workspaces.borrow();
+        fctl_domain::schedule::no_runner_takes(
+            want.own_runners.then_some(want.person_name.as_str()),
+            runners.values().any(|s| s.takes(want)),
+            runners.values().any(|s| s.runs(&want.workspace_id)),
+            others_online,
+        )
     }
 
-    /// Reads which workspaces each runner serves, for scheduling.
+    /// Reads which workspaces each runner serves, and for whom, for
+    /// scheduling.
     async fn load_runner_workspaces(&self, db: &worker::D1Database) {
         #[derive(Deserialize)]
         struct R {
             runner_id: String,
             workspace_id: String,
+            #[serde(deserialize_with = "crate::db::int_bool", default)]
+            personal: bool,
+            owner: Option<String>,
         }
         let rows: Vec<R> = match crate::db::q(
             db,
             concat!(
-                "SELECT rw.runner_id, rw.workspace_id FROM runner_workspaces rw \
-                 JOIN runners r ON r.id = rw.runner_id WHERE ",
+                "SELECT rw.runner_id, rw.workspace_id, rw.personal, r.created_by AS owner \
+                 FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id WHERE ",
                 crate::serves!()
             ),
             &[],
@@ -2343,10 +2377,11 @@ impl FleetObject {
             },
             Err(_) => return,
         };
-        let mut map: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
+        let mut map: std::collections::HashMap<String, Serves> = std::collections::HashMap::new();
         for r in rows {
-            map.entry(r.runner_id).or_default().push(r.workspace_id);
+            let serves = map.entry(r.runner_id).or_default();
+            serves.owner = r.owner;
+            serves.workspaces.push((r.workspace_id, r.personal));
         }
         *self.runner_workspaces.borrow_mut() = map;
     }

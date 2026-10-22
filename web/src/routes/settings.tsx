@@ -412,6 +412,9 @@ function Workspaces({ me }: { me: G.Me }) {
                     {roleLabel(w.role)} · as {w.email}
                     {w.blocked && <span className="text-amber"> · closed until you set up two-factor</span>}
                   </div>
+                  {w.own_runners && (
+                    <div className="truncate text-[12px] text-ink-4">Only on your runners</div>
+                  )}
                 </div>
               </Link>
               <div className="flex items-center gap-2">
@@ -585,8 +588,9 @@ function Claude({ me }: { me: G.Me }) {
                 <Radio className="size-3.5 text-accent" /> Sign in with Claude
               </h3>
               <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
-                The official Claude Code sign-in, run on one of your hosts. Sessions can then be followed and
-                steered from claude.ai/code and the Claude apps.
+                The official Claude Code sign-in, run in a sandbox on one of your runners or, when none is
+                online, on one that runs your sessions, whose machine sees the tokens. Sessions can then be
+                followed and steered from claude.ai/code and the Claude apps.
               </p>
             </div>
             {(!current || current.state === "failed" || current.state === "succeeded") && (

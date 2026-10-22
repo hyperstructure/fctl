@@ -140,6 +140,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::Runner,
         api::RunnerList,
         api::CreateRunnerRequest,
+        api::AddRunnerRequest,
         api::RunnerRegistration,
         api::UpdateRunnerRequest,
         api::RunnerDrain,
