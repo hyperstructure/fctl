@@ -48,6 +48,7 @@ import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
 import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
+import { thinkingNow } from "./thinking";
 import { Run, ToolRow, WorkDir } from "./tool";
 
 const UserMessage = memo(function UserMessage({
@@ -588,7 +589,7 @@ export function LiveTurnView({
             <RailIcon className="text-violet/80">
               <ThoughtIcon />
             </RailIcon>
-            <span className={cn("text-ink-3", !stall && "text-shimmer")}>Thinking</span>
+            <span className={cn("text-ink-3", !stall && "text-shimmer")}>{thinkingNow(b.tokens)}</span>
           </div>
         ) : (
           <div

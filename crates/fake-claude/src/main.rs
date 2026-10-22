@@ -16,7 +16,7 @@
 //! | Word | Behavior |
 //! |---|---|
 //! | (anything) | reports plan usage, streams a short answer, runs a fake `Bash` tool, answers again |
-//! | `explore` | looks around the working directory first, as Claude Code does before it changes something: a thought, then commands, searches and a read (two of them at once) with another thought among them |
+//! | `explore` | looks around the working directory first, as Claude Code does before it changes something: a thought (saying how far it got, `system/thinking_tokens`), then commands, searches and a read (two of them at once) with another thought among them |
 //! | `explore <n>` | looks around that many times over (at most 100), in one run of calls, as agents do in a long stretch of work: more than the newest 400 events, which a session page gets first |
 //! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message as Claude Code does: with `attribution.commit` from `~/.claude/settings.json`, or Claude's trailer when that is unset |
 //! | `push` | pushes the branch to `origin` with `git push`; a repository without one (the dev instance's projects have no repository) gets a bare one in `~/.fake-github` to stand in for GitHub |
@@ -333,7 +333,8 @@ impl Session {
         msg_id
     }
 
-    /// Thinks `text` over, streamed as Claude Code streams a thinking block.
+    /// Thinks `text` over, streamed as Claude Code streams a thinking block,
+    /// with its word on how far it got (`system/thinking_tokens`).
     fn think(&mut self, text: &str) {
         let msg_id = format!("msg_{}", short_id(8));
         let usage = self.call_started();
@@ -343,9 +344,16 @@ impl Session {
         out(
             &json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
+        let mut thought = String::new();
         for word in text.split_inclusive(' ') {
             out(
                 &json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": word}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            );
+            let before = thought.len().div_ceil(4);
+            thought.push_str(word);
+            let tokens = thought.len().div_ceil(4);
+            out(
+                &json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": tokens, "estimated_tokens_delta": tokens - before, "session_id": self.id, "uuid": uuid()}),
             );
             self.sleep();
         }

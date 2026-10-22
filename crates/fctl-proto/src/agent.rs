@@ -160,7 +160,9 @@ pub enum AgentToHost {
     Events {
         events: Vec<AgentEvent>,
     },
-    /// An ephemeral Claude `stream_event`.
+    /// A Claude message that goes to viewers live and isn't stored: a
+    /// `stream_event`, a tool heartbeat (`tool_progress`) or how far its
+    /// thinking got (`system/thinking_tokens`).
     Stream {
         #[cfg_attr(feature = "ts", ts(type = "unknown"))]
         event: serde_json::Value,

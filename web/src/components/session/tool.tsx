@@ -61,7 +61,7 @@ import {
   type Tool,
 } from "@/lib/transcript";
 import { OpenLine, RailIcon, Thread, Tile, Unreadable } from "./lines";
-import { Thinking } from "./thinking";
+import { Thinking, thinkingNow } from "./thinking";
 
 const ICONS: Record<string, ReactNode> = {
   Bash: <Terminal />,
@@ -519,7 +519,7 @@ export const ToolRow = memo(function ToolRow({
 const none: ReadonlySet<string> = new Set();
 
 /** A thought or a call that streams in, in the run it goes in, until it is stored. */
-function Coming({ block }: { block: Pick<LiveBlock, "type" | "name"> }) {
+function Coming({ block }: { block: Pick<LiveBlock, "type" | "name" | "tokens"> }) {
   return (
     <div className="step-in flex min-h-7 items-center gap-2 py-1 text-[13px] text-ink-3">
       {block.type === "thinking" ? (
@@ -528,7 +528,7 @@ function Coming({ block }: { block: Pick<LiveBlock, "type" | "name"> }) {
         <Spinner className="size-3.5 shrink-0 text-accent" />
       )}
       <span className="text-shimmer">
-        {block.type === "thinking" ? "Thinking" : `Preparing ${block.name ?? "a tool"}`}
+        {block.type === "thinking" ? thinkingNow(block.tokens) : `Preparing ${block.name ?? "a tool"}`}
       </span>
     </div>
   );
@@ -560,7 +560,7 @@ export const Run = memo(
     /** How long its call in progress has run, as Claude Code reports it. */
     progress?: { id: string; seconds: number };
     /** The thoughts and calls streaming in, which will be its next steps. */
-    coming?: Pick<LiveBlock, "index" | "type" | "name">[];
+    coming?: Pick<LiveBlock, "index" | "type" | "name" | "tokens">[];
   }) {
     const [open, setOpen] = useState(false);
     const [shown, setShown] = useState(none);

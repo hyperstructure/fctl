@@ -19,8 +19,9 @@ has_more_before: boolean,
  */
 next_seq: number, 
 /**
- * `stream_event` messages of the turn in progress, so a viewer that joins
- * mid-turn sees the text being written.
+ * The live messages of the response in progress (`Stream`), so a viewer
+ * that joins mid-turn sees the text being written: of its thinking
+ * progress, only the newest, last.
  */
 live: Array<import('../lib/claude-types').ClaudeStreamEvent>, viewers: Array<Presence>, 
 /**
