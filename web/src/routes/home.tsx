@@ -311,8 +311,11 @@ function QuickStart({
           {target && (
             <StartChoices project={target} choice={choice} onPick={pickChoice} disabled={starting} />
           )}
-          {/* From lg the pickers share its row, which has room for it again from xl. */}
-          <span className="hidden text-[11.5px] text-ink-4 sm:inline lg:hidden xl:inline">⌘↵ to start</span>
+          {/* From lg the pickers share its row, which has room for it again from xl. Its margins set it
+              apart from them, and a little from the button. */}
+          <span className="mr-1 ml-5 hidden text-[11.5px] text-ink-4 sm:inline lg:hidden xl:inline">
+            ⌘+Enter
+          </span>
           {/* On a phone it can take a line of its own, at its end. */}
           <StartButton
             starting={starting}
