@@ -35,7 +35,6 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { useFeed } from "@/lib/feed";
-import { useHotkey } from "@/lib/hotkeys";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe, useProjects, useWorkspaces } from "@/lib/queries";
 import { type Sortable, useSortable } from "@/lib/sortable";
@@ -48,7 +47,7 @@ import {
   useFactorsWatch,
   useFolded,
 } from "@/lib/workspaces";
-import { CommandPalette } from "./command-palette";
+import { CommandPalette, usePaletteKeys } from "./command-palette";
 import { MenuButton, ShellContext, useHeaderButtons } from "./menu-button";
 
 export function AppShell() {
@@ -58,7 +57,7 @@ export function AppShell() {
   const openDrawer = useCallback(() => setDrawer(true), []);
   // A page whose header holds the menu button (the session's) takes the top bar's place.
   const [headerButton, shell] = useHeaderButtons(openDrawer);
-  useHotkey("mod+k", openPalette, { inInputs: true });
+  usePaletteKeys(openPalette);
   useFeed(); // live updates for every page
   usePush();
   useFactorsWatch();

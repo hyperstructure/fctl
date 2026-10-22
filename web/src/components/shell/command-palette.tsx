@@ -18,6 +18,7 @@ import { HomeIcon, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
+import { useHotkey } from "@/lib/hotkeys";
 import { useMe, useProjects, useSessions, useWorkspaces } from "@/lib/queries";
 import { repoLabel } from "@/lib/repos";
 import { focusTaskBox } from "@/lib/task-box";
@@ -31,6 +32,16 @@ interface Entry {
   icon: ReactNode;
   run: () => void;
   group: string;
+}
+
+/**
+ * Opens the palette on ⌘K, and on ⌘P and ⌘⇧P as quick open and the command palette do in
+ * code editors (⌘P in place of printing), even while typing. The search button shows ⌘K alone.
+ */
+export function usePaletteKeys(open: () => void) {
+  useHotkey("mod+k", open, { inInputs: true });
+  useHotkey("mod+p", open, { inInputs: true });
+  useHotkey("mod+shift+p", open, { inInputs: true });
 }
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {

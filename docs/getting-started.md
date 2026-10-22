@@ -226,7 +226,9 @@ fctl run "Add a dark mode toggle to the settings page"
 
 On a computer, the home page opens with the cursor in its task box. From
 anywhere in the app, ⌘K and then Enter take you there (Ctrl+K and Enter on
-Linux and Windows), and ⌘Enter (Ctrl+Enter) starts the session.
+Linux and Windows), and ⌘Enter (Ctrl+Enter) starts the session. ⌘K opens
+the search that jumps to sessions, projects and workspaces, and ⌘P and ⌘⇧P
+open it too, as in code editors.
 
 The two lists by the Start button choose the model the session runs on
 (Opus, Sonnet, Haiku or Fable, each the latest of its family) and its
