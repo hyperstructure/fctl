@@ -2,7 +2,8 @@
 
 /**
  * The checks of a pull request's head commit, check runs and commit
- * statuses, counted as GitHub counts them in a pull request's checks.
+ * statuses, counted as the pull request on GitHub shows them: each check
+ * once, by its latest run.
  */
 export type PullRequestChecks = { 
 /**

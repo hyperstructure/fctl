@@ -708,7 +708,8 @@ pub struct PullRequestRef {
 }
 
 /// The checks of a pull request's head commit, check runs and commit
-/// statuses, counted as GitHub counts them in a pull request's checks.
+/// statuses, counted as the pull request on GitHub shows them: each check
+/// once, by its latest run.
 #[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
