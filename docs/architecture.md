@@ -291,11 +291,17 @@ the instance creates one, as its primary admin.
   handing the role over (`fctl_domain::workspace::check_*`).
 - **Invitations** (`workspace_invitations`) are for an address and last 30
   days. Whoever has it (an account's, or connected to one) sees it on their
-  home page and in `fctl workspaces`, and joins as that address; one the
-  instance doesn't admit yet needs an instance invitation first, which
-  instance admins send together with their workspaces' invitations. People
-  invited before they had an account join when they make it, or connect the
-  address, as far as the limit and two-factor allow; the rest keep waiting.
+  home page and in `fctl workspaces`, and joins as that address. A
+  workspace's admins invite any address and get the same answer whether it
+  can sign in to the instance, has an account or is another address of a
+  member, so that inviting tells them nothing about who uses the instance:
+  the email goes out after the answer, and only to an address that can sign
+  in and isn't a member's. One the instance doesn't admit yet waits for an
+  instance invitation; instance admins, who see who can sign in anyway, are
+  told so, and send the instance's invitation together with their
+  workspaces'. People invited before they had an account join when they
+  make it, or connect the address, as far as the limit and two-factor
+  allow; the rest keep waiting.
 - **Your preferences.** Each member chooses the Claude connection their
   sessions in it run on (`workspace_members.credential_id`), else their
   default one, so that a company's seat pays for the company's work. They

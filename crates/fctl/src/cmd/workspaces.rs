@@ -659,7 +659,9 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             );
             println!(
                 "{}",
-                style::dim("They join it in the app, or with `fctl workspaces join`.")
+                style::dim(
+                    "They join it in the app, or with `fctl workspaces join`, once they can sign in to this instance."
+                )
             );
         }
         WorkspacesCmd::Uninvite { email, workspace } => {

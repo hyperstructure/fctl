@@ -80,7 +80,11 @@ owner and purpose), so a value copied between rows does not decrypt.
 - The CLI signs in with a device flow (you approve a code in the browser) and
   gets a revocable token; Settings lists every device and token.
 - Sign-in, signup and reset endpoints are rate limited per address and per
-  account; unknown emails take as long to fail as known ones.
+  account; unknown emails take as long to fail as known ones. Signing up
+  without an invitation, asking for a password reset or for early access,
+  and inviting an address to a workspace answer the same whether the
+  address has an account or can sign in, so that none of them tells who
+  uses the instance (instance admins, who see that anyway, excepted).
 - The web app ships a strict Content-Security-Policy (`script-src 'self'`, no
   inline scripts), `frame-ancestors 'none'`, HSTS, and renders agent output
   as text (Markdown is parsed into elements, never injected as HTML).
