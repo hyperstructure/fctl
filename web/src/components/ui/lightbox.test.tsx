@@ -550,11 +550,8 @@ describe("Lightbox zooming in", () => {
     expect(zoomOf(img)).toEqual(["2", "100px 50px"]);
     // Not the page: the dialog takes the fingers.
     expect(dialog.className).toMatch(/\btouch-none\b/);
-    // On a layer of its own while the fingers move it, and drawn anew once they let go.
-    expect(img.hasAttribute("data-moving")).toBe(true);
-    lift(dialog);
+    // Drawn at each size as it grows, not on a layer of its own.
     expect(img.hasAttribute("data-moving")).toBe(false);
-    expect(zoomOf(img)).toEqual(["2", "100px 50px"]);
   });
 
   it("settles an image zoomed out back to how it fits", () => {
@@ -568,6 +565,19 @@ describe("Lightbox zooming in", () => {
     expect(zoomOf(img)).toEqual(["1", "0px 0px"]);
     settled(img);
     expect(img.hasAttribute("data-settling")).toBe(false);
+    expect(zoomOf(img)).toEqual(["", ""]);
+  });
+
+  it("settles an image two fingers moved aside, not zooming it, back to how it fits", () => {
+    const { dialog, track } = browse(1);
+    const img = layOut(dialog)();
+    pinch(dialog, "150,400 250,400", "180,430 280,430", { held: true });
+    expect(zoomOf(img)).toEqual(["1", "30px 30px"]);
+    // The finger left on doesn't swipe.
+    hand(dialog, ["_ 280,430", "_ 150,430"], { on: 2, start: 2000 });
+    expect(track.style.translate).toBe("");
+    expect(zoomOf(img)).toEqual(["1", "0px 0px"]);
+    settled(img);
     expect(zoomOf(img)).toEqual(["", ""]);
   });
 
@@ -587,9 +597,13 @@ describe("Lightbox zooming in", () => {
     const img = layOut(dialog)();
     pinch(dialog, "150,400 250,400", "100,400 300,400");
     expect(zoomOf(img)).toEqual(["2", "0px 0px"]);
-    const moves = hand(dialog, ["200,400", "230,450", "260,300"], { start: 2000, ms: 200 });
+    const moves = hand(dialog, ["200,400", "230,450", "260,300"], { start: 2000, ms: 200, held: true });
     expect(moves.map((m) => m.defaultPrevented)).toEqual([true, true]);
     expect(zoomOf(img)).toEqual(["2", "60px -100px"]);
+    // On a layer of its own while the finger moves it, and drawn anew once it lets go.
+    expect(img.hasAttribute("data-moving")).toBe(true);
+    lift(dialog);
+    expect(img.hasAttribute("data-moving")).toBe(false);
     expect(track.style.translate).toBe("");
     expect(shown()).toBe("after.png");
     // Past its bottom edge, 100 px up from there, it resists, and settles back.

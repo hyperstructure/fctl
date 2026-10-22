@@ -277,7 +277,7 @@
     translate 260ms var(--ease-out),
     scale 260ms var(--ease-out);
 }
-/* While fingers move it, or it glides on, on a layer of its own. */
+/* While a finger moves it, or it glides on, on a layer of its own. */
 .lightbox-picture[data-moving] {
   will-change: transform;
 }

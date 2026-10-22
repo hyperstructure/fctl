@@ -321,9 +321,10 @@ export function Lightbox({
     };
 
     // What the fingers on the screen do from now on: two zoom the image, and
-    // one moves a zoomed image about, or swipes. An image fingers move is
-    // drawn on a layer of its own meanwhile, which moves without drawing it
-    // again.
+    // one moves a zoomed image about, or swipes. An image one finger moves is
+    // drawn on a layer of its own meanwhile, which moves without being drawn
+    // again. Not one two fingers zoom: browsers would draw it at the size it
+    // had when they touched, blurred as it grows.
     const begin = (e: TouchEvent) => {
       const a = e.touches[0];
       const b = e.touches[1];
@@ -347,7 +348,6 @@ export function Lightbox({
           from,
           to: from,
         };
-        img.dataset.moving = "";
       } else if (a) {
         const view = img ? viewOf(img) : FITS;
         if (img && view.scale > 1) {
@@ -427,7 +427,7 @@ export function Lightbox({
         pinch = undefined;
         const view = viewOf(p.img);
         // A finger left on goes on moving the image about, zoomed in as far as it may be.
-        if (on.length && view.scale >= 1 && view.scale <= p.zoom.max) return begin(e);
+        if (on.length && view.scale > 1 && view.scale <= p.zoom.max) return begin(e);
         const [a, b] = p.to;
         settle(p.img, p.zoom.settle(view, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }));
       }
