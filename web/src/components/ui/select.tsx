@@ -24,7 +24,10 @@ export interface SelectOption<T extends string = string> {
   label: string;
   /** Shown in the list instead of `label`, when its section already says the rest. */
   item?: string;
-  /** Shown in the trigger instead of `label` on a phone, with `narrow`; "" leaves the icon alone. */
+  /**
+   * Shown in the trigger instead of `label` on a phone, with `narrow`, or at every width, with
+   * `compact`; "" leaves the icon alone.
+   */
   short?: string;
   /** A quieter second line, in the list only. */
   description?: ReactNode;
@@ -46,6 +49,11 @@ export interface SelectProps<T extends string> {
    * them; `bare` does that without the chevron. Screen readers still read the labels.
    */
   narrow?: "fit" | "bare";
+  /**
+   * The trigger shows the options' `short` labels at every width, not only on a phone, and says the
+   * rest when hovered (`aria-label`: label). Screen readers still read the labels.
+   */
+  compact?: boolean;
   id?: string;
   disabled?: boolean;
   /** Shown when no option has the value. */
@@ -84,6 +92,7 @@ export function Select<T extends string>({
   onChange,
   size = "md",
   narrow,
+  compact,
   id,
   disabled,
   placeholder,
@@ -109,7 +118,9 @@ export function Select<T extends string>({
   const selected = options.findIndex((o) => o.value === value);
   const current = options[selected];
   const shown = current?.label ?? (value || placeholder || "");
-  const short = narrow ? current?.short : undefined;
+  const short = narrow || compact ? current?.short : undefined;
+  // A compact trigger that shows only its short label (or its icon) says the rest when hovered.
+  const tip = compact && short !== undefined ? (label ? `${label}: ${shown}` : shown) : undefined;
   const mounted = phase !== "closed";
   const open = phase === "open";
 
@@ -299,6 +310,7 @@ export function Select<T extends string>({
         aria-controls={mounted ? listId : undefined}
         aria-activedescendant={open && active >= 0 ? optionId(active) : undefined}
         aria-label={label}
+        title={tip}
         disabled={disabled}
         className={cn(
           // It shrinks (and its value truncates) only when its row runs out of room.
@@ -342,11 +354,18 @@ export function Select<T extends string>({
           muted={!value}
           sizes={placeholder ? [...options.map((o) => o.label), placeholder] : options.map((o) => o.label)}
           fit={!!narrow}
-          // On a phone the short label takes its place on screen.
-          className={short !== undefined ? "max-sm:sr-only" : undefined}
+          // The short label takes its place on screen: on a phone, or at every width when compact.
+          className={short === undefined ? undefined : compact ? "sr-only" : "max-sm:sr-only"}
         />
         {short && (
-          <Value text={short} index={selected} muted={!value} sizes={[]} hidden className="sm:hidden" />
+          <Value
+            text={short}
+            index={selected}
+            muted={!value}
+            sizes={[]}
+            hidden
+            className={compact ? undefined : "sm:hidden"}
+          />
         )}
         <Chevron className={narrow === "bare" ? "max-sm:hidden" : undefined} />
       </button>
