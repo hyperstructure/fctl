@@ -266,6 +266,16 @@ describe("StartChoices", () => {
     ]);
   });
 
+  it("says Extra effort for the extra high level, which its list names in full", () => {
+    const { container } = render(<Choices p={project({ effort: "xhigh" })} />);
+    expect(shown(container)[1]).toEqual(["Effort", "Extra effort"]);
+    act(() => container.querySelectorAll<HTMLElement>("[role=combobox]")[1]?.click());
+    const listed = [...container.querySelectorAll("[role=option]")].map(
+      (o) => o.querySelector(".truncate")?.textContent,
+    );
+    expect(listed).toEqual(["Low", "Medium", "High", "Extra high", "Max"]);
+  });
+
   it("says what the agent may do on GitHub where the project has a repository", () => {
     const repo = { repo: { owner: "acme", name: "web" } };
     const { container, rerender } = render(<Choices p={project({})} />);
@@ -276,5 +286,11 @@ describe("StartChoices", () => {
     // A project that holds its agents to commenting starts there.
     rerender(<Choices p={{ ...project({ github_access: "comment" }), ...repo }} />);
     expect(shown(container)[2]).toEqual(["On GitHub", "Comments only"]);
+    // Its symbol alone, at every width, so that Start fits in the row; the label is for screen
+    // readers, and for a pointer that rests on it.
+    const github = container.querySelectorAll("[role=combobox]")[2];
+    expect(github?.querySelector(":scope > .grid")?.classList.contains("sr-only")).toBe(true);
+    expect(github?.querySelector(":scope > span:not(.grid) > svg")).not.toBeNull();
+    expect(github?.getAttribute("title")).toBe("On GitHub: Comments only");
   });
 });

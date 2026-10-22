@@ -375,3 +375,69 @@ describe("Select on a phone", () => {
     expect(sizers()).toEqual([EFFORT.length, false]);
   });
 });
+
+describe("A compact Select", () => {
+  const has = (el: Element | null | undefined, cls: string) => !!el?.classList.contains(cls);
+
+  it("shows the icon alone at every width, beside the chevron, and says the rest when hovered", () => {
+    const options: SelectOption[] = [
+      { value: "push", label: "Can push", short: "", icon: <svg /> },
+      { value: "comment", label: "Comments only", short: "", icon: <svg /> },
+    ];
+    function Github() {
+      const [value, setValue] = useState("push");
+      return (
+        <Select
+          aria-label="On GitHub"
+          narrow="bare"
+          compact
+          value={value}
+          options={options}
+          onChange={setValue}
+        />
+      );
+    }
+    const container = render(<Github />);
+    const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]');
+    const label = trigger?.querySelector(":scope > .grid");
+    // Screen readers read the label, wherever the eyes see the icon alone.
+    expect(shownIn(container)).toBe("Can push");
+    expect(has(label, "sr-only")).toBe(true);
+    expect(trigger?.querySelectorAll(":scope > .grid")).toHaveLength(1);
+    expect(trigger?.querySelector(":scope > span:not(.grid) > svg")).not.toBeNull();
+    // The chevron goes on a phone only, as with bare alone.
+    expect(has(trigger?.querySelector(":scope > svg"), "max-sm:hidden")).toBe(true);
+    expect(trigger?.title).toBe("On GitHub: Can push");
+    act(() => trigger?.click());
+    act(() => container.querySelectorAll<HTMLElement>('[role="option"]')[1]?.click());
+    act(() => vi.advanceTimersByTime(1000));
+    expect(shownIn(container)).toBe("Comments only");
+    expect(trigger?.title).toBe("On GitHub: Comments only");
+  });
+
+  it("shows short labels at every width, and labels where options have none", () => {
+    const options: SelectOption[] = [
+      { value: "fctl", label: "hyperstructure / fctl", short: "fctl" },
+      { value: "notes", label: "Ada's lab / notes" },
+    ];
+    function Project() {
+      const [value, setValue] = useState("fctl");
+      return <Select aria-label="Project" compact value={value} options={options} onChange={setValue} />;
+    }
+    const container = render(<Project />);
+    const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]');
+    const short = trigger?.querySelector(":scope > .grid[aria-hidden]");
+    expect(short?.textContent).toBe("fctl");
+    expect(has(short, "sm:hidden")).toBe(false);
+    expect(has(trigger?.querySelector(":scope > .grid:not([aria-hidden])"), "sr-only")).toBe(true);
+    expect(trigger?.title).toBe("Project: hyperstructure / fctl");
+    act(() => trigger?.click());
+    act(() => container.querySelectorAll<HTMLElement>('[role="option"]')[1]?.click());
+    act(() => vi.advanceTimersByTime(1000));
+    expect(trigger?.querySelector(":scope > .grid[aria-hidden]")).toBeNull();
+    expect(has(trigger?.querySelector(":scope > .grid"), "sr-only")).toBe(false);
+    expect(shownIn(container)).toBe("Ada's lab / notes");
+    // What it shows says it all.
+    expect(trigger?.hasAttribute("title")).toBe(false);
+  });
+});

@@ -114,6 +114,10 @@ const GITHUB = { key: "github", label: "On GitHub" };
 /** Where the project's own setting is, which sessions follow unless they ask for another. */
 const theirs = (o: Offer) => (o.own ? "The project's default" : undefined);
 
+/** What the effort picker says once a level is picked: Extra high, the longest, as "Extra effort". */
+const effortText = (o: Offer) =>
+  o.value ? `${o.value === "xhigh" ? "Extra" : o.label} effort` : "Default effort";
+
 /**
  * On a phone the two pickers make one control, joined where their borders meet. The one in use
  * comes to the front, so its border shows whole; it doesn't shrink as it is pressed, which would
@@ -124,10 +128,11 @@ const joined =
 
 /**
  * The model, effort level and GitHub access pickers of a start form, in its row of controls; the
- * last only where the project's agents work on GitHub. Where the row is narrow (from `sm` to `lg`,
- * with the sidebar beside it from `md`), they take a line of their own above it, which needs the
- * row to wrap. On a phone they show just the model's name and the symbols of the effort level and
- * the GitHub access, in one control, so that they fit in the row with the others.
+ * last only where the project's agents work on GitHub, where it shows just its symbol, so that
+ * Start keeps its place at the end of the row. Where the row is narrow (from `sm` to `lg`, with the
+ * sidebar beside it from `md`), they take a line of their own above it, which needs the row to
+ * wrap. On a phone they show just the model's name and the symbols of the effort level and the
+ * GitHub access, in one control, so that they fit in the row with the others.
  */
 export function StartChoices({
   project,
@@ -171,7 +176,7 @@ export function StartChoices({
         onChange={(effort) => onPick({ effort })}
         options={effortOffers(project, choice.effort).map((o) => ({
           value: o.value,
-          label: o.value ? `${o.label} effort` : "Default effort",
+          label: effortText(o),
           short: "",
           item: o.label,
           icon: <EffortIcon level={o.value} />,
@@ -183,6 +188,7 @@ export function StartChoices({
         <Select
           size="sm"
           narrow="bare"
+          compact
           className={cn("max-sm:-ml-px max-sm:rounded-l-none", joined)}
           aria-label="On GitHub"
           value={choice.github}
