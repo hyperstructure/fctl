@@ -35,6 +35,15 @@ const SKIPPED = "fctl:skipped-update:";
 const here = new Map<string, string>();
 const listeners = new Set<() => void>();
 
+function subscribe(fn: () => void) {
+  listeners.add(fn);
+  window.addEventListener("storage", fn);
+  return () => {
+    listeners.delete(fn);
+    window.removeEventListener("storage", fn);
+  };
+}
+
 function readSkipped(user: string): string | undefined {
   try {
     const v = localStorage.getItem(SKIPPED + user);
@@ -46,14 +55,7 @@ function readSkipped(user: string): string | undefined {
 /** The version of fctl whose notice `user` skipped in this browser, and how to skip one. */
 export function useSkippedUpdate(user: string): [string | undefined, (version: string) => void] {
   const skipped = useSyncExternalStore(
-    (fn) => {
-      listeners.add(fn);
-      window.addEventListener("storage", fn);
-      return () => {
-        listeners.delete(fn);
-        window.removeEventListener("storage", fn);
-      };
-    },
+    subscribe,
     () => readSkipped(user),
     () => undefined,
   );
