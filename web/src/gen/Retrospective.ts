@@ -9,13 +9,19 @@ import type { UserRef } from "./UserRef";
  * What an agent recorded as it finished a piece of its session's work
  * (`fctl retro`), for the project's people: what it worked on, the
  * approach it took, what got in the way and what a future agent should
- * know (`ProjectSettings::retrospectives`).
+ * know (`ProjectSettings::retrospectives`). One for each piece of work:
+ * as later turns carry on with it, the agent updates it (`fctl retro
+ * update`).
  */
 export type Retrospective = { id: RetrospectiveId, project_id: ProjectId, session: SessionRef, 
 /**
  * Who started the session. Absent once their account is gone.
  */
-started_by?: UserRef, created_at: number, outcome: RetrospectiveOutcome, 
+started_by?: UserRef, created_at: number, 
+/**
+ * When the agent last updated it; absent until it does.
+ */
+updated_at?: number, outcome: RetrospectiveOutcome, 
 /**
  * What it worked on.
  */

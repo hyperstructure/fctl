@@ -1,5 +1,6 @@
-// Retrospectives: what agents record as they finish a piece of work
-// (fctl_domain::retrospectives on the Rust side).
+// Retrospectives: what agents record as they finish a piece of work, and
+// update as later turns carry on with it (fctl_domain::retrospectives on the
+// Rust side).
 import type * as G from "@/gen";
 import type { Item } from "./transcript";
 
@@ -22,17 +23,22 @@ export function parts(r: G.Retrospective): { key: string; label: string; text: s
   ].filter((p) => p.text.trim());
 }
 
+/** When the agent last said something in a retrospective: recorded it, or updated it. */
+export const changedAt = (r: G.Retrospective) => r.updated_at ?? r.created_at;
+
 /**
- * The retrospectives a session's transcript has that its list doesn't: new
- * ones the list doesn't have yet, or deleted ones.
+ * The retrospectives a session's transcript has that its list doesn't, one
+ * key for each (`rtr_…@time`): new ones the list doesn't have yet, or
+ * deleted ones, and updates newer than the list's.
  */
 export function unlisted(listed: G.Retrospective[] | undefined, items: Item[]): string[] {
-  const known = new Set((listed ?? []).map((r) => r.id));
-  return items.flatMap((it) =>
-    it.kind === "notice" && it.notice.retrospective && !known.has(it.notice.retrospective.id)
-      ? [it.notice.retrospective.id]
-      : [],
-  );
+  const known = new Map((listed ?? []).map((r) => [r.id, changedAt(r)]));
+  return items.flatMap((it) => {
+    const r = it.kind === "notice" ? it.notice.retrospective : undefined;
+    if (!r) return [];
+    const listedAt = known.get(r.id);
+    return listedAt !== undefined && listedAt >= changedAt(r) ? [] : [`${r.id}@${changedAt(r)}`];
+  });
 }
 
 /**

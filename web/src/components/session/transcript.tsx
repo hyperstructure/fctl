@@ -153,13 +153,16 @@ function MemoryNotice({
   );
 }
 
-/** A retrospective the agent recorded as it finished a piece of work. */
+/**
+ * A retrospective the agent recorded as it finished a piece of work, or
+ * updated as a later turn carried on with it: as it was then.
+ */
 function RetrospectiveNotice({ r }: { r: G.Retrospective }) {
   return (
     <div className="my-2 animate-rise rounded-xl border border-line bg-raised/30 px-4 py-3.5">
       <div className="mb-3 flex items-center gap-2 text-[12.5px] text-ink-3">
         <ScrollText className="size-3.5 shrink-0" />
-        <span>Retrospective</span>
+        <span>{r.updated_at ? "Retrospective updated" : "Retrospective"}</span>
         <OutcomeBadge outcome={r.outcome} />
       </div>
       <RetrospectiveParts r={r} wide />

@@ -25,7 +25,8 @@
 //! | `screenshot` | draws a small PNG and publishes it with `fctl publish`, as agents do for pull requests |
 //! | `remember <text>` | adds `<text>` (to the end of its line) to the project's memory with `fctl memory add`, as agents do |
 //! | `recall` | lists the project's memory with `fctl memory` |
-//! | `retro` | records a retrospective of the turn's work with `fctl retro`, as agents do when they finish a piece of work |
+//! | `retro` | records a retrospective of the turn's work with `fctl retro`, as agents do when they finish a piece of work: completed, or `partial` or `blocked` when the message says so |
+//! | `revise` | updates the session's newest retrospective (after `retro`, in the same message or an earlier one) with `fctl retro list` and `fctl retro update`: completed, with what the work was and what got in the way said again, as agents do when a later turn carries on with work they recorded |
 //! | `slow` | streams for about ten seconds (try interrupting) |
 //! | `background <seconds>` | starts a shell command in the background that ends after that many seconds (`system/task_started`), and ends its turn; when the command ends (`system/task_notification`), takes its result in a turn of its own, as Claude Code does |
 //! | `delegate` | delegates a look around the working directory to a subagent with the `Agent` tool, as Claude Code does: the subagent's messages name the call (`parent_tool_use_id`), it runs two commands about a second each, and the call returns its report |
@@ -471,14 +472,20 @@ impl Session {
     }
 
     /// Runs the sandbox's `fctl` with `args` in a `Bash` tool call, as
-    /// agents do.
-    fn fctl(&mut self, args: &[&str], description: &str) {
+    /// agents do; what it printed to stdout, when it succeeded.
+    fn fctl(&mut self, args: &[&str], description: &str) -> Option<String> {
+        let mut stdout = None;
         let (output, failed) = match std::process::Command::new("fctl").args(args).output() {
-            Ok(o) => (
-                String::from_utf8_lossy(&o.stdout).into_owned()
-                    + &String::from_utf8_lossy(&o.stderr),
-                !o.status.success(),
-            ),
+            Ok(o) => {
+                let out = String::from_utf8_lossy(&o.stdout).into_owned();
+                if o.status.success() {
+                    stdout = Some(out.clone());
+                }
+                (
+                    out + &String::from_utf8_lossy(&o.stderr),
+                    !o.status.success(),
+                )
+            }
             Err(e) => (format!("fctl: {e}"), true),
         };
         let command = std::iter::once("fctl".to_owned())
@@ -496,6 +503,38 @@ impl Session {
             json!({"command": command, "description": description}),
             &output,
             failed,
+        );
+        stdout
+    }
+
+    /// Updates the session's newest retrospective as the work done, as
+    /// agents do when a later turn carries on with the work they recorded
+    /// one for: `fctl retro list` finds it, `fctl retro update` changes it.
+    fn revise(&mut self) {
+        let listed = self.fctl(
+            &["retro", "list", "--json"],
+            "Find this session's retrospective",
+        );
+        let newest = listed
+            .and_then(|out| serde_json::from_str::<Value>(&out).ok())
+            .and_then(|list| list["retrospectives"][0]["id"].as_str().map(str::to_owned));
+        let Some(id) = newest else {
+            self.stream_text("This session has no retrospective to update yet.");
+            return;
+        };
+        self.fctl(
+            &[
+                "retro",
+                "update",
+                &id,
+                "--outcome",
+                "completed",
+                "--worked-on",
+                "What the messages asked, in fake-claude's sandbox, finished in a later turn.",
+                "--challenges",
+                "It took another turn: fake-claude revises when a message says so.",
+            ],
+            "Update the retrospective",
         );
     }
 
@@ -943,11 +982,15 @@ impl Session {
             self.fctl(&["memory"], "Read the project's memory");
         }
         if says(&lower, "retro") {
+            let outcome = ["blocked", "partial"]
+                .into_iter()
+                .find(|o| says(&lower, o))
+                .unwrap_or("completed");
             self.fctl(
                 &[
                     "retro",
                     "--outcome",
-                    "completed",
+                    outcome,
                     "--worked-on",
                     "What the message asked, in fake-claude's sandbox.",
                     "--approach",
@@ -959,6 +1002,9 @@ impl Session {
                 ],
                 "Record a retrospective",
             );
+        }
+        if says(&lower, "revise") {
+            self.revise();
         }
         if let Some(secs) = watch_for(text)
             && self.watch(secs)

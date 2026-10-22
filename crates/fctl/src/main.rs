@@ -110,12 +110,14 @@ enum Command {
                             fctl memory rm mem_01JC3V…         # people who can edit the project"
     )]
     Memory(cmd::memory::MemoryArgs),
-    /// Record a retrospective as you finish a piece of work (agents, in a
-    /// session's sandbox), or read a project's (`fctl retro list`).
+    /// Record a retrospective as you finish a piece of work, and update it
+    /// as later turns carry on with it (agents, in a session's sandbox), or
+    /// read a project's (`fctl retro list`).
     #[command(
         after_help = "Examples:\n  fctl retro --outcome completed --worked-on \"Retried failed uploads (#41).\" \\\n    \
                             --approach \"Used the existing backoff helper.\" --challenges \"The tests need MinIO.\" \\\n    \
                             --insights \"Start MinIO with docker compose up minio first.\"\n  \
+                            fctl retro update rtr_01JC3W… --outcome completed   # the parts left out stay\n  \
                             fctl retro list -p my-app --outcome blocked\n  \
                             fctl retro list my-app#12"
     )]

@@ -239,8 +239,9 @@ outside it except through these channels:
   describe it (`fctl edit`); in projects that publish screenshots, publish
   images at public links (`fctl publish`); and in projects that keep a
   memory or ask for retrospectives, read the project's notes, add notes,
-  mark them stale or duplicates of other notes and record retrospectives
-  of its session (`fctl memory`, `fctl retro`); and where the agent may
+  mark them stale or duplicates of other notes, and record, list and
+  update retrospectives of its session (`fctl memory`, `fctl retro`); and
+  where the agent may
   comment on GitHub, resolve review threads of its repositories' pull
   requests (`fctl resolve`); and nothing else. The control plane checks
   the values and the settings again. Turn publishing

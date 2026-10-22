@@ -650,7 +650,11 @@ impl Supervisor {
     ) -> std::result::Result<String, ApiError> {
         let spec = self.this_session(session_id.as_ref())?;
         match call {
-            AgentCall::Retrospective { .. } if !spec.retrospectives => {
+            AgentCall::Retrospective { .. }
+            | AgentCall::Retrospectives
+            | AgentCall::UpdateRetrospective { .. }
+                if !spec.retrospectives =>
+            {
                 return Err(ApiError::forbidden(
                     "This project doesn't ask for retrospectives: its maintainers can turn them on in the project's settings.",
                 ));
@@ -720,7 +724,7 @@ impl Supervisor {
 
     /// Adds to the transcript what an answer says the agent kept: a note it
     /// remembered (and those it replaced), a note it marked stale, a
-    /// retrospective.
+    /// retrospective it recorded or updated.
     fn notice_kept(&mut self, answer: &AgentAnswer) {
         let notices = kept_notices(answer);
         if notices.is_empty() {
@@ -1074,6 +1078,9 @@ impl Supervisor {
                 _ => None,
             };
             let retrospectives = spec.retrospectives && fctl_can(&paths, "retro").await;
+            // Agents keep one for each piece of work where their fctl
+            // updates them.
+            let update_retrospectives = retrospectives && fctl_can(&paths, "retro update").await;
             let lacking = (spec.memory.is_some() && memory.is_none())
                 || (spec.retrospectives && !retrospectives);
             if lacking && !self.told_old_fctl {
@@ -1092,6 +1099,7 @@ impl Supervisor {
                 screenshot_days: days,
                 memory,
                 retrospectives,
+                update_retrospectives,
                 review_threads,
                 now: now_ms(),
             };
@@ -1896,10 +1904,10 @@ fn expiry(write: Option<&GithubCredential>, read: Option<&GithubCredential>) -> 
     write.iter().chain(read.iter()).map(|c| c.expires_at).min()
 }
 
-/// Whether the sandbox's `fctl` has a command (`edit`, `publish`): custom
-/// images may have none, and older images an older one.
+/// Whether the sandbox's `fctl` has a command (`edit`, `publish`, `retro
+/// update`): custom images may have none, and older images an older one.
 async fn fctl_can(paths: &Paths, command: &str) -> bool {
-    let args = [command, "--help"];
+    let args: Vec<&str> = command.split_whitespace().chain(["--help"]).collect();
     let help = workspace::run(&paths.home, &paths.home, "fctl", &args);
     matches!(
         tokio::time::timeout(Duration::from_secs(10), help).await,
@@ -1934,8 +1942,10 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
 
 /// What the transcript says about what the agent kept: the note it
 /// remembered (and those it took the place of), or marked stale (a
-/// duplicate too), or the retrospective it recorded. The message stands alone for clients from
-/// before the notice's `memory` and `retrospective`.
+/// duplicate too), or the retrospective it recorded, or updated
+/// (`retrospective_updated`, with the retrospective as it now is). The
+/// message stands alone for clients from before the notice's `memory` and
+/// `retrospective`.
 fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
     let notice = |code: &str, message: String| Notice {
         level: NoticeLevel::Info,
@@ -1947,7 +1957,7 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
         retrospective: None,
     };
     match answer {
-        AgentAnswer::Memories { .. } => vec![],
+        AgentAnswer::Memories { .. } | AgentAnswer::Retrospectives { .. } => vec![],
         AgentAnswer::Memory {
             memory,
             replaced,
@@ -1976,7 +1986,11 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
         AgentAnswer::Retrospective { retrospective } => vec![Notice {
             retrospective: Some(retrospective.clone()),
             ..notice(
-                "retrospective",
+                if retrospective.updated_at.is_some() {
+                    "retrospective_updated"
+                } else {
+                    "retrospective"
+                },
                 fctl_domain::retrospectives::message(retrospective),
             )
         }],
@@ -2543,6 +2557,7 @@ mod tests {
             },
             started_by: None,
             created_at: 5,
+            updated_at: None,
             outcome: fctl_proto::session::RetrospectiveOutcome::Partial,
             worked_on: "Retried failed uploads.".into(),
             approach: None,
@@ -2564,6 +2579,66 @@ mod tests {
             "Recorded a retrospective (partly done): Retried failed uploads."
         );
         assert_eq!(n[0].retrospective.as_ref(), Some(&retrospective));
+
+        // A later turn finishes the work and updates it: the transcript
+        // shows it as it now is.
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(AgentCall::UpdateRetrospective {
+                id: retrospective.id.clone(),
+                outcome: Some(fctl_proto::session::RetrospectiveOutcome::Completed),
+                worked_on: None,
+                approach: None,
+                challenges: None,
+                insights: None,
+            }),
+            reply: tx,
+        });
+        let AgentToHost::Call { request_id, call } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a call frame");
+        };
+        assert!(matches!(call, AgentCall::UpdateRetrospective { .. }));
+        let updated = fctl_proto::session::Retrospective {
+            updated_at: Some(9),
+            outcome: fctl_proto::session::RetrospectiveOutcome::Completed,
+            ..retrospective
+        };
+        sup.on_answer(
+            &request_id,
+            Some(AgentAnswer::Retrospective {
+                retrospective: updated.clone(),
+            }),
+            None,
+        );
+        assert!(matches!(rx.try_recv(), Ok(SessionReply::Answer { .. })));
+        let n = notices(&mut host_rx)?;
+        assert_eq!(n[0].code, "retrospective_updated");
+        assert_eq!(
+            n[0].message,
+            "Updated a retrospective (completed): Retried failed uploads."
+        );
+        assert_eq!(n[0].retrospective.as_ref(), Some(&updated));
+
+        // Listing them keeps nothing new, so the transcript stays as it is.
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(AgentCall::Retrospectives),
+            reply: tx,
+        });
+        let AgentToHost::Call { request_id, .. } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a call frame");
+        };
+        sup.on_answer(
+            &request_id,
+            Some(AgentAnswer::Retrospectives {
+                retrospectives: vec![updated],
+            }),
+            None,
+        );
+        assert!(matches!(rx.try_recv(), Ok(SessionReply::Answer { .. })));
+        assert!(host_rx.try_recv().is_err());
         Ok(())
     }
 
@@ -2588,6 +2663,22 @@ mod tests {
         assert!(
             matches!(retro, Some(SessionReply::Error { ref error }) if error.message.contains("doesn't ask for retrospectives"))
         );
+        for call in [
+            AgentCall::Retrospectives,
+            AgentCall::UpdateRetrospective {
+                id: fctl_proto::RetrospectiveId("rtr_1".into()),
+                outcome: Some(fctl_proto::session::RetrospectiveOutcome::Completed),
+                worked_on: None,
+                approach: None,
+                challenges: None,
+                insights: None,
+            },
+        ] {
+            let refused = ask(&mut sup, calling(call));
+            assert!(
+                matches!(refused, Some(SessionReply::Error { ref error }) if error.message.contains("doesn't ask for retrospectives"))
+            );
+        }
         assert!(host_rx.try_recv().is_err());
         // Another session's sandbox can't call for this one.
         let (mut sup, mut host_rx) = keeping(dir.path(), true, true)?;

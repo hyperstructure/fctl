@@ -73,8 +73,12 @@ PATH), `screenshot` draws a small PNG and publishes it with `fctl publish`
 on`, then `cargo run -p fctl -- projects set --publish-screenshots on`),
 `remember <text>` adds the rest of its line to the project's memory with
 `fctl memory add`, `recall` lists the memory with `fctl memory`, `retro`
-records a retrospective with `fctl retro` (the project's Memory and
-Retrospectives tabs, and the session page, show them),
+records a retrospective with `fctl retro` (completed, or `partial` or
+`blocked` when the message says so; the project's Memory and
+Retrospectives tabs, and the session page, show them), `revise` updates
+the session's newest retrospective to completed with `fctl retro list` and
+`fctl retro update`, as agents do when a later turn carries on with the
+same work,
 `slow` streams slowly, `background <seconds>` starts a shell command in
 the background that ends after that many seconds and takes its result in
 a turn of its own (the session waits for it, then runs again, as with
@@ -193,12 +197,14 @@ fails there fails the same way locally with `cargo xtask check <part>`.
 `cargo xtask dev --smoke` starts the local stack as `cargo xtask dev` does
 and runs `fctl run -p playground --model haiku` with a task that has
 fake-claude commit `notes.md`, push it, watch its checks for 12 seconds,
-keep a note in the project's memory, record a retrospective and leave a
-command running in the background. It waits until the session has shown
-the commit pushed before the turn ended, the transcript has shown the note
-and the retrospective, the turn has ended, the session has waited for the
-command and the agent has taken its result in a turn of its own, checks
-that the project's memory has the note and the session its retrospective,
+keep a note in the project's memory, record a partial retrospective and
+update it, and leave a command running in the background. It waits until
+the session has shown the commit pushed before the turn ended, the
+transcript has shown the note and the retrospective recorded and updated,
+the turn has ended, the session has waited for the command and the agent
+has taken its result in a turn of its own, checks that the project's
+memory has the note and the session its one retrospective, completed and
+updated,
 then stops the session, checks the model and effort level it reports and
 that the project remembers the model it asked for, and stops everything
 else. It fails when any step does. CI runs it from a fresh

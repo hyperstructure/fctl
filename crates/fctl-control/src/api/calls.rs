@@ -199,6 +199,33 @@ pub async fn runner_call(
                     .await?,
             }
         }
+        AgentCall::Retrospectives => {
+            session.require_retrospectives()?;
+            AgentAnswer::Retrospectives {
+                retrospectives: retrospectives::of_session(&ctx.db, &session.id).await?,
+            }
+        }
+        AgentCall::UpdateRetrospective {
+            id,
+            outcome,
+            worked_on,
+            approach,
+            challenges,
+            insights,
+        } => {
+            session.require_retrospectives()?;
+            let change = fctl_domain::retrospectives::Change {
+                outcome,
+                worked_on: worked_on.as_deref(),
+                approach: approach.as_deref(),
+                challenges: challenges.as_deref(),
+                insights: insights.as_deref(),
+            };
+            AgentAnswer::Retrospective {
+                retrospective: retrospectives::update(&ctx.db, &session, &id, &change, ctx.now)
+                    .await?,
+            }
+        }
         AgentCall::ResolveThread { thread, unresolve } => AgentAnswer::Thread {
             thread: resolve_thread(ctx, &session, &thread, unresolve).await?,
         },

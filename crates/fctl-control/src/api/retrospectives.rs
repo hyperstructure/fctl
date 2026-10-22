@@ -1,6 +1,7 @@
 //! Retrospectives (`fctl retro`, docs/architecture.md#retrospectives): what
 //! agents record as they finish a piece of their session's work, for the
-//! project's people. Agents record them through their host
+//! project's people, and update as later turns carry on with it. Agents
+//! record, list and update their session's through their host
 //! ([`crate::api::calls`]); everyone who sees a session reads its
 //! retrospectives, everyone who sees a project reads them all, and the
 //! people who manage a session delete one.
@@ -10,19 +11,19 @@ use crate::api::calls::RunnerSession;
 use crate::api::memories::person;
 use crate::ctx::Ctx;
 use crate::db::{n, os, q, s};
-use crate::error::{AppResult, conflict, forbidden, internal, not_found, validation};
+use crate::error::{AppError, AppResult, conflict, forbidden, internal, not_found, validation};
 use crate::http;
 use fctl_domain::retrospectives::{self as retros, Parts};
 use fctl_proto::api::{Ok, OutcomeCounts, RetrospectiveList};
 use fctl_proto::session::{Retrospective, RetrospectiveOutcome, SessionRef};
-use fctl_proto::{ProjectId, RetrospectiveId, SessionId};
+use fctl_proto::{ApiError, ErrorCode, ProjectId, RetrospectiveId, SessionId};
 use serde::Deserialize;
 use worker::{D1Database, Request, Response};
 
 /// Retrospectives with their sessions and who started them.
 const SELECT: &str = "SELECT r.id, r.project_id, r.session_id, s.number AS session_number, s.title AS session_title, \
     s.created_by, u.name AS starter_name, u.avatar_url AS starter_avatar, \
-    r.created_at, r.outcome, r.worked_on, r.approach, r.challenges, r.insights \
+    r.created_at, r.updated_at, r.outcome, r.worked_on, r.approach, r.challenges, r.insights \
     FROM retrospectives r JOIN sessions s ON s.id = r.session_id LEFT JOIN users u ON u.id = s.created_by";
 
 #[derive(Deserialize)]
@@ -38,6 +39,8 @@ struct Row {
     starter_avatar: Option<String>,
     #[serde(deserialize_with = "crate::db::int")]
     created_at: i64,
+    #[serde(default, deserialize_with = "crate::db::opt_int")]
+    updated_at: Option<i64>,
     outcome: String,
     worked_on: String,
     approach: Option<String>,
@@ -57,6 +60,7 @@ impl Row {
             },
             started_by: person(self.created_by, self.starter_name, self.starter_avatar),
             created_at: self.created_at,
+            updated_at: self.updated_at,
             // Only these are stored; a row from a later version reads as done.
             outcome: retros::parse_outcome(&self.outcome)
                 .unwrap_or(RetrospectiveOutcome::Completed),
@@ -117,19 +121,74 @@ pub async fn record(
         .ok_or_else(|| internal("a retrospective vanished as it was recorded"))
 }
 
+/// What an agent updates (`fctl retro update`): a retrospective its
+/// session recorded, as a later turn carries on with that piece of work.
+/// The parts the update leaves out stay.
+pub async fn update(
+    db: &D1Database,
+    session: &RunnerSession,
+    id: &RetrospectiveId,
+    change: &retros::Change<'_>,
+    now: i64,
+) -> AppResult<Retrospective> {
+    let not_recorded = || {
+        AppError(ApiError::new(
+            ErrorCode::NotFound,
+            format!(
+                "This session recorded no retrospective {id}: `fctl retro list` lists those it did"
+            ),
+        ))
+    };
+    let r = one(db, id.as_str())
+        .await?
+        .filter(|r| r.session.id.as_str() == session.id)
+        .ok_or_else(not_recorded)?;
+    let (outcome, parts) = retros::update(&r, change)?;
+    let changed = q(
+        db,
+        "UPDATE retrospectives SET outcome = ?1, worked_on = ?2, approach = ?3, challenges = ?4, insights = ?5, updated_at = ?6 \
+         WHERE id = ?7 AND session_id = ?8",
+        &[
+            s(retros::outcome_name(outcome)),
+            s(&parts.worked_on),
+            os(parts.approach.as_deref()),
+            os(parts.challenges.as_deref()),
+            os(parts.insights.as_deref()),
+            n(now),
+            s(id.as_str()),
+            s(&session.id),
+        ],
+    )?
+    .run()
+    .await?;
+    // Someone deleted it in the meantime.
+    if changed == 0 {
+        return Err(not_recorded());
+    }
+    one(db, id.as_str())
+        .await?
+        .ok_or_else(|| internal("a retrospective vanished as it was updated"))
+}
+
+/// A session's retrospectives, newest first: for its agent, and for
+/// everyone who sees it.
+pub async fn of_session(db: &D1Database, session_id: &str) -> AppResult<Vec<Retrospective>> {
+    let rows: Vec<Row> = q(
+        db,
+        &format!("{SELECT} WHERE r.session_id = ? ORDER BY r.id DESC"),
+        &[s(session_id)],
+    )?
+    .all()
+    .await?;
+    Ok(rows.into_iter().map(Row::into_retrospective).collect())
+}
+
 /// `GET /api/v1/sessions/{id}/retrospectives`: for everyone who sees the
 /// session, newest first.
 pub async fn session_list(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let a = access::session(ctx, id).await?;
-    let rows: Vec<Row> = q(
-        &ctx.db,
-        &format!("{SELECT} WHERE r.session_id = ? ORDER BY r.id DESC"),
-        &[s(&a.row.id)],
-    )?
-    .all()
-    .await?;
     http::ok(&RetrospectiveList {
-        retrospectives: rows.into_iter().map(Row::into_retrospective).collect(),
+        retrospectives: of_session(&ctx.db, &a.row.id).await?,
         next_before: None,
         outcomes: None,
     })

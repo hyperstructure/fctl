@@ -6,7 +6,7 @@ import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Ellipsis, ScrollText, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { OutcomeIcon, RetrospectiveParts } from "@/components/retrospective";
+import { OutcomeIcon, RetrospectiveParts, RetrospectiveTime } from "@/components/retrospective";
 import {
   Avatar,
   Banner,
@@ -22,7 +22,6 @@ import {
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, stamp } from "@/lib/format";
 import { canEditMemory } from "@/lib/memory";
 import { keys, queryClient, useMe } from "@/lib/queries";
 import { canDelete, OUTCOMES, outcomeLabel, total } from "@/lib/retrospectives";
@@ -197,22 +196,18 @@ function Entry({
         <OutcomeIcon outcome={r.outcome} className="size-4" />
         <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <span className="text-[12.5px] font-medium text-ink-2">{outcomeLabel(r.outcome)}</span>
+          {/* On phones, the time goes beside the outcome and the session's title gets a line of its own. */}
+          <RetrospectiveTime r={r} className="sm:hidden" />
           <Link
             to="/s/$id"
             params={{ id: r.session.id }}
-            className="min-w-0 text-[14px] text-ink transition-colors [overflow-wrap:anywhere] hover:text-accent"
+            className="min-w-0 basis-full text-[14px] text-ink transition-colors [overflow-wrap:anywhere] hover:text-accent sm:basis-auto"
           >
             <span className="font-mono text-[12.5px] text-ink-3">#{r.session.number}</span> {r.session.title}
           </Link>
         </div>
         {r.started_by && <Avatar user={r.started_by} size={18} />}
-        <time
-          dateTime={new Date(r.created_at).toISOString()}
-          title={stamp(r.created_at)}
-          className="shrink-0 text-[12px] whitespace-nowrap text-ink-4"
-        >
-          {ago(r.created_at)}
-        </time>
+        <RetrospectiveTime r={r} className="hidden shrink-0 sm:inline" />
         {deletable && (
           <Menu
             trigger={(toggle, open) => (

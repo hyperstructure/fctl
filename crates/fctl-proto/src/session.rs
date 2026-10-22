@@ -915,7 +915,9 @@ pub enum RetrospectiveOutcome {
 /// What an agent recorded as it finished a piece of its session's work
 /// (`fctl retro`), for the project's people: what it worked on, the
 /// approach it took, what got in the way and what a future agent should
-/// know (`ProjectSettings::retrospectives`).
+/// know (`ProjectSettings::retrospectives`). One for each piece of work:
+/// as later turns carry on with it, the agent updates it (`fctl retro
+/// update`).
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -926,6 +928,8 @@ pub struct Retrospective {
     /// Who started the session. Absent once their account is gone.
     pub started_by: Option<UserRef>,
     pub created_at: Millis,
+    /// When the agent last updated it; absent until it does.
+    pub updated_at: Option<Millis>,
     pub outcome: RetrospectiveOutcome,
     /// What it worked on.
     pub worked_on: String,
@@ -1039,6 +1043,15 @@ mod tests {
         }))?;
         assert_eq!(retro.outcome, RetrospectiveOutcome::Blocked);
         assert_eq!(retro.insights, None);
+        // One its agent never updated says so by leaving the time out.
+        assert_eq!(retro.updated_at, None);
+        assert!(serde_json::to_value(&retro)?.get("updated_at").is_none());
+        let updated = Retrospective {
+            updated_at: Some(9),
+            outcome: RetrospectiveOutcome::Completed,
+            ..retro
+        };
+        assert_eq!(serde_json::to_value(&updated)?["updated_at"], 9);
         Ok(())
     }
 }
