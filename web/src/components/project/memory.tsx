@@ -277,7 +277,7 @@ function AddNote({ project }: { project: G.Project }) {
             {left < 200 ? `${left} characters left` : "Markdown · one fact per note"}
           </span>
           <span className="flex-1" />
-          <span className="text-[11.5px] text-ink-4 max-sm:hidden">⌘↵</span>
+          <span className="text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
           <Button
             type="submit"
             size="sm"
