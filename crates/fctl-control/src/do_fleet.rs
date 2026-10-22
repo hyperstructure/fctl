@@ -2281,7 +2281,7 @@ impl FleetObject {
     fn feed_session(&self, s: &fctl_proto::session::Session) {
         let workspace = s.workspace.as_ref().map(|w| w.id.as_str());
         for (ws, ident) in self.feed_sockets() {
-            if ident.sees(s.project_id.as_str(), workspace, s.created_by.id.as_str()) {
+            if ident.sees(s.project_id.as_str(), workspace) {
                 let mut copy = s.clone();
                 copy.role = None;
                 if let Ok(text) = serde_json::to_string(&FeedServer::Session {
@@ -2309,7 +2309,7 @@ impl FleetObject {
             _ => String::new(),
         };
         for (ws, ident) in self.feed_sockets() {
-            if ident.sees(&project, workspace.as_deref(), "") {
+            if ident.sees(&project, workspace.as_deref()) {
                 let _ = ws.send_with_str(&text);
             }
         }

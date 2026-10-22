@@ -189,17 +189,13 @@ impl FeedIdentity {
             && self.workspaces == other.workspaces
     }
 
-    /// Whether they see a session of `project_id` in `workspace_id` that
-    /// `created_by` started.
-    pub fn sees(&self, project_id: &str, workspace_id: Option<&str>, created_by: &str) -> bool {
-        if self.projects.iter().any(|p| p == project_id) {
-            return true;
-        }
-        let Some(w) = workspace_id else {
-            return false;
-        };
-        self.sees_all.iter().any(|x| x == w)
-            || (created_by == self.user_id && self.workspaces.iter().any(|x| x == w))
+    /// Whether they see a session of `project_id` in `workspace_id`: they
+    /// see its project. Starting it counts only while they may start
+    /// sessions there (`fctl_domain::perm::session_role`), when they see
+    /// the project anyway.
+    pub fn sees(&self, project_id: &str, workspace_id: Option<&str>) -> bool {
+        self.projects.iter().any(|p| p == project_id)
+            || workspace_id.is_some_and(|w| self.sees_all.iter().any(|x| x == w))
     }
 }
 

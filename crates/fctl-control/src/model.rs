@@ -704,7 +704,8 @@ impl SessionRow {
 
 /// SELECT for sessions with their workspace, the caller's workspace,
 /// project and share roles, and whether they follow it. Bind: `?1` =
-/// caller user id.
+/// caller user id. A share someone gave themselves (as an owner, before
+/// they were demoted) counts for nothing.
 pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
@@ -723,6 +724,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     LEFT JOIN runners r ON r.id = s.runner_id \
     LEFT JOIN project_members m ON m.project_id = s.project_id AND m.user_id = ?1 \
     LEFT JOIN session_shares sh ON sh.session_id = s.id AND sh.user_id = ?1 \
+      AND (sh.created_by IS NULL OR sh.created_by != sh.user_id) \
     LEFT JOIN session_followers f ON f.session_id = s.id AND f.user_id = ?1";
 
 #[derive(Clone, Debug, Deserialize)]

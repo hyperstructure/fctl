@@ -754,6 +754,19 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     )?
     .all()
     .await?;
+    // Only those they can still see: starting a session counts while they
+    // may start sessions in its project (`perm::session_role`).
+    let visible: std::collections::HashSet<String> = q(
+        &ctx.db,
+        &format!("{} WHERE s.created_by = ?1", crate::model::SESSION_SELECT),
+        &me(),
+    )?
+    .all::<crate::model::SessionRow>()
+    .await?
+    .into_iter()
+    .filter(|r| crate::access::session_role(&user, &settings, None, r).is_some())
+    .map(|r| r.id)
+    .collect();
     let mut queue = VecDeque::new();
     for row in sessions {
         let id = row
@@ -761,6 +774,9 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        if !visible.contains(&id) {
+            continue;
+        }
         queue.push_back((id, opened(&serde_json::to_string(&readable(row))?)?));
     }
     let head = format!(

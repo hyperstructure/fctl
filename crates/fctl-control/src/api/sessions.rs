@@ -264,9 +264,11 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         .unwrap_or(50)
         .clamp(1, 200);
     let before = http::query(req, "before").and_then(|b| b.parse::<i64>().ok());
+    // Starting a session counts only while its person may start sessions
+    // in its project, who then sees the project (`perm::session_role`).
     let mut sql = format!(
         "{SESSION_SELECT} WHERE wm.user_id IS NOT NULL AND (wm.role IN ('owner', 'admin') OR w.base_role != 'none' \
-         OR m.role IS NOT NULL OR sh.role IS NOT NULL OR s.created_by = ?1)"
+         OR m.role IS NOT NULL OR sh.role IS NOT NULL)"
     );
     let mut params = vec![s(&user.id)];
     if let Some(w) = http::query(req, "workspace") {
@@ -707,6 +709,13 @@ pub async fn add_share(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<
                 "No one in this workspace has this address. Sessions are shared with its people.",
             )
         })?;
+    // A share of one's own would outlast the role that let them make it.
+    if target.id == ctx.user()?.id {
+        return Err(validation(
+            "email",
+            "That's you: sessions are shared with other people.",
+        ));
+    }
     q(
         &ctx.db,
         "INSERT INTO session_shares (session_id, user_id, role, created_by, created_at) VALUES (?, ?, ?, ?, ?) \

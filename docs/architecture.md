@@ -337,6 +337,13 @@ the instance creates one, as its primary admin.
   whichever is higher. New workspaces start with `editor`. Starting a
   session, a share or a project role counts for nothing once someone leaves
   the workspace, or while its two-factor requirement closes it to them.
+  Starting a session makes someone its owner only while they may start
+  sessions in its project: made a viewer of it, or taken out of it, they
+  have the session as its viewers do, or not at all, so that they neither
+  steer its agent nor resume it with the project's secrets and new tokens
+  (`fctl_domain::perm::session_role`). Nobody shares a session with
+  themselves, and a share someone gave themselves before counts for
+  nothing: it would outlast the role that let them make it.
   The project and session queries join the caller's membership
   (`model::PROJECT_SELECT`, `PROJECT_VISIBLE`).
 - **Roles.** Admins invite and remove people, change roles, choose the
