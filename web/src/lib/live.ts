@@ -50,6 +50,8 @@ export interface LiveState {
   agentUnreachable?: G.AgentUnreachable;
   hasMoreBefore: boolean;
   loadingOlder: boolean;
+  /** The last load of earlier activity brought nothing, though there is more: a page failed. */
+  olderFailed: boolean;
   firstSeq: number;
   lastSeq: number;
   git?: G.GitState;
@@ -94,6 +96,7 @@ export class LiveSession {
       runnerConnected: false,
       hasMoreBefore: false,
       loadingOlder: false,
+      olderFailed: false,
       firstSeq: 0,
       lastSeq: 0,
       activity: 0,
@@ -375,7 +378,7 @@ export class LiveSession {
     const now = parts(this.builder.items).length;
     const target = want ?? now + SCREENFUL;
     if (now >= target) return;
-    this.set({ loadingOlder: true });
+    this.set({ loadingOlder: true, olderFailed: false });
     let older: G.SessionEvent[] = [];
     let more = true;
     try {
@@ -389,7 +392,9 @@ export class LiveSession {
       // What came in shows; the rest loads when the reader asks for it.
     }
     if (!older.length) {
-      this.set({ loadingOlder: false, hasMoreBefore: more });
+      // There is more and nothing came (the reader may be offline): the page
+      // doesn't ask again by itself until the reader comes back to it.
+      this.set({ loadingOlder: false, hasMoreBefore: more, olderFailed: more });
       return;
     }
     this.events = older.concat(this.events);

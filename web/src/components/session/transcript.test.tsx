@@ -122,7 +122,7 @@ function transcript(
   items: Item[],
   status: "running" | "idle",
   withStall?: Stall,
-  { onLoadOlder = () => {}, hasMoreBefore = false } = {},
+  { onLoadOlder = () => {}, hasMoreBefore = false, loadingOlder = false, olderFailed = false } = {},
 ) {
   return render(
     <Transcript
@@ -134,7 +134,8 @@ function transcript(
       stall={withStall}
       onLoadOlder={onLoadOlder}
       hasMoreBefore={hasMoreBefore}
-      loadingOlder={false}
+      loadingOlder={loadingOlder}
+      olderFailed={olderFailed}
     />,
   );
 }
@@ -453,13 +454,48 @@ describe("a run of work", () => {
 });
 
 describe("earlier activity", () => {
-  // Where the reader's place stays meanwhile: lib/keep-place.test.tsx.
+  // Where the reader's place stays meanwhile: lib/keep-place.test.tsx. When
+  // it loads by itself: lib/load-in-view.test.tsx.
+  const button = (c: HTMLElement) => c.querySelector("button");
+
   it("loads when the reader asks for it", () => {
     const onLoadOlder = vi.fn();
     const c = transcript([tool("done")], "idle", undefined, { onLoadOlder, hasMoreBefore: true });
-    const button = [...c.querySelectorAll("button")].find((b) => b.textContent === "Show earlier activity");
-    act(() => button?.click());
+    expect(button(c)?.textContent).toBe("Show earlier activity");
+    act(() => button(c)?.click());
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads as the reader scrolls up to it", () => {
+    let report: IntersectionObserverCallback = () => {};
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        constructor(callback: IntersectionObserverCallback) {
+          report = callback;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    try {
+      const onLoadOlder = vi.fn();
+      transcript([tool("done")], "idle", undefined, { onLoadOlder, hasMoreBefore: true });
+      act(() => report([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+      expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("says it is loading, and when a load failed", () => {
+    const opts = { hasMoreBefore: true, loadingOlder: true };
+    const loading = transcript([tool("done")], "idle", undefined, opts);
+    expect(button(loading)?.textContent).toBe("Loading earlier activity");
+    expect(spinners(button(loading) as HTMLElement)).toBe(1);
+    const failed = transcript([tool("done")], "idle", undefined, { hasMoreBefore: true, olderFailed: true });
+    expect(button(failed)?.textContent).toBe("Earlier activity didn't load. Try again");
+    expect(spinners(button(failed) as HTMLElement)).toBe(0);
   });
 });
 

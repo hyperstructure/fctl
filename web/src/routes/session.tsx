@@ -467,6 +467,7 @@ export function SessionPage() {
               onLoadOlder={() => void store.loadOlder()}
               hasMoreBefore={s.hasMoreBefore}
               loadingOlder={s.loadingOlder}
+              olderFailed={s.olderFailed}
             />
           )}
         </div>
