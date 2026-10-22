@@ -245,7 +245,8 @@ repositories it changes, it uses the same branch and opens a pull request in
 each. The session page and the session lists name every pull request the
 session opens, with its repository (`fctl#120`, `design#14`), as does
 `fctl show`. The session page's Changes section shows what the branch
-changed since it left the base; once its pull request is merged, Changes
+changed since it left the base, the first ten files of each repository and
+the rest a click away; once its pull request is merged, Changes
 says so, and fctl no longer pushes the branch. Once it understands the task it renames the session to what it
 is working on and describes it in a sentence or two, so the home page shows
 the work rather than the first line of your task.
