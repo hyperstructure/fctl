@@ -378,13 +378,16 @@ pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResu
         &files,
     )
     .await?;
+    // Each person's own, as over the viewer socket: someone else's id,
+    // which is easy to guess, would make their message count as sent.
+    let client_key = body.client_id.map(|c| format!("{}:{c}", author.id));
     let delivery_id = deliver_message(
         ctx,
         id,
         text,
         author,
         source_of(ctx),
-        body.client_id,
+        client_key,
         attachments,
     )
     .await?;
