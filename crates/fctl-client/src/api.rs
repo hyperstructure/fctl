@@ -757,6 +757,18 @@ impl Api {
         self.get(&q).await
     }
 
+    /// The review of a review agent's session; `None` for other sessions.
+    pub async fn get_review(&self, project: &str, session: &str) -> Result<Option<Review>> {
+        let list: ReviewList = self
+            .get(&format!(
+                "/projects/{}/reviews?session={}",
+                enc(project),
+                enc(session)
+            ))
+            .await?;
+        Ok(list.reviews.into_iter().next())
+    }
+
     /// Asks for a review of a pull request's head now.
     pub async fn start_review(&self, project: &str, req: &StartReviewRequest) -> Result<Review> {
         self.post(&format!("/projects/{}/reviews", enc(project)), req)

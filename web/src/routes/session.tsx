@@ -221,7 +221,8 @@ export function SessionPage() {
                           </Link>
                         </span>
                         <StatusPill status={session.status} label={reviewLabel(session)} />
-                        <SessionGithub session={session} />
+                        {/* A review agent only reads, and its footer says what fctl posts for it. */}
+                        {!session.review && <SessionGithub session={session} />}
                         {statusReason(session) && (
                           <span className="truncate text-ink-4">{statusReason(session)}</span>
                         )}
@@ -808,7 +809,7 @@ function Details({
           <SessionRetrospectives list={retrospectives} project={project} />
         </RailSection>
       )}
-      {project && memory.shown && (
+      {project && memory.shown && !session.review && (
         <RailSection title="Memory">
           <SessionMemory project={project} memory={memory} />
         </RailSection>

@@ -1548,7 +1548,16 @@ impl Supervisor {
     /// The session waits: for Claude's background tasks while any run,
     /// then for a message.
     fn wait(&mut self) {
-        let reason = tasks::waiting_reason(self.tasks.len());
+        let reviews = self
+            .config
+            .as_ref()
+            .is_some_and(|c| c.spec.review.is_some());
+        let reason = if reviews && self.tasks.is_empty() {
+            // It waits for nobody: once its turn ends, it stops.
+            "The review session stops in a minute".to_owned()
+        } else {
+            tasks::waiting_reason(self.tasks.len())
+        };
         self.set_status(SessionStatus::Idle, Some(reason));
         if self.idle_since.is_none() && self.nothing_runs() {
             self.idle_since = Some(Instant::now());

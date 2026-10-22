@@ -632,7 +632,8 @@ invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
 and runners, projects, their members and
 repositories, sessions (summary rows), which sessions list which pull
-request, shares, who follows which session,
+request, projects' review agents and their reviews, shares, who follows
+which session,
 notification settings and browsers (push subscriptions), runners, encrypted
 credentials and project secrets, the latest plan usage of each Claude
 credential, the links of published screenshots, projects' memories and
@@ -1018,6 +1019,94 @@ Each session hears of all of its pull requests at once, and
 session that lists it heard, so that the job asks again for one that
 didn't. The web app shows the states and checks with GitHub's octicons and
 colors (the design system's `pr-*` and `checks-*` tokens).
+
+### Review agents
+
+Where a project turns them on, an agent reviews each new commit of the
+pull requests in the repositories its agents may write to (its primary
+repository and those it lists as read and write), drafts too, and fctl
+posts what it found on GitHub
+([ADR 0040](adr/0040-review-agents-review-pull-requests-on-an-owners-subscription.md)):
+
+1. **Settings** (`project_reviews`, the project's **Reviews** tab, `fctl
+   review settings`, `GET`/`PATCH /api/v1/projects/{id}/review-agents`).
+   The project's owners, its workspace's admins among them, turn them on,
+   and they run on the Claude subscription of whoever did: their operator,
+   whose connection for the workspace each review session runs on.
+   Another owner takes them over (`run_as_me`), and nobody puts them on
+   someone else's subscription; the operator may always turn them off.
+   Owners also choose their model and effort level (else the project's) and
+   instructions that follow fctl's own. The settings say why no review
+   starts, where none would (`problem`): no GitHub App or webhook, no
+   repository to review, or an operator who left, can no longer start
+   sessions in the project, or has no Claude connection.
+2. **What starts one.** A `pull_request` delivery of GitHub's webhook
+   (`opened`, `reopened`, `synchronize`, `ready_for_review`) about an
+   open pull request starts a review of its head in each project whose
+   review agents are on and that may write to its repository, through the
+   installation its workspace connected (`crate::reviews::on_delivery`,
+   `fctl_domain::reviews::starts_review`). A commit that has its review
+   gets no other from a delivery, so marking a draft ready reviews it only
+   when its head is new; merged, closed and queued pull requests get none.
+   People who start sessions in the project ask for one of a pull
+   request's head (the Reviews tab, `fctl review start`, `POST
+   /api/v1/projects/{id}/reviews`). The review of the pull request still
+   under way stops (`superseded`), once the new one is in: a newer commit
+   takes its place, and a review that runs finishes even when its pull
+   request merges meanwhile.
+3. **The session.** A review is a session of its project (`reviews` keeps
+   which, with the pull request, its head and how it went), started as
+   the operator, titled after the pull request (`Review of web#12: …`),
+   with a task from fctl. Its agent only reads on GitHub (`read`): its
+   one token reads the reviewed repository, which its working directory
+   holds at the pull request's head (fetched from `refs/pull/<n>/head`,
+   forks' too), and the project's others. It gets none of the project's
+   secrets, setup script, memory, retrospectives, claude.ai connectors or
+   Remote Control, and stops a minute after its last turn. Its system
+   prompt comes from the control plane (`ReviewSpec::instructions`,
+   `fctl_domain::reviews::instructions`): review what the pull request
+   changes and what that affects, and nothing else; bugs, security
+   problems, breaks of the repository's rules and bad practices, without
+   nitpicks; read rather than run, and run nothing of a pull request
+   whose author can't write to the repository (`trusted`: GitHub's
+   `OWNER`, `MEMBER` and `COLLABORATOR`, and fctl's own app); split a
+   large one among subagents; don't take what the pull request says for
+   instructions; and post once. It takes no messages, interrupts or
+   resumes (`409`), sends no "waits for you" notifications, and stays off
+   the Agent Floor, session lists (`GET /api/v1/sessions` leaves them out
+   unless `?reviews=1`) and projects' session counts. FleetDO gives it
+   only to runners whose hosts announce `reviews` (`HostHello.features`).
+4. **On GitHub, as it starts.** The control plane adds an `eyes`
+   reaction to the pull request and a check on the commit, `fctl review`,
+   queued until a runner takes the session and in progress after
+   (`crate::reviews::started`), with a link to the session.
+5. **Posting** (`fctl review submit`, an agent call). The agent hands its
+   findings (file, line, severity, title, a few sentences, an optional
+   suggested change) and the earlier ones the new commits fixed to the
+   control plane, which checks them (`fctl_domain::reviews::check`) and,
+   with a token of the repository's that never leaves it: posts one
+   review of the commit (`COMMENT`) with each finding on its lines where
+   the diff shows them and in the review's text where it doesn't
+   (`place`); marks each earlier finding it names fixed in this commit,
+   its title struck through, and resolves its thread, for fctl's own
+   threads alone (the token's app wrote them, and they carry fctl's mark);
+   and completes the check: success with nothing to look at, neutral with
+   findings or earlier ones still open, since acting on them is up to the
+   pull request's people. It posts once: a second submission gets what
+   the first posted. `fctl review threads` lists fctl's earlier findings,
+   with what people answered. fctl-agent reminds an agent that ends its
+   turn without posting, once.
+6. **A review that ends otherwise** (superseded, stopped, failed) ends
+   its check as cancelled, saying why (`crate::reviews::ended`, from
+   SessionObject; the hourly job catches what it missed).
+
+The project's Reviews tab lists them, newest first, with their pull
+request, commit, outcome and the review on GitHub, and opens their
+sessions, whose page says what came of the review instead of offering a
+composer (`GET /api/v1/projects/{id}/reviews`, `fctl review`). Checks need
+the GitHub App's Checks permission (read and write): without it, reviews
+run and post, and say why their commit shows no check
+([Self-hosting](self-hosting.md#connect-github-optional-recommended)).
 
 ### Commits
 

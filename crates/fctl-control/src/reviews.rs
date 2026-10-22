@@ -505,7 +505,6 @@ pub async fn start(
             rv::short(&pr.head_sha)
         )
     };
-    supersede(ctx, project, pr, inst, &because).await?;
 
     let id = fctl_domain::ids::session_id(ctx.now);
     let title = rv::title(pr);
@@ -578,6 +577,10 @@ pub async fn start(
         }
         return Err(e);
     }
+    // The reviews of the pull request still under way stop: this one takes
+    // their place. Only once it is in, so that a delivery that turns out
+    // to repeat another stops nothing.
+    supersede(ctx, project, pr, inst, id.as_str(), &because).await?;
     let session = crate::spec::session_row(&ctx.db, id.as_str())
         .await?
         .ok_or_else(|| crate::error::internal("the review's session vanished"))?
@@ -737,14 +740,15 @@ async fn announce(
     Ok(())
 }
 
-/// Stops the reviews of `pr` in `project` that are still under way, for
-/// `because`: a review of a newer commit, or of the same one again, takes
-/// their place. Their checks say so.
+/// Stops the reviews of `pr` in `project` that are still under way, but
+/// `new`, for `because`: the review of a newer commit, or of the same one
+/// again, takes their place. Their checks say so.
 async fn supersede(
     ctx: &Ctx,
     project: &ProjectRow,
     pr: &PullRequest,
     inst: u64,
+    new: &str,
     because: &str,
 ) -> AppResult<()> {
     #[derive(Deserialize)]
@@ -756,13 +760,14 @@ async fn supersede(
     let gone: Vec<Gone> = q(
         &ctx.db,
         "UPDATE reviews SET state = 'superseded', reason = ?, finished_at = ? WHERE project_id = ? AND repo_key = ? \
-         AND number = ? AND state = 'running' RETURNING session_id, check_run_id",
+         AND number = ? AND state = 'running' AND session_id != ? RETURNING session_id, check_run_id",
         &[
             s(because),
             n(ctx.now),
             s(&project.id),
             s(&pr.repo.full_name().to_ascii_lowercase()),
             n(pr.number as i64),
+            s(new),
         ],
     )?
     .all()

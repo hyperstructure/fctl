@@ -96,6 +96,12 @@ faster than the week passes (`allowed_warning`: the apps go by the share
 used instead), `refresh` asks the host for a new OAuth token,
 `effort <level>` (or Claude Code's `/effort <level>`) changes the effort
 level it works at (`low` … `max`, or `none` as a model that takes none),
+a review session's task (`Review acme/web#12, … at commit …`) reviews as a
+review agent does: it reads the pull request's commits and diff and fctl's
+earlier findings (`fctl review threads`), then posts with `fctl review
+submit`, marking earlier findings still open fixed, and without any,
+finding an issue on the first line the pull request adds (the dev
+instance has no GitHub App, so no review starts there by itself),
 and `crash` exits mid-turn. Anything
 else gets a short answer with a tool call. It answers `get_settings` with
 its model and effort level (`--effort`, else `medium`), which the session

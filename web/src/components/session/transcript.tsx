@@ -30,6 +30,7 @@ import {
   CopyButton,
   Dialog,
   Gallery,
+  Logo,
   plainClick,
   Spinner,
   ThoughtIcon,
@@ -66,7 +67,7 @@ const UserMessage = memo(function UserMessage({
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
       <div className="mb-1.5 flex items-center gap-2.5 text-[12.5px]">
         <RailIcon>
-          {author ? <Avatar user={author} size={20} /> : <span className="size-5 rounded-full bg-raised" />}
+          {author ? <Avatar user={author} size={20} /> : <Logo withWord={false} className="[&_svg]:size-5" />}
         </RailIcon>
         <span className="font-medium text-ink">{author?.name ?? "fctl"}</span>
         <span className="text-ink-4 opacity-0 transition-opacity group-hover/msg:opacity-100">

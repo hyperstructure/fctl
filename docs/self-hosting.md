@@ -315,7 +315,8 @@ installed on that are connected to the workspace.
    | Pull requests | Read and write | open and update pull requests |
    | Issues | Read and write | agents can read and comment on issues |
    | Workflows | Read and write | agents may edit `.github/workflows` |
-   | Checks, Actions, Commit statuses | Read | agents can see CI results |
+   | Checks | Read and write | agents can see CI results; review agents' checks |
+   | Actions, Commit statuses | Read | agents can see CI results |
    | Administration | Read and write | only for **New repository** |
    | Metadata | Read | required |
 
@@ -382,6 +383,14 @@ point of the installation's GraphQL rate limit (5,000 an hour, which your
 agents share), and leaves the rest for the next hour while the
 installation has fewer than 1,000 points left. Without the secret,
 sessions show what their agents last looked up, without checks.
+
+The webhook also starts the reviews of projects whose review agents are
+on ([Architecture](architecture.md#review-agents)): a pull request opened,
+pushed to or marked ready gets one. Their checks need the app's **Checks**
+permission to be **Read and write**: for an app made before, change it
+under **Permissions & events**, and each installation's owners accept it
+(GitHub asks them). Until then reviews post, without a check, and the
+project's Reviews tab says why.
 
 To turn the webhook on for an app made before, edit it on GitHub: under
 **General**, tick **Active** under **Webhook** and fill in its URL and
@@ -459,6 +468,13 @@ own choice within its project's setting
 permissions for it: to resolve review threads for agents that comment,
 the control plane mints a token that can write the thread's repository's
 contents and keeps it.
+
+A review agent's session gets one token, which only reads, for the
+reviewed repository and the project's others. The control plane posts
+its review with a token of its own, for that repository alone: pull
+requests and checks: write, contents: read; and resolves fctl's earlier
+threads with one that can write contents. Neither leaves the control
+plane, and both are revoked once used.
 
 Agents may write only to repositories that are named: reading a whole
 account is as far as an owner-wide grant goes. A listed repository the

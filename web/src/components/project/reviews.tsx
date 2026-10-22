@@ -761,11 +761,12 @@ function ReviewRow({ r }: { r: G.Review }) {
               node: <span className={cn("font-medium", OUTCOME_TONE[look])}>{reviewOutcome(r)}</span>,
             },
             ...earlier.map((e) => ({ key: e, node: e })),
-            r.busy_ms > 0 && {
-              key: "time",
-              node: <span title="How long its agent worked">{duration(r.busy_ms)}</span>,
-              className: "max-sm:hidden",
-            },
+            r.busy_ms > 0 &&
+              (look === "passed" || look === "commented") && {
+                key: "time",
+                node: <span title="How long its agent worked">{duration(r.busy_ms)}</span>,
+                className: "max-sm:hidden",
+              },
             r.review_url && {
               key: "review",
               node: (
