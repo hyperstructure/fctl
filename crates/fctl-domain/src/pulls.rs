@@ -51,6 +51,45 @@ pub fn named_by(url: &str) -> Option<PullRequestRef> {
     })
 }
 
+/// What an agent says of a pull request, as the control plane keeps it: a
+/// GitHub pull request's own URL, rebuilt from it with its repository and
+/// number, and the title, state and times `gh pr view` gives, none of them
+/// later than `now`. Anything in a session's sandbox can pose as its agent,
+/// and the apps show these as the session's own links and checks, so a
+/// link anywhere else, a number its URL doesn't have, or checks (which only
+/// GitHub tells the control plane) are refused or left out; a time in the
+/// future would keep what GitHub says later from replacing it ([`update`]).
+pub fn from_agent(pr: &PullRequestRef, now: Millis) -> Option<PullRequestRef> {
+    let named = named_by(&pr.url)?;
+    if named.number != pr.number {
+        return None;
+    }
+    let state = pr
+        .state
+        .as_deref()
+        .filter(|s| matches!(*s, "open" | "draft" | "merged" | "closed"));
+    Some(PullRequestRef {
+        title: pr.title.clone(),
+        state: state.map(str::to_owned),
+        state_changed_at: pr.state_changed_at.map(|t| t.min(now)),
+        updated_at: pr.updated_at.map(|t| t.min(now)),
+        checks: None,
+        ..named
+    })
+}
+
+/// A git state from an agent, with its pull requests as the control plane
+/// keeps them ([`from_agent`]).
+pub fn from_agent_git(git: &mut GitState, now: Millis) {
+    git.pull_request = git.pull_request.as_ref().and_then(|p| from_agent(p, now));
+    for r in git.repos.iter_mut().flatten() {
+        r.pull_request = r.pull_request.as_ref().and_then(|p| from_agent(p, now));
+    }
+    if let Some(list) = &mut git.pull_requests {
+        *list = list.iter().filter_map(|p| from_agent(p, now)).collect();
+    }
+}
+
 /// The pull requests a command's output names, each once, in order: the
 /// URL `gh pr create` prints, or the one it says already exists.
 pub fn named_in(text: &str) -> Vec<PullRequestRef> {
@@ -355,6 +394,85 @@ mod tests {
 
     fn repo(full: &str) -> Option<RepoRef> {
         RepoRef::parse(full)
+    }
+
+    #[test]
+    fn agents_report_only_github_pull_requests_and_never_their_checks() {
+        let now = 1_000;
+        let honest = PullRequestRef {
+            title: Some("Fix login".into()),
+            state: Some("open".into()),
+            updated_at: Some(900),
+            ..pr("acme/widgets", 42)
+        };
+        let kept = from_agent(&honest, now);
+        assert_eq!(
+            kept.as_ref().map(|p| p.url.as_str()),
+            Some("https://github.com/acme/widgets/pull/42")
+        );
+        assert_eq!(
+            kept.as_ref().and_then(|p| p.repo.clone()),
+            repo("acme/widgets")
+        );
+        assert_eq!(kept.as_ref().and_then(|p| p.updated_at), Some(900));
+        // A link to another site, or a number its URL doesn't have.
+        for url in [
+            "https://evil.example/acme/widgets/pull/42",
+            "https://github.com.evil.example/acme/widgets/pull/42",
+            "javascript:alert(1)",
+            "https://github.com/acme/widgets/pull/41",
+        ] {
+            let forged = PullRequestRef {
+                url: url.into(),
+                ..honest.clone()
+            };
+            assert_eq!(from_agent(&forged, now), None, "{url}");
+        }
+        // Its repository is the URL's, checks are GitHub's to say, and
+        // nothing is from the future.
+        let claims = PullRequestRef {
+            url: "https://github.com/acme/widgets/pull/42#discussion".into(),
+            repo: repo("victim/private"),
+            state: Some("<b>merged</b>".into()),
+            updated_at: Some(9_000_000),
+            state_changed_at: Some(9_000_000),
+            checks: Some(PullRequestChecks {
+                passed: 12,
+                ..Default::default()
+            }),
+            ..honest.clone()
+        };
+        let kept = from_agent(&claims, now);
+        assert_eq!(
+            kept.as_ref().map(|p| p.url.as_str()),
+            Some("https://github.com/acme/widgets/pull/42")
+        );
+        assert_eq!(
+            kept.as_ref().and_then(|p| p.repo.clone()),
+            repo("acme/widgets")
+        );
+        assert_eq!(kept.as_ref().and_then(|p| p.state.clone()), None);
+        assert_eq!(kept.as_ref().and_then(|p| p.updated_at), Some(now));
+        assert_eq!(kept.as_ref().and_then(|p| p.state_changed_at), Some(now));
+        assert_eq!(kept.as_ref().and_then(|p| p.checks.clone()), None);
+        let mut git = GitState {
+            pull_request: Some(claims.clone()),
+            pull_requests: Some(vec![
+                claims,
+                PullRequestRef {
+                    url: "https://evil.example/x/pull/1".into(),
+                    number: 1,
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        from_agent_git(&mut git, now);
+        assert_eq!(
+            git.pull_request.as_ref().and_then(|p| p.checks.clone()),
+            None
+        );
+        assert_eq!(git.pull_requests.as_ref().map(Vec::len), Some(1));
     }
 
     #[test]
