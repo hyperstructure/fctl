@@ -250,12 +250,20 @@ fn stale() -> AppError {
     )
 }
 
-/// Uses up the challenge the browser signed: each works once.
+/// Uses up the challenge the browser signed: each works once, for what it
+/// was made for. Only a challenge for `purpose` goes: one spent signing in
+/// stays recorded (`spend`), or an answer naming it here would let that
+/// sign-in be replayed.
 async fn claim(ctx: &Ctx, challenge: &[u8], purpose: Purpose) -> AppResult<ChallengeRow> {
     let row: Option<ChallengeRow> = q(
         &ctx.db,
-        "DELETE FROM passkey_challenges WHERE hash = ? AND expires_at > ? RETURNING purpose, user_id, sign_in_hash",
-        &[s(&hex::encode(crypto::sha256(challenge))), n(ctx.now)],
+        "DELETE FROM passkey_challenges WHERE hash = ? AND purpose = ? AND expires_at > ? \
+         RETURNING purpose, user_id, sign_in_hash",
+        &[
+            s(&hex::encode(crypto::sha256(challenge))),
+            s(purpose.as_str()),
+            n(ctx.now),
+        ],
     )?
     .first()
     .await?;

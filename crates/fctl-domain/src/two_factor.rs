@@ -152,6 +152,37 @@ pub fn can_remove_last_passkey(
     !required(settings, has_password) || factors.authenticator
 }
 
+/// What setting up an authenticator app takes besides a code from it
+/// ([`setup_proof`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupProof {
+    /// Nothing more.
+    Nothing,
+    /// The account's password.
+    Password,
+    /// A sign-in in this browser within the last [`FRESH_SIGN_IN_MS`]:
+    /// nothing else can stand in for it.
+    FreshSignIn,
+}
+
+/// What setting up an authenticator app takes: nothing more after a browser
+/// sign-in within the last [`FRESH_SIGN_IN_MS`] (`fresh`), else the
+/// password, or, without one, nothing more when it replaces an app (which
+/// took a code from that one). A first app on an account without a password
+/// takes that fresh sign-in: its codes then prove it's the person, as when
+/// adding a passkey, so a stolen session or token must not set one up.
+pub fn setup_proof(replacing: bool, has_password: bool, fresh: bool) -> SetupProof {
+    if fresh {
+        SetupProof::Nothing
+    } else if has_password {
+        SetupProof::Password
+    } else if replacing {
+        SetupProof::Nothing
+    } else {
+        SetupProof::FreshSignIn
+    }
+}
+
 /// How long sign-ins wait after `failures` wrong codes in a row: not at all
 /// for fewer than [`FREE_FAILURES`], then a minute, doubling with each
 /// further one, up to an hour. A right code starts the count over.
@@ -400,5 +431,22 @@ mod tests {
         assert_eq!(normalize_recovery_code("BCDFG-HJKM"), None);
         assert_eq!(normalize_recovery_code("123456"), None);
         assert_eq!(hash_recovery_code(""), None);
+    }
+
+    #[test]
+    fn a_first_app_without_a_password_takes_a_fresh_sign_in() {
+        use SetupProof::*;
+        // A browser that signed in just now needs nothing more.
+        for (replacing, has_password) in [(false, false), (false, true), (true, false)] {
+            assert_eq!(setup_proof(replacing, has_password, true), Nothing);
+        }
+        // Later, or with a CLI or access token: the password.
+        assert_eq!(setup_proof(false, true, false), Password);
+        assert_eq!(setup_proof(true, true, false), Password);
+        // Replacing an app took a code from it.
+        assert_eq!(setup_proof(true, false, false), Nothing);
+        // Without a password, nothing stands in for the sign-in: a stolen
+        // session or token would set up an app, then add a passkey with it.
+        assert_eq!(setup_proof(false, false, false), FreshSignIn);
     }
 }
