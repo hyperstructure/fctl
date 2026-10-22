@@ -743,13 +743,103 @@ describe("Lightbox zooming in", () => {
     expect(zoomOf(img)).toEqual(["", ""]);
   });
 
-  it("settles a swipe back when a second finger joins it, and zooms", () => {
+  it("keeps the image where it is when a second finger joins a swipe, and zooms it", () => {
     const { dialog, track, sliding } = browse(1);
     const img = layOut(dialog)();
-    hand(dialog, ["300,400", "250,400", "200,400", "200,400 300,400", "150,400 350,400"], { held: true });
-    expect(sliding()).toBe(true);
+    hand(dialog, ["300,400", "250,400", "200,400"], { held: true });
+    expect(track.style.translate).toBe("-50px 0");
+    // The pictures go back under the image at once, and it stays 50 px to the left.
+    hand(dialog, ["200,400 300,400"], { on: 1, start: 2000, held: true });
     expect(track.style.translate).toBe("");
-    expect(img.style.scale).toBe("2");
+    expect(sliding()).toBe(false);
+    expect(zoomOf(img)).toEqual(["1", "-50px 0px"]);
+    // Twice as far apart, about the spot between them.
+    hand(dialog, ["150,400 350,400"], { on: 2, start: 2100, held: true });
+    expect(zoomOf(img)).toEqual(["2", "-150px 0px"]);
+  });
+
+  it("draws an image two fingers zoom anew, though one touched it first", () => {
+    const { dialog } = open();
+    const img = layOut(dialog)();
+    pinch(dialog, "150,400 250,400", "100,400 300,400");
+    hand(dialog, ["200,400"], { start: 2000, held: true });
+    expect(img.hasAttribute("data-moving")).toBe(true);
+    hand(dialog, ["200,400 300,400"], { on: 1, start: 2100, held: true });
+    expect(img.hasAttribute("data-moving")).toBe(false);
+  });
+
+  it("moves an image on from where a pinch left it, past its edge, without a jump or a swipe", () => {
+    const { dialog, track, shown } = browse(1);
+    const img = layOut(dialog)();
+    // Twice as far apart, moving right: 40 px past its left edge.
+    pinch(dialog, "150,400 250,400", "300,400 500,400", { held: true });
+    expect(zoomOf(img)).toEqual(["2", "200px 0px"]);
+    // The first finger lets go; the other moves on 1 px, then 1 px more.
+    hand(dialog, ["_ 500,400", "_ 501,400"], { on: 2, start: 2000, held: true });
+    expect(img.style.translate).toBe("200px 0px");
+    expect(track.style.translate).toBe("1px 0");
+    hand(dialog, ["_ 502,400"], { on: 1, start: 2032 });
+    expect(shown()).toBe("after.png");
+    // Back within its edges.
+    expect(zoomOf(img)).toEqual(["2", "160px 0px"]);
+  });
+
+  it("moves a lone image on from where a pinch left it, past its edge, without a jump", () => {
+    const { dialog } = open();
+    const img = layOut(dialog)();
+    pinch(dialog, "150,400 250,400", "300,400 500,400", { held: true });
+    hand(dialog, ["_ 500,400", "_ 510,400"], { on: 2, start: 2000, held: true });
+    expect(img.style.translate).toBe("203px 0px");
+  });
+
+  it("doesn't swipe on with a finger moving up along a zoomed image's edge", () => {
+    const { dialog, track, shown, sliding } = browse(1);
+    const img = layOut(dialog)();
+    pinch(dialog, "150,400 250,400", "100,400 300,400");
+    // To its left edge.
+    hand(dialog, ["100,400", "260,400"], { start: 2000, ms: 200 });
+    expect(img.style.translate).toBe("160px 0px");
+    // A flick up, a little to the right.
+    hand(dialog, ["200,600", "210,563", "220,525", "230,488", "240,450"], {
+      start: 3000,
+      ms: 20,
+      held: true,
+    });
+    expect(track.style.translate).toBe("");
+    lift(dialog);
+    expect(sliding()).toBe(false);
+    expect(shown()).toBe("after.png");
+  });
+
+  it("doesn't glide after a tap on a zoomed image", () => {
+    vi.useFakeTimers();
+    const { dialog } = open();
+    const img = layOut(dialog)();
+    pinch(dialog, "150,400 250,400", "100,400 300,400");
+    hand(img, ["200,400", "202,400", "203,400"], { start: 2000 });
+    act(() => vi.advanceTimersByTime(1000));
+    expect(img.style.translate).toBe("3px 0px");
+  });
+
+  it("leaves an image two fingers hardly zoomed as it fits, and the finger left doesn't move it", () => {
+    const { dialog, track } = browse(1);
+    const img = layOut(dialog)();
+    pinch(dialog, "150,400 250,400", "180,430 280.1,430", { held: true });
+    expect(Number(img.style.scale)).toBeCloseTo(1.001);
+    hand(dialog, ["_ 280.1,430", "_ 200,430"], { on: 2, start: 2000, held: true });
+    expect(track.style.translate).toBe("");
+    expect(zoomOf(img)).toEqual(["1", "0px 0px"]);
+  });
+
+  it("settles an image a pinch left out of place when another picture arrives", () => {
+    const show = (items: LightboxItem[]) => <Lightbox items={items} onIndex={() => {}} onClose={() => {}} />;
+    const rerender = render(show(pictures.slice(0, 1)));
+    const dialog = document.querySelector("dialog") as HTMLDialogElement;
+    const img = layOut(dialog)();
+    pinch(dialog, "100,400 300,400", "150,400 250,400", { held: true });
+    expect(Number(img.style.scale)).toBeCloseTo(0.85);
+    rerender(show(pictures));
+    expect(zoomOf(img)).toEqual(["", ""]);
   });
 
   it("doesn't close after a pinch that starts outside the image", () => {
