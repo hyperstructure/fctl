@@ -30,13 +30,15 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     if !include_archived {
         sql.push_str(" AND p.archived_at IS NULL");
     }
+    sql.push_str(&access::places_sql(ctx.limits(), &mut params));
     sql.push_str(&format!(" ORDER BY {PROJECT_ORDER}"));
     let rows: Vec<ProjectRow> = q(&ctx.db, &sql, &params)?.all().await?;
     http::ok(&ProjectList {
         projects: rows
             .iter()
             .filter_map(|r| {
-                access::project_role(user, &settings, r).map(|role| r.to_project(Some(role)))
+                access::project_role(user, &settings, ctx.limits(), r)
+                    .map(|role| r.to_project(Some(role)))
             })
             .collect(),
     })

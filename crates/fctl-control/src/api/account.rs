@@ -596,7 +596,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "devices_and_tokens".into(),
         rows(
             ctx,
-            "SELECT kind, name, user_agent, ip, created_at, last_used_at, expires_at FROM tokens WHERE user_id = ? ORDER BY created_at",
+            "SELECT kind, name, user_agent, ip, created_at, last_used_at, expires_at, scope FROM tokens WHERE user_id = ? ORDER BY created_at",
             &me(),
         )
         .await?,

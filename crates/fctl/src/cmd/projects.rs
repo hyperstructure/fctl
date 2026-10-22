@@ -9,7 +9,7 @@ use fctl_proto::api::{
     AddProjectRepoRequest, CreateProjectRequest, CreateRepoRequest, ProjectRepoList,
     UpdateMembershipRequest, UpdateProjectRequest,
 };
-use fctl_proto::session::{ImageBuild, Project, ProjectSettings, RepoAccess};
+use fctl_proto::session::{GithubAccess, ImageBuild, Project, ProjectSettings, RepoAccess};
 use std::io::{BufRead, IsTerminal, Write};
 
 #[derive(Subcommand)]
@@ -102,6 +102,12 @@ pub enum ProjectsCmd {
         /// and what a future agent should know (on by default).
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         retrospectives: Option<bool>,
+        /// The most its sessions' agents may do on GitHub, and what a
+        /// session gets unless it asks for less: push, comment (review,
+        /// comment and resolve review threads; push nothing) or read.
+        /// Running sessions get no more from their next GitHub token on.
+        #[arg(long, value_enum)]
+        github: Option<super::tokens::Github>,
         /// The image sessions start from, like ghcr.io/acme/agent:1, on
         /// runners whose owners allow it ("" for each runner's own). Only
         /// the Apple container and Docker drivers use images.
@@ -249,6 +255,15 @@ fn learning(s: &ProjectSettings) -> &'static str {
         (true, false) => "keep the project's memory and record no retrospectives",
         (false, true) => "keep no memory and record retrospectives",
         (false, false) => "keep no memory and record no retrospectives",
+    }
+}
+
+/// What a project's agents may do on GitHub, in words.
+fn on_github(s: &ProjectSettings) -> &'static str {
+    match s.github_access.unwrap_or_default() {
+        GithubAccess::Push => "push, or less when a session asks",
+        GithubAccess::Comment => "review and comment at most, and push nothing",
+        GithubAccess::Read => "only read",
     }
 }
 
@@ -558,6 +573,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             println!("idle:    sessions {}", idle(&p.settings));
             println!("agents:  {}", learning(&p.settings));
+            println!("github:  agents {}", on_github(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
             println!("{}", style::dim(&format!("{}/p/{}", api.base(), p.slug)));
         }
@@ -611,6 +627,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             screenshot_days,
             project_memory,
             retrospectives,
+            github,
             image: new_image,
             build,
             build_context,
@@ -690,6 +707,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(on) = retrospectives {
                 settings.retrospectives = on;
+            }
+            if let Some(g) = github {
+                settings.github_access = Some(g.into());
             }
             let p = api
                 .update_project(
@@ -781,6 +801,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::accent("✓"),
                     style::bold(&p.slug),
                     learning(&p.settings)
+                );
+            }
+            if github.is_some() {
+                println!(
+                    "{} Agents in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    on_github(&p.settings)
                 );
             }
             println!(

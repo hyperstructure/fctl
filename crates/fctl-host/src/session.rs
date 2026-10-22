@@ -496,9 +496,10 @@ fn call(
 }
 
 /// Retries what may pass, where asking twice changes nothing: reading the
-/// memory and marking a note stale. A note or a retrospective that may have
-/// reached the control plane isn't sent again, so that none is kept twice;
-/// the agent hears what went wrong and can ask again.
+/// memory, marking a note stale and resolving a review thread. A note or a
+/// retrospective that may have reached the control plane isn't sent again,
+/// so that none is kept twice; the agent hears what went wrong and can ask
+/// again.
 async fn ask(
     api: &fctl_client::Api,
     session: &SessionId,
@@ -506,7 +507,7 @@ async fn ask(
 ) -> std::result::Result<AgentAnswer, ApiError> {
     let again = matches!(
         call,
-        AgentCall::Memories { .. } | AgentCall::MarkStale { .. }
+        AgentCall::Memories { .. } | AgentCall::MarkStale { .. } | AgentCall::ResolveThread { .. }
     );
     let mut delay = Duration::from_secs(1);
     let mut attempt = 1;

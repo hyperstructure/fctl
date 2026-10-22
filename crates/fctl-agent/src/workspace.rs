@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use fctl_domain::repos;
 use fctl_proto::event::{CommitInfo, FileChange, GitState, LogLevel, RepoGitState};
 use fctl_proto::runner::{GitIdentity, GithubCredential, SessionSpec};
-use fctl_proto::session::{RepoAccess, RepoGrant, RepoRef};
+use fctl_proto::session::{GithubAccess, RepoAccess, RepoGrant, RepoRef};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -120,7 +120,9 @@ async fn git_ok_in(dir: &Path, home: &Path, args: &[&str]) -> Result<String> {
 
 /// Writes the GitHub tokens where git's credential helper and `gh` read
 /// them. `gh` takes one token per host: the one that can write, when there
-/// is one.
+/// is one. A session whose agent only reads has none, and its read-only
+/// token covers every repository: an earlier one that could write, from
+/// before its project held its agents to reading, goes.
 pub fn write_github_tokens(
     p: &Paths,
     write: Option<&GithubCredential>,
@@ -129,8 +131,12 @@ pub fn write_github_tokens(
     if let Some(dir) = p.token_file.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    if let Some(cred) = write {
-        write_private(&p.token_file, &cred.token)?;
+    match write {
+        Some(cred) => write_private(&p.token_file, &cred.token)?,
+        None if read.is_some() => {
+            let _ = std::fs::remove_file(&p.token_file);
+        }
+        None => {}
     }
     if let Some(cred) = read {
         write_private(&p.read_token_file, &cred.token)?;
@@ -800,6 +806,12 @@ pub async fn clones(p: &Paths, spec: &SessionSpec) -> Vec<RepoClone> {
         if primary || seen {
             continue;
         }
+        // An agent that doesn't push writes to none of them.
+        let access = if pushes(spec) {
+            access
+        } else {
+            RepoAccess::Read
+        };
         out.push(RepoClone { repo, access, dir });
         if out.len() >= MAX_CLONES {
             break;
@@ -1125,12 +1137,19 @@ impl Run<'_> {
     }
 }
 
+/// Whether the session's agent pushes: unless it may only comment or read
+/// on GitHub, whose tokens can't push.
+pub fn pushes(spec: &SessionSpec) -> bool {
+    spec.github_access.is_none_or(GithubAccess::pushes)
+}
+
 /// The state of the primary repository and the clones of the others at
 /// `moment`, with the pull requests fctl-agent follows (`pulls`), which
 /// lookups update. When a turn ends or the session stops it also moves the
 /// work in writable clones onto the session branch and, with
 /// `push_commits`, pushes new commits on the session branch. `last` is the
-/// state reported last.
+/// state reported last. A session whose agent doesn't push ([`pushes`])
+/// moves and pushes nothing.
 pub async fn sync(
     p: &Paths,
     spec: &SessionSpec,
@@ -1139,6 +1158,7 @@ pub async fn sync(
     last: Option<&GitState>,
     pulls: &mut Pulls,
 ) -> Result<Synced> {
+    let push_commits = push_commits && pushes(spec);
     let mut run = Run {
         p,
         moment,
@@ -1701,6 +1721,79 @@ cat "$answer"
         )
         .await?;
         assert!(again.logs.is_empty(), "{:?}", again.logs);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_comments_pushes_and_moves_nothing() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = SessionSpec {
+            github_access: Some(GithubAccess::Comment),
+            ..spec_with(serde_json::json!([
+                { "owner": "acme", "name": "lib", "access": "write" }
+            ]))?
+        };
+        assert!(!pushes(&spec));
+        configure_git(&p, &spec.git_author).await?;
+        let widgets = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let lib = fake_github(dir.path(), &p.home, "acme/lib").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let url = "https://github.com/acme/lib.git";
+        let to = p.repos.join("acme/lib").display().to_string();
+        assert!(
+            run(&p.home, &p.home, "git", &["clone", "-q", url, &to])
+                .await?
+                .ok
+        );
+        // It commits on the session branch, and on lib's default branch.
+        for dir in [p.workdir.clone(), p.repos.join("acme/lib")] {
+            std::fs::write(dir.join("change.txt"), "hello\n")?;
+            assert!(run(&dir, &p.home, "git", &["add", "change.txt"]).await?.ok);
+            let commit = ["commit", "-q", "-m", "Change"];
+            assert!(run(&dir, &p.home, "git", &commit).await?.ok);
+        }
+        let synced = sync(
+            &p,
+            &spec,
+            true,
+            Moment::Stopping,
+            None,
+            &mut Pulls::default(),
+        )
+        .await?;
+        assert!(
+            !synced.logs.iter().any(|(_, t)| t.starts_with("Pushed")),
+            "{:?}",
+            synced.logs
+        );
+        for origin in [&widgets, &lib] {
+            assert!(!has_branch(origin, &p.home, "fctl/1-test").await?);
+        }
+        assert_eq!((synced.state.ahead, synced.state.pushed), (1, false));
+        // lib's work stays where the agent left it, and lib reads as read only.
+        let repos = synced.state.repos.context("repos")?;
+        assert_eq!(repos[0].access, RepoAccess::Read);
+        assert_eq!(repos[0].branch.as_deref(), Some("main"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_agent_held_to_reading_drops_the_token_that_could_write() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        configure_git(&p, &spec()?.git_author).await?;
+        write_routes(&p, &spec()?)?;
+        write_github_tokens(&p, Some(&cred("ghs_write")), Some(&cred("ghs_read")))?;
+        // Its project now holds its agents to reading: one read-only token.
+        write_github_tokens(&p, None, Some(&cred("ghs_read2")))?;
+        assert_eq!(
+            token_for(&p.home, Some("acme/widgets.git")).await?,
+            Some("ghs_read2".into())
+        );
+        let hosts = std::fs::read_to_string(p.home.join(".config/gh/hosts.yml"))?;
+        assert!(hosts.contains("oauth_token: ghs_read2"));
         Ok(())
     }
 

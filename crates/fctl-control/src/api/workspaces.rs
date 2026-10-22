@@ -70,9 +70,31 @@ async fn respond(ctx: &Ctx, id: &str) -> AppResult<Workspace> {
 /// `GET /api/v1/workspaces`.
 pub async fn list(ctx: &Ctx) -> AppResult<Response> {
     let user = ctx.user()?;
-    let rows = ws::mine(&ctx.db, &user.id).await?;
+    let mut rows = ws::mine(&ctx.db, &user.id).await?;
+    // A limited token sees the workspaces of the projects it reaches, and
+    // no invitations.
+    if let Some(places) = ctx.limits().and_then(|l| l.places.as_ref()) {
+        #[derive(serde::Deserialize)]
+        struct Id {
+            workspace_id: String,
+        }
+        let of_projects: Vec<Id> = q(
+            &ctx.db,
+            "SELECT DISTINCT workspace_id FROM projects WHERE id IN (SELECT value FROM json_each(?)) AND workspace_id IS NOT NULL",
+            &[s(&serde_json::to_string(&places.projects)?)],
+        )?
+        .all()
+        .await?;
+        rows.retain(|r| {
+            places.workspaces.contains(&r.id) || of_projects.iter().any(|p| p.workspace_id == r.id)
+        });
+    }
     let live = live(ctx).await;
-    let invitations = ws::invitations_for(&ctx.db, &user.id, ctx.now).await?;
+    let invitations = if ctx.limits().is_some() {
+        Vec::new()
+    } else {
+        ws::invitations_for(&ctx.db, &user.id, ctx.now).await?
+    };
     let settings = ctx.settings();
     http::ok(&WorkspaceList {
         workspaces: rows

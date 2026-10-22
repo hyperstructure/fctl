@@ -1202,11 +1202,15 @@ impl SessionObject {
             .await
             .map_err(|e| e.0)?
         {
-            Some((user, settings)) if user.id == viewer.user.id.0 => {
-                crate::access::session_role_now(&db, &user, &settings, summary.id.as_str())
-                    .await
-                    .map_err(|e| e.0)?
-            }
+            Some(h) if h.user.id == viewer.user.id.0 => crate::access::session_role_now(
+                &db,
+                &h.user,
+                &h.settings,
+                h.limits.as_ref(),
+                summary.id.as_str(),
+            )
+            .await
+            .map_err(|e| e.0)?,
             _ => None,
         };
         let Some(role) = role else {

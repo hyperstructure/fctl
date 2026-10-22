@@ -41,7 +41,8 @@ pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
 /// without having shown it: for `claude_ai_connectors`, `credit_people`,
 /// `credit_claude`, `project_memory` and `retrospectives`, on; for
 /// `publish_screenshots`, off; for `screenshot_days`, 30 days (send `null`
-/// to choose the default). An `image_build` it leaves out stays unless it
+/// to choose the default); for `github_access`, push, which would let
+/// agents push again. An `image_build` it leaves out stays unless it
 /// chooses an image instead (send `null` for none). `sent` is the update's
 /// `settings` object as it arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
@@ -68,6 +69,9 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("retrospectives").is_none() {
         settings.retrospectives = stored.retrospectives;
+    }
+    if sent.get("github_access").is_none() {
+        settings.github_access = stored.github_access;
     }
 }
 
@@ -126,6 +130,24 @@ mod tests {
             &json!({ "claude_ai_connectors": false }),
         );
         assert!(!s.claude_ai_connectors);
+    }
+
+    #[test]
+    fn updates_without_github_access_keep_agents_held_to_it() {
+        use fctl_proto::session::GithubAccess;
+        let stored = ProjectSettings {
+            github_access: Some(GithubAccess::Comment),
+            ..Default::default()
+        };
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
+        assert_eq!(s.github_access, Some(GithubAccess::Comment));
+        let mut s = ProjectSettings {
+            github_access: Some(GithubAccess::Push),
+            ..Default::default()
+        };
+        keep_unsent(&mut s, &stored, &json!({ "github_access": "push" }));
+        assert_eq!(s.github_access, Some(GithubAccess::Push));
     }
 
     #[test]

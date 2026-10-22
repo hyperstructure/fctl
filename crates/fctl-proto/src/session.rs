@@ -418,6 +418,54 @@ impl RepoAccess {
     }
 }
 
+/// What a session's agent may do on GitHub in the repositories it may write
+/// to (`Read` < `Comment` < `Push`): it only reads the others. A session
+/// asks for it as it starts; its project's settings and the access token
+/// that starts it can hold it lower. The tokens the session gets carry its
+/// permissions, so GitHub enforces it.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum GithubAccess {
+    /// Read the code, pull requests, issues and CI results; write nothing.
+    Read,
+    /// Also review and comment on pull requests and issues, label them and
+    /// resolve review threads; push nothing, merge nothing.
+    Comment,
+    /// Also push branches and open pull requests: what every session's
+    /// agent did before sessions had a GitHub access.
+    #[default]
+    Push,
+}
+
+impl GithubAccess {
+    pub const ALL: [Self; 3] = [Self::Push, Self::Comment, Self::Read];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Comment => "comment",
+            Self::Push => "push",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(Self::Read),
+            "comment" => Some(Self::Comment),
+            "push" => Some(Self::Push),
+            _ => None,
+        }
+    }
+
+    /// Whether its agent pushes, as every agent did before.
+    pub fn pushes(self) -> bool {
+        self == Self::Push
+    }
+}
+
 /// A repository a project's agents may use besides its primary one, or an
 /// owner-wide grant: every repository of an account the GitHub App can reach.
 #[skip_serializing_none]
@@ -535,6 +583,12 @@ pub struct ProjectSettings {
     /// what a future agent should know. On by default. Off, agents hear
     /// nothing of it, and the ones recorded stay.
     pub retrospectives: bool,
+    /// The most its sessions' agents may do on GitHub, and what a session
+    /// gets unless it asks for less. Absent: push. Running sessions get no
+    /// more than this from their next GitHub token on (within the hour).
+    /// An update that leaves it out keeps the stored value, so an older
+    /// client can't lift it.
+    pub github_access: Option<GithubAccess>,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
 }
@@ -560,6 +614,7 @@ impl Default for ProjectSettings {
             screenshot_days: None,
             project_memory: true,
             retrospectives: true,
+            github_access: None,
             env: Default::default(),
         }
     }
@@ -762,6 +817,10 @@ pub struct Session {
     /// reported it. Absent until Claude starts, when its model takes no
     /// effort level, and from agents and control planes before it.
     pub effort: Option<String>,
+    /// What its agent may do on GitHub, within its project's
+    /// `github_access` as it is now. Absent: push, as from control planes
+    /// before it.
+    pub github_access: Option<GithubAccess>,
     pub remote_control: Option<RemoteControlState>,
     pub stats: SessionStats,
     /// The caller's role.

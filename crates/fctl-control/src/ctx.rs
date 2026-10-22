@@ -6,6 +6,7 @@ use crate::db::{n, os, q, s};
 use crate::error::{AppError, AppResult};
 use crate::http;
 use crate::model::UserRow;
+use fctl_domain::limits::Limits;
 use fctl_proto::api::{InstanceSettings, TokenKind};
 use fctl_proto::{ApiError, ErrorCode};
 use std::future::Future;
@@ -26,6 +27,9 @@ pub struct Authed {
     pub two_factor_setup_required: bool,
     /// The instance's settings, read with the token.
     pub settings: InstanceSettings,
+    /// What the access token is limited to, when it is
+    /// (`fctl_domain::limits`).
+    pub limits: Option<Limits>,
 }
 
 impl Authed {
@@ -44,6 +48,7 @@ impl Authed {
             signed_in_at: now,
             two_factor_setup_required: false,
             settings,
+            limits: None,
         }
     }
 }
@@ -116,6 +121,11 @@ impl Ctx {
                 worker::console_error!("deferred task failed: {}", e.0.message);
             }
         });
+    }
+
+    /// What the caller's access token is limited to, when it is.
+    pub fn limits(&self) -> Option<&Limits> {
+        self.auth.as_ref().and_then(|a| a.limits.as_ref())
     }
 
     /// The instance's settings, as read with the caller's token (defaults

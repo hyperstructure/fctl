@@ -9,7 +9,8 @@
 
 use crate::validate::Result;
 use fctl_proto::ApiError;
-use fctl_proto::session::{RepoAccess, RepoGrant, RepoRef};
+use fctl_proto::session::{GithubAccess, RepoAccess, RepoGrant, RepoRef};
+use serde_json::{Value, json};
 
 /// Most repositories a project lists besides its primary one. GitHub mints
 /// tokens for at most 500, and every one of them is named in the agent's
@@ -133,6 +134,29 @@ pub enum ReadScope {
     All,
 }
 
+impl TokenPlan {
+    /// The plan of a session whose agent only reads on GitHub: one
+    /// read-only token for every repository, those it could write to
+    /// besides, so that `gh` reads them all.
+    pub fn reading_only(self) -> Self {
+        let read = match self.read {
+            ReadScope::All => ReadScope::All,
+            ReadScope::None if self.write.is_empty() => ReadScope::None,
+            ReadScope::None => ReadScope::Repos(self.write),
+            ReadScope::Repos(names) => {
+                let mut all = self.write;
+                all.extend(names);
+                ReadScope::Repos(all)
+            }
+        };
+        Self {
+            owner: self.owner,
+            write: Vec::new(),
+            read,
+        }
+    }
+}
+
 /// The tokens a session needs, or `None` when it has no repository.
 pub fn token_plan(primary: Option<&RepoRef>, grants: &[RepoGrant]) -> Option<TokenPlan> {
     let owner = owner(primary, grants)?.to_owned();
@@ -164,6 +188,61 @@ pub fn token_plan(primary: Option<&RepoRef>, grants: &[RepoGrant]) -> Option<Tok
         ReadScope::Repos(read)
     };
     Some(TokenPlan { owner, write, read })
+}
+
+/// The permissions of a session's token for the repositories it may write
+/// to, when its agent may do `access` on GitHub
+/// (`crate::limits::session_github`). An agent that comments reviews,
+/// comments and labels (`pull_requests` and `issues`), and can't push,
+/// merge (both `contents`) or change workflows.
+pub fn permissions(access: GithubAccess) -> Value {
+    match access {
+        GithubAccess::Push => json!({
+            "contents": "write",
+            "pull_requests": "write",
+            "issues": "write",
+            "workflows": "write",
+            "checks": "read",
+            "actions": "read",
+            "statuses": "read",
+            "metadata": "read"
+        }),
+        GithubAccess::Comment => json!({
+            "contents": "read",
+            "pull_requests": "write",
+            "issues": "write",
+            "checks": "read",
+            "actions": "read",
+            "statuses": "read",
+            "metadata": "read"
+        }),
+        GithubAccess::Read => read_permissions(),
+    }
+}
+
+/// The permissions of a session's token for the repositories it only reads.
+pub fn read_permissions() -> Value {
+    json!({
+        "contents": "read",
+        "pull_requests": "read",
+        "issues": "read",
+        "checks": "read",
+        "actions": "read",
+        "statuses": "read",
+        "metadata": "read"
+    })
+}
+
+/// The permissions of the token the control plane resolves a review thread
+/// with, for an agent that may comment: GitHub lets only tokens that can
+/// write a repository's contents resolve its threads. The token never
+/// leaves the control plane.
+pub fn resolve_permissions() -> Value {
+    json!({
+        "contents": "write",
+        "pull_requests": "write",
+        "metadata": "read"
+    })
 }
 
 /// What an agent may do in `repo`: write to the primary repository and the
@@ -435,6 +514,55 @@ mod tests {
             name,
             access,
         }
+    }
+
+    #[test]
+    fn agents_that_read_get_one_token_for_every_repository() {
+        let plan = |write: &[&str], read| TokenPlan {
+            owner: "acme".into(),
+            write: write.iter().map(|w| w.to_string()).collect(),
+            read,
+        };
+        let names = |n: &[&str]| ReadScope::Repos(n.iter().map(|w| w.to_string()).collect());
+        assert_eq!(
+            plan(&["web", "lib"], names(&["docs"])).reading_only(),
+            plan(&[], names(&["web", "lib", "docs"]))
+        );
+        assert_eq!(
+            plan(&["web"], ReadScope::None).reading_only(),
+            plan(&[], names(&["web"]))
+        );
+        assert_eq!(
+            plan(&["web"], ReadScope::All).reading_only(),
+            plan(&[], ReadScope::All)
+        );
+        assert_eq!(
+            plan(&[], ReadScope::None).reading_only(),
+            plan(&[], ReadScope::None)
+        );
+    }
+
+    #[test]
+    fn agents_that_comment_or_read_get_tokens_that_cannot_push() {
+        let write = |access| {
+            let p = permissions(access);
+            ["contents", "workflows"]
+                .iter()
+                .any(|k| p.get(k).and_then(Value::as_str) == Some("write"))
+        };
+        assert!(write(GithubAccess::Push));
+        assert!(!write(GithubAccess::Comment));
+        assert!(!write(GithubAccess::Read));
+        let comment = permissions(GithubAccess::Comment);
+        for k in ["pull_requests", "issues"] {
+            assert_eq!(comment[k], "write", "{k}");
+        }
+        let read = permissions(GithubAccess::Read);
+        assert!(
+            read.as_object()
+                .is_some_and(|o| o.values().all(|v| v == "read"))
+        );
+        assert_eq!(resolve_permissions()["contents"], "write");
     }
 
     #[test]

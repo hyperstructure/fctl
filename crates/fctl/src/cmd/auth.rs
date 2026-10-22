@@ -1,4 +1,4 @@
-//! `fctl login`, `logout`, `whoami`, `token`.
+//! `fctl login`, `logout`, `whoami`.
 
 use crate::config::{self, CliConfig, Credentials};
 use crate::style;
@@ -144,6 +144,21 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
             me.user.id
         ))
     );
+    // A limited token sees only who it belongs to and its workspaces.
+    let limited = me.token.as_ref().is_some_and(|t| t.scope.is_some());
+    if let Some(t) = &me.token {
+        let what = t.scope.as_ref().map_or_else(
+            || "Does everything you can.".to_owned(),
+            super::tokens::describe,
+        );
+        println!(
+            "Access token {}: {}",
+            style::bold(&style::terminal_safe(
+                t.name.as_deref().unwrap_or(t.id.as_str())
+            )),
+            style::terminal_safe(&what)
+        );
+    }
     let others: Vec<&str> = me
         .emails
         .iter()
@@ -186,6 +201,9 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
             );
         }
     }
+    if limited {
+        return Ok(());
+    }
     if !me.passkeys.is_empty() {
         println!(
             "Passkeys: {}",
@@ -226,19 +244,5 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
             if c.is_default { " · default" } else { "" }
         );
     }
-    Ok(())
-}
-
-pub async fn token(server: Option<&str>, name: &str, days: Option<u32>, json: bool) -> Result<()> {
-    let api = config::api(server)?;
-    let created = api.create_token(name, days).await?;
-    if json {
-        return style::print_json(&created);
-    }
-    println!("{}", created.secret);
-    eprintln!(
-        "{}",
-        style::dim("Shown once. Use it as FCTL_TOKEN or an `Authorization: Bearer` header.")
-    );
     Ok(())
 }

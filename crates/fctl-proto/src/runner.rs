@@ -8,8 +8,8 @@
 
 use crate::event::Attachment;
 use crate::session::{
-    Memory, ProjectSettings, PullRequestRef, RepoAccess, RepoGrant, RepoRef, RunnerRef,
-    SessionStatus, UserRef,
+    GithubAccess, Memory, ProjectSettings, PullRequestRef, RepoAccess, RepoGrant, RepoRef,
+    RunnerRef, SessionStatus, UserRef,
 };
 use crate::{CredentialId, LoginJobId, Millis, ProjectId, SessionId};
 use serde::{Deserialize, Serialize};
@@ -331,6 +331,12 @@ pub struct SessionSpec {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub retrospectives: bool,
+    /// What the agent may do on GitHub (`credentials` carry it), when it
+    /// may do less than push: its agent then pushes nothing, and tells
+    /// Claude what it may do. Absent: push, as from older control planes.
+    /// Older hosts leave it out of the agent's configuration, and their
+    /// agents' pushes fail.
+    pub github_access: Option<GithubAccess>,
 }
 
 /// A project's memory, as a session's agent starts with it.

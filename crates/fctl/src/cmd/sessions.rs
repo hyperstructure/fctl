@@ -10,7 +10,7 @@ use fctl_client::Api;
 use fctl_domain::{files, pulls};
 use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
 use fctl_proto::api::{CreateSessionRequest, UpdateSessionRequest};
-use fctl_proto::session::{PullRequestRef, Session};
+use fctl_proto::session::{GithubAccess, PullRequestRef, Session};
 use fctl_proto::{AttachmentId, SessionId};
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
@@ -43,6 +43,11 @@ pub struct RunArgs {
     /// Effort: low, medium, high, xhigh or max.
     #[arg(long)]
     pub effort: Option<String>,
+    /// What its agent may do on GitHub: push, comment (review, comment and
+    /// resolve review threads; push nothing) or read. Default: the most the
+    /// project and your token allow.
+    #[arg(long, value_enum)]
+    pub github: Option<super::tokens::Github>,
     /// Start it and return instead of following along.
     #[arg(short, long)]
     pub detach: bool,
@@ -188,6 +193,7 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
                 model: args.model,
                 effort: args.effort,
                 attachments,
+                github_access: args.github.map(Into::into),
             },
         )
         .await?;
@@ -361,6 +367,14 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     }
     if let Some(e) = &s.effort {
         println!("effort:   {e}");
+    }
+    // Sessions that push, as all did before, say nothing.
+    match s.github_access {
+        Some(GithubAccess::Comment) => {
+            println!("github:   reviews and comments, pushes nothing")
+        }
+        Some(GithubAccess::Read) => println!("github:   reads only"),
+        _ => {}
     }
     if let Some(following) = s.following {
         println!("follow:   {}", if following { "yes" } else { "no" });

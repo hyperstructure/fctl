@@ -17,6 +17,7 @@ pub mod repos;
 pub mod retrospectives;
 pub mod runners;
 pub mod sessions;
+pub mod tokens;
 pub mod two_factor;
 pub mod webhooks;
 pub mod workspaces;

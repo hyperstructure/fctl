@@ -84,6 +84,13 @@ enum Command {
                         fctl publish --json after.png | jq -r '.published[].markdown'"
     )]
     Publish(cmd::publish::PublishArgs),
+    /// Resolve review threads of a pull request (agents that review and
+    /// comment, in their session's sandbox): GitHub lets only tokens that
+    /// can push resolve them, so fctl does it for them.
+    #[command(after_help = "Examples:\n  fctl resolve PRRT_kwDOABCD1234\n  \
+                            fctl resolve PRRT_kwDOABCD1234 PRRT_kwDOEFGH5678\n  \
+                            fctl resolve --unresolve PRRT_kwDOABCD1234")]
+    Resolve(cmd::resolve::ResolveArgs),
     /// Delete published screenshots before they expire (people who manage
     /// their session).
     Unpublish {
@@ -197,13 +204,13 @@ enum Command {
     /// export your data, or delete your account.
     #[command(subcommand)]
     Account(cmd::account::AccountCmd),
-    /// Create a personal access token for scripts and CI.
-    Token {
-        /// What the token is for, e.g. "deploy bot".
-        name: String,
-        /// Expire after this many days (default: never).
-        #[arg(long)]
-        days: Option<u32>,
+    /// Create a personal access token for scripts, CI and bots, limited to
+    /// what it is for.
+    Token(cmd::tokens::TokenArgs),
+    /// Where you are signed in and your access tokens, and revoke them.
+    Tokens {
+        #[command(subcommand)]
+        cmd: Option<cmd::tokens::TokensCmd>,
     },
     /// Update fctl itself.
     #[command(name = "self", subcommand)]
@@ -311,7 +318,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Host(c) => cmd::host::run(server, c, json).await,
         Command::Admin(c) => cmd::admin::run(server, c, json).await,
         Command::Account(c) => cmd::account::run(server, c, json).await,
-        Command::Token { name, days } => cmd::auth::token(server, &name, days, json).await,
+        Command::Token(args) => cmd::tokens::create(server, args, json).await,
+        Command::Tokens { cmd: c } => {
+            let c = c.unwrap_or(cmd::tokens::TokensCmd::List);
+            cmd::tokens::run(server, c, json).await
+        }
+        Command::Resolve(args) => cmd::resolve::resolve(args, json).await,
         Command::SelfCmd(c) => cmd::selfcmd::run(c, json).await,
         Command::Completions {
             shell,
