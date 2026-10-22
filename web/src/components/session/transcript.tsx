@@ -46,6 +46,7 @@ import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
+import { Thinking } from "./thinking";
 import { ToolRow } from "./tool";
 
 function Milestone({
@@ -278,28 +279,6 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
   );
 }
 
-function Thinking({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="py-1">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-[12.5px] text-violet/80 transition-colors hover:text-violet"
-      >
-        <BrainCircuit className="size-3.5" />
-        Thought it through
-        <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} />
-      </button>
-      {open && (
-        <div className="mt-2 ml-5.5 animate-rise border-l border-violet/25 pl-4 font-display text-[15px] leading-relaxed whitespace-pre-wrap text-ink-3 italic">
-          {text}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function Setup({ item, stalled }: { item: Extract<Item, { kind: "setup" }>; stalled?: boolean }) {
   const [open, setOpen] = useState(false);
   const last = item.steps[item.steps.length - 1];
@@ -426,6 +405,7 @@ const ItemView = memo(function ItemView({
   live,
   sessionId,
   running,
+  up,
   stalled,
   canManage,
   claudeUrl,
@@ -436,6 +416,8 @@ const ItemView = memo(function ItemView({
   sessionId?: string;
   /** For tool calls: whether the agent works on its turn, as far as the page knows. */
   running?: boolean;
+  /** For subagents: whether Claude Code runs, as far as the page knows. */
+  up?: boolean;
   /** For the setup: whether its runner can't be heard. */
   stalled?: boolean;
   /** The viewer manages the session (deletes its published screenshots). */
@@ -461,6 +443,7 @@ const ItemView = memo(function ItemView({
         <ToolRow
           t={item}
           running={!item.result && !!running}
+          up={up}
           seconds={live?.tool?.id === item.id ? live.tool.seconds : undefined}
         />
       );
@@ -674,6 +657,9 @@ export const Transcript = memo(function Transcript({
   // a stop or a failure) never gets one.
   const running = status === "running" && !stall;
   const turnStart = items.findLastIndex((it) => it.kind === "turn" || it.kind === "status");
+  // Subagents in the background work on after their turn, while the
+  // session waits for them, until they end or the session stops.
+  const up = (status === "running" || status === "idle") && !stall;
   const list = useRef<HTMLDivElement>(null);
   // Earlier activity goes in above the reader, who stays where they are.
   const keepPlace = useKeepPlace(list, loadingOlder);
@@ -712,6 +698,7 @@ export const Transcript = memo(function Transcript({
                 live={it.kind === "tool" ? live : undefined}
                 sessionId={sessionId}
                 running={it.kind === "tool" ? running && i > turnStart : undefined}
+                up={it.kind === "tool" && it.agent ? up : undefined}
                 stalled={it.kind === "setup" ? !!stall : undefined}
                 canManage={canManage}
                 claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}

@@ -83,6 +83,27 @@ export interface ResultMessage extends ClaudeMessage {
   usage?: Usage;
 }
 
+/**
+ * Claude Code's word on its background work and subagents:
+ * `task_started`, `task_progress`, `task_notification` (as it ends, for
+ * any reason).
+ */
+export interface TaskMessage extends ClaudeMessage {
+  type: "system";
+  subtype: string;
+  task_id?: string;
+  /** The tool call that started it. */
+  tool_use_id?: string;
+  /** `local_agent` for a subagent, `local_bash` for a shell command, … */
+  task_type?: string;
+  is_backgrounded?: boolean;
+  /** How it ended: `completed`, `failed`, `stopped`. */
+  status?: string;
+  /** A subagent's last words, as it ended. */
+  summary?: string;
+  usage?: { duration_ms?: number; tool_uses?: number; total_tokens?: number };
+}
+
 export interface RateLimitMessage extends ClaudeMessage {
   type: "rate_limit_event";
   rate_limit_info: {
@@ -125,6 +146,8 @@ export const isAssistant = (m: ClaudeMessage): m is AssistantMessage => m.type =
 export const isUserTool = (m: ClaudeMessage): m is UserToolMessage => m.type === "user";
 export const isResult = (m: ClaudeMessage): m is ResultMessage => m.type === "result";
 export const isRateLimit = (m: ClaudeMessage): m is RateLimitMessage => m.type === "rate_limit_event";
+export const isTask = (m: ClaudeMessage): m is TaskMessage =>
+  m.type === "system" && typeof m.subtype === "string" && m.subtype.startsWith("task_");
 
 export function resultText(content: ToolResultBlock["content"]): string {
   if (typeof content === "string") return content;
