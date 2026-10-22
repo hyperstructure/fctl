@@ -3,6 +3,7 @@ import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/re
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "./api";
 import { withPendingProjects, withPendingWorkspaces } from "./order";
+import { forgetSidebar } from "./sidebar";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -59,20 +60,20 @@ export const keys = {
 export const useInstance = () =>
   useQuery({ queryKey: keys.instance, queryFn: api.instance, staleTime: 60_000 });
 
-export function useMe() {
-  return useQuery({
-    queryKey: keys.me,
-    queryFn: async () => {
-      try {
-        return await api.me();
-      } catch (e) {
-        if (e instanceof ApiFailure && (e.status === 401 || e.status === 403)) return null;
-        throw e;
-      }
-    },
-    staleTime: 60_000,
-  });
+/** You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you. */
+export async function fetchMe(): Promise<G.Me | null> {
+  try {
+    return await api.me();
+  } catch (e) {
+    if (e instanceof ApiFailure && (e.status === 401 || e.status === 403)) {
+      forgetSidebar();
+      return null;
+    }
+    throw e;
+  }
 }
+
+export const useMe = () => useQuery({ queryKey: keys.me, queryFn: fetchMe, staleTime: 60_000 });
 
 /** Your projects, in your order: under your workspaces in theirs. */
 export const useProjects = () =>

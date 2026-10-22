@@ -57,6 +57,7 @@ import { forgetDraft } from "@/lib/draft";
 import { ago, browserName } from "@/lib/format";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
+import { forgetSidebar } from "@/lib/sidebar";
 import { useTheme } from "@/lib/theme";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
 import { claudeOptions, roleLabel } from "@/lib/workspaces";
@@ -1381,6 +1382,7 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
       await forgetPush();
       await forgetDraft();
       queryClient.clear();
+      forgetSidebar(); // last, so that no list that comes is kept again
       window.location.assign("/login?deleted=1");
     },
   });

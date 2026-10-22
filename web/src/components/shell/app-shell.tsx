@@ -30,13 +30,13 @@ import {
   toast,
 } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
-import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { useFeed } from "@/lib/feed";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe, useProjects, useWorkspaces } from "@/lib/queries";
+import { forgetSidebar, type SidebarProject, type SidebarWorkspace, useSidebarLists } from "@/lib/sidebar";
 import { type Sortable, useSortable } from "@/lib/sortable";
 import { useTheme } from "@/lib/theme";
 import {
@@ -165,7 +165,7 @@ function NavLink({
   );
 }
 
-function Sidebar({
+export function Sidebar({
   onPalette,
   onNavigate,
   path,
@@ -176,12 +176,15 @@ function Sidebar({
 }) {
   const { data: me } = useMe();
   const { data: instance } = useInstance();
-  const { data: projects } = useProjects();
-  const { data: workspaces } = useWorkspaces();
+  const { data: projectList } = useProjects();
+  const { data: workspaceList } = useWorkspaces();
+  // The lists this browser kept show at once, until the control plane's come.
+  const { workspaces, projects, kept } = useSidebarLists(me?.user.id, workspaceList, projectList);
   const [folded, toggleFold] = useFolded();
-  const groups = groupProjects(workspaces?.workspaces ?? [], projects?.projects ?? []);
+  const groups = groupProjects(workspaces?.workspaces ?? [], projects ?? []);
   const sort = useSortable({
-    ids: groups.map((g) => g.workspace.id),
+    // Kept lists don't move: a new order names the workspaces the control plane sent.
+    ids: kept ? [] : groups.map((g) => g.workspace.id),
     onReorder: (ids) => reorderWorkspaces(ids, notSaved),
     label: (id) => groups.find((g) => g.workspace.id === id)?.workspace.name ?? "",
     describedBy: ORDER_HELP,
@@ -254,6 +257,8 @@ function Sidebar({
             workspace={workspace}
             projects={list}
             path={path}
+            loading={!projects}
+            kept={kept}
             folded={folded.has(workspace.id)}
             onFold={() => toggleFold(workspace.id)}
             onNavigate={onNavigate}
@@ -351,6 +356,7 @@ function Sidebar({
                     await forgetDraft();
                     await api.logout().catch(() => {});
                     queryClient.clear();
+                    forgetSidebar(); // last, so that no list that comes is kept again
                     window.location.assign("/login");
                   }}
                 >
@@ -383,14 +389,20 @@ function WorkspaceGroup({
   workspace,
   projects,
   path,
+  loading,
+  kept,
   folded,
   onFold,
   onNavigate,
   sort,
 }: {
-  workspace: G.Workspace;
-  projects: G.Project[];
+  workspace: SidebarWorkspace;
+  projects: SidebarProject[];
   path: string;
+  /** Its projects haven't come yet. */
+  loading: boolean;
+  /** The workspace and its projects are as this browser kept them. */
+  kept: boolean;
   folded: boolean;
   onFold: () => void;
   onNavigate: () => void;
@@ -400,7 +412,7 @@ function WorkspaceGroup({
   const here = path === `/w/${workspace.slug}`;
   const active = projects.reduce((n, p) => n + p.active_sessions, 0);
   const sortProjects = useSortable({
-    ids: projects.map((p) => p.id),
+    ids: kept ? [] : projects.map((p) => p.id),
     onReorder: (ids) => reorderProjects(workspace.id, ids, notSaved),
     label: (id) => projects.find((p) => p.id === id)?.name ?? "",
     describedBy: ORDER_HELP,
@@ -522,7 +534,7 @@ function WorkspaceGroup({
                   )}
                 </Link>
               ))}
-              {projects.length === 0 && createsProjects(workspace) && (
+              {projects.length === 0 && !loading && createsProjects(workspace) && (
                 <Link
                   to="/new"
                   search={{ workspace: workspace.slug }}

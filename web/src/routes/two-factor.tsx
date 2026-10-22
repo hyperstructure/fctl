@@ -16,6 +16,7 @@ import { forgetDraft } from "@/lib/draft";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { forgetPush } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
+import { forgetSidebar } from "@/lib/sidebar";
 import { RECOVERY_LEFT } from "@/lib/two-factor";
 import { AuthFrame } from "@/routes/auth";
 
@@ -69,6 +70,7 @@ function TwoFactorRequired({ me }: { me: G.Me }) {
     await forgetDraft();
     await api.logout().catch(() => {});
     queryClient.clear();
+    forgetSidebar(); // last, so that no list that comes is kept again
     window.location.assign("/login");
   };
   // Without passkeys there is nothing to choose.
