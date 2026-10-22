@@ -2,6 +2,12 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.20.0 (2026-10-22)
+
+### Features
+
+- Add review agents that review each new commit of pull requests ([#223](https://github.com/hyperstructure/fctl/pull/223))
+
 ## 0.19.0 (2026-10-22)
 
 ### Features
