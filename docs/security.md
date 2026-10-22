@@ -34,11 +34,19 @@ owner and purpose), so a value copied between rows does not decrypt.
   allowlist entry disconnects the addresses it admitted from their
   accounts, which leave the workspaces they are in as them, and disables
   the accounts none of whose addresses is admitted any more, revoking their
-  tokens.
+  tokens. Revoking an invitation takes back the entry it added, and
+  demoting or removing an admin turns the entries that admitted their
+  addresses as an admin into a member's, so that a Google sign-up, which
+  needs no invitation, can't bring them back as one.
 - **Workspaces** keep their projects, sessions, files and secrets to their
   members: people outside one are told its projects and sessions don't
   exist, whatever they started there or was shared with them, and instance
-  admins see inside only the ones they are members of. A workspace sees
+  admins see inside only the ones they are members of. On an instance that
+  sends email, the password reset and invitation links admins make go to
+  the addresses alone, never to the admin: a reset link signs in as its
+  person, and an invitation's joins the workspaces that invited its
+  address. Without email, admins hand those links over, so whoever runs
+  such an instance can sign in as its people. A workspace sees
   only the address each member joined as. Only its admins create its
   projects, so its members' agents reach the repositories of the projects
   the admins made and opened to them, not every one its GitHub accounts
@@ -61,7 +69,8 @@ owner and purpose), so a value copied between rows does not decrypt.
   signs nobody in. Replacing the app, turning it off and getting new
   recovery codes take a current code; setting up an app takes the password
   unless the browser signed in within 15 minutes (with a CLI or access
-  token, always). Admins can require it:
+  token, always), and on an account without a password, that sign-in.
+  Admins can require it:
   accounts that sign in with a password, and with Google sign-ins asking
   too every account, then can do nothing until they set it up, in the
   browser or with their CLI and access tokens. An attacker who has the

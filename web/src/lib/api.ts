@@ -269,8 +269,13 @@ export const api = {
   users: () => request<G.UserList>("GET", "/admin/users"),
   updateUser: (id: string, b: G.UpdateUserRequest) => request<G.User>("PATCH", `/admin/users/${enc(id)}`, b),
   deleteUser: (id: string) => request<G.Ok>("DELETE", `/admin/users/${enc(id)}`),
+  /** The link, or, where the instance sends email, `emailed`: then it went to them alone. */
   resetLink: (id: string) =>
-    request<{ url: string; expires_in: number }>("POST", `/admin/users/${enc(id)}/reset-link`, {}),
+    request<{ url?: string; emailed?: boolean; expires_in: number }>(
+      "POST",
+      `/admin/users/${enc(id)}/reset-link`,
+      {},
+    ),
   resetTwoFactor: (id: string) => request<G.User>("DELETE", `/admin/users/${enc(id)}/two-factor`),
   allowlist: () => request<G.AllowList>("GET", "/admin/allowlist"),
   allow: (b: G.CreateAllowRequest) => request<G.CreatedAllow>("POST", "/admin/allowlist", b),

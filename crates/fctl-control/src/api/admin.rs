@@ -73,6 +73,21 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
             ));
         }
     }
+    // Names as roles and statuses: the primary instance owner's is theirs,
+    // and only they rename admins, so that nobody below them can make
+    // another admin look like someone else.
+    if body.name.is_some() && target.id != actor.id {
+        if target.role() == InstanceRole::Owner {
+            return Err(forbidden(
+                "Nobody renames the primary instance owner. They change their name in Settings.",
+            ));
+        }
+        if target.role() == InstanceRole::Admin && actor.role() != InstanceRole::Owner {
+            return Err(forbidden(
+                "Only the primary instance owner can rename admins",
+            ));
+        }
+    }
     let name = body
         .name
         .as_deref()
@@ -82,13 +97,14 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
     let changed = q(
         &ctx.db,
         "UPDATE users SET role = COALESCE(?1, role), status = COALESCE(?2, status), name = COALESCE(?3, name), updated_at = ?4 \
-         WHERE id = ?5 AND (role != 'owner' OR (?1 IS NULL AND ?2 IS NULL))",
+         WHERE id = ?5 AND (role != 'owner' OR (?1 IS NULL AND ?2 IS NULL AND (?3 IS NULL OR id = ?6)))",
         &[
             os(body.role.map(|r| r.as_str())),
             os(body.status.map(|st| st.as_str())),
             os(name.as_deref()),
             n(ctx.now),
             s(&target.id),
+            s(&actor.id),
         ],
     )?
     .run()
@@ -105,6 +121,9 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
     if body.status.is_some() {
         crate::api::workspaces::owner_runners_changed(ctx, &target.id).await?;
     }
+    if target.role() == InstanceRole::Admin && body.role == Some(InstanceRole::Member) {
+        demote_allowed(ctx, &target.id).await?;
+    }
     ctx.audit(
         "user.updated",
         Some(&target.id),
@@ -114,6 +133,23 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
         .await?
         .ok_or_else(|| not_found("User"))?;
     http::ok(&updated.to_user())
+}
+
+/// The allowlist entries that admit an admin's addresses as an admin, for
+/// those addresses alone, admit them as a member from now on: they were
+/// made an admin or removed, and an entry that still said admin would make
+/// whoever signs up with one of them (with Google, which needs no
+/// invitation) an admin again.
+async fn demote_allowed(ctx: &Ctx, user_id: &str) -> AppResult<()> {
+    q(
+        &ctx.db,
+        "UPDATE allowlist SET role = 'member' WHERE role = 'admin' AND pattern IN \
+         (SELECT email FROM user_emails WHERE user_id = ?1 UNION SELECT email FROM users WHERE id = ?1)",
+        &[s(user_id)],
+    )?
+    .run()
+    .await?;
+    Ok(())
 }
 
 pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
@@ -141,6 +177,9 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if plan.running() > 0 {
         return Err(conflict("Stop their running sessions first"));
     }
+    if target.role() == InstanceRole::Admin {
+        demote_allowed(ctx, &target.id).await?;
+    }
     crate::api::account::erase(ctx, &target, &plan).await?;
     ctx.audit(
         "user.deleted",
@@ -150,7 +189,8 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     http::ok(&Ok { ok: true })
 }
 
-/// A password reset link an admin can hand over (when email is not set up).
+/// A link that resets someone's password: emailed to them where the
+/// instance sends email, else for the admin to hand over.
 pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let actor = ctx.admin()?.clone();
     let target = auth::user_by_id(ctx, id)
@@ -163,17 +203,22 @@ pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     }
     let url = crate::api::auth::create_reset_link(ctx, &target.id, Some(&actor.id)).await?;
     ctx.audit("user.reset_link", Some(&target.id), None);
-    // Whoever has the link sets their password: they hear of it.
     let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
-    crate::email::notice(
-        ctx,
-        &target,
-        "An admin made a link to reset your password",
-        format!(
-            "{} made a link that sets a new password for your {instance} account ({}). It works for an hour.\n\nIf you didn't ask for it, tell another admin of the instance.",
-            actor.name, target.email
-        ),
-    );
+    // Whoever has the link signs in as them, into their workspaces: where
+    // the instance sends email, it goes to them alone, never to the admin.
+    if let Some(mail) = ctx.cfg.email.clone() {
+        crate::email::send(
+            &mail,
+            &target.email,
+            "Reset your password",
+            &format!(
+                "{} sent you a link that sets a new password for your {instance} account ({}). It works for an hour:\n\n{url}\n\nIf you didn't ask for it, ignore this email and tell another admin of the instance.",
+                actor.name, target.email
+            ),
+        )
+        .await?;
+        return http::ok(&serde_json::json!({ "emailed": true, "expires_in": 3600 }));
+    }
     http::ok(&serde_json::json!({ "url": url, "expires_in": 3600 }))
 }
 
@@ -465,7 +510,12 @@ async fn create_invite_for(
     Ok(Invite {
         id,
         email: email.to_owned(),
-        url: Some(url),
+        // Where the instance sends email, the link goes to the address
+        // alone: whoever holds it creates the account, or connects the
+        // address to theirs, and joins the workspaces that invited it, so
+        // an admin who kept it could join workspaces they aren't in. When
+        // the email didn't go out, they invite the address again.
+        url: ctx.cfg.email.is_none().then_some(url),
         role,
         expires_at,
         emailed,
@@ -606,16 +656,35 @@ pub async fn audit_page(ctx: &Ctx, req: &Request, workspace: Option<&str>) -> Ap
 /// Unused invite ids are listed for revocation.
 pub async fn revoke_invite(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     ctx.admin()?;
-    let changed = q(
+    #[derive(serde::Deserialize)]
+    struct Revoked {
+        email: String,
+    }
+    let revoked: Option<Revoked> = q(
         &ctx.db,
-        "DELETE FROM invites WHERE id = ? AND accepted_at IS NULL",
+        "DELETE FROM invites WHERE id = ? AND accepted_at IS NULL RETURNING email",
         &[s(id)],
+    )?
+    .first()
+    .await?;
+    let Some(revoked) = revoked else {
+        return Err(not_found("Invitation"));
+    };
+    // Inviting the address allowed it too (`create_invite`): that goes with
+    // the invitation, unless the address has an account or another one, or
+    // an admin allowed it on its own. Otherwise a Google sign-up, which
+    // needs no invitation, would still let its holder in.
+    q(
+        &ctx.db,
+        "DELETE FROM allowlist WHERE pattern = ?1 AND note = 'Invited' \
+         AND NOT EXISTS (SELECT 1 FROM users WHERE email = ?1) \
+         AND NOT EXISTS (SELECT 1 FROM user_emails WHERE email = ?1) \
+         AND NOT EXISTS (SELECT 1 FROM invites WHERE email = ?1 AND accepted_at IS NULL AND expires_at > ?2)",
+        &[s(&revoked.email), n(ctx.now)],
     )?
     .run()
     .await?;
-    if changed == 0 {
-        return Err(not_found("Invitation"));
-    }
+    ctx.audit("invite.revoked", Some(&revoked.email), None);
     let _ = InviteId(id.to_owned());
     http::ok(&Ok { ok: true })
 }
@@ -809,6 +878,10 @@ pub async fn workspace_primary(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
             "Choose one of its members whose account is active",
         ));
     }
+    // Instance admins can disable the primary admin, so one who is a member
+    // could otherwise take a workspace over: they make only themselves its
+    // primary admin where they are one of its admins already.
+    fctl_domain::workspace::check_assign_primary(to == admin.id, row.role())?;
     let from = row.primary_id.clone();
     crate::db::batch(
         &ctx.db,

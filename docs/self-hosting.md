@@ -485,7 +485,10 @@ sign up with it.
 ## Email (optional)
 
 Without email, admins copy invite and password-reset links from the app. To
-send them, use [Resend](https://resend.com) with a verified domain.
+send them, use [Resend](https://resend.com) with a verified domain. With
+email, the links go only to the addresses they are for, and admins don't see
+them: a reset link signs in as its person, and an invitation's link joins
+the workspaces that invited its address.
 
 On your own machine, set `RESEND_API_KEY` and `FCTL_EMAIL_FROM`
 (`Acme factory <fctl@acme.dev>`) and start the server again. On Cloudflare:
