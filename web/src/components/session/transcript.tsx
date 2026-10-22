@@ -5,6 +5,7 @@ import { useMutation } from "@tanstack/react-query";
 import {
   Archive,
   BookMarked,
+  Box,
   CircleAlert,
   CircleStop,
   GitBranch,
@@ -13,7 +14,7 @@ import {
   Info,
   Radio,
   ScrollText,
-  Sparkles,
+  Sparkle,
   Trash2,
   TriangleAlert,
   Unplug,
@@ -263,7 +264,7 @@ function Setup({ item, stalled }: { item: Extract<Item, { kind: "setup" }>; stal
       <MilestoneButton
         icon={
           item.done ? (
-            <Sparkles className="text-accent/80" />
+            <Box className="text-accent/80" />
           ) : stalled ? (
             <Hourglass className="text-amber" />
           ) : (
@@ -347,8 +348,8 @@ function GitItem({ git, repos }: { git: G.GitState; repos: (string | undefined)[
     <Milestone key={r.name ?? ""} icon={<GitBranch />}>
       {r.name && <span className="font-mono text-ink-3">{r.name}: </span>}
       {r.files.length} {r.files.length === 1 ? "file" : "files"} changed{" "}
-      <span className="text-accent/80">+{r.additions}</span>{" "}
-      <span className="text-danger/80">−{r.deletions}</span>
+      <span className={cn(r.additions > 0 && "text-accent/80")}>+{r.additions}</span>{" "}
+      <span className={cn(r.deletions > 0 && "text-danger/80")}>−{r.deletions}</span>
       {r.ahead > 0 && (
         <>
           {" "}
@@ -489,7 +490,7 @@ const ItemView = memo(function ItemView({
       );
     case "init":
       return (
-        <Milestone icon={<Sparkles />}>
+        <Milestone icon={<Sparkle />}>
           Claude Code {item.version ? `${item.version} · ` : ""}
           {item.model}
         </Milestone>

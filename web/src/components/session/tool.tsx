@@ -22,6 +22,7 @@ import {
   Wrench,
 } from "lucide-react";
 import {
+  type CSSProperties,
   createContext,
   memo,
   type ReactNode,
@@ -520,7 +521,7 @@ const none: ReadonlySet<string> = new Set();
 /** A thought or a call that streams in, in the run it goes in, until it is stored. */
 function Coming({ block }: { block: Pick<LiveBlock, "type" | "name"> }) {
   return (
-    <div className="flex min-h-7 animate-fade items-center gap-2 py-1 text-[13px] text-ink-3">
+    <div className="step-in flex min-h-7 items-center gap-2 py-1 text-[13px] text-ink-3">
       {block.type === "thinking" ? (
         <ThoughtIcon className="size-3.5 shrink-0 text-violet/80" />
       ) : (
@@ -634,7 +635,11 @@ export const Run = memo(
         />
         {(visible.length > 0 || coming.length > 0) && (
           <Thread id={id} className="mb-1">
-            {visible.map((s) => step(s, true))}
+            {visible.map((s, i) => (
+              <div key={s.key} className="step-in" style={{ "--i": i } as CSSProperties}>
+                {step(s, true)}
+              </div>
+            ))}
             {coming.map((b) => (
               <Coming key={`coming-${b.index}`} block={b} />
             ))}
