@@ -6,7 +6,7 @@ use crate::access;
 use crate::auth::{self, DAY_MS};
 use crate::ctx::Ctx;
 use crate::db::{n, q, s};
-use crate::error::{AppResult, not_found, validation};
+use crate::error::{AppError, AppResult, not_found, validation};
 use crate::http;
 use crate::model::PROJECT_VISIBLE;
 use fctl_domain::limits::{Limits, MAX_PLACES, Places};
@@ -268,8 +268,10 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         Some(d) if d <= 3650 => Some(ctx.now + d as i64 * DAY_MS),
         Some(_) => return Err(validation("expires_in_days", "Use at most 3650 days")),
     };
+    let access = body.access.unwrap_or_default();
+    fctl_domain::limits::check(access, body.github_access).map_err(AppError)?;
     let places = places(ctx, &body.workspaces, &body.projects).await?;
-    let limits = Limits::new(body.access.unwrap_or_default(), places, body.github_access);
+    let limits = Limits::new(access, places, body.github_access);
     let (id, secret) = auth::issue_token(
         ctx,
         &user.id,
@@ -329,11 +331,19 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 }
 
 /// What a limited token sees of its person (`GET /auth/me`): who they are,
-/// and the token. Their addresses, sign-in methods and Claude connections
-/// stay with tokens without limits.
+/// and the token. Their other addresses, sign-in methods, second factors
+/// and Claude connections stay with tokens without limits.
 pub fn limited_me(user: &crate::model::UserRow, token: Option<TokenInfo>) -> Me {
     Me {
-        user: user.to_user(),
+        user: User {
+            emails: Vec::new(),
+            has_password: false,
+            two_factor: false,
+            passkeys: 0,
+            last_login_at: None,
+            workspaces: 0,
+            ..user.to_user()
+        },
         identities: Vec::new(),
         claude: Vec::new(),
         commit_email: None,

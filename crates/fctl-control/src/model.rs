@@ -599,15 +599,32 @@ pub struct SessionRow {
 }
 
 impl SessionRow {
-    /// What its agent may do on GitHub now: what it started with, within
-    /// its project's settings as they are now.
+    /// What its agent may do on GitHub now, as its tokens are minted and
+    /// its pages say: what it started with, within its project's settings
+    /// as they are now. A value this version doesn't know reads as the
+    /// least.
     pub fn github_access(&self) -> GithubAccess {
+        let known = |v: &Option<String>| {
+            v.as_deref()
+                .map(|v| GithubAccess::parse(v).unwrap_or(GithubAccess::Read))
+        };
         fctl_domain::limits::effective(
-            self.github_access.as_deref().and_then(GithubAccess::parse),
-            self.project_github_access
-                .as_deref()
-                .and_then(GithubAccess::parse),
+            known(&self.github_access),
+            known(&self.project_github_access),
         )
+    }
+
+    /// What its agent may have done on GitHub since it started, for whom
+    /// may steer it (`fctl_domain::limits::Limits::session_role`): what it
+    /// started with, even once its project holds it lower, since the
+    /// tokens in its sandbox last until they expire. A value this version
+    /// doesn't know counts as the most.
+    pub fn started_github(&self) -> GithubAccess {
+        self.github_access
+            .as_deref()
+            .map_or(GithubAccess::Push, |v| {
+                GithubAccess::parse(v).unwrap_or(GithubAccess::Push)
+            })
     }
 
     pub fn status(&self) -> SessionStatus {

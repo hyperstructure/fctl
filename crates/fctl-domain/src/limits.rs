@@ -24,8 +24,11 @@ use serde::{Deserialize, Serialize};
 /// Most workspaces and projects one token names.
 pub const MAX_PLACES: usize = 50;
 
-/// What a limited access token may do, as D1 keeps it (`tokens.scope`).
+/// What a limited access token may do, as D1 keeps it (`tokens.scope`). A
+/// field this version doesn't know, from a newer one, makes it unreadable,
+/// so that it reaches nothing rather than ignore a limit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
     pub access: TokenAccess,
     /// Where it reaches: `None`, every project its person sees.
@@ -39,11 +42,27 @@ pub struct Limits {
 /// The workspaces whose every project a token reaches, and the projects it
 /// reaches besides, by id. Once all of them are gone it reaches nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Places {
     #[serde(default)]
     pub workspaces: Vec<String>,
     #[serde(default)]
     pub projects: Vec<String>,
+}
+
+/// Checks the limits a new token asks for. One that may do everything in
+/// its projects may change their settings, and so what every agent there
+/// does (their setup scripts, instructions, images and secrets), so a
+/// limit on what its sessions' agents may do on GitHub would hold nothing:
+/// that takes a token that only runs sessions.
+pub fn check(access: TokenAccess, github_access: Option<GithubAccess>) -> Result<()> {
+    if access == TokenAccess::Full && github_access.is_some_and(|g| g != GithubAccess::Push) {
+        return Err(ApiError::validation(
+            "github_access",
+            "A token that does everything in its projects can change their settings, and so what every agent there does. To hold its agents to commenting or reading, let it run sessions instead.",
+        ));
+    }
+    Ok(())
 }
 
 impl Limits {
@@ -122,11 +141,13 @@ impl Limits {
     }
 
     /// The role it has in a session, whose person's relation to it is
-    /// `access` and whose agent may do `github` on GitHub: their role, with
-    /// their role in its project counting for at most [`Self::project_cap`],
-    /// as a viewer when the token only reads, and as a viewer too when the
-    /// agent may do more on GitHub than the token allows its agents. So a
-    /// token for review agents can't steer an agent that pushes.
+    /// `access` and whose agent started able to do `github` on GitHub:
+    /// their role, with their role in its project counting for at most
+    /// [`Self::project_cap`], as a viewer when the token only reads, and as
+    /// a viewer too when the agent started able to do more on GitHub than
+    /// the token allows its agents. So a token for review agents can't
+    /// steer an agent that pushes, also once its project holds it lower,
+    /// while its sandbox still has the tokens it started with.
     pub fn session_role(
         &self,
         workspace_id: &str,
@@ -161,7 +182,7 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
         ("GET", ["auth", "me"]) | ("POST", ["auth", "logout"]) => Read,
         // Open to anyone anyway.
         ("GET", ["instance" | "health"]) | ("GET" | "HEAD", ["published", ..]) => Read,
-        ("GET", ["workspaces"] | ["workspaces", _, "avatar"]) => Read,
+        ("GET", ["workspaces"]) => Read,
         (
             "GET",
             ["projects"]
@@ -322,6 +343,22 @@ mod tests {
             Limits::parse(Some(r#"{"access":"admin"}"#)).unwrap_or(limits(TokenAccess::Full));
         assert_eq!(broken.access, TokenAccess::Read);
         assert!(!broken.reaches("wsp_1", "prj_1"));
+        // A limit from a newer version this one doesn't know.
+        let newer = Limits::parse(Some(r#"{"access":"run","hours":"9-17"}"#))
+            .unwrap_or(limits(TokenAccess::Full));
+        assert_eq!(newer.access, TokenAccess::Read);
+        assert!(!newer.reaches("wsp_1", "prj_1"));
+    }
+
+    #[test]
+    fn a_token_that_does_everything_holds_its_agents_to_nothing() {
+        use GithubAccess::{Comment, Push, Read};
+        assert!(check(TokenAccess::Full, Some(Comment)).is_err());
+        assert!(check(TokenAccess::Full, Some(Read)).is_err());
+        assert!(check(TokenAccess::Full, Some(Push)).is_ok());
+        assert!(check(TokenAccess::Full, None).is_ok());
+        assert!(check(TokenAccess::Run, Some(Comment)).is_ok());
+        assert!(check(TokenAccess::Read, Some(Read)).is_ok());
     }
 
     #[test]
@@ -461,6 +498,8 @@ mod tests {
                 ("POST", "workspaces/wsp_1/invitations"),
                 ("PATCH", "workspaces/wsp_1"),
                 ("GET", "admin/users"),
+                ("GET", "workspaces/wsp_1/avatar"),
+                ("POST", "auth/device/KFTW-QXPL"),
                 ("GET", "runners"),
                 ("GET", "feed/ws"),
                 ("GET", "github/repos"),

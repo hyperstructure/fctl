@@ -20,11 +20,14 @@ It prints the token once. Three questions limit it:
 |---|---|---|
 | What it can do | **Run sessions**: start sessions, message their agents, stop and resume the ones it started, keep projects' memory. **Read**: read projects and sessions, change nothing. **Everything**: all you can do in its projects. | `--access run`, `read` or `full` |
 | Where | All your projects, or some projects, or every project of some workspaces (those made later too) | `-p web` and `-w acme`, repeated |
-| What its sessions' agents may do on GitHub | Push, comment or read (below) | `--github push`, `comment` or `read` |
+| What its sessions' agents may do on GitHub | Push, comment or read (below), for a token that runs sessions | `--github push`, `comment` or `read` |
 
 A token with any limit reaches projects and sessions only: never your
 account, your workspaces' people and settings, your Claude connections or
-your other tokens, so it can't make itself a token without limits. It
+your other tokens, so it can't make itself a token without limits. Only a
+token that runs sessions holds their agents to commenting or reading: one
+that does everything could change its projects' settings, and so what
+every agent there does. It
 works as you, within its limits and never beyond your own roles, until it
 expires or you revoke it. A token without limits, which `fctl token NAME`
 makes when you ask for none, does everything you can, as you do when signed
@@ -139,8 +142,11 @@ What to keep in mind:
 - **What the agent reads can steer it.** A pull request can ask the agent
   to do something else. It can comment what it is asked, not push it, and
   its token can't reach your other projects. Its sandbox has the project's
-  secrets, as every session's does: review code from people you don't
-  trust in a project whose secrets they may see, or that has none.
+  secrets, as every session's does, and it can add to the project's
+  memory, which later agents start with, those that push too: review code
+  from people you don't trust in a project whose secrets they may see, or
+  that has none, and keeps no memory (`fctl projects set --project-memory
+  off`).
 - **One project, an expiry.** Keep the token to the projects it serves and
   let it expire; revoke it in Settings → Access tokens, or with `fctl
   tokens revoke`, as soon as it may have leaked.

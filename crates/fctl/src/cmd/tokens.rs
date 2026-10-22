@@ -66,7 +66,8 @@ pub struct TokenArgs {
     pub days: Option<u32>,
     /// What it does: read; run (also start and steer sessions); full
     /// (everything you can). A token with any limit reaches only projects
-    /// and sessions, never your account or other tokens.
+    /// and sessions, never your account or other tokens. Default: full, or
+    /// run with --github comment or read.
     #[arg(long, value_enum)]
     pub access: Option<Access>,
     /// Only this project, by slug or id (repeat for more).
@@ -78,7 +79,8 @@ pub struct TokenArgs {
     pub workspaces: Vec<String>,
     /// The most the agents of the sessions it starts may do on GitHub:
     /// push, comment (review, comment and resolve review threads; push
-    /// nothing) or read.
+    /// nothing) or read. Only for a token that runs sessions: one that does
+    /// everything could change what its projects' agents do.
     #[arg(long, value_enum)]
     pub github: Option<Github>,
 }
@@ -99,10 +101,16 @@ pub enum TokensCmd {
 
 pub async fn create(server: Option<&str>, args: TokenArgs, json: bool) -> Result<()> {
     let api = config::api(server)?;
+    // Holding its agents to less than pushing takes a token that runs
+    // sessions, not one that could change what they do.
+    let access = match (args.access, args.github) {
+        (None, Some(Github::Comment | Github::Read)) => Some(Access::Run),
+        (access, _) => access,
+    };
     let req = CreateTokenRequest {
         name: args.name,
         expires_in_days: args.days,
-        access: args.access.map(Into::into),
+        access: access.map(Into::into),
         workspaces: args.workspaces,
         projects: args.projects,
         github_access: args.github.map(Into::into),

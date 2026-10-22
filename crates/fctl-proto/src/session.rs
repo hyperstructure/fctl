@@ -587,10 +587,22 @@ pub struct ProjectSettings {
     /// gets unless it asks for less. Absent: push. Running sessions get no
     /// more than this from their next GitHub token on (within the hour).
     /// An update that leaves it out keeps the stored value, so an older
-    /// client can't lift it.
+    /// client can't lift it, and a value this version doesn't know reads
+    /// as `read`.
+    #[serde(deserialize_with = "least_if_unknown")]
     pub github_access: Option<GithubAccess>,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
+}
+
+/// A [`GithubAccess`] that a newer version may have stored, which reads as
+/// the least an agent may do when this version doesn't know it, rather than
+/// failing the whole of the settings it is in.
+fn least_if_unknown<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<GithubAccess>, D::Error> {
+    let v: Option<String> = Option::deserialize(d)?;
+    Ok(v.map(|v| GithubAccess::parse(&v).unwrap_or(GithubAccess::Read)))
 }
 
 impl Default for ProjectSettings {
@@ -929,6 +941,27 @@ pub struct Retrospective {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_github_access_this_version_does_not_know_reads_as_the_least()
+    -> Result<(), serde_json::Error> {
+        let newer: ProjectSettings =
+            serde_json::from_str(r#"{"github_access":"triage","auto_pull_request":false}"#)?;
+        assert_eq!(newer.github_access, Some(GithubAccess::Read));
+        // The other settings stay as they are.
+        assert!(!newer.auto_pull_request);
+        let known: ProjectSettings = serde_json::from_str(r#"{"github_access":"comment"}"#)?;
+        assert_eq!(known.github_access, Some(GithubAccess::Comment));
+        let none: ProjectSettings = serde_json::from_str("{}")?;
+        assert_eq!(none.github_access, None);
+        let null: ProjectSettings = serde_json::from_str(r#"{"github_access":null}"#)?;
+        assert_eq!(null.github_access, None);
+        assert_eq!(
+            serde_json::to_value(&known)?["github_access"],
+            serde_json::json!("comment")
+        );
+        Ok(())
+    }
 
     #[test]
     fn settings_stored_before_a_field_get_its_default() -> Result<(), serde_json::Error> {

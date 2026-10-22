@@ -280,24 +280,31 @@ which D1 keeps with it (`tokens.scope`, `fctl_domain::limits::Limits`):
   as an editor does; `full` does whatever its person may in its projects.
 - **Where** (`places`): every project its person sees, or the projects of
   some workspaces (those made later too) and some projects.
-- **What its sessions' agents may do on GitHub** (`github_access`): the
-  sessions it starts get at most that ([GitHub access](#github-access)),
-  and a session whose agent may do more is read only to it, so that a
-  token for review agents can't steer an agent that pushes.
+- **What its sessions' agents may do on GitHub** (`github_access`), for a
+  token that runs sessions: the sessions it starts get at most that
+  ([GitHub access](#github-access)), and a session whose agent started able
+  to do more is read only to it, so that a token for review agents can't
+  steer an agent that pushes, also once its project holds that agent
+  lower, while its sandbox still has the tokens it started with
+  (`SessionRow::started_github`). A token that does everything can't have
+  this limit (`limits::check`): it could change its projects' settings,
+  and so what every agent there does.
 
 A token with any limit reaches projects and sessions alone. The router
 refuses it everything else before a handler runs (`limits::allows`): the
 account and its sign-in methods, Claude connections, workspaces' people,
 settings, runners and GitHub accounts, notifications, other tokens and
 administration, so that a token handed to CI can't make itself another.
-`GET /auth/me` shows it whose it is and the token itself, nothing more.
+`GET /auth/me` shows it whose it is (their name and primary address) and
+the token itself, nothing more.
 Its role in a project is its person's, at most a viewer's (`read`) or an
 editor's (`run`); in a session, its person's with their project role so
 capped, and at most a viewer's for a token that reads
 (`limits::session_role`). Lists of projects, sessions and workspaces keep
 to its places in SQL (`access::places_sql`), so that their pages stay
 full, and sockets opened with it check its limits again as they check its
-person ([Viewers](#viewers)); it opens no feed. A place that is deleted, or
+person ([Viewers](#viewers)); it opens no feed. Limits that don't read as
+limits, as a newer version's might, reach nothing. A place that is deleted, or
 that its person no longer sees, drops out of its reach, and a token whose
 places are all gone reaches nothing. Its limits hold however it comes, as
 a bearer token or in a cookie. Browser sessions and the CLI's sign-ins
@@ -819,7 +826,8 @@ gets as much as they allow when it doesn't ask (`limits::session_github`).
 Its tokens carry what it may do now: what it started with, within its
 project's setting as that is now (`limits::effective`), so that lowering a
 project's setting reaches its running sessions with their next token,
-within the hour, as removing a repository does. GitHub holds the agent to
+within the hour, as removing a repository does. A value this version
+doesn't know, stored by a newer one, reads as `read`. GitHub holds the agent to
 it, since git and `gh` have no token that can do more.
 
 fctl-agent reads it in the spec (`SessionSpec.github_access`). For an agent
@@ -836,10 +844,11 @@ them through fctl: `fctl resolve PRRT_…` in the sandbox goes to the control
 plane as an agent call (`AgentCall::ResolveThread`), as `fctl memory`
 does. The control plane looks the thread up through the project's
 installation, checks that its pull request is in a repository the session
-may write to and its workspace may use, and resolves it, or opens it
-again, with a token of its own for that repository, which never leaves the
-control plane and which it revokes at once (`fctl_domain::threads`,
-`repos::resolve_permissions`). `~/AGENTS.md` tells agents that comment
+may write to and its workspace may use (and refuses one elsewhere as it
+refuses one that doesn't exist, naming no repository), and resolves it, or
+opens it again, with a token of its own for that repository, which never
+leaves the control plane and which it revokes at once
+(`fctl_domain::threads`, `repos::resolve_permissions`). `~/AGENTS.md` tells agents that comment
 how, where the sandbox's fctl has the command.
 
 ### Pull request state and checks

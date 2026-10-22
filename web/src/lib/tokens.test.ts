@@ -58,6 +58,21 @@ describe("access tokens", () => {
     ).not.toHaveProperty("github_access");
   });
 
+  it("holds agents to less only in a token that runs sessions", () => {
+    // One that does everything could change what its projects' agents do.
+    expect(
+      tokenRequest({ ...NEW_TOKEN, name: "Script", access: "full", github: "comment" }),
+    ).not.toHaveProperty("github_access");
+    const names = { workspaces: new Map(), projects: new Map([["prj_1", "Web"]]) };
+    expect(
+      formScope(
+        { ...NEW_TOKEN, access: "full", github: "comment", places: { workspaces: [], projects: ["prj_1"] } },
+        names,
+      )?.github_access,
+    ).toBeUndefined();
+    expect(formScope({ ...NEW_TOKEN, access: "full", github: "comment" }, names)).toBeUndefined();
+  });
+
   it("needs a name, and a project when it names some", () => {
     expect(ready(NEW_TOKEN)).toBe(false);
     expect(ready({ ...NEW_TOKEN, name: "x" })).toBe(true);
