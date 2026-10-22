@@ -888,7 +888,9 @@ async fn device_by_user_code(ctx: &Ctx, code: &str) -> AppResult<DeviceRow> {
 }
 
 pub async fn device_info(ctx: &Ctx, code: &str) -> AppResult<Response> {
-    ctx.user()?;
+    let user = ctx.user()?;
+    // Codes are short enough to type: nobody tries many of them.
+    ctx.rate_limit(&format!("device-code:{}", user.id)).await?;
     let row = device_by_user_code(ctx, code).await?;
     http::ok(&DeviceInfo {
         user_code: row.user_code,
@@ -904,6 +906,7 @@ pub async fn device_info(ctx: &Ctx, code: &str) -> AppResult<Response> {
 pub async fn device_decide(ctx: &mut Ctx, req: &mut Request, code: &str) -> AppResult<Response> {
     let body: DeviceDecisionRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
+    ctx.rate_limit(&format!("device-code:{}", user.id)).await?;
     let row = device_by_user_code(ctx, code).await?;
     let status = if body.approve { "approved" } else { "denied" };
     q(
