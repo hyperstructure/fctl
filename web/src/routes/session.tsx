@@ -20,6 +20,7 @@ import {
   Users,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Changes } from "@/components/session/changes";
 import { Composer } from "@/components/session/composer";
 import {
   SessionMemory,
@@ -55,7 +56,7 @@ import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, duration, num, until } from "@/lib/format";
-import { hasChanges, type RepoChanges, repoChanges, whereCommits } from "@/lib/git";
+import { hasChanges, repoChanges } from "@/lib/git";
 import { useLiveSession } from "@/lib/live";
 import {
   checksText,
@@ -571,90 +572,6 @@ function AgentTime({ stats, until }: { stats: G.SessionStats; until?: number }) 
   return <span className="tabular-nums">{duration(agentTime(stats, now, until))}</span>;
 }
 
-/** A repository's changed files and totals. */
-function Changes({
-  repo,
-  title,
-  limit,
-  showTotals,
-}: {
-  repo: RepoChanges;
-  /** The repository's name, when the session has more than one. */
-  title?: string;
-  limit: number;
-  showTotals: boolean;
-}) {
-  const { files, ahead } = repo;
-  const maxChange = Math.max(1, ...files.map((f) => (f.additions ?? 0) + (f.deletions ?? 0)));
-  return (
-    <div>
-      {title && (
-        <div className="mb-1.5 flex items-baseline justify-between gap-2">
-          <span className="min-w-0 truncate font-mono text-[12px] text-ink-2" title={title}>
-            {title}
-          </span>
-          {repo.readOnly && <span className="shrink-0 text-[11.5px] text-ink-4">read only</span>}
-        </div>
-      )}
-      {files.length === 0 ? (
-        <p className="text-[12.5px] text-ink-4">No changes yet.</p>
-      ) : (
-        <ul className="flex flex-col gap-1">
-          {files.slice(0, limit).map((f) => {
-            const a = f.additions ?? 0;
-            const d = f.deletions ?? 0;
-            return (
-              <li key={f.path} className="flex items-center gap-2 text-[12px]">
-                <span
-                  className={cn(
-                    "w-3 shrink-0 text-center font-mono text-[11px]",
-                    f.status === "added" || f.status === "untracked"
-                      ? "text-accent"
-                      : f.status === "deleted"
-                        ? "text-danger"
-                        : "text-blue",
-                  )}
-                >
-                  {f.status === "added" || f.status === "untracked"
-                    ? "A"
-                    : f.status === "deleted"
-                      ? "D"
-                      : f.status === "renamed"
-                        ? "R"
-                        : "M"}
-                </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-ink-2" title={f.path}>
-                  {f.path}
-                </span>
-                <span className="flex h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-raised">
-                  <span className="bg-accent/80" style={{ width: `${(a / maxChange) * 100}%` }} />
-                  <span className="bg-danger/70" style={{ width: `${(d / maxChange) * 100}%` }} />
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {showTotals && (
-        <div className="mt-3 flex flex-wrap gap-x-3 text-[12px] text-ink-4">
-          <span>
-            <span className="text-accent">+{repo.additions}</span>{" "}
-            <span className="text-danger">−{repo.deletions}</span>
-          </span>
-          {ahead > 0 && (
-            <span>
-              {ahead} {ahead === 1 ? "commit" : "commits"}
-            </span>
-          )}
-          {whereCommits(repo).map((where) => (
-            <span key={where}>{where}</span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** Every pull request of the session, with the repository of each, its state and its checks. */
 function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
   return (
@@ -836,19 +753,18 @@ function Details({
       {pullsFirst && pulls}
       <RailSection title="Changes">
         {primary && others.length === 0 ? (
-          <Changes repo={primary} limit={60} showTotals={!!git} />
+          <Changes repo={primary} showTotals={!!git} />
         ) : (
           <div className="flex flex-col gap-5">
             {primary && (hasChanges(primary) || changed.length === 0) && (
               <Changes
                 repo={primary}
                 title={project?.repo ? `${project.repo.owner}/${project.repo.name}` : "~/workspace"}
-                limit={30}
                 showTotals={hasChanges(primary)}
               />
             )}
             {changed.map((r) => (
-              <Changes key={r.name} repo={r} title={r.name} limit={30} showTotals />
+              <Changes key={r.name} repo={r} title={r.name} showTotals />
             ))}
           </div>
         )}
