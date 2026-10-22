@@ -512,7 +512,7 @@ pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respon
     let mut refs = Vec::new();
     for (row, role) in &workspaces {
         // The instance invitation's email says it.
-        crate::api::workspaces::invite(ctx, row, &email, *role, false).await?;
+        crate::api::workspaces::invite(ctx, row, &email, *role, false, true).await?;
         refs.push(row.to_ref());
     }
     let invite = create_invite_for(ctx, &email, role, refs).await?;

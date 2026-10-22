@@ -20,7 +20,7 @@ use serde::Deserialize;
 use worker::{D1Database, Request, Response};
 
 /// Notes with the sessions and people they name.
-const SELECT: &str = "SELECT m.id, m.project_id, m.text, m.created_at, m.edited_at, m.stale_at, m.stale_reason, m.replaced_by, \
+const SELECT: &str = "SELECT m.id, m.project_id, m.text, m.created_at, m.edited_at, m.stale_at, m.stale_reason, m.replaced_by, m.duplicate_of, \
     m.session_id, cs.number AS session_number, cs.title AS session_title, \
     m.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     m.edited_by, eu.name AS editor_name, eu.avatar_url AS editor_avatar, \
@@ -46,6 +46,7 @@ struct Row {
     stale_at: Option<i64>,
     stale_reason: Option<String>,
     replaced_by: Option<String>,
+    duplicate_of: Option<String>,
     session_id: Option<String>,
     #[serde(default, deserialize_with = "crate::db::opt_int")]
     session_number: Option<i64>,
@@ -109,6 +110,7 @@ impl Row {
             ),
             by: person(self.stale_by, self.stale_by_name, self.stale_by_avatar),
             replaced_by: self.replaced_by.map(MemoryId),
+            duplicate_of: self.duplicate_of.map(MemoryId),
         });
         Memory {
             id: MemoryId(self.id),
@@ -224,26 +226,31 @@ impl Writer<'_> {
     }
 }
 
-/// Adds a note to a project's memory (`fctl memory add`), in place of
-/// `replaces` when it names one, which goes stale and points at it, in one
-/// batch. Returns the new note, and the one it replaced.
+/// Notes of a project, in the order of `ids`, which all must be there.
+async fn several(db: &D1Database, ids: &[MemoryId], project_id: &str) -> AppResult<Vec<Memory>> {
+    let mut notes = Vec::with_capacity(ids.len());
+    for id in ids {
+        let note = one(db, id.as_str(), Some(project_id))
+            .await?
+            .ok_or_else(|| not_found(&format!("Memory {id}")))?;
+        notes.push(note);
+    }
+    Ok(notes)
+}
+
+/// Adds a note to a project's memory (`fctl memory add`), in place of the
+/// notes `replaces` names (`memory::replaced`), which go stale and point
+/// at it, in one batch. Returns the new note, and those it replaced.
 pub async fn remember(
     db: &D1Database,
     project_id: &str,
     writer: &Writer<'_>,
     text: &str,
-    replaces: Option<&MemoryId>,
+    replaces: &[MemoryId],
     now: i64,
-) -> AppResult<(Memory, Option<Memory>)> {
+) -> AppResult<(Memory, Vec<Memory>)> {
     let text = memory::text(text)?;
-    let replaced = match replaces {
-        Some(old) => Some(
-            one(db, old.as_str(), Some(project_id))
-                .await?
-                .ok_or_else(|| not_found("Memory"))?,
-        ),
-        None => None,
-    };
+    let replaced = several(db, replaces, project_id).await?;
     let id = fctl_domain::ids::memory_id(now);
     let mut statements = vec![insert(
         db,
@@ -254,7 +261,7 @@ pub async fn remember(
         Some(writer.person()),
         now,
     )?];
-    if let Some(old) = &replaced {
+    for old in &replaced {
         // Only once the new note is in; one stale already keeps its reason.
         statements.push(q(
             db,
@@ -275,25 +282,76 @@ pub async fn remember(
     }
     batch(db, statements).await?;
     let memory = one(db, id.as_str(), None).await?.ok_or_else(full)?;
-    let replaced = match replaced {
-        Some(old) => one(db, old.id.as_str(), None).await?,
-        None => None,
-    };
-    Ok((memory, replaced))
+    let mut now_replaced = Vec::with_capacity(replaced.len());
+    for old in &replaced {
+        // Unless someone deleted it meanwhile.
+        if let Some(note) = one(db, old.id.as_str(), None).await? {
+            now_replaced.push(note);
+        }
+    }
+    Ok((memory, now_replaced))
 }
 
-/// An agent marks a note stale (`fctl memory stale`), saying why. One its
-/// session marked stale already stays as it is (the host may ask again);
-/// one marked by someone else is refused, with their reason.
+/// The current note of a project that another is marked a duplicate of,
+/// checked (`memory::check_duplicate`).
+async fn original(db: &D1Database, note: &Memory, of: &MemoryId) -> AppResult<Memory> {
+    let original = one(db, of.as_str(), Some(note.project_id.as_str()))
+        .await?
+        .ok_or_else(|| not_found(&format!("Memory {of}")))?;
+    memory::check_duplicate(note, &original)?;
+    Ok(original)
+}
+
+/// Marks a note stale as a duplicate of `of` in a batch's statement, only
+/// while both are as [`original`] checked them: the note current, `of` too.
+fn mark_duplicate(
+    db: &D1Database,
+    id: &MemoryId,
+    of: &MemoryId,
+    reason: &str,
+    session: Option<&str>,
+    person: &str,
+    now: i64,
+) -> AppResult<Query> {
+    q(
+        db,
+        "UPDATE memories SET stale_at = ?1, stale_reason = ?2, stale_session_id = ?3, stale_by = ?4, \
+         duplicate_of = ?5 WHERE id = ?6 AND stale_at IS NULL \
+         AND EXISTS (SELECT 1 FROM memories WHERE id = ?5 AND stale_at IS NULL)",
+        &[
+            n(now),
+            s(reason),
+            os(session),
+            s(person),
+            s(of.as_str()),
+            s(id.as_str()),
+        ],
+    )
+}
+
+/// An agent marks a note stale (`fctl memory stale`), saying why, or a
+/// duplicate of `duplicate_of` (`fctl memory duplicate`), a current note
+/// of the project. One its session marked stale already stays as it is
+/// (the host may ask again); one marked by someone else is refused, with
+/// their reason.
 pub async fn mark_stale(
     db: &D1Database,
     session: &RunnerSession,
     id: &MemoryId,
     reason: &str,
+    duplicate_of: Option<&MemoryId>,
     now: i64,
 ) -> AppResult<Memory> {
-    let reason = memory::reason(Some(reason))?
-        .ok_or_else(|| crate::error::validation("reason", "Say why the note is stale"))?;
+    let reason = match (memory::reason(Some(reason))?, duplicate_of) {
+        (Some(reason), _) => reason,
+        (None, Some(of)) => memory::duplicate_reason(of),
+        (None, None) => {
+            return Err(crate::error::validation(
+                "reason",
+                "Say why the note is stale",
+            ));
+        }
+    };
     let note = one(db, id.as_str(), Some(&session.project_id))
         .await?
         .ok_or_else(|| not_found("Memory"))?;
@@ -312,20 +370,33 @@ pub async fn mark_stale(
             .unwrap_or_default();
         return Err(conflict(&format!("{id} is stale already{why}")));
     }
-    q(
-        db,
-        "UPDATE memories SET stale_at = ?, stale_reason = ?, stale_session_id = ?, stale_by = ? \
-         WHERE id = ? AND stale_at IS NULL",
-        &[
-            n(now),
-            s(&reason),
-            s(&session.id),
-            s(&session.created_by),
-            s(id.as_str()),
-        ],
-    )?
-    .run()
-    .await?;
+    let statement = match duplicate_of {
+        Some(of) => {
+            original(db, &note, of).await?;
+            mark_duplicate(
+                db,
+                id,
+                of,
+                &reason,
+                Some(&session.id),
+                &session.created_by,
+                now,
+            )?
+        }
+        None => q(
+            db,
+            "UPDATE memories SET stale_at = ?, stale_reason = ?, stale_session_id = ?, stale_by = ? \
+             WHERE id = ? AND stale_at IS NULL",
+            &[
+                n(now),
+                s(&reason),
+                s(&session.id),
+                s(&session.created_by),
+                s(id.as_str()),
+            ],
+        )?,
+    };
+    statement.run().await?;
     one(db, id.as_str(), None)
         .await?
         .ok_or_else(|| not_found("Memory"))
@@ -395,30 +466,38 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     let p = access::project(ctx, id).await?;
     require_editor(&p)?;
     let user = ctx.user()?.id.clone();
+    let replaces = memory::replaced(body.replaces.as_ref(), &body.also_replaces)?;
     let (note, replaced) = remember(
         &ctx.db,
         &p.row.id,
         &Writer::Person(&user),
         &body.text,
-        body.replaces.as_ref(),
+        &replaces,
         ctx.now,
     )
     .await?;
+    let mut replaced = replaced.into_iter().map(|m| m.id);
+    let first = replaced.next();
+    let more: Vec<MemoryId> = replaced.collect();
+    let mut details = serde_json::json!({
+        "project_id": p.row.id,
+        "text": memory::headline(&note.text, 80),
+        "replaces": first,
+    });
+    if let Some(details) = details.as_object_mut().filter(|_| !more.is_empty()) {
+        details.insert("also_replaces".into(), serde_json::json!(more));
+    }
     ctx.audit_in(
         Some(p.workspace_id()),
         "memory.added",
         Some(note.id.as_str()),
-        Some(serde_json::json!({
-            "project_id": p.row.id,
-            "text": memory::headline(&note.text, 80),
-            "replaces": replaced.map(|m| m.id),
-        })),
+        Some(details),
     );
     http::created(&note)
 }
 
 /// `PATCH /api/v1/memories/{id}` (editors): changes a note's text, marks
-/// it stale or makes it current again.
+/// it stale (a duplicate of another too) or makes it current again.
 pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: UpdateMemoryRequest = http::body(req).await?;
     let (note, p) = editable(ctx, id).await?;
@@ -436,10 +515,32 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             changed.push("text");
         }
     }
-    match body.stale {
+    // `duplicate_of` marks it stale too.
+    let stale = match (body.stale, &body.duplicate_of) {
+        (Some(false), Some(_)) => {
+            return Err(crate::error::validation(
+                "duplicate_of",
+                "A duplicate is stale: leave stale out, or set it to true",
+            ));
+        }
+        (None, Some(_)) => Some(true),
+        (stale, _) => stale,
+    };
+    let mut duplicate_of = None;
+    match (stale, &body.duplicate_of) {
         // A stale note keeps when, why and who.
-        Some(true) if note.stale.is_some() => {}
-        Some(true) => {
+        (Some(true), _) if note.stale.is_some() => {}
+        (Some(true), Some(of)) => {
+            let of = original(&ctx.db, &note, of).await?;
+            let reason = memory::reason(body.reason.as_deref())?
+                .unwrap_or_else(|| memory::duplicate_reason(&of.id));
+            statements.push(mark_duplicate(
+                &ctx.db, &note.id, &of.id, &reason, None, &user, ctx.now,
+            )?);
+            changed.push("stale");
+            duplicate_of = Some(of.id);
+        }
+        (Some(true), None) => {
             let reason = memory::reason(body.reason.as_deref())?;
             statements.push(q(
                 &ctx.db,
@@ -448,10 +549,10 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             )?);
             changed.push("stale");
         }
-        Some(false) if note.stale.is_some() => {
+        (Some(false), _) if note.stale.is_some() => {
             statements.push(q(
                 &ctx.db,
-                "UPDATE memories SET stale_at = NULL, stale_reason = NULL, stale_session_id = NULL, stale_by = NULL, replaced_by = NULL WHERE id = ?",
+                "UPDATE memories SET stale_at = NULL, stale_reason = NULL, stale_session_id = NULL, stale_by = NULL, replaced_by = NULL, duplicate_of = NULL WHERE id = ?",
                 &[s(note.id.as_str())],
             )?);
             changed.push("current");
@@ -460,15 +561,19 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     }
     if !statements.is_empty() {
         batch(&ctx.db, statements).await?;
+        let mut details = serde_json::json!({
+            "project_id": p.row.id,
+            "changed": changed,
+            "text": memory::headline(&note.text, 80),
+        });
+        if let (Some(details), Some(of)) = (details.as_object_mut(), duplicate_of) {
+            details.insert("duplicate_of".into(), serde_json::json!(of));
+        }
         ctx.audit_in(
             Some(p.workspace_id()),
             "memory.edited",
             Some(note.id.as_str()),
-            Some(serde_json::json!({
-                "project_id": p.row.id,
-                "changed": changed,
-                "text": memory::headline(&note.text, 80),
-            })),
+            Some(details),
         );
     }
     let note = one(&ctx.db, note.id.as_str(), None)

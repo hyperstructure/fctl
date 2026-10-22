@@ -44,7 +44,8 @@ export type Item =
       id: string;
       name: string;
       input: Record<string, Json>;
-      result?: { text: string; isError: boolean; structured?: unknown };
+      /** What the call returned, and when (`ts`). */
+      result?: { text: string; isError: boolean; structured?: unknown; ts?: number };
       /** Tool calls a subagent made inside this one. */
       children: number;
       childLast?: string;
@@ -66,7 +67,8 @@ export type Item =
   | (Base & { kind: "git"; git: G.GitState; repos: (string | undefined)[] })
   | (Base & { kind: "remote"; rc: G.RemoteControlState })
   | (Base & { kind: "interrupt"; by?: G.UserRef })
-  | (Base & { kind: "init"; model: string; version?: string })
+  /** Claude Code started, in `cwd`. */
+  | (Base & { kind: "init"; model: string; version?: string; cwd?: string })
   | (Base & { kind: "limit"; status: string; resetsAt?: number; limit?: string });
 
 export type Tool = Extract<Item, { kind: "tool" }>;
@@ -351,6 +353,7 @@ export class TranscriptBuilder {
           key: `init-${ev.seq}`,
           model: m.model,
           version: m.claude_code_version,
+          cwd: typeof m.cwd === "string" ? m.cwd : undefined,
         });
       }
       return;
@@ -398,7 +401,12 @@ export class TranscriptBuilder {
         const r = b as ToolResultBlock;
         this.updateTool(items, r.tool_use_id, (t) => ({
           ...t,
-          result: { text: resultText(r.content), isError: !!r.is_error, structured: m.tool_use_result },
+          result: {
+            text: resultText(r.content),
+            isError: !!r.is_error,
+            structured: m.tool_use_result,
+            ts: ev.ts,
+          },
         }));
         // A subagent whose call returned has ended, unless it works in the background.
         if (!this.tool(items, r.tool_use_id)?.agent?.background) this.open.delete(r.tool_use_id);

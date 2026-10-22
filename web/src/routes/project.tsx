@@ -270,8 +270,9 @@ function Sessions({ project }: { project: G.Project }) {
               <AttachButton onFiles={(f) => attach(f)} />
               <span className="flex-1" />
               <StartChoices project={project} choice={choice} onPick={pick} disabled={starting} />
-              {/* On a phone, as on the home page, its room goes to the button. */}
-              <span className="text-[11.5px] text-ink-4 max-sm:hidden">⌘↵</span>
+              {/* Set apart from the pickers, as on the home page. On a phone its room goes to the
+                  button. */}
+              <span className="ml-4 text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
               {/* On a phone it can take a line of its own, at its end. */}
               <StartButton
                 starting={starting}

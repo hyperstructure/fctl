@@ -89,7 +89,7 @@ describe("TextareaControls", () => {
         <Textarea ref={ref} bare aria-label="Task" />
         <TextareaControls textarea={ref}>
           <button type="button">Attach files</button>
-          <span>⌘↵ to start</span>
+          <span>⌘+Enter</span>
         </TextareaControls>
       </>,
     );

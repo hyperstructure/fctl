@@ -2035,13 +2035,18 @@ pub struct MemoryList {
 
 /// `POST /api/v1/projects/{id}/memories` (editors): a note from a person
 /// for the project's agents; with `replaces`, in place of that note, which
-/// goes stale.
+/// goes stale, and with `also_replaces` in place of those too.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct AddMemoryRequest {
     pub text: String,
     pub replaces: Option<MemoryId>,
+    /// More notes it takes the place of. Control planes from before it
+    /// replace only `replaces`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<MemoryId>>", optional))]
+    pub also_replaces: Vec<MemoryId>,
 }
 
 /// `PATCH /api/v1/memories/{id}` (editors): absent fields stay as they
@@ -2055,6 +2060,9 @@ pub struct UpdateMemoryRequest {
     /// again.
     pub stale: Option<bool>,
     pub reason: Option<String>,
+    /// Marks it stale as a duplicate of that note, a current one of the
+    /// same project, with `reason` or `Duplicate of mem_…`.
+    pub duplicate_of: Option<MemoryId>,
 }
 
 // ───────────────────────────── retrospectives ─────────────────────────────
@@ -2103,14 +2111,28 @@ pub enum AgentCall {
         stale: bool,
     },
     /// A note for the agents of later sessions. With `replaces`, it takes
-    /// the place of that note, which goes stale.
+    /// the place of that note, which goes stale, and with `also_replaces`
+    /// of those too.
     Remember {
         text: String,
         #[cfg_attr(feature = "ts", ts(optional))]
         replaces: Option<MemoryId>,
+        /// More notes it takes the place of. Hosts and control planes from
+        /// before it replace only `replaces`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<Vec<MemoryId>>", optional))]
+        also_replaces: Vec<MemoryId>,
     },
-    /// Marks a note stale: it turned out wrong, or out of date.
-    MarkStale { id: MemoryId, reason: String },
+    /// Marks a note stale: it turned out wrong, or out of date. With
+    /// `duplicate_of`, it repeats that note, a current one, which stays;
+    /// hosts and control planes from before it mark it stale with the
+    /// reason alone.
+    MarkStale {
+        id: MemoryId,
+        reason: String,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        duplicate_of: Option<MemoryId>,
+    },
     /// Records a retrospective of a piece of the session's work.
     Retrospective {
         outcome: RetrospectiveOutcome,
@@ -2134,11 +2156,15 @@ pub enum AgentAnswer {
         memories: Vec<Memory>,
     },
     /// The note as it is now: the new one, or the one marked stale. With
-    /// `replaces`, also the note it replaced.
+    /// `replaces`, also the note it replaced, and with `also_replaces` the
+    /// others.
     Memory {
         memory: Memory,
         #[cfg_attr(feature = "ts", ts(optional))]
         replaced: Option<Memory>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Memory>>", optional))]
+        also_replaced: Vec<Memory>,
     },
     Retrospective {
         retrospective: Retrospective,

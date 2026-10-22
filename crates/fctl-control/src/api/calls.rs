@@ -101,8 +101,13 @@ pub async fn runner_call(
                 memories: memories::list(&ctx.db, &session.project_id, stale).await?,
             }
         }
-        AgentCall::Remember { text, replaces } => {
+        AgentCall::Remember {
+            text,
+            replaces,
+            also_replaces,
+        } => {
             session.require_memory()?;
+            let replaces = fctl_domain::memory::replaced(replaces.as_ref(), &also_replaces)?;
             let writer = memories::Writer::Agent {
                 session: &session.id,
                 started_by: &session.created_by,
@@ -112,17 +117,37 @@ pub async fn runner_call(
                 &session.project_id,
                 &writer,
                 &text,
-                replaces.as_ref(),
+                &replaces,
                 ctx.now,
             )
             .await?;
-            AgentAnswer::Memory { memory, replaced }
+            // The first in `replaced`, as agents from before `also_replaced`
+            // read it.
+            let mut replaced = replaced.into_iter();
+            AgentAnswer::Memory {
+                memory,
+                replaced: replaced.next(),
+                also_replaced: replaced.collect(),
+            }
         }
-        AgentCall::MarkStale { id, reason } => {
+        AgentCall::MarkStale {
+            id,
+            reason,
+            duplicate_of,
+        } => {
             session.require_memory()?;
             AgentAnswer::Memory {
-                memory: memories::mark_stale(&ctx.db, &session, &id, &reason, ctx.now).await?,
+                memory: memories::mark_stale(
+                    &ctx.db,
+                    &session,
+                    &id,
+                    &reason,
+                    duplicate_of.as_ref(),
+                    ctx.now,
+                )
+                .await?,
                 replaced: None,
+                also_replaced: Vec::new(),
             }
         }
         AgentCall::Retrospective {

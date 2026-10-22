@@ -311,8 +311,11 @@ function QuickStart({
           {target && (
             <StartChoices project={target} choice={choice} onPick={pickChoice} disabled={starting} />
           )}
-          {/* From lg the pickers share its row, which has room for it again from xl. */}
-          <span className="hidden text-[11.5px] text-ink-4 sm:inline lg:hidden xl:inline">⌘↵ to start</span>
+          {/* From lg the pickers share its row, which has room for it again from xl. Its margins set it
+              apart from them, and a little from the button. */}
+          <span className="mr-1 ml-5 hidden text-[11.5px] text-ink-4 sm:inline lg:hidden xl:inline">
+            ⌘+Enter
+          </span>
           {/* On a phone it can take a line of its own, at its end. */}
           <StartButton
             starting={starting}
@@ -437,7 +440,7 @@ function GettingStarted({
           done={project}
           title="Create a project"
           action={
-            workspace ? (
+            yours ? (
               <Link to="/new">
                 <Button size="sm" icon={<FolderPlus className="size-3.5" />}>
                   Create
@@ -446,7 +449,9 @@ function GettingStarted({
             ) : undefined
           }
         >
-          Link a GitHub repository — or start a brand new one — and tell agents how to set it up.
+          {yours
+            ? "Link a GitHub repository — or start a brand new one — and tell agents how to set it up."
+            : "A workspace admin creates its projects, and adds you to the ones you work in."}
         </Step>
       </ol>
     </section>

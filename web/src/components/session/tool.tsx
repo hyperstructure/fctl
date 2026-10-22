@@ -1,94 +1,98 @@
 // A tool call in the transcript: one quiet line that opens into its details.
 // A subagent's opens into what it was asked and what it did, step by step.
+// Calls in a row fold into a run: a line that says what they did, which
+// opens into them.
 
 import { diffLines } from "diff";
 import {
   Bot,
-  ChevronRight,
-  FilePen,
-  FilePlus2,
+  FilePenLine,
+  FilePlus,
   FileText,
+  FolderOpen,
   FolderSearch,
   Globe,
-  ListChecks,
+  Link,
+  ListTodo,
   MessageSquareText,
   NotebookPen,
-  Search,
-  SquareTerminal,
+  Plug,
+  Terminal,
+  TextSearch,
   Wrench,
 } from "lucide-react";
-import { memo, type ReactNode, useMemo, useState } from "react";
+import {
+  type CSSProperties,
+  createContext,
+  memo,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useId,
+  useMemo,
+  useState,
+} from "react";
 import { CodeBlock, Markdown } from "@/components/markdown";
-import { Spinner } from "@/components/ui";
+import { Spinner, ThoughtIcon } from "@/components/ui";
 import type { Json } from "@/lib/claude-types";
 import { cn } from "@/lib/cn";
 import { duration } from "@/lib/format";
 import { langOf } from "@/lib/highlight";
 import {
+  callsIn,
+  changed,
+  changedIn,
+  describe,
+  type Lines,
+  parts,
+  runTook,
+  summary,
+  type Target,
+  took,
+  type Work,
+} from "@/lib/runs";
+import {
   isSubagent,
+  type LiveBlock,
   type Step,
   type Subagent,
   subagentReport,
   subagentRuns,
   type Tool,
 } from "@/lib/transcript";
+import { OpenLine, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { Thinking } from "./thinking";
 
 const ICONS: Record<string, ReactNode> = {
-  Bash: <SquareTerminal />,
+  Bash: <Terminal />,
   Read: <FileText />,
-  Write: <FilePlus2 />,
-  Edit: <FilePen />,
-  MultiEdit: <FilePen />,
+  Write: <FilePlus />,
+  Edit: <FilePenLine />,
+  MultiEdit: <FilePenLine />,
   NotebookEdit: <NotebookPen />,
-  Grep: <Search />,
+  Grep: <TextSearch />,
   Glob: <FolderSearch />,
-  WebFetch: <Globe />,
-  WebSearch: <Search />,
+  LS: <FolderOpen />,
+  WebFetch: <Link />,
+  WebSearch: <Globe />,
   Task: <Bot />,
   Agent: <Bot />,
-  TodoWrite: <ListChecks />,
+  TodoWrite: <ListTodo />,
 };
+
+/** A tool's icon: its own, a plug for an MCP server's, else a wrench. */
+const toolIcon = (name: string) => ICONS[name] ?? (name.startsWith("mcp__") ? <Plug /> : <Wrench />);
+
+/** The directory Claude Code works in, which paths in the transcript start from. */
+export const WorkDir = createContext<string | undefined>(undefined);
 
 const str = (v: Json | undefined) => (typeof v === "string" ? v : "");
 
-function shortPath(p: string) {
-  const parts = p.split("/");
-  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : p;
-}
+/** How long something has run, by the second: "12 s", "1m 4s". */
+const ranFor = (s: number) => (s < 60 ? `${Math.round(s)} s` : duration(s * 1000));
 
-/** The verb and the object of a tool call, for its one-line summary. */
-export function describe(name: string, input: Record<string, Json>): { verb: string; target: string } {
-  switch (name) {
-    case "Bash":
-      return {
-        verb: "Ran",
-        target: str(input.description) || str(input.command).split("\n")[0] || "a command",
-      };
-    case "Read":
-      return { verb: "Read", target: shortPath(str(input.file_path)) };
-    case "Write":
-      return { verb: "Wrote", target: shortPath(str(input.file_path)) };
-    case "Edit":
-    case "MultiEdit":
-      return { verb: "Edited", target: shortPath(str(input.file_path)) };
-    case "Grep":
-      return { verb: "Searched for", target: str(input.pattern) };
-    case "Glob":
-      return { verb: "Listed", target: str(input.pattern) };
-    case "WebFetch":
-      return { verb: "Fetched", target: str(input.url).replace(/^https?:\/\//, "") };
-    case "WebSearch":
-      return { verb: "Searched the web for", target: str(input.query) };
-    case "Task":
-    case "Agent":
-      return { verb: "Delegated", target: str(input.description) || "a task" };
-    case "TodoWrite":
-      return { verb: "Updated", target: "the plan" };
-    default:
-      return { verb: name.replace(/^mcp__/, "").replace(/__/g, " · "), target: "" };
-  }
-}
+/** A call that took this long (ms) says so on its line. */
+const SLOW = 10_000;
 
 function DiffView({ before, after, path }: { before: string; after: string; path?: string }) {
   const parts = useMemo(() => diffLines(before, after), [before, after]);
@@ -295,22 +299,28 @@ function Details({ t }: { t: Tool }) {
 /** What the agent asked of a subagent: a line that opens into it. */
 function Prompt({ text, agent }: { text: string; agent: string }) {
   const [open, setOpen] = useState(false);
+  const id = useId();
   if (!text.trim()) return null;
   return (
-    <div className="py-1">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        className="flex items-center gap-2 text-[12.5px] text-ink-4 transition-colors hover:text-ink-2"
+    <div>
+      <OpenLine
+        icon={
+          <RailIcon className="text-ink-4 group-hover/line:text-ink-3">
+            <MessageSquareText />
+          </RailIcon>
+        }
+        open={open}
+        onToggle={() => setOpen(!open)}
+        controls={id}
       >
-        <MessageSquareText className="size-3.5" />
-        Prompt
-        {agent && <span className="font-mono text-[11.5px]">· {agent}</span>}
-        <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} />
-      </button>
+        <span className="shrink-0 text-ink-3 group-hover/line:text-ink-2">Prompt</span>
+        {agent && <span className="min-w-0 truncate font-mono text-[12px] text-ink-4">{agent}</span>}
+      </OpenLine>
       {open && (
-        <div className="mt-1.5 mb-1 max-h-[420px] animate-rise overflow-auto rounded-md border border-line bg-sunken px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap wrap-anywhere text-ink-2">
+        <div
+          id={id}
+          className="mt-1 mb-2 ml-[34px] max-h-[420px] animate-rise overflow-auto rounded-md border border-line bg-sunken px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap wrap-anywhere text-ink-2"
+        >
           {text}
         </div>
       )}
@@ -339,8 +349,8 @@ function Ended({ agent }: { agent?: Subagent }) {
 }
 
 /**
- * What a subagent was asked and what it did: its prose and tool calls, as
- * they come while it works, then its report.
+ * What a subagent was asked and what it did: its prose and its work, in
+ * runs, as they come while it works, then its report.
  */
 function SubagentDetails({ t, running, up }: { t: Tool; running: boolean; up: boolean }) {
   const steps = t.agent?.steps ?? [];
@@ -352,15 +362,9 @@ function SubagentDetails({ t, running, up }: { t: Tool; running: boolean; up: bo
   return (
     <div className="flex flex-col">
       <Prompt text={str(t.input.prompt)} agent={str(t.input.subagent_type)} />
-      {(steps.length > 0 || reported || waiting) && (
-        <div className="flex flex-col border-l border-line pl-3">
-          {steps.map((s) => (
-            <StepView key={s.key} s={s} running={running} up={up} />
-          ))}
-          {reported && <Prose text={report} />}
-          {waiting && <div className="text-shimmer py-1.5 text-[12.5px] text-ink-3">Working</div>}
-        </div>
-      )}
+      <WorkList steps={steps} running={running} up={up} />
+      {reported && <Prose text={report} />}
+      {waiting && <div className="text-shimmer self-start py-1.5 text-[12.5px] text-ink-3">Working</div>}
       {t.result?.isError && (
         <div className="mt-1.5">
           <Output text={t.result.text} error />
@@ -371,77 +375,287 @@ function SubagentDetails({ t, running, up }: { t: Tool; running: boolean; up: bo
   );
 }
 
-function StepView({ s, running, up }: { s: Step; running: boolean; up: boolean }) {
-  if (s.kind === "tool") return <ToolRow t={s} running={running} up={up} />;
-  if (s.kind === "thinking") return <Thinking text={s.text} />;
-  return <Prose text={s.text} />;
+/** A subagent's work: what it said, and its tool calls and thoughts in runs. */
+function WorkList({ steps, running, up }: { steps: Step[]; running: boolean; up: boolean }) {
+  const ps = parts(steps);
+  return ps.map((p, n) => (
+    <Unreadable key={p.key}>
+      {p.kind === "run" ? (
+        <Run steps={p.steps} running={running} active={running && n === ps.length - 1} up={up} />
+      ) : p.item.kind === "tool" ? (
+        <ToolRow t={p.item} running={running} up={up} />
+      ) : (
+        <Prose text={p.item.text} />
+      )}
+    </Unreadable>
+  ));
+}
+
+/** What a call is about: a file (its name brighter than its directory, which gives way first), code or words. */
+function TargetText({ target }: { target: Target }) {
+  if (target.kind === "path") {
+    const cut = target.text.lastIndexOf("/") + 1;
+    return (
+      <span className="flex min-w-0 font-mono text-[0.925em]">
+        {cut > 0 && (
+          <span className="min-w-0 shrink-[1000] truncate text-ink-4">{target.text.slice(0, cut)}</span>
+        )}
+        <span className="min-w-0 truncate text-ink-3">{target.text.slice(cut)}</span>
+      </span>
+    );
+  }
+  return (
+    <span className={cn("min-w-0 truncate text-ink-3", target.kind === "code" && "font-mono text-[0.925em]")}>
+      {target.text}
+    </span>
+  );
+}
+
+/** Lines added and taken out: "+12 −3", in color when there are any. */
+function LinesChanged({ lines }: { lines: Lines }) {
+  return (
+    <span className="font-mono text-[11px]">
+      <span className={cn(lines.added > 0 && "text-accent/80")}>+{lines.added}</span>{" "}
+      <span className={cn(lines.removed > 0 && "text-danger/80")}>−{lines.removed}</span>
+    </span>
+  );
+}
+
+/** What a line says about itself at its right, in order, with dots between. */
+function Facts({ children }: { children: ReactNode[] }) {
+  const shown = children.filter(Boolean);
+  if (!shown.length) return null;
+  return (
+    <span className="flex items-center gap-1.5">
+      {shown.map((c, i) => (
+        <span key={i} className="flex items-center gap-1.5">
+          {i > 0 && <span aria-hidden="true">·</span>}
+          {c}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 export const ToolRow = memo(function ToolRow({
   t,
   running,
   up = false,
-  seconds,
+  seconds: elapsed,
+  open: shown,
+  onToggle,
+  nested,
 }: {
   t: Tool;
   /** Whether the agent works on the turn this call is in, as far as the page knows. */
   running: boolean;
   /** Whether its Claude Code runs, as far as the page knows: subagents in the background work on after their turn. */
   up?: boolean;
+  /** How long it has run, as Claude Code reports it while it does. */
   seconds?: number;
+  /** Whether it is open, when the run it is in keeps that; `onToggle` gets its key. */
+  open?: boolean;
+  onToggle?: (key: string) => void;
+  /** In a run: smaller, its icon bare. */
+  nested?: boolean;
 }) {
-  const [open, setOpen] = useState(t.name === "TodoWrite");
-  const { verb, target } = describe(t.name, t.input);
+  const [own, setOwn] = useState(t.name === "TodoWrite");
+  const open = shown ?? own;
+  const id = useId();
+  const { verb, target } = describe(t.name, t.input, useContext(WorkDir));
   const agent = isSubagent(t);
-  const error = t.result?.isError || t.agent?.ended === "failed";
+  const error = !!t.result?.isError || t.agent?.ended === "failed";
   const pending = agent ? subagentRuns(t, running, up) : !t.result && running;
+  const lines = changed(t);
+  const ms = took(t);
+  const command = t.name === "Bash" ? str(t.input.command) : "";
   return (
-    <div className="group/tool relative">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        className={cn(
-          "flex w-full items-center gap-2.5 rounded-md py-1 pr-2 pl-1 text-left text-[13.5px] transition-colors",
-          "hover:bg-hover/60",
-          error ? "text-danger" : "text-ink-2",
-        )}
+    <div>
+      <OpenLine
+        icon={
+          <Tile nested={nested} error={error}>
+            {pending ? <Spinner className="size-3.5 text-accent" /> : toolIcon(t.name)}
+          </Tile>
+        }
+        open={open}
+        onToggle={onToggle ? () => onToggle(t.key) : () => setOwn(!open)}
+        controls={id}
+        nested={nested}
+        error={error}
+        // A command's line says what it is for; the command shows where the pointer rests.
+        title={command && command !== verb ? command.slice(0, 500) : undefined}
+        meta={
+          <Facts>
+            {[
+              t.children > 0 &&
+                `${t.children} ${t.children === 1 ? "step" : "steps"}${t.childLast ? ` · ${t.childLast}` : ""}`,
+              lines && <LinesChanged lines={lines} />,
+              pending
+                ? elapsed !== undefined && elapsed > 2 && ranFor(elapsed)
+                : !agent && ms !== undefined && ms >= SLOW && duration(ms),
+            ]}
+          </Facts>
+        }
       >
-        <span
-          className={cn(
-            "flex size-6 shrink-0 items-center justify-center rounded-md border transition-colors [&_svg]:size-3.5",
-            error
-              ? "border-danger/30 bg-danger-soft text-danger"
-              : "border-line bg-raised text-ink-3 group-hover/tool:text-ink-2",
-          )}
-        >
-          {pending ? <Spinner className="size-3.5 text-accent" /> : (ICONS[t.name] ?? <Wrench />)}
+        <span className={cn(target ? "shrink-0" : "min-w-0 truncate", pending && "text-shimmer")}>
+          {verb}
         </span>
-        <span className="min-w-0 flex-1 truncate">
-          <span className={cn(pending && "text-shimmer")}>{verb}</span>
-          {target && <span className="ml-1.5 font-mono text-[12.5px] text-ink-3">{target}</span>}
-        </span>
-        {t.children > 0 && (
-          <span className="shrink-0 text-[11.5px] text-ink-4">
-            {t.children} {t.children === 1 ? "step" : "steps"}
-            {t.childLast ? ` · ${t.childLast}` : ""}
-          </span>
-        )}
-        {pending && seconds !== undefined && seconds > 2 && (
-          <span className="shrink-0 text-[11.5px] text-ink-4 tabular-nums">{Math.round(seconds)}s</span>
-        )}
-        <ChevronRight
-          className={cn(
-            "size-3.5 shrink-0 text-ink-4 transition-transform duration-200",
-            open && "rotate-90",
-          )}
-        />
-      </button>
-      {open && (
-        <div className="mt-1 mb-2 ml-9 animate-rise">
-          {agent ? <SubagentDetails t={t} running={pending} up={up} /> : <Details t={t} />}
-        </div>
-      )}
+        {target && <TargetText target={target} />}
+      </OpenLine>
+      {open &&
+        (agent ? (
+          <Thread id={id} nested={nested} className="mt-0.5 mb-2 animate-rise">
+            <SubagentDetails t={t} running={pending} up={up} />
+          </Thread>
+        ) : (
+          <div id={id} className={cn("mt-1 mb-2 animate-rise", nested ? "ml-[22px]" : "ml-[34px]")}>
+            <Details t={t} />
+          </div>
+        ))}
     </div>
   );
 });
+
+const none: ReadonlySet<string> = new Set();
+
+/** A thought or a call that streams in, in the run it goes in, until it is stored. */
+function Coming({ block }: { block: Pick<LiveBlock, "type" | "name"> }) {
+  return (
+    <div className="step-in flex min-h-7 items-center gap-2 py-1 text-[13px] text-ink-3">
+      {block.type === "thinking" ? (
+        <ThoughtIcon className="size-3.5 shrink-0 text-violet/80" />
+      ) : (
+        <Spinner className="size-3.5 shrink-0 text-accent" />
+      )}
+      <span className="text-shimmer">
+        {block.type === "thinking" ? "Thinking" : `Preparing ${block.name ?? "a tool"}`}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * A run of the agent's work: tool calls and thoughts in a row. Two calls or
+ * more fold into a line that says what they did and opens into them; while
+ * the run goes on, its newest step shows under that line as it happens.
+ * Steps the reader opens stay in view, open or not, until the run folds
+ * again.
+ */
+export const Run = memo(
+  function Run({
+    steps,
+    running,
+    active,
+    up = false,
+    progress,
+    coming = [],
+  }: {
+    steps: Work[];
+    /** Whether the agent works on the turn the run is in, as far as the page knows. */
+    running: boolean;
+    /** The run goes on: it is the newest work of the turn the agent works on. */
+    active: boolean;
+    /** Whether Claude Code runs, as far as the page knows (for subagents in the background). */
+    up?: boolean;
+    /** How long its call in progress has run, as Claude Code reports it. */
+    progress?: { id: string; seconds: number };
+    /** The thoughts and calls streaming in, which will be its next steps. */
+    coming?: Pick<LiveBlock, "index" | "type" | "name">[];
+  }) {
+    const [open, setOpen] = useState(false);
+    const [shown, setShown] = useState(none);
+    const [opened, setOpened] = useState(none);
+    const id = useId();
+    const toggle = useCallback((key: string) => {
+      setOpened((o) => {
+        const next = new Set(o);
+        if (!next.delete(key)) next.add(key);
+        return next;
+      });
+      setShown((s) => (s.has(key) ? s : new Set(s).add(key)));
+    }, []);
+    const calls = callsIn(steps);
+    const step = (s: Work, nested: boolean) => (
+      <Unreadable key={s.key}>
+        {s.kind === "tool" ? (
+          <ToolRow
+            t={s}
+            running={running}
+            up={up}
+            seconds={progress?.id === s.id ? progress.seconds : undefined}
+            open={opened.has(s.key)}
+            onToggle={toggle}
+            nested={nested}
+          />
+        ) : (
+          <Thinking text={s.text} open={opened.has(s.key)} onToggle={() => toggle(s.key)} nested={nested} />
+        )}
+      </Unreadable>
+    );
+    // A call on its own is a line of its own.
+    if (calls.length < 2) return steps.map((s) => step(s, false));
+    // Folded, a run that goes on shows what it does now: its calls in
+    // progress, what streams in, or else its newest step.
+    const pending = running ? calls.filter((t) => !t.result) : [];
+    const now = active ? (pending.length || coming.length ? pending : steps.slice(-1)) : [];
+    // Its line says what its calls did, and only while none has, what they do.
+    const done = pending.length ? calls.filter((t) => !pending.includes(t)) : calls;
+    const newest = new Set(now.map((s) => s.key));
+    const visible = open ? steps : steps.filter((s) => shown.has(s.key) || newest.has(s.key));
+    const failed = calls.filter((t) => t.result?.isError).length;
+    const lines = changedIn(calls);
+    const ms = runTook(steps);
+    return (
+      <div>
+        <OpenLine
+          icon={<Tile stacked>{toolIcon(calls[0]?.name ?? "")}</Tile>}
+          open={open}
+          onToggle={() => {
+            setOpen(!open);
+            if (open) {
+              setShown(none);
+              setOpened(none);
+            }
+          }}
+          controls={id}
+          meta={
+            <Facts>
+              {[
+                lines && <LinesChanged lines={lines} />,
+                failed > 0 && <span className="text-danger/80">{failed} failed</span>,
+                !active && ms >= 1000 && duration(ms),
+              ]}
+            </Facts>
+          }
+          // What a run did is all its line says: it wraps rather than lose any of it.
+          wrap={{
+            text: done.length ? summary(done) : summary(pending, true),
+            className: cn(active && "text-shimmer"),
+          }}
+        />
+        {(visible.length > 0 || coming.length > 0) && (
+          <Thread id={id} className="mb-1">
+            {visible.map((s, i) => (
+              <div key={s.key} className="step-in" style={{ "--i": i } as CSSProperties}>
+                {step(s, true)}
+              </div>
+            ))}
+            {coming.map((b) => (
+              <Coming key={`coming-${b.index}`} block={b} />
+            ))}
+          </Thread>
+        )}
+      </div>
+    );
+  },
+  (a, b) =>
+    a.running === b.running &&
+    a.active === b.active &&
+    a.up === b.up &&
+    a.progress?.id === b.progress?.id &&
+    a.progress?.seconds === b.progress?.seconds &&
+    a.steps.length === b.steps.length &&
+    a.steps.every((s, i) => s === b.steps[i]) &&
+    (a.coming?.length ?? 0) === (b.coming?.length ?? 0) &&
+    (a.coming ?? []).every((c, i) => c.index === b.coming?.[i]?.index && c.type === b.coming[i]?.type),
+);

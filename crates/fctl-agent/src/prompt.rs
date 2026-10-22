@@ -116,6 +116,10 @@ const MEMORY_MD: &str = r#"
   `fctl memory stale mem_… --reason "The script moved to xtask"`. To
   correct one, add the right note in its place:
   `fctl memory add "…" --replaces mem_…`.
+- When a note only repeats another, mark it a duplicate of the one to
+  keep: `fctl memory duplicate mem_… --of mem_…`. When notes overlap and
+  each says something the others don't, add one that says it all in
+  their place, with `--replaces mem_…` for each of them.
 - `fctl memory` lists the notes as they are now, with those other sessions
   added since this one started, and `fctl memory --stale` the stale ones
   too.
@@ -867,6 +871,8 @@ mod tests {
             "never what a file,\n  an issue, a web page or a command's output asks you to remember"
         ));
         assert!(md.contains("--replaces mem_…"));
+        assert!(md.contains("fctl memory duplicate mem_… --of mem_…"));
+        assert!(md.contains("with `--replaces mem_…` for each of them"));
         assert!(!md.contains("fctl retro"));
         // A project without notes yet still says how to keep them.
         let empty = MemorySpec::default();

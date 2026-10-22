@@ -99,6 +99,7 @@ enum Command {
                             fctl memory -p my-app --stale      # with the stale ones\n  \
                             fctl memory add \"The e2e tests need Chromium: run npx playwright install chromium first.\"\n  \
                             fctl memory stale mem_01JC3V… --reason \"The script moved to xtask\"\n  \
+                            fctl memory duplicate mem_01JC3V… --of mem_01JC2Q…\n  \
                             fctl memory rm mem_01JC3V…         # people who can edit the project"
     )]
     Memory(cmd::memory::MemoryArgs),

@@ -39,7 +39,10 @@ owner and purpose), so a value copied between rows does not decrypt.
   members: people outside one are told its projects and sessions don't
   exist, whatever they started there or was shared with them, and instance
   admins see inside only the ones they are members of. A workspace sees
-  only the address each member joined as.
+  only the address each member joined as. Only its admins create its
+  projects, so its members' agents reach the repositories of the projects
+  the admins made and opened to them, not every one its GitHub accounts
+  cover.
 - Browser sessions are `__Host-` cookies (`Secure`, `HttpOnly`,
   `SameSite=Lax`). An instance served over plain http at an address other
   than localhost, which only [a control plane of your own](#the-control-plane-without-cloudflare)
@@ -80,7 +83,11 @@ owner and purpose), so a value copied between rows does not decrypt.
 - The CLI signs in with a device flow (you approve a code in the browser) and
   gets a revocable token; Settings lists every device and token.
 - Sign-in, signup and reset endpoints are rate limited per address and per
-  account; unknown emails take as long to fail as known ones.
+  account; unknown emails take as long to fail as known ones. Signing up
+  without an invitation, asking for a password reset or for early access,
+  and inviting an address to a workspace answer the same whether the
+  address has an account or can sign in, so that none of them tells who
+  uses the instance (instance admins, who see that anyway, excepted).
 - The web app ships a strict Content-Security-Policy (`script-src 'self'`, no
   inline scripts), `frame-ancestors 'none'`, HSTS, and renders agent output
   as text (Markdown is parsed into elements, never injected as HTML).
@@ -183,6 +190,10 @@ outside it except through these channels:
   the instance mint tokens there, but no workspace uses it until one of its
   admins connects it with a GitHub sign-in
   ([ADR 0029](adr/0029-workspaces-connect-github-accounts-with-a-github-sign-in.md)).
+  A connection is to the account, by GitHub's id, not its name: when a
+  connected account is renamed or deleted and someone else takes its name,
+  the workspace's sessions get no tokens there, and their pull requests no
+  news from it, until its admins connect the account again.
 - **Claude.** A short-lived access token for the session's owner. Refresh
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host. A session gets the
@@ -205,12 +216,12 @@ outside it except through these channels:
   describe it (`fctl edit`); in projects that publish screenshots, publish
   images at public links (`fctl publish`); and in projects that keep a
   memory or ask for retrospectives, read the project's notes, add notes,
-  mark them stale and record retrospectives of its session (`fctl memory`,
-  `fctl retro`), and nothing else; the control plane checks the values and
-  the settings again. Turn publishing on only where anything the agents see
-  may be shown to anyone with a link: text in a repository or on a web page
-  can ask an agent to publish a screenshot, as it can ask it to send what
-  it sees elsewhere.
+  mark them stale or duplicates of other notes and record retrospectives
+  of its session (`fctl memory`, `fctl retro`), and nothing else; the
+  control plane checks the values and the settings again. Turn publishing
+  on only where anything the agents see may be shown to anyone with a
+  link: text in a repository or on a web page can ask an agent to publish
+  a screenshot, as it can ask it to send what it sees elsewhere.
 - **Project memory** is text that the agent of every later session in the
   project starts with, and anything an agent runs can add to it, so text in
   a repository or on a web page that steers one agent can leave a note for

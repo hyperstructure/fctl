@@ -1,26 +1,55 @@
 // What the agent thought before it went on: a line that opens into it.
 
-import { BrainCircuit, ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
+import { ThoughtIcon } from "@/components/ui";
 import { cn } from "@/lib/cn";
+import { OpenLine, RailIcon, Thread } from "./lines";
 
-export function Thinking({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+export function Thinking({
+  text,
+  open: shown,
+  onToggle,
+  nested,
+}: {
+  text: string;
+  /** Whether it is open, when the run it is in keeps that. */
+  open?: boolean;
+  onToggle?: () => void;
+  /** In a run or a subagent's work. */
+  nested?: boolean;
+}) {
+  const [own, setOwn] = useState(false);
+  const open = shown ?? own;
+  const id = useId();
+  const icon = <ThoughtIcon className="size-3.5" />;
   return (
-    <div className="py-1">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-[12.5px] text-violet/80 transition-colors hover:text-violet"
+    <div>
+      <OpenLine
+        icon={
+          nested ? (
+            <span className="flex size-3.5 shrink-0 text-violet/80">{icon}</span>
+          ) : (
+            <RailIcon className="text-violet/80">{icon}</RailIcon>
+          )
+        }
+        open={open}
+        onToggle={onToggle ?? (() => setOwn(!open))}
+        controls={id}
+        nested={nested}
       >
-        <BrainCircuit className="size-3.5" />
-        Thought it through
-        <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} />
-      </button>
+        <span className="text-ink-3 transition-colors group-hover/line:text-ink-2">Thought it through</span>
+      </OpenLine>
       {open && (
-        <div className="mt-2 ml-5.5 animate-rise border-l border-violet/25 pl-4 font-display text-[15px] leading-relaxed whitespace-pre-wrap text-ink-3 italic">
-          {text}
-        </div>
+        <Thread id={id} nested={nested} tone="thought" className="mt-0.5 mb-2 animate-rise">
+          <p
+            className={cn(
+              "py-1 leading-relaxed whitespace-pre-wrap wrap-anywhere text-ink-3 italic",
+              nested ? "text-[13.5px]" : "text-[14px]",
+            )}
+          >
+            {text}
+          </p>
+        </Thread>
       )}
     </div>
   );

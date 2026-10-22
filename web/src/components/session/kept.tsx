@@ -175,7 +175,10 @@ export function SessionMemory({
                 arrow={false}
                 className="line-clamp-3 min-w-0 [overflow-wrap:anywhere]"
               >
-                <span className="text-ink-4">Marked stale:</span> <NoteLine text={headline(m.text, 400)} />
+                <span className="text-ink-4">
+                  {m.stale?.duplicate_of ? "Marked a duplicate:" : "Marked stale:"}
+                </span>{" "}
+                <NoteLine text={headline(m.text, 400)} />
               </NoteLink>
             </li>
           ))}

@@ -53,6 +53,9 @@ pub struct Hook {
     /// The app's installation that sent it, which mints the token that
     /// looks them up.
     pub installation: Option<u64>,
+    /// GitHub's id of the account the repository belongs to: what GitHub
+    /// says reaches only the sessions of workspaces connected to it.
+    pub owner_id: Option<u64>,
     pub repo: RepoRef,
     pub numbers: Vec<u64>,
     pub sha: Option<String>,
@@ -101,9 +104,13 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
         RepoRef::parse(&text(r, "full_name")?)
     };
     let installation = payload.pointer("/installation/id").and_then(Value::as_u64);
+    let owner_id = payload
+        .pointer("/repository/owner/id")
+        .and_then(Value::as_u64);
     let hook = |repo, numbers, sha, payload| {
         Delivery::Hook(Hook {
             installation,
+            owner_id,
             repo,
             numbers,
             sha,
@@ -393,7 +400,7 @@ mod tests {
             "action": action,
             "number": pr["number"],
             "pull_request": pr,
-            "repository": { "full_name": "acme/app", "name": "app", "owner": { "login": "acme" } },
+            "repository": { "full_name": "acme/app", "name": "app", "owner": { "login": "acme", "id": 314 } },
             "installation": { "id": 42 },
         })
     }
@@ -429,6 +436,7 @@ mod tests {
             &pull_request_event("opened", open_pr()),
         ));
         assert_eq!(h.installation, Some(42));
+        assert_eq!(h.owner_id, Some(314));
         assert_eq!(h.repo.full_name(), "acme/app");
         assert_eq!(
             (h.numbers.as_slice(), h.sha.as_deref()),

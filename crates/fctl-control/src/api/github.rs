@@ -18,7 +18,7 @@
 
 use crate::crypto::{self, Keys};
 use crate::ctx::Ctx;
-use crate::db::{b, n, os, q, s};
+use crate::db::{b, n, on, os, q, s};
 use crate::error::{AppError, AppResult, not_configured, not_found, validation};
 use crate::github::{self, Github, InstallationInfo, Viewer};
 use crate::http;
@@ -305,6 +305,8 @@ struct OfferRow {
     account: String,
     #[serde(deserialize_with = "crate::db::int")]
     installation_id: i64,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    account_id: Option<i64>,
     account_type: Option<String>,
     github_user: String,
     #[serde(deserialize_with = "crate::db::int_bool")]
@@ -316,7 +318,7 @@ struct OfferRow {
     expires_at: i64,
 }
 
-const OFFER_SELECT: &str = "SELECT account, installation_id, account_type, github_user, all_repos, repos, \
+const OFFER_SELECT: &str = "SELECT account, installation_id, account_id, account_type, github_user, all_repos, repos, \
     others, expires_at FROM github_offers";
 
 impl OfferRow {
@@ -369,9 +371,9 @@ async fn keep_offer(
     q(
         &ctx.db,
         "INSERT INTO github_offers (workspace_id, user_id, account, installation_id, account_type, github_user, \
-         all_repos, repos, others, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         all_repos, repos, others, created_at, expires_at, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (workspace_id, user_id, account) DO UPDATE SET account = excluded.account, \
-         installation_id = excluded.installation_id, account_type = excluded.account_type, \
+         installation_id = excluded.installation_id, account_id = excluded.account_id, account_type = excluded.account_type, \
          github_user = excluded.github_user, all_repos = excluded.all_repos, repos = excluded.repos, \
          others = excluded.others, created_at = excluded.created_at, expires_at = excluded.expires_at",
         &[
@@ -386,6 +388,7 @@ async fn keep_offer(
             n(offer.others as i64),
             n(ctx.now),
             n(ctx.now + CONNECT_TTL_MS),
+            on(info.account_id.map(|id| id as i64)),
         ],
     )?
     .run()
@@ -428,6 +431,7 @@ pub async fn choose(
         &a.row,
         &offer.account,
         offer.installation_id,
+        offer.account_id,
         &scope,
         &offer.github_user,
     )
@@ -846,6 +850,7 @@ async fn check_and_connect(
                 row,
                 &info.account,
                 info.id as i64,
+                info.account_id.map(|id| id as i64),
                 &scope,
                 &viewer.login,
             )
@@ -963,6 +968,7 @@ async fn connect_account(
     row: &WorkspaceRow,
     account: &str,
     installation_id: i64,
+    account_id: Option<i64>,
     scope: &Scope,
     github_user: &str,
 ) -> AppResult<()> {
@@ -977,9 +983,9 @@ async fn connect_account(
         vec![
             q(
                 &ctx.db,
-                "INSERT INTO workspace_github (workspace_id, account, installation_id, repos, status, requested_by, approved_by, github_user, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?) ON CONFLICT (workspace_id, account) DO UPDATE SET account = excluded.account, \
-                 installation_id = excluded.installation_id, repos = excluded.repos, status = 'active', \
+                "INSERT INTO workspace_github (workspace_id, account, installation_id, repos, status, requested_by, approved_by, github_user, created_at, updated_at, account_id) \
+                 VALUES (?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?) ON CONFLICT (workspace_id, account) DO UPDATE SET account = excluded.account, \
+                 installation_id = excluded.installation_id, account_id = excluded.account_id, repos = excluded.repos, status = 'active', \
                  requested_by = excluded.requested_by, approved_by = NULL, github_user = excluded.github_user, \
                  updated_at = excluded.updated_at",
                 &[
@@ -991,6 +997,7 @@ async fn connect_account(
                     s(github_user),
                     n(ctx.now),
                     n(ctx.now),
+                    on(account_id),
                 ],
             )?,
             q(
