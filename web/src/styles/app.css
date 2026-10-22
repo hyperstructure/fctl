@@ -160,21 +160,41 @@
   );
 }
 
-/* The shimmer used for "working" labels. */
+/* The shimmer of "working" labels: a soft light passes over the text, left to
+   right, in two seconds, then rests for two. It passes over every label at
+   once, however long each has been on the page (lib/shimmer.ts), and is as
+   wide on each. Put it on the text, not on a box wider than it, where the
+   light would hurry past. Where motion is reduced, it stays off the text. */
+@keyframes text-shimmer {
+  from {
+    background-position: -5em 0;
+  }
+  50%,
+  to {
+    background-position: calc(100% + 5em) 0;
+  }
+}
 .text-shimmer {
-  background: linear-gradient(
+  /* Longhands: Tailwind repeats the image in a rule of its own for browsers
+     without color-mix(), and a shorthand there could reset the clip. */
+  background-image: linear-gradient(
     90deg,
-    var(--c-ink-3) 0%,
-    var(--c-ink-3) 38%,
-    var(--c-ink) 50%,
-    var(--c-ink-3) 62%,
-    var(--c-ink-3) 100%
+    transparent,
+    color-mix(in oklab, var(--c-ink) 14%, transparent) 15%,
+    color-mix(in oklab, var(--c-ink) 46%, transparent) 30%,
+    color-mix(in oklab, var(--c-ink) 70%, transparent),
+    color-mix(in oklab, var(--c-ink) 46%, transparent) 70%,
+    color-mix(in oklab, var(--c-ink) 14%, transparent) 85%,
+    transparent
   );
-  background-size: 200% 100%;
+  background-color: var(--c-ink-3);
+  background-position: -5em 0;
+  background-size: 5em 100%;
+  background-repeat: no-repeat;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: var(--animate-shimmer);
+  animation: text-shimmer 4s ease-in-out infinite;
 }
 
 /* The steps of a run in the transcript (components/session/tool.tsx) settle

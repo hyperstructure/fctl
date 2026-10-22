@@ -364,7 +364,7 @@ function SubagentDetails({ t, running, up }: { t: Tool; running: boolean; up: bo
       <Prompt text={str(t.input.prompt)} agent={str(t.input.subagent_type)} />
       <WorkList steps={steps} running={running} up={up} />
       {reported && <Prose text={report} />}
-      {waiting && <div className="text-shimmer py-1.5 text-[12.5px] text-ink-3">Working</div>}
+      {waiting && <div className="text-shimmer self-start py-1.5 text-[12.5px] text-ink-3">Working</div>}
       {t.result?.isError && (
         <div className="mt-1.5">
           <Output text={t.result.text} error />
