@@ -271,7 +271,8 @@ turns them off.
   a subagent, its line opens into what the subagent was asked, its steps
   as it takes them, in the background too, and its report. A click on an
   image or a screenshot shows it at full size, where the arrow keys, or a
-  swipe on a phone, step through the session's others. On a phone, tap
+  swipe on a phone, step through the session's others, and on a phone a
+  pinch or a double tap zooms in on it. On a phone, tap
   the session's title for its details: its pull requests, the files
   changed, its branch and who else is watching. Type below to message the
   agent, with files attached if you like; it reads your message at its
