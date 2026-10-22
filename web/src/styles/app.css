@@ -277,7 +277,9 @@
 
 /* The lightbox (components/ui/lightbox.tsx): a screenshot or video grows
    into place as the page dims behind it. A picture swiped aside slides on
-   from where the finger left it, to the next or previous one or back. */
+   from where the finger left it, to the next or previous one or back. One
+   zoomed in on settles into place once the fingers let go, and a double tap
+   zooms it in or out. */
 @theme {
   --animate-zoom-in: zoom-in 220ms var(--ease-out) both;
 }
@@ -289,6 +291,15 @@
 }
 .lightbox-track[data-sliding] {
   transition: translate 260ms var(--ease-out);
+}
+.lightbox-picture[data-settling] {
+  transition:
+    translate 260ms var(--ease-out),
+    scale 260ms var(--ease-out);
+}
+/* While a finger moves it, or it glides on, on a layer of its own. */
+.lightbox-picture[data-moving] {
+  will-change: transform;
 }
 
 /* Sheets (components/ui/sheet.tsx): on phones a sheet slides up from the

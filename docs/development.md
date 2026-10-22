@@ -321,7 +321,10 @@ with `env(safe-area-inset-*)`, as the message box does.
 On a phone the app keeps the screen's size. Zooming is off: the viewport
 tag in `index.html` asks for none (which also keeps Safari from zooming
 into a text field), and `src/lib/zoom.ts` cancels the pinches Safari on
-iOS allows anyway. No page is wider than the screen: what can be wider
+iOS allows anyway. The image viewer zooms its picture by itself instead:
+`src/components/ui/lightbox.tsx` follows the fingers, and `Zoom` in
+`src/lib/zoom.ts` works out where they take the picture. No page is wider
+than the screen: what can be wider
 than a phone, like Home's workspace chips or a page's tabs, scrolls in a
 row of its own (`overflow-x-auto`), long names, addresses and links wrap
 (`[overflow-wrap:anywhere]`) or truncate, and the signed-in layout clips
