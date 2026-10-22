@@ -5,8 +5,7 @@ import { useMutation } from "@tanstack/react-query";
 import {
   Archive,
   BookMarked,
-  BrainCircuit,
-  ChevronRight,
+  Box,
   CircleAlert,
   CircleStop,
   GitBranch,
@@ -15,12 +14,12 @@ import {
   Info,
   Radio,
   ScrollText,
-  Sparkles,
+  Sparkle,
   Trash2,
   TriangleAlert,
   Unplug,
 } from "lucide-react";
-import { Component, type MouseEvent, memo, type ReactNode, useMemo, useRef, useState } from "react";
+import { type MouseEvent, memo, useId, useMemo, useRef, useState } from "react";
 import { ImageSizes, Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
 import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
@@ -32,6 +31,7 @@ import {
   Gallery,
   plainClick,
   Spinner,
+  ThoughtIcon,
   toast,
   useLightbox,
 } from "@/components/ui";
@@ -43,59 +43,12 @@ import { repoChanges } from "@/lib/git";
 import { useKeepPlace } from "@/lib/keep-place";
 import { isPublishedLink, linkToken, markdown } from "@/lib/published";
 import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
+import { callsIn, lastRun, parts } from "@/lib/runs";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
-import { Thinking } from "./thinking";
-import { ToolRow } from "./tool";
-
-function Milestone({
-  icon,
-  children,
-  tone = "muted",
-}: {
-  icon: ReactNode;
-  children: ReactNode;
-  tone?: "muted" | "warn" | "error" | "info" | "ok";
-}) {
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-2 py-1.5 text-[12.5px] [&>svg]:size-3.5 [&>svg]:shrink-0",
-        tone === "muted" && "text-ink-4",
-        tone === "warn" && "text-amber",
-        tone === "error" && "text-danger",
-        tone === "info" && "text-blue",
-        tone === "ok" && "text-accent",
-      )}
-    >
-      {icon}
-      <span className="min-w-0">{children}</span>
-    </div>
-  );
-}
-
-/**
- * One item of the transcript, or a line in its place when it can't be shown: events come from the session's sandbox,
- * where anything can pose as the agent, and one this app can't read mustn't take the page down for everyone.
- */
-class Unreadable extends Component<{ children: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  render() {
-    return this.state.failed ? (
-      <Milestone icon={<CircleAlert />} tone="warn">
-        This event couldn't be shown
-      </Milestone>
-    ) : (
-      this.props.children
-    );
-  }
-}
+import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
+import { Run, ToolRow, WorkDir } from "./tool";
 
 const UserMessage = memo(function UserMessage({
   item,
@@ -108,8 +61,10 @@ const UserMessage = memo(function UserMessage({
   const files = item.attachments ?? [];
   return (
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
-      <div className="mb-1.5 flex items-center gap-2 text-[12.5px]">
-        {author ? <Avatar user={author} size={20} /> : <span className="size-5 rounded-full bg-raised" />}
+      <div className="mb-1.5 flex items-center gap-2.5 text-[12.5px]">
+        <RailIcon>
+          {author ? <Avatar user={author} size={20} /> : <span className="size-5 rounded-full bg-raised" />}
+        </RailIcon>
         <span className="font-medium text-ink">{author?.name ?? "fctl"}</span>
         <span className="text-ink-4 opacity-0 transition-opacity group-hover/msg:opacity-100">
           {item.pending ? "Sending…" : clock(item.ts)}
@@ -118,12 +73,12 @@ const UserMessage = memo(function UserMessage({
         </span>
       </div>
       {item.text && (
-        <div className="ml-7 rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap wrap-anywhere text-ink">
+        <div className="ml-[34px] rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap wrap-anywhere text-ink">
           {item.text}
         </div>
       )}
       {files.length > 0 && (
-        <div className={cn("ml-7", item.text && "mt-2")}>
+        <div className={cn("ml-[34px]", item.text && "mt-2")}>
           <MessageFiles sessionId={sessionId} files={files} previews={item.previews} pending={item.pending} />
         </div>
       )}
@@ -163,12 +118,7 @@ function MemoryNotice({
           </>
         )}
       </Milestone>
-      <div
-        className={cn(
-          "mt-0.5 ml-5.5 border-l border-line-strong pl-3 text-[13.5px]",
-          stale ? "text-ink-3" : "text-ink-2",
-        )}
-      >
+      <Thread className={cn("text-[13.5px]", stale ? "text-ink-3" : "text-ink-2")}>
         <Markdown text={memory.text} className="prose-note" />
         {stale && (memory.stale?.replaced_by || duplicateOf || memory.stale?.reason) && (
           <p className="mt-1 text-[12.5px] text-ink-4 [overflow-wrap:anywhere]">
@@ -196,7 +146,7 @@ function MemoryNotice({
             )}
           </p>
         )}
-      </div>
+      </Thread>
     </div>
   );
 }
@@ -274,7 +224,7 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
             : " · its link no longer works"}
       </Milestone>
       {state === "shown" && (
-        <div className="mt-1 ml-5.5 flex flex-wrap items-end gap-3">
+        <div className="mt-1 ml-[34px] flex flex-wrap items-end gap-3">
           <a
             ref={ref}
             href={file.url}
@@ -333,33 +283,37 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
 
 function Setup({ item, stalled }: { item: Extract<Item, { kind: "setup" }>; stalled?: boolean }) {
   const [open, setOpen] = useState(false);
+  const id = useId();
   const last = item.steps[item.steps.length - 1];
   const took = item.endTs - item.ts;
   return (
-    <div className="py-2">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-[12.5px] text-ink-4 transition-colors hover:text-ink-2"
+    <div className="py-1.5">
+      <MilestoneButton
+        icon={
+          item.done ? (
+            <Box className="text-accent/80" />
+          ) : stalled ? (
+            <Hourglass className="text-amber" />
+          ) : (
+            <Spinner className="text-amber" />
+          )
+        }
+        open={open}
+        onToggle={() => setOpen(!open)}
+        controls={id}
+        more={item.logs.length > 0 || item.steps.length > 1}
       >
-        {item.done ? (
-          <Sparkles className="size-3.5 text-accent/80" />
-        ) : stalled ? (
-          <Hourglass className="size-3.5 text-amber" />
-        ) : (
-          <Spinner className="size-3.5 text-amber" />
-        )}
         {item.done ? (
           <>Sandbox ready in {duration(took)}</>
         ) : (
           <span className={cn(!stalled && "text-shimmer")}>{last?.reason ?? "Setting up the sandbox"}</span>
         )}
-        {(item.logs.length > 0 || item.steps.length > 1) && (
-          <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} />
-        )}
-      </button>
+      </MilestoneButton>
       {open && (
-        <div className="mt-2 ml-5.5 animate-rise space-y-1 border-l border-line pl-4 font-mono text-[11.75px] leading-relaxed text-ink-3">
+        <Thread
+          id={id}
+          className="mt-1.5 animate-rise space-y-1 font-mono text-[11.75px] leading-relaxed text-ink-3"
+        >
           {item.steps.map((s, i) => (
             <div key={`s${i}`} className="text-ink-2">
               <span className="mr-2 text-ink-4">{clock(s.ts)}</span>
@@ -378,7 +332,7 @@ function Setup({ item, stalled }: { item: Extract<Item, { kind: "setup" }>; stal
               {l.text}
             </div>
           ))}
-        </div>
+        </Thread>
       )}
     </div>
   );
@@ -386,34 +340,29 @@ function Setup({ item, stalled }: { item: Extract<Item, { kind: "setup" }>; stal
 
 function Logs({ lines }: { lines: G.LogLine[] }) {
   const [open, setOpen] = useState(false);
+  const id = useId();
   const warn = lines.some((l) => l.level === "warn" || l.level === "error");
   const first = lines[0]?.text ?? "";
   return (
     <div className="py-1">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className={cn(
-          "flex max-w-full items-center gap-2 text-[12.5px] transition-colors hover:text-ink-2",
-          warn ? "text-amber/80" : "text-ink-4",
-        )}
+      <MilestoneButton
+        icon={<Info />}
+        open={open}
+        onToggle={() => setOpen(!open)}
+        controls={id}
+        more={lines.length > 1}
+        className={warn ? "text-amber/80" : undefined}
       >
-        <Info className="size-3.5 shrink-0" />
-        <span className="truncate">
-          {lines.length === 1 ? first : `${first} (+${lines.length - 1} more)`}
-        </span>
-        {lines.length > 1 && (
-          <ChevronRight className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
-        )}
-      </button>
+        {lines.length === 1 ? first : `${first} (+${lines.length - 1} more)`}
+      </MilestoneButton>
       {open && (
-        <div className="mt-2 ml-5.5 animate-rise space-y-0.5 border-l border-line pl-4 font-mono text-[11.75px] text-ink-3">
+        <Thread id={id} className="mt-1.5 animate-rise space-y-0.5 font-mono text-[11.75px] text-ink-3">
           {lines.map((l, i) => (
             <div key={i} className="whitespace-pre-wrap break-words">
               {l.text}
             </div>
           ))}
-        </div>
+        </Thread>
       )}
     </div>
   );
@@ -426,8 +375,8 @@ function GitItem({ git, repos }: { git: G.GitState; repos: (string | undefined)[
     <Milestone key={r.name ?? ""} icon={<GitBranch />}>
       {r.name && <span className="font-mono text-ink-3">{r.name}: </span>}
       {r.files.length} {r.files.length === 1 ? "file" : "files"} changed{" "}
-      <span className="text-accent/80">+{r.additions}</span>{" "}
-      <span className="text-danger/80">−{r.deletions}</span>
+      <span className={cn(r.additions > 0 && "text-accent/80")}>+{r.additions}</span>{" "}
+      <span className={cn(r.deletions > 0 && "text-danger/80")}>−{r.deletions}</span>
       {r.ahead > 0 && (
         <>
           {" "}
@@ -454,7 +403,7 @@ function GitItem({ git, repos }: { git: G.GitState; repos: (string | undefined)[
 
 const ItemView = memo(function ItemView({
   item,
-  live,
+  seconds,
   sessionId,
   running,
   up,
@@ -464,7 +413,8 @@ const ItemView = memo(function ItemView({
   projectSlug,
 }: {
   item: Item;
-  live?: LiveTurn;
+  /** For a tool call in progress: how long it has run, as Claude Code reports it. */
+  seconds?: number;
   sessionId?: string;
   /** For tool calls: whether the agent works on its turn, as far as the page knows. */
   running?: boolean;
@@ -488,17 +438,8 @@ const ItemView = memo(function ItemView({
           <Markdown text={item.text} />
         </div>
       );
-    case "thinking":
-      return <Thinking text={item.text} />;
     case "tool":
-      return (
-        <ToolRow
-          t={item}
-          running={!item.result && !!running}
-          up={up}
-          seconds={live?.tool?.id === item.id ? live.tool.seconds : undefined}
-        />
-      );
+      return <ToolRow t={item} running={!item.result && !!running} up={up} seconds={seconds} />;
     case "turn":
       return (
         <div className="flex items-center gap-3 py-4 text-[11.5px] text-ink-4">
@@ -576,7 +517,7 @@ const ItemView = memo(function ItemView({
       );
     case "init":
       return (
-        <Milestone icon={<Sparkles />}>
+        <Milestone icon={<Sparkle />}>
           Claude Code {item.version ? `${item.version} · ` : ""}
           {item.model}
         </Milestone>
@@ -610,7 +551,9 @@ function StallNotice({ stall }: { stall: Stall }) {
   const { title, detail } = stallText(stall);
   return (
     <div role="status" className="flex animate-fade gap-2.5 py-2 text-[13px] leading-relaxed">
-      <Unplug className="mt-[3px] size-3.5 shrink-0 text-amber" />
+      <RailIcon className="h-[21px] text-amber">
+        <Unplug />
+      </RailIcon>
       <div className="min-w-0">
         <p className="text-amber">{title}</p>
         <p className="text-ink-3">{detail}</p>
@@ -624,11 +567,14 @@ export function LiveTurnView({
   status,
   since,
   stall,
+  inRun,
 }: {
   live: LiveTurn;
   status?: G.SessionStatus;
   since?: number;
   stall?: Stall;
+  /** The run the agent works on shows its thoughts and calls as they come, in place of these lines. */
+  inRun?: boolean;
 }) {
   const blocks = live.blocks;
   const working = status === "running" && !stall;
@@ -637,37 +583,32 @@ export function LiveTurnView({
       {blocks.map((b) =>
         b.type === "text" ? (
           <LiveText key={`live-${b.index}`} text={b.text} writing={!stall} />
-        ) : b.type === "thinking" ? (
-          <div
-            key={`live-${b.index}`}
-            className="flex items-center gap-2 py-1.5 text-[12.5px] text-violet/80"
-          >
-            <BrainCircuit className="size-3.5" />
-            <span className={cn(!stall && "text-shimmer")}>Thinking</span>
+        ) : inRun ? null : b.type === "thinking" ? (
+          <div key={`live-${b.index}`} className="flex min-h-8 items-center gap-2.5 py-1 text-[13.5px]">
+            <RailIcon className="text-violet/80">
+              <ThoughtIcon />
+            </RailIcon>
+            <span className={cn("text-ink-3", !stall && "text-shimmer")}>Thinking</span>
           </div>
         ) : (
           <div
             key={`live-${b.index}`}
-            className="flex items-center gap-2.5 py-1 pl-1 text-[13.5px] text-ink-3"
+            className="flex min-h-8 items-center gap-2.5 py-1 text-[13.5px] text-ink-3"
           >
-            <span className="flex size-6 items-center justify-center rounded-md border border-line bg-raised">
-              {stall ? (
-                <Hourglass className="size-3.5 text-ink-4" />
-              ) : (
-                <Spinner className="size-3.5 text-accent" />
-              )}
-            </span>
+            <Tile>{stall ? <Hourglass className="text-ink-4" /> : <Spinner className="text-accent" />}</Tile>
             <span className={cn(!stall && "text-shimmer")}>Preparing {b.name ?? "a tool"}</span>
           </div>
         ),
       )}
       {stall && <StallNotice stall={stall} />}
       {working && !blocks.some((b) => !b.done) && (
-        <div className="flex items-center gap-2 py-2 text-[12.5px] text-ink-3">
-          <span className="relative flex size-2">
-            <span className="absolute inset-0 animate-ping rounded-full bg-accent/60" />
-            <span className="relative size-2 rounded-full bg-accent" />
-          </span>
+        <div className="flex items-center gap-2.5 py-2 text-[12.5px] text-ink-3">
+          <RailIcon>
+            <span className="relative flex size-2">
+              <span className="absolute inset-0 animate-ping rounded-full bg-accent/60" />
+              <span className="relative size-2 rounded-full bg-accent" />
+            </span>
+          </RailIcon>
           <span className="text-shimmer">Working{since ? ` · ${duration(Date.now() - since)}` : ""}</span>
         </div>
       )}
@@ -710,6 +651,19 @@ export const Transcript = memo(function Transcript({
   // a stop or a failure) never gets one.
   const running = status === "running" && !stall;
   const turnStart = items.findLastIndex((it) => it.kind === "turn" || it.kind === "status");
+  // Its tool calls and thoughts in runs, each folded into a line. The newest
+  // goes on while the agent works on its turn and hasn't started to write:
+  // it shows its thoughts and calls as they come.
+  const ps = parts(items);
+  const last = lastRun(ps);
+  const writing = live.blocks.some((b) => b.type === "text");
+  const tail = last && running && last.index > turnStart && !writing ? last : undefined;
+  // What streams in shows in the run, once it is folded; until then, after it.
+  const folded = !!tail && callsIn(tail.steps).length > 1;
+  const coming = folded ? live.blocks.filter((b) => b.type !== "text") : [];
+  const progress = live.tool;
+  // Paths start where Claude Code works, which its first message says.
+  const cwd = items.find((it) => it.kind === "init")?.cwd;
   // Subagents in the background work on after their turn, while the
   // session waits for them, until they end or the session stops.
   const up = (status === "running" || status === "idle") && !stall;
@@ -724,8 +678,8 @@ export const Transcript = memo(function Transcript({
   const shotUrls = shots.map((f) => f.url).join(" ");
   // biome-ignore lint/correctness/useExhaustiveDependencies: shotUrls stands for shots
   const sizes = useMemo(() => new Map(shots.map((f) => [f.url, f])), [shotUrls]);
-  // Tool rows sit in a quiet column; everything else spans the reading width.
-  // The pictures people attach, the agent publishes and its answers show
+  // The agent's work sits in a quiet column; everything else spans the
+  // reading width. The pictures people attach, the agent publishes and its answers show
   // open in one lightbox, which steps through them all.
   return (
     <ImageSizes value={sizes}>
@@ -744,24 +698,45 @@ export const Transcript = memo(function Transcript({
               Show earlier activity
             </button>
           )}
-          {items.map((it, i) => (
-            <div key={it.key} data-item>
-              <Unreadable>
-                <ItemView
-                  item={it}
-                  live={it.kind === "tool" ? live : undefined}
-                  sessionId={sessionId}
-                  running={it.kind === "tool" ? running && i > turnStart : undefined}
-                  up={it.kind === "tool" && it.agent ? up : undefined}
-                  stalled={it.kind === "setup" ? !!stall : undefined}
-                  canManage={canManage}
-                  claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}
-                  projectSlug={projectSlug}
-                />
-              </Unreadable>
-            </div>
-          ))}
-          <LiveTurnView live={live} status={status} stall={stall} />
+          <WorkDir value={cwd}>
+            {ps.map((p) => (
+              <div key={p.key} data-item>
+                <Unreadable>
+                  {p.kind === "run" ? (
+                    <Run
+                      steps={p.steps}
+                      running={running && p.index > turnStart}
+                      active={p === tail}
+                      up={up}
+                      progress={
+                        progress && p.steps.some((s) => s.kind === "tool" && s.id === progress.id)
+                          ? progress
+                          : undefined
+                      }
+                      coming={p === tail ? coming : undefined}
+                    />
+                  ) : (
+                    <ItemView
+                      item={p.item}
+                      seconds={
+                        p.item.kind === "tool" && progress?.id === p.item.id ? progress.seconds : undefined
+                      }
+                      sessionId={sessionId}
+                      running={p.item.kind === "tool" ? running && p.index > turnStart : undefined}
+                      up={p.item.kind === "tool" && p.item.agent ? up : undefined}
+                      stalled={p.item.kind === "setup" ? !!stall : undefined}
+                      canManage={canManage}
+                      claudeUrl={
+                        p.item.kind === "remote" ? remoteControlUrl(p.item.rc, startedBy, me) : undefined
+                      }
+                      projectSlug={projectSlug}
+                    />
+                  )}
+                </Unreadable>
+              </div>
+            ))}
+          </WorkDir>
+          <LiveTurnView live={live} status={status} stall={stall} inRun={folded} />
         </div>
       </Gallery>
     </ImageSizes>

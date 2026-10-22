@@ -97,14 +97,17 @@ describe("TranscriptBuilder", () => {
       ]),
     ]);
     const prose = first[0];
-    const next = b.add([toolResult("t1", "README.md")]);
+    const result = toolResult("t1", "README.md");
+    const next = b.add([result]);
     expect(next).not.toBe(first);
     expect(next[0]).toBe(prose);
     const tool = next[1];
+    // With when it returned, which says how long it took.
     expect(tool?.kind === "tool" && tool.result).toEqual({
       text: "README.md",
       isError: false,
       structured: undefined,
+      ts: result.ts,
     });
   });
 

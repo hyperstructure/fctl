@@ -54,7 +54,11 @@ access, as app.fctl.sh does: signed out, the sign-in page links to
 `/early-access`, and the requests show under Admin → Early access and in
 `cargo run -p fctl -- admin early-access`.
 
-fake-claude reacts to words in the prompt: `write <name>` creates and
+fake-claude reacts to words in the prompt: `explore` looks around the
+working directory first, as agents do before they change something (a
+thought, commands, searches and a read, two of them at once, with another
+thought among them), which the session page folds into a line that opens
+into its steps, `write <name>` creates and
 commits a file, `push` pushes the branch (dev projects have no repository,
 so a bare one in the sandbox's `~/.fake-github` stands in for GitHub),
 `watch <seconds>` watches the pull request's checks in one tool call that

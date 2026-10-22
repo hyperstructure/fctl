@@ -391,3 +391,81 @@ fn commits_pushes_and_watches_the_checks_in_one_turn() -> Result<(), Box<dyn Err
     assert!(has_branch.success());
     Ok(())
 }
+
+#[test]
+fn explores_in_a_run_of_calls_with_thoughts_among_them() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(
+        dir.path().join("README.md"),
+        "# Widgets\n\nTODO: say what they are.\n",
+    )?;
+    let mut claude = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+        .current_dir(dir.path())
+        .env("FAKE_CLAUDE_DELAY_MS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
+        return Err("fake-claude's stdin and stdout aren't piped".into());
+    };
+    let turn = json!({"type": "user", "message": {"role": "user", "content": "explore"}});
+    stdin.write_all(format!("{turn}\n").as_bytes())?;
+    // What its assistant messages hold, in order, with their message's id.
+    let mut said = Vec::new();
+    let mut streamed_thoughts = 0;
+    let mut results = HashMap::new();
+    for line in BufReader::new(stdout).lines() {
+        let v: Value = serde_json::from_str(&line?)?;
+        if v["event"]["delta"]["type"] == "thinking_delta" {
+            streamed_thoughts += 1;
+        }
+        let blocks = v["message"]["content"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        match v["type"].as_str() {
+            Some("assistant") => {
+                for b in blocks {
+                    let what = match b["type"].as_str() {
+                        Some("tool_use") => b["name"].as_str().unwrap_or_default().to_owned(),
+                        Some(other) => other.to_owned(),
+                        None => String::new(),
+                    };
+                    said.push((what, v["message"]["id"].clone(), b["id"].clone()));
+                }
+            }
+            Some("user") => {
+                for b in blocks.iter().filter(|b| b["type"] == "tool_result") {
+                    results.insert(b["tool_use_id"].clone(), b["content"].clone());
+                }
+            }
+            Some("result") => break,
+            _ => {}
+        }
+    }
+    drop(stdin);
+    claude.wait()?;
+    let what: Vec<&str> = said.iter().map(|(w, _, _)| w.as_str()).collect();
+    assert_eq!(
+        what,
+        [
+            "text", "Bash", "thinking", "Bash", "Bash", "Glob", "Read", "thinking", "Grep", "Bash",
+            "text", "text"
+        ]
+    );
+    assert!(streamed_thoughts > 1);
+    // The listing and the read come at once, in one response.
+    assert_eq!(said[5].1, said[6].1);
+    let result = |i: usize| results.get(&said[i].2).cloned().unwrap_or_default();
+    assert_eq!(result(5), "./README.md\n");
+    assert_eq!(
+        result(6),
+        "     1\t# Widgets\n     2\t\n     3\tTODO: say what they are.\n"
+    );
+    assert!(
+        result(8)
+            .as_str()
+            .is_some_and(|r| r.contains("README.md:3:TODO"))
+    );
+    Ok(())
+}

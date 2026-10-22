@@ -177,6 +177,21 @@
   animation: var(--animate-shimmer);
 }
 
+/* The steps of a run in the transcript (components/session/tool.tsx) settle
+   in one after another as it opens, and a new one as it comes. */
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .step-in {
+    animation: step-in 220ms var(--ease-out) both;
+    animation-delay: calc(min(var(--i, 0), 8) * 14ms);
+  }
+}
+
 /* Select (components/ui/select.tsx): the list grows out of its trigger, its
    options settle in one after another, the picked one flashes, its check draws
    itself and the new value rolls into the trigger. */
