@@ -450,6 +450,8 @@ impl Daemon {
             allowed_images: images.allowed,
             allowed_builds: images.builds,
             min_free_disk_mb: self.ctx.cfg.min_free_disk_mb(),
+            // Its agents, of its own version, run review agents' sessions.
+            features: vec![fctl_proto::runner::FEATURE_REVIEWS.to_owned()],
         }
     }
 

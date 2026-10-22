@@ -70,8 +70,13 @@ says so.
 
 ## Review pull requests from GitHub Actions
 
-A review agent reads each new pull request, runs its tests if that helps,
-and posts a review. Here for the project `web`, on app.fctl.sh:
+Projects have review agents built in: turn them on under the project's
+**Reviews** tab, or with `fctl review settings --on`, and each new commit
+of a pull request gets a review, with a check on the commit
+([Architecture](architecture.md#review-agents)). A workflow of your own
+suits reviews those don't make: ones that run the tests, or that start on
+a label. Here one reads each new pull request, runs its tests if that
+helps, and posts a review, for the project `web`, on app.fctl.sh:
 
 1. **A token.** Make one that runs sessions in `web` alone, whose agents
    comment:

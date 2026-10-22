@@ -12,7 +12,7 @@ use crate::followed::{self, Pulls};
 use anyhow::{Context, Result, bail};
 use fctl_domain::repos;
 use fctl_proto::event::{CommitInfo, FileChange, GitState, LogLevel, RepoGitState};
-use fctl_proto::runner::{GitIdentity, GithubCredential, SessionSpec};
+use fctl_proto::runner::{GitIdentity, GithubCredential, ReviewSpec, SessionSpec};
 use fctl_proto::session::{GithubAccess, RepoAccess, RepoGrant, RepoRef};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -310,6 +310,9 @@ pub async fn prepare(p: &Paths, spec: &SessionSpec, log: &LogSink) -> Result<()>
                 format!("git fetch failed: {}", f.stderr.trim()),
             ));
         }
+        if let Some(review) = &spec.review {
+            return review_checkout(p, spec, review, log).await;
+        }
         return Ok(());
     }
     let _ = log.send((LogLevel::Info, format!("Cloning {}", repo.full_name())));
@@ -347,6 +350,9 @@ pub async fn prepare(p: &Paths, spec: &SessionSpec, log: &LogSink) -> Result<()>
             repo.full_name(),
             clone.stderr.trim()
         );
+    }
+    if let Some(review) = &spec.review {
+        return review_checkout(p, spec, review, log).await;
     }
     let remote_branch = git(
         p,
@@ -416,6 +422,90 @@ pub async fn prepare(p: &Paths, spec: &SessionSpec, log: &LogSink) -> Result<()>
             ),
         ));
     }
+    Ok(())
+}
+
+/// The branch a review session checks the pull request out on: its own,
+/// unless it is named like its base (a fork's `main`), where `pull/<n>`
+/// keeps the two apart.
+pub fn review_branch(spec: &SessionSpec, review: &ReviewSpec) -> String {
+    if spec.branch.is_empty() || spec.branch == review.base_ref {
+        format!("pull/{}", review.number)
+    } else {
+        spec.branch.clone()
+    }
+}
+
+/// Whether the checkout has commit `sha`.
+pub async fn has_commit(dir: &Path, home: &Path, sha: &str) -> bool {
+    let object = format!("{sha}^{{commit}}");
+    run_with(dir, home, "git", &["cat-file", "-e", &object], &[])
+        .await
+        .is_ok_and(|o| o.ok)
+}
+
+/// Checks out the commit a review session reviews, on a branch of its own
+/// ([`review_branch`]), with its base and, where GitHub still has it, the
+/// commit an earlier review reviewed. GitHub keeps a pull request's head at
+/// `refs/pull/<n>/head`, also when it comes from a fork; a commit that is
+/// no longer its head is fetched by its id.
+async fn review_checkout(
+    p: &Paths,
+    spec: &SessionSpec,
+    review: &ReviewSpec,
+    log: &LogSink,
+) -> Result<()> {
+    let pull = format!(
+        "+refs/pull/{0}/head:refs/remotes/origin/pull/{0}",
+        review.number
+    );
+    let base = format!("+refs/heads/{0}:refs/remotes/origin/{0}", review.base_ref);
+    let f = git(p, &["fetch", "--quiet", "origin", &pull, &base]).await?;
+    if !f.ok {
+        let _ = log.send((
+            LogLevel::Warn,
+            format!("Fetching the pull request failed: {}", f.stderr.trim()),
+        ));
+    }
+    if !has_commit(&p.workdir, &p.home, &review.head_sha).await {
+        let _ = git(p, &["fetch", "--quiet", "origin", &review.head_sha]).await?;
+    }
+    if !has_commit(&p.workdir, &p.home, &review.head_sha).await {
+        bail!(
+            "{}#{}'s commit {} is no longer on GitHub: its branch was rewritten since. Its newest commit gets a review of its own.",
+            review.repo.full_name(),
+            review.number,
+            review.head_sha.get(..7).unwrap_or(&review.head_sha)
+        );
+    }
+    if let Some(previous) = review.previous_sha.as_deref()
+        && !has_commit(&p.workdir, &p.home, previous).await
+    {
+        // Gone when the branch was rewritten: the prompt says so.
+        let _ = git(p, &["fetch", "--quiet", "origin", previous]).await?;
+    }
+    let branch = review_branch(spec, review);
+    git_ok(
+        p,
+        &[
+            "checkout",
+            "-q",
+            "--no-track",
+            "-B",
+            &branch,
+            &review.head_sha,
+        ],
+    )
+    .await?;
+    let _ = log.send((
+        LogLevel::Info,
+        format!(
+            "Checked out {}#{} at {} on {branch}",
+            review.repo.full_name(),
+            review.number,
+            review.head_sha.get(..7).unwrap_or(&review.head_sha)
+        ),
+    ));
     Ok(())
 }
 
@@ -2209,6 +2299,90 @@ cat "$answer"
         assert!(
             calls.contains("--json number,url,title,state,isDraft\n"),
             "{calls}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_review_checks_out_the_pull_requests_commit_also_from_a_fork() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let mut spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        // The pull request's commits, from a fork: on no branch of the
+        // repository, only at GitHub's refs/pull/12/head.
+        git_ok_in(&origin, &p.home, &["checkout", "-q", "-b", "fork-main"]).await?;
+        let earlier = commit(&origin, &p.home, "a.txt", "one", "First try").await?;
+        let head = commit(&origin, &p.home, "a.txt", "two", "Second try").await?;
+        git_ok_in(
+            &origin,
+            &p.home,
+            &["update-ref", "refs/pull/12/head", &head],
+        )
+        .await?;
+        git_ok_in(&origin, &p.home, &["checkout", "-q", "main"]).await?;
+        git_ok_in(&origin, &p.home, &["branch", "-q", "-D", "fork-main"]).await?;
+        spec.branch = "main".into();
+        spec.review = Some(ReviewSpec {
+            repo: RepoRef {
+                owner: "acme".into(),
+                name: "widgets".into(),
+            },
+            number: 12,
+            url: "https://github.com/acme/widgets/pull/12".into(),
+            title: "Change".into(),
+            head_sha: head.clone(),
+            head_ref: "main".into(),
+            base_ref: "main".into(),
+            previous_sha: Some(earlier.clone()),
+            instructions: String::new(),
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &tx).await?;
+        let at = git_ok_in(&p.workdir, &p.home, &["rev-parse", "HEAD"]).await?;
+        assert_eq!(at.trim(), head);
+        // A fork's main stays apart from the base's.
+        let branch = git_ok_in(&p.workdir, &p.home, &["branch", "--show-current"]).await?;
+        assert_eq!(branch.trim(), "pull/12");
+        assert!(has_commit(&p.workdir, &p.home, &earlier).await);
+        let diff = git_ok_in(
+            &p.workdir,
+            &p.home,
+            &["diff", "--stat", "origin/main...HEAD"],
+        )
+        .await?;
+        assert!(diff.contains("a.txt"), "{diff}");
+        drop(tx);
+        let mut logs = Vec::new();
+        while let Some(l) = rx.recv().await {
+            logs.push(l);
+        }
+        assert!(
+            log_texts(&logs)
+                .iter()
+                .any(|l| l.starts_with("Checked out acme/widgets#12 at ")),
+            "{logs:?}"
+        );
+        // A commit GitHub no longer has fails the review, saying why.
+        let p2 = sandbox(&dir.path().join("again"))?;
+        let rewrite = format!("url.{}.insteadOf", origin.display());
+        let config = [
+            "config",
+            "--global",
+            rewrite.as_str(),
+            "https://github.com/acme/widgets.git",
+        ];
+        assert!(run(&p2.home, &p2.home, "git", &config).await?.ok);
+        if let Some(r) = spec.review.as_mut() {
+            r.head_sha = "0123456789abcdef0123456789abcdef01234567".into();
+        }
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let err = prepare(&p2, &spec, &tx).await.err().map(|e| e.to_string());
+        assert!(
+            err.as_deref()
+                .is_some_and(|e| e.contains("is no longer on GitHub")),
+            "{err:?}"
         );
         Ok(())
     }

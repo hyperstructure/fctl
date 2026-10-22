@@ -192,7 +192,7 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
             | [
                 "projects",
                 _,
-                "repos" | "members" | "memories" | "retrospectives",
+                "repos" | "members" | "memories" | "retrospectives" | "review-agents" | "reviews",
             ]
             | ["memories", _],
         ) => Read,
@@ -203,8 +203,15 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
             | ["sessions", _, "events" | "retrospectives" | "ws" | "shares"]
             | ["sessions", _, "attachments", _],
         ) => Read,
-        // Starting and steering sessions, and keeping the memory.
-        ("POST", ["projects", _, "sessions" | "attachments" | "memories"]) => Run,
+        // Starting and steering sessions (a review's too), and keeping the memory.
+        (
+            "POST",
+            [
+                "projects",
+                _,
+                "sessions" | "attachments" | "memories" | "reviews",
+            ],
+        ) => Run,
         (
             "POST",
             [
@@ -217,6 +224,7 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
         ("PUT" | "DELETE", ["sessions", _, "follow"]) => Run,
         // Managing its projects, and deleting.
         ("PATCH" | "DELETE", ["projects", _]) => Full,
+        ("PATCH", ["projects", _, "review-agents"]) => Full,
         ("GET", ["projects", _, "secrets"]) => Full,
         ("PUT" | "DELETE", ["projects", _, "secrets", _]) => Full,
         ("POST", ["projects", _, "members" | "repos"]) => Full,
@@ -475,6 +483,8 @@ mod tests {
                 ("GET", "projects"),
                 ("GET", "projects/web"),
                 ("GET", "projects/web/memories"),
+                ("GET", "projects/web/review-agents"),
+                ("GET", "projects/web/reviews"),
                 ("GET", "sessions"),
                 ("GET", "sessions/ses_1/events"),
                 ("GET", "sessions/ses_1/ws"),
@@ -535,6 +545,7 @@ mod tests {
             ("PATCH", "sessions/ses_1"),
             ("POST", "projects/web/memories"),
             ("PATCH", "memories/mem_1"),
+            ("POST", "projects/web/reviews"),
         ] {
             assert!(!can(Read, method, path), "{method} {path}");
             assert!(can(Run, method, path), "{method} {path}");
@@ -550,6 +561,7 @@ mod tests {
             ("POST", "sessions/ses_1/shares"),
             ("DELETE", "memories/mem_1"),
             ("DELETE", "retrospectives/ret_1"),
+            ("PATCH", "projects/web/review-agents"),
         ] {
             assert!(!can(Run, method, path), "{method} {path}");
             assert!(can(Full, method, path), "{method} {path}");

@@ -124,6 +124,7 @@ const project = createRoute({
   validateSearch: (s: Record<string, unknown>) => ({
     tab: str(s.tab) as
       | "sessions"
+      | "reviews"
       | "memory"
       | "retrospectives"
       | "repositories"

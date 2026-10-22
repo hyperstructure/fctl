@@ -26,6 +26,8 @@ pub struct Slot<'a> {
     pub low_disk: bool,
     /// The images it runs and builds.
     pub images: HostImages<'a>,
+    /// Its host runs review agents' sessions (`fctl_proto::runner::FEATURE_REVIEWS`).
+    pub reviews: bool,
 }
 
 /// The runner that keeps a session's sandbox from an earlier run: there,
@@ -70,6 +72,9 @@ pub enum Wait {
     Image { image: String },
     /// No online runner builds images from its project's repository.
     Build { repo: String },
+    /// It is a review agent's session, and no online runner of its
+    /// workspace runs a version of fctl that has review agents.
+    Reviews,
 }
 
 impl Wait {
@@ -112,6 +117,7 @@ impl Wait {
             ),
             Self::Image { image } => format!("No runner allows this project's image, {image}"),
             Self::Build { repo } => format!("No runner builds this project's image from {repo}"),
+            Self::Reviews => "Waiting for a runner that runs review agents: the ones online run an older fctl. Update them with `fctl self update`.".into(),
         }
     }
 
@@ -141,8 +147,9 @@ fn parts(cpus: Option<u32>, memory_mb: Option<u32>, memory_suffix: &str) -> Stri
 }
 
 /// The least loaded online runner with a free slot that has every required
-/// label, runs or builds the image the session wants, and gives a sandbox
-/// the size it wants. Ties go to the runner listed first.
+/// label, runs or builds the image the session wants, gives a sandbox the
+/// size it wants and, for a review agent's session (`review`), runs review
+/// agents. Ties go to the runner listed first.
 ///
 /// A session's `home` comes first when it is online and could take it, also
 /// while it drains or is low on disk: with a free slot it gets the session,
@@ -154,6 +161,7 @@ pub fn pick<'a>(
     want: Want,
     image: &ImageWant,
     home: Option<Home<'_>>,
+    review: bool,
 ) -> Result<&'a Slot<'a>, Wait> {
     let online: Vec<&Slot> = slots
         .iter()
@@ -166,6 +174,13 @@ pub fn pick<'a>(
     let online: Vec<&Slot> = online.into_iter().filter(|s| s.serves).collect();
     if online.is_empty() {
         return Err(Wait::Workspace);
+    }
+    let online: Vec<&Slot> = online
+        .into_iter()
+        .filter(|s| !review || s.reviews)
+        .collect();
+    if online.is_empty() {
+        return Err(Wait::Reviews);
     }
     let online: Vec<&Slot> = online
         .into_iter()
@@ -301,6 +316,7 @@ mod tests {
             draining: false,
             low_disk: false,
             images: HostImages::default(),
+            reviews: false,
         }
     }
 
@@ -339,19 +355,19 @@ mod tests {
         ];
         let any = Want::default();
         assert_eq!(
-            pick(&slots, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots, &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Ok("b")
         );
         assert_eq!(
-            pick(&slots, &gpu, any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots, &gpu, any, &ImageWant::Default, None, false).map(|s| s.id),
             Ok("b")
         );
         assert_eq!(
-            pick(&slots[2..3], &[], any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots[2..3], &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Err(Wait::NoRunner)
         );
         assert_eq!(
-            pick(&slots[3..], &[], any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots[3..], &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Err(Wait::Busy)
         );
     }
@@ -369,11 +385,11 @@ mod tests {
         ];
         // The busier runner, since the idle one serves another workspace.
         assert_eq!(
-            pick(&slots, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots, &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Ok("ours")
         );
         assert_eq!(
-            pick(&slots[..1], &[], any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots[..1], &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Err(Wait::Workspace)
         );
         // Even the runner that has the session's sandbox, once it no longer
@@ -384,7 +400,7 @@ mod tests {
             wait: true,
         };
         assert_eq!(
-            pick(&slots, &[], any, &ImageWant::Default, Some(home)).map(|s| s.id),
+            pick(&slots, &[], any, &ImageWant::Default, Some(home), false).map(|s| s.id),
             Ok("ours")
         );
         assert_eq!(
@@ -408,11 +424,19 @@ mod tests {
         ];
         // The idle runner first, while the session fits there.
         assert_eq!(
-            pick(&slots, &[], memory(8192), &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots, &[], memory(8192), &ImageWant::Default, None, false).map(|s| s.id),
             Ok("docker-vm")
         );
         assert_eq!(
-            pick(&slots, &[], memory(16_384), &ImageWant::Default, None).map(|s| s.id),
+            pick(
+                &slots,
+                &[],
+                memory(16_384),
+                &ImageWant::Default,
+                None,
+                false
+            )
+            .map(|s| s.id),
             Ok("studio")
         );
         let many = Want {
@@ -420,7 +444,7 @@ mod tests {
             memory_mb: None,
         };
         assert_eq!(
-            pick(&slots, &[], many, &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots, &[], many, &ImageWant::Default, None, false).map(|s| s.id),
             Ok("studio")
         );
         // The only runner that fits is full: it waits for that one.
@@ -432,7 +456,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            pick(&full, &[], memory(16_384), &ImageWant::Default, None).map(|s| s.id),
+            pick(&full, &[], memory(16_384), &ImageWant::Default, None, false).map(|s| s.id),
             Err(Wait::Busy)
         );
     }
@@ -442,7 +466,15 @@ mod tests {
         let none: Vec<String> = vec![];
         let slots = [slot("old", 4, 0, &none)];
         assert_eq!(
-            pick(&slots, &[], memory(262_144), &ImageWant::Default, None).map(|s| s.id),
+            pick(
+                &slots,
+                &[],
+                memory(262_144),
+                &ImageWant::Default,
+                None,
+                false
+            )
+            .map(|s| s.id),
             Ok("old")
         );
     }
@@ -461,7 +493,7 @@ mod tests {
             },
         ];
         let reason = |want: Want| {
-            pick(&slots, &[], want, &ImageWant::Default, None)
+            pick(&slots, &[], want, &ImageWant::Default, None, false)
                 .err()
                 .map(|w| w.reason())
         };
@@ -509,7 +541,15 @@ mod tests {
         let any = Want::default();
         // Busier, but it has the sandbox.
         assert_eq!(
-            pick(&slots, &[], any, &ImageWant::Default, home("studio", true)).map(|s| s.id),
+            pick(
+                &slots,
+                &[],
+                any,
+                &ImageWant::Default,
+                home("studio", true),
+                false
+            )
+            .map(|s| s.id),
             Ok("studio")
         );
         // Full: the session waits for it, or starts elsewhere once it no
@@ -522,13 +562,29 @@ mod tests {
             },
         ];
         assert_eq!(
-            pick(&full, &[], any, &ImageWant::Default, home("studio", true)).map(|s| s.id),
+            pick(
+                &full,
+                &[],
+                any,
+                &ImageWant::Default,
+                home("studio", true),
+                false
+            )
+            .map(|s| s.id),
             Err(Wait::Home {
                 name: "studio".into()
             })
         );
         assert_eq!(
-            pick(&full, &[], any, &ImageWant::Default, home("studio", false)).map(|s| s.id),
+            pick(
+                &full,
+                &[],
+                any,
+                &ImageWant::Default,
+                home("studio", false),
+                false
+            )
+            .map(|s| s.id),
             Ok("idle")
         );
         assert_eq!(
@@ -562,7 +618,8 @@ mod tests {
                 &[],
                 Want::default(),
                 &ImageWant::Default,
-                home("asleep", true)
+                home("asleep", true),
+                false
             )
             .map(|s| s.id),
             Ok("idle")
@@ -574,7 +631,8 @@ mod tests {
                 &[],
                 memory(16_384),
                 &ImageWant::Default,
-                home("small", true)
+                home("small", true),
+                false
             )
             .map(|s| s.id),
             Ok("idle")
@@ -586,7 +644,8 @@ mod tests {
                 &[],
                 Want::default(),
                 &ImageWant::Default,
-                home("removed", true)
+                home("removed", true),
+                false
             )
             .map(|s| s.id),
             Ok("idle")
@@ -606,12 +665,20 @@ mod tests {
         let any = Want::default();
         // Emptier, but draining: new sessions go elsewhere.
         assert_eq!(
-            pick(&slots, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots, &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Ok("laptop")
         );
         // A resume goes back to its sandbox there.
         assert_eq!(
-            pick(&slots, &[], any, &ImageWant::Default, home("studio", true)).map(|s| s.id),
+            pick(
+                &slots,
+                &[],
+                any,
+                &ImageWant::Default,
+                home("studio", true),
+                false
+            )
+            .map(|s| s.id),
             Ok("studio")
         );
         // The other one is full: a new session waits, and says why when
@@ -624,12 +691,12 @@ mod tests {
             },
         ];
         assert_eq!(
-            pick(&full, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&full, &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Err(Wait::Busy)
         );
         let draining = [slots[0].clone()];
         assert_eq!(
-            pick(&draining, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&draining, &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Err(Wait::Draining)
         );
         assert_eq!(
@@ -650,7 +717,7 @@ mod tests {
         ];
         let any = Want::default();
         let new = |slots: &[Slot]| {
-            pick(slots, &[], any, &ImageWant::Default, None)
+            pick(slots, &[], any, &ImageWant::Default, None, false)
                 .map(|s| s.id.to_owned())
                 .map_err(|w| w.reason())
         };
@@ -658,7 +725,15 @@ mod tests {
         assert_eq!(new(&slots), Ok("laptop".into()));
         // A resume goes back to its sandbox there, which needs no new one.
         assert_eq!(
-            pick(&slots, &[], any, &ImageWant::Default, home("studio", true)).map(|s| s.id),
+            pick(
+                &slots,
+                &[],
+                any,
+                &ImageWant::Default,
+                home("studio", true),
+                false
+            )
+            .map(|s| s.id),
             Ok("studio")
         );
         // With no other runner, a new session waits and says why.
@@ -718,15 +793,30 @@ mod tests {
         let image = |i: &str| ImageWant::Image(i.into());
         // The default image runs everywhere: the emptier runner.
         assert_eq!(
-            pick(&slots, &[], any, &ImageWant::Default, None).map(|s| s.id),
+            pick(&slots, &[], any, &ImageWant::Default, None, false).map(|s| s.id),
             Ok("strict")
         );
         // A project's image only where its owner allows it.
         assert_eq!(
-            pick(&slots, &[], any, &image("ghcr.io/acme/agent:1"), None).map(|s| s.id),
+            pick(
+                &slots,
+                &[],
+                any,
+                &image("ghcr.io/acme/agent:1"),
+                None,
+                false
+            )
+            .map(|s| s.id),
             Ok("acme")
         );
-        let wait = pick(&slots, &[], any, &image("docker.io/evil/miner"), None);
+        let wait = pick(
+            &slots,
+            &[],
+            any,
+            &image("docker.io/evil/miner"),
+            None,
+            false,
+        );
         assert_eq!(
             wait.clone().map(|s| s.id),
             Err(Wait::Image {
@@ -742,13 +832,16 @@ mod tests {
             owner: "acme".into(),
             name: "app".into(),
         });
-        assert_eq!(pick(&slots, &[], any, &app, None).map(|s| s.id), Ok("acme"));
+        assert_eq!(
+            pick(&slots, &[], any, &app, None, false).map(|s| s.id),
+            Ok("acme")
+        );
         let other = ImageWant::Build(RepoRef {
             owner: "other".into(),
             name: "app".into(),
         });
         assert_eq!(
-            pick(&slots, &[], any, &other, None)
+            pick(&slots, &[], any, &other, None, false)
                 .err()
                 .map(|w| w.reason())
                 .as_deref(),
@@ -761,7 +854,8 @@ mod tests {
                 &[],
                 any,
                 &image("ghcr.io/acme/agent:1"),
-                home("strict", true)
+                home("strict", true),
+                false
             )
             .map(|s| s.id),
             Ok("acme")
@@ -769,11 +863,11 @@ mod tests {
         // Older hosts send no list and run any image, but build none.
         let old = [slot("old", 4, 0, &none)];
         assert_eq!(
-            pick(&old, &[], any, &image("docker.io/evil/miner"), None).map(|s| s.id),
+            pick(&old, &[], any, &image("docker.io/evil/miner"), None, false).map(|s| s.id),
             Ok("old")
         );
         assert_eq!(
-            pick(&old, &[], any, &app, None).map(|s| s.id),
+            pick(&old, &[], any, &app, None, false).map(|s| s.id),
             Err(Wait::Build {
                 repo: "acme/app".into()
             })
@@ -823,5 +917,30 @@ mod tests {
             no_runner_takes(Some(" "), true, true, false)
                 .starts_with("Waiting for one of its person's runners")
         );
+    }
+
+    #[test]
+    fn review_sessions_go_to_runners_that_run_review_agents() {
+        let none: Vec<String> = vec![];
+        let any = Want::default();
+        let slots = [
+            slot("old", 4, 0, &none),
+            Slot {
+                reviews: true,
+                ..slot("new", 4, 3, &none)
+            },
+        ];
+        // Other sessions go anywhere, the least loaded first.
+        assert_eq!(
+            pick(&slots, &[], any, &ImageWant::Default, None, false).map(|s| s.id),
+            Ok("old")
+        );
+        assert_eq!(
+            pick(&slots, &[], any, &ImageWant::Default, None, true).map(|s| s.id),
+            Ok("new")
+        );
+        let wait = pick(&slots[..1], &[], any, &ImageWant::Default, None, true).map(|s| s.id);
+        assert_eq!(wait, Err(Wait::Reviews));
+        assert!(Wait::Reviews.reason().contains("fctl self update"));
     }
 }

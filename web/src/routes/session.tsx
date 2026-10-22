@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { GithubAccessChip, GithubAccessLabel } from "@/components/github-access";
+import { ReviewFacts, ReviewFooter, useSessionReview } from "@/components/review";
 import { Changes } from "@/components/session/changes";
 import { Composer } from "@/components/session/composer";
 import {
@@ -88,6 +89,7 @@ export function SessionPage() {
   const prs = session ? pullRequests(session) : [];
   const workspaceIndex = useWorkspaceIndex();
   const stall = useStall(session, s);
+  const review = useSessionReview(session);
   const [rail, setRail] = useState(true);
   // The details sheet, where the rail doesn't fit.
   const [details, setDetails] = useState(false);
@@ -174,7 +176,7 @@ export function SessionPage() {
                     </h1>
                     {/* Phones: the status, and what says most about it. */}
                     <p className="mt-0.5 flex items-center gap-1.5 text-[12.5px] leading-4 md:hidden">
-                      <StatusPill status={session.status} className="shrink-0" />
+                      <StatusPill status={session.status} label={reviewLabel(session)} className="shrink-0" />
                       <span aria-hidden="true" className="text-ink-4">
                         ·
                       </span>
@@ -218,8 +220,9 @@ export function SessionPage() {
                             {session.project_slug}#{session.number}
                           </Link>
                         </span>
-                        <StatusPill status={session.status} />
-                        <SessionGithub session={session} />
+                        <StatusPill status={session.status} label={reviewLabel(session)} />
+                        {/* A review agent only reads, and its footer says what fctl posts for it. */}
+                        {!session.review && <SessionGithub session={session} />}
                         {statusReason(session) && (
                           <span className="truncate text-ink-4">{statusReason(session)}</span>
                         )}
@@ -378,10 +381,10 @@ export function SessionPage() {
                           stop.mutate();
                         }}
                       >
-                        Stop the session
+                        {session?.review ? "Stop the review" : "Stop the session"}
                       </MenuItem>
                     )}
-                    {isOwner && (status === "stopped" || status === "failed") && (
+                    {isOwner && !session?.review && (status === "stopped" || status === "failed") && (
                       <MenuItem
                         icon={<Play />}
                         onClick={() => {
@@ -475,34 +478,38 @@ export function SessionPage() {
           )}
         </div>
 
-        {/* Composer */}
+        {/* Composer: a review agent takes no messages, and says what becomes of its review instead. */}
         <div className="sticky bottom-0 z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
           <div className="mx-auto w-full max-w-[760px] px-6">
-            <Composer
-              status={status}
-              role={role}
-              viewers={s.viewers}
-              meId={me?.user.id}
-              sessionId={id}
-              onSend={(t, files) =>
-                store.send(
-                  t,
-                  me?.user
-                    ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
-                    : undefined,
-                  files,
-                )
-              }
-              onInterrupt={() => store.interrupt()}
-              onTyping={() => store.typing()}
-              onResume={async (t, files) => {
-                await resume.mutateAsync({
-                  prompt: t,
-                  attachments: files.attachments.map((a) => a.id),
-                });
-                for (const url of Object.values(files.previews)) URL.revokeObjectURL(url);
-              }}
-            />
+            {session?.review ? (
+              <ReviewFooter session={session} review={review} />
+            ) : (
+              <Composer
+                status={status}
+                role={role}
+                viewers={s.viewers}
+                meId={me?.user.id}
+                sessionId={id}
+                onSend={(t, files) =>
+                  store.send(
+                    t,
+                    me?.user
+                      ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
+                      : undefined,
+                    files,
+                  )
+                }
+                onInterrupt={() => store.interrupt()}
+                onTyping={() => store.typing()}
+                onResume={async (t, files) => {
+                  await resume.mutateAsync({
+                    prompt: t,
+                    attachments: files.attachments.map((a) => a.id),
+                  });
+                  for (const url of Object.values(files.previews)) URL.revokeObjectURL(url);
+                }}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -511,6 +518,7 @@ export function SessionPage() {
         <aside className="sticky top-0 hidden h-dvh w-[300px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
           <Details
             session={session}
+            review={review}
             me={me?.user.id}
             git={s.git}
             items={s.items}
@@ -526,6 +534,7 @@ export function SessionPage() {
           <Overview session={session} workspace={workspace} notes={notes} />
           <Details
             session={session}
+            review={review}
             me={me?.user.id}
             git={s.git}
             items={s.items}
@@ -541,6 +550,10 @@ export function SessionPage() {
     </div>
   );
 }
+
+/** A review agent's session waits for nobody: once its turn ends, it finishes and stops. */
+const reviewLabel = (session: G.Session) =>
+  session.review && session.status === "idle" ? "Finishing" : undefined;
 
 /** What the session's agent may do on GitHub, beside its status, when that is less than push. */
 function SessionGithub({ session }: { session: G.Session }) {
@@ -702,7 +715,7 @@ function Overview({
   return (
     <section className="flex flex-col gap-3 border-b border-line px-5 py-4 text-[12.5px]">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <StatusPill status={session.status} />
+        <StatusPill status={session.status} label={reviewLabel(session)} />
         {notes.map((n) => (
           <span key={n.text} className={n.warn ? "text-amber" : "text-ink-3"}>
             {n.text}
@@ -748,6 +761,7 @@ function Overview({
 /** What the rail shows beside the transcript, and the details sheet where the rail doesn't fit. */
 function Details({
   session,
+  review,
   me,
   git,
   items,
@@ -758,6 +772,8 @@ function Details({
   pullsFirst,
 }: {
   session: G.Session;
+  /** What came of it, for a review agent's session. */
+  review?: G.Review;
   /** The signed-in person. */
   me?: G.UserId;
   git?: G.GitState;
@@ -823,8 +839,13 @@ function Details({
   );
   return (
     <>
+      {session.review && (
+        <RailSection title="Review">
+          <ReviewFacts session={session} review={review} />
+        </RailSection>
+      )}
       {pullsFirst && pulls}
-      <RailSection title="Changes">
+      <RailSection title={session.review ? "Changes reviewed" : "Changes"}>
         {primary && others.length === 0 ? (
           <Changes repo={primary} showTotals={!!git} />
         ) : (
@@ -843,14 +864,14 @@ function Details({
         )}
       </RailSection>
       {!pullsFirst && pulls}
-      {(retrospectives.length > 0 || project?.settings.retrospectives) && (
+      {(retrospectives.length > 0 || (project?.settings.retrospectives && !session.review)) && (
         <RailSection
           title={retrospectives.length > 1 ? `Retrospectives (${retrospectives.length})` : "Retrospective"}
         >
           <SessionRetrospectives list={retrospectives} project={project} />
         </RailSection>
       )}
-      {project && memory.shown && (
+      {project && memory.shown && !session.review && (
         <RailSection title="Memory">
           <SessionMemory project={project} memory={memory} />
         </RailSection>
@@ -865,9 +886,12 @@ function Details({
       </RailSection>
       <RailSection title="Session">
         <Row
-          k="Started by"
+          k={session.review ? "Runs on" : "Started by"}
           v={
-            <span className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-flex items-center gap-1.5"
+              title={session.review ? `${session.created_by.name}'s Claude subscription` : undefined}
+            >
               <Avatar user={session.created_by} size={16} />
               {session.created_by.name}
             </span>

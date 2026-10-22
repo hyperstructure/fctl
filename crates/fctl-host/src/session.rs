@@ -528,11 +528,11 @@ fn call(
 }
 
 /// Retries what may pass, where asking twice changes nothing: reading the
-/// memory or the session's retrospectives, marking a note stale, updating
-/// a retrospective and resolving a review thread. A new note or
-/// retrospective that may have reached the control plane isn't sent again,
-/// so that none is kept twice; the agent hears what went wrong and can ask
-/// again.
+/// memory, the session's retrospectives or a review's threads, marking a
+/// note stale, updating a retrospective and resolving a review thread. A
+/// new note, retrospective or review that may have reached the control
+/// plane isn't sent again, so that none is kept or posted twice; the agent
+/// hears what went wrong and can ask again.
 async fn ask(
     api: &fctl_client::Api,
     session: &SessionId,
@@ -545,6 +545,7 @@ async fn ask(
             | AgentCall::Retrospectives
             | AgentCall::UpdateRetrospective { .. }
             | AgentCall::ResolveThread { .. }
+            | AgentCall::ReviewThreads
     );
     let mut delay = Duration::from_secs(1);
     let mut attempt = 1;

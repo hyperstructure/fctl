@@ -330,6 +330,35 @@ notes and retrospectives stay for people to read. A project keeps at most
 500 notes of 2,000 characters, stale ones included, and a session at most
 50 retrospectives.
 
+### Review agents
+
+Where a project's review agents are on, each new commit of a pull request
+in the repositories its agents may write to gets a review: an agent reads
+it, on the Claude subscription of the owner who turned them on, and fctl
+posts what it found on the pull request, with a check on the commit. The
+project's owners turn them on (on their own subscription), take them over
+and say how they review; the person they run for may turn them off:
+
+```sh
+fctl review settings -p my-app                 # on or off, on whose subscription, how
+fctl review settings -p my-app --on --model opus --effort high
+fctl review settings -p my-app --instructions-file review.md   # what they're told besides fctl's own
+fctl review settings -p my-app --mine          # run them on your subscription from now on
+fctl review settings -p my-app --model default # the project's model again
+fctl review settings -p my-app --off           # reviews under way finish
+fctl review -p my-app                          # the reviews, newest first, with what came of each
+fctl review start -p my-app 12                 # review a pull request's head now (or acme/api#7, or its link)
+```
+
+Review sessions take no messages: `fctl show my-app#12` says which pull
+request one reviews and what came of it. In a review agent's sandbox,
+`fctl review` is the agent's, through fctl-agent:
+
+```sh
+fctl review threads                    # fctl's earlier findings on the pull request, with the answers
+fctl review submit review.json         # post the review, once: --help shows the file
+```
+
 ## Notifications
 
 A session you follow notifies you when it waits for your reply, pauses on a

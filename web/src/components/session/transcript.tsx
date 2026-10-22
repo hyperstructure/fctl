@@ -23,12 +23,14 @@ import { type MouseEvent, memo, useId, useMemo, useRef, useState } from "react";
 import { ImageSizes, Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
 import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
+import { ReviewPostedNotice } from "@/components/review";
 import {
   Avatar,
   Button,
   CopyButton,
   Dialog,
   Gallery,
+  Logo,
   plainClick,
   Spinner,
   ThoughtIcon,
@@ -65,7 +67,7 @@ const UserMessage = memo(function UserMessage({
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
       <div className="mb-1.5 flex items-center gap-2.5 text-[12.5px]">
         <RailIcon>
-          {author ? <Avatar user={author} size={20} /> : <span className="size-5 rounded-full bg-raised" />}
+          {author ? <Avatar user={author} size={20} /> : <Logo withWord={false} className="[&_svg]:size-5" />}
         </RailIcon>
         <span className="font-medium text-ink">{author?.name ?? "fctl"}</span>
         <span className="text-ink-4 opacity-0 transition-opacity group-hover/msg:opacity-100">
@@ -478,6 +480,7 @@ const ItemView = memo(function ItemView({
       if (item.notice.published && shown(item.notice.published))
         return <PublishedShot file={item.notice.published} canManage={canManage} />;
       if (item.notice.retrospective) return <RetrospectiveNotice r={item.notice.retrospective} />;
+      if (item.notice.review) return <ReviewPostedNotice posted={item.notice.review} />;
       if (item.notice.memory)
         return (
           <MemoryNotice

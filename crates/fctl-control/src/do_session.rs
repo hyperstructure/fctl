@@ -164,6 +164,9 @@ fn event_json(seq: i64, ts: i64, kind: &str, data: &str) -> String {
     format!(r#"{{"seq":{seq},"ts":{ts},"kind":"{kind}","data":{data}}}"#)
 }
 
+/// Why a review agent's session takes no message or interrupt.
+const REVIEWS_TAKE_NO_MESSAGES: &str = "Review agents take no messages: this one reviews its pull request's commit, posts what it found on GitHub, and ends. A new commit starts a new review.";
+
 fn api_err(code: ErrorCode, message: &str) -> ApiError {
     ApiError::new(code, message)
 }
@@ -654,6 +657,9 @@ impl SessionObject {
     async fn deliver(&self, b: Deliver) -> std::result::Result<Delivered, ApiError> {
         let now = now_ms();
         let message = matches!(b.delivery.kind, DeliveryKind::Message { .. });
+        if self.summary().is_some_and(|s| s.review.is_some()) {
+            return Err(api_err(ErrorCode::Conflict, REVIEWS_TAKE_NO_MESSAGES));
+        }
         if let Some(key) = b.client_key.as_deref() {
             #[derive(Deserialize)]
             struct K {
@@ -867,6 +873,7 @@ impl SessionObject {
             published: None,
             memory: None,
             retrospective: None,
+            review: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -1245,6 +1252,9 @@ impl SessionObject {
                 "You can view this session but not message the agent",
             ));
         }
+        if self.summary().is_some_and(|s| s.review.is_some()) {
+            return Err(api_err(ErrorCode::Conflict, REVIEWS_TAKE_NO_MESSAGES));
+        }
         let files = fctl_domain::validate::attachment_ids(&attachments)?;
         let text = fctl_domain::validate::message_with_files("text", &text, files.len())?;
         let Some(summary) = self.summary() else {
@@ -1296,6 +1306,9 @@ impl SessionObject {
                 ErrorCode::Forbidden,
                 "You can view this session but not interrupt the agent",
             ));
+        }
+        if self.summary().is_some_and(|s| s.review.is_some()) {
+            return Err(api_err(ErrorCode::Conflict, REVIEWS_TAKE_NO_MESSAGES));
         }
         let now = now_ms();
         let id = fctl_domain::ids::delivery_id(now);
@@ -1564,6 +1577,7 @@ impl SessionObject {
                         published: None,
                         memory: None,
                         retrospective: None,
+                        review: None,
                     };
                     if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                         self.broadcast_events(&[json]);
@@ -1915,8 +1929,40 @@ impl SessionObject {
         if s.status == SessionStatus::Running && before != SessionStatus::Running {
             self.delete_meta("interrupted_by");
         }
-        if let Some(kind) = notify::Kind::of(before, s.status) {
+        if s.review.is_some() {
+            self.review_moved(s, before);
+        }
+        // A review agent waits for nobody: its turn's end is its review's.
+        let kind = notify::Kind::of(before, s.status)
+            .filter(|k| s.review.is_none() || *k != notify::Kind::Waiting);
+        if let Some(kind) = kind {
             self.notify(s, kind, now);
+        }
+    }
+
+    /// A review session's runner took it, or it ended: its review's check
+    /// on GitHub says so (`crate::reviews`).
+    fn review_moved(&self, s: &Session, before: SessionStatus) {
+        let env = self.env.clone();
+        let id = s.id.0.clone();
+        if s.status.is_terminal() && !before.is_terminal() {
+            let failed = s.status == SessionStatus::Failed;
+            let reason = s.status_reason.clone();
+            self.state.wait_until(async move {
+                if let Err(e) = crate::reviews::ended(&env, &id, failed, reason.as_deref()).await {
+                    worker::console_error!("ending review {id}: {}", e.0.message);
+                }
+            });
+        } else if matches!(s.status, SessionStatus::Preparing | SessionStatus::Running)
+            && matches!(before, SessionStatus::Queued | SessionStatus::Provisioning)
+            && self.meta("review_started").is_none()
+        {
+            self.set_meta("review_started", "1");
+            self.state.wait_until(async move {
+                if let Err(e) = crate::reviews::started(&env, &id).await {
+                    worker::console_error!("starting review {id}'s check: {}", e.0.message);
+                }
+            });
         }
     }
 

@@ -5,7 +5,7 @@ use crate::tasks::{self, Task};
 use crate::workspace::Paths;
 use fctl_domain::{files, memory, size};
 use fctl_proto::event::Attachment;
-use fctl_proto::runner::{MemorySpec, SandboxSize, SessionRepo, SessionSpec};
+use fctl_proto::runner::{MemorySpec, ReviewSpec, SandboxSize, SessionRepo, SessionSpec};
 use fctl_proto::session::{GithubAccess, RepoAccess};
 use std::path::PathBuf;
 
@@ -413,6 +413,89 @@ pub fn system_prompt(
     s
 }
 
+/// `~/AGENTS.md` for a review agent: fctl names its session, and its
+/// review goes through `fctl review`.
+pub const REVIEW_AGENTS_MD: &str = r#"# fctl
+
+This sandbox runs an fctl review session. fctl named the session after the
+pull request it reviews: leave its title as it is.
+
+- `fctl review threads` lists the findings fctl's earlier reviews of the
+  pull request posted, with their ids, whether they are resolved and what
+  people answered.
+- `fctl review submit review.json` posts your review, once, at the end. The
+  system prompt says what goes in the file.
+"#;
+
+/// What a review agent that ended its turn without posting is told.
+pub const REVIEW_REMINDER: &str = "You haven't posted your review yet, and the session ends soon. Post what you found now with `fctl review submit`, once: without findings if there's nothing to point out.";
+
+/// What a review agent is told: its sandbox, where the pull request is
+/// checked out (on `branch`), and then how to review it, which the control
+/// plane says (`ReviewSpec::instructions`). `previous_here`: the commit an
+/// earlier review reviewed is in the checkout, to compare with.
+pub fn review_system_prompt(
+    spec: &SessionSpec,
+    review: &ReviewSpec,
+    workdir: &str,
+    branch: &str,
+    previous_here: bool,
+    paths: &Paths,
+    sandbox: Option<SandboxSize>,
+) -> String {
+    let mut s = String::from(
+        "You are running as a review agent in fctl, a software factory. Your work happens in a sandbox; people follow along live, but nobody messages you.\n\n",
+    );
+    let base = &review.base_ref;
+    s.push_str(&format!(
+        "- The repository {} is cloned at {workdir}, checked out at the pull request's head commit, {}, on the branch `{branch}`. `origin/{base}` is its base: `git diff origin/{base}...HEAD` shows what the pull request changes, and `git log origin/{base}..HEAD` its commits.\n",
+        review.repo.full_name(),
+        short(&review.head_sha),
+    ));
+    if let Some(previous) = review.previous_sha.as_deref() {
+        let p = short(previous);
+        if previous_here {
+            s.push_str(&format!(
+                "- fctl last reviewed it at {p}: `git diff {p} HEAD` shows what changed since, which matters most now.\n"
+            ));
+        } else {
+            s.push_str(&format!(
+                "- fctl last reviewed it at {p}, which GitHub no longer has: the branch was rewritten since, so compare with its base.\n"
+            ));
+        }
+    }
+    let repos = spec.project.repos.as_deref().unwrap_or_default();
+    if !repos.is_empty() {
+        let dir = paths.repos.display();
+        s.push_str(&format!(
+            "- You may also read the repositories below, for what the change affects there. Clone one when you need it, into {dir}/<owner>/<name>; git is signed in for them:\n"
+        ));
+        for r in repos {
+            s.push_str(&format!(
+                "  - {}\n",
+                describe(r, repos, fctl_proto::session::GithubAccess::Read)
+            ));
+        }
+    }
+    s.push_str("- git and gh are signed in to read: the code, the pull request and its comments, issues and CI results. Neither can push, comment or review: fctl posts your review, in its own name.\n");
+    if let Some(size) = sandbox {
+        s.push_str(&format!(
+            "- This sandbox has {} and {} of memory ($FCTL_SANDBOX_CPUS, $FCTL_SANDBOX_MEMORY_MB), even where `nproc` and `free` show more.\n",
+            size::cpus(size.cpus),
+            size::memory(size.memory_mb.into()),
+        ));
+    }
+    s.push_str("- Never print or log secrets.\n");
+    s.push_str("- Once your turn ends, the session stops a minute later. Background work you start (a subagent, a shell command with `run_in_background`) keeps it up while it runs, for up to an hour: wait for what you started before you post your review.\n");
+    s.push_str(&review.instructions);
+    s
+}
+
+/// A commit's first seven characters.
+fn short(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
 /// What an agent that may comment, not push, is told.
 const COMMENT_ONLY: &str = "- In this session you read the repositories and review and comment on GitHub, but you can't push: gh reviews and comments on pull requests (`gh pr review`, `gh pr comment`, line comments through `gh api`), and comments on and labels issues, while git can't push, nor does fctl push for you. Change files only to check something, as when you run a pull request's tests on its branch (`gh pr checkout <number>`): what you find goes in your review and comments, with fixes as suggested changes, and in your reply. Approve a pull request only when you are asked to.\n";
 
@@ -644,6 +727,7 @@ mod tests {
             memory: None,
             retrospectives: false,
             github_access: None,
+            review: None,
         }
     }
 
@@ -1118,5 +1202,64 @@ mod tests {
         assert_eq!(user_turn("hi", Some("Ada"), "Ada"), "hi");
         assert_eq!(user_turn("hi", Some("Bob"), "Ada"), "Bob wrote:\n\nhi");
         assert_eq!(user_turn("continue", None, "Ada"), "continue");
+    }
+
+    #[test]
+    fn review_agents_are_told_where_the_pull_request_is_and_how_to_review_it() {
+        let mut spec = spec_with(serde_json::json!([
+            { "owner": "acme", "name": "web", "access": "read" }
+        ]));
+        let review = ReviewSpec {
+            repo: fctl_proto::session::RepoRef {
+                owner: "acme".into(),
+                name: "app".into(),
+            },
+            number: 12,
+            url: "https://github.com/acme/app/pull/12".into(),
+            title: "Fix the login redirect".into(),
+            head_sha: "3f2a1c9d00000000000000000000000000000000".into(),
+            head_ref: "fctl/12-fix".into(),
+            base_ref: "main".into(),
+            previous_sha: Some("1a2b3c4d00000000000000000000000000000000".into()),
+            instructions: "\n## What to review\n\nThe change.\n".into(),
+        };
+        spec.review = Some(review.clone());
+        let size = SandboxSize {
+            cpus: 2,
+            memory_mb: 4096,
+        };
+        let text = review_system_prompt(
+            &spec,
+            &review,
+            "/home/agent/workspace",
+            "fctl/12-fix",
+            true,
+            &paths(),
+            Some(size),
+        );
+        assert!(text.starts_with("You are running as a review agent in fctl"));
+        assert!(text.contains("nobody messages you"));
+        assert!(text.contains("checked out at the pull request's head commit, 3f2a1c9, on the branch `fctl/12-fix`. `origin/main` is its base: `git diff origin/main...HEAD`"));
+        assert!(text.contains("fctl last reviewed it at 1a2b3c4: `git diff 1a2b3c4 HEAD`"));
+        assert!(text.contains("acme/web (read only)"));
+        assert!(text.contains("Neither can push, comment or review: fctl posts your review"));
+        assert!(text.contains("This sandbox has 2 CPUs and 4 GiB of memory"));
+        assert!(text.ends_with("## What to review\n\nThe change.\n"));
+        // Nothing of the work other sessions do.
+        for work in ["Commit as you go", "open a pull request", "fctl pushes"] {
+            assert!(!text.contains(work), "{work}");
+        }
+        let gone = review_system_prompt(
+            &spec,
+            &review,
+            "/home/agent/workspace",
+            "fctl/12-fix",
+            false,
+            &paths(),
+            None,
+        );
+        assert!(gone.contains("which GitHub no longer has: the branch was rewritten since"));
+        assert!(!gone.contains("This sandbox has"));
+        assert!(REVIEW_AGENTS_MD.contains("fctl review submit review.json"));
     }
 }
