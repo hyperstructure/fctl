@@ -2,6 +2,17 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.17.1 (2026-10-22)
+
+### Features
+
+- Count the agent's thinking live instead of storing its progress ([#203](https://github.com/hyperstructure/fctl/pull/203))
+- **web:** Open the search with ⌘P and ⌘⇧P as well as ⌘K ([#204](https://github.com/hyperstructure/fctl/pull/204))
+
+### Fixes
+
+- **web:** Open a session's page on a screenful of its transcript ([#200](https://github.com/hyperstructure/fctl/pull/200))
+
 ## 0.17.0 (2026-10-22)
 
 ### Features
