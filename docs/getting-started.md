@@ -120,9 +120,9 @@ name or id `fctl claude status` shows).
 ## 5. Bring a machine online
 
 A workspace's sessions run only on its runners: until one is online, they
-wait in the queue, and the app says so under the task box. Until it has
-one, its **Runners** tab shows its admins how to add one, and its members
-whom to ask.
+wait in the queue, and the app says so under the task box. Its **Runners**
+tab shows its admins how to add a runner, under the ones it has, and its
+members whom to ask.
 
 Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
 
