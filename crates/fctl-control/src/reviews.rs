@@ -484,6 +484,29 @@ pub async fn start(
         (Some(a), Some(_)) => a + 1,
         (None, _) => 0,
     };
+    // Deliveries come out of order: one about an older head, late, starts
+    // nothing in place of the review of a newer one.
+    if asked_by.is_none()
+        && let Some(updated) = pr.updated_at
+    {
+        #[derive(Deserialize)]
+        struct Newest {
+            #[serde(deserialize_with = "opt_int", default)]
+            at: Option<i64>,
+        }
+        let newest: Option<Newest> = q(
+            &ctx.db,
+            "SELECT MAX(pr_updated_at) AS at FROM reviews WHERE project_id = ? AND repo_key = ? AND number = ?",
+            &[s(&project.id), s(&key), n(pr.number as i64)],
+        )?
+        .first()
+        .await?;
+        if newest.and_then(|n| n.at).is_some_and(|at| at > updated) {
+            return Ok(Started::Skipped(
+                "a newer commit of it has its review already".into(),
+            ));
+        }
+    }
     #[derive(Deserialize)]
     struct Head {
         head_sha: String,
@@ -548,8 +571,8 @@ pub async fn start(
         q(
             &ctx.db,
             "INSERT INTO reviews (session_id, project_id, repo, repo_key, number, head_sha, attempt, url, title, author, draft, \
-             fork, trusted, previous_sha, installation_id, state, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+             fork, trusted, previous_sha, pr_updated_at, installation_id, state, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
             &[
                 s(id.as_str()),
                 s(&project.id),
@@ -565,6 +588,7 @@ pub async fn start(
                 crate::db::b(pr.fork),
                 crate::db::b(rv::trusted(pr, app_login(&ctx.cfg).as_deref())),
                 os(previous.as_deref()),
+                crate::db::on(pr.updated_at),
                 n(inst as i64),
                 n(ctx.now),
             ],
@@ -660,6 +684,7 @@ pub fn spec_of(
         draft: row.draft,
         open: true,
         fork: row.fork,
+        updated_at: None,
     };
     Some(fctl_proto::runner::ReviewSpec {
         instructions: rv::instructions(&pr, row.trusted, project),

@@ -63,6 +63,10 @@ pub struct PullRequest {
     pub open: bool,
     /// From a fork.
     pub fork: bool,
+    /// When GitHub last changed it, as of the delivery or the lookup:
+    /// deliveries come out of order, and one about an older head mustn't
+    /// take the place of a review of a newer one.
+    pub updated_at: Option<fctl_proto::Millis>,
 }
 
 /// What a `pull_request` delivery says of its pull request, and the action
@@ -92,6 +96,9 @@ pub fn delivered(payload: &Value) -> Option<(String, PullRequest)> {
             open: text(pr, "/state").as_deref() == Some("open") && !merged,
             // A fork that was deleted has no repository.
             fork: head_repo.is_none() || head_repo != base_repo,
+            updated_at: text(pr, "/updated_at")
+                .as_deref()
+                .and_then(crate::pulls::github_time),
         },
     ))
 }
@@ -135,7 +142,7 @@ pub fn trusted(pr: &PullRequest, app_login: Option<&str>) -> bool {
 /// asks for (`POST /api/v1/projects/{id}/reviews`).
 pub fn lookup(repo: &RepoRef, number: u64) -> Value {
     json!({
-        "query": "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { nameWithOwner pullRequest(number: $number) { number url title state isDraft headRefOid headRefName baseRefName isCrossRepository authorAssociation author { login __typename } } } }",
+        "query": "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { nameWithOwner pullRequest(number: $number) { number url title state isDraft updatedAt headRefOid headRefName baseRefName isCrossRepository authorAssociation author { login __typename } } } }",
         "variables": {
             "owner": repo.owner,
             "name": repo.name,
@@ -175,6 +182,9 @@ pub fn looked_up(answer: &Value) -> Option<PullRequest> {
             .get("isCrossRepository")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        updated_at: text("/updatedAt")
+            .as_deref()
+            .and_then(crate::pulls::github_time),
     })
 }
 
@@ -1102,6 +1112,7 @@ mod tests {
             draft: false,
             open: true,
             fork: false,
+            updated_at: None,
         }
     }
 
@@ -1135,6 +1146,7 @@ mod tests {
             "pull_request": {
                 "number": 12, "html_url": "https://github.com/acme/web/pull/12",
                 "title": "Fix the login redirect", "state": "open", "draft": true,
+                "updated_at": "2026-10-22T10:00:00Z",
                 "merged": false, "author_association": "CONTRIBUTOR",
                 "user": { "login": "mallory" },
                 "head": { "sha": SHA, "ref": "fix", "repo": { "full_name": "mallory/web" } },
@@ -1148,6 +1160,10 @@ mod tests {
         let (action, pr) = delivered(&payload("synchronize")).unwrap_or_else(|| panic!("parsed"));
         assert_eq!(action, "synchronize");
         assert!(pr.draft && pr.open && pr.fork);
+        assert_eq!(
+            pr.updated_at,
+            crate::pulls::github_time("2026-10-22T10:00:00Z")
+        );
         assert_eq!(pr.head_ref, "fix");
         assert_eq!(pr.author.as_deref(), Some("mallory"));
         for a in ACTIONS {

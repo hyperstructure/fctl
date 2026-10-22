@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS reviews (
   trusted INTEGER NOT NULL DEFAULT 0,
   -- The commit the last finished review of the pull request reviewed.
   previous_sha TEXT,
+  -- When GitHub last changed the pull request, as of what started the
+  -- review: a delivery about an older head, which comes late, starts none.
+  pr_updated_at INTEGER,
   -- The GitHub App's installation it works through, and its check run.
   installation_id INTEGER,
   check_run_id INTEGER,
