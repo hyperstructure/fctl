@@ -115,6 +115,11 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   (`Origin`/`Sec-Fetch-Site` checks) and carry JSON; file uploads carry
   `application/octet-stream`, which browsers cannot send cross-site without
   asking first either. WebSocket upgrades check the origin too.
+- **Sensitive actions take a passkey or a code**, where the primary
+  instance owner turns that on: deleting a project, making an access token
+  and the like ask the person to confirm it's them first, which then lasts
+  15 minutes for the browser, CLI or token that confirmed
+  ([Confirming it's you](#confirming-its-you)).
 
 ### Early access
 
@@ -257,6 +262,10 @@ decoder, `fctl_domain::cbor`), and WebCrypto checks the signatures
   has an authenticator app too: the step after the password offers it
   (`POST /api/v1/auth/two-factor/passkey`, then
   `POST /api/v1/auth/two-factor/verify` with the passkey's answer).
+- **Confirming it's you** before sensitive actions, where the instance
+  asks for it ([Confirming it's you](#confirming-its-you)):
+  `POST /api/v1/auth/verify/passkey`, then `POST /api/v1/auth/verify`
+  with the passkey's answer.
 - **Signals.** Where browsers have them, the app tells the person's passkey
   provider which passkeys the account has, what the account is called, and
   which passkey fctl doesn't know any more (`signalAllAcceptedCredentials`,
@@ -270,6 +279,78 @@ Adding and removing a passkey go in the audit log, and adding one emails
 the person when email is set up. A passkey that is the account's last way
 in, or the second factor the instance requires, can't be removed until
 another takes its place ([ADR 0023](adr/0023-passkeys-sign-in-on-their-own.md)).
+
+### Confirming it's you
+
+Where the primary instance owner turns it on (Admin → Settings → Sensitive
+actions, or `fctl admin set --verify-sensitive-actions on`; off by
+default), sensitive actions take the person's passkey or a code from their
+authenticator app first, so that a stolen browser session, CLI or access
+token can't do them alone
+([ADR 0039](adr/0039-sensitive-actions-take-a-passkey-or-a-code.md)).
+`fctl_domain::verify::Sensitive` lists them:
+
+- inviting someone to the instance as an admin, or allowing an address
+  as one, making someone an admin, and handing over the primary instance
+  owner's role;
+- turning off what makes people prove it's them: requiring two-factor
+  sign-in, of the instance or a workspace, asking for codes on Google
+  sign-in, and this confirmation itself; resetting someone's two-factor
+  sign-in, and removing a passkey;
+- adding one of your runners to a workspace, or letting it run
+  everyone's sessions there (registering a new one, as `fctl host install`
+  does, doesn't ask);
+- making someone a workspace's admin, or inviting them as one, and
+  handing over or giving a workspace's primary admin role;
+- making an access token, and approving a CLI's sign-in;
+- exporting your data, and deleting your account, someone else's, a
+  project or a workspace.
+
+Only the primary instance owner turns it on or off, and turning it off is
+one of those actions (`verify::check_verify_setting`). Turning off your
+own authenticator app, replacing it and new recovery codes take a current
+code already, and adding a passkey or an app the password or a recent
+sign-in ([Two-factor sign-in](#two-factor-sign-in)).
+
+1. **Who it asks.** People with a passkey or an authenticator app
+   (`verify::required`). People with neither have nothing to confirm it
+   with, and aren't asked: requiring two-factor sign-in gives everyone one.
+2. **Where.** Each sensitive action's handler checks it once the action is
+   allowed and checked, right before it changes anything
+   (`Ctx::verified`), so that nobody confirms for something that then
+   fails; actions whose request decides (a role, a setting turned off) ask
+   only when they are sensitive. A browser, CLI or token that hasn't
+   confirmed within the last 15 minutes gets `verification_required` (HTTP
+   403), which says what to confirm and with what. D1 keeps when each
+   token last confirmed (`tokens.verified_at`), and the token lookup reads
+   it with the token, so the check costs no query.
+3. **How.** `POST /api/v1/auth/verify` takes a passkey's answer to
+   `POST /api/v1/auth/verify/passkey`'s options (a challenge for that
+   person, `verify`, which the device must verify them for), a code from
+   the app or a recovery code, used up and counted towards the wait after
+   wrong ones as at sign-in. The token that sent it counts as confirmed for
+   15 minutes, and the audit log records it (`user.verified`). A browser
+   that signs in with a passkey, or with a second factor after the
+   password or Google, counts as confirmed from its sign-in
+   (`auth::start_web_session`). `GET /api/v1/auth/verify` says whether
+   sensitive actions ask the caller, with what, and until when they count
+   as confirmed.
+4. **The web app** answers `verification_required` with one dialog, the
+   passkey first where the browser can use one, then the app's code or a
+   recovery code, and sends the request again once the person confirmed
+   (`web/src/lib/api.ts`, `components/two-factor/verify.tsx`); requests
+   that wait at the same time share it. The export, a download the
+   browser makes, asks first.
+5. **The CLI** asks in a terminal, and sends the request again: for a
+   code from the app, or, for someone with passkeys, to approve a code in
+   the browser, as `fctl login` does (`POST /api/v1/auth/verify/device`,
+   the `/device` page). Approving that code confirms the CLI's token
+   instead of signing a new one in, and the device flow's poll answers
+   `verified`; such a code is its person's alone. Without a terminal the
+   command fails with the server's answer, and `fctl account verify --code`
+   confirms first. Access tokens with limits can't confirm; of these
+   actions they reach only deleting a project, which they leave to a
+   person.
 
 ### Access tokens
 
@@ -544,7 +625,8 @@ version of the control plane, in that browser (localStorage, per person).
 their email addresses, identities, two-factor sign-in (sealed authenticator
 secrets, hashed recovery codes, sign-ins waiting for a code), passkeys'
 public keys and their challenges, allowlist, early access requests, auth
-tokens (and what access tokens are limited to), device codes, workspaces
+tokens (what access tokens are limited to, and when each last confirmed
+it's its person), device codes, workspaces
 (with their avatar images), their members,
 invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
