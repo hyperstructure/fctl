@@ -338,6 +338,7 @@ fn state(status: SessionStatus, reason: &str) -> SessionState {
         stats: None,
         title: None,
         description: None,
+        context: None,
     }
 }
 

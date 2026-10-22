@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use fctl_proto::runner::GitIdentity;
 use fctl_proto::session::ProjectSettings;
+use fctl_proto::uplink::ContextWindow;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -564,6 +565,24 @@ pub fn applied_effort(settings: &Value) -> Option<String> {
     }
 }
 
+/// The context window Claude works in, from its answer to
+/// `get_context_usage`: `maxTokens`, and `autoCompactThreshold`, where it
+/// compacts the conversation, which it leaves out when auto-compact is off.
+/// Claude doesn't compact there when it leaves that to the API
+/// (`autocompactSource` `auto`: it compacts once the API says the prompt is
+/// too long, and `/context` shows no buffer for it). `None` when the answer
+/// doesn't say.
+pub fn context_window(usage: &Value) -> Option<ContextWindow> {
+    let tokens = usage.get("maxTokens")?.as_u64().filter(|&t| t > 0)?;
+    let compacts = usage.get("isAutoCompactEnabled").and_then(Value::as_bool) != Some(false)
+        && usage.get("autocompactSource").and_then(Value::as_str) != Some("auto");
+    let compact_at = usage
+        .get("autoCompactThreshold")
+        .and_then(Value::as_u64)
+        .filter(|&t| compacts && t > 0 && t < tokens);
+    Some(ContextWindow { tokens, compact_at })
+}
+
 pub fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_owned();
@@ -650,6 +669,49 @@ pub(crate) mod tests {
             applied_effort(&json!({ "applied": { "model": "x" } })),
             None
         );
+    }
+
+    #[test]
+    fn claude_says_which_context_window_it_works_in() {
+        // As Claude Code 2.1.308 answers `get_context_usage` with
+        // `detail: "summary"` for Opus 5.5 (categories cut short).
+        let answer = json!({
+            "categories": [{ "name": "System prompt", "tokens": 1873, "color": "promptBorder", "kind": "used" }],
+            "totalTokens": 16480, "maxTokens": 1_000_000, "rawMaxTokens": 1_000_000, "percentage": 2,
+            "model": "claude-opus-5-5", "autoCompactThreshold": 967_000, "isAutoCompactEnabled": true,
+            "autocompactSource": "model-default",
+            "apiUsage": { "input_tokens": 3, "output_tokens": 7, "cache_creation_input_tokens": 5723, "cache_read_input_tokens": 5724 }
+        });
+        assert_eq!(
+            context_window(&answer),
+            Some(ContextWindow {
+                tokens: 1_000_000,
+                compact_at: Some(967_000)
+            })
+        );
+        // Auto-compact off: no threshold.
+        let off = json!({ "maxTokens": 200_000, "isAutoCompactEnabled": false });
+        assert_eq!(
+            context_window(&off),
+            Some(ContextWindow {
+                tokens: 200_000,
+                compact_at: None
+            })
+        );
+        // Left to the API, which says when the prompt is too long.
+        let mut auto = answer.clone();
+        auto["autocompactSource"] = json!("auto");
+        assert_eq!(context_window(&auto).and_then(|w| w.compact_at), None);
+        // A Claude Code from before `isAutoCompactEnabled` gives the
+        // threshold only when auto-compact is on.
+        let older = json!({ "maxTokens": 200_000, "autoCompactThreshold": 167_000 });
+        assert_eq!(
+            context_window(&older).and_then(|w| w.compact_at),
+            Some(167_000)
+        );
+        // An answer without the window says nothing.
+        assert_eq!(context_window(&json!({ "totalTokens": 9 })), None);
+        assert_eq!(context_window(&json!({ "maxTokens": 0 })), None);
     }
 
     #[test]
