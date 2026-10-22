@@ -528,8 +528,8 @@ function People({ w }: { w: G.Workspace }) {
           <Field
             label="Invite someone"
             className="sm:flex-1"
-            hint="An address they sign in with. They join from their home page; Settings shows which of their addresses they joined as."
-            error={invite.error && !notOnInstance ? invite.error.message : undefined}
+            hint="An address they sign in with. They join from their home page, once this instance lets the address in; Settings shows which of their addresses they joined as."
+            error={invite.error && !(notOnInstance && instanceAdmin) ? invite.error.message : undefined}
           >
             {(id) => (
               <Input
@@ -571,26 +571,22 @@ function People({ w }: { w: G.Workspace }) {
           </Field>
         </form>
       )}
-      {notOnInstance && (
+      {/* Only instance admins hear that an address can't sign in yet: to
+          everyone else the invitation waits, whoever the address is. */}
+      {notOnInstance && instanceAdmin && (
         <Banner tone="info" className="mt-3">
-          {email.trim()} can't sign in to this instance yet.{" "}
-          {instanceAdmin ? (
-            <>
-              You are an instance admin: invite them to it and to {w.name} at once.
-              <div className="mt-3">
-                <Button
-                  size="sm"
-                  variant="primary"
-                  loading={inviteToInstance.isPending}
-                  onClick={() => inviteToInstance.mutate()}
-                >
-                  Invite them to the instance and {w.name}
-                </Button>
-              </div>
-            </>
-          ) : (
-            "An instance admin invites them first, and can invite them to this workspace at the same time."
-          )}
+          {email.trim()} can't sign in to this instance yet. You are an instance admin: invite them to it and
+          to {w.name} at once.
+          <div className="mt-3">
+            <Button
+              size="sm"
+              variant="primary"
+              loading={inviteToInstance.isPending}
+              onClick={() => inviteToInstance.mutate()}
+            >
+              Invite them to the instance and {w.name}
+            </Button>
+          </div>
         </Banner>
       )}
       <ul className={cn("border-t border-line", admin && "mt-8")}>

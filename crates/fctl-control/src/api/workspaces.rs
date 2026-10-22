@@ -947,15 +947,36 @@ async fn on_instance(ctx: &Ctx, email: &str) -> AppResult<bool> {
 }
 
 /// Creates (or renews) an invitation to a workspace, and emails it
-/// (`notify`). The caller checked that they may invite.
+/// (`notify`, after the response) when the address can sign in to the
+/// instance and isn't a member's: others wait, unemailed, until the
+/// instance admits them. The caller checked that they may invite.
+///
+/// The answer is the same whether or not the address can sign in, has an
+/// account or is another address of a member, so that it tells a
+/// workspace's admins nothing about who uses the instance; only `reveal`
+/// (an instance admin, who sees that anyway) hears whether it was emailed.
 pub async fn invite(
     ctx: &Ctx,
     workspace: &WorkspaceRow,
     email: &str,
     role: WorkspaceRole,
     notify: bool,
+    reveal: bool,
 ) -> AppResult<WorkspaceInvitation> {
-    let already: Option<Count> = q(
+    // The address a member joined as, which its admins see in the list.
+    let member: Option<Count> = q(
+        &ctx.db,
+        "SELECT COUNT(*) AS n FROM workspace_members WHERE workspace_id = ? AND email = ?",
+        &[s(&workspace.id), s(email)],
+    )?
+    .first()
+    .await?;
+    if member.map_or(0, |c| c.n) > 0 {
+        return Err(conflict("They are a member of this workspace already"));
+    }
+    // Another address of a member: invited all the same, but they hear
+    // nothing of it, being in already.
+    let theirs: Option<Count> = q(
         &ctx.db,
         "SELECT COUNT(*) AS n FROM workspace_members m JOIN user_emails e ON e.user_id = m.user_id \
          WHERE m.workspace_id = ? AND e.email = ?",
@@ -963,9 +984,7 @@ pub async fn invite(
     )?
     .first()
     .await?;
-    if already.map_or(0, |c| c.n) > 0 {
-        return Err(conflict("They are a member of this workspace already"));
-    }
+    let a_member = theirs.map_or(0, |c| c.n) > 0;
     let id = fctl_domain::ids::workspace_invite_id(ctx.now);
     let actor = ctx.user()?;
     q(
@@ -993,8 +1012,14 @@ pub async fn invite(
     .first()
     .await?
     .ok_or_else(|| not_found("Invitation"))?;
+    let can_sign_in = on_instance(ctx, email).await?;
     let mut emailed = false;
-    if let Some(mail) = ctx.cfg.email.clone().filter(|_| notify) {
+    if let Some(mail) = ctx
+        .cfg
+        .email
+        .clone()
+        .filter(|_| notify && can_sign_in && !a_member)
+    {
         let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
         let text = format!(
             "{} invited you to join {} on {instance}, where you and its people give Claude agents work in its projects.\n\n\
@@ -1003,14 +1028,16 @@ pub async fn invite(
             workspace.name,
             ctx.cfg.url("/"),
         );
-        emailed = crate::email::send(
-            &mail,
-            email,
-            &format!("Join {} on {instance}", workspace.name),
-            &text,
-        )
-        .await
-        .is_ok();
+        let subject = format!("Join {} on {instance}", workspace.name);
+        if reveal {
+            emailed = crate::email::send(&mail, email, &subject, &text)
+                .await
+                .is_ok();
+        } else {
+            // After the response, so that how long it takes says nothing.
+            let to = email.to_owned();
+            ctx.defer(async move { crate::email::send(&mail, &to, &subject, &text).await });
+        }
     }
     ctx.audit_in(
         Some(&workspace.id),
@@ -1018,11 +1045,14 @@ pub async fn invite(
         Some(email),
         Some(serde_json::json!({ "role": role.as_str() })),
     );
-    if let Some(invitee) = crate::auth::user_by_email(ctx, email).await? {
+    if let Some(invitee) = crate::auth::user_by_email(ctx, email)
+        .await?
+        .filter(|_| !a_member)
+    {
         ws::changed(ctx, vec![invitee.id]);
     }
     let mut out = row.to_invitation(false);
-    out.emailed = Some(emailed);
+    out.emailed = reveal.then_some(emailed);
     Ok(out)
 }
 
@@ -1033,15 +1063,20 @@ pub async fn create_invitation(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
     a.require_admin()?;
     let email = validate::email(&body.email)?;
     let role = policy::invitation_role(body.role)?;
-    if !on_instance(ctx, &email).await? {
+    // Instance admins see who can sign in anyway, and are offered to invite
+    // the address to the instance too. Everyone else gets the same answer
+    // either way: an invitation that waits until the instance admits it.
+    let instance_admin = ctx.user()?.is_admin();
+    if instance_admin && !on_instance(ctx, &email).await? {
         return Err(AppError(ApiError::new(
             ErrorCode::AccessDenied,
             format!(
-                "{email} can't sign in to this instance yet. An instance admin invites them first, and can invite them to this workspace at the same time."
+                "{email} can't sign in to this instance yet. Invite them to it and to this workspace at once, in the app or with `fctl admin invite {email} -w {}`.",
+                a.row.slug
             ),
         )));
     }
-    http::created(&invite(ctx, &a.row, &email, role, true).await?)
+    http::created(&invite(ctx, &a.row, &email, role, true, instance_admin).await?)
 }
 
 /// `DELETE /api/v1/workspaces/{id}/invitations/{invitation}` (admins).
