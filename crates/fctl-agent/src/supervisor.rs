@@ -116,9 +116,10 @@ pub struct Supervisor {
     /// The turn under way is one Claude started on its own, which its
     /// `idle` ends as well as its `result`.
     claude_turn: bool,
-    /// Claude reports its turns (`session_state_changed`), so its other
-    /// messages needn't tell.
-    reports_turns: bool,
+    /// Claude said last that it works (`session_state_changed`: `running`
+    /// or `requires_action`), on a turn or for background work it hands
+    /// Claude when it ends: the idle clock waits for its `idle`.
+    claude_running: bool,
     /// Claude's background tasks that still run.
     tasks: Tasks,
     /// Why the session stops, and when it stops anyway.
@@ -214,7 +215,7 @@ impl Supervisor {
                 queue: VecDeque::new(),
                 turn_active: false,
                 claude_turn: false,
-                reports_turns: false,
+                claude_running: false,
                 tasks: Tasks::default(),
                 stopping: None,
                 idle_since: None,
@@ -446,8 +447,9 @@ impl Supervisor {
             None
         };
         let waits = status == SessionStatus::Idle;
-        // The idle clock starts once background work has ended too.
-        self.idle_since = (waits && self.tasks.is_empty()).then(Instant::now);
+        // The idle clock starts once background work has ended too, and
+        // Claude is done.
+        self.idle_since = self.nothing_runs().then(Instant::now);
         self.waiting_since = match (waits, waited) {
             (true, true) => self.waiting_since,
             (true, false) => Some(Instant::now()),
@@ -1423,17 +1425,23 @@ impl Supervisor {
     }
 
     async fn on_claude_message(&mut self, v: Value) {
-        // Claude's word on its turns: acted on, not kept.
+        // Claude's word on its state: acted on, not kept.
         if let Some(state) = tasks::session_state(&v) {
-            self.reports_turns = true;
             match state {
                 "idle" => self.claude_went_idle(),
-                "running" | "requires_action" if !self.turn_active => self.claude_started_turn(),
+                "running" | "requires_action" => {
+                    self.claude_running = true;
+                    if !self.turn_active {
+                        self.claude_started_turn();
+                    }
+                }
                 _ => {}
             }
             return;
         }
-        if !self.turn_active && !self.reports_turns && tasks::in_turn(&v) {
+        // It doesn't report every turn it starts on its own: their
+        // messages tell.
+        if !self.turn_active && tasks::in_turn(&v) {
             self.claude_started_turn();
         }
         let kind = ev::classify(&v);
@@ -1489,6 +1497,15 @@ impl Supervisor {
     fn wait(&mut self) {
         let reason = tasks::waiting_reason(self.tasks.len());
         self.set_status(SessionStatus::Idle, Some(reason));
+        if self.idle_since.is_none() && self.nothing_runs() {
+            self.idle_since = Some(Instant::now());
+        }
+    }
+
+    /// Whether the session waits for a message with nothing running: no
+    /// background task, and Claude said last that it is done, if it says.
+    fn nothing_runs(&self) -> bool {
+        self.state.status == SessionStatus::Idle && self.tasks.is_empty() && !self.claude_running
     }
 
     /// Claude started a turn on its own, to take what its background work
@@ -1508,15 +1525,23 @@ impl Supervisor {
         }
     }
 
-    /// Claude says no turn is under way. A `result` ends each turn, but one
-    /// Claude started on its own can end without.
+    /// Claude says it is done: no turn is under way, and none comes for
+    /// background work that has ended. A `result` ends each turn, but one
+    /// Claude started on its own can end without. A session that waits
+    /// starts its idle clock, unless background tasks still run.
     fn claude_went_idle(&mut self) {
-        if !(self.turn_active && self.claude_turn) {
-            return;
+        self.claude_running = false;
+        let ended = self.turn_active && self.claude_turn;
+        if ended {
+            self.turn_active = false;
+            self.claude_turn = false;
         }
-        self.turn_active = false;
-        self.claude_turn = false;
-        if self.stopping.is_none() && self.state.status == SessionStatus::Running {
+        let waits = match self.state.status {
+            SessionStatus::Idle => true,
+            SessionStatus::Running => ended,
+            _ => false,
+        };
+        if waits && self.stopping.is_none() {
             self.wait();
         }
     }
@@ -1736,8 +1761,9 @@ impl Supervisor {
         self.turn_active = false;
         self.claude_turn = false;
         // A restarted Claude Code doesn't follow the old one's background
-        // tasks.
+        // tasks, and hasn't said what it does.
         self.tasks.take();
+        self.claude_running = false;
         if self.stopping.is_some() || self.state.status.is_terminal() {
             return;
         }
@@ -1807,7 +1833,9 @@ impl Supervisor {
                 kind: CredentialKind::Github,
             });
         }
-        // The idle timeout, and the most background work may add to it.
+        // The idle timeout, and the most background work may add to it:
+        // the tasks Claude Code reports, or whatever it says it still runs
+        // for once its turns have ended.
         if let Some(idle) = self.config.as_ref().map(|c| tasks::idle_timeout(&c.spec))
             && self.stopping.is_none()
         {
@@ -1815,7 +1843,7 @@ impl Supervisor {
             if self.idle_since.is_some_and(|t| t.elapsed() > idle) {
                 self.begin_stop(stop_text(StopReason::Idle).to_owned(), 30_000)
                     .await;
-            } else if !self.tasks.is_empty()
+            } else if (!self.tasks.is_empty() || self.claude_running)
                 && self.waiting_since.is_some_and(|t| t.elapsed() > limit)
             {
                 self.begin_stop(tasks::limit_reason(limit), 30_000).await;
@@ -2856,6 +2884,31 @@ mod tests {
                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": "", "is_error": false}]}})
     }
 
+    /// `system/init`, which starts each turn.
+    fn init() -> Value {
+        json!({"type": "system", "subtype": "init", "apiKeySource": "none", "model": "claude-opus-5-5",
+               "session_id": "s", "uuid": "u"})
+    }
+
+    fn says(text: &str) -> Value {
+        json!({"type": "assistant", "parent_tool_use_id": null, "session_id": "s", "uuid": "u",
+               "message": {"id": "msg_says", "role": "assistant", "content": [{"type": "text", "text": text}]}})
+    }
+
+    /// A subagent's message, which names the `Agent` call that started it.
+    fn subagent_says(call: &str, text: &str) -> Value {
+        json!({"type": "assistant", "parent_tool_use_id": call, "session_id": "s", "uuid": "u",
+               "message": {"id": "msg_sub", "role": "assistant", "content": [{"type": "text", "text": text}]}})
+    }
+
+    /// An `Agent` call that starts a subagent in the background.
+    fn agent(id: &str, description: &str) -> Value {
+        json!({"type": "assistant", "parent_tool_use_id": null, "session_id": "s", "uuid": "u",
+               "message": {"id": format!("msg_{id}"), "role": "assistant",
+                           "content": [{"type": "tool_use", "id": id, "name": "Agent",
+                                        "input": {"description": description, "prompt": description, "run_in_background": true}}]}})
+    }
+
     /// Hands the supervisor the end of the refresh of the repositories'
     /// state that runs, and sends the host what it emitted.
     async fn synced(sup: &mut Supervisor, work: &mut mpsc::UnboundedReceiver<Work>) {
@@ -3172,7 +3225,10 @@ done
             waiting(&sup),
             (SessionStatus::Idle, Some("Waiting for a message"))
         );
-        assert!(!sup.turn_active && sup.idle_since.is_some());
+        // The idle clock starts once Claude says it is done.
+        assert!(!sup.turn_active && sup.idle_since.is_none());
+        sup.on_claude_message(turn_state("idle")).await;
+        assert!(sup.idle_since.is_some());
 
         // One that ends without a result ends all the same.
         sup.on_claude_message(turn_state("running")).await;
@@ -3195,15 +3251,14 @@ done
     }
 
     #[tokio::test]
-    async fn without_turn_reports_the_first_message_of_a_turn_starts_it() -> anyhow::Result<()> {
+    async fn the_first_message_of_a_turn_starts_it() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let (mut sup, _host) = in_a_turn(dir.path())?;
         sup.on_claude_message(result()).await;
         assert_eq!(waiting(&sup).0, SessionStatus::Idle);
         // A background subagent works while the conversation waits.
-        let subagent = json!({"type": "assistant", "parent_tool_use_id": "toolu_1",
-            "message": {"id": "m1", "role": "assistant", "content": [{"type": "text", "text": "Reviewing"}]}});
-        sup.on_claude_message(subagent).await;
+        sup.on_claude_message(subagent_says("toolu_1", "Reviewing"))
+            .await;
         assert_eq!(waiting(&sup).0, SessionStatus::Idle);
         let delta = json!({"type": "stream_event", "parent_tool_use_id": null,
             "event": {"type": "message_start", "message": {"id": "m2"}}});
@@ -3212,10 +3267,131 @@ done
         sup.on_claude_message(result()).await;
         assert_eq!(waiting(&sup).0, SessionStatus::Idle);
 
-        // Once Claude reports its turns, its messages don't have to tell.
+        // `system/init` starts each turn, before Claude streams.
+        sup.on_claude_message(init()).await;
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        sup.on_claude_message(result()).await;
+
+        // Claude Code that reports its state doesn't report every turn,
+        // so the messages still tell.
         sup.on_claude_message(turn_state("idle")).await;
         sup.on_claude_message(delta).await;
-        assert_eq!(waiting(&sup).0, SessionStatus::Idle);
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn turns_that_take_subagents_reports_count_without_running() -> anyhow::Result<()> {
+        // Claude Code 2.1.308's order with two subagents in the background:
+        // it says `running` once, for the turn that starts them, and
+        // `idle` once both have reported and the last turn has ended.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_turn(dir.path())?;
+        sup.on_claude_message(turn_state("running")).await;
+        sup.on_claude_message(init()).await;
+        for (call, task, part) in [("toolu_a", "a1", "A"), ("toolu_b", "b1", "B")] {
+            let description = format!("Review part {part}");
+            sup.on_claude_message(agent(call, &description)).await;
+            sup.on_claude_message(task_started(task, &description, "local_agent"))
+                .await;
+            sup.on_claude_message(tool_result(call)).await;
+        }
+        sup.on_claude_message(says("Waiting for the reviews."))
+            .await;
+        sup.on_claude_message(result()).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for 2 background tasks"))
+        );
+
+        // A reports, and Claude Code takes the report in a turn of its own,
+        // with no `running`.
+        sup.on_claude_message(subagent_says("toolu_a", "Report A"))
+            .await;
+        sup.on_claude_message(task_ended("a1")).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for a background task"))
+        );
+        sup.on_claude_message(init()).await;
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        assert!(sup.turn_active && sup.idle_since.is_none());
+        sup.on_claude_message(bash("t3", "sleep 14")).await;
+        // A shell command in the turn, which Claude Code reports as a task
+        // once it has run for a few seconds.
+        let mut command = task_started("c1", "Wait a while", "local_bash");
+        command["is_backgrounded"] = json!(false);
+        sup.on_claude_message(command).await;
+
+        // B reports in the middle of that turn: the session runs on.
+        sup.on_claude_message(subagent_says("toolu_b", "Report B"))
+            .await;
+        sup.on_claude_message(task_ended("b1")).await;
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        assert!(sup.idle_since.is_none() && sup.waiting_since.is_none());
+        sup.on_tick().await;
+        assert!(sup.stopping.is_none());
+
+        // The turn takes B's report too, and ends. Claude Code says it is
+        // done right after: only then does the idle clock start.
+        sup.on_claude_message(task_ended("c1")).await;
+        sup.on_claude_message(tool_result("t3")).await;
+        sup.on_claude_message(says("Both reviews are in.")).await;
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        sup.on_claude_message(result()).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for a message"))
+        );
+        assert!(!sup.turn_active && sup.idle_since.is_none());
+        sup.on_claude_message(turn_state("idle")).await;
+        assert!(
+            sup.idle_since
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(5))
+        );
+        // The host saw the session run for the second turn, and wait
+        // after it.
+        let statuses: Vec<SessionStatus> =
+            states_sent(&mut host).iter().map(|s| s.status).collect();
+        assert_eq!(
+            statuses,
+            [
+                SessionStatus::Running,
+                SessionStatus::Idle,
+                SessionStatus::Idle,
+                SessionStatus::Running,
+                SessionStatus::Idle,
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn work_claude_says_it_does_keeps_a_session_up_for_an_hour() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        // Claude's turn ends, and it says it still works: for background
+        // work that fctl-agent doesn't follow as a task, say.
+        sup.on_claude_message(turn_state("running")).await;
+        sup.on_claude_message(result()).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for a message"))
+        );
+        assert!(sup.idle_since.is_none());
+        sup.waiting_since = Some(Instant::now() - tasks::LIMIT + Duration::from_secs(60));
+        sup.on_tick().await;
+        assert!(sup.stopping.is_none());
+
+        sup.waiting_since = Some(Instant::now() - tasks::LIMIT - Duration::from_secs(1));
+        sup.on_tick().await;
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Stopped,
+                Some("Stopped after an hour waiting for background tasks")
+            )
+        );
         Ok(())
     }
 

@@ -260,8 +260,9 @@ fn wrangler_dev(root: &Path, children: &mut Children) -> Result<()> {
 /// meanwhile), keeps a note in the project's memory, records a
 /// retrospective and updates it (`fctl memory add`, `fctl retro`, `fctl
 /// retro update`), the agent finishes its
-/// turn, the session waits for the command the agent left running in the
-/// background and the agent takes its result in a turn of its own, the
+/// turn, the session waits for the command and the subagent the agent left
+/// working in the background and runs again while the agent takes each
+/// one's result in a turn of its own, the
 /// session stops when asked, it says which model and effort level Claude
 /// worked at, and the project remembers the model it asked for.
 fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
@@ -279,7 +280,7 @@ fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
         "haiku",
         "--detach",
         &format!(
-            "write notes.md, push it, watch 12 seconds of checks, record a partial retro and revise it, then run the checks in the background 3\nremember {SMOKE_NOTE}"
+            "write notes.md, push it, watch 12 seconds of checks, record a partial retro and revise it, then run the checks in the background 3 and delegate a review in the background\nremember {SMOKE_NOTE}"
         ),
     ]))?;
     let session: Session =
@@ -304,7 +305,7 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
         &auth,
         children,
         Duration::from_secs(60),
-        "show its commit and push, keep a note, record a retrospective and update it, finish its turn and wait for its background task",
+        "show its commit and push, keep a note, record a retrospective and update it, finish its turn and wait for its background tasks",
         |s| match s.status() {
             Some(SessionStatus::Stopped) => bail!("the session stopped before its turn ended"),
             Some(SessionStatus::Idle) => Ok(s.turn_ok
@@ -350,22 +351,27 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
             retro.updated_at
         );
     }
+    // fake-claude says `running` from the turn that starts the subagent
+    // until the turn that takes its report has ended, as Claude Code does,
+    // so fctl-agent tells the turns of its own by their messages.
     seen.until(
         id,
         &auth,
         children,
         Duration::from_secs(60),
-        "take its background task's result in a turn of its own",
+        "run while the agent takes its background tasks' results in turns of its own",
         |s| match &s.status {
             Some(StatusChange {
                 status: SessionStatus::Stopped,
                 ..
-            }) => bail!("the session stopped while it waited for its background task"),
+            }) => bail!("the session stopped while it waited for its background tasks"),
             Some(StatusChange {
                 status: SessionStatus::Idle,
                 reason,
                 ..
-            }) => Ok(s.results >= 2 && reason.as_deref() == Some("Waiting for a message")),
+            }) => Ok(s.results >= 3
+                && s.ran_again >= 2
+                && reason.as_deref() == Some("Waiting for a message")),
             _ => Ok(false),
         },
     )?;
@@ -410,8 +416,9 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
          pushed it, the session showed both before the turn ended, the agent \
          kept a note in the project's memory, recorded a retrospective and \
          updated it, \
-         finished its turn, the session waited for its background task and \
-         the agent took its result in a turn of its own, the session stopped, \
+         finished its turn, the session waited for its background command \
+         and subagent and ran again while the agent took each one's result \
+         in a turn of its own, the session stopped, \
          it said Claude worked with haiku at medium effort, and the project \
          remembers haiku\n"
     );
@@ -425,8 +432,10 @@ struct Seen {
     status: Option<StatusChange>,
     turn_ok: bool,
     results: u32,
-    /// The session said it waited for a background task.
+    /// The session said it waited for background tasks.
     waited_for_background: bool,
+    /// How often the session ran again after the first turn ended.
+    ran_again: u32,
     commit: Option<CommitInfo>,
     /// The session showed the agent's commit pushed before the turn ended.
     pushed_in_turn: bool,
@@ -493,9 +502,12 @@ impl Seen {
         match &e.body {
             EventBody::Status(s) => {
                 if s.status == SessionStatus::Idle
-                    && s.reason.as_deref() == Some("Waiting for a background task")
+                    && s.reason.as_deref() == Some("Waiting for 2 background tasks")
                 {
                     self.waited_for_background = true;
+                }
+                if s.status == SessionStatus::Running && self.results > 0 {
+                    self.ran_again += 1;
                 }
                 self.status = Some(s.clone());
             }

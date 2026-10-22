@@ -6,10 +6,12 @@
 //! on stdin, and `system`, `stream_event`, `assistant`, `user`, `result` and
 //! `rate_limit_event` messages on stdout. A user turn that arrives during
 //! another waits for it, and each `result` says how many turns still wait
-//! (`queued_turn_count`), as Claude Code's does. With
-//! `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` set, it reports each turn
-//! starting and ending (`system/session_state_changed`), as Claude Code
-//! does.
+//! (`queued_turn_count`), as Claude Code's does. Each turn starts with
+//! `system/init`. With `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` set, it
+//! reports its state (`system/session_state_changed`) as Claude Code 2.1.308
+//! does: `running` as a turn starts and `idle` once it has ended, but from a
+//! turn that starts a subagent in the background, `running` until the turn
+//! that takes the subagent's report has ended.
 //!
 //! What it does depends on the words in a user turn:
 //!
@@ -30,7 +32,7 @@
 //! | `slow` | streams for about ten seconds (try interrupting) |
 //! | `background <seconds>` | starts a shell command in the background that ends after that many seconds (`system/task_started`), and ends its turn; when the command ends (`system/task_notification`), takes its result in a turn of its own, as Claude Code does |
 //! | `delegate` | delegates a look around the working directory to a subagent with the `Agent` tool, as Claude Code does: the subagent's messages name the call (`parent_tool_use_id`), it runs two commands about a second each, and the call returns its report |
-//! | `delegate … in the background` | the same subagent in the background (`run_in_background`): its call returns at once and the turn ends; it takes a step every two seconds, and when it ends, a turn of its own takes its report |
+//! | `delegate … in the background` | the same subagent in the background (`run_in_background`): its call returns at once and the turn ends; it takes a step every two seconds, and when it ends, a turn of its own takes its report, which starts without a `running` of its own, as Claude Code's does |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds, unless the turn also says `reset`, as fctl-agent's message that continues the session does |
 //! | `overage` | reports paid extra usage starting |
 //! | `warning` | reports plan usage with Claude Code's warning that the weekly limit goes faster than the week passes (`allowed_warning`), as Claude Code sends with a quarter of the week used in its first day |
@@ -116,10 +118,13 @@ struct Session {
     /// Shell commands and subagents working in the background, in the
     /// order they end.
     background: Vec<Background>,
-    /// Whether to report turns starting and ending
-    /// (`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`), and whether one runs.
+    /// Whether to report its state (`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`),
+    /// and whether it said `running` last.
     reports_turns: bool,
     running: bool,
+    /// What `system/init` says of the credential and the MCP servers.
+    api_key_source: String,
+    mcp_servers: Value,
 }
 
 /// A shell command Claude Code runs with `run_in_background`, or a
@@ -182,7 +187,7 @@ impl Session {
         std::thread::sleep(self.delay);
     }
 
-    /// `system/session_state_changed`, when the turns' state changes.
+    /// `system/session_state_changed`, when the state changes.
     fn report_turn(&mut self, running: bool) {
         if self.reports_turns && self.running != running {
             let state = if running { "running" } else { "idle" };
@@ -191,6 +196,26 @@ impl Session {
             );
         }
         self.running = running;
+    }
+
+    /// A turn starts: `running`, unless Claude Code said so already, then
+    /// `system/init`.
+    fn turn_starts(&mut self) {
+        self.report_turn(true);
+        out(
+            &json!({"type": "system", "subtype": "init", "apiKeySource": self.api_key_source, "claude_code_version": "2.1.999", "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": self.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": self.mcp_servers, "model": self.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
+        );
+    }
+
+    /// A turn has ended. With no message waiting, Claude Code says it is
+    /// `idle`, unless subagents still work in the background: from the turn
+    /// that starts them, it says `running` until they have all reported and
+    /// the turn that takes the last report has ended, as 2.1.308 does.
+    fn turn_ended(&mut self) {
+        let subagents = self.background.iter().any(|b| b.subagent.is_some());
+        if QUEUED_TURNS.load(Ordering::SeqCst) == 0 && !subagents {
+            self.report_turn(false);
+        }
     }
 
     /// Starts a shell command in the background that ends after `secs`, as
@@ -263,7 +288,7 @@ impl Session {
             }
         }
         INTERRUPTED.store(false, Ordering::SeqCst);
-        self.report_turn(true);
+        self.turn_starts();
         let started = Instant::now();
         let names: Vec<&str> = ended.iter().map(|b| b.description.as_str()).collect();
         let what = if ended.iter().all(|b| b.subagent.is_some()) {
@@ -277,9 +302,7 @@ impl Session {
         );
         self.stream_text(&text);
         self.result(started, &text, "success");
-        if QUEUED_TURNS.load(Ordering::SeqCst) == 0 {
-            self.report_turn(false);
-        }
+        self.turn_ended();
     }
 
     /// An API call's usage as its response starts: Claude Code repeats it
@@ -1272,6 +1295,12 @@ fn main() {
         println!("2.1.999 (fake-claude)");
         return;
     }
+    let connectors_off = std::env::var("ENABLE_CLAUDEAI_MCP_SERVERS").is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    });
     let mut session = Session {
         id: arg("--session-id")
             .or_else(|| arg("--resume"))
@@ -1296,6 +1325,13 @@ fn main() {
             )
         }),
         running: false,
+        api_key_source: std::env::var("FAKE_CLAUDE_API_KEY_SOURCE")
+            .unwrap_or_else(|_| "none".into()),
+        mcp_servers: if connectors_off {
+            json!([])
+        } else {
+            json!([{"name": "claude.ai Fake Docs", "status": "connected"}])
+        },
     };
     // stdin is read on its own thread so interrupts arrive during a turn.
     let (tx, rx) = mpsc::channel::<Value>();
@@ -1324,24 +1360,6 @@ fn main() {
             }
         }
     });
-    let source = std::env::var("FAKE_CLAUDE_API_KEY_SOURCE").unwrap_or_else(|_| "none".into());
-    let connectors_off = std::env::var("ENABLE_CLAUDEAI_MCP_SERVERS").is_ok_and(|v| {
-        matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        )
-    });
-    let mcp_servers = if connectors_off {
-        json!([])
-    } else {
-        json!([{"name": "claude.ai Fake Docs", "status": "connected"}])
-    };
-    let mut announced = false;
-    let announce = |s: &Session| {
-        out(
-            &json!({"type": "system", "subtype": "init", "apiKeySource": source, "claude_code_version": "2.1.999", "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": s.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": mcp_servers, "model": s.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
-        );
-    };
     loop {
         // Background work takes its steps, and gets a turn of its own when it ends.
         let next = match session.next_due() {
@@ -1387,10 +1405,6 @@ fn main() {
             }
             Some("user") => {
                 QUEUED_TURNS.fetch_sub(1, Ordering::SeqCst);
-                if !announced {
-                    announce(&session);
-                    announced = true;
-                }
                 let text = v
                     .pointer("/message/content")
                     .map(|c| match c {
@@ -1412,12 +1426,10 @@ fn main() {
                             .filter(|b| b.get("type").and_then(Value::as_str) == Some("image"))
                             .count()
                     });
-                session.report_turn(true);
+                session.turn_starts();
                 // Drain anything that arrived meanwhile into the turn's control channel.
                 session.turn(&text, images, &turn_rx);
-                if QUEUED_TURNS.load(Ordering::SeqCst) == 0 {
-                    session.report_turn(false);
-                }
+                session.turn_ended();
             }
             _ => {}
         }

@@ -85,7 +85,8 @@ a turn of its own (the session waits for it, then runs again, as with
 Claude Code), `delegate` hands a look around the sandbox to a subagent,
 whose steps the session page shows under its Delegated line as they come
 (`delegate in the background` runs it in the background: the turn ends,
-the subagent works on, and a turn of its own takes its report), `limit`
+the subagent works on, and a turn of its own takes its report, which
+starts without a `running` of its own, as with Claude Code), `limit`
 hits a usage limit that resets 20 seconds later (the session pauses and
 continues half a minute after the reset; a message that also says
 `reset`, like the one fctl-agent continues it with, doesn't count),
@@ -102,9 +103,12 @@ page and `fctl show` show. A message sent during a turn
 waits for it and gets a turn of its own; each `result` says how many
 messages still wait (`queued_turn_count`), as Claude Code's does, so the
 session stays running until fake-claude has answered the last one. Like
-Claude Code, it reports each turn starting and ending
+Claude Code, it starts each turn with `system/init`, and reports its state
 (`session_state_changed`) when `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` is
-set, as fctl-agent sets it. A message with
+set, as fctl-agent sets it: `running` as a turn starts and `idle` once it
+has ended, but from a turn that starts a subagent in the background,
+`running` until the turn that takes its report has ended, as Claude Code
+2.1.308 does. A message with
 attached files also gets a sentence about them: how many images it holds,
 and whether each listed file is on disk. Turns other than `limit` and
 `crash` report plan usage as Claude Code does (`unifiedWindows`), with
@@ -198,11 +202,12 @@ fails there fails the same way locally with `cargo xtask check <part>`.
 and runs `fctl run -p playground --model haiku` with a task that has
 fake-claude commit `notes.md`, push it, watch its checks for 12 seconds,
 keep a note in the project's memory, record a partial retrospective and
-update it, and leave a command running in the background. It waits until
-the session has shown the commit pushed before the turn ended, the
-transcript has shown the note and the retrospective recorded and updated,
-the turn has ended, the session has waited for the command and the agent
-has taken its result in a turn of its own, checks that the project's
+update it, and leave a command and a subagent working in the background.
+It waits until the session has shown the commit pushed before the turn
+ended, the transcript has shown the note and the retrospective recorded
+and updated, the turn has ended, the session has waited for the command
+and the subagent and has run again while the agent took each one's result
+in a turn of its own, checks that the project's
 memory has the note and the session its one retrospective, completed and
 updated,
 then stops the session, checks the model and effort level it reports and
