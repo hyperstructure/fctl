@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { applyStream, emptyLive, settleLive, TranscriptBuilder } from "./transcript";
+import {
+  applyStream,
+  emptyLive,
+  type Item,
+  settleLive,
+  subagentReport,
+  subagentRuns,
+  type Tool,
+  TranscriptBuilder,
+} from "./transcript";
 
 let seq = 0;
 const ev = (kind: string, data: unknown): G.SessionEvent =>
@@ -8,15 +17,60 @@ const ev = (kind: string, data: unknown): G.SessionEvent =>
 const claude = (data: unknown) => ev("claude", data);
 const assistant = (id: string, content: unknown[], parent: string | null = null) =>
   claude({ type: "assistant", message: { id, role: "assistant", content }, parent_tool_use_id: parent });
-const toolResult = (id: string, text: string, isError = false) =>
+const toolResult = (id: string, text: string, isError = false, parent: string | null = null) =>
   claude({
     type: "user",
     message: {
       role: "user",
       content: [{ type: "tool_result", tool_use_id: id, content: text, is_error: isError }],
     },
-    parent_tool_use_id: null,
+    parent_tool_use_id: parent,
   });
+/** Claude Code's word on a task (`task_started`, `task_notification`), as 2.1.307 sends it. */
+const task = (subtype: string, fields: Record<string, unknown>) =>
+  claude({ type: "system", subtype, session_id: "s", uuid: `u${seq}`, ...fields });
+/** A subagent's start: its call, and Claude Code saying it started. */
+const delegate = (id: string, background = false) => [
+  assistant(`m-${id}`, [
+    {
+      type: "tool_use",
+      id,
+      name: "Agent",
+      input: {
+        description: "Count lines in cn.ts",
+        prompt: "Read web/src/lib/cn.ts and count its lines.",
+        subagent_type: "general-purpose",
+        ...(background ? { run_in_background: true } : {}),
+      },
+    },
+  ]),
+  task("task_started", {
+    task_id: `task-${id}`,
+    tool_use_id: id,
+    description: "Count lines in cn.ts",
+    task_type: "local_agent",
+    is_backgrounded: background,
+  }),
+  // Its prompt, which the call has already.
+  claude({
+    type: "user",
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "Read web/src/lib/cn.ts and count its lines." }],
+    },
+    parent_tool_use_id: id,
+  }),
+];
+const ended = (id: string, summary: string, status = "completed") =>
+  task("task_notification", {
+    task_id: `task-${id}`,
+    tool_use_id: id,
+    status,
+    summary,
+    output_file: "/tmp/tasks/a1.output",
+    usage: { duration_ms: 12_107, tool_uses: 2, total_tokens: 21_365 },
+  });
+const call = (items: Item[], i = 0) => items[i] as Tool;
 
 describe("TranscriptBuilder", () => {
   it("groups setup steps and closes them when Claude starts", () => {
@@ -75,6 +129,171 @@ describe("TranscriptBuilder", () => {
     ]);
     expect(items).toHaveLength(1);
     expect(items[0]?.kind === "tool" && [items[0].children, items[0].childLast]).toEqual([2, "Read"]);
+  });
+
+  it("keeps a subagent's steps under the call that started it", () => {
+    const b = new TranscriptBuilder();
+    const items = b.add([
+      ...delegate("agent"),
+      assistant(
+        "s1",
+        [{ type: "tool_use", id: "r1", name: "Read", input: { file_path: "web/src/lib/cn.ts" } }],
+        "agent",
+      ),
+      toolResult("r1", '1\timport { clsx } from "clsx";', false, "agent"),
+      assistant("s2", [{ type: "text", text: "It has three lines." }], "agent"),
+      assistant(
+        "s2",
+        [{ type: "tool_use", id: "b1", name: "Bash", input: { command: "wc -l cn.ts" } }],
+        "agent",
+      ),
+      toolResult("b1", "3 cn.ts", false, "agent"),
+      ended("agent", "cn.ts has 3 lines."),
+      claude({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "agent",
+              content: [
+                { type: "text", text: "[Subagent hand-back] The report follows:\n  cn.ts has 3 lines." },
+              ],
+            },
+          ],
+        },
+        parent_tool_use_id: null,
+        tool_use_result: { status: "completed", content: [{ type: "text", text: "cn.ts has 3 lines." }] },
+      }),
+    ]);
+    expect(items).toHaveLength(1);
+    const t = call(items);
+    expect(t.agent?.steps.map((s) => s.kind)).toEqual(["tool", "prose", "tool"]);
+    expect(t.agent?.steps.map((s) => (s.kind === "tool" ? s.result?.text : s.text))).toEqual([
+      '1\timport { clsx } from "clsx";',
+      "It has three lines.",
+      "3 cn.ts",
+    ]);
+    expect([t.children, t.childLast]).toEqual([2, "Bash"]);
+    expect([t.agent?.background, t.agent?.ended, t.agent?.durationMs]).toEqual([false, "completed", 12_107]);
+    // The report alone, without Claude Code's notes for Claude around it.
+    expect(subagentReport(t)).toBe("cn.ts has 3 lines.");
+    expect(subagentRuns(t, true, true)).toBe(false);
+  });
+
+  it("shows a subagent working until its call returns", () => {
+    const b = new TranscriptBuilder();
+    const items = b.add([
+      ...delegate("agent"),
+      assistant("s1", [{ type: "tool_use", id: "r1", name: "Read", input: {} }], "agent"),
+    ]);
+    const t = call(items);
+    expect(subagentRuns(t, true, true)).toBe(true);
+    // A turn that ended, or a session that stopped, takes its subagents with it.
+    expect(subagentRuns(t, false, true)).toBe(false);
+    const stopped = b.add([ev("status", { status: "stopped", reason: "Stopped by Ada" })]);
+    expect(call(stopped).agent?.ended).toBe("stopped");
+    expect(subagentReport(call(stopped))).toBeUndefined();
+  });
+
+  it("follows a subagent in the background after its call returned", () => {
+    const b = new TranscriptBuilder();
+    b.add([
+      ...delegate("agent", true),
+      claude({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "agent", content: "Async agent launched successfully." },
+          ],
+        },
+        parent_tool_use_id: null,
+        tool_use_result: { isAsync: true, agentId: "a1", status: "async_launched" },
+      }),
+      claude({ type: "result", subtype: "success", is_error: false, duration_ms: 5, result: "Started it" }),
+      assistant("s1", [{ type: "tool_use", id: "g1", name: "Grep", input: { pattern: "export" } }], "agent"),
+    ]);
+    let t = call(b.items);
+    expect(t.agent?.background).toBe(true);
+    // It works while the session waits for it, not once the session stopped.
+    expect([subagentRuns(t, false, true), subagentRuns(t, false, false)]).toEqual([true, false]);
+    expect(subagentReport(t)).toBeUndefined();
+    b.add([
+      toolResult("g1", "10:export function stopPinchZoom", false, "agent"),
+      assistant("s2", [{ type: "text", text: "It has one export." }], "agent"),
+      ended("agent", "It has one export."),
+    ]);
+    t = call(b.items);
+    expect(t.agent?.steps.map((s) => s.kind)).toEqual(["tool", "prose"]);
+    expect(subagentRuns(t, false, true)).toBe(false);
+    expect(subagentReport(t)).toBe("It has one export.");
+  });
+
+  it("ends subagents in the background when Claude Code restarts or the session stops", () => {
+    const restarted = new TranscriptBuilder();
+    restarted.add([
+      ...delegate("agent", true),
+      ev("notice", { level: "warn", code: "claude_restarted", message: "Claude exited unexpectedly" }),
+    ]);
+    expect(call(restarted.items).agent?.ended).toBe("stopped");
+    const failed = new TranscriptBuilder();
+    failed.add([
+      ...delegate("agent", true),
+      ev("status", { status: "failed", reason: "The runner went away" }),
+    ]);
+    expect(subagentRuns(call(failed.items), false, true)).toBe(false);
+    // A subagent that ended keeps how.
+    const done = new TranscriptBuilder();
+    done.add([...delegate("agent", true), ended("agent", "Done."), ev("status", { status: "stopped" })]);
+    expect(call(done.items).agent?.ended).toBe("completed");
+  });
+
+  it("says a subagent failed without taking what it said for its report", () => {
+    const b = new TranscriptBuilder();
+    b.add([...delegate("agent", true), ended("agent", "API Error: 500", "failed")]);
+    expect(call(b.items).agent?.ended).toBe("failed");
+    expect(subagentReport(call(b.items))).toBeUndefined();
+  });
+
+  it("puts the steps of a subagent's own subagent under its call", () => {
+    const b = new TranscriptBuilder();
+    const items = b.add([
+      ...delegate("outer"),
+      assistant(
+        "s1",
+        [{ type: "tool_use", id: "inner", name: "Agent", input: { description: "Look deeper" } }],
+        "outer",
+      ),
+      assistant("s2", [{ type: "tool_use", id: "r1", name: "Read", input: {} }], "inner"),
+      toolResult("r1", "deep", false, "inner"),
+      toolResult("inner", "Found it deep down.", false, "outer"),
+    ]);
+    expect(items).toHaveLength(1);
+    const inner = call(items).agent?.steps[0] as Tool;
+    expect([inner.name, inner.result?.text, inner.children]).toEqual(["Agent", "Found it deep down.", 1]);
+    expect((inner.agent?.steps[0] as Tool | undefined)?.result?.text).toBe("deep");
+    expect(subagentReport(inner)).toBe("Found it deep down.");
+  });
+
+  it("leaves out the work of a subagent whose call isn't loaded, and other tasks", () => {
+    const b = new TranscriptBuilder();
+    const items = b.add([
+      assistant("s1", [{ type: "tool_use", id: "r1", name: "Read", input: {} }], "earlier"),
+      toolResult("r1", "text", false, "earlier"),
+      // A shell command in the background is a task, not a subagent.
+      assistant("m1", [{ type: "tool_use", id: "bg", name: "Bash", input: { command: "sleep 9" } }]),
+      task("task_started", {
+        task_id: "b1",
+        tool_use_id: "bg",
+        task_type: "local_bash",
+        is_backgrounded: true,
+      }),
+      task("task_notification", { task_id: "b1", tool_use_id: "bg", status: "completed", summary: "done" }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(call(items).agent).toBeUndefined();
   });
 
   it("shows a state when a branch changes, and keeps the newest", () => {
@@ -149,5 +368,16 @@ describe("live streaming", () => {
   it("ignores subagent streams", () => {
     const live = emptyLive();
     expect(applyStream(live, { type: "stream_event", parent_tool_use_id: "t1", event: {} })).toBe(live);
+  });
+
+  it("keeps the agent's tool running through a subagent's tool results", () => {
+    const live = applyStream(emptyLive(), {
+      type: "tool_progress",
+      tool_use_id: "t1",
+      tool_name: "Bash",
+      elapsed_time_seconds: 40,
+    });
+    expect(settleLive(live, [toolResult("r1", "text", false, "agent")]).tool?.seconds).toBe(40);
+    expect(settleLive(live, [toolResult("t1", "built")]).tool).toBeUndefined();
   });
 });

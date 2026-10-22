@@ -1,4 +1,5 @@
 // A tool call in the transcript: one quiet line that opens into its details.
+// A subagent's opens into what it was asked and what it did, step by step.
 
 import { diffLines } from "diff";
 import {
@@ -10,20 +11,28 @@ import {
   FolderSearch,
   Globe,
   ListChecks,
+  MessageSquareText,
   NotebookPen,
   Search,
   SquareTerminal,
   Wrench,
 } from "lucide-react";
 import { memo, type ReactNode, useMemo, useState } from "react";
-import { CodeBlock } from "@/components/markdown";
+import { CodeBlock, Markdown } from "@/components/markdown";
 import { Spinner } from "@/components/ui";
 import type { Json } from "@/lib/claude-types";
 import { cn } from "@/lib/cn";
+import { duration } from "@/lib/format";
 import { langOf } from "@/lib/highlight";
-import type { Item } from "@/lib/transcript";
-
-type Tool = Extract<Item, { kind: "tool" }>;
+import {
+  isSubagent,
+  type Step,
+  type Subagent,
+  subagentReport,
+  subagentRuns,
+  type Tool,
+} from "@/lib/transcript";
+import { Thinking } from "./thinking";
 
 const ICONS: Record<string, ReactNode> = {
   Bash: <SquareTerminal />,
@@ -283,24 +292,115 @@ function Details({ t }: { t: Tool }) {
   }
 }
 
+/** What the agent asked of a subagent: a line that opens into it. */
+function Prompt({ text, agent }: { text: string; agent: string }) {
+  const [open, setOpen] = useState(false);
+  if (!text.trim()) return null;
+  return (
+    <div className="py-1">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex items-center gap-2 text-[12.5px] text-ink-4 transition-colors hover:text-ink-2"
+      >
+        <MessageSquareText className="size-3.5" />
+        Prompt
+        {agent && <span className="font-mono text-[11.5px]">· {agent}</span>}
+        <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} />
+      </button>
+      {open && (
+        <div className="mt-1.5 mb-1 max-h-[420px] animate-rise overflow-auto rounded-md border border-line bg-sunken px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap wrap-anywhere text-ink-2">
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Prose({ text }: { text: string }) {
+  return (
+    <div className="py-1.5 text-[13.5px] text-ink-2">
+      <Markdown text={text} className="prose-note" />
+    </div>
+  );
+}
+
+/** How a subagent ended, and after how long. */
+function Ended({ agent }: { agent?: Subagent }) {
+  if (!agent?.ended) return null;
+  const took = agent.durationMs ? duration(agent.durationMs) : "";
+  const failed = agent.ended === "failed";
+  const text =
+    agent.ended === "completed"
+      ? `Finished${took && ` in ${took}`}`
+      : `${failed ? "Failed" : "Stopped"}${took && ` after ${took}`}`;
+  return <div className={cn("py-1 text-[11.5px]", failed ? "text-danger" : "text-ink-4")}>{text}</div>;
+}
+
+/**
+ * What a subagent was asked and what it did: its prose and tool calls, as
+ * they come while it works, then its report.
+ */
+function SubagentDetails({ t, running, up }: { t: Tool; running: boolean; up: boolean }) {
+  const steps = t.agent?.steps ?? [];
+  const last = steps[steps.length - 1];
+  const report = subagentReport(t);
+  // From the background, its last words are its report.
+  const reported = report && !(last?.kind === "prose" && last.text.trim() === report.trim());
+  const waiting = running && !(last?.kind === "tool" && !last.result);
+  return (
+    <div className="flex flex-col">
+      <Prompt text={str(t.input.prompt)} agent={str(t.input.subagent_type)} />
+      {(steps.length > 0 || reported || waiting) && (
+        <div className="flex flex-col border-l border-line pl-3">
+          {steps.map((s) => (
+            <StepView key={s.key} s={s} running={running} up={up} />
+          ))}
+          {reported && <Prose text={report} />}
+          {waiting && <div className="text-shimmer py-1.5 text-[12.5px] text-ink-3">Working</div>}
+        </div>
+      )}
+      {t.result?.isError && (
+        <div className="mt-1.5">
+          <Output text={t.result.text} error />
+        </div>
+      )}
+      <Ended agent={t.agent} />
+    </div>
+  );
+}
+
+function StepView({ s, running, up }: { s: Step; running: boolean; up: boolean }) {
+  if (s.kind === "tool") return <ToolRow t={s} running={running} up={up} />;
+  if (s.kind === "thinking") return <Thinking text={s.text} />;
+  return <Prose text={s.text} />;
+}
+
 export const ToolRow = memo(function ToolRow({
   t,
   running,
+  up = false,
   seconds,
 }: {
   t: Tool;
+  /** Whether the agent works on the turn this call is in, as far as the page knows. */
   running: boolean;
+  /** Whether its Claude Code runs, as far as the page knows: subagents in the background work on after their turn. */
+  up?: boolean;
   seconds?: number;
 }) {
   const [open, setOpen] = useState(t.name === "TodoWrite");
   const { verb, target } = describe(t.name, t.input);
-  const error = t.result?.isError;
-  const pending = !t.result && running;
+  const agent = isSubagent(t);
+  const error = t.result?.isError || t.agent?.ended === "failed";
+  const pending = agent ? subagentRuns(t, running, up) : !t.result && running;
   return (
     <div className="group/tool relative">
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
         className={cn(
           "flex w-full items-center gap-2.5 rounded-md py-1 pr-2 pl-1 text-left text-[13.5px] transition-colors",
           "hover:bg-hover/60",
@@ -323,7 +423,8 @@ export const ToolRow = memo(function ToolRow({
         </span>
         {t.children > 0 && (
           <span className="shrink-0 text-[11.5px] text-ink-4">
-            {t.children} steps{t.childLast ? ` · ${t.childLast}` : ""}
+            {t.children} {t.children === 1 ? "step" : "steps"}
+            {t.childLast ? ` · ${t.childLast}` : ""}
           </span>
         )}
         {pending && seconds !== undefined && seconds > 2 && (
@@ -338,7 +439,7 @@ export const ToolRow = memo(function ToolRow({
       </button>
       {open && (
         <div className="mt-1 mb-2 ml-9 animate-rise">
-          <Details t={t} />
+          {agent ? <SubagentDetails t={t} running={pending} up={up} /> : <Details t={t} />}
         </div>
       )}
     </div>

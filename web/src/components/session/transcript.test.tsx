@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import type { Stall } from "@/lib/stall";
-import { emptyLive, type Item } from "@/lib/transcript";
+import { emptyLive, type Item, type Step, type Subagent } from "@/lib/transcript";
 import { Transcript } from "./transcript";
 
 vi.mock("@/components/ui", async () => {
@@ -160,6 +160,127 @@ describe("the transcript", () => {
     const [title, detail] = [...c.querySelectorAll("[role=status] p")].map((p) => p.textContent);
     expect(title).toMatch(/^Runner now hasn't been heard from since .+\.$/);
     expect(detail).toMatch(/^The agent's work shows up here when it's back/);
+  });
+});
+
+describe("a subagent", () => {
+  const step = (name: string, input: Record<string, string>, result?: string): Step => ({
+    kind: "tool",
+    key: `step-${++seq}`,
+    seq,
+    ts: 0,
+    id: `toolu_${seq}`,
+    name,
+    input,
+    result: result === undefined ? undefined : { text: result, isError: false },
+    children: 0,
+  });
+  const delegated = (agent: Partial<Subagent>, result?: string, background = false): Item => ({
+    kind: "tool",
+    key: `agent-${++seq}`,
+    seq,
+    ts: 0,
+    id: `toolu_${seq}`,
+    name: "Agent",
+    input: {
+      description: "Audit the webhooks",
+      prompt: "Read the webhook handler and report what it checks.",
+      subagent_type: "Explore",
+      ...(background ? { run_in_background: true } : {}),
+    },
+    result: result === undefined ? undefined : { text: result, isError: false },
+    children: 2,
+    childLast: "Bash",
+    agent: {
+      steps: [
+        step("Read", { file_path: "crates/fctl-control/src/github.rs" }, "fn verify() {}"),
+        { kind: "prose", key: `prose-${++seq}`, seq, ts: 0, text: "It verifies signatures first." },
+        step("Bash", { command: "grep -rn verify", description: "Find the callers" }, "src/routes.rs:12"),
+      ],
+      background,
+      ...agent,
+    },
+  });
+  const open = (c: HTMLElement, text: string) => {
+    const button = [...c.querySelectorAll("button")].find((b) => b.textContent?.startsWith(text));
+    act(() => button?.click());
+    return button;
+  };
+
+  it("opens into what it was asked, what it did and what it reported", () => {
+    const c = transcript(
+      [delegated({ ended: "completed", durationMs: 12_107 }, "The handler checks signatures first.")],
+      "idle",
+    );
+    expect(c.textContent).toContain("Delegated");
+    expect(c.textContent).toContain("2 steps · Bash");
+    const row = open(c, "Delegated");
+    expect(row?.getAttribute("aria-expanded")).toBe("true");
+    const text = c.textContent ?? "";
+    expect(text).toContain("Prompt· Explore");
+    expect(text).not.toContain("Read the webhook handler and report what it checks.");
+    expect(text).toContain("Read…/fctl-control/src/github.rs");
+    expect(text).toContain("It verifies signatures first.");
+    expect(text).toContain("RanFind the callers");
+    expect(text).toContain("The handler checks signatures first.");
+    expect(text).toContain("Finished in 12 s");
+    open(c, "Prompt");
+    expect(c.textContent).toContain("Read the webhook handler and report what it checks.");
+    // Its steps open too.
+    open(c, "RanFind the callers");
+    expect(c.textContent).toContain("src/routes.rs:12");
+  });
+
+  it("works in the background while the session waits for it, and its call's answer stays out", () => {
+    const launched = "Async agent launched successfully. agentId: a1 (internal ID - do not mention to user.)";
+    const item = delegated({}, launched, true);
+    const c = transcript([item, turn()], "idle");
+    expect(spinners(c)).toBe(1);
+    open(c, "Delegated");
+    expect(c.textContent).not.toContain("Async agent launched");
+    expect(c.querySelector("[data-item]")?.textContent).toContain("Working");
+    const stopped = render(
+      <Transcript
+        sessionId="ses_1"
+        startedBy={ada}
+        items={[item]}
+        live={emptyLive()}
+        status="stopped"
+        onLoadOlder={() => {}}
+        hasMoreBefore={false}
+        loadingOlder={false}
+      />,
+    );
+    expect(spinners(stopped)).toBe(0);
+    const done = transcript(
+      [delegated({ ended: "completed", report: "Two callers." }, launched, true)],
+      "idle",
+    );
+    expect(spinners(done)).toBe(0);
+    open(done, "Delegated");
+    expect(done.textContent).toContain("Two callers.");
+    expect(done.textContent).not.toContain("Working");
+  });
+
+  it("shows the step it works on", () => {
+    const item = delegated({
+      steps: [step("Bash", { command: "cargo test", description: "Run the tests" })],
+    });
+    const c = transcript([item], "running");
+    open(c, "Delegated");
+    // The call and its step in progress.
+    expect(spinners(c)).toBe(2);
+    expect(c.querySelector("[data-item]")?.textContent).not.toContain("Working");
+  });
+
+  it("says it failed", () => {
+    const c = transcript(
+      [delegated({ ended: "failed", durationMs: 3_000 }, "Async agent launched", true)],
+      "idle",
+    );
+    expect(c.querySelector("button")?.className).toContain("text-danger");
+    open(c, "Delegated");
+    expect(c.textContent).toContain("Failed after 3.0 s");
   });
 });
 

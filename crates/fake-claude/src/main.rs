@@ -26,6 +26,8 @@
 //! | `retro` | records a retrospective of the turn's work with `fctl retro`, as agents do when they finish a piece of work |
 //! | `slow` | streams for about ten seconds (try interrupting) |
 //! | `background <seconds>` | starts a shell command in the background that ends after that many seconds (`system/task_started`), and ends its turn; when the command ends (`system/task_notification`), takes its result in a turn of its own, as Claude Code does |
+//! | `delegate` | delegates a look around the working directory to a subagent with the `Agent` tool, as Claude Code does: the subagent's messages name the call (`parent_tool_use_id`), it runs two commands about a second each, and the call returns its report |
+//! | `delegate … in the background` | the same subagent in the background (`run_in_background`): its call returns at once and the turn ends; it takes a step every two seconds, and when it ends, a turn of its own takes its report |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds, unless the turn also says `reset`, as fctl-agent's message that continues the session does |
 //! | `overage` | reports paid extra usage starting |
 //! | `refresh` | asks its host for a fresh OAuth token |
@@ -107,7 +109,8 @@ struct Session {
     output_tokens: u64,
     cache_read_tokens: u64,
     delay: Duration,
-    /// Shell commands running in the background, in the order they end.
+    /// Shell commands and subagents working in the background, in the
+    /// order they end.
     background: Vec<Background>,
     /// Whether to report turns starting and ending
     /// (`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`), and whether one runs.
@@ -115,13 +118,60 @@ struct Session {
     running: bool,
 }
 
-/// A shell command Claude Code runs with `run_in_background`.
+/// A shell command Claude Code runs with `run_in_background`, or a
+/// subagent it runs in the background.
 struct Background {
     id: String,
     tool_use_id: String,
     description: String,
     ends: Instant,
+    /// A subagent, with the steps it still takes, each when it is due.
+    subagent: Option<(Subagent, Vec<(Instant, Step)>)>,
 }
+
+/// A subagent that Claude Code's `Agent` tool started.
+struct Subagent {
+    /// The `Agent` call, which its messages name (`parent_tool_use_id`).
+    tool_use_id: String,
+    task_id: String,
+    description: String,
+    started: Instant,
+    tool_uses: u64,
+}
+
+impl Subagent {
+    /// What it has used so far, as Claude Code reports it.
+    fn usage(&self) -> Value {
+        json!({"duration_ms": self.started.elapsed().as_millis() as u64, "tool_uses": self.tool_uses, "total_tokens": 1000 * (self.tool_uses + 1)})
+    }
+}
+
+/// What fake-claude's subagents do: a command, or a few words.
+#[derive(Clone, Copy)]
+enum Step {
+    Bash {
+        command: &'static str,
+        description: &'static str,
+    },
+    Text(&'static str),
+}
+
+/// A look around the working directory, as fake-claude delegates it.
+const SUBAGENT_STEPS: [Step; 3] = [
+    Step::Bash {
+        command: "ls -la",
+        description: "List the files",
+    },
+    Step::Text("Now the branch."),
+    Step::Bash {
+        command: "git status --short --branch",
+        description: "Check the branch",
+    },
+];
+const SUBAGENT_DESCRIPTION: &str = "Look around the working directory";
+const SUBAGENT_PROMPT: &str = "List the files in the working directory and check its branch. Report in a sentence whether anything needs attention.";
+const SUBAGENT_REPORT: &str =
+    "The working directory and its branch look as expected: nothing needs attention.";
 
 impl Session {
     fn sleep(&self) {
@@ -162,19 +212,37 @@ impl Session {
             tool_use_id,
             description,
             ends: Instant::now() + Duration::from_secs(secs),
+            subagent: None,
         });
         self.background.sort_by_key(|b| b.ends);
     }
 
-    /// When the next background command ends.
-    fn next_ending(&self) -> Option<Instant> {
-        self.background.first().map(|b| b.ends)
+    /// When background work next takes a step or ends.
+    fn next_due(&self) -> Option<Instant> {
+        self.background
+            .iter()
+            .flat_map(|b| {
+                let step = b.subagent.as_ref().and_then(|(_, steps)| steps.first());
+                step.map(|(at, _)| *at).into_iter().chain([b.ends])
+            })
+            .min()
     }
 
-    /// The background commands that have ended get their notifications,
-    /// and a turn of fake-claude's own takes their results.
+    /// Subagents in the background take the steps that are due. The work
+    /// that has ended gets its notification, and a turn of fake-claude's
+    /// own takes its results.
     fn finish_background(&mut self) {
         let now = Instant::now();
+        let mut work = std::mem::take(&mut self.background);
+        for b in &mut work {
+            if let Some((agent, steps)) = &mut b.subagent {
+                let n = steps.iter().take_while(|(at, _)| *at <= now).count();
+                for (_, step) in steps.drain(..n) {
+                    self.subagent_step(agent, step);
+                }
+            }
+        }
+        self.background = work;
         let ended: Vec<Background> = match self.background.iter().position(|b| b.ends > now) {
             Some(n) => self.background.drain(..n).collect(),
             None => std::mem::take(&mut self.background),
@@ -183,16 +251,24 @@ impl Session {
             return;
         }
         for b in &ended {
-            out(
-                &json!({"type": "system", "subtype": "task_notification", "task_id": b.id, "tool_use_id": b.tool_use_id, "status": "completed", "output_file": "", "summary": format!("Background command \"{}\" completed (exit code 0)", b.description), "session_id": self.id, "uuid": uuid()}),
-            );
+            match &b.subagent {
+                Some((agent, _)) => self.end_subagent(agent, "completed", true),
+                None => out(
+                    &json!({"type": "system", "subtype": "task_notification", "task_id": b.id, "tool_use_id": b.tool_use_id, "status": "completed", "output_file": "", "summary": format!("Background command \"{}\" completed (exit code 0)", b.description), "session_id": self.id, "uuid": uuid()}),
+                ),
+            }
         }
         INTERRUPTED.store(false, Ordering::SeqCst);
         self.report_turn(true);
         let started = Instant::now();
         let names: Vec<&str> = ended.iter().map(|b| b.description.as_str()).collect();
+        let what = if ended.iter().all(|b| b.subagent.is_some()) {
+            "The subagent"
+        } else {
+            "The background command"
+        };
         let text = format!(
-            "The background command finished: {}. Picking up where I left off.",
+            "{what} finished: {}. Picking up where I left off.",
             names.join(", ")
         );
         self.stream_text(&text);
@@ -311,18 +387,7 @@ impl Session {
   remote="$HOME/.fake-github/$(basename "$PWD").git"
   git init -q --bare "$remote" && git remote add origin "$remote"
 } && git push -u origin HEAD"#;
-        let (output, failed) = match std::process::Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .output()
-        {
-            Ok(o) => (
-                String::from_utf8_lossy(&o.stdout).into_owned()
-                    + &String::from_utf8_lossy(&o.stderr),
-                !o.status.success(),
-            ),
-            Err(e) => (format!("sh: {e}"), true),
-        };
+        let (output, failed) = sh(script);
         self.tool(
             "Bash",
             json!({"command": "git push -u origin HEAD", "description": "Push the branch"}),
@@ -370,6 +435,160 @@ impl Session {
             &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": output, "is_error": interrupted}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
         interrupted
+    }
+
+    /// Starts a subagent with the `Agent` tool, as Claude Code does: the
+    /// call, `system/task_started`, and the prompt the subagent gets, which
+    /// names the call, as all its messages do (`parent_tool_use_id`).
+    fn start_subagent(&mut self, background: bool) -> Subagent {
+        let agent = Subagent {
+            tool_use_id: format!("toolu_{}", short_id(12)),
+            task_id: format!("a{}", short_id(12)),
+            description: SUBAGENT_DESCRIPTION.to_owned(),
+            started: Instant::now(),
+            tool_uses: 0,
+        };
+        let mut input = json!({"description": SUBAGENT_DESCRIPTION, "prompt": SUBAGENT_PROMPT, "subagent_type": "general-purpose"});
+        if background {
+            input["run_in_background"] = json!(true);
+        }
+        let msg_id = format!("msg_{}", short_id(8));
+        let usage = self.call_started();
+        out(
+            &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": agent.tool_use_id, "name": "Agent", "input": input}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        self.call_ended(&msg_id, "tool_use", 60);
+        out(
+            &json!({"type": "system", "subtype": "task_started", "task_id": agent.task_id, "tool_use_id": agent.tool_use_id, "description": SUBAGENT_DESCRIPTION, "prompt": SUBAGENT_PROMPT, "subagent_type": "general-purpose", "task_type": "local_agent", "is_backgrounded": background, "session_id": self.id, "uuid": uuid()}),
+        );
+        out(
+            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": SUBAGENT_PROMPT}]}, "parent_tool_use_id": agent.tool_use_id, "session_id": self.id, "uuid": uuid()}),
+        );
+        agent
+    }
+
+    /// One of a subagent's assistant messages.
+    fn subagent_says(&mut self, agent: &Subagent, content: Value) {
+        let msg_id = format!("msg_{}", short_id(8));
+        let usage = self.call_started();
+        out(
+            &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": content, "stop_reason": null, "usage": usage}, "parent_tool_use_id": agent.tool_use_id, "session_id": self.id, "uuid": uuid()}),
+        );
+    }
+
+    /// A subagent's step: a few words, or a command it runs, which Claude
+    /// Code reports first (`system/task_progress`).
+    fn subagent_step(&mut self, agent: &mut Subagent, step: Step) {
+        let (command, description) = match step {
+            Step::Text(text) => {
+                self.subagent_says(agent, json!([{"type": "text", "text": text}]));
+                return;
+            }
+            Step::Bash {
+                command,
+                description,
+            } => (command, description),
+        };
+        agent.tool_uses += 1;
+        out(
+            &json!({"type": "system", "subtype": "task_progress", "task_id": agent.task_id, "tool_use_id": agent.tool_use_id, "description": format!("Running {description}"), "last_tool_name": "Bash", "usage": agent.usage(), "session_id": self.id, "uuid": uuid()}),
+        );
+        let tool_id = format!("toolu_{}", short_id(12));
+        self.subagent_says(
+            agent,
+            json!([{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command, "description": description}}]),
+        );
+        // Slow enough to watch it work.
+        std::thread::sleep(self.delay * 40);
+        let (output, failed) = sh(command);
+        out(
+            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": output, "is_error": failed}]}, "parent_tool_use_id": agent.tool_use_id, "session_id": self.id, "uuid": uuid()}),
+        );
+    }
+
+    /// A subagent ends (`system/task_notification`). One in the background
+    /// says its last words first; in the foreground, its call returns them.
+    fn end_subagent(&mut self, agent: &Subagent, status: &str, background: bool) {
+        let report = if status == "completed" {
+            SUBAGENT_REPORT
+        } else {
+            ""
+        };
+        if background && !report.is_empty() {
+            self.subagent_says(agent, json!([{"type": "text", "text": report}]));
+        }
+        out(
+            &json!({"type": "system", "subtype": "task_notification", "task_id": agent.task_id, "tool_use_id": agent.tool_use_id, "status": status, "output_file": "", "summary": report, "usage": agent.usage(), "session_id": self.id, "uuid": uuid()}),
+        );
+    }
+
+    /// Delegates a look around the working directory to a subagent, whose
+    /// call waits for it and returns its report, as Claude Code's `Agent`
+    /// tool does. Returns whether it was interrupted.
+    fn delegate(&mut self) -> bool {
+        let mut agent = self.start_subagent(false);
+        for step in SUBAGENT_STEPS {
+            if INTERRUPTED.load(Ordering::SeqCst) {
+                break;
+            }
+            self.subagent_step(&mut agent, step);
+        }
+        let interrupted = INTERRUPTED.load(Ordering::SeqCst);
+        self.end_subagent(
+            &agent,
+            if interrupted { "stopped" } else { "completed" },
+            false,
+        );
+        let mut result = if interrupted {
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": agent.tool_use_id, "content": "[Request interrupted by user for tool use]", "is_error": true}]}})
+        } else {
+            // Claude Code's copy of the result (`tool_use_result`) has the
+            // report alone; Claude gets notes about the subagent with it.
+            let usage = agent.usage();
+            let text = format!(
+                "{SUBAGENT_REPORT}\nagentId: {} (use SendMessage with to: '{}' to continue this agent)\n<usage>tool_uses: {}\nduration_ms: {}</usage>",
+                agent.task_id, agent.task_id, usage["tool_uses"], usage["duration_ms"]
+            );
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": agent.tool_use_id, "content": [{"type": "text", "text": text}], "is_error": false}]},
+                "tool_use_result": {"status": "completed", "agentId": agent.task_id, "agentType": "general-purpose", "content": [{"type": "text", "text": SUBAGENT_REPORT}], "totalDurationMs": usage["duration_ms"], "totalToolUseCount": agent.tool_uses}})
+        };
+        result["parent_tool_use_id"] = Value::Null;
+        result["session_id"] = json!(self.id);
+        result["uuid"] = json!(uuid());
+        out(&result);
+        interrupted
+    }
+
+    /// Delegates the same look around to a subagent in the background, as
+    /// Claude Code does with `run_in_background`: its call returns at once,
+    /// it takes a step every two seconds (at the usual delay), and when it
+    /// ends, a turn of fake-claude's own takes its report.
+    fn delegate_in_background(&mut self) {
+        let agent = self.start_subagent(true);
+        let launched = format!(
+            "Async agent launched successfully.\nagentId: {} (internal ID - do not mention to user. Use SendMessage with to: '{}' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.",
+            agent.task_id, agent.task_id
+        );
+        out(
+            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": agent.tool_use_id, "content": [{"type": "text", "text": launched}]}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid(),
+                "tool_use_result": {"isAsync": true, "status": "async_launched", "agentId": agent.task_id, "description": SUBAGENT_DESCRIPTION, "prompt": SUBAGENT_PROMPT, "outputFile": ""}}),
+        );
+        let now = Instant::now();
+        let every = self.delay * 80;
+        let steps: Vec<(Instant, Step)> = SUBAGENT_STEPS
+            .iter()
+            .zip(1u32..)
+            .map(|(step, n)| (now + every * n, *step))
+            .collect();
+        let ends = now + every * (steps.len() as u32 + 1);
+        self.background.push(Background {
+            id: agent.task_id.clone(),
+            tool_use_id: agent.tool_use_id.clone(),
+            description: agent.description.clone(),
+            ends,
+            subagent: Some((agent, steps)),
+        });
+        self.background.sort_by_key(|b| b.ends);
     }
 
     fn result(&mut self, started: Instant, text: &str, subtype: &str) {
@@ -607,6 +826,17 @@ impl Session {
             self.result(started, "Interrupted", "error_during_execution");
             return;
         }
+        if says(&lower, "delegate") {
+            if lower.contains("in the background") {
+                self.delegate_in_background();
+                self.stream_text(
+                    "It works in the background: I'll pick up its report when it finishes.",
+                );
+            } else if self.delegate() {
+                self.result(started, "Interrupted", "error_during_execution");
+                return;
+            }
+        }
         if let Some(secs) = background_for(text) {
             self.start_background(secs);
             self.stream_text("It runs in the background: I'll pick it up when it finishes.");
@@ -614,6 +844,21 @@ impl Session {
         let done = "Done. Everything looks good: the change is committed and ready for review.";
         self.stream_text(done);
         self.result(started, done, "success");
+    }
+}
+
+/// Runs `command` with `sh -c`: what it printed, and whether it failed.
+fn sh(command: &str) -> (String, bool) {
+    match std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .output()
+    {
+        Ok(o) => (
+            String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr),
+            !o.status.success(),
+        ),
+        Err(e) => (format!("sh: {e}"), true),
     }
 }
 
@@ -906,8 +1151,8 @@ fn main() {
         );
     };
     loop {
-        // A background command that ends gets a turn of its own.
-        let next = match session.next_ending() {
+        // Background work takes its steps, and gets a turn of its own when it ends.
+        let next = match session.next_due() {
             Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
         };
