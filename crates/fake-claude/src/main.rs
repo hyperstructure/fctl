@@ -17,6 +17,7 @@
 //! |---|---|
 //! | (anything) | reports plan usage, streams a short answer, runs a fake `Bash` tool, answers again |
 //! | `explore` | looks around the working directory first, as Claude Code does before it changes something: a thought, then commands, searches and a read (two of them at once) with another thought among them |
+//! | `explore <n>` | looks around that many times over (at most 100), in one run of calls, as agents do in a long stretch of work: more than the newest 400 events, which a session page gets first |
 //! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message as Claude Code does: with `attribution.commit` from `~/.claude/settings.json`, or Claude's trailer when that is unset |
 //! | `push` | pushes the branch to `origin` with `git push`; a repository without one (the dev instance's projects have no repository) gets a bare one in `~/.fake-github` to stand in for GitHub |
 //! | `watch <seconds>` | watches the pull request's checks in one tool call that lasts that many seconds (at most ten minutes), as agents wait for CI before they end their turn |
@@ -818,7 +819,13 @@ impl Session {
             false,
         );
         if says(&lower, "explore") {
-            self.explore();
+            for _ in 0..explorations(text) {
+                self.explore();
+                if INTERRUPTED.load(Ordering::SeqCst) {
+                    self.result(started, "Interrupted", "error_during_execution");
+                    return;
+                }
+            }
             self.stream_text("I have what I need.");
         }
         if let Some(name) = lower
@@ -979,17 +986,23 @@ fn sh(command: &str) -> (String, bool) {
 /// How long a turn's background command runs: the seconds after
 /// `background` (any case), at most an hour.
 fn background_for(text: &str) -> Option<u64> {
-    seconds_after(text, "background").map(|s| s.min(3600))
+    number_after(text, "background").map(|s| s.min(3600))
 }
 
 /// How long a turn watches checks: the seconds after `watch` (any case), at
 /// most ten minutes.
 fn watch_for(text: &str) -> Option<u64> {
-    seconds_after(text, "watch").map(|s| s.min(600))
+    number_after(text, "watch").map(|s| s.min(600))
+}
+
+/// How many times a turn looks around: the number after `explore` (any
+/// case), at most 100, else once.
+fn explorations(text: &str) -> u64 {
+    number_after(text, "explore").map_or(1, |n| n.clamp(1, 100))
 }
 
 /// The number right after `word` and a space, in any case.
-fn seconds_after(text: &str, word: &str) -> Option<u64> {
+fn number_after(text: &str, word: &str) -> Option<u64> {
     let lower = text.to_lowercase();
     let word = format!("{word} ");
     lower.match_indices(&word).find_map(|(i, word)| {
@@ -1349,8 +1362,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        adler32, asks_for_limit, background_for, crc32, effort_in, rename_to, says, screenshot_png,
-        short_id, watch_for,
+        adler32, asks_for_limit, background_for, crc32, effort_in, explorations, rename_to, says,
+        screenshot_png, short_id, watch_for,
     };
 
     #[test]
@@ -1406,6 +1419,15 @@ mod tests {
         assert!(says("push it, then watch 12", "push"));
         // fctl-agent's words when a session resumes in a new sandbox.
         assert!(!says("everything that was pushed to it", "push"));
+    }
+
+    #[test]
+    fn explore_takes_how_many_times_after_it() {
+        assert_eq!(explorations("explore"), 1);
+        assert_eq!(explorations("EXPLORE 40 times, then write notes.md"), 40);
+        assert_eq!(explorations("explore 9999"), 100);
+        assert_eq!(explorations("explore 0"), 1);
+        assert_eq!(explorations("explore the code"), 1);
     }
 
     #[test]
