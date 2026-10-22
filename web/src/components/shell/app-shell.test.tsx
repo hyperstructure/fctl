@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys } from "@/lib/queries";
 import { keepSidebar } from "@/lib/sidebar";
-import { Sidebar } from "./app-shell";
+import { AppShell, Sidebar } from "./app-shell";
 
 // No request is answered: the sidebar shows what the cache holds, and what this browser kept.
 vi.mock("@/lib/api", () => {
@@ -17,17 +17,39 @@ vi.mock("@tanstack/react-router", () => ({
     to,
     params,
     search: _,
+    onClick,
     children,
     ...rest
-  }: { to: string; params?: { slug: string }; search?: unknown; children: ReactNode } & Record<
-    string,
-    unknown
-  >) => (
-    <a href={params ? to.replace("$slug", params.slug) : to} {...rest}>
+  }: {
+    to: string;
+    params?: { slug: string };
+    search?: unknown;
+    onClick?: () => void;
+    children: ReactNode;
+  } & Record<string, unknown>) => (
+    <a
+      href={params ? to.replace("$slug", params.slug) : to}
+      onClick={(e) => {
+        e.preventDefault();
+        onClick?.();
+      }}
+      {...rest}
+    >
       {children}
     </a>
   ),
+  Outlet: () => null,
   useNavigate: () => () => {},
+  useRouter: () => ({ history: { push: () => {} } }),
+  useRouterState: ({ select }: { select: (s: { location: { pathname: string } }) => string }) =>
+    select({ location: { pathname: "/" } }),
+}));
+// The shell without the live feed and notifications.
+vi.mock("@/lib/feed", () => ({ useFeed: () => {}, feed: { onPulse: () => () => {} } }));
+vi.mock("@/lib/push", () => ({
+  syncPush: async () => {},
+  onPushOpen: () => () => {},
+  forgetPush: async () => {},
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -61,7 +83,7 @@ function reload() {
   act(() =>
     root.render(
       <QueryClientProvider client={client}>
-        <Sidebar onPalette={() => {}} onNavigate={() => {}} path="/" />
+        <Sidebar onPalette={() => {}} onNavigate={() => {}} onClose={() => {}} path="/" />
       </QueryClientProvider>,
     ),
   );
@@ -114,5 +136,67 @@ describe("the sidebar", () => {
   it("shows no one else's lists", () => {
     keepSidebar("usr_grace", workspaces, projects);
     expect(reload().shown()).toEqual({});
+  });
+});
+
+/** The shell at a phone's width, where the sidebar is a drawer. */
+function phone() {
+  const client = new QueryClient();
+  client.setQueryData(keys.me, {
+    user: { id: "usr_ada", name: "Ada Lovelace", role: "member" },
+    claude: [],
+  } as unknown as G.Me);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() =>
+    root.render(
+      <QueryClientProvider client={client}>
+        <AppShell />
+      </QueryClientProvider>,
+    ),
+  );
+  cleanups.push(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+  const drawer = () => container.querySelector("aside") as HTMLElement;
+  const click = (el: Element | null | undefined) => act(() => (el as HTMLElement).click());
+  const closeButtons = () => [...container.querySelectorAll('button[aria-label="Close menu"]')];
+  return {
+    /** Whether it is open, and whether it slides when it opens or closes. */
+    state: () => ({
+      open: drawer().classList.contains("translate-x-0"),
+      slides: drawer().classList.contains("transition-[translate,display]"),
+      shade: closeButtons().some((b) => !drawer().contains(b)),
+    }),
+    open: () => click(container.querySelector('button[aria-label="Open menu"]')),
+    close: () => click(closeButtons().find((b) => drawer().contains(b))),
+    shade: () => click(closeButtons().find((b) => !drawer().contains(b))),
+    follow: (name: string) =>
+      click([...drawer().querySelectorAll("a")].find((a) => a.textContent?.trim() === name)),
+  };
+}
+
+describe("the drawer", () => {
+  it("slides in, and away when its close button or the shade closes it", () => {
+    const shell = phone();
+    expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
+    shell.open();
+    expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
+    shell.close();
+    expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
+    shell.open();
+    shell.shade();
+    expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
+  });
+
+  it("goes at once when one of its links opens a page, and slides in again", () => {
+    const shell = phone();
+    shell.open();
+    shell.follow("Settings");
+    expect(shell.state()).toEqual({ open: false, slides: false, shade: false });
+    shell.open();
+    expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
   });
 });
