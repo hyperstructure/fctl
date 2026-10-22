@@ -5,7 +5,7 @@ import { playable } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { bytes } from "@/lib/format";
 import { useHoldPage } from "@/lib/hold-page";
-import { FITS, type Point, Trail, type View, Zoom } from "@/lib/zoom";
+import { FITS, type Point, Trail, type View, Zoom, zoomedIn } from "@/lib/zoom";
 
 /** What a lightbox shows. Attachments and published screenshots are these. */
 export interface LightboxFile {
@@ -68,6 +68,7 @@ const DOUBLE_TAP_PX = 50;
 const FRAME_MS = 16;
 
 const spot = (t: Touch): Point => ({ x: t.clientX, y: t.clientY });
+const between = ([a, b]: [Point, Point]): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
 /**
@@ -221,8 +222,20 @@ export function Lightbox({
     };
 
     // A finger moving a zoomed image about, or two zooming it: the image, how
-    // it showed and where they touched it.
-    let pan: { img: HTMLImageElement; zoom: Zoom; view: View; from: Point; trail: Trail } | undefined;
+    // it showed and where they touched it. A finger has `moved` once it went
+    // further than a tap, and is `sideways` or not once it went past the
+    // image's left or right edge.
+    let pan:
+      | {
+          img: HTMLImageElement;
+          zoom: Zoom;
+          view: View;
+          from: Point;
+          trail: Trail;
+          moved: boolean;
+          sideways?: boolean;
+        }
+      | undefined;
     let pinch:
       | {
           img: HTMLImageElement;
@@ -328,30 +341,35 @@ export function Lightbox({
     const begin = (e: TouchEvent) => {
       const a = e.touches[0];
       const b = e.touches[1];
-      // A swipe that another finger joins settles back.
-      if (swipe) slide(0);
+      const img = image();
       touched = undefined;
-      swipe = undefined;
       pan = undefined;
       pinch = undefined;
-      const img = image();
-      if (a && b) {
-        if (!img) return;
+      if (img) still(img);
+      if (a && b && img) {
         // Nor is it a click outside the picture.
         pressedOutside.current = false;
+        let view = viewOf(img);
+        // A swipe the second finger joins stops: the pictures go back under
+        // the image at once, and it stays where it is.
+        if (swipe) {
+          view = { ...view, x: view.x + (Number.parseFloat(t.style.translate) || 0) };
+          t.style.removeProperty("translate");
+          show(img, view);
+        }
         const from: [Point, Point] = [spot(a), spot(b)];
-        pinch = {
-          img,
-          zoom: measure(img),
-          view: viewOf(img),
-          ids: [a.identifier, b.identifier],
-          from,
-          to: from,
-        };
-      } else if (a) {
+        pinch = { img, zoom: measure(img), view, ids: [a.identifier, b.identifier], from, to: from };
+      } else if (swipe) {
+        // A swipe that another finger joins settles back.
+        slide(0);
+      }
+      swipe = undefined;
+      if (a && !b) {
         const view = img ? viewOf(img) : FITS;
-        if (img && view.scale > 1) {
-          pan = { img, zoom: measure(img), view, from: spot(a), trail: new Trail() };
+        if (img && zoomedIn(view)) {
+          const trail = new Trail();
+          trail.moved(spot(a), e.timeStamp);
+          pan = { img, zoom: measure(img), view, from: spot(a), trail, moved: false };
           img.dataset.moving = "";
         } else if (several) touched = spot(a);
       }
@@ -383,22 +401,39 @@ export function Lightbox({
         const p = pan;
         e.preventDefault();
         const by = { x: f.clientX - p.from.x, y: f.clientY - p.from.y };
+        const last = p.trail.last;
         p.trail.moved(spot(f), e.timeStamp);
-        // Nor is it a click outside the picture.
-        if (Math.hypot(by.x, by.y) >= SLOP) pressedOutside.current = false;
-        // Past the image's left or right edge, the finger swipes on.
-        const [left, right] = p.zoom.bounds(p.view.scale).x;
-        const x = p.view.x + by.x;
-        const past = several ? x - Math.min(right, Math.max(left, x)) : 0;
-        show(p.img, p.zoom.pan(p.view, { x: by.x - past, y: by.y }));
-        if (past) {
-          swipe ??= new Swipe(f.clientX - past, e.timeStamp);
-          swipe.moved(f.clientX, e.timeStamp);
-          follow(swipe.distance);
-        } else if (swipe) {
-          swipe = undefined;
-          t.style.removeProperty("translate");
+        if (Math.hypot(by.x, by.y) >= SLOP) {
+          p.moved = true;
+          // Nor is it a click outside the picture.
+          pressedOutside.current = false;
         }
+        // Past the image's left or right edge, a finger moving sideways swipes
+        // on to the picture beside it; one moving up or down along it doesn't.
+        const onward = p.zoom.pan(p.view, by, several);
+        if (onward.past && p.sideways === undefined) {
+          // Which way it was going lately, or since it last moved, after a rest.
+          const v = p.trail.speed(e.timeStamp);
+          const d =
+            v.x || v.y ? v : { x: f.clientX - (last?.x ?? f.clientX), y: f.clientY - (last?.y ?? f.clientY) };
+          p.sideways = Math.abs(d.x) > Math.abs(d.y);
+        }
+        const { view, past } = p.sideways === false ? p.zoom.pan(p.view, by) : onward;
+        show(p.img, view);
+        if (!past) {
+          if (swipe) t.style.removeProperty("translate");
+          swipe = undefined;
+          return;
+        }
+        if (!swipe) {
+          // From where the finger crossed the edge, and when.
+          const edge = f.clientX - past;
+          const k = last && f.clientX !== last.x ? (edge - last.x) / (f.clientX - last.x) : 1;
+          const at = last ? last.at + Math.min(1, Math.max(0, k)) * (e.timeStamp - last.at) : e.timeStamp;
+          swipe = new Swipe(edge, at);
+        }
+        swipe.moved(f.clientX, e.timeStamp);
+        follow(swipe.distance);
       } else if (touched) {
         if (!swipe) {
           const dx = f.clientX - touched.x;
@@ -427,9 +462,8 @@ export function Lightbox({
         pinch = undefined;
         const view = viewOf(p.img);
         // A finger left on goes on moving the image about, zoomed in as far as it may be.
-        if (on.length && view.scale > 1 && view.scale <= p.zoom.max) return begin(e);
-        const [a, b] = p.to;
-        settle(p.img, p.zoom.settle(view, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }));
+        if (on.length && zoomedIn(view) && view.scale <= p.zoom.max) return begin(e);
+        settle(p.img, p.zoom.settle(view, between(p.to)));
       }
       if (on.length) return;
       const tapping = tap;
@@ -440,7 +474,7 @@ export function Lightbox({
         const view = viewOf(p.img);
         const rest = p.zoom.settle(view, p.from);
         if (rest.scale !== view.scale || rest.x !== view.x || rest.y !== view.y) settle(p.img, rest);
-        else if (!swipe && e.type === "touchend" && !reducedMotion())
+        else if (p.moved && !swipe && e.type === "touchend" && !reducedMotion())
           glide(p.img, p.zoom, p.trail.speed(e.timeStamp));
         else still(p.img);
       }
@@ -474,6 +508,15 @@ export function Lightbox({
       clearTimeout(timer);
       cancelAnimationFrame(frame);
       settling?.();
+      // A pinch or a move under way, which the listeners that come next don't
+      // know, ends where it may.
+      const under = pinch ? { ...pinch, at: between(pinch.to) } : pan && { ...pan, at: pan.from };
+      if (under) {
+        const rest = under.zoom.settle(viewOf(under.img), under.at);
+        if (zoomedIn(rest)) show(under.img, rest);
+        else restore(under.img);
+      }
+      if (zoomed.current) still(zoomed.current.img);
       sliding.current = undefined;
       unzoom.current = undefined;
       // Back in place, for a picture that stays alone.

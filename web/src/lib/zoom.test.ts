@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FITS, stopPinchZoom, Trail, Zoom } from "./zoom";
+import { FITS, stopPinchZoom, Trail, Zoom, zoomedIn } from "./zoom";
 
 /** Pinches as Safari does, and says whether the page cancelled it. */
 function pinch(target: EventTarget, type = "gesturestart") {
@@ -73,11 +73,32 @@ describe("Zoom", () => {
   it("follows a finger, and resists it past the picture's edges", () => {
     const zoom = new Zoom(win, fit, 1440);
     const view = { scale: 2, x: 100, y: 0 };
-    expect(zoom.pan(view, p(-50, 120))).toEqual({ scale: 2, x: 50, y: 120 });
+    expect(zoom.pan(view, p(-50, 120))).toEqual({ view: { scale: 2, x: 50, y: 120 }, past: 0 });
     // 40 px past the left edge, and 100 px past the top.
-    const past = zoom.pan(view, p(100, 300));
+    const past = zoom.pan(view, p(100, 300)).view;
     expect(past.x).toBeCloseTo(172);
     expect(past.y).toBeCloseTo(230);
+  });
+
+  it("stops at the left and right edges of a picture a finger swipes on past, and says how far", () => {
+    const zoom = new Zoom(win, fit, 1440);
+    const view = { scale: 2, x: 100, y: 0 };
+    expect(zoom.pan(view, p(100, 0), true)).toEqual({ view: { scale: 2, x: 160, y: 0 }, past: 40 });
+    expect(zoom.pan(view, p(-300, 0), true)).toEqual({ view: { scale: 2, x: -160, y: 0 }, past: -40 });
+    expect(zoom.pan(view, p(-30, 0), true)).toEqual({ view: { scale: 2, x: 70, y: 0 }, past: 0 });
+  });
+
+  it("moves a picture on from past an edge without a jump", () => {
+    const zoom = new Zoom(win, fit, 1440);
+    // 40 px past its left edge, and 30 px past its top, as a pinch can leave it.
+    const view = { scale: 2, x: 200, y: 230 };
+    const on = zoom.pan(view, p(1, 1)).view;
+    expect(on.x).toBeCloseTo(200.3);
+    expect(on.y).toBeCloseTo(230.3);
+    expect(zoom.pan(view, p(-10, -10)).view).toEqual({ scale: 2, x: 190, y: 220 });
+    // A finger swiping on goes past where it started.
+    expect(zoom.pan(view, p(5, 0), true)).toEqual({ view: { scale: 2, x: 200, y: 230 }, past: 5 });
+    expect(zoom.pan(view, p(-5, 0), true)).toEqual({ view: { scale: 2, x: 195, y: 230 }, past: 0 });
   });
 
   it("settles a picture within its edges, zoomed in no further than the most", () => {
@@ -131,7 +152,23 @@ describe("Zoom", () => {
   });
 });
 
+describe("zoomedIn", () => {
+  it("is a picture zoomed in more than a hair", () => {
+    expect(zoomedIn(FITS)).toBe(false);
+    expect(zoomedIn({ scale: 1.005, x: 30, y: 0 })).toBe(false);
+    expect(zoomedIn({ scale: 1.5, x: 0, y: 0 })).toBe(true);
+  });
+});
+
 describe("Trail", () => {
+  it("knows where the finger was last", () => {
+    const trail = new Trail();
+    expect(trail.last).toBeUndefined();
+    trail.moved(p(10, 20), 100);
+    trail.moved(p(30, 25), 116);
+    expect(trail.last).toEqual({ x: 30, y: 25, at: 116 });
+  });
+
   it("measures a finger's speed over its last moments", () => {
     const trail = new Trail();
     trail.moved(p(0, 0), 0);

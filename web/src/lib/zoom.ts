@@ -52,6 +52,9 @@ const STILL = 0.02;
 /** The last moments of a finger's moves, in ms. */
 const RECENT_MS = 100;
 
+/** Whether a view shows a picture zoomed in, rather than as it fits. */
+export const zoomedIn = (view: View) => view.scale >= ZOOMED;
+
 /**
  * A picture that fingers zoom in on and move about in the window: where it
  * fits, and where pinches, moves, double taps and glides take it from
@@ -103,10 +106,23 @@ export class Zoom {
     return this.about(start, scale, between(from), between(to));
   }
 
-  /** The view after a finger moved `by` from `start`. It resists moving past the picture's edges. */
-  pan(start: View, by: Point): View {
+  /**
+   * The view after a finger moved `by` from `start`. It resists moving past
+   * the picture's edges; with `swipes`, it stops at its left and right ones
+   * instead, and `past` says how far on the finger went (< 0 past its right
+   * edge, toward the next picture). Edges it starts past are where it starts
+   * (a pinch can leave it there), so that it doesn't jump.
+   */
+  pan(start: View, by: Point, swipes = false): { view: View; past: number } {
     const { x, y } = this.bounds(start.scale);
-    return { scale: start.scale, x: resist(start.x + by.x, ...x), y: resist(start.y + by.y, ...y) };
+    const across: [number, number] = [Math.min(x[0], start.x), Math.max(x[1], start.x)];
+    const down: [number, number] = [Math.min(y[0], start.y), Math.max(y[1], start.y)];
+    const to = start.x + by.x;
+    const past = swipes ? to - clamp(to, ...across) : 0;
+    return {
+      view: { scale: start.scale, x: resist(to - past, ...across), y: resist(start.y + by.y, ...down) },
+      past,
+    };
   }
 
   /**
@@ -115,7 +131,7 @@ export class Zoom {
    * the picture's edges; or as it fits, if it was zoomed out that far.
    */
   settle(view: View, at: Point): View {
-    if (view.scale < ZOOMED) return FITS;
+    if (!zoomedIn(view)) return FITS;
     const v = view.scale > this.max ? this.about(view, this.max, at) : view;
     const { x, y } = this.bounds(v.scale);
     return { scale: v.scale, x: clamp(v.x, ...x), y: clamp(v.y, ...y) };
@@ -123,7 +139,7 @@ export class Zoom {
 
   /** A double tap at `at`: zooms in about it, or back out to the fitting size. */
   toggle(view: View, at: Point): View {
-    return view.scale > 1 ? FITS : this.settle(this.about(view, DOUBLE_TAP_ZOOM, at), at);
+    return zoomedIn(view) ? FITS : this.settle(this.about(view, DOUBLE_TAP_ZOOM, at), at);
   }
 
   /**
@@ -154,6 +170,11 @@ export class Zoom {
 /** Where a finger moving a picture has been lately, for the speed it lets go at. */
 export class Trail {
   private moves: (Point & { at: number })[] = [];
+
+  /** Where the finger was last, and when. */
+  get last(): (Point & { at: number }) | undefined {
+    return this.moves[this.moves.length - 1];
+  }
 
   /** The finger is at `p` at `at` (ms). */
   moved(p: Point, at: number) {
