@@ -80,14 +80,16 @@ pub struct Live {
 impl Live {
     /// Takes a live message `v`, serialized as `text`.
     pub fn push(&mut self, v: &Value, text: &str) {
+        // The agent's own, not a subagent's, which viewers don't show.
+        let own = v.get("parent_tool_use_id").is_none_or(Value::is_null);
         if classify(v) == ClaudeKind::ThinkingProgress {
-            self.thought = Some(text.to_owned());
+            if own {
+                self.thought = Some(text.to_owned());
+            }
             return;
         }
-        // The agent's next response, not a subagent's.
-        if v.pointer("/event/type").and_then(Value::as_str) == Some("message_start")
-            && v.get("parent_tool_use_id").is_none_or(Value::is_null)
-        {
+        // The agent's next response.
+        if own && v.pointer("/event/type").and_then(Value::as_str) == Some("message_start") {
             self.clear();
         }
         if self.messages.len() >= LIVE_MAX_EVENTS {
@@ -578,9 +580,15 @@ mod tests {
         assert_eq!(seen.len(), 3);
         assert_eq!(seen[0]["event"]["type"], "message_start");
         assert_eq!(seen[2]["estimated_tokens"], 30_000);
-        // A subagent's response leaves the agent's.
+        // A subagent's response leaves the agent's, and so does its
+        // thinking progress, if Claude Code ever sends that.
         stream(&mut live, start("m2"), Some("toolu_1"));
-        assert_eq!(snapshot(&live).len(), 4);
+        let theirs = json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 5,
+                            "parent_tool_use_id": "toolu_1"});
+        live.push(&theirs, &theirs.to_string());
+        let seen = snapshot(&live);
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[3]["estimated_tokens"], 30_000);
         // The agent's next response starts over.
         stream(&mut live, start("m3"), None);
         let seen = snapshot(&live);
