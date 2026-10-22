@@ -1191,16 +1191,22 @@ function Github() {
               </div>
             </div>
             {i.workspaces.length > 0 ? (
-              <ul className="mt-3 ml-11 flex flex-col gap-1.5">
+              <ul className="mt-3 ml-11 flex flex-col gap-2.5 sm:gap-1.5">
                 {i.workspaces.map((w) => (
-                  <li key={w.workspace.id} className="flex items-center gap-2.5 text-[13px] text-ink-2">
+                  <li
+                    key={w.workspace.id}
+                    className="flex items-start gap-2.5 text-[13px] text-ink-2 sm:items-center"
+                  >
                     <WorkspaceAvatar workspace={w.workspace} size={18} />
-                    <span className="truncate">{w.workspace.name}</span>
-                    <span className="truncate text-[12px] text-ink-4">
-                      {scopeOf(w.repos)}
-                      {w.github_user && ` · by ${w.requested_by?.name ?? "an admin"} as @${w.github_user}`}
-                    </span>
-                    <span className="flex-1" />
+                    {/* On a phone the repositories go under the workspace's name; beside it, they
+                        give way to it. */}
+                    <div className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-center sm:gap-2.5">
+                      <span className="truncate sm:max-w-1/2 sm:shrink-0">{w.workspace.name}</span>
+                      <span className="text-[12px] text-ink-4 sm:truncate">
+                        {scopeOf(w.repos)}
+                        {w.github_user && ` · by ${w.requested_by?.name ?? "an admin"} as @${w.github_user}`}
+                      </span>
+                    </div>
                     <button
                       type="button"
                       aria-label={`Disconnect ${w.workspace.name} from ${i.account}`}
