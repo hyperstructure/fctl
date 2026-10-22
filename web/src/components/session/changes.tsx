@@ -9,6 +9,7 @@ import { type RepoChanges, whereCommits } from "@/lib/git";
 /** The files a repository's list shows until someone asks for the rest. */
 const FEW = 10;
 
+/** A repository's changed files and totals. */
 export function Changes({
   repo,
   title,
