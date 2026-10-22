@@ -62,12 +62,17 @@ fn key(repo: &RepoRef) -> String {
 /// any pull request, and a workspace can lose an account, so rows kept from
 /// before are held to it too. `l.repo` is `owner/name` in lowercase.
 ///
-/// With `account` (a parameter, `?N`), GitHub's id of the account that
-/// answered: only where the connection is to that account, or from before
-/// ids were kept, since a login can change hands.
-fn in_reach(account: Option<&str>) -> String {
-    let account = account
-        .map(|p| format!(" AND (rg.account_id IS NULL OR rg.account_id = {p})"))
+/// With `answered` (parameters, `?N`): GitHub's id of the account that
+/// answered and of the installation it answered through, only where the
+/// connection is to that account, or, from before ids were kept, recorded
+/// that installation, since a login can change hands.
+fn in_reach(answered: Option<(&str, &str)>) -> String {
+    let account = answered
+        .map(|(account, installation)| {
+            format!(
+                " AND (rg.account_id = {account} OR (rg.account_id IS NULL AND rg.installation_id = {installation}))"
+            )
+        })
         .unwrap_or_default();
     format!(
         "EXISTS (SELECT 1 FROM sessions rs JOIN projects rp ON rp.id = rs.project_id \
@@ -209,7 +214,7 @@ pub async fn hook(
             });
         }
     }
-    settle(env, db, &seen, now, hook.owner_id).await
+    settle(env, db, &seen, now, hook.owner_id.zip(hook.installation)).await
 }
 
 /// Looks up pull requests sessions list and tells those sessions what
@@ -238,7 +243,10 @@ pub async fn refresh(
         // Its installation, and who has the login now: what it says goes to
         // the sessions of workspaces connected to that account.
         let found = gh.installation(&account).await;
-        let account_id = found.as_ref().ok().and_then(|f| f.account_id);
+        let answered = found
+            .as_ref()
+            .ok()
+            .and_then(|f| Some((f.account_id?, f.id)));
         let mut batches = prs.chunks(webhooks::MAX_LOOKUP).peekable();
         while let Some(batch) = batches.next() {
             let answer = match &found {
@@ -259,7 +267,7 @@ pub async fn refresh(
                 .collect();
             // Those GitHub didn't answer for wait their six hours too, so
             // that one that always fails can't hold up the others.
-            told += settle(env, db, &seen, now, account_id).await?;
+            told += settle(env, db, &seen, now, answered).await?;
             let left = match &answer {
                 Ok(a) => webhooks::remaining(a),
                 Err(e) => {
@@ -336,12 +344,17 @@ struct Listing {
 /// name, and their states, which the sweep goes by. A pull request keeps
 /// its old state there until every session that lists it heard, so that
 /// the sweep asks again for those that didn't. Returns how many heard.
+///
+/// `answered`: GitHub's ids of the account that answered and of the
+/// installation it answered through. What it said reaches the sessions
+/// whose workspaces connected that account ([`in_reach`]), and nobody when
+/// GitHub didn't say who answered.
 async fn settle(
     env: &Env,
     db: &D1Database,
     seen: &[Seen],
     now: i64,
-    account_id: Option<u64>,
+    answered: Option<(u64, u64)>,
 ) -> AppResult<usize> {
     if seen.is_empty() {
         return Ok(0);
@@ -351,24 +364,24 @@ async fn settle(
         .filter(|x| x.looked.is_some())
         .map(|x| json!([key(&x.repo), x.number]))
         .collect();
-    let listing: Vec<Listing> = if found.is_empty() {
-        Vec::new()
-    } else {
-        q(
+    let listing: Vec<Listing> = match answered {
+        Some((account, installation)) if !found.is_empty() => q(
             db,
             &format!(
                 "SELECT l.repo AS repo, l.number AS number, l.session_id AS session_id FROM pull_request_sessions l \
                  WHERE (l.repo, l.number) IN \
                  (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?1)) AND {}",
-                in_reach(account_id.map(|_| "?2"))
+                in_reach(Some(("?2", "?3")))
             ),
-            &[s(&json!(found).to_string())]
-                .into_iter()
-                .chain(account_id.map(|id| n(id as i64)))
-                .collect::<Vec<_>>(),
+            &[
+                s(&json!(found).to_string()),
+                n(account as i64),
+                n(installation as i64),
+            ],
         )?
         .all()
-        .await?
+        .await?,
+        _ => Vec::new(),
     };
     let of = |l: &Listing| {
         seen.iter()
@@ -406,18 +419,32 @@ async fn settle(
             .as_ref()
             .filter(|_| heard)
             .and_then(|l| l.pr.state.as_deref());
+        // Asked, for the sweep; what GitHub said, only for the sessions it
+        // could tell.
         statements.push(q(
             db,
-            "UPDATE pull_request_sessions SET head_sha = COALESCE(?, head_sha), state = COALESCE(?, state), checked_at = ? \
-             WHERE repo = ? AND number = ?",
-            &[
-                os(x.looked.as_ref().and_then(|l| l.head.as_deref())),
-                os(state),
-                n(now),
-                s(&repo),
-                n(x.number as i64),
-            ],
+            "UPDATE pull_request_sessions SET checked_at = ? WHERE repo = ? AND number = ?",
+            &[n(now), s(&repo), n(x.number as i64)],
         )?);
+        if let Some((account, installation)) = answered {
+            statements.push(q(
+                db,
+                &format!(
+                    "UPDATE pull_request_sessions SET head_sha = COALESCE(?1, head_sha), state = COALESCE(?2, state) \
+                     WHERE repo = ?3 AND number = ?4 AND session_id IN (SELECT l.session_id FROM pull_request_sessions l \
+                     WHERE l.repo = ?3 AND l.number = ?4 AND {})",
+                    in_reach(Some(("?5", "?6")))
+                ),
+                &[
+                    os(x.looked.as_ref().and_then(|l| l.head.as_deref())),
+                    os(state),
+                    s(&repo),
+                    n(x.number as i64),
+                    n(account as i64),
+                    n(installation as i64),
+                ],
+            )?);
+        }
     }
     crate::db::batch(db, statements).await?;
     Ok(told)

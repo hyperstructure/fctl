@@ -623,24 +623,28 @@ pub fn scope(connections: &[ConnectionRow], owner: &str) -> Option<Scope> {
 /// account the workspace connected, by id (`fctl_domain::github::binding`).
 /// A connection from before ids were kept takes the account of the
 /// installation it recorded, when GitHub still has it, else the one that
-/// has the login now. The installation is remembered with the connections
-/// to that account.
+/// has the login now. The installation is remembered with the workspace's
+/// connection and the others bound to that account; never with another
+/// workspace's connection from before ids were kept, whose recorded
+/// installation is what tells it which account it connected. A workspace
+/// without an active connection to `account` gets none.
 pub async fn installation(
     db: &D1Database,
     gh: &crate::github::Github<'_>,
     connections: &[ConnectionRow],
     account: &str,
 ) -> AppResult<u64> {
-    let found = gh.installation(account).await?;
-    let connection = connections
+    let Some(connection) = connections
         .iter()
-        .find(|c| c.account.eq_ignore_ascii_case(account));
+        .find(|c| c.active() && c.account.eq_ignore_ascii_case(account))
+    else {
+        return Err(not_used(account));
+    };
+    let found = gh.installation(account).await?;
     let known = connection
-        .and_then(|c| c.installation_id)
+        .installation_id
         .and_then(|id| u64::try_from(id).ok());
-    let stored = connection
-        .and_then(|c| c.account_id)
-        .and_then(|id| u64::try_from(id).ok());
+    let stored = connection.account_id.and_then(|id| u64::try_from(id).ok());
     let mut connected = stored;
     if stored.is_none()
         && let Some(recorded) = known.filter(|k| *k != found.id)
@@ -653,12 +657,12 @@ pub async fn installation(
     }
     // A connection from before ids were kept keeps the account from now on.
     if stored.is_none()
-        && let (Some(c), Some(id)) = (connection, found.account_id)
+        && let Some(id) = found.account_id
     {
         q(
             db,
             "UPDATE workspace_github SET account_id = ? WHERE workspace_id = ? AND account = ? AND account_id IS NULL",
-            &[n(id as i64), s(&c.workspace_id), s(account)],
+            &[n(id as i64), s(&connection.workspace_id), s(&connection.account)],
         )?
         .run()
         .await?;
@@ -666,10 +670,12 @@ pub async fn installation(
     if known != Some(found.id) {
         q(
             db,
-            "UPDATE workspace_github SET installation_id = ? WHERE account = ? AND (account_id IS NULL OR account_id = ?)",
+            "UPDATE workspace_github SET installation_id = ?1 \
+             WHERE (workspace_id = ?2 AND account = ?3) OR (?4 IS NOT NULL AND account_id = ?4)",
             &[
                 n(found.id as i64),
-                s(account),
+                s(&connection.workspace_id),
+                s(&connection.account),
                 on(found.account_id.map(|id| id as i64)),
             ],
         )?
@@ -677,6 +683,16 @@ pub async fn installation(
         .await?;
     }
     Ok(found.id)
+}
+
+/// The error for an account a workspace doesn't work in (now).
+fn not_used(account: &str) -> AppError {
+    AppError(ApiError::new(
+        ErrorCode::Forbidden,
+        format!(
+            "This workspace doesn't use the GitHub account {account}. Its admins connect it under the workspace's GitHub tab."
+        ),
+    ))
 }
 
 /// The error for a connection whose login belongs to another GitHub

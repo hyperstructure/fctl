@@ -95,8 +95,15 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 grant.owner = login;
             }
         }
-        // GitHub's names (a renamed repository answers to its old one).
+        // GitHub's names (a renamed repository answers to its old one, and
+        // one moved to another account too), which the workspace must be
+        // able to use as well.
         repos::check(primary.as_ref(), &grants, &grant)?;
+        repos::check_scope(
+            crate::workspaces::scope(&connections, &grant.owner).as_ref(),
+            &grant.owner,
+            grant.name.as_deref(),
+        )?;
     }
     q(
         &ctx.db,
