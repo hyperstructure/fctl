@@ -550,6 +550,9 @@ version (sessions keep running) and refreshes installed completions.
 Installed with Homebrew (`brew install hyperstructure/tap/fctl`)? Update with
 `brew upgrade fctl` instead; Homebrew owns those files.
 
+The web app's home page says when a runner of yours is online with an older
+fctl than the control plane, and shows this command.
+
 ## Shell completions
 
 The installer sets up tab completion for your shell. To do it yourself:

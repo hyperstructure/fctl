@@ -120,9 +120,9 @@ name or id `fctl claude status` shows).
 ## 5. Bring a machine online
 
 A workspace's sessions run only on its runners: until one is online, they
-wait in the queue, and the app says so under the task box. Until it has
-one, its **Runners** tab shows its admins how to add one, and its members
-whom to ask.
+wait in the queue, and the app says so under the task box. Its **Runners**
+tab shows its admins how to add a runner, under the ones it has, and its
+members whom to ask.
 
 Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
 
@@ -171,6 +171,13 @@ Elsewhere, that command takes the runner's name or the id `fctl host
 status` shows. For a Mac that runs around the clock, keep it plugged in
 and turn on automatic login, so the host starts again after a reboot or a
 power cut.
+
+Keep it on the version of fctl the app runs. While a runner of yours is
+online with an older one, your home page says so, and **How to update**
+shows what to run on it: `fctl self update`, which restarts the host
+service while its sessions carry on (or `brew upgrade fctl`, then `fctl
+host restart`, where Homebrew installed fctl). **Skip this version** hides
+the notice in that browser until the app runs a newer version.
 
 ## 6. Create a project
 
