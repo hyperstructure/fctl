@@ -19,6 +19,8 @@ use fctl_proto::ApiError;
 /// A repository the app's installation reaches, as the person sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seen {
+    /// GitHub's id for it.
+    pub id: u64,
     /// Its name, as GitHub spells it.
     pub name: String,
     /// They are an admin of it.
@@ -34,8 +36,10 @@ pub struct Standing {
     /// It reaches every repository of the account (its repository
     /// selection is `all`).
     pub reaches_all: bool,
-    /// How many repositories it reaches.
-    pub reached: usize,
+    /// The repositories it reaches, by id, as the installation lists them
+    /// after `seen` was: asked only of someone else's account it reaches
+    /// every repository of.
+    pub reached: Vec<u64>,
     /// The ones they can see.
     pub seen: Vec<Seen>,
 }
@@ -94,16 +98,33 @@ pub struct Offer {
 /// What the person may choose from of the account: nothing when it isn't
 /// their own and they are an admin of none of its repositories the app
 /// reaches.
+///
+/// Every repository of an organization takes being an admin of each one the
+/// app reaches there, by id: not as many as it reaches, since GitHub's
+/// lists aren't taken at once, and someone who creates repositories while
+/// they are read (and is an admin of what they create) would make up the
+/// number. A repository made after `seen` was read is one they weren't
+/// seen to be an admin of. (Lists of more than one page can still shift
+/// while they are read, which can hide a repository at a page's edge.)
 pub fn offer(standing: &Standing) -> std::result::Result<Offer, Refusal> {
-    let mut repos: Vec<String> = standing
-        .seen
-        .iter()
-        .filter(|r| r.admin)
-        .map(|r| r.name.clone())
-        .collect();
+    let mut repos: Vec<String> = Vec::new();
+    let mut others: Vec<u64> = Vec::new();
+    let mut admin: Vec<u64> = Vec::new();
+    for r in &standing.seen {
+        if r.admin {
+            if !admin.contains(&r.id) {
+                admin.push(r.id);
+                repos.push(r.name.clone());
+            }
+        } else if !others.contains(&r.id) {
+            others.push(r.id);
+        }
+    }
     repos.sort_by_key(|n| n.to_lowercase());
-    let others = standing.seen.len() - repos.len();
-    let of_all = standing.reaches_all && standing.reached > 0 && repos.len() >= standing.reached;
+    let others = others.iter().filter(|id| !admin.contains(id)).count();
+    let of_all = standing.reaches_all
+        && !standing.reached.is_empty()
+        && standing.reached.iter().all(|id| admin.contains(id));
     let all = standing.own || of_all;
     if !all && repos.is_empty() {
         return Err(Refusal::NoAdmin);
@@ -194,11 +215,18 @@ mod tests {
     fn seen(repos: &[(&str, bool)]) -> Vec<Seen> {
         repos
             .iter()
-            .map(|(name, admin)| Seen {
+            .zip(1..)
+            .map(|((name, admin), id)| Seen {
+                id,
                 name: (*name).to_owned(),
                 admin: *admin,
             })
             .collect()
+    }
+
+    /// The ids `seen` gives its first `n` repositories.
+    fn ids(n: u64) -> Vec<u64> {
+        (1..=n).collect()
     }
 
     fn names(v: &[&str]) -> Vec<String> {
@@ -219,7 +247,7 @@ mod tests {
         let mine = Standing {
             own: true,
             reaches_all: false,
-            reached: 2,
+            reached: Vec::new(),
             seen: seen(&[("site", true), ("notes", true)]),
         };
         assert_eq!(offer(&mine), offered(true, &["notes", "site"], 0));
@@ -238,7 +266,7 @@ mod tests {
         let owner = Standing {
             own: false,
             reaches_all: true,
-            reached: 3,
+            reached: ids(3),
             seen: seen(&[("web", true), ("api", true), ("design", true)]),
         };
         assert_eq!(offer(&owner), offered(true, &["api", "design", "web"], 0));
@@ -250,7 +278,7 @@ mod tests {
         let member = Standing {
             own: false,
             reaches_all: true,
-            reached: 3,
+            reached: ids(3),
             seen: seen(&[("web", true), ("api", false), ("Design", true)]),
         };
         assert_eq!(offer(&member), offered(false, &["Design", "web"], 1));
@@ -260,7 +288,7 @@ mod tests {
         let selected = Standing {
             own: false,
             reaches_all: false,
-            reached: 2,
+            reached: Vec::new(),
             seen: seen(&[("web", true), ("api", true)]),
         };
         assert_eq!(offer(&selected), offered(false, &["api", "web"], 0));
@@ -268,7 +296,7 @@ mod tests {
         let partial = Standing {
             own: false,
             reaches_all: true,
-            reached: 5,
+            reached: ids(5),
             seen: seen(&[("web", true)]),
         };
         assert_eq!(offer(&partial), offered(false, &["web"], 0));
@@ -276,9 +304,10 @@ mod tests {
         let many = Standing {
             own: false,
             reaches_all: true,
-            reached: MAX_REPOS + 5,
+            reached: ids(MAX_REPOS as u64 + 5),
             seen: (0..=MAX_REPOS)
                 .map(|i| Seen {
+                    id: i as u64 + 1,
                     name: format!("repo-{i:03}"),
                     admin: true,
                 })
@@ -289,11 +318,83 @@ mod tests {
     }
 
     #[test]
+    fn every_repository_takes_being_an_admin_of_each_one_reached() {
+        // A member who administers two of the organization's three
+        // repositories creates two more while fctl reads the lists: they
+        // see four they administer, more than the three it reaches before,
+        // but not the third.
+        let racing = Standing {
+            own: false,
+            reaches_all: true,
+            reached: vec![1, 2, 3, 4, 5],
+            seen: vec![
+                Seen {
+                    id: 1,
+                    name: "web".into(),
+                    admin: true,
+                },
+                Seen {
+                    id: 2,
+                    name: "api".into(),
+                    admin: true,
+                },
+                Seen {
+                    id: 4,
+                    name: "new-1".into(),
+                    admin: true,
+                },
+                Seen {
+                    id: 5,
+                    name: "new-2".into(),
+                    admin: true,
+                },
+            ],
+        };
+        assert_eq!(offer(&racing).map(|o| o.all), Ok(false));
+        // Repositories made after their list was read are ones they weren't
+        // seen to administer.
+        let later = Standing {
+            reached: vec![1, 2, 6],
+            seen: seen(&[("web", true), ("api", true)]),
+            ..racing.clone()
+        };
+        assert_eq!(offer(&later).map(|o| o.all), Ok(false));
+        // GitHub listing one twice counts it once.
+        let twice = Standing {
+            reached: vec![1, 2, 3],
+            seen: vec![
+                Seen {
+                    id: 1,
+                    name: "web".into(),
+                    admin: true,
+                },
+                Seen {
+                    id: 1,
+                    name: "web".into(),
+                    admin: true,
+                },
+                Seen {
+                    id: 2,
+                    name: "api".into(),
+                    admin: true,
+                },
+                Seen {
+                    id: 3,
+                    name: "docs".into(),
+                    admin: false,
+                },
+            ],
+            ..racing
+        };
+        assert_eq!(offer(&twice), offered(false, &["api", "web"], 1));
+    }
+
+    #[test]
     fn people_who_administer_none_of_it_are_offered_nothing() {
         let reader = Standing {
             own: false,
             reaches_all: true,
-            reached: 2,
+            reached: ids(2),
             seen: seen(&[("web", false), ("api", false)]),
         };
         assert_eq!(offer(&reader), Err(Refusal::NoAdmin));
@@ -301,7 +402,7 @@ mod tests {
         let empty = Standing {
             own: false,
             reaches_all: true,
-            reached: 0,
+            reached: Vec::new(),
             seen: Vec::new(),
         };
         assert_eq!(offer(&empty), Err(Refusal::NoAdmin));
@@ -357,7 +458,7 @@ mod tests {
         let member = Standing {
             own: false,
             reaches_all: true,
-            reached: 3,
+            reached: ids(3),
             seen: seen(&[("Web", true), ("api", false), ("design", true)]),
         };
         // As GitHub spells them.
@@ -377,7 +478,7 @@ mod tests {
         let mine = Standing {
             own: true,
             reaches_all: false,
-            reached: 1,
+            reached: Vec::new(),
             seen: seen(&[("site", true)]),
         };
         assert_eq!(

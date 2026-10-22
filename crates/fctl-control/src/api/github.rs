@@ -804,16 +804,19 @@ async fn standing(
             None => info.account.eq_ignore_ascii_case(&viewer.login),
         };
     let reaches_all = info.repository_selection.as_deref() == Some("all");
+    // What they see first, then what the app reaches: a repository made in
+    // between is one they weren't seen to be an admin of.
+    let seen = gh.seen(token, info.id).await?;
     Ok(Standing {
         own,
         reaches_all,
-        // Only every repository of someone else's account asks how many.
+        // Only every repository of someone else's account asks which.
         reached: if !named && !own && reaches_all {
             gh.reached(info.id).await?
         } else {
-            0
+            Vec::new()
         },
-        seen: gh.seen(token, info.id).await?,
+        seen,
     })
 }
 
