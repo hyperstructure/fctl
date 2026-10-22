@@ -3,4 +3,8 @@
 /**
  * `PATCH /api/v1/admin/settings`: absent fields stay as they are.
  */
-export type UpdateInstanceSettingsRequest = { publish_screenshots?: boolean, require_two_factor?: boolean, two_factor_google?: boolean, };
+export type UpdateInstanceSettingsRequest = { publish_screenshots?: boolean, require_two_factor?: boolean, two_factor_google?: boolean, 
+/**
+ * Only the primary instance owner changes it.
+ */
+verify_sensitive_actions?: boolean, };

@@ -1696,6 +1696,7 @@ function SignInSettings({
     publish_screenshots: false,
     require_two_factor: false,
     two_factor_google: false,
+    verify_sensitive_actions: false,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

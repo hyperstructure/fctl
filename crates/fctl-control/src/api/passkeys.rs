@@ -17,6 +17,7 @@ use crate::error::{AppError, AppResult, conflict, internal, not_found, validatio
 use crate::http;
 use crate::model::UserRow;
 use fctl_domain::two_factor as policy;
+use fctl_domain::verify::Sensitive;
 use fctl_domain::webauthn::{self, ALGORITHMS, Expect, b64url, from_b64url};
 use fctl_domain::{cbor, random_bytes};
 use fctl_proto::api::*;
@@ -152,6 +153,8 @@ enum Purpose {
     Register,
     SignIn,
     SecondFactor,
+    /// Confirming it's you before sensitive actions (`api::verify`).
+    Verify,
 }
 
 impl Purpose {
@@ -160,6 +163,7 @@ impl Purpose {
             Self::Register => "register",
             Self::SignIn => "sign_in",
             Self::SecondFactor => "second_factor",
+            Self::Verify => "verify",
         }
     }
 }
@@ -533,6 +537,8 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             "A workspace you are in requires two-factor sign-in, and this passkey is yours. Set up an authenticator app first, add another passkey, or leave the workspace.",
         ));
     }
+    // A stolen session must not take away what confirms it's the person.
+    ctx.verified(Sensitive::RemovePasskey)?;
     // The checks again, in the statement, for removals that race.
     let removed = q(
         &ctx.db,
@@ -703,7 +709,7 @@ pub async fn sign_in(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "Your account is disabled. Ask an admin for access.",
         )));
     }
-    auth::start_web_session(ctx, &user).await?;
+    auth::start_web_session(ctx, &user, true).await?;
     ctx.audit(
         "user.login",
         Some(&user.id),
@@ -730,6 +736,38 @@ pub async fn second_factor_options(ctx: &mut Ctx, req: &Request) -> AppResult<Re
     }
     let challenge = challenge(ctx, Purpose::SecondFactor, Some(&user_id), Some(&hash)).await?;
     http::ok(&request_options(challenge, rp_id(ctx)?, allow, "preferred"))
+}
+
+/// `POST /api/v1/auth/verify/passkey`: options to confirm it's you with
+/// one of your passkeys before sensitive actions (`api::verify`).
+pub async fn verify_options(ctx: &mut Ctx) -> AppResult<Response> {
+    let user = ctx.user()?.clone();
+    ctx.rate_limit(&format!("2fa-user:{}", user.id)).await?;
+    let allow: Vec<PasskeyDescriptor> = rows(ctx, &user.id)
+        .await?
+        .iter()
+        .map(PasskeyRow::descriptor)
+        .collect();
+    if allow.is_empty() {
+        return Err(conflict(
+            "You have no passkeys. Confirm it's you with a code from your authenticator app.",
+        ));
+    }
+    let challenge = challenge(ctx, Purpose::Verify, Some(&user.id), None).await?;
+    // The passkey is all it takes, so the device must check who it is.
+    http::ok(&request_options(challenge, rp_id(ctx)?, allow, "required"))
+}
+
+/// Checks a passkey that confirms it's `user` before sensitive actions,
+/// answering [`verify_options`]: its name.
+pub async fn confirm(ctx: &Ctx, user: &UserRow, answer: &PasskeyAssertion) -> AppResult<String> {
+    let signed = check(ctx, answer, Purpose::Verify, true).await?;
+    if signed.challenge.user_id.as_deref() != Some(user.id.as_str())
+        || signed.passkey.user_id != user.id
+    {
+        return Err(stale());
+    }
+    Ok(signed.passkey.name)
 }
 
 /// Checks a passkey that finishes the sign-in `sign_in_hash` of `user`.

@@ -14,6 +14,7 @@ use crate::workspaces::{self as ws, INVITATION_SELECT, InvitationRow, WorkspaceR
 use base64::Engine;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
+use fctl_domain::verify::{self, Sensitive};
 use fctl_domain::workspace as policy;
 use fctl_proto::api::*;
 use fctl_proto::session::{WorkspaceColor, WorkspaceRole};
@@ -268,6 +269,9 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     if let Some(on) = body.require_two_factor {
         policy::check_two_factor(&ctx.settings(), on)?;
     }
+    if body.require_two_factor == Some(false) && a.row.require_two_factor {
+        ctx.verified(Sensitive::StopWorkspaceTwoFactor)?;
+    }
     if body.require_two_factor == Some(true)
         && !a.row.require_two_factor
         && user.blocked_by(&ctx.settings(), true)
@@ -336,6 +340,7 @@ pub async fn erase(ctx: &mut Ctx, row: &WorkspaceRow, typed: &str) -> AppResult<
     if running.map_or(0, |c| c.n) > 0 {
         return Err(conflict("Stop the workspace's sessions before deleting it"));
     }
+    ctx.verified(Sensitive::DeleteWorkspace)?;
     let members = ws::member_ids(&ctx.db, &row.id).await?;
     // Rows cascade from the workspace, and its audit log goes with it; the
     // sessions' event logs and the projects' files live in Durable
@@ -568,6 +573,9 @@ pub async fn set_member_role(
         .ok_or_else(|| not_found("Member"))?;
     let from = WorkspaceRole::parse(&target.role).unwrap_or(WorkspaceRole::Member);
     policy::check_role_change(Some(actor), from, body.role)?;
+    if verify::makes_workspace_admin(Some(from), body.role) {
+        ctx.verified(Sensitive::MakeWorkspaceAdmin)?;
+    }
     // Only from the role it was checked against: a handover in between
     // could have made them the primary admin.
     let changed = q(
@@ -797,6 +805,7 @@ pub async fn transfer(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<R
         .and_then(|m| WorkspaceRole::parse(&m.role));
     a.require_open()?;
     policy::check_transfer(a.role, to)?;
+    ctx.verified(Sensitive::TransferWorkspace)?;
     // The old primary admin goes first (one per workspace), and only while
     // the new one is still an admin, so that the workspace always has one.
     batch(
@@ -1133,6 +1142,9 @@ pub async fn create_invitation(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
             ),
         )));
     }
+    if verify::makes_workspace_admin(None, role) {
+        ctx.verified(Sensitive::MakeWorkspaceAdmin)?;
+    }
     http::created(&invite(ctx, &a.row, &email, role, true, instance_admin).await?)
 }
 
@@ -1416,6 +1428,23 @@ pub async fn add_runner(
         Some(role),
         personal,
     )?;
+    // The workspace's sessions, with their code, secrets and tokens, then
+    // run on it: more of them than before takes confirming it's you.
+    #[derive(Deserialize)]
+    struct Added {
+        #[serde(deserialize_with = "crate::db::int_bool")]
+        personal: bool,
+    }
+    let added: Option<Added> = q(
+        &ctx.db,
+        "SELECT personal FROM runner_workspaces WHERE runner_id = ? AND workspace_id = ?",
+        &[s(runner_id), s(a.id())],
+    )?
+    .first()
+    .await?;
+    if verify::adds_runner(added.map(|r| r.personal), personal) {
+        ctx.verified(Sensitive::AddRunner)?;
+    }
     q(
         &ctx.db,
         "INSERT INTO runner_workspaces (runner_id, workspace_id, added_by, created_at, personal) VALUES (?, ?, ?, ?, ?) \

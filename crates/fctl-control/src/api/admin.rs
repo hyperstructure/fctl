@@ -12,6 +12,7 @@ use fctl_domain::allowlist::AllowPattern;
 use fctl_domain::perm;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
+use fctl_domain::verify::{self, Sensitive};
 use fctl_proto::api::*;
 use fctl_proto::session::{InstanceRole, UserRef, WorkspaceRef};
 use fctl_proto::{InviteId, UserId};
@@ -93,6 +94,12 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
         .as_deref()
         .map(|v| validate::name("name", v))
         .transpose()?;
+    if body
+        .role
+        .is_some_and(|role| verify::makes_admin(target.role(), role))
+    {
+        ctx.verified(Sensitive::MakeAdmin)?;
+    }
     // Not if they became the primary instance owner in the meantime.
     let changed = q(
         &ctx.db,
@@ -177,6 +184,7 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if plan.running() > 0 {
         return Err(conflict("Stop their running sessions first"));
     }
+    ctx.verified(Sensitive::DeleteUser)?;
     if target.role() == InstanceRole::Admin {
         demote_allowed(ctx, &target.id).await?;
     }
@@ -266,6 +274,10 @@ pub async fn add_allow(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         .map(|v| validate::text("note", v, 200))
         .transpose()?
         .filter(|v| !v.is_empty());
+    // Whoever has an address it admits as an admin signs up as one.
+    if role == InstanceRole::Admin {
+        ctx.verified(Sensitive::InviteAdmin)?;
+    }
     let canonical = pattern.canonical();
     let id = fctl_domain::ids::allow_id(ctx.now);
     let inserted = q(
@@ -551,6 +563,11 @@ pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respon
         })?;
         workspaces.push((a.row, fctl_domain::workspace::invitation_role(w.role)?));
     }
+    if role == InstanceRole::Admin {
+        ctx.verified(Sensitive::InviteAdmin)?;
+    } else if workspaces.iter().any(|(_, role)| role.is_admin()) {
+        ctx.verified(Sensitive::MakeWorkspaceAdmin)?;
+    }
     // Inviting someone also allows them.
     q(
         &ctx.db,
@@ -695,11 +712,21 @@ pub async fn settings(ctx: &Ctx) -> AppResult<Response> {
     http::ok(&crate::instance::settings(&ctx.db).await?)
 }
 
-/// `PATCH /api/v1/admin/settings`.
+/// `PATCH /api/v1/admin/settings`. Only the primary instance owner turns
+/// confirming sensitive actions on or off, and turning off what makes
+/// people prove it's them takes confirming it's you
+/// (`fctl_domain::verify::instance_settings_change`).
 pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: UpdateInstanceSettingsRequest = http::body(req).await?;
-    ctx.admin()?;
+    let actor = ctx.admin()?.clone();
     let mut settings = crate::instance::settings(&ctx.db).await?;
+    if let Some(on) = body.verify_sensitive_actions {
+        verify::check_verify_setting(actor.role(), settings.verify_sensitive_actions, on)
+            .map_err(crate::error::AppError)?;
+    }
+    if let Some(action) = verify::instance_settings_change(&settings, &body) {
+        ctx.verified(action)?;
+    }
     if let Some(on) = body.publish_screenshots {
         settings.publish_screenshots = on;
     }
@@ -713,6 +740,9 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     }
     if let Some(on) = body.two_factor_google {
         settings.two_factor_google = on;
+    }
+    if let Some(on) = body.verify_sensitive_actions {
+        settings.verify_sensitive_actions = on;
     }
     crate::instance::save(&ctx.db, &settings).await?;
     ctx.audit(
@@ -747,6 +777,7 @@ pub async fn transfer(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "Make them an admin first: the role of primary instance owner goes to an admin",
         ));
     }
+    ctx.verified(Sensitive::TransferInstance)?;
     crate::db::batch(
         &ctx.db,
         vec![
@@ -882,6 +913,7 @@ pub async fn workspace_primary(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
     // could otherwise take a workspace over: they make only themselves its
     // primary admin where they are one of its admins already.
     fctl_domain::workspace::check_assign_primary(to == admin.id, row.role())?;
+    ctx.verified(Sensitive::TransferWorkspace)?;
     let from = row.primary_id.clone();
     crate::db::batch(
         &ctx.db,

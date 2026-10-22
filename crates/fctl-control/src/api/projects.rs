@@ -454,6 +454,7 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if active.map_or(0, |c| c.n) > 0 {
         return Err(conflict("Stop the project's sessions before deleting it"));
     }
+    ctx.verified(fctl_domain::verify::Sensitive::DeleteProject)?;
     // The rows cascade; the sessions' event logs and the project's files
     // live in Durable Objects, so they are queued for purging in the same batch.
     batch(

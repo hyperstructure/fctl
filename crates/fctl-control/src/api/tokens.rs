@@ -11,6 +11,7 @@ use crate::http;
 use crate::model::PROJECT_VISIBLE;
 use fctl_domain::limits::{Limits, MAX_PLACES, Places};
 use fctl_domain::validate;
+use fctl_domain::verify::Sensitive;
 use fctl_proto::TokenId;
 use fctl_proto::api::*;
 use serde::Deserialize;
@@ -272,6 +273,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     fctl_domain::limits::check(access, body.github_access).map_err(AppError)?;
     let places = places(ctx, &body.workspaces, &body.projects).await?;
     let limits = Limits::new(access, places, body.github_access);
+    ctx.verified(Sensitive::NewToken)?;
     let (id, secret) = auth::issue_token(
         ctx,
         &user.id,
@@ -279,6 +281,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         Some(&name),
         expires_at,
         limits.as_ref(),
+        None,
     )
     .await?;
     let scope = match &limits {

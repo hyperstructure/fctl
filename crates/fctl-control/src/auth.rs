@@ -54,6 +54,8 @@ pub fn dummy_verify(password: &str) {
 
 /// Creates a web session, CLI token or PAT and returns the secret. Web
 /// sessions also set the cookie on `ctx`. Only a PAT may have `limits`.
+/// `verified_at`: the sign-in it comes from confirmed it's its person
+/// (`fctl_domain::verify`).
 pub async fn issue_token(
     ctx: &mut Ctx,
     user_id: &str,
@@ -61,6 +63,7 @@ pub async fn issue_token(
     name: Option<&str>,
     expires_at: Option<i64>,
     limits: Option<&Limits>,
+    verified_at: Option<i64>,
 ) -> AppResult<(String, String)> {
     let secret_kind = match kind {
         TokenKind::Web => SecretKind::WebSession,
@@ -79,8 +82,8 @@ pub async fn issue_token(
         .map(Limits::to_json);
     q(
         &ctx.db,
-        "INSERT INTO tokens (id, hash, kind, user_id, name, user_agent, ip, created_at, last_used_at, expires_at, scope) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tokens (id, hash, kind, user_id, name, user_agent, ip, created_at, last_used_at, expires_at, scope, verified_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&hash_secret(&secret)),
@@ -94,6 +97,7 @@ pub async fn issue_token(
             on((kind != TokenKind::Pat).then_some(ctx.now)),
             on(expires_at),
             os(scope.as_deref()),
+            on(verified_at),
         ],
     )?
     .run()
@@ -111,9 +115,14 @@ pub async fn issue_token(
 }
 
 /// Signs in `user` in the browser: a new web session, and `last_login_at`.
-/// The request then counts as theirs (for the audit log).
-pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow) -> AppResult<()> {
-    let (token_id, _) = issue_token(ctx, &user.id, TokenKind::Web, None, None, None).await?;
+/// The request then counts as theirs (for the audit log). `confirmed`: the
+/// sign-in took a passkey or a second factor, so the browser counts as
+/// having confirmed it's them before sensitive actions
+/// (`fctl_domain::verify`) for the next 15 minutes.
+pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow, confirmed: bool) -> AppResult<()> {
+    let verified_at = confirmed.then_some(ctx.now);
+    let (token_id, _) =
+        issue_token(ctx, &user.id, TokenKind::Web, None, None, None, verified_at).await?;
     q(
         &ctx.db,
         "UPDATE users SET last_login_at = ? WHERE id = ?",
@@ -122,7 +131,13 @@ pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow) -> AppResult<()> {
     .run()
     .await?;
     let settings = crate::instance::settings(&ctx.db).await?;
-    ctx.auth = Some(Authed::signed_in(user, token_id, ctx.now, settings));
+    ctx.auth = Some(Authed::signed_in(
+        user,
+        token_id,
+        ctx.now,
+        settings,
+        verified_at,
+    ));
     Ok(())
 }
 
@@ -145,6 +160,9 @@ struct TokenLookup {
     expires_at: Option<i64>,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     last_used_at: Option<i64>,
+    /// When it last confirmed it's its person (`fctl_domain::verify`).
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    verified_at: Option<i64>,
     /// What the token is limited to (`fctl_domain::limits::Limits`, JSON).
     #[serde(default)]
     scope: Option<String>,
@@ -173,7 +191,8 @@ pub fn presented_secret(req: &Request, secure: bool) -> Option<(String, bool)> {
 fn token_lookup_sql(column: &str) -> String {
     format!(
         "SELECT t.id AS token_id, t.kind AS kind, t.created_at AS token_created_at, t.expires_at AS expires_at, \
-         t.last_used_at AS last_used_at, t.scope AS scope, (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
+         t.last_used_at AS last_used_at, t.verified_at AS verified_at, t.scope AS scope, \
+         (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
          FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.{column} = ?",
         crate::instance::KEY,
         user_columns("u")
@@ -316,6 +335,7 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         kind,
         via_cookie,
         signed_in_at: found.token_created_at,
+        verified_at: found.verified_at,
         two_factor_setup_required,
         settings,
         limits,
