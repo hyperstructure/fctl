@@ -18,7 +18,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { GithubAvatar } from "@/components/github-avatar";
 import { SessionRow } from "@/components/session/row";
@@ -1091,6 +1091,14 @@ function someRepos(repos: string[]) {
   return `${repos.slice(0, 4).join(", ")}${repos.length > 4 ? ` and ${repos.length - 4} more` : ""}`;
 }
 
+/** Up to three account names for a sentence ("acme and globex"), else two and how many more. */
+function someAccounts(accounts: string[]) {
+  if (accounts.length > 3) return `${accounts.slice(0, 2).join(", ")} and ${accounts.length - 2} more`;
+  return accounts.length > 1
+    ? `${accounts.slice(0, -1).join(", ")} and ${accounts.at(-1)}`
+    : (accounts[0] ?? "");
+}
+
 /** What the tab says when the browser comes back from GitHub. */
 function Returned({
   w,
@@ -1380,6 +1388,8 @@ function Github({
   });
   const signingIn = (account?: string) =>
     (connect.isPending || connect.isSuccess) && connect.variables === account;
+  const heading = useId();
+  const already = useId();
   const [dropping, setDropping] = useState<G.GithubConnection | null>(null);
   const disconnect = useMutation({
     mutationFn: (a: string) => workspaces.disconnectGithub(w.id, a),
@@ -1412,6 +1422,11 @@ function Github({
   const connection = (account?: string) =>
     g?.connections.find((c) => c.account.toLowerCase() === account?.toLowerCase());
   const offers = admin ? (g?.offers ?? []) : [];
+  // Once it works in an account, connecting another is up to its admins: a heading says so, and the
+  // two ways to connect one go a level under it.
+  const connected = (g?.connections ?? []).filter((c) => c.status === "active").map((c) => c.account);
+  const another = connected.length > 0;
+  const Sub = another ? "h4" : "h3";
   return (
     <div>
       {returned && g && (
@@ -1509,48 +1524,77 @@ function Github({
       </ul>
       {admin && g && !g.can_connect && (
         <Banner tone="info" className="mt-8">
-          Connecting an account takes signing in to GitHub, which this instance isn't set up for. Its admins
-          add the GitHub App's client secret (see the self-hosting guide).
+          Connecting {another ? "another" : "an"} account takes signing in to GitHub, which this instance
+          isn't set up for. Its admins add the GitHub App's client secret (see the self-hosting guide).
         </Banner>
       )}
       {admin && g?.can_connect && (
-        <>
-          <p className="mt-10 max-w-2xl text-[13px] leading-relaxed text-ink-3">
+        <section aria-labelledby={another ? heading : undefined} className="mt-10">
+          {another && (
+            <>
+              <h3 id={heading} className="font-display text-xl text-ink">
+                Add another account
+              </h3>
+              <p className="mt-1 max-w-2xl text-[14px] leading-relaxed text-ink-3">
+                You don't need one unless {w.name}'s projects use repositories outside{" "}
+                {someAccounts(connected)}.
+              </p>
+            </>
+          )}
+          <p className={cn("max-w-2xl text-[13px] leading-relaxed text-ink-3", another && "mt-3")}>
             Connecting an account takes signing in to GitHub, which shows what you may give {w.name}: every
             repository of your own account, or of an organization whose every repository the app reaches and
             you're an admin of; otherwise the repositories you're an admin of. Then you choose from them here.
           </p>
-          <div className="mt-6 grid gap-8 md:grid-cols-2">
+          {/* Side by side, each column's text above and its button below, so that the buttons line up
+              whatever the texts take; one above the other, each text with its button. */}
+          <div className="mt-6 grid gap-y-4 md:grid-flow-col md:grid-cols-2 md:grid-rows-[auto_auto] md:gap-x-8">
             <div>
-              <h3 className="text-[13.5px] font-semibold text-ink">Install the app on an account</h3>
+              <Sub className="text-[13.5px] font-semibold text-ink">
+                Install the app on {another ? "another" : "an"} account
+              </Sub>
               <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
                 On your own account or an organization you own, or give it more repositories where it's
                 installed. GitHub brings you back here to choose what {w.name} works in.
               </p>
+            </div>
+            <div>
               {g.install_url && (
-                <a href={g.install_url} className="mt-4 inline-block">
+                <a href={g.install_url} className="inline-block">
                   <Button icon={<GithubIcon className="size-3.5" />}>Install {app} on GitHub</Button>
                 </a>
               )}
             </div>
-            <div>
-              <h3 className="text-[13.5px] font-semibold text-ink">Connect an account it is installed on</h3>
+            <div className="max-md:mt-4">
+              <Sub className="text-[13.5px] font-semibold text-ink">
+                Connect {another ? "another" : "an"} account it is installed on
+              </Sub>
               <p className="mt-1 text-[13px] leading-relaxed text-ink-3">
                 GitHub shows you the accounts it's installed on and what you may connect of each, and you
                 choose here.
               </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <Button
-                className="mt-4"
                 icon={<GithubIcon className="size-3.5" />}
                 loading={signingIn(undefined)}
                 disabled={connect.isPending || connect.isSuccess}
                 onClick={() => connect.mutate(undefined)}
+                aria-describedby={another ? already : undefined}
               >
                 Connect with GitHub
               </Button>
+              {another && (
+                <p id={already} className="flex gap-1.5 text-[12.5px] leading-relaxed text-ink-4">
+                  <Check className="mt-[3px] size-3.5 shrink-0" />
+                  <span className="min-w-0 [overflow-wrap:anywhere]">
+                    {someAccounts(connected)} {connected.length === 1 ? "is" : "are"} connected already.
+                  </span>
+                </p>
+              )}
             </div>
           </div>
-        </>
+        </section>
       )}
       <Dialog
         open={!!dropping}

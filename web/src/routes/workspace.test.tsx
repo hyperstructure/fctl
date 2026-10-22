@@ -370,6 +370,7 @@ describe("a workspace's GitHub tab", () => {
     const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
     const page = githubTab(side, github);
     expect(page.textContent).toContain("Connecting an account takes signing in to GitHub");
+    expect(page.textContent).not.toContain("Add another account");
     expect(page.querySelector("input")).toBeNull();
     // Installing goes through the control plane, which keeps where it started.
     expect(page.querySelector("a[href^='https://fctl.test/api/v1/github/install']")?.textContent).toBe(
@@ -378,6 +379,43 @@ describe("a workspace's GitHub tab", () => {
     await click(button(page, "Connect with GitHub"));
     expect(connectGithub).toHaveBeenCalledWith("ws_side", { account: undefined });
     expect(assign).toHaveBeenCalledWith("https://fctl.test/api/v1/github/connect?ticket=t");
+  });
+
+  it("tells admins they don't need another account once it works in one, and how to add one", () => {
+    const page = githubTab(side, { ...github, connections: [acme] });
+    expect(page.querySelector("section h3")?.textContent).toBe("Add another account");
+    expect(page.textContent).toContain(
+      "You don't need one unless Side project's projects use repositories outside acme.",
+    );
+    expect([...page.querySelectorAll("section h4")].map((h) => h.textContent)).toEqual([
+      "Install the app on another account",
+      "Connect another account it is installed on",
+    ]);
+    // Beside the button, and read with it.
+    const connect = button(page, "Connect with GitHub");
+    const already = page.querySelector(`#${CSS.escape(connect?.getAttribute("aria-describedby") ?? "")}`);
+    expect(already?.textContent).toBe("acme is connected already.");
+    expect(already?.parentElement).toBe(connect?.parentElement);
+  });
+
+  it("names the accounts it works in, and only those", () => {
+    const globex: G.GithubConnection = { ...acme, account: "globex", repos: undefined };
+    const page = githubTab(side, { ...github, connections: [acme, globex] });
+    expect(page.textContent).toContain("use repositories outside acme and globex.");
+    expect(page.textContent).toContain("acme and globex are connected already.");
+    const more = ["initech", "umbrella"].map((account) => ({ ...globex, account }));
+    expect(githubTab(side, { ...github, connections: [acme, globex, ...more] }).textContent).toContain(
+      "acme, globex and 2 more are connected already.",
+    );
+    // One an instance admin never approved isn't connected: connecting one is still the first.
+    const asked = githubTab(side, { ...github, connections: [{ ...acme, status: "requested" }] });
+    expect(asked.textContent).not.toContain("Add another account");
+    expect(asked.textContent).not.toContain("connected already");
+    expect([...asked.querySelectorAll("section h3")].map((h) => h.textContent)).toEqual([
+      "Install the app on an account",
+      "Connect an account it is installed on",
+    ]);
+    expect(button(asked, "Connect with GitHub")?.hasAttribute("aria-describedby")).toBe(false);
   });
 
   it("chooses again which repositories of a connected account it works in", async () => {
@@ -516,7 +554,9 @@ describe("a workspace's GitHub tab", () => {
       can_connect: false,
       connections: [acme],
     });
-    expect(page.textContent).toContain("which this instance isn't set up for");
+    expect(page.textContent).toContain(
+      "Connecting another account takes signing in to GitHub, which this instance isn't set up for.",
+    );
     expect(page.textContent).not.toContain("Connect with GitHub");
     expect(page.querySelector("button[aria-label^='Choose which repositories']")).toBeNull();
   });
