@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { claudeOptions, runnersOf } from "./workspaces";
+import { claudeOptions, createsProjects, runnersOf } from "./workspaces";
 
 const cred = (c: Partial<G.ClaudeCredentialInfo> & { id: string }): G.ClaudeCredentialInfo => ({
   kind: "oauth",
@@ -71,5 +71,14 @@ describe("runnersOf", () => {
     const before = runner({ id: "studio" });
     delete before.workspaces;
     expect(runnersOf([before], "ws_side")).toBeUndefined();
+  });
+});
+
+describe("createsProjects", () => {
+  it("is for a workspace's admins, while it is open to them", () => {
+    expect(createsProjects({ role: "owner", blocked: false })).toBe(true);
+    expect(createsProjects({ role: "admin", blocked: false })).toBe(true);
+    expect(createsProjects({ role: "member", blocked: false })).toBe(false);
+    expect(createsProjects({ role: "admin", blocked: true })).toBe(false);
   });
 });

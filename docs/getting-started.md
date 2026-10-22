@@ -182,7 +182,8 @@ the notice in that browser until the app runs a newer version.
 ## 6. Create a project
 
 In the app, choose **New project** (or the **+** beside a workspace in the
-sidebar). Link an existing repository of a GitHub account the workspace
+sidebar); a workspace's admins create its projects, and add the people who
+work in them. Link an existing repository of a GitHub account the workspace
 works in, create a new one, or start without a repository. A workspace
 works in an account once the instance's GitHub App is installed there and
 one of its admins connects it under the workspace's **GitHub** tab, by

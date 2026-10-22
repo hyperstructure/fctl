@@ -200,6 +200,22 @@ pub fn avatar(bytes: &[u8]) -> Result<&'static str> {
     Ok(info.media_type)
 }
 
+/// Whether someone whose role in a workspace is `role` may create a project
+/// in it: only its admins. A project's owners choose its repositories among
+/// those of the workspace's GitHub accounts, and its sessions get write
+/// tokens for them, so a member who could create one would reach every
+/// repository the workspace works in, whatever the base role and their
+/// project roles let them see.
+pub fn check_create_project(role: Option<WorkspaceRole>) -> Result<()> {
+    if role.is_some_and(WorkspaceRole::is_admin) {
+        Ok(())
+    } else {
+        Err(denied(
+            "Only the workspace's admins create its projects. Ask one of them to create it and add you to it.",
+        ))
+    }
+}
+
 /// Whether someone may add a runner to a workspace: they registered the
 /// runner (it is their machine) and they are an admin of the workspace (it
 /// trusts the machine with its code and secrets).
@@ -381,6 +397,14 @@ mod tests {
         let wide =
             b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\x07\xd0\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89";
         assert!(avatar(wide).is_err());
+    }
+
+    #[test]
+    fn only_admins_create_projects() {
+        assert!(check_create_project(Some(Owner)).is_ok());
+        assert!(check_create_project(Some(Admin)).is_ok());
+        assert!(check_create_project(Some(Member)).is_err());
+        assert!(check_create_project(None).is_err());
     }
 
     #[test]

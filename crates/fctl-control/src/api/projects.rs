@@ -10,7 +10,7 @@ use crate::model::{PROJECT_ORDER, PROJECT_SELECT, PROJECT_VISIBLE, ProjectRow};
 use crate::workspaces::{self as ws, ConnectionRow};
 use fctl_domain::{naming, perm, published, settings, validate};
 use fctl_proto::api::*;
-use fctl_proto::session::{ProjectRole, ProjectSettings, RepoRef, UserRef};
+use fctl_proto::session::{ProjectRole, ProjectSettings, RepoRef, UserRef, WorkspaceRole};
 use fctl_proto::{ApiError, UserId};
 use serde::Deserialize;
 use worker::{Request, Response};
@@ -151,19 +151,31 @@ async fn slug_taken(ctx: &Ctx, slug: &str) -> AppResult<bool> {
     Ok(c.map_or(0, |c| c.n) > 0)
 }
 
-/// The workspace a new project goes into: the one named, or the caller's
-/// only one.
-async fn target_workspace(ctx: &Ctx, named: Option<&str>) -> AppResult<ws::WorkspaceAccess> {
+/// The workspace a request is about: the one named, or the caller's only
+/// one; with `admin`, for a new project, the only one they are an admin of.
+async fn target_workspace(
+    ctx: &Ctx,
+    named: Option<&str>,
+    admin: bool,
+) -> AppResult<ws::WorkspaceAccess> {
     if let Some(w) = named.filter(|w| !w.trim().is_empty()) {
         return ws::load(ctx, w.trim()).await;
     }
     let user = ctx.user()?;
     let mine = ws::mine(&ctx.db, &user.id).await?;
-    match mine.as_slice() {
-        [only] => ws::load(ctx, &only.id).await,
-        [] => Err(validation(
+    let candidates: Vec<&ws::WorkspaceRow> = mine
+        .iter()
+        .filter(|w| !admin || w.role().is_some_and(WorkspaceRole::is_admin))
+        .collect();
+    match (candidates.as_slice(), mine.is_empty()) {
+        ([only], _) => ws::load(ctx, &only.id).await,
+        ([], true) => Err(validation(
             "workspace",
             "Create a workspace first, or ask to join one: projects belong to workspaces",
+        )),
+        // A member of workspaces they don't administer.
+        ([], false) => Err(forbidden(
+            "Only a workspace's admins create its projects, and you are an admin of none of yours. Ask one of them to create it, or create a workspace of your own.",
         )),
         _ => Err(validation(
             "workspace",
@@ -191,8 +203,8 @@ async fn check_repo(
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: CreateProjectRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
-    let workspace = target_workspace(ctx, body.workspace.as_deref()).await?;
-    workspace.require_open()?;
+    let workspace = target_workspace(ctx, body.workspace.as_deref(), true).await?;
+    fctl_domain::workspace::check_create_project(Some(workspace.require_open()?))?;
     let connections = ws::connections(&ctx.db, workspace.id()).await?;
     let name = validate::name("name", &body.name)?;
     let description = body
@@ -853,7 +865,7 @@ pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
 /// projects may use (the caller's only workspace without one), newest
 /// push first, with the projects of it that use them.
 pub async fn github_repos(ctx: &Ctx, req: &Request) -> AppResult<Response> {
-    let workspace = target_workspace(ctx, http::query(req, "workspace").as_deref()).await?;
+    let workspace = target_workspace(ctx, http::query(req, "workspace").as_deref(), false).await?;
     workspace.require_open()?;
     let gh = github::from_config(&ctx.cfg, ctx.now)?;
     let connections = ws::connections(&ctx.db, workspace.id()).await?;

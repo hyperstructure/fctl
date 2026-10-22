@@ -437,7 +437,7 @@ function GettingStarted({
           done={project}
           title="Create a project"
           action={
-            workspace ? (
+            yours ? (
               <Link to="/new">
                 <Button size="sm" icon={<FolderPlus className="size-3.5" />}>
                   Create
@@ -446,7 +446,9 @@ function GettingStarted({
             ) : undefined
           }
         >
-          Link a GitHub repository — or start a brand new one — and tell agents how to set it up.
+          {yours
+            ? "Link a GitHub repository — or start a brand new one — and tell agents how to set it up."
+            : "A workspace admin creates its projects, and adds you to the ones you work in."}
         </Step>
       </ol>
     </section>
