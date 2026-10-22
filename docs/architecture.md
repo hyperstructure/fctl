@@ -364,7 +364,11 @@ the instance creates one, as its primary admin.
   lists of workspaces and projects come in it (`model::WORKSPACE_ORDER`,
   `PROJECT_ORDER`): what someone hasn't placed follows, oldest first, so
   nothing moves unless they move it. Which workspaces they fold in the
-  sidebar stays in their browser.
+  sidebar stays in their browser, and so does a copy of what the sidebar
+  last showed them (names, colors and avatars, their role, each project's
+  active sessions; `web/src/lib/sidebar.ts`): when the app opens, the
+  sidebar shows it at once, until the lists of workspaces and projects
+  have both come. Signing out forgets it.
 - **Audit log.** What happens in a workspace (people, roles, runners, GitHub
   accounts, settings, projects, sessions) goes in its log
   (`audit_log.workspace_id`), which its admins read; the rest is the
