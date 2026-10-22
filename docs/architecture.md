@@ -983,8 +983,11 @@ session that stopped looks up nothing, so GitHub tells the control plane
    concerns, the control plane asks GitHub with one GraphQL query
    (`fctl_domain::webhooks::query`, with a token of the installation that
    sent it): for each, its title, state, merge queue entry, times and its
-   head commit's checks counted by state. Deliveries come out of order and
-   some never come; a lookup says how things are. A pull request is queued
+   head commit's checks counted by state, each check once: GitHub counts
+   every run of a check, but the pull request shows its latest run alone,
+   so a run that a re-run, or the next run of its workflow for the same
+   commit, replaced counts no more. Deliveries come out of order and some
+   never come; a lookup says how things are. A pull request is queued
    when the delivery's action is `enqueued` (or `queued`), GitHub lists its
    entry in the merge queue, or its merge state status (else its
    `mergeable_state`) is `queued` or `in_merge_queue`. When the lookup

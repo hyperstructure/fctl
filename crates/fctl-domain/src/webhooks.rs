@@ -199,14 +199,19 @@ fn seen_in(pr: &Value, action: &str) -> Option<PullRequestRef> {
     })
 }
 
-/// The most pull requests one lookup asks about. GitHub counts a query of
-/// up to 100 as one point of the installation's rate limit (5,000 an hour),
-/// and answers one of 50 in about two seconds; it gives up after ten.
+/// The most pull requests one lookup asks about. GitHub counts a query by
+/// the pages of connections it could fetch, a hundred to a point of the
+/// installation's rate limit (5,000 an hour): two for each pull request
+/// (its last commit, and that commit's checks), so one of 50 costs one
+/// point. It answers one of 50 in two to three seconds, and gives up after
+/// ten.
 pub const MAX_LOOKUP: usize = 50;
 
 /// What a lookup asks of each pull request: its title, state and times,
 /// whether it is in a merge queue, and the checks of its head commit
-/// counted by their state.
+/// counted by their state, with the first 100 check runs among them, in
+/// which [`replaced`] finds the runs that a later run of the same check
+/// replaced.
 const FIELDS: &str = "fragment pr on PullRequest {
   number url title state isDraft createdAt updatedAt mergedAt closedAt headRefOid
   mergeStateStatus
@@ -216,9 +221,15 @@ const FIELDS: &str = "fragment pr on PullRequest {
       commit {
         oid
         statusCheckRollup {
-          contexts {
+          contexts(first: 100) {
             checkRunCountsByState { state count }
             statusContextCountsByState { state count }
+            nodes {
+              ... on CheckRun {
+                name status conclusion databaseId
+                checkSuite { app { databaseId } workflowRun { event workflow { databaseId } } }
+              }
+            }
           }
         }
       }
@@ -319,12 +330,16 @@ pub fn looked_up(answer: &Value, i: usize, at: Millis, hints: Hints<'_>) -> Opti
         for (state, count) in
             counts("checkRunCountsByState").chain(counts("statusContextCountsByState"))
         {
-            let count = u32::try_from(count).unwrap_or(u32::MAX);
-            match check_state(state) {
-                Some(Check::Passed) => checks.passed = checks.passed.saturating_add(count),
-                Some(Check::Failed) => checks.failed = checks.failed.saturating_add(count),
-                Some(Check::Pending) => checks.pending = checks.pending.saturating_add(count),
-                None => {}
+            if let Some(check) = check_state(state) {
+                let n = check.of(&mut checks);
+                *n = n.saturating_add(u32::try_from(count).unwrap_or(u32::MAX));
+            }
+        }
+        // GitHub counts every run of a check; the pull request shows its latest.
+        for state in replaced(contexts) {
+            if let Some(check) = check_state(state) {
+                let n = check.of(&mut checks);
+                *n = n.saturating_sub(1);
             }
         }
         checks
@@ -348,6 +363,62 @@ enum Check {
     Passed,
     Failed,
     Pending,
+}
+
+impl Check {
+    /// Its count among `checks`.
+    fn of(self, checks: &mut PullRequestChecks) -> &mut u32 {
+        match self {
+            Check::Passed => &mut checks.passed,
+            Check::Failed => &mut checks.failed,
+            Check::Pending => &mut checks.pending,
+        }
+    }
+}
+
+/// The states of the check runs among `contexts`' nodes that a later run
+/// of the same check replaced: a re-run, or a run of its workflow again for
+/// the same commit (one that runs when a pull request's title changes, say,
+/// and cancels the run before). GitHub counts every run, but a check's
+/// latest run is its result, the one `gh pr checks` shows alone. The latest
+/// is the run GitHub created last, the highest `databaseId`. Commit
+/// statuses need none of this: GitHub gives the latest of each context.
+fn replaced(contexts: Option<&Value>) -> Vec<&str> {
+    let runs: Vec<_> = contexts
+        .and_then(|c| c.get("nodes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|run| {
+            // As GitHub counts it: its conclusion once it finished, else its status.
+            let state = run
+                .get("conclusion")
+                .and_then(Value::as_str)
+                .or_else(|| run.get("status")?.as_str())?;
+            Some((check_of(run)?, run.get("databaseId")?.as_u64()?, state))
+        })
+        .collect();
+    runs.iter()
+        .filter(|(check, id, _)| {
+            runs.iter()
+                .any(|(other, later, _)| other == check && later > id)
+        })
+        .map(|(_, _, state)| *state)
+        .collect()
+}
+
+/// Which check a check run is a run of: its name, and the app, workflow and
+/// event that ran it, which tell apart checks of the same name, such as a
+/// job of a workflow that runs both on pushes and on pull requests.
+fn check_of(run: &Value) -> Option<[&Value; 4]> {
+    let suite = run.get("checkSuite").unwrap_or(&Value::Null);
+    let at = |path| suite.pointer(path).unwrap_or(&Value::Null);
+    Some([
+        run.get("name").filter(|name| name.is_string())?,
+        at("/app/databaseId"),
+        at("/workflowRun/workflow/databaseId"),
+        at("/workflowRun/event"),
+    ])
 }
 
 /// What a check run's state (`CheckRunState`) or a commit status's
@@ -730,5 +801,145 @@ mod tests {
             { "state": "ERROR", "count": 1 }, { "state": "EXPECTED", "count": 1 }, { "state": "PENDING", "count": 1 }
         ]);
         assert_eq!(counts(runs, statuses), (1, 5, 4));
+    }
+
+    /// GitHub's answer to a [`query`] of hyperstructure/fctl#216 (trimmed of
+    /// states with no checks): its Commits workflow ran twice for its head
+    /// commit as its title changed, and the second run cancelled the first.
+    fn answer_216() -> Value {
+        let ci = |name: &str, id: u64, conclusion: &str| {
+            json!({ "name": name, "status": "COMPLETED", "conclusion": conclusion, "databaseId": id,
+                "checkSuite": { "app": { "databaseId": 15368 }, "workflowRun": { "event": "pull_request", "workflow": { "databaseId": 387806428 } } } })
+        };
+        let commits = |id: u64, conclusion: &str| {
+            json!({ "name": "Conventional Commits", "status": "COMPLETED", "conclusion": conclusion, "databaseId": id,
+                "checkSuite": { "app": { "databaseId": 15368 }, "workflowRun": { "event": "pull_request", "workflow": { "databaseId": 388057660 } } } })
+        };
+        json!({ "data": { "rateLimit": { "remaining": 4952 }, "pr0": { "pullRequest": {
+            "number": 216,
+            "url": "https://github.com/hyperstructure/fctl/pull/216",
+            "title": "feat(web): rename Home to Agent Floor and light its row up on hover",
+            "state": "MERGED",
+            "isDraft": false,
+            "createdAt": "2026-10-22T19:52:09Z",
+            "updatedAt": "2026-10-22T20:19:41Z",
+            "mergedAt": "2026-10-22T20:19:37Z",
+            "closedAt": "2026-10-22T20:19:37Z",
+            "headRefOid": "e389f64d066714d0c366b8b4b3ae4157ff7bebfd",
+            "mergeStateStatus": "UNKNOWN",
+            "mergeQueueEntry": null,
+            "commits": { "nodes": [{ "commit": {
+                "oid": "e389f64d066714d0c366b8b4b3ae4157ff7bebfd",
+                "statusCheckRollup": { "contexts": {
+                    "checkRunCountsByState": [
+                        { "state": "CANCELLED", "count": 1 },
+                        { "state": "SKIPPED", "count": 3 },
+                        { "state": "SUCCESS", "count": 6 }
+                    ],
+                    "statusContextCountsByState": [],
+                    "nodes": [
+                        commits(120062394194, "CANCELLED"),
+                        ci("Formatting, generated types and Clippy", 120062394772, "SUCCESS"),
+                        commits(120062476880, "SUCCESS"),
+                        ci("Rust tests", 120062395217, "SUCCESS"),
+                        ci("Web app and standalone server", 120062395530, "SUCCESS"),
+                        ci("cargo xtask dev --smoke", 120062395207, "SUCCESS"),
+                        ci("Build the Worker", 120062397324, "SKIPPED"),
+                        ci("cargo xtask check", 120062830355, "SUCCESS"),
+                        ci("Deploy app.fctl.sh", 120063000845, "SKIPPED"),
+                        ci("Pin fctl.sh to these docs", 120062889266, "SKIPPED")
+                    ]
+                } }
+            } }] }
+        } } } })
+    }
+
+    #[test]
+    fn a_check_that_ran_again_counts_by_its_latest_run() {
+        // GitHub counts the cancelled run too; its pull request shows 9
+        // checks, all passed or skipped.
+        let c = looked_up(&answer_216(), 0, 1, Hints::default())
+            .and_then(|l| l.pr.checks)
+            .unwrap_or_else(|| panic!("no checks"));
+        assert_eq!((c.passed, c.failed, c.pending), (9, 0, 0));
+    }
+
+    /// What a lookup counts of check runs (name, `databaseId`, workflow,
+    /// event, state), which GitHub counts each: passed, failed, pending.
+    /// Workflow 0 is another app's check, without one.
+    fn count_runs(runs: &[(&str, Value, u64, &str, &str)]) -> (u32, u32, u32) {
+        let mut states = std::collections::BTreeMap::<&str, u64>::new();
+        let mut nodes: Vec<Value> = runs
+            .iter()
+            .map(|(name, id, workflow, event, state)| {
+                *states.entry(state).or_default() += 1;
+                let done = !matches!(*state, "QUEUED" | "IN_PROGRESS");
+                let suite = match workflow {
+                    0 => json!({ "app": { "databaseId": 77 }, "workflowRun": null }),
+                    w => json!({ "app": { "databaseId": 15368 },
+                        "workflowRun": { "event": event, "workflow": { "databaseId": w } } }),
+                };
+                json!({
+                    "name": name,
+                    "status": if done { "COMPLETED" } else { state },
+                    "conclusion": done.then_some(state),
+                    "databaseId": id,
+                    "checkSuite": suite,
+                })
+            })
+            .collect();
+        // A commit status, which the query asks nothing of.
+        nodes.push(json!({}));
+        let mut a = answer();
+        let contexts = a
+            .pointer_mut("/data/pr0/pullRequest/commits/nodes/0/commit/statusCheckRollup/contexts")
+            .unwrap_or_else(|| panic!("no contexts"));
+        *contexts = json!({
+            "checkRunCountsByState": states
+                .iter()
+                .map(|(state, count)| json!({ "state": state, "count": count }))
+                .collect::<Vec<_>>(),
+            "statusContextCountsByState": [],
+            "nodes": nodes,
+        });
+        let c = looked_up(&a, 0, 1, Hints::default())
+            .and_then(|l| l.pr.checks)
+            .unwrap_or_else(|| panic!("no checks"));
+        (c.passed, c.failed, c.pending)
+    }
+
+    #[test]
+    fn runs_replace_only_earlier_runs_of_the_same_check() {
+        const CI: u64 = 1;
+        const RELEASE: u64 = 2;
+        let pr = "pull_request";
+        // The latest run counts, wherever GitHub lists it.
+        let latest = [
+            ("lint", json!(3), CI, pr, "SUCCESS"),
+            ("lint", json!(1), CI, pr, "CANCELLED"),
+            ("lint", json!(2), CI, pr, "FAILURE"),
+        ];
+        assert_eq!(count_runs(&latest), (1, 0, 0));
+        // A failed check that someone re-runs waits for its new run.
+        let rerun = [
+            ("test", json!(4), CI, pr, "FAILURE"),
+            ("test", json!(9), CI, pr, "QUEUED"),
+        ];
+        assert_eq!(count_runs(&rerun), (0, 0, 1));
+        // A check of the same name in another workflow, on another event,
+        // or from another app is another check.
+        let others = [
+            ("build", json!(1), CI, pr, "FAILURE"),
+            ("build", json!(2), RELEASE, pr, "SUCCESS"),
+            ("build", json!(3), CI, "push", "SUCCESS"),
+            ("build", json!(4), 0, "", "SUCCESS"),
+        ];
+        assert_eq!(count_runs(&others), (3, 1, 0));
+        // A run without its id replaces none, and none replaces it.
+        let unknown = [
+            ("test", Value::Null, CI, pr, "FAILURE"),
+            ("test", json!(2), CI, pr, "SUCCESS"),
+        ];
+        assert_eq!(count_runs(&unknown), (1, 1, 0));
     }
 }

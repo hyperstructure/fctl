@@ -100,6 +100,16 @@ describe("the Agent Floor's row", () => {
     expect(link.textContent).toBe("Agent Floor");
   });
 
+  it("keeps its label bold, lit or not", () => {
+    const { link, enter, leave } = row();
+    const label = () => [...link.querySelectorAll("span")].find((s) => s.textContent === "Agent Floor");
+    expect(label()?.classList).toContain("font-semibold");
+    enter("mouse");
+    expect(label()?.classList).toContain("font-semibold");
+    leave();
+    expect(label()?.classList).toContain("font-semibold");
+  });
+
   it("powers on under a mouse, and stays a plain row under a finger", () => {
     const { link, enter, scene } = row(2);
     enter("touch");
