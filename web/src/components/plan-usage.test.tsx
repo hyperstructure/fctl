@@ -63,10 +63,10 @@ describe("the home page's plan usage", () => {
   });
 
   it("says when a limit is used up", () => {
-    const reached = notice(
-      strip([limit("five_hour", 1, { status: "rejected" }), limit("seven_day", 0.93)]),
+    const reached = notice(strip([limit("five_hour", 1, { status: "rejected" }), limit("seven_day", 0.93)]));
+    expect(reached?.text).toMatch(
+      /^Your 5-hour limit is used up\. Sessions you start now pause until it resets/,
     );
-    expect(reached?.text).toMatch(/^Your 5-hour limit is used up\. Sessions you start now pause until it resets/);
     expect(reached?.tone).toBe("text-danger");
   });
 });
