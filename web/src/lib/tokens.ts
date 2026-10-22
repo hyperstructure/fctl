@@ -59,8 +59,9 @@ export function tokenRequest(f: TokenForm): G.CreateTokenRequest {
   if (days) req.expires_in_days = days;
   if (f.places?.workspaces.length) req.workspaces = f.places.workspaces;
   if (f.places?.projects.length) req.projects = f.places.projects;
-  // A token that reads starts no session.
-  if (f.access !== "read" && f.github !== "push") req.github_access = f.github;
+  // Only a token that runs sessions holds its agents to less: one that reads starts none, and one
+  // that does everything could change what they do.
+  if (f.access === "run" && f.github !== "push") req.github_access = f.github;
   return req;
 }
 
@@ -113,8 +114,8 @@ export function formScope(
   f: TokenForm,
   names: { workspaces: Map<string, string>; projects: Map<string, string> },
 ): G.TokenScope | undefined {
-  // With everything, everywhere and agents that push, it has no limits.
-  const limited = f.access !== "full" || !!f.places || f.github !== "push";
+  // Everything, everywhere: no limits.
+  const limited = f.access !== "full" || !!f.places;
   if (!limited) return undefined;
   const place = (names: Map<string, string>) => (id: string) => ({ id, name: names.get(id) });
   return {
@@ -123,7 +124,7 @@ export function formScope(
       workspaces: f.places.workspaces.map(place(names.workspaces)),
       projects: f.places.projects.map(place(names.projects)),
     },
-    github_access: f.access !== "read" && f.github !== "push" ? f.github : undefined,
+    github_access: f.access === "run" && f.github !== "push" ? f.github : undefined,
   };
 }
 

@@ -41,9 +41,13 @@ resolving a review thread takes `contents` write, which can.
   everything), where (some workspaces and projects) and in what their
   sessions' agents may do on GitHub (`fctl_domain::limits::Limits`). Their
   roles are capped to a viewer's or an editor's, and a session whose agent
-  may do more than the token allows is read only to it. Limits are chosen
-  from three questions rather than a list of scopes, so that a person can
-  say what a token is for and read back what it does.
+  started able to do more than the token allows is read only to it, also
+  once its project holds it lower, since its sandbox keeps its tokens until
+  they expire. Only a token that runs sessions may hold its agents lower:
+  one that does everything could change the settings that steer them
+  (setup script, instructions, image, secrets). Limits are chosen from
+  three questions rather than a list of scopes, so that a person can say
+  what a token is for and read back what it does.
 - **A limited token reaches projects and sessions only.** One rule in the
   router (`limits::allows`) refuses it everything else, so that no handler
   has to remember to; it never reaches the account, workspaces' people and

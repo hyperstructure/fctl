@@ -51,9 +51,11 @@ messages and interrupts their agents, stops and resumes the sessions it
 started, and keeps projects' memory; `full` does all you can in its
 projects. `-p` and `-w` (repeat them) keep it to some projects, or to every
 project of some workspaces. `--github` is the most the agents of its
-sessions may do on GitHub (below): sessions it starts get that unless they
-ask for less, and it can't message or resume a session whose agent may do
-more. Sessions it starts don't notify you; follow the ones you want.
+sessions may do on GitHub (below), for a token that runs sessions (it makes
+one, without `--access`): sessions it starts get that unless they ask for
+less, and it can't message or resume a session whose agent started able to
+do more. A token that does everything can't take it, since it could change
+the settings that steer its projects' agents. Sessions it starts don't notify you; follow the ones you want.
 `fctl whoami` with a token says what it does. [Automation](automation.md)
 runs review agents from GitHub Actions with one.
 

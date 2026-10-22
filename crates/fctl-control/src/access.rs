@@ -120,7 +120,7 @@ pub async fn session(ctx: &Ctx, id: &str) -> AppResult<SessionAccessRow> {
     let held_to = ctx
         .limits()
         .and_then(|l| l.github_access)
-        .filter(|most| row.github_access() > *most);
+        .filter(|most| row.started_github() > *most);
     Ok(SessionAccessRow { row, role, held_to })
 }
 
@@ -159,7 +159,7 @@ pub fn session_role(
             row.workspace.workspace_id.as_deref().unwrap_or_default(),
             &row.project_id,
             access,
-            row.github_access(),
+            row.started_github(),
         ),
         None => perm::session_role(access),
     }
@@ -180,9 +180,9 @@ impl SessionAccessRow {
     fn held(&self) -> AppResult<()> {
         match self.held_to {
             Some(most) => Err(forbidden(&format!(
-                "This access token's sessions' agents may at most {} on GitHub, and this session's agent may {}: the token only reads it.",
+                "This access token's agents may at most {} on GitHub, and this session's agent started able to {}: the token only reads it.",
                 most.as_str(),
-                self.row.github_access().as_str()
+                self.row.started_github().as_str()
             ))),
             None => Ok(()),
         }

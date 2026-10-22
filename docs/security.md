@@ -89,8 +89,10 @@ owner and purpose), so a value copied between rows does not decrypt.
   it the account, workspaces' people and settings, Claude connections,
   other tokens and administration before any handler runs, so a token that
   leaks from CI can't make itself another, and its roles in its projects
-  are capped. It can't message or resume a session whose agent may do more
-  on GitHub than it allows. Make them expire, and revoke one that may have
+  are capped. It can't message or resume a session whose agent started
+  able to do more on GitHub than it allows, and only a token that runs
+  sessions may hold its agents lower: one that does everything could
+  change the settings that steer them. Make them expire, and revoke one that may have
   leaked in Settings or with `fctl tokens revoke`.
 - Sign-in, signup and reset endpoints are rate limited per address and per
   account; unknown emails take as long to fail as known ones. Signing up

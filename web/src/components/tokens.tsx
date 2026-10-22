@@ -213,11 +213,17 @@ function TokenFormView({
         )}
       </fieldset>
 
+      {form.access === "full" && (
+        <p className="text-[12.5px] leading-relaxed text-ink-3">
+          Its sessions' agents do on GitHub what their projects allow: a token that does everything could
+          change that. To hold them to commenting or reading, let it run sessions.
+        </p>
+      )}
       <div className="grid items-start gap-4 sm:grid-cols-2">
-        {form.access !== "read" && (
+        {form.access === "run" && (
           <Field
             label="Its sessions' agents on GitHub"
-            hint="At most this, within each project's own limit. It can't message or resume a session whose agent may do more."
+            hint="At most this, within each project's own limit. It can't message or resume a session whose agent started able to do more."
           >
             {(fid) => (
               <Select

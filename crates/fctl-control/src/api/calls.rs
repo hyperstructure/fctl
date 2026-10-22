@@ -230,19 +230,23 @@ async fn resolve_thread(
     let gh = crate::github::from_config(&ctx.cfg, ctx.now)?;
     let connections = crate::workspaces::connections(&ctx.db, &session.workspace_id).await?;
     let inst = crate::workspaces::installation(&ctx.db, &gh, &connections, owner).await?;
+    // One answer for a thread that doesn't exist and one elsewhere, so that
+    // asking tells nothing of the installation's other repositories.
+    let elsewhere = || {
+        forbidden(
+            "This session has no review thread by that id: it resolves those of pull requests in the repositories it may write to.",
+        )
+    };
     let found = gh
         .review_thread(inst, &thread)
         .await?
-        .ok_or_else(|| not_found("Review thread"))?;
+        .ok_or_else(elsewhere)?;
     let writes = fctl_domain::repos::access(session.repo.as_ref(), &grants, &found.repo)
         == Some(RepoAccess::Write)
         && crate::workspaces::scope(&connections, &found.repo.owner)
             .is_some_and(|s| s.allows(&found.repo.name));
     if !writes {
-        return Err(forbidden(&format!(
-            "That review thread is on a pull request of {}, which this session can't write to.",
-            found.repo.full_name()
-        )));
+        return Err(elsewhere());
     }
     let resolved = if found.resolved == !unresolve {
         found.resolved

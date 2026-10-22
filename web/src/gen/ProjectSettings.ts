@@ -105,7 +105,8 @@ retrospectives: boolean,
  * gets unless it asks for less. Absent: push. Running sessions get no
  * more than this from their next GitHub token on (within the hour).
  * An update that leaves it out keeps the stored value, so an older
- * client can't lift it.
+ * client can't lift it, and a value this version doesn't know reads
+ * as `read`.
  */
 github_access?: GithubAccess, 
 /**
