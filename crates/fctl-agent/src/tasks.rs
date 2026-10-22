@@ -6,9 +6,18 @@
 //! for them isn't idle until they end.
 //!
 //! When background work ends, Claude Code can start a turn on its own to
-//! hand Claude the result. `system/session_state_changed` says so when
-//! [`SESSION_STATE_ENV`] is set; without it, the first message of the
-//! conversation after a `result` does.
+//! hand Claude the result. The turn's first message tells: `system/init`,
+//! which starts each turn, or the conversation's first message after a
+//! `result` ([`in_turn`]). Its `result` ends it, or `idle` when it ends
+//! without one.
+//!
+//! With [`SESSION_STATE_ENV`] set, Claude Code reports its state too
+//! (`system/session_state_changed`), but not each turn. From the turn that
+//! starts background subagents, 2.1.308 says `running` until they have all
+//! reported and the last turn that takes their reports has ended, so those
+//! turns start without a `running` of their own. Its `idle` says that
+//! Claude Code has nothing left to do, not even for background work that
+//! has just ended: until then, a session doesn't count as idle.
 
 use fctl_proto::runner::SessionSpec;
 use serde::{Deserialize, Serialize};
@@ -138,8 +147,8 @@ impl Tasks {
     }
 }
 
-/// What Claude Code says about its turns in `session_state_changed`:
-/// `running` or `requires_action` while one is under way, `idle` after.
+/// What Claude Code says about its state in `session_state_changed`:
+/// `running` or `requires_action` while it works, `idle` once it is done.
 pub fn session_state(v: &Value) -> Option<&str> {
     if v.get("type").and_then(Value::as_str) != Some("system")
         || v.get("subtype").and_then(Value::as_str) != Some("session_state_changed")
@@ -149,15 +158,17 @@ pub fn session_state(v: &Value) -> Option<&str> {
     Some(v.get("state").and_then(Value::as_str).unwrap_or_default())
 }
 
-/// Whether a message belongs to a turn of the conversation: Claude streams,
-/// writes or gets a tool's result in it. A subagent's messages name the
-/// tool use that started it in `parent_tool_use_id`, and arrive while the
-/// conversation itself may wait.
+/// Whether a message belongs to a turn of the conversation: `system/init`
+/// starts each, and Claude streams, writes or gets a tool's result in it.
+/// A subagent's messages name the tool use that started it in
+/// `parent_tool_use_id`, and arrive while the conversation itself may wait.
 pub fn in_turn(v: &Value) -> bool {
-    matches!(
-        v.get("type").and_then(Value::as_str),
-        Some("stream_event" | "assistant" | "user")
-    ) && v.get("parent_tool_use_id").is_none_or(Value::is_null)
+    let turn = match v.get("type").and_then(Value::as_str) {
+        Some("stream_event" | "assistant" | "user") => true,
+        Some("system") => v.get("subtype").and_then(Value::as_str) == Some("init"),
+        _ => false,
+    };
+    turn && v.get("parent_tool_use_id").is_none_or(Value::is_null)
 }
 
 /// Why an idle session waits: for its background tasks while any run,
@@ -326,6 +337,9 @@ mod tests {
         assert_eq!(session_state(&ended("a1", "completed")), None);
 
         assert!(in_turn(
+            &json!({"type": "system", "subtype": "init", "model": "claude-opus-5-5"})
+        ));
+        assert!(in_turn(
             &json!({"type": "stream_event", "parent_tool_use_id": null})
         ));
         assert!(in_turn(&json!({"type": "assistant", "message": {}})));
@@ -337,6 +351,13 @@ mod tests {
             &json!({"type": "assistant", "parent_tool_use_id": "toolu_1"})
         ));
         assert!(!in_turn(&ended("a1", "completed")));
+        assert!(!in_turn(&state("running")));
+        assert!(!in_turn(
+            &json!({"type": "system", "subtype": "background_tasks_changed"})
+        ));
+        assert!(!in_turn(
+            &json!({"type": "command_lifecycle", "state": "completed"})
+        ));
         assert!(!in_turn(&json!({"type": "result"})));
         assert!(!in_turn(&json!({"type": "rate_limit_event"})));
     }

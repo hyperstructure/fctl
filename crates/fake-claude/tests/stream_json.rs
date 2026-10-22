@@ -96,8 +96,9 @@ fn warns_about_the_week_as_claude_code_does() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[test]
-fn background_work_ends_in_a_turn_of_its_own() -> Result<(), Box<dyn Error>> {
+/// What fake-claude says of its state, its turns and its one task after
+/// `turn`, as fctl-agent runs it: the first `n` of them.
+fn states_and_turns(turn: &str, n: usize) -> Result<Vec<String>, Box<dyn Error>> {
     let mut claude = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
         .env("FAKE_CLAUDE_DELAY_MS", "1")
         .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
@@ -107,9 +108,8 @@ fn background_work_ends_in_a_turn_of_its_own() -> Result<(), Box<dyn Error>> {
     let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
         return Err("fake-claude's stdin and stdout aren't piped".into());
     };
-    let turn = json!({"type": "user", "message": {"role": "user", "content": "Run it in the background 1"}});
+    let turn = json!({"type": "user", "message": {"role": "user", "content": turn}});
     stdin.write_all(format!("{turn}\n").as_bytes())?;
-    // The turn, the command's end, and the turn that takes its result.
     let mut seen = Vec::new();
     let mut task = None;
     for line in BufReader::new(stdout).lines() {
@@ -118,6 +118,7 @@ fn background_work_ends_in_a_turn_of_its_own() -> Result<(), Box<dyn Error>> {
             (Some("system"), Some("session_state_changed")) => {
                 v["state"].as_str().map(str::to_owned)
             }
+            (Some("system"), Some("init")) => Some("init".to_owned()),
             (Some("system"), Some(s @ ("task_started" | "task_notification"))) => {
                 let id = v["task_id"].clone();
                 assert!(
@@ -130,21 +131,50 @@ fn background_work_ends_in_a_turn_of_its_own() -> Result<(), Box<dyn Error>> {
             _ => None,
         };
         seen.extend(what);
-        if seen.len() == 8 {
+        if seen.len() == n {
             break;
         }
     }
     drop(stdin);
     claude.wait()?;
+    Ok(seen)
+}
+
+#[test]
+fn background_work_ends_in_a_turn_of_its_own() -> Result<(), Box<dyn Error>> {
+    // The turn, the command's end, and the turn that takes its result.
     assert_eq!(
-        seen,
+        states_and_turns("Run it in the background 1", 10)?,
         [
             "running",
+            "init",
             "task_started",
             "result",
             "idle",
             "task_notification",
             "running",
+            "init",
+            "result",
+            "idle"
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_subagent_in_the_background_keeps_claude_running() -> Result<(), Box<dyn Error>> {
+    // As Claude Code 2.1.308 says: `running` from the turn that starts the
+    // subagent until the turn that takes its report has ended, which
+    // starts with `system/init` alone.
+    assert_eq!(
+        states_and_turns("Delegate it in the background", 8)?,
+        [
+            "running",
+            "init",
+            "task_started",
+            "result",
+            "task_notification",
+            "init",
             "result",
             "idle"
         ]

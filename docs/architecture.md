@@ -643,22 +643,26 @@ Background work keeps a session up: a shell command Claude runs with
 Claude Code reports each task starting (`system/task_started`) and ending
 (`system/task_notification`), and fctl-agent follows them
 (`crates/fctl-agent/src/tasks.rs`). While any runs after a turn, the
-session waits for it ("Waiting for 2 background tasks"), and the idle
-timeout counts from when the last one ends. When background work ends,
-Claude Code hands Claude the result in a turn of its own. fctl-agent
-counts it as any other: the session runs, and a stop or an interrupt
-reaches the turn. It learns of these turns from
-`system/session_state_changed` (it sets
-`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`), or from a turn's first message
-when Claude Code doesn't report them. Background work keeps a session up
-for at most an hour after its last turn, or for the idle timeout when that
-is longer, so that a forgotten dev server doesn't hold the runner's slot
-for ever. When a session stops with background tasks still running (that
-limit, a person's stop, a drain, an uninstall), the transcript names them,
-and the next message tells Claude they didn't finish. The system prompt
-says how long background work may run after a turn ends. Such a session
-holds its slot as any other does, and a draining runner stops it after a
-minute, as it stops sessions that wait for a message.
+session waits for it ("Waiting for 2 background tasks"). When background
+work ends, Claude Code hands Claude the result in a turn of its own.
+fctl-agent counts it as any other: the session runs, and a stop or an
+interrupt reaches the turn. It tells these turns by their first message:
+`system/init`, which starts each turn, or the conversation's first message
+after a `result`. Claude Code also reports its state
+(`system/session_state_changed`, which fctl-agent turns on with
+`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`), but not each turn: from a turn
+that starts subagents in the background, it says `running` until they
+have all reported and the last turn that takes their reports has ended,
+and only then `idle`. So the idle timeout counts from when the last task
+has ended and Claude Code has said `idle`. Background work keeps a session
+up for at most an hour after its last turn, or for the idle timeout when
+that is longer, so that a forgotten dev server doesn't hold the runner's
+slot for ever. When a session stops with background tasks still running
+(that limit, a person's stop, a drain, an uninstall), the transcript
+names them, and the next message tells Claude they didn't finish. The
+system prompt says how long background work may run after a turn ends.
+Such a session holds its slot as any other does, and a draining runner
+stops it after a minute, as it stops sessions that wait for a message.
 
 A message to a stopped session resumes it: from the web app, `fctl send`,
 `fctl attach` or the API, for anyone who may message the agent. SessionDO
