@@ -444,11 +444,19 @@ pub async fn change_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     .await?;
     let keep = ctx.auth.as_ref().map(|a| a.token_id.clone());
     auth::revoke_tokens(ctx, &user.id, keep.as_deref()).await?;
-    // Sign-ins with the old password that wait for a code go too.
+    // Sign-ins with the old password that wait for a code go too, and so
+    // do reset links made for it.
     q(
         &ctx.db,
         "DELETE FROM sign_in_challenges WHERE user_id = ?",
         &[s(&user.id)],
+    )?
+    .run()
+    .await?;
+    q(
+        &ctx.db,
+        "UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL",
+        &[n(ctx.now), s(&user.id)],
     )?
     .run()
     .await?;
@@ -598,10 +606,12 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
                 "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
                 &[s(&phc), n(ctx.now), s(&user.id)],
             )?,
+            // This link and any other the account has: the password they
+            // would replace is a new one.
             q(
                 &ctx.db,
-                "UPDATE password_resets SET used_at = ? WHERE token_hash = ?",
-                &[n(ctx.now), s(&hash)],
+                "UPDATE password_resets SET used_at = ? WHERE token_hash = ? OR (user_id = ? AND used_at IS NULL)",
+                &[n(ctx.now), s(&hash), s(&user.id)],
             )?,
             q(
                 &ctx.db,

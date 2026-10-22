@@ -113,8 +113,11 @@ owner and purpose), so a value copied between rows does not decrypt.
   address has an account or can sign in, so that none of them tells who
   uses the instance (instance admins, who see that anyway, excepted).
 - The web app ships a strict Content-Security-Policy (`script-src 'self'`, no
-  inline scripts), `frame-ancestors 'none'`, HSTS, and renders agent output
-  as text (Markdown is parsed into elements, never injected as HTML).
+  inline scripts), `frame-ancestors 'none'`, `Cross-Origin-Opener-Policy:
+  same-origin`, HSTS, and renders agent output as text (Markdown is parsed
+  into elements, never injected as HTML). Links in what agents and other
+  people write open web pages in a new tab, and never the app's sign-in
+  pages or API, however they name them (`textLink`).
 - Notifications go through each browser's push service (Google's for
   Chrome, Mozilla's for Firefox, Apple's for Safari, Microsoft's for Edge),
   encrypted for that browser alone (RFC 8291): the service sees when one

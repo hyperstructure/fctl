@@ -431,8 +431,8 @@ async fn apply_reset(ctx: &Ctx, user: &UserRow, row: &ChallengeRow) -> AppResult
             )?,
             q(
                 &ctx.db,
-                "UPDATE password_resets SET used_at = ? WHERE token_hash = ?",
-                &[n(ctx.now), s(reset_hash)],
+                "UPDATE password_resets SET used_at = ? WHERE token_hash = ? OR (user_id = ? AND used_at IS NULL)",
+                &[n(ctx.now), s(reset_hash), s(&user.id)],
             )?,
             q(
                 &ctx.db,

@@ -737,10 +737,12 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         rows(
             ctx,
             // The addresses of their own requests, not of others' that
-            // concerned them (an admin's, say).
+            // concerned them (an admin's, say); in workspaces, those open
+            // to them, as the rest.
             "SELECT ts, action, target, data, CASE WHEN actor_id = ?1 THEN ip END AS ip FROM audit_log \
-             WHERE actor_id = ?1 OR target = ?1 ORDER BY ts",
-            &me(),
+             WHERE (actor_id = ?1 OR target = ?1) \
+             AND (workspace_id IS NULL OR workspace_id IN (SELECT value FROM json_each(?2))) ORDER BY ts",
+            &mine_open()?,
         )
         .await?,
     );
