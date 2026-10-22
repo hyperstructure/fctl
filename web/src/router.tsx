@@ -3,8 +3,8 @@
 // sends everyone else to /login (or /setup on a fresh instance).
 
 import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@tanstack/react-router";
-import { ApiFailure, api } from "@/lib/api";
-import { keys, queryClient } from "@/lib/queries";
+import { api } from "@/lib/api";
+import { fetchMe, keys, queryClient } from "@/lib/queries";
 import { Admin } from "@/routes/admin";
 import { InvitePage, LoginPage, ResetPage, SetupPage, TwoFactorPage } from "@/routes/auth";
 import { DevicePage } from "@/routes/device";
@@ -27,19 +27,7 @@ import {
   type WorkspaceTab,
 } from "@/routes/workspace";
 
-async function me() {
-  return queryClient.ensureQueryData({
-    queryKey: keys.me,
-    queryFn: async () => {
-      try {
-        return await api.me();
-      } catch (e) {
-        if (e instanceof ApiFailure && (e.status === 401 || e.status === 403)) return null;
-        throw e;
-      }
-    },
-  });
-}
+const me = () => queryClient.ensureQueryData({ queryKey: keys.me, queryFn: fetchMe });
 
 // Unknown addresses get NotFound; a failed request or a crash anywhere, ErrorPage.
 const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound, errorComponent: ErrorPage });

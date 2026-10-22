@@ -32,16 +32,16 @@ export function freshest(
   return index.get(ref.id) ?? ref;
 }
 
-export interface WorkspaceGroup {
-  workspace: G.Workspace;
-  projects: G.Project[];
+export interface WorkspaceGroup<W = G.Workspace, P = G.Project> {
+  workspace: W;
+  projects: P[];
 }
 
 /** Projects under their workspaces, both in your order. */
-export function groupProjects(
-  workspaces: readonly G.Workspace[],
-  projects: readonly G.Project[],
-): WorkspaceGroup[] {
+export function groupProjects<W extends { id: string }, P extends { workspace?: { id: string } }>(
+  workspaces: readonly W[],
+  projects: readonly P[],
+): WorkspaceGroup<W, P>[] {
   return workspaces.map((workspace) => ({
     workspace,
     projects: projects.filter((p) => p.workspace?.id === workspace.id),
