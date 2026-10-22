@@ -8,6 +8,7 @@ use crate::model::{CredentialRow, IdentityRow, USAGE_JSON, UserRow, user_columns
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use fctl_domain::cookies::Cookie;
+use fctl_domain::limits::Limits;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_proto::ApiError;
 use fctl_proto::api::{InstanceSettings, Me, TokenKind};
@@ -52,13 +53,14 @@ pub fn dummy_verify(password: &str) {
 // ───────────────────────────── tokens ─────────────────────────────
 
 /// Creates a web session, CLI token or PAT and returns the secret. Web
-/// sessions also set the cookie on `ctx`.
+/// sessions also set the cookie on `ctx`. Only a PAT may have `limits`.
 pub async fn issue_token(
     ctx: &mut Ctx,
     user_id: &str,
     kind: TokenKind,
     name: Option<&str>,
     expires_at: Option<i64>,
+    limits: Option<&Limits>,
 ) -> AppResult<(String, String)> {
     let secret_kind = match kind {
         TokenKind::Web => SecretKind::WebSession,
@@ -72,10 +74,13 @@ pub async fn issue_token(
         TokenKind::Cli => Some(ctx.now + CLI_TOKEN_TTL_MS),
         TokenKind::Pat => None,
     });
+    let scope = limits
+        .filter(|_| kind == TokenKind::Pat)
+        .map(Limits::to_json);
     q(
         &ctx.db,
-        "INSERT INTO tokens (id, hash, kind, user_id, name, user_agent, ip, created_at, last_used_at, expires_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tokens (id, hash, kind, user_id, name, user_agent, ip, created_at, last_used_at, expires_at, scope) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&hash_secret(&secret)),
@@ -85,8 +90,10 @@ pub async fn issue_token(
             os(ctx.user_agent.as_deref()),
             os(ctx.ip.as_deref()),
             n(ctx.now),
-            n(ctx.now),
+            // An access token is used once something uses it.
+            on((kind != TokenKind::Pat).then_some(ctx.now)),
             on(expires_at),
+            os(scope.as_deref()),
         ],
     )?
     .run()
@@ -106,7 +113,7 @@ pub async fn issue_token(
 /// Signs in `user` in the browser: a new web session, and `last_login_at`.
 /// The request then counts as theirs (for the audit log).
 pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow) -> AppResult<()> {
-    let (token_id, _) = issue_token(ctx, &user.id, TokenKind::Web, None, None).await?;
+    let (token_id, _) = issue_token(ctx, &user.id, TokenKind::Web, None, None, None).await?;
     q(
         &ctx.db,
         "UPDATE users SET last_login_at = ? WHERE id = ?",
@@ -138,6 +145,9 @@ struct TokenLookup {
     expires_at: Option<i64>,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     last_used_at: Option<i64>,
+    /// What the token is limited to (`fctl_domain::limits::Limits`, JSON).
+    #[serde(default)]
+    scope: Option<String>,
     /// The instance's settings (JSON), for its two-factor policy.
     #[serde(default)]
     instance_settings: Option<String>,
@@ -163,24 +173,31 @@ pub fn presented_secret(req: &Request, secure: bool) -> Option<(String, bool)> {
 fn token_lookup_sql(column: &str) -> String {
     format!(
         "SELECT t.id AS token_id, t.kind AS kind, t.created_at AS token_created_at, t.expires_at AS expires_at, \
-         t.last_used_at AS last_used_at, (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
+         t.last_used_at AS last_used_at, t.scope AS scope, (SELECT value FROM settings WHERE key = '{}') AS instance_settings, {} \
          FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.{column} = ?",
         crate::instance::KEY,
         user_columns("u")
     )
 }
 
-/// The account behind the token `token_id`, with the instance's settings,
-/// while the token still lets it in as [`authenticate`] does: it exists and
-/// hasn't expired, the account is active, and it may do more than set up
-/// two-factor sign-in. For sockets opened with the token, which check again
-/// while they stay open, so that signing out, revoking the token or
-/// disabling the account closes them too.
-pub async fn by_token_id(
-    db: &D1Database,
-    token_id: &str,
-    now: i64,
-) -> AppResult<Option<(UserRow, InstanceSettings)>> {
+/// Who a token signs in, as sockets opened with it check again while they
+/// stay open ([`by_token_id`]).
+pub struct Holder {
+    pub user: UserRow,
+    /// The instance's settings.
+    pub settings: InstanceSettings,
+    /// What the token is limited to, when it is.
+    pub limits: Option<Limits>,
+}
+
+/// The account behind the token `token_id`, with the instance's settings
+/// and the token's limits, while the token still lets it in as
+/// [`authenticate`] does: it exists and hasn't expired, the account is
+/// active, and it may do more than set up two-factor sign-in. For sockets
+/// opened with the token, which check again while they stay open, so that
+/// signing out, revoking the token or disabling the account closes them
+/// too.
+pub async fn by_token_id(db: &D1Database, token_id: &str, now: i64) -> AppResult<Option<Holder>> {
     let found: Option<TokenLookup> = q(db, &token_lookup_sql("id"), &[s(token_id)])?
         .first()
         .await?;
@@ -194,7 +211,11 @@ pub async fn by_token_id(
             f.user.has_password(),
             f.user.factors(),
         );
-        (!setup_required).then_some((f.user, settings))
+        (!setup_required).then(|| Holder {
+            limits: Limits::parse(f.scope.as_deref()),
+            user: f.user,
+            settings,
+        })
     }))
 }
 
@@ -287,6 +308,8 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         found.user.has_password(),
         found.user.factors(),
     );
+    // However it comes: in a cookie, a limited token stays limited.
+    let limits = Limits::parse(found.scope.as_deref());
     ctx.auth = Some(Authed {
         user: found.user,
         token_id: found.token_id,
@@ -295,6 +318,7 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         signed_in_at: found.token_created_at,
         two_factor_setup_required,
         settings,
+        limits,
     });
     Ok(())
 }
@@ -361,6 +385,7 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
         two_factor: crate::api::two_factor::status(ctx, user).await?,
         passkeys: crate::api::passkeys::list(ctx, &user.id).await?,
         emails: crate::api::emails::list(ctx, user).await?,
+        token: None,
     })
 }
 

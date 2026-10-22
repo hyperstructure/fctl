@@ -39,11 +39,14 @@ function changes(name: string | undefined, readOnly: boolean, s: State): RepoCha
   };
 }
 
-/** The primary repository first, then the others. */
-export function repoChanges(git: G.GitState): RepoChanges[] {
+/**
+ * The primary repository first, then the others. In a session whose agent doesn't push
+ * (`pushes`: false), every one keeps its commits in the sandbox.
+ */
+export function repoChanges(git: G.GitState, pushes = true): RepoChanges[] {
   return [
-    changes(undefined, false, git),
-    ...(git.repos ?? []).map((r) => changes(`${r.owner}/${r.name}`, r.access === "read", r)),
+    changes(undefined, !pushes, git),
+    ...(git.repos ?? []).map((r) => changes(`${r.owner}/${r.name}`, !pushes || r.access === "read", r)),
   ];
 }
 

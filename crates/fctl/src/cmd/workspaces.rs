@@ -1079,7 +1079,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             workspace,
         } => {
             let w = resolve(&api, workspace).await?;
-            let me = api.me().await?;
+            let me = super::auth::account(&api).await?;
             let w = match credential {
                 Some(c) => {
                     let claude = if c.eq_ignore_ascii_case("default") {

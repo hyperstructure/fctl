@@ -91,6 +91,12 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
     {
         return Err(api::two_factor::setup_required_error(ctx));
     }
+    // Limited access tokens reach projects and sessions only
+    // (`fctl_domain::limits`); their roles there are capped as well.
+    if let Some(limits) = ctx.limits() {
+        fctl_domain::limits::allows(limits.access, method.as_ref(), segs.as_slice())
+            .map_err(AppError)?;
+    }
     use Method::*;
     match (method, segs.as_slice()) {
         (Get, ["instance"]) => api::auth::instance(ctx).await,
@@ -118,9 +124,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["auth", "google", "start"]) => api::google::start(ctx, req).await,
         (Get, ["auth", "google", "callback"]) => api::google::callback(ctx, req).await,
         (Delete, ["auth", "identities", id]) => api::google::unlink(ctx, id).await,
-        (Get, ["auth", "tokens"]) => api::auth::list_tokens(ctx).await,
-        (Post, ["auth", "tokens"]) => api::auth::create_token(ctx, req).await,
-        (Delete, ["auth", "tokens", id]) => api::auth::delete_token(ctx, id).await,
+        (Get, ["auth", "tokens"]) => api::tokens::list(ctx).await,
+        (Post, ["auth", "tokens"]) => api::tokens::create(ctx, req).await,
+        (Delete, ["auth", "tokens", id]) => api::tokens::delete(ctx, id).await,
         (Post, ["auth", "device"]) => api::auth::device_start(ctx, req).await,
         (Post, ["auth", "device", "token"]) => api::auth::device_poll(ctx, req).await,
         (Get, ["auth", "device", code]) => api::auth::device_info(ctx, code).await,

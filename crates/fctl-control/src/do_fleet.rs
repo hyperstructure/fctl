@@ -1952,12 +1952,14 @@ impl FleetObject {
                     .map_err(|e| e.0)?
                     .ok_or_else(|| ApiError::not_found("Project"))?;
                 let grants = spec::grants(&db, &project.id).await.map_err(|e| e.0)?;
+                // Within what its project allows now, as it was started.
                 let tokens = spec::github_tokens(
                     &cfg,
                     &db,
                     project.workspace_id(),
                     project.repo().as_ref(),
                     &grants,
+                    row.github_access(),
                     now,
                 )
                 .await
@@ -2228,8 +2230,11 @@ impl FleetObject {
             return;
         };
         let Ok(db) = self.env.d1("DB") else { return };
+        // Limited tokens open no feed (`fctl_domain::limits::allows`).
         let user = match crate::auth::by_token_id(&db, &token_id, now).await {
-            Ok(Some((user, settings))) if user.id == ident.user_id => Some((user, settings)),
+            Ok(Some(h)) if h.user.id == ident.user_id && h.limits.is_none() => {
+                Some((h.user, h.settings))
+            }
             Ok(_) => None,
             Err(e) => {
                 worker::console_error!("checking a feed: {}", e.0.message);

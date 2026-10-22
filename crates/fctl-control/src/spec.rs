@@ -15,7 +15,7 @@ use fctl_proto::runner::{
     ClaudeCredential, ClaudeCredentialKind, GitIdentity, ProjectSpec, SessionCredentials,
     SessionRepo, SessionSpec,
 };
-use fctl_proto::session::{ProjectSettings, PullRequestRef, RepoGrant, RepoRef};
+use fctl_proto::session::{GithubAccess, ProjectSettings, PullRequestRef, RepoGrant, RepoRef};
 use fctl_proto::{ApiError, CredentialId, ErrorCode, ProjectId};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -236,7 +236,18 @@ pub async fn build(
     let repo = project.repo();
     let grants = grants(db, &project.id).await?;
     let workspace_id = project.workspace_id().to_owned();
-    let tokens = github_tokens(cfg, db, &workspace_id, repo.as_ref(), &grants, now).await?;
+    // What it started with, within what its project allows now.
+    let github_access = row.github_access();
+    let tokens = github_tokens(
+        cfg,
+        db,
+        &workspace_id,
+        repo.as_ref(),
+        &grants,
+        github_access,
+        now,
+    )
+    .await?;
     let repos = (!grants.is_empty()).then(|| {
         grants
             .iter()
@@ -347,6 +358,7 @@ pub async fn build(
             .collect(),
         memory,
         retrospectives,
+        github_access: (!github_access.pushes()).then_some(github_access),
     })
 }
 
@@ -414,15 +426,17 @@ async fn bot_identity(cfg: &Config, _now: i64) -> GitIdentity {
 }
 
 /// A session's GitHub tokens (none without a GitHub App or repositories),
-/// within what its workspace may use. Listed repositories the workspace may
-/// not use, or the GitHub App cannot reach, are left out; without the
-/// primary repository the session cannot start.
+/// within what its workspace may use, for an agent that may do `access` on
+/// GitHub. Listed repositories the workspace may not use, or the GitHub App
+/// cannot reach, are left out; without the primary repository the session
+/// cannot start.
 pub async fn github_tokens(
     cfg: &Config,
     db: &D1Database,
     workspace_id: &str,
     primary: Option<&RepoRef>,
     grants: &[RepoGrant],
+    access: GithubAccess,
     now: i64,
 ) -> AppResult<github::SessionTokens> {
     let (Some(gh), Some(plan)) = (
@@ -434,6 +448,12 @@ pub async fn github_tokens(
     let connections = crate::workspaces::connections(db, workspace_id).await?;
     let scope = crate::workspaces::scope(&connections, &plan.owner);
     let (plan, refused) = fctl_domain::repos::narrow(plan, scope.as_ref());
+    // An agent that only reads gets one read-only token for everything.
+    let plan = if access == GithubAccess::Read {
+        plan.reading_only()
+    } else {
+        plan
+    };
     if let Some(p) = primary
         && refused.iter().any(|n| n.eq_ignore_ascii_case(&p.name))
     {
@@ -453,7 +473,7 @@ pub async fn github_tokens(
         // while its login is still that account's.
         let gh = github::from_config(cfg, now)?;
         let inst = crate::workspaces::installation(db, &gh, &connections, &plan.owner).await?;
-        gh.session_tokens(inst, &plan).await?
+        gh.session_tokens(inst, &plan, access).await?
     };
     tokens.refused = refused;
     if let Some(p) = primary

@@ -8,9 +8,9 @@ use fctl_proto::api::{
 };
 use fctl_proto::runner::{ClaudeAccount, ClaudeCredentialKind, HostHello};
 use fctl_proto::session::{
-    InstanceRole, Project, ProjectRole, ProjectSettings, PullRequestRef, RemoteControlState,
-    RepoAccess, RepoGrant, RepoRef, RunnerRef, Session, SessionRole, SessionStats, SessionStatus,
-    UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
+    GithubAccess, InstanceRole, Project, ProjectRole, ProjectSettings, PullRequestRef,
+    RemoteControlState, RepoAccess, RepoGrant, RepoRef, RunnerRef, Session, SessionRole,
+    SessionStats, SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use fctl_proto::{
     AllowId, CredentialId, IdentityId, ProjectId, RunnerId, SessionId, UserId, WorkspaceId,
@@ -582,6 +582,12 @@ pub struct SessionRow {
     pub ended_at: Option<i64>,
     #[serde(deserialize_with = "opt_int", default)]
     pub last_activity_at: Option<i64>,
+    /// What its agent may do on GitHub, as it started (NULL: push).
+    #[serde(default)]
+    pub github_access: Option<String>,
+    /// What its project's settings let agents do on GitHub now.
+    #[serde(default)]
+    pub project_github_access: Option<String>,
     /// The caller's project membership role and share role (LEFT JOINs).
     pub member_role: Option<String>,
     pub share_role: Option<String>,
@@ -593,6 +599,17 @@ pub struct SessionRow {
 }
 
 impl SessionRow {
+    /// What its agent may do on GitHub now: what it started with, within
+    /// its project's settings as they are now.
+    pub fn github_access(&self) -> GithubAccess {
+        fctl_domain::limits::effective(
+            self.github_access.as_deref().and_then(GithubAccess::parse),
+            self.project_github_access
+                .as_deref()
+                .and_then(GithubAccess::parse),
+        )
+    }
+
     pub fn status(&self) -> SessionStatus {
         SessionStatus::parse(&self.status).unwrap_or(SessionStatus::Failed)
     }
@@ -653,6 +670,7 @@ impl SessionRow {
             },
             model: self.model.clone(),
             effort: self.claude_effort.clone(),
+            github_access: Some(self.github_access()),
             remote_control: self
                 .remote_control
                 .as_deref()
@@ -674,6 +692,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
     s.claude_effort, s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.pull_requests, s.remote_control, s.stats, s.archived, \
+    s.github_access, json_extract(p.settings, '$.github_access') AS project_github_access, \
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \

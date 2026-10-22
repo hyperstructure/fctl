@@ -20,13 +20,20 @@ describe("the home page's draft", () => {
     expect(loadText("usr_a")).toBeUndefined();
   });
 
-  it("keeps the model and effort level picked for it", () => {
-    saveText("usr_a", { prompt: "Rename the button", project: "web", model: "haiku", effort: "" });
+  it("keeps the model, effort level and GitHub access picked for it", () => {
+    saveText("usr_a", {
+      prompt: "Rename the button",
+      project: "web",
+      model: "haiku",
+      effort: "",
+      github: "read",
+    });
     expect(loadText("usr_a")).toEqual({
       prompt: "Rename the button",
       project: "web",
       model: "haiku",
       effort: "",
+      github: "read",
     });
   });
 
@@ -37,7 +44,14 @@ describe("the home page's draft", () => {
     expect(loadText("usr_a")).toBeUndefined();
     localStorage.setItem(
       "fctl:draft:usr_a",
-      JSON.stringify({ prompt: "Hi", project: 7, selection: [1, -2], model: 4, effort: null }),
+      JSON.stringify({
+        prompt: "Hi",
+        project: 7,
+        selection: [1, -2],
+        model: 4,
+        effort: null,
+        github: "admin",
+      }),
     );
     expect(loadText("usr_a")).toEqual({ prompt: "Hi", project: undefined, selection: undefined });
   });

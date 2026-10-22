@@ -4,6 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ArrowRight, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { GithubAccessIcon } from "@/components/github-access";
 import { MemoryTab } from "@/components/project/memory";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
 import {
@@ -44,6 +45,7 @@ import { ApiFailure, api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
+import { GITHUB_ACCESS } from "@/lib/github-access";
 import {
   type ImageSource,
   imageSource,
@@ -780,6 +782,25 @@ function Settings({ project }: { project: G.Project }) {
               )}
             </Field>
           </div>
+          <Field
+            label="Agents on GitHub"
+            hint="The most its sessions' agents may do there, and what they do unless a session asks for less. Running sessions get no more from their next GitHub token on, within the hour."
+          >
+            {(id) => (
+              <Select
+                id={id}
+                value={s.github_access ?? "push"}
+                onChange={(v) => set("github_access", v)}
+                options={GITHUB_ACCESS.map((l) => ({
+                  value: l.value,
+                  label: l.label,
+                  icon: <GithubAccessIcon access={l.value} />,
+                  description: l.description,
+                }))}
+                className="w-full"
+              />
+            )}
+          </Field>
           {model === "id" && (
             <Field label="Model ID" hint="Passed to Claude Code as --model." error={err("model")}>
               {(id) => (

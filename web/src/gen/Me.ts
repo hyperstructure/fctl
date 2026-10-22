@@ -3,6 +3,7 @@ import type { ClaudeCredentialInfo } from "./ClaudeCredentialInfo";
 import type { EmailAddress } from "./EmailAddress";
 import type { Identity } from "./Identity";
 import type { Passkey } from "./Passkey";
+import type { TokenInfo } from "./TokenInfo";
 import type { TwoFactor } from "./TwoFactor";
 import type { User } from "./User";
 
@@ -29,4 +30,9 @@ passkeys: Array<Passkey>,
  * Your email addresses, the primary one first. You sign in with any of
  * them, and each workspace knows you by one.
  */
-emails: Array<EmailAddress>, };
+emails: Array<EmailAddress>, 
+/**
+ * The access token of the request, when it is one. A limited one sees
+ * only `user` and this here: the rest stays empty.
+ */
+token?: TokenInfo, };

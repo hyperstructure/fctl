@@ -98,7 +98,7 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
             Ok(())
         }
         AccountCmd::Emails => {
-            let me = api.me().await?;
+            let me = super::auth::account(&api).await?;
             if json {
                 return style::print_json(&me.emails);
             }
@@ -190,7 +190,7 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
             Ok(())
         }
         AccountCmd::Delete { confirm } => {
-            let me = api.me().await?;
+            let me = super::auth::account(&api).await?;
             let plan = api.account_deletion().await?;
             if let Some(reason) = plan.blocked {
                 bail!("{reason}");

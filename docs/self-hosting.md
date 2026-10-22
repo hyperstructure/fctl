@@ -441,8 +441,15 @@ hour and refreshed through its host:
 
 | Token | Repositories | Permissions |
 |---|---|---|
-| Write | the primary repository and those listed as read and write | contents, pull requests, issues and workflows: write; checks, actions, commit statuses: read |
-| Read only | those listed as read only, or the account's (`owner/*`) | contents, pull requests, issues, checks, actions, commit statuses: read |
+| Write | the primary repository and those listed as read and write | contents, pull requests, issues and workflows: write; checks, actions, commit statuses: read. For an agent that comments: pull requests and issues: write; contents, checks, actions, commit statuses: read |
+| Read only | those listed as read only, or the account's (`owner/*`); for an agent that only reads, all of them | contents, pull requests, issues, checks, actions, commit statuses: read |
+
+What a session's agent may do on GitHub, push, comment or read, is its
+own choice within its project's setting
+([Architecture](architecture.md#github-access)). The app needs no more
+permissions for it: to resolve review threads for agents that comment,
+the control plane mints a token that can write the thread's repository's
+contents and keeps it.
 
 Agents may write only to repositories that are named: reading a whole
 account is as far as an owner-wide grant goes. A listed repository the

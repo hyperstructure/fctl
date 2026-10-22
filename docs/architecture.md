@@ -105,8 +105,9 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   hashes: `fctl_ws_` (web session cookie `__Host-fctl`, or `fctl` over plain
   http outside localhost, where browsers refuse the prefix:
   `fctl_domain::cookies`), `fctl_cli_` (CLI,
-  issued through the device flow), `fctl_pat_` (personal access token),
-  `fctl_rt_` (runner).
+  issued through the device flow), `fctl_pat_` (personal access token,
+  which may be limited: [Access tokens](#access-tokens)), `fctl_rt_`
+  (runner).
 - Cookie requests that change state must come from the app's origin
   (`Origin`/`Sec-Fetch-Site` checks) and carry JSON; file uploads carry
   `application/octet-stream`, which browsers cannot send cross-site without
@@ -263,6 +264,47 @@ Adding and removing a passkey go in the audit log, and adding one emails
 the person when email is set up. A passkey that is the account's last way
 in, or the second factor the instance requires, can't be removed until
 another takes its place ([ADR 0023](adr/0023-passkeys-sign-in-on-their-own.md)).
+
+### Access tokens
+
+People make personal access tokens (`fctl_pat_`) for scripts, CI and bots
+in Settings → Access tokens or with `fctl token`, and list and revoke them
+there or with `fctl tokens`. A token may be limited, in three ways
+([ADR 0037](adr/0037-access-tokens-and-sessions-limit-what-agents-do-on-github.md)),
+which D1 keeps with it (`tokens.scope`, `fctl_domain::limits::Limits`):
+
+- **What it does** (`access`): `read` reads projects and sessions as a
+  viewer does, with their transcripts, changes, memory and retrospectives;
+  `run` also starts sessions, messages and interrupts their agents, stops
+  and resumes the sessions its person started and keeps projects' memory,
+  as an editor does; `full` does whatever its person may in its projects.
+- **Where** (`places`): every project its person sees, or the projects of
+  some workspaces (those made later too) and some projects.
+- **What its sessions' agents may do on GitHub** (`github_access`): the
+  sessions it starts get at most that ([GitHub access](#github-access)),
+  and a session whose agent may do more is read only to it, so that a
+  token for review agents can't steer an agent that pushes.
+
+A token with any limit reaches projects and sessions alone. The router
+refuses it everything else before a handler runs (`limits::allows`): the
+account and its sign-in methods, Claude connections, workspaces' people,
+settings, runners and GitHub accounts, notifications, other tokens and
+administration, so that a token handed to CI can't make itself another.
+`GET /auth/me` shows it whose it is and the token itself, nothing more.
+Its role in a project is its person's, at most a viewer's (`read`) or an
+editor's (`run`); in a session, its person's with their project role so
+capped, and at most a viewer's for a token that reads
+(`limits::session_role`). Lists of projects, sessions and workspaces keep
+to its places in SQL (`access::places_sql`), so that their pages stay
+full, and sockets opened with it check its limits again as they check its
+person ([Viewers](#viewers)); it opens no feed. A place that is deleted, or
+that its person no longer sees, drops out of its reach, and a token whose
+places are all gone reaches nothing. Its limits hold however it comes, as
+a bearer token or in a cookie. Browser sessions and the CLI's sign-ins
+have none. A control plane from before limits ignores them and makes a
+token without any, so `fctl token` revokes such a token and says so. The
+audit log records each token's limits as it is made, and which token
+started a session.
 
 ## Workspaces
 
@@ -474,7 +516,8 @@ version of the control plane, in that browser (localStorage, per person).
 their email addresses, identities, two-factor sign-in (sealed authenticator
 secrets, hashed recovery codes, sign-ins waiting for a code), passkeys'
 public keys and their challenges, allowlist, early access requests, auth
-tokens, device codes, workspaces (with their avatar images), their members,
+tokens (and what access tokens are limited to), device codes, workspaces
+(with their avatar images), their members,
 invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
 and runners, projects, their members and
@@ -689,7 +732,8 @@ access to every repository of the account the GitHub App reaches
 (`owner/*`), all within what its workspace may use
 ([GitHub accounts](#github-accounts)): an owner-wide grant reads only the
 workspace's repositories of the account. One installation mints a session's
-tokens: one that can write (the primary repository and the writable ones)
+tokens: one that can write (the primary repository and the writable ones),
+as far as the session's agent may on GitHub ([GitHub access](#github-access)),
 and one that can only read. A token carries one set of permissions, hence
 two; they are refreshed together (`CredentialKind::Github`). A listed
 repository the workspace may no longer use, or the installation no longer
@@ -753,6 +797,50 @@ agent posts a notice; a primary repository out of reach fails the session.
 Older hosts and agents ignore the list and the second token, and work on the
 primary repository alone
 ([ADR 0009](adr/0009-projects-span-an-accounts-repositories.md)).
+
+### GitHub access
+
+A session's agent pushes, comments or only reads on GitHub
+(`GithubAccess`, `sessions.github_access`) in the repositories the session
+may write to; it only reads the others
+([ADR 0037](adr/0037-access-tokens-and-sessions-limit-what-agents-do-on-github.md)):
+
+| Access | Its token for those repositories | The agent |
+|---|---|---|
+| `push`, as every session's before | contents, pull requests, issues and workflows: write | commits, pushes its branch and opens pull requests |
+| `comment` | pull requests and issues: write; contents: read | reviews, comments, labels and resolves review threads; pushes and merges nothing |
+| `read` | none: the read-only token covers them too | reads; writes nothing |
+
+A session asks for one as it starts (`CreateSessionRequest.github_access`,
+`fctl run --github`, the list beside the composer's model and effort), at
+most what its project's settings allow (`ProjectSettings.github_access`,
+`fctl projects set --github`) and the access token that starts it, and
+gets as much as they allow when it doesn't ask (`limits::session_github`).
+Its tokens carry what it may do now: what it started with, within its
+project's setting as that is now (`limits::effective`), so that lowering a
+project's setting reaches its running sessions with their next token,
+within the hour, as removing a repository does. GitHub holds the agent to
+it, since git and `gh` have no token that can do more.
+
+fctl-agent reads it in the spec (`SessionSpec.github_access`). For an agent
+that doesn't push, it pushes nothing, moves no work onto session branches
+and treats the other repositories as read only, and it tells Claude what
+the agent may do instead of how to push and open pull requests; the
+transcript says so as the session starts. Hosts from before it leave it
+out of the agent's configuration: their agents try to push, and GitHub
+refuses.
+
+GitHub lets only tokens that can write a repository's contents resolve the
+review threads of its pull requests, so an agent that comments resolves
+them through fctl: `fctl resolve PRRT_…` in the sandbox goes to the control
+plane as an agent call (`AgentCall::ResolveThread`), as `fctl memory`
+does. The control plane looks the thread up through the project's
+installation, checks that its pull request is in a repository the session
+may write to and its workspace may use, and resolves it, or opens it
+again, with a token of its own for that repository, which never leaves the
+control plane and which it revokes at once (`fctl_domain::threads`,
+`repos::resolve_permissions`). `~/AGENTS.md` tells agents that comment
+how, where the sandbox's fctl has the command.
 
 ### Pull request state and checks
 
@@ -1400,8 +1488,9 @@ or taking a sandbox it couldn't stop or remove for gone.
 A second socket beside
 it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
 serves programs in the sandbox: `fctl edit` names and describes the session
-there, `fctl publish` publishes screenshots, and `fctl memory` and `fctl
-retro` keep the project's memory and record retrospectives, with no fctl
+there, `fctl publish` publishes screenshots, `fctl memory` and `fctl retro`
+keep the project's memory and record retrospectives, and `fctl resolve`
+resolves review threads ([GitHub access](#github-access)), with no fctl
 credentials in the sandbox.
 
 A stopped session keeps its sandbox, so resuming it on the same host

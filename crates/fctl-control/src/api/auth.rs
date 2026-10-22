@@ -354,7 +354,13 @@ pub async fn logout(ctx: &mut Ctx) -> AppResult<Response> {
 
 pub async fn get_me(ctx: &Ctx) -> AppResult<Response> {
     let user = ctx.user()?;
-    http::ok(&auth::me(ctx, user).await?)
+    let token = crate::api::tokens::current(ctx).await?;
+    if ctx.limits().is_some() {
+        return http::ok(&crate::api::tokens::limited_me(user, token));
+    }
+    let mut me = auth::me(ctx, user).await?;
+    me.token = token;
+    http::ok(&me)
 }
 
 pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
@@ -628,107 +634,6 @@ pub async fn password_reset_notice(ctx: &Ctx, user: &crate::model::UserRow) -> A
     Ok(())
 }
 
-// ───────────────────────────── tokens ─────────────────────────────
-
-#[derive(serde::Deserialize)]
-struct TokenRow {
-    id: String,
-    kind: String,
-    name: Option<String>,
-    user_agent: Option<String>,
-    #[serde(deserialize_with = "crate::db::int")]
-    created_at: i64,
-    #[serde(deserialize_with = "crate::db::opt_int", default)]
-    last_used_at: Option<i64>,
-    #[serde(deserialize_with = "crate::db::opt_int", default)]
-    expires_at: Option<i64>,
-}
-
-pub async fn list_tokens(ctx: &Ctx) -> AppResult<Response> {
-    let user = ctx.user()?;
-    let current = ctx
-        .auth
-        .as_ref()
-        .map(|a| a.token_id.clone())
-        .unwrap_or_default();
-    let rows: Vec<TokenRow> = q(
-        &ctx.db,
-        "SELECT id, kind, name, user_agent, created_at, last_used_at, expires_at FROM tokens \
-         WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY COALESCE(last_used_at, created_at) DESC",
-        &[s(&user.id), n(ctx.now)],
-    )?
-    .all()
-    .await?;
-    http::ok(&TokenList {
-        tokens: rows
-            .into_iter()
-            .map(|r| TokenInfo {
-                current: r.id == current,
-                id: fctl_proto::TokenId(r.id),
-                kind: TokenKind::parse(&r.kind).unwrap_or(TokenKind::Pat),
-                name: r.name,
-                created_at: r.created_at,
-                last_used_at: r.last_used_at,
-                expires_at: r.expires_at,
-                user_agent: r.user_agent,
-            })
-            .collect(),
-    })
-}
-
-pub async fn create_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
-    let body: CreateTokenRequest = http::body(req).await?;
-    let user = ctx.user()?.clone();
-    let name = validate::name("name", &body.name)?;
-    let expires_at = match body.expires_in_days {
-        Some(0) | None => None,
-        Some(d) if d <= 3650 => Some(ctx.now + d as i64 * DAY_MS),
-        Some(_) => return Err(validation("expires_in_days", "Use at most 3650 days")),
-    };
-    let (id, secret) =
-        auth::issue_token(ctx, &user.id, TokenKind::Pat, Some(&name), expires_at).await?;
-    ctx.audit(
-        "token.created",
-        Some(&id),
-        Some(serde_json::json!({ "name": name })),
-    );
-    http::created(&CreatedToken {
-        token: TokenInfo {
-            id: fctl_proto::TokenId(id),
-            kind: TokenKind::Pat,
-            name: Some(name),
-            created_at: ctx.now,
-            last_used_at: None,
-            expires_at,
-            user_agent: None,
-            current: false,
-        },
-        secret,
-    })
-}
-
-pub async fn delete_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
-    let user = ctx.user()?.clone();
-    let changed = q(
-        &ctx.db,
-        "DELETE FROM tokens WHERE id = ? AND user_id = ?",
-        &[s(id), s(&user.id)],
-    )?
-    .run()
-    .await?;
-    if changed == 0 {
-        return Err(not_found("Token"));
-    }
-    if ctx
-        .auth
-        .as_ref()
-        .is_some_and(|a| a.token_id == id && a.via_cookie)
-    {
-        auth::clear_session_cookie(ctx);
-    }
-    http::ok(&Ok { ok: true })
-}
-
 // ───────────────────────────── device flow ─────────────────────────────
 
 const DEVICE_TTL_MS: i64 = 10 * 60 * 1000;
@@ -859,8 +764,15 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
     if !user.is_active() {
         return http::ok(&DevicePollResponse::Denied);
     }
-    let (_, token) =
-        auth::issue_token(ctx, &user.id, TokenKind::Cli, Some(&row.client_name), None).await?;
+    let (_, token) = auth::issue_token(
+        ctx,
+        &user.id,
+        TokenKind::Cli,
+        Some(&row.client_name),
+        None,
+        None,
+    )
+    .await?;
     let me = auth::me(ctx, &user).await?;
     http::ok(&DevicePollResponse::Approved {
         token,

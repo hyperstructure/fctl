@@ -97,6 +97,14 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         .map(|b| validate::branch("base_branch", b))
         .transpose()?
         .unwrap_or_else(|| p.row.default_branch.clone());
+    // What its agent may do on GitHub: what it asks, within its project
+    // and the token that starts it.
+    let github_access = fctl_domain::limits::session_github(
+        body.github_access,
+        p.row.settings().github_access,
+        ctx.limits().and_then(|l| l.github_access),
+    )
+    .map_err(AppError)?;
     let credential = default_credential(ctx, &user, p.workspace_id()).await?;
     let id = fctl_domain::ids::session_id(ctx.now);
     // The task's files belong to the new session from here on.
@@ -131,7 +139,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     q(
         &ctx.db,
         "INSERT INTO sessions (id, project_id, number, title, prompt, prompt_attachments, status, created_by, credential_id, branch, base_branch, model, effort, \
-         claude_session_id, stats, created_at, updated_at, last_activity_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)",
+         claude_session_id, stats, created_at, updated_at, last_activity_at, github_access) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&p.row.id),
@@ -149,12 +157,17 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             n(ctx.now),
             n(ctx.now),
             n(ctx.now),
+            s(github_access.as_str()),
         ],
     )?
     .run()
     .await?;
     // Following is not worth failing a session over: it can be done later.
-    if let Err(e) = crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await {
+    // Sessions a limited token starts, for CI or a bot, notify nobody unless
+    // someone follows them: each review's end would.
+    if ctx.limits().is_none()
+        && let Err(e) = crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await
+    {
         worker::console_error!("following a new session failed: {}", e.0.message);
     }
     // Nor is remembering what it asked for.
@@ -201,7 +214,12 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         Some(p.workspace_id()),
         "session.created",
         Some(id.as_str()),
-        Some(serde_json::json!({ "project": p.row.slug, "number": number })),
+        Some(serde_json::json!({
+            "project": p.row.slug,
+            "number": number,
+            "github_access": github_access,
+            "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat).map(|a| &a.token_id),
+        })),
     );
     http::created(&session)
 }
@@ -284,6 +302,7 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         params.push(n(b));
         sql.push_str(&format!(" AND s.created_at < ?{}", params.len()));
     }
+    sql.push_str(&access::places_sql(ctx.limits(), &mut params));
     params.push(n(limit + 1));
     sql.push_str(&format!(
         " ORDER BY s.created_at DESC LIMIT ?{}",
@@ -301,7 +320,8 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         sessions: rows
             .iter()
             .filter_map(|r| {
-                access::session_role(user, &settings, r).map(|role| r.to_session(Some(role)))
+                access::session_role(user, &settings, ctx.limits(), r)
+                    .map(|role| r.to_session(Some(role)))
             })
             .collect(),
         next_before,
@@ -523,7 +543,9 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     )?
     .run()
     .await?;
-    if let Err(e) = crate::notify::follow_own(&ctx.db, id, &user.id, ctx.now).await {
+    if ctx.limits().is_none()
+        && let Err(e) = crate::notify::follow_own(&ctx.db, id, &user.id, ctx.now).await
+    {
         worker::console_error!("following a resumed session failed: {}", e.0.message);
     }
     let stub = internal::session_stub(&ctx.env, id)?;

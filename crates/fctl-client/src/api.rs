@@ -306,15 +306,15 @@ impl Api {
         self.get("/auth/tokens").await
     }
 
-    pub async fn create_token(&self, name: &str, days: Option<u32>) -> Result<CreatedToken> {
-        self.post(
-            "/auth/tokens",
-            &CreateTokenRequest {
-                name: name.to_owned(),
-                expires_in_days: days,
-            },
-        )
-        .await
+    /// A personal access token, limited to what `req` asks.
+    pub async fn create_token(&self, req: &CreateTokenRequest) -> Result<CreatedToken> {
+        self.post("/auth/tokens", req).await
+    }
+
+    /// Revokes a token: signs a browser or the CLI out, or ends an access
+    /// token.
+    pub async fn delete_token(&self, id: &str) -> Result<Ok> {
+        self.delete(&format!("/auth/tokens/{}", enc(id))).await
     }
 
     // ── projects ──

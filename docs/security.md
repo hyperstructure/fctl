@@ -82,6 +82,16 @@ owner and purpose), so a value copied between rows does not decrypt.
   Where two-factor is required, a passkey also counts as the second factor.
 - The CLI signs in with a device flow (you approve a code in the browser) and
   gets a revocable token; Settings lists every device and token.
+- **Access tokens** for scripts, CI and bots can be limited to reading,
+  running sessions or everything their person may, to some workspaces and
+  projects, and in what their sessions' agents may do on GitHub. A limited
+  token reaches projects and sessions alone: one rule in the router refuses
+  it the account, workspaces' people and settings, Claude connections,
+  other tokens and administration before any handler runs, so a token that
+  leaks from CI can't make itself another, and its roles in its projects
+  are capped. It can't message or resume a session whose agent may do more
+  on GitHub than it allows. Make them expire, and revoke one that may have
+  leaked in Settings or with `fctl tokens revoke`.
 - Sign-in, signup and reset endpoints are rate limited per address and per
   account; unknown emails take as long to fail as known ones. Signing up
   without an invitation, asking for a password reset or for early access,
@@ -159,17 +169,28 @@ outside it except through these channels:
   others, within the GitHub accounts and repositories its workspace may use,
   valid for an hour and refreshed on demand
   ([self-hosting](self-hosting.md#what-sessions-get) has the details):
-  - one that can write (contents, pull requests, issues and workflows) to
-    the primary repository and the others listed as read and write. git
-    and `gh` use it.
+  - one for the primary repository and the others listed as read and
+    write, with what the session's agent may do on GitHub: write contents,
+    pull requests, issues and workflows for one that pushes; write pull
+    requests and issues, and read contents, for one that comments; none
+    for one that only reads. git and `gh` use it.
   - one that can only read (contents, pull requests, issues and CI
     results) the repositories listed as read only, or every repository of
     the account the GitHub App can reach when the project grants that
-    (`owner/*`). git uses it for those repositories.
+    (`owner/*`); for an agent that only reads, the others too. git uses it
+    for those repositories.
 
-  An agent can push to, open pull requests in, and change the workflows of
-  every repository it can write to, so list as writable only the ones it
-  needs. Reading a whole account includes its private repositories, as far
+  An agent that pushes can push to, open pull requests in, and change the
+  workflows of every repository it can write to, so list as writable only
+  the ones it needs. Sessions that don't need to push, such as review
+  agents and planners, can comment or only read (`fctl run --github`), and
+  a project can hold its agents to that (`fctl projects set --github`):
+  their tokens can't push, whatever they read asks of them. An agent that
+  comments can still close, edit and approve pull requests and issues.
+  GitHub lets only tokens that can push resolve review threads, so the
+  control plane resolves them for such an agent with a token it keeps to
+  itself, for that one repository, after checking that the session may
+  write there. Reading a whole account includes its private repositories, as far
   as the workspace may use them. Running sessions lose a repository removed
   from the project, or an account taken from its workspace, when their
   tokens are next refreshed, within the hour. A session's tokens are minted
@@ -217,8 +238,10 @@ outside it except through these channels:
   images at public links (`fctl publish`); and in projects that keep a
   memory or ask for retrospectives, read the project's notes, add notes,
   mark them stale or duplicates of other notes and record retrospectives
-  of its session (`fctl memory`, `fctl retro`), and nothing else; the
-  control plane checks the values and the settings again. Turn publishing
+  of its session (`fctl memory`, `fctl retro`); and where the agent may
+  comment on GitHub, resolve review threads of its repositories' pull
+  requests (`fctl resolve`); and nothing else. The control plane checks
+  the values and the settings again. Turn publishing
   on only where anything the agents see may be shown to anyone with a
   link: text in a repository or on a web page can ask an agent to publish
   a screenshot, as it can ask it to send what it sees elsewhere.

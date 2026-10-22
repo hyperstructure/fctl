@@ -27,6 +27,13 @@ pub struct SessionAccess {
 /// open to people outside it, whatever they started or was shared with
 /// them.
 pub fn session_role(a: SessionAccess) -> Option<SessionRole> {
+    session_role_within(a, ProjectRole::Owner)
+}
+
+/// [`session_role`] with their role in the session's project counting for
+/// at most `cap`: what a limited access token does in its sessions
+/// (`crate::limits`). Starting a session and shares count as they are.
+pub fn session_role_within(a: SessionAccess, cap: ProjectRole) -> Option<SessionRole> {
     a.membership?.open()?;
     let mut best: Option<SessionRole> = None;
     let mut grant = |r: SessionRole| {
@@ -38,7 +45,7 @@ pub fn session_role(a: SessionAccess) -> Option<SessionRole> {
     if a.is_creator {
         grant(SessionRole::Owner);
     }
-    match project_role(a.membership, a.project_role) {
+    match project_role(a.membership, a.project_role).map(|r| lower_project_role(r, cap)) {
         Some(ProjectRole::Owner | ProjectRole::Maintainer) => grant(SessionRole::Owner),
         Some(ProjectRole::Editor) => grant(SessionRole::Editor),
         Some(ProjectRole::Viewer) => grant(SessionRole::Viewer),
@@ -56,6 +63,16 @@ fn rank(r: SessionRole) -> u8 {
         SessionRole::Editor => 2,
         SessionRole::Owner => 3,
     }
+}
+
+/// The lower of two session roles.
+pub fn lower_session_role(a: SessionRole, b: SessionRole) -> SessionRole {
+    if rank(a) <= rank(b) { a } else { b }
+}
+
+/// The lower of two project roles.
+pub fn lower_project_role(a: ProjectRole, b: ProjectRole) -> ProjectRole {
+    if a.at_least(b) { b } else { a }
 }
 
 /// The effective project role (see [`workspace::project_role`]).
@@ -182,6 +199,46 @@ mod tests {
         assert_eq!(
             session_role(access(m, Some(ProjectRole::Maintainer), None, false)),
             Some(SessionRole::Owner)
+        );
+    }
+
+    #[test]
+    fn a_cap_lowers_the_project_role_but_not_starting_or_shares() {
+        let admin = member(WorkspaceRole::Admin);
+        let editor = ProjectRole::Editor;
+        // A maintainer's sessions, as an editor's.
+        assert_eq!(
+            session_role_within(access(admin, None, None, false), editor),
+            Some(SessionRole::Editor)
+        );
+        // Their own, still theirs.
+        assert_eq!(
+            session_role_within(access(admin, None, None, true), editor),
+            Some(SessionRole::Owner)
+        );
+        assert_eq!(
+            session_role_within(
+                access(
+                    member(WorkspaceRole::Member),
+                    None,
+                    Some(SessionRole::Owner),
+                    false
+                ),
+                ProjectRole::Viewer
+            ),
+            Some(SessionRole::Owner)
+        );
+        assert_eq!(
+            session_role_within(access(admin, None, None, false), ProjectRole::Viewer),
+            Some(SessionRole::Viewer)
+        );
+        assert_eq!(
+            lower_session_role(SessionRole::Owner, SessionRole::Viewer),
+            SessionRole::Viewer
+        );
+        assert_eq!(
+            lower_project_role(ProjectRole::Viewer, ProjectRole::Owner),
+            ProjectRole::Viewer
         );
     }
 

@@ -1,5 +1,5 @@
 // Settings: profile, email addresses, workspaces, Claude, notifications,
-// sign-in methods, passkeys, two-factor sign-in, devices and tokens,
+// sign-in methods, passkeys, two-factor sign-in, devices, access tokens,
 // appearance, your data (export) and the danger zone (deleting the account).
 
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -27,6 +27,7 @@ import {
 import { useEffect, useState } from "react";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
+import { AccessTokens } from "@/components/tokens";
 import { ConfirmWithCode } from "@/components/two-factor/confirm-code";
 import { RecoveryCodes } from "@/components/two-factor/recovery-codes";
 import { AuthenticatorSetup } from "@/components/two-factor/setup";
@@ -34,7 +35,6 @@ import {
   Avatar,
   Banner,
   Button,
-  CodeBox,
   DangerZone,
   Dialog,
   Field,
@@ -96,7 +96,8 @@ export function SettingsPage() {
         <SignIn me={me} />
         <PasskeySettings me={me} />
         <TwoFactorSettings me={me} />
-        <Tokens />
+        <Devices />
+        <AccessTokens />
         <Appearance />
         <YourData />
       </div>
@@ -1253,39 +1254,25 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
   );
 }
 
-function Tokens() {
+/** Where you are signed in: browsers and the CLI. Access tokens have a section of their own. */
+function Devices() {
   const list = useQuery({ queryKey: keys.tokens, queryFn: api.tokens });
-  const [name, setName] = useState("");
-  const [created, setCreated] = useState<string | null>(null);
-  const create = useMutation({
-    mutationFn: () => api.createToken({ name }),
-    onSuccess: (t) => {
-      setCreated(t.secret);
-      setName("");
-      void list.refetch();
-    },
-  });
   const revoke = useMutation({
     mutationFn: (id: string) => api.deleteToken(id),
     onSuccess: () => list.refetch(),
   });
+  const devices = list.data?.tokens.filter((t) => t.kind !== "pat") ?? [];
   return (
     <Section
-      title="Devices and tokens"
+      title="Devices"
       description="Everywhere you are signed in. Revoking signs that device out at once."
     >
       <div className="flex flex-col gap-5">
         <ul className="divide-y divide-line border-y border-line">
-          {list.data?.tokens.map((t) => (
+          {devices.map((t) => (
             <li key={t.id} className="flex items-center gap-3 py-2.5">
               <span className="text-ink-4">
-                {t.kind === "web" ? (
-                  <Monitor className="size-4" />
-                ) : t.kind === "cli" ? (
-                  <Terminal className="size-4" />
-                ) : (
-                  <KeyRound className="size-4" />
-                )}
+                {t.kind === "web" ? <Monitor className="size-4" /> : <Terminal className="size-4" />}
               </span>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px] text-ink">
@@ -1293,9 +1280,7 @@ function Tokens() {
                   {t.current && <span className="ml-2 text-[11.5px] text-accent">this device</span>}
                 </div>
                 <div className="text-[11.5px] text-ink-4">
-                  {t.kind === "pat" ? "Access token" : t.kind === "cli" ? "fctl" : "Browser"} · active{" "}
-                  {ago(t.last_used_at ?? t.created_at)}
-                  {t.expires_at && t.kind === "pat" && ` · expires ${ago(t.expires_at)}`}
+                  {t.kind === "cli" ? "fctl" : "Browser"} · active {ago(t.last_used_at ?? t.created_at)}
                 </div>
               </div>
               {!t.current && (
@@ -1306,40 +1291,6 @@ function Tokens() {
             </li>
           ))}
         </ul>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate();
-          }}
-        >
-          <Field label="New access token" hint="For scripts and CI: use it as FCTL_TOKEN.">
-            {(id) => (
-              <div className="flex gap-2">
-                <Input
-                  id={id}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="deploy bot"
-                />
-                <Button
-                  type="submit"
-                  variant="secondary"
-                  size="field"
-                  loading={create.isPending}
-                  disabled={!name}
-                >
-                  Create
-                </Button>
-              </div>
-            )}
-          </Field>
-        </form>
-        {created && (
-          <div className="animate-rise">
-            <Banner tone="warn">Copy it now: it is shown once.</Banner>
-            <CodeBox value={created} className="mt-2" />
-          </div>
-        )}
         <div className="flex items-center gap-3 text-[12.5px] text-ink-3">
           <Laptop className="size-4 text-ink-4" />
           <span className="flex-1">

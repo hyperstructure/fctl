@@ -7,9 +7,9 @@
 use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, SandboxLimits};
 use crate::session::{
-    InstanceRole, Memory, Project, ProjectRole, ProjectSettings, RepoAccess, Retrospective,
-    RetrospectiveOutcome, Session, SessionRole, SessionStatus, UserRef, WorkspaceColor,
-    WorkspaceRef, WorkspaceRole,
+    GithubAccess, InstanceRole, Memory, Project, ProjectRole, ProjectSettings, RepoAccess,
+    Retrospective, RetrospectiveOutcome, Session, SessionRole, SessionStatus, UserRef,
+    WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use crate::{
     AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId,
@@ -173,6 +173,9 @@ pub struct Me {
     /// them, and each workspace knows you by one.
     #[serde(default)]
     pub emails: Vec<EmailAddress>,
+    /// The access token of the request, when it is one. A limited one sees
+    /// only `user` and this here: the rest stays empty.
+    pub token: Option<TokenInfo>,
 }
 
 /// One of your email addresses. Each was invited to the instance on its
@@ -763,6 +766,89 @@ impl TokenKind {
     }
 }
 
+/// What a limited access token does in fctl, within what its person may
+/// (`Read` < `Run` < `Full`).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum TokenAccess {
+    /// Reads projects and sessions, as a viewer: their transcripts,
+    /// changes, memory and retrospectives. Changes nothing, starts nothing.
+    Read,
+    /// Also starts sessions, messages and interrupts their agents, stops
+    /// and resumes the sessions its person started, and keeps projects'
+    /// memory, as an editor.
+    Run,
+    /// Everything its person may do in its projects.
+    #[default]
+    Full,
+}
+
+impl TokenAccess {
+    pub const ALL: [Self; 3] = [Self::Read, Self::Run, Self::Full];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Run => "run",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(Self::Read),
+            "run" => Some(Self::Run),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+}
+
+/// What a limited access token may do. A token without one does everything
+/// its person may, as tokens did before; one with one reaches projects and
+/// sessions only, never the account, workspaces' people and settings,
+/// other tokens or administration.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct TokenScope {
+    pub access: TokenAccess,
+    /// Where it reaches: absent, every project its person sees, those to
+    /// come too.
+    pub places: Option<TokenPlaces>,
+    /// The most the agents of the sessions it starts, messages or resumes
+    /// may do on GitHub (`CreateSessionRequest::github_access`). Absent:
+    /// push.
+    pub github_access: Option<GithubAccess>,
+}
+
+/// The projects a limited access token reaches.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TokenPlaces {
+    /// Workspaces whose every project it reaches, those made later too.
+    pub workspaces: Vec<TokenPlace>,
+    /// Projects it reaches.
+    pub projects: Vec<TokenPlace>,
+}
+
+/// A workspace or project a token reaches, as it is now.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct TokenPlace {
+    pub id: String,
+    /// Absent once it is gone or its person no longer sees it: the token
+    /// reaches nothing there.
+    pub slug: Option<String>,
+    pub name: Option<String>,
+    /// A project's workspace, by name.
+    pub workspace: Option<String>,
+}
+
 /// A web session, CLI token or personal access token (never the secret).
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -777,6 +863,9 @@ pub struct TokenInfo {
     pub user_agent: Option<String>,
     /// The token used for this request.
     pub current: bool,
+    /// What an access token is limited to. Absent: it does everything its
+    /// person may (browser sessions and the CLI's sign-ins always do).
+    pub scope: Option<TokenScope>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -785,12 +874,40 @@ pub struct TokenList {
     pub tokens: Vec<TokenInfo>,
 }
 
+/// `POST /api/v1/auth/tokens`: a personal access token. With none of
+/// `access`, `workspaces`, `projects` and `github_access`, it does
+/// everything its person may; with any, it is limited ([`TokenScope`]).
+/// Control planes from before limits ignore them and make a token without
+/// any: `fctl token` checks the answer's `scope`.
 #[skip_serializing_none]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct CreateTokenRequest {
     pub name: String,
     pub expires_in_days: Option<u32>,
+    /// What it does in fctl. Absent: `full`.
+    pub access: Option<TokenAccess>,
+    /// Workspaces (ids or slugs) whose every project it reaches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub workspaces: Vec<String>,
+    /// Projects (ids or slugs) it reaches. With neither these nor
+    /// `workspaces`, every project its person sees.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub projects: Vec<String>,
+    /// The most the agents of its sessions may do on GitHub. Absent: push.
+    pub github_access: Option<GithubAccess>,
+}
+
+impl CreateTokenRequest {
+    /// Whether it asks for any limit.
+    pub fn limited(&self) -> bool {
+        self.access.is_some_and(|a| a != TokenAccess::Full)
+            || !self.workspaces.is_empty()
+            || !self.projects.is_empty()
+            || self.github_access.is_some_and(|g| g != GithubAccess::Push)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1946,6 +2063,10 @@ pub struct CreateSessionRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<AttachmentId>>", optional))]
     pub attachments: Vec<AttachmentId>,
+    /// What its agent may do on GitHub: at most what its project's
+    /// settings and the access token starting it allow, which is what it
+    /// gets when absent. Asking for more fails.
+    pub github_access: Option<GithubAccess>,
 }
 
 #[skip_serializing_none]
@@ -2094,11 +2215,12 @@ pub struct OutcomeCounts {
 // ───────────────────────────── what agents ask ─────────────────────────────
 
 /// What an agent asks of the control plane about its session's project,
-/// with `fctl memory` and `fctl retro` in its sandbox. fctl-agent hands it
-/// to its host, which sends it with its runner token
+/// with `fctl memory`, `fctl retro` and `fctl resolve` in its sandbox.
+/// fctl-agent hands it to its host, which sends it with its runner token
 /// (`POST /api/v1/runner/sessions/{id}/calls`) and hands the
 /// [`AgentAnswer`] back. Each needs the project's setting:
-/// `project_memory`, or `retrospectives`.
+/// `project_memory`, or `retrospectives`; resolving review threads needs a
+/// session whose agent may comment.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -2144,6 +2266,18 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(optional))]
         insights: Option<String>,
     },
+    /// Resolves a review thread of a pull request in a repository the
+    /// session may write to, or with `unresolve` opens it again. GitHub
+    /// lets only tokens that can push resolve threads, so the control plane
+    /// does it for agents that may comment but not push, with a token it
+    /// keeps.
+    ResolveThread {
+        /// GitHub's id of the thread (`PRRT_…`).
+        thread: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+        unresolve: bool,
+    },
 }
 
 /// The control plane's answer to an [`AgentCall`].
@@ -2169,6 +2303,21 @@ pub enum AgentAnswer {
     Retrospective {
         retrospective: Retrospective,
     },
+    /// The review thread as it is now.
+    Thread {
+        thread: ReviewThread,
+    },
+}
+
+/// A review thread of a pull request, as GitHub has it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReviewThread {
+    /// GitHub's id (`PRRT_…`).
+    pub id: String,
+    pub resolved: bool,
+    /// The pull request it is on.
+    pub pull_request_url: String,
 }
 
 // ───────────────────────────── GitHub ─────────────────────────────

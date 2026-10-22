@@ -160,7 +160,7 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
     let api = config::api(server)?;
     match cmd {
         ClaudeCmd::Status => {
-            let me = api.me().await?;
+            let me = super::auth::account(&api).await?;
             if json {
                 return style::print_json(&me.claude);
             }

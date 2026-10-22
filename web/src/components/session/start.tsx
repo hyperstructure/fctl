@@ -1,14 +1,16 @@
 // Starting a session from a prompt, on the home page and on a project's page, with the model
-// and effort level it asks for.
+// and effort level it asks for, and what its agent may do on GitHub.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowUp } from "lucide-react";
 import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { GithubAccessIcon } from "@/components/github-access";
 import { EffortIcon, Select, Spinner, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { githubOffers, onGithub } from "@/lib/github-access";
 import { type Choice, effortOffers, modelOffers, type Offer, startChoice } from "@/lib/models";
 import { keys } from "@/lib/queries";
 import type { SentFiles } from "./attachments";
@@ -19,8 +21,8 @@ export interface StartFiles {
   take: () => Promise<{ files: SentFiles; restore: () => void }>;
 }
 
-/** The model and effort level a session asks for as it starts (see `asked`). */
-export type StartAsks = Pick<G.CreateSessionRequest, "model" | "effort">;
+/** The model, effort level and GitHub access a session asks for as it starts (see `asked`). */
+export type StartAsks = Pick<G.CreateSessionRequest, "model" | "effort" | "github_access">;
 
 /**
  * Starts a session and opens it. While a start is in flight, `start` does nothing, so a double
@@ -52,6 +54,7 @@ export function useStartSession(onStarted?: (s: G.Session) => unknown) {
       if (attachments.length) body.attachments = attachments;
       if (asks?.model) body.model = asks.model;
       if (asks?.effort) body.effort = asks.effort;
+      if (asks?.github_access) body.github_access = asks.github_access;
       try {
         const s = await api.createSession(project, body);
         for (const url of Object.values(taken?.files.previews ?? {})) URL.revokeObjectURL(url);
@@ -83,23 +86,30 @@ export function useStartSession(onStarted?: (s: G.Session) => unknown) {
   };
 }
 
-type ChoiceProject = Parameters<typeof startChoice>[0];
+/** A project as a start form knows it: its repositories say whether its agents work on GitHub. */
+type ChoiceProject = Parameters<typeof startChoice>[0] &
+  Partial<Pick<G.Project, "repo" | "other_repos" | "all_repos_of">>;
 
 /**
- * The model and effort level a start form shows for `project` (see `startChoice`), and `pick`
- * for the pickers. What was picked (`picked`, starting as `kept`) stays when the project changes,
- * as far as the new one allows it.
+ * The model, effort level and GitHub access a start form shows for `project` (see
+ * `startChoice`), and `pick` for the pickers. What was picked (`picked`, starting as `kept`) stays
+ * when the project changes, as far as the new one allows it.
  */
 export function useStartChoice(project: ChoiceProject | undefined, kept?: Partial<Choice>) {
-  const [picked, setPicked] = useState<Partial<Choice>>(() => ({ model: kept?.model, effort: kept?.effort }));
+  const [picked, setPicked] = useState<Partial<Choice>>(() => ({
+    model: kept?.model,
+    effort: kept?.effort,
+    github: kept?.github,
+  }));
   const pick = useCallback((c: Partial<Choice>) => setPicked((p) => ({ ...p, ...c })), []);
-  const choice = project ? startChoice(project, picked) : { model: "", effort: "" };
+  const choice: Choice = project ? startChoice(project, picked) : { model: "", effort: "", github: "push" };
   return { choice, picked, pick };
 }
 
 // Each list is one section, whose label says what it lists.
 const MODEL = { key: "model", label: "Model" };
 const EFFORT = { key: "effort", label: "Effort" };
+const GITHUB = { key: "github", label: "On GitHub" };
 
 /** Where the project's own setting is, which sessions follow unless they ask for another. */
 const theirs = (o: Offer) => (o.own ? "The project's default" : undefined);
@@ -113,10 +123,11 @@ const joined =
   "max-sm:hover:z-10 max-sm:focus-visible:z-10 max-sm:aria-expanded:z-10 max-sm:active:scale-100";
 
 /**
- * The model and effort level pickers of a start form, in its row of controls. Where the row is
- * narrow (from `sm` to `lg`, with the sidebar beside it from `md`), they take a line of their own
- * above it, which needs the row to wrap. On a phone they show just the model's name and the effort
- * level's symbol, in one control, so that they fit in the row with the others.
+ * The model, effort level and GitHub access pickers of a start form, in its row of controls; the
+ * last only where the project's agents work on GitHub. Where the row is narrow (from `sm` to `lg`,
+ * with the sidebar beside it from `md`), they take a line of their own above it, which needs the
+ * row to wrap. On a phone they show just the model's name and the symbols of the effort level and
+ * the GitHub access, in one control, so that they fit in the row with the others.
  */
 export function StartChoices({
   project,
@@ -129,6 +140,7 @@ export function StartChoices({
   onPick: (c: Partial<Choice>) => void;
   disabled?: boolean;
 }) {
+  const github = onGithub(project);
   return (
     <div className="flex min-w-0 items-center gap-2 max-sm:gap-0 sm:max-lg:order-first sm:max-lg:w-full">
       <Select
@@ -152,7 +164,7 @@ export function StartChoices({
       <Select
         size="sm"
         narrow="bare"
-        className={cn("max-sm:-ml-px max-sm:rounded-l-none", joined)}
+        className={cn("max-sm:-ml-px max-sm:rounded-l-none", github && "max-sm:rounded-r-none", joined)}
         aria-label="Effort"
         value={choice.effort}
         disabled={disabled}
@@ -167,6 +179,25 @@ export function StartChoices({
           section: EFFORT,
         }))}
       />
+      {github && (
+        <Select
+          size="sm"
+          narrow="bare"
+          className={cn("max-sm:-ml-px max-sm:rounded-l-none", joined)}
+          aria-label="On GitHub"
+          value={choice.github}
+          disabled={disabled}
+          onChange={(g) => onPick({ github: g })}
+          options={githubOffers(project).map((l) => ({
+            value: l.value,
+            label: l.label,
+            short: "",
+            icon: <GithubAccessIcon access={l.value} />,
+            description: l.description,
+            section: GITHUB,
+          }))}
+        />
+      )}
     </div>
   );
 }

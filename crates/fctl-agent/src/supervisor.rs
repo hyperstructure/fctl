@@ -32,7 +32,7 @@ use fctl_proto::runner::{
     ClaudeCredential, ClaudeCredentialKind, CredentialKind, GitIdentity, GithubCredential,
     StopReason,
 };
-use fctl_proto::session::{ProjectSettings, RemoteControlState, SessionStatus};
+use fctl_proto::session::{GithubAccess, ProjectSettings, RemoteControlState, SessionStatus};
 use fctl_proto::uplink::{AgentEvent, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState};
 use fctl_proto::{ApiError, DeliveryId, PROTOCOL_VERSION, SessionId};
 use serde::{Deserialize, Serialize};
@@ -664,6 +664,11 @@ impl Supervisor {
                     "This project keeps no memory: its maintainers can turn it on in the project's settings.",
                 ));
             }
+            AgentCall::ResolveThread { .. } if spec.github_access == Some(GithubAccess::Read) => {
+                return Err(ApiError::forbidden(
+                    "This session's agent only reads on GitHub, so it can't resolve review threads.",
+                ));
+            }
             _ => {}
         }
         if self.host.is_none() {
@@ -854,12 +859,18 @@ impl Supervisor {
             Some("Preparing the workspace".into()),
         );
         let repos = spec.project.repos.as_deref().unwrap_or_default();
+        let github = spec.github_access.unwrap_or_default();
         if !repos.is_empty() {
             self.log(
                 LogSource::Agent,
                 LogLevel::Info,
-                &prompt::repos_line(repos, &paths.repos.display().to_string()),
+                &prompt::repos_line(repos, &paths.repos.display().to_string(), github),
             );
+        }
+        if let Some(line) = prompt::github_line(github)
+            && (spec.project.repo.is_some() || !repos.is_empty())
+        {
+            self.log(LogSource::Agent, LogLevel::Info, line);
         }
         for r in repos {
             if let Some(why) = &r.unavailable {
@@ -1074,10 +1085,14 @@ impl Supervisor {
                 );
             }
             keeps_memory = memory.is_some();
+            // An agent that comments resolves review threads through fctl.
+            let review_threads = spec.github_access == Some(GithubAccess::Comment)
+                && fctl_can(&paths, "resolve").await;
             let extras = prompt::Extras {
                 screenshot_days: days,
                 memory,
                 retrospectives,
+                review_threads,
                 now: now_ms(),
             };
             if let Err(e) = claude::write_instructions(&paths.home, &prompt::agents_md(&extras)) {
@@ -1965,6 +1980,8 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
                 fctl_domain::retrospectives::message(retrospective),
             )
         }],
+        // The tool call shows it.
+        AgentAnswer::Thread { .. } => vec![],
     }
 }
 

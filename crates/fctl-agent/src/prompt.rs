@@ -6,7 +6,7 @@ use crate::workspace::Paths;
 use fctl_domain::{files, memory, size};
 use fctl_proto::event::Attachment;
 use fctl_proto::runner::{MemorySpec, SandboxSize, SessionRepo, SessionSpec};
-use fctl_proto::session::RepoAccess;
+use fctl_proto::session::{GithubAccess, RepoAccess};
 use std::path::PathBuf;
 
 /// What `~/AGENTS.md` says besides how to name the session: what the
@@ -20,6 +20,9 @@ pub struct Extras<'a> {
     pub memory: Option<&'a MemorySpec>,
     /// The project asks for retrospectives.
     pub retrospectives: bool,
+    /// The agent may comment but not push, and resolves review threads
+    /// with `fctl resolve`.
+    pub review_threads: bool,
     /// Now, for how old the notes are.
     pub now: i64,
 }
@@ -27,10 +30,13 @@ pub struct Extras<'a> {
 /// `~/AGENTS.md`: how the agent keeps its session's title and description
 /// about the work (Claude reads it through `~/.claude/CLAUDE.md`), and what
 /// else its project turned on: how it shows screenshots in pull requests,
-/// the project's memory and how to keep it, and how to record
-/// retrospectives.
+/// resolves review threads when it may comment but not push, the project's
+/// memory and how to keep it, and how to record retrospectives.
 pub fn agents_md(extras: &Extras<'_>) -> String {
     let mut s = AGENTS_MD.to_owned();
+    if extras.review_threads {
+        s.push_str(REVIEW_THREADS_MD);
+    }
     if let Some(days) = extras.screenshot_days {
         let lasts = if days == 1 {
             "24 hours".to_owned()
@@ -183,6 +189,42 @@ fctl edit --title "Retry failed uploads in the sync worker" \
 - If `fctl edit` fails, carry on with the task.
 "#;
 
+const REVIEW_THREADS_MD: &str = r#"
+## Review threads
+
+GitHub lets only tokens that can push resolve the review threads of a pull
+request, and this session's can't push. Resolve them through fctl, which
+talks to this session directly:
+
+```sh
+fctl resolve PRRT_kwDOABCD1234 PRRT_kwDOEFGH5678   # --unresolve opens them again
+```
+
+A pull request's threads, with their ids and whether they are resolved:
+
+```sh
+gh api graphql -F owner=OWNER -F name=REPO -F number=12 -f query='
+  query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        reviewThreads(first: 100) {
+          nodes { id isResolved path line comments(first: 1) { nodes { author { login } body } } }
+        }
+      }
+    }
+  }'
+```
+
+- Resolve a thread once what it asks for is done, as when a new commit
+  fixes what your earlier review pointed out, and say so in the thread
+  first. Leave the threads of people's reviews to them unless you are
+  asked.
+- It works on pull requests of the repositories this session may comment
+  in.
+- If `fctl resolve` fails, say in your reply which threads are ready to
+  resolve.
+"#;
+
 const SCREENSHOTS_MD: &str = r#"
 ## Screenshots in pull requests
 
@@ -231,6 +273,7 @@ pub fn system_prompt(
         None if repos.is_empty() => s.push_str(&format!("- Your working directory is {workdir}. No GitHub repository is linked.\n")),
         None => s.push_str(&format!("- Your working directory is {workdir}, an empty git repository.\n")),
     }
+    let github = spec.github_access.unwrap_or_default();
     let usable = |access: RepoAccess| {
         repos
             .iter()
@@ -255,17 +298,23 @@ pub fn system_prompt(
             "- You may {also}use the repositories below. Clone one when you need it, into {dir}/<owner>/<name> (for example `git clone https://github.com/{example} {dir}/{example}`); git is signed in for them:\n"
         ));
         for r in repos {
-            s.push_str(&format!("  - {}\n", describe(r, repos)));
+            s.push_str(&format!("  - {}\n", describe(r, repos, github)));
         }
-        if writable {
+        if writable && github.pushes() {
             s.push_str(&format!(
                 "- In each of those repositories you change, work on a branch named `{}` too: check it out if it exists on the remote, otherwise create it from the default branch before your first commit. fctl pushes it after every turn, until its pull request is merged. Read-only repositories can't be pushed to.\n",
                 spec.branch
             ));
         }
-        if readable && (writable || spec.project.repo.is_some()) {
+        // An agent that only reads has one token, which reads them all.
+        if readable && (writable || spec.project.repo.is_some()) && github != GithubAccess::Read {
+            let can = if github.pushes() {
+                "write to"
+            } else {
+                "comment in"
+            };
             s.push_str(&format!(
-                "- gh is signed in for the repositories you can write to. For a read-only one, run it as `GH_TOKEN=\"$(cat {})\" gh …`.\n",
+                "- gh is signed in for the repositories you can {can}. For a read-only one, run it as `GH_TOKEN=\"$(cat {})\" gh …`.\n",
                 paths.read_token_file.display()
             ));
         }
@@ -282,11 +331,19 @@ pub fn system_prompt(
         ));
     }
     s.push_str("- Work in small, verified steps: read before you change, and run the project's tests and linters.\n");
-    s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn, until its pull request is merged; never force-push and never rewrite published history.\n");
-    if spec.project.repo.is_some() || writable {
+    let has_repos = spec.project.repo.is_some() || !repos.is_empty();
+    match github {
+        GithubAccess::Comment if has_repos => s.push_str(COMMENT_ONLY),
+        GithubAccess::Read if has_repos => s.push_str(READ_ONLY),
+        _ => {}
+    }
+    if github.pushes() {
+        s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn, until its pull request is merged; never force-push and never rewrite published history.\n");
+    }
+    if github.pushes() && (spec.project.repo.is_some() || writable) {
         s.push_str("- For another pull request, make its branch where the repository is checked out, with `git switch -c <branch> origin/<base>`, not in a worktree or another clone: the session shows the changes of the branch checked out there.\n");
     }
-    if spec.project.settings.auto_pull_request {
+    if spec.project.settings.auto_pull_request && github.pushes() {
         let describe = format!(
             "Describe what changed and why, how you verified it, and link the session: {}",
             spec.web_url
@@ -329,11 +386,19 @@ pub fn system_prompt(
     s
 }
 
-/// One of the other repositories, as the system prompt lists it.
-fn describe(r: &SessionRepo, all: &[SessionRepo]) -> String {
-    let access = match r.access {
-        RepoAccess::Write => "read and write",
-        RepoAccess::Read => "read only",
+/// What an agent that may comment, not push, is told.
+const COMMENT_ONLY: &str = "- In this session you read the repositories and review and comment on GitHub, but you can't push: gh reviews and comments on pull requests (`gh pr review`, `gh pr comment`, line comments through `gh api`), and comments on and labels issues, while git can't push, nor does fctl push for you. Change files only to check something, as when you run a pull request's tests on its branch (`gh pr checkout <number>`): what you find goes in your review and comments, with fixes as suggested changes, and in your reply. Approve a pull request only when you are asked to.\n";
+
+/// What an agent that only reads is told.
+const READ_ONLY: &str = "- In this session you only read on GitHub: the repositories, pull requests, issues and CI results. You can't push, comment, review or open issues or pull requests, and fctl pushes nothing. Change files only to check something, as when you run the code or its tests: what you find goes in your reply.\n";
+
+/// One of the other repositories, as the system prompt lists it, for an
+/// agent that may do `github` on GitHub.
+fn describe(r: &SessionRepo, all: &[SessionRepo], github: GithubAccess) -> String {
+    let access = match (r.access, github) {
+        (RepoAccess::Write, GithubAccess::Push) => "read and write",
+        (RepoAccess::Write, GithubAccess::Comment) => "read and comment",
+        (RepoAccess::Write, GithubAccess::Read) | (RepoAccess::Read, _) => "read only",
     };
     match (&r.name, &r.unavailable) {
         (Some(name), Some(_)) => format!(
@@ -348,16 +413,36 @@ fn describe(r: &SessionRepo, all: &[SessionRepo]) -> String {
     }
 }
 
-/// The repositories for the transcript: `acme/lib (read and write), …`.
-pub fn repos_line(repos: &[SessionRepo], dir: &str) -> String {
+/// What the transcript says of an agent that may do less than push on
+/// GitHub.
+pub fn github_line(github: GithubAccess) -> Option<&'static str> {
+    match github {
+        GithubAccess::Push => None,
+        GithubAccess::Comment => Some(
+            "The agent reviews and comments on GitHub in this session: its token can't push, and fctl pushes nothing.",
+        ),
+        GithubAccess::Read => Some(
+            "The agent only reads on GitHub in this session: its token can't push, comment or review, and fctl pushes nothing.",
+        ),
+    }
+}
+
+/// The repositories for the transcript: `acme/lib (read and write), …`,
+/// for an agent that may do `github` on GitHub.
+pub fn repos_line(repos: &[SessionRepo], dir: &str, github: GithubAccess) -> String {
     let list: Vec<String> = repos
         .iter()
         .map(|r| {
             let label = r.grant().label();
-            match (r.access, &r.unavailable) {
-                (_, Some(_)) => format!("{label} (unavailable)"),
-                (RepoAccess::Write, None) => format!("{label} (read and write)"),
-                (RepoAccess::Read, None) => format!("{label} (read only)"),
+            match (r.access, &r.unavailable, github) {
+                (_, Some(_), _) => format!("{label} (unavailable)"),
+                (RepoAccess::Write, None, GithubAccess::Push) => {
+                    format!("{label} (read and write)")
+                }
+                (RepoAccess::Write, None, GithubAccess::Comment) => {
+                    format!("{label} (read and comment)")
+                }
+                (RepoAccess::Write | RepoAccess::Read, None, _) => format!("{label} (read only)"),
             }
         })
         .collect();
@@ -531,6 +616,7 @@ mod tests {
             pull_requests: vec![],
             memory: None,
             retrospectives: false,
+            github_access: None,
         }
     }
 
@@ -721,6 +807,73 @@ mod tests {
         assert!(!text.contains("For another pull request"));
     }
 
+    fn with_access(github: GithubAccess) -> SessionSpec {
+        let repos = serde_json::json!([
+            { "owner": "acme", "name": "lib", "access": "write" },
+            { "owner": "acme", "name": "docs", "access": "read" }
+        ]);
+        SessionSpec {
+            github_access: Some(github),
+            ..spec_with(repos)
+        }
+    }
+
+    #[test]
+    fn agents_that_comment_review_and_push_nothing() {
+        let text = system_prompt(
+            &with_access(GithubAccess::Comment),
+            "/home/agent/workspace",
+            &paths(),
+            None,
+        );
+        assert!(text.contains("  - acme/lib (read and comment)\n"));
+        assert!(text.contains("  - acme/docs (read only)\n"));
+        assert!(text.contains("review and comment on GitHub, but you can't push"));
+        assert!(text.contains("gh is signed in for the repositories you can comment in"));
+        assert!(text.contains("Approve a pull request only when you are asked to."));
+        assert!(!text.contains("work on a branch named"));
+        assert!(!text.contains("Commit as you go"));
+        assert!(!text.contains("gh pr create"));
+        assert!(!text.contains("For another pull request"));
+        assert!(github_line(GithubAccess::Comment).is_some_and(|l| l.contains("can't push")));
+    }
+
+    #[test]
+    fn agents_that_read_write_nothing() {
+        let text = system_prompt(
+            &with_access(GithubAccess::Read),
+            "/home/agent/workspace",
+            &paths(),
+            None,
+        );
+        assert!(text.contains("  - acme/lib (read only)\n"));
+        assert!(text.contains("In this session you only read on GitHub"));
+        // One token reads every repository, so gh needs no other.
+        assert!(!text.contains("GH_TOKEN"));
+        assert!(!text.contains("Commit as you go"));
+        assert!(!text.contains("gh pr create"));
+        assert_eq!(github_line(GithubAccess::Push), None);
+        // Without a repository there is nothing to say.
+        let none = SessionSpec {
+            github_access: Some(GithubAccess::Read),
+            ..spec()
+        };
+        assert!(!system_prompt(&none, "/work", &paths(), None).contains("only read on GitHub"));
+    }
+
+    #[test]
+    fn agents_md_says_how_to_resolve_review_threads_when_they_comment() {
+        let extras = Extras {
+            review_threads: true,
+            ..Extras::default()
+        };
+        let text = agents_md(&extras);
+        assert!(text.contains("## Review threads"));
+        assert!(text.contains("fctl resolve PRRT_"));
+        assert!(text.contains("reviewThreads(first: 100)"));
+        assert!(!agents_md(&Extras::default()).contains("Review threads"));
+    }
+
     #[test]
     fn repositories_for_the_transcript() {
         let repos: Vec<SessionRepo> = serde_json::from_value(serde_json::json!([
@@ -730,8 +883,15 @@ mod tests {
         ]))
         .unwrap_or_default();
         assert_eq!(
-            repos_line(&repos, "/root/repos"),
+            repos_line(&repos, "/root/repos", GithubAccess::Push),
             "Other repositories, cloned when the agent needs them into /root/repos: acme/lib (read and write), acme/* (read only), acme/gone (unavailable)"
+        );
+        assert_eq!(
+            repos_line(&repos, "/root/repos", GithubAccess::Comment),
+            "Other repositories, cloned when the agent needs them into /root/repos: acme/lib (read and comment), acme/* (read only), acme/gone (unavailable)"
+        );
+        assert!(
+            repos_line(&repos, "/root/repos", GithubAccess::Read).contains("acme/lib (read only)")
         );
     }
 

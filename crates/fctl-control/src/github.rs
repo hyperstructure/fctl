@@ -11,10 +11,11 @@ use crate::crypto;
 use crate::error::{AppError, AppResult, internal, not_configured, unavailable};
 use base64::Engine;
 use fctl_domain::github::Seen;
-use fctl_domain::repos::{ReadScope, TokenPlan};
+use fctl_domain::repos::{self, ReadScope, TokenPlan};
+use fctl_domain::threads;
 use fctl_proto::api::GithubRepo;
 use fctl_proto::runner::GithubCredential;
-use fctl_proto::session::RepoRef;
+use fctl_proto::session::{GithubAccess, RepoRef};
 use fctl_proto::{ApiError, ErrorCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -157,33 +158,6 @@ struct UserToken {
     access_token: Option<String>,
     #[serde(default)]
     error: Option<String>,
-}
-
-/// The permissions agents get on repositories they may write to.
-pub fn session_permissions() -> Value {
-    json!({
-        "contents": "write",
-        "pull_requests": "write",
-        "issues": "write",
-        "workflows": "write",
-        "checks": "read",
-        "actions": "read",
-        "statuses": "read",
-        "metadata": "read"
-    })
-}
-
-/// The permissions agents get on read-only repositories.
-pub fn read_permissions() -> Value {
-    json!({
-        "contents": "read",
-        "pull_requests": "read",
-        "issues": "read",
-        "checks": "read",
-        "actions": "read",
-        "statuses": "read",
-        "metadata": "read"
-    })
 }
 
 /// A session's tokens (see [`TokenPlan`]).
@@ -643,11 +617,17 @@ impl<'a> Github<'a> {
             .map_err(|(_, msg)| refused(&msg))
     }
 
-    /// Tokens for a session's repositories. A listed repository the
+    /// Tokens for a session's repositories, whose agent may do `access` on
+    /// GitHub in those it may write to. A listed repository the
     /// installation cannot reach (it left the installation, was renamed or
     /// deleted) is left out and reported, so one stale entry does not stop
     /// every session; the caller decides about the primary repository.
-    pub async fn session_tokens(&self, inst: u64, plan: &TokenPlan) -> AppResult<SessionTokens> {
+    pub async fn session_tokens(
+        &self,
+        inst: u64,
+        plan: &TokenPlan,
+        access: GithubAccess,
+    ) -> AppResult<SessionTokens> {
         let mut listed = plan.write.clone();
         if let ReadScope::Repos(names) = &plan.read {
             listed.extend(names.iter().cloned());
@@ -658,16 +638,16 @@ impl<'a> Github<'a> {
             unreachable: Vec::new(),
         };
         let write = self
-            .listed_token(inst, &plan.write, session_permissions(), &mut reach)
+            .listed_token(inst, &plan.write, repos::permissions(access), &mut reach)
             .await?;
         let read = match &plan.read {
             ReadScope::None => None,
             ReadScope::All => Some(
-                self.installation_token(inst, None, Some(read_permissions()))
+                self.installation_token(inst, None, Some(repos::read_permissions()))
                     .await?,
             ),
             ReadScope::Repos(names) => {
-                self.listed_token(inst, names, read_permissions(), &mut reach)
+                self.listed_token(inst, names, repos::read_permissions(), &mut reach)
                     .await?
             }
         };
@@ -823,6 +803,77 @@ impl<'a> Github<'a> {
             return Err(unavailable("GitHub did not answer"));
         }
         Ok(answer)
+    }
+
+    /// Review thread `id`, as installation `inst` sees it: the pull
+    /// request it is on, and whether it is resolved. `None` when GitHub has
+    /// no thread by that id there.
+    pub async fn review_thread(&self, inst: u64, id: &str) -> AppResult<Option<threads::Found>> {
+        let token = self.lookup_token(inst).await?;
+        let (status, answer) = self
+            .call(
+                Method::Post,
+                "/graphql",
+                &format!("token {token}"),
+                Some(threads::lookup(id)),
+            )
+            .await?;
+        if status == 401 {
+            LOOKUP_TOKENS.with(|m| m.borrow_mut().remove(&inst));
+        }
+        if status != 200 {
+            worker::console_error!("looking up a review thread: GitHub answered {status}");
+            return Err(unavailable("GitHub did not answer"));
+        }
+        Ok(threads::found(&answer))
+    }
+
+    /// Resolves review thread `id` of `repo`, or opens it again, and says
+    /// whether it is resolved now. GitHub asks for a token that may write
+    /// `repo`'s contents, which could push: this one is for `repo` alone,
+    /// does this alone and is revoked after it, and never leaves the
+    /// control plane.
+    pub async fn resolve_thread(
+        &self,
+        inst: u64,
+        repo: &RepoRef,
+        id: &str,
+        unresolve: bool,
+    ) -> AppResult<bool> {
+        let token = self
+            .installation_token(
+                inst,
+                Some(&[repo.name.as_str()]),
+                Some(repos::resolve_permissions()),
+            )
+            .await?;
+        let auth = format!("token {}", token.token);
+        let answer = self
+            .call(
+                Method::Post,
+                "/graphql",
+                &auth,
+                Some(threads::resolve(id, unresolve)),
+            )
+            .await;
+        // An hour left on it, which nothing needs.
+        if let Err(e) = self
+            .call(Method::Delete, "/installation/token", &auth, None)
+            .await
+        {
+            worker::console_error!("revoking a token: {}", e.0.message);
+        }
+        let (status, answer) = answer?;
+        if status != 200 {
+            worker::console_error!("resolving a review thread: GitHub answered {status}");
+            return Err(unavailable("GitHub did not answer"));
+        }
+        threads::resolved(&answer).map_err(|message| {
+            AppError(ApiError::new(
+                ErrorCode::Forbidden,
+                format!("GitHub didn't change the review thread: {message}"),
+            ))
+        })
     }
 
     async fn installation_call(
