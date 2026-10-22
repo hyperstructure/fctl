@@ -2,6 +2,25 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.19.0 (2026-10-22)
+
+### Features
+
+- **web:** Show the sidebar at once from a copy kept in the browser ([#210](https://github.com/hyperstructure/fctl/pull/210))
+- Let agents update their session's retrospectives ([#211](https://github.com/hyperstructure/fctl/pull/211))
+- **web:** Rename Home to Agent Floor and light its row up on hover ([#216](https://github.com/hyperstructure/fctl/pull/216))
+- Confirm it's you with a passkey or a code before sensitive actions ([#222](https://github.com/hyperstructure/fctl/pull/222))
+
+### Fixes
+
+- **web:** Fit Start beside the task box's pickers on desktop ([#212](https://github.com/hyperstructure/fctl/pull/212))
+- **web:** Say another GitHub account is optional once one is connected ([#214](https://github.com/hyperstructure/fctl/pull/214))
+- Close the access gaps a security review of all of fctl found ([#215](https://github.com/hyperstructure/fctl/pull/215))
+- **agent:** Keep sessions running while Claude takes subagents' reports ([#217](https://github.com/hyperstructure/fctl/pull/217))
+- **control:** Count each check of a pull request by its latest run ([#218](https://github.com/hyperstructure/fctl/pull/218))
+- **web:** Keep the Agent Floor's label bold in the sidebar ([#220](https://github.com/hyperstructure/fctl/pull/220))
+- **web:** Close the phone sidebar at once when a link in it opens a page ([#221](https://github.com/hyperstructure/fctl/pull/221))
+
 ## 0.18.0 (2026-10-22)
 
 ### Features
