@@ -416,6 +416,37 @@ fn to_agent(l: &AgentLink, frame: HostToAgent, agent_files: bool, uplink: &Uplin
 /// What publishing a screenshot came to, for the agent that asked.
 type Published = (String, std::result::Result<PublishedFile, ApiError>);
 
+/// The most screenshots and calls one session's agent has the host send at
+/// once. What runs in a sandbox can pose as its agent, and each holds up
+/// to a frame's worth of memory on a host that runs other sessions too.
+const MAX_IN_FLIGHT: usize = 8;
+
+/// Why the host doesn't take another screenshot or call from a session's
+/// agent now: it has [`MAX_IN_FLIGHT`] of them under way.
+fn busy(in_flight: usize) -> Option<ApiError> {
+    (in_flight >= MAX_IN_FLIGHT).then(|| {
+        ApiError::new(
+            ErrorCode::RateLimited,
+            "The host is still sending this session's other screenshots and calls. Try again in a moment.",
+        )
+    })
+}
+
+/// Why the host doesn't upload a screenshot: its bytes (`data`, base64)
+/// are more than the control plane takes, which fctl-agent checks too.
+fn oversized(data: &str) -> Option<ApiError> {
+    let most = 4 * (fctl_domain::published::MAX_BYTES as usize).div_ceil(3);
+    (data.len() > most).then(|| {
+        ApiError::validation(
+            "file",
+            format!(
+                "Screenshots can be at most {}",
+                fctl_domain::files::human_size(fctl_domain::published::MAX_BYTES)
+            ),
+        )
+    })
+}
+
 /// Uploads a screenshot the agent publishes (`fctl publish`), retrying what
 /// may pass, and hands the answer back for the agent.
 fn publish(
@@ -573,7 +604,12 @@ async fn prepare(ctx: &HostCtx, spec: &SessionSpec, uplink: &Uplink) -> Result<S
             ));
             (crate::build::image(ctx, spec, &log_uplink).await?, None)
         }
-        ImageWant::Image(image) => (image, None),
+        // The control plane checked the reference; the host takes none that
+        // its runtime could read as anything else (`-…`, a flag).
+        ImageWant::Image(image) => match fctl_domain::image::ImageRef::parse(&image) {
+            Some(_) if !image.starts_with('-') => (image, None),
+            _ => anyhow::bail!("The project's image isn't an image reference: {image}"),
+        },
         _ => (ctx.cfg.image(), ctx.cfg.fallback_image()),
     };
     let size = ctx.sandbox_size(spec);
@@ -615,6 +651,8 @@ async fn run(
     let (jobs, mut ready) = files::start(api.clone(), session_id.clone());
     let (published_tx, mut published_rx) = mpsc::unbounded_channel::<Published>();
     let (answered_tx, mut answered_rx) = mpsc::unbounded_channel::<Answered>();
+    // Screenshots and calls under way (`MAX_IN_FLIGHT`).
+    let mut in_flight: usize = 0;
     let set_report = |status: SessionStatus, seq: Option<u64>| {
         if let Ok(mut r) = report.lock() {
             r.status = status;
@@ -830,10 +868,20 @@ async fn run(
                         let _ = events.send(SessionEvent::CredentialRequest { session_id: session_id.clone(), request_id, kind });
                     }
                     AgentToHost::Publish { request_id, name, data } => {
-                        publish(api.clone(), session_id.clone(), request_id, name, data, published_tx.clone());
+                        if let Some(error) = busy(in_flight).or_else(|| oversized(&data)) {
+                            l.send(HostToAgent::Published { request_id, file: None, error: Some(error) });
+                        } else {
+                            in_flight += 1;
+                            publish(api.clone(), session_id.clone(), request_id, name, data, published_tx.clone());
+                        }
                     }
                     AgentToHost::Call { request_id, call: c } => {
-                        call(api.clone(), session_id.clone(), request_id, c, answered_tx.clone());
+                        if let Some(error) = busy(in_flight) {
+                            l.send(HostToAgent::Answer { request_id, answer: None, error: Some(error) });
+                        } else {
+                            in_flight += 1;
+                            call(api.clone(), session_id.clone(), request_id, c, answered_tx.clone());
+                        }
                     }
                     AgentToHost::Exited { status, reason } => {
                         set_report(status, None);
@@ -897,6 +945,7 @@ async fn run(
                 },
             },
             Some((request_id, result)) = published_rx.recv() => {
+                in_flight = in_flight.saturating_sub(1);
                 let (file, error) = match result {
                     Ok(file) => (Some(file), None),
                     Err(e) => (None, Some(e)),
@@ -908,6 +957,7 @@ async fn run(
                 }
             }
             Some((request_id, result)) = answered_rx.recv() => {
+                in_flight = in_flight.saturating_sub(1);
                 let (answer, error) = match result {
                     Ok(answer) => (Some(answer), None),
                     Err(e) => (None, Some(e)),
