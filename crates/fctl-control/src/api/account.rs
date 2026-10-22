@@ -599,7 +599,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "devices_and_tokens".into(),
         rows(
             ctx,
-            "SELECT kind, name, user_agent, ip, created_at, last_used_at, expires_at, scope FROM tokens WHERE user_id = ? ORDER BY created_at",
+            "SELECT kind, name, user_agent, ip, created_at, last_used_at, expires_at, scope, verified_at FROM tokens WHERE user_id = ? ORDER BY created_at",
             &me(),
         )
         .await?,
@@ -608,7 +608,8 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "cli_sign_in_requests".into(),
         rows(
             ctx,
-            "SELECT client_name, status, ip, location, user_agent, created_at, expires_at FROM device_codes WHERE user_id = ? ORDER BY created_at",
+            "SELECT client_name, CASE WHEN token_id IS NULL THEN 'sign_in' ELSE 'confirm' END AS purpose, status, ip, location, user_agent, created_at, expires_at \
+             FROM device_codes WHERE user_id = ? ORDER BY created_at",
             &me(),
         )
         .await?,
