@@ -85,7 +85,13 @@ export class TranscriptBuilder {
     for (const ev of events) {
       if (this.seen.has(ev.seq)) continue;
       this.seen.add(ev.seq);
-      this.apply(items, ev);
+      // Events come from the sandbox too, where anything can pose as the
+      // agent: one this app can't read is left out, not the page broken.
+      try {
+        this.apply(items, ev);
+      } catch {
+        // Left out.
+      }
     }
     this.items = items;
     return items;

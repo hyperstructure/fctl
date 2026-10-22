@@ -20,7 +20,7 @@ import {
   TriangleAlert,
   Unplug,
 } from "lucide-react";
-import { type MouseEvent, memo, type ReactNode, useMemo, useRef, useState } from "react";
+import { Component, type MouseEvent, memo, type ReactNode, useMemo, useRef, useState } from "react";
 import { ImageSizes, Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
 import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
@@ -72,6 +72,28 @@ function Milestone({
       <span className="min-w-0">{children}</span>
     </div>
   );
+}
+
+/**
+ * One item of the transcript, or a line in its place when it can't be shown: events come from the session's sandbox,
+ * where anything can pose as the agent, and one this app can't read mustn't take the page down for everyone.
+ */
+class Unreadable extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? (
+      <Milestone icon={<CircleAlert />} tone="warn">
+        This event couldn't be shown
+      </Milestone>
+    ) : (
+      this.props.children
+    );
+  }
 }
 
 const UserMessage = memo(function UserMessage({
@@ -711,16 +733,18 @@ export const Transcript = memo(function Transcript({
           )}
           {items.map((it, i) => (
             <div key={it.key} data-item>
-              <ItemView
-                item={it}
-                live={it.kind === "tool" ? live : undefined}
-                sessionId={sessionId}
-                running={it.kind === "tool" ? running && i > turnStart : undefined}
-                stalled={it.kind === "setup" ? !!stall : undefined}
-                canManage={canManage}
-                claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}
-                projectSlug={projectSlug}
-              />
+              <Unreadable>
+                <ItemView
+                  item={it}
+                  live={it.kind === "tool" ? live : undefined}
+                  sessionId={sessionId}
+                  running={it.kind === "tool" ? running && i > turnStart : undefined}
+                  stalled={it.kind === "setup" ? !!stall : undefined}
+                  canManage={canManage}
+                  claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}
+                  projectSlug={projectSlug}
+                />
+              </Unreadable>
             </div>
           ))}
           <LiveTurnView live={live} status={status} stall={stall} />

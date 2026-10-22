@@ -102,6 +102,23 @@ describe("TranscriptBuilder", () => {
     expect(b.latestGit?.files).toHaveLength(3);
   });
 
+  it("leaves out events it can't read", () => {
+    const b = new TranscriptBuilder();
+    const items = b.add([
+      claude({ type: "assistant" }),
+      claude({
+        type: "assistant",
+        message: { id: "m0", content: [{ type: "text", text: 7 }] },
+        parent_tool_use_id: null,
+      }),
+      claude({ type: "user", message: null, parent_tool_use_id: null }),
+      claude({ type: "rate_limit_event" }),
+      ev("git", null),
+      assistant("m1", [{ type: "text", text: "Still here." }]),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["prose"]);
+  });
+
   it("ignores events it has already seen", () => {
     const b = new TranscriptBuilder();
     const e = ev("user_message", { id: "dlv_1", text: "hi", source: "web" });
