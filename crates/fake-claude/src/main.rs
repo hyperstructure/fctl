@@ -162,16 +162,16 @@ const SUBAGENT_STEPS: [Step; 3] = [
         command: "ls -la",
         description: "List the files",
     },
-    Step::Text("Now the recent commits."),
+    Step::Text("Now the branch."),
     Step::Bash {
-        command: "git log --oneline -5",
-        description: "Read the recent commits",
+        command: "git status --short --branch",
+        description: "Check the branch",
     },
 ];
 const SUBAGENT_DESCRIPTION: &str = "Look around the working directory";
-const SUBAGENT_PROMPT: &str = "List the files in the working directory and read its recent commits. Report in a sentence whether anything needs attention.";
+const SUBAGENT_PROMPT: &str = "List the files in the working directory and check its branch. Report in a sentence whether anything needs attention.";
 const SUBAGENT_REPORT: &str =
-    "The working directory and its recent commits look as expected: nothing needs attention.";
+    "The working directory and its branch look as expected: nothing needs attention.";
 
 impl Session {
     fn sleep(&self) {
@@ -443,7 +443,7 @@ impl Session {
     fn start_subagent(&mut self, background: bool) -> Subagent {
         let agent = Subagent {
             tool_use_id: format!("toolu_{}", short_id(12)),
-            task_id: format!("a{}", short_id(16)),
+            task_id: format!("a{}", short_id(12)),
             description: SUBAGENT_DESCRIPTION.to_owned(),
             started: Instant::now(),
             tool_uses: 0,
