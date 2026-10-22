@@ -326,7 +326,7 @@ function Note({
   });
   const next = replacement(all, note);
   // The note it repeats, unless a newer one took its place since.
-  const first = next ? undefined : original(all, note);
+  const repeated = next ? undefined : original(all, note);
   const author = note.created_by;
   return (
     <li id={noteAnchor(note.id)} className="group/note scroll-mt-24 border-b border-line py-1">
@@ -377,7 +377,7 @@ function Note({
                 ) : note.stale.by ? (
                   `, marked by ${note.stale.by.name}`
                 ) : null}
-                {note.stale.reason && !next && !first ? `: ${note.stale.reason}` : ""}
+                {note.stale.reason && !next && !repeated ? `: ${note.stale.reason}` : ""}
                 {next && (
                   <>
                     {": "}
@@ -390,12 +390,12 @@ function Note({
                     </button>
                   </>
                 )}
-                {first && (
+                {repeated && (
                   <>
                     {": "}
                     <button
                       type="button"
-                      onClick={() => onShow(first.id)}
+                      onClick={() => onShow(repeated.id)}
                       className="text-ink-2 underline underline-offset-2 hover:text-ink"
                     >
                       a duplicate of another note
