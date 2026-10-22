@@ -1250,13 +1250,14 @@ the rest of a partial one), `~/AGENTS.md` asks the agent to update that
 one rather than record another: `fctl retro update rtr_… --outcome
 completed …` replaces the outcome and the parts it gives and keeps the
 others, and `fctl retro list` in the sandbox lists the session's own, with
-their ids. The control plane changes only retrospectives of the calling
-session, in place, and keeps when (`updated_at`); the transcript shows the
-retrospective as it now is in a `retrospective_updated` notice, and keeps
-the earlier notices as they were. A new one is for different work. Where
-the sandbox's fctl can't update them (fctl-agent asks `fctl retro update
---help`), `~/AGENTS.md` asks instead for one for each follow-up that
-changes the work.
+their ids, which the agent checks before it records one (a resumed run may
+start without its conversation). The control plane changes only
+retrospectives of the calling session, in place, and keeps when
+(`updated_at`); the transcript shows the retrospective as it now is in a
+`retrospective_updated` notice, and keeps the earlier notices as they
+were. A new one is for different work. Where the sandbox's fctl can't
+update them (fctl-agent asks `fctl retro update --help`), `~/AGENTS.md`
+asks instead for one for each follow-up that changes the work.
 
 The session page shows the newest beside the transcript and all of them a
 click away, each saying when its agent last updated it, and the project's

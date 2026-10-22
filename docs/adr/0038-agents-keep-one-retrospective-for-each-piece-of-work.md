@@ -33,9 +33,10 @@ retrospectives; people delete them.
   retrospective only for the session that recorded it, under the same
   `retrospectives` setting, and keeps when (`updated_at`); updates don't
   count toward the 50 a session records. `fctl retro` prints the id it
-  recorded, and `fctl retro list` in a sandbox lists the session's own, so
-  that an agent that lost its conversation (a resume on another runner, a
-  compacted context) finds it.
+  recorded, and `fctl retro list` in a sandbox lists the session's own,
+  which `~/AGENTS.md` asks the agent to check before it records one: an
+  agent that lost its conversation (a resume on another runner, a
+  compacted context) still finds the one to update.
 - **Unlike notes.** Agents still neither change nor delete notes: a note
   speaks to every later session, and a mistake in one stays visible until
   a person cleans it up. A retrospective is one session's account of its

@@ -178,8 +178,9 @@ const RETROSPECTIVE_UPDATES_MD: &str = r#"- One for each piece of work, not one 
     --challenges "The worker's tests need MinIO, which CI lacked until #42."
   ```
 
-  The parts you give replace what it said, and the others stay.
-  `fctl retro list` lists this session's retrospectives, with their ids.
+  The parts you give replace what it said, and the others stay. Before
+  you record one, check `fctl retro list`: it lists this session's
+  retrospectives, with their ids.
 - Record another one when the session turns to different work. A turn
   that only answers a question needs none.
 "#;
@@ -1095,7 +1096,9 @@ mod tests {
         });
         assert!(md.contains("One for each piece of work, not one for each turn."));
         assert!(md.contains("fctl retro update rtr_… --outcome completed"));
-        assert!(md.contains("`fctl retro list` lists this session's retrospectives"));
+        assert!(md.contains(
+            "Before\n  you record one, check `fctl retro list`: it lists this session's\n  retrospectives"
+        ));
         assert!(md.contains("Record another one when the session turns to different work."));
         assert!(!md.contains("gets one of its own"));
         assert!(md.ends_with("- If `fctl retro` fails, carry on.\n"));
