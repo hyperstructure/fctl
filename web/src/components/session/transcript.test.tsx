@@ -12,6 +12,8 @@ vi.mock("@/components/ui", async () => {
     await vi.importActual<typeof import("@/components/ui/lightbox")>("@/components/ui/lightbox");
   const { Gallery, useLightbox } =
     await vi.importActual<typeof import("@/components/ui/gallery")>("@/components/ui/gallery");
+  const { ThoughtIcon } =
+    await vi.importActual<typeof import("@/components/ui/icons")>("@/components/ui/icons");
   return {
     Avatar: () => null,
     Button: () => null,
@@ -20,6 +22,7 @@ vi.mock("@/components/ui", async () => {
     Gallery,
     plainClick,
     Spinner: () => <svg className="animate-spin" />,
+    ThoughtIcon,
     toast: vi.fn(),
     useLightbox,
   };
@@ -217,17 +220,19 @@ describe("a subagent", () => {
     const row = open(c, "Delegated");
     expect(row?.getAttribute("aria-expanded")).toBe("true");
     const text = c.textContent ?? "";
-    expect(text).toContain("Prompt· Explore");
+    expect(text).toContain("PromptExplore");
     expect(text).not.toContain("Read the webhook handler and report what it checks.");
-    expect(text).toContain("Read…/fctl-control/src/github.rs");
+    expect(text).toContain("Readcrates/fctl-control/src/github.rs");
     expect(text).toContain("It verifies signatures first.");
-    expect(text).toContain("RanFind the callers");
+    // A command says what it is for.
+    expect(text).toContain("Find the callers");
+    expect(text).not.toContain("Ran");
     expect(text).toContain("The handler checks signatures first.");
     expect(text).toContain("Finished in 12 s");
     open(c, "Prompt");
     expect(c.textContent).toContain("Read the webhook handler and report what it checks.");
     // Its steps open too.
-    open(c, "RanFind the callers");
+    open(c, "Find the callers");
     expect(c.textContent).toContain("src/routes.rs:12");
   });
 
@@ -281,6 +286,149 @@ describe("a subagent", () => {
     expect(c.querySelector("button")?.className).toContain("text-danger");
     open(c, "Delegated");
     expect(c.textContent).toContain("Failed after 3.0 s");
+  });
+});
+
+describe("a run of work", () => {
+  const call = (name: string, input: Record<string, string>, result?: string, isError = false): Item => ({
+    kind: "tool",
+    key: `call-${++seq}`,
+    seq,
+    ts: seq * 1000,
+    id: `toolu_${seq}`,
+    name,
+    input,
+    result: result === undefined ? undefined : { text: result, isError, ts: seq * 1000 + 500 },
+    children: 0,
+  });
+  const bash = (description: string, result?: string, isError = false) =>
+    call("Bash", { command: "true", description }, result, isError);
+  const thought = (text: string): Item => ({
+    kind: "thinking",
+    key: `th-${++seq}`,
+    seq,
+    ts: seq * 1000,
+    text,
+  });
+  const line = (c: HTMLElement, text: string) =>
+    [...c.querySelectorAll("button")].find((b) => b.textContent?.startsWith(text));
+  /** A transcript that takes new items, as the session's events come. */
+  function mount(items: Item[], status: "running" | "idle", live = emptyLive()) {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const client = new QueryClient();
+    const draw = (next: Item[]) =>
+      act(() =>
+        root.render(
+          <QueryClientProvider client={client}>
+            <Transcript
+              sessionId="ses_1"
+              startedBy={ada}
+              items={next}
+              live={live}
+              status={status}
+              onLoadOlder={() => {}}
+              hasMoreBefore={false}
+              loadingOlder={false}
+            />
+          </QueryClientProvider>,
+        ),
+      );
+    draw(items);
+    roots.push(() => act(() => root.unmount()));
+    return { container, draw };
+  }
+
+  it("folds the calls and thoughts between what the agent says into a line that opens into them", () => {
+    const init: Item = {
+      kind: "init",
+      key: "init",
+      seq: 0,
+      ts: 0,
+      model: "claude-opus-5-5",
+      cwd: "/srv/app",
+    };
+    const c = transcript(
+      [
+        init,
+        prose("Looking."),
+        bash("List the files", "a"),
+        thought("The README says how."),
+        call("Read", { file_path: "/srv/app/README.md" }, "# App"),
+        bash("Check the branch", "main"),
+        prose("Done."),
+      ],
+      "idle",
+    );
+    const run = line(c, "Ran 2 commands, read 1 file");
+    expect(run?.getAttribute("aria-expanded")).toBe("false");
+    // How long it took.
+    expect(run?.textContent).toMatch(/\d(\.\d)? s$/);
+    expect(c.textContent).not.toContain("List the files");
+    act(() => run?.click());
+    expect(run?.getAttribute("aria-expanded")).toBe("true");
+    const text = c.textContent ?? "";
+    expect(text).toContain("List the files");
+    expect(text).toContain("Thought it through");
+    // From where Claude Code works.
+    expect(text).toContain("ReadREADME.md");
+    expect(text).toContain("Check the branch");
+    act(() => run?.click());
+    expect(c.textContent).not.toContain("List the files");
+  });
+
+  it("leaves a call on its own on a line of its own", () => {
+    const c = transcript([prose("Looking."), bash("List the files", "a"), prose("Done.")], "idle");
+    expect(line(c, "List the files")).toBeDefined();
+  });
+
+  it("says what it did while it goes on, with its call in progress under it", () => {
+    const c = transcript([bash("List the files", "a"), bash("Run the tests")], "running");
+    expect(line(c, "Ran 1 command")).toBeDefined();
+    expect(line(c, "Run the tests")).toBeDefined();
+    expect(c.textContent).not.toContain("List the files");
+    expect(spinners(c)).toBe(1);
+    // Calls at once, none done yet.
+    const both = transcript([bash("List the files"), bash("Run the tests")], "running");
+    expect(line(both, "Running 2 commands")).toBeDefined();
+    expect(spinners(both)).toBe(2);
+    // Once the turn is over, it says what it did.
+    const done = transcript([bash("List the files", "a"), bash("Run the tests", "ok"), turn()], "idle");
+    expect(line(done, "Ran 2 commands")).toBeDefined();
+    expect(done.textContent).not.toContain("Run the tests");
+  });
+
+  it("shows the thought or call streaming in where it will go, once", () => {
+    const live = {
+      ...emptyLive(),
+      blocks: [{ index: 0, type: "tool_use" as const, text: "", name: "Bash", done: false }],
+    };
+    const { container } = mount(
+      [bash("List the files", "a"), bash("Check the branch", "main")],
+      "running",
+      live,
+    );
+    expect(container.querySelector("[data-item]")?.textContent).toContain("Preparing Bash");
+    expect(container.textContent?.split("Preparing Bash")).toHaveLength(2);
+    // What it streamed in takes the place of its newest step.
+    expect(container.textContent).not.toContain("Check the branch");
+  });
+
+  it("says how many of its calls failed", () => {
+    const c = transcript([bash("Find the tests", "", true), bash("Run them", "ok")], "idle");
+    expect(line(c, "Ran 2 commands")?.textContent).toContain("1 failed");
+  });
+
+  it("keeps a call the reader opened in view as the run it is in grows", () => {
+    const first = bash("List the files", "notes.md");
+    const { container, draw } = mount([prose("Looking."), first], "running");
+    act(() => line(container, "List the files")?.click());
+    expect(container.textContent).toContain("notes.md");
+    draw([prose("Looking."), first, bash("Check the branch")]);
+    expect(line(container, "Ran 1 command")?.getAttribute("aria-expanded")).toBe("false");
+    expect(line(container, "List the files")?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("notes.md");
+    expect(line(container, "Check the branch")).toBeDefined();
   });
 });
 

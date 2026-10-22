@@ -16,6 +16,7 @@
 //! | Word | Behavior |
 //! |---|---|
 //! | (anything) | reports plan usage, streams a short answer, runs a fake `Bash` tool, answers again |
+//! | `explore` | looks around the working directory first, as Claude Code does before it changes something: a thought, then commands, searches and a read (two of them at once) with another thought among them |
 //! | `write <name>` | creates `<name>` in the working directory and commits it, ending the message as Claude Code does: with `attribution.commit` from `~/.claude/settings.json`, or Claude's trailer when that is unset |
 //! | `push` | pushes the branch to `origin` with `git push`; a repository without one (the dev instance's projects have no repository) gets a bare one in `~/.fake-github` to stand in for GitHub |
 //! | `watch <seconds>` | watches the pull request's checks in one tool call that lasts that many seconds (at most ten minutes), as agents wait for CI before they end their turn |
@@ -331,22 +332,131 @@ impl Session {
         msg_id
     }
 
-    fn tool(&mut self, name: &str, input: Value, output: &str, is_error: bool) {
-        let tool_id = format!("toolu_{}", short_id(12));
+    /// Thinks `text` over, streamed as Claude Code streams a thinking block.
+    fn think(&mut self, text: &str) {
         let msg_id = format!("msg_{}", short_id(8));
         let usage = self.call_started();
         out(
-            &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": input}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            &json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": msg_id, "role": "assistant", "model": self.model, "content": [], "usage": usage}}, "api_message_id": msg_id, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
-        self.call_ended(&msg_id, "tool_use", 30);
-        for i in 0..2 {
+        out(
+            &json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        for word in text.split_inclusive(' ') {
             out(
-                &json!({"type": "tool_progress", "tool_use_id": tool_id, "tool_name": name, "parent_tool_use_id": null, "elapsed_time_seconds": i, "session_id": self.id, "uuid": uuid()}),
+                &json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": word}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
             );
             self.sleep();
         }
         out(
-            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": output, "is_error": is_error}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            &json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        out(
+            &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "thinking", "thinking": text, "signature": "fake"}], "stop_reason": null, "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        self.call_ended(&msg_id, "end_turn", text.len() as u64 / 4);
+    }
+
+    fn tool(&mut self, name: &str, input: Value, output: &str, is_error: bool) {
+        self.tools(vec![(name, input, output.to_owned(), is_error)]);
+    }
+
+    /// Calls tools at once, as Claude Code does when a response asks for
+    /// several: each call in an assistant message of its own, then their
+    /// results, in order.
+    fn tools(&mut self, calls: Vec<(&str, Value, String, bool)>) {
+        let msg_id = format!("msg_{}", short_id(8));
+        let usage = self.call_started();
+        let ids: Vec<String> = calls
+            .iter()
+            .map(|_| format!("toolu_{}", short_id(12)))
+            .collect();
+        for ((name, input, _, _), tool_id) in calls.iter().zip(&ids) {
+            out(
+                &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": input}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            );
+        }
+        self.call_ended(&msg_id, "tool_use", 30 * calls.len() as u64);
+        for ((name, _, output, is_error), tool_id) in calls.iter().zip(&ids) {
+            for i in 0..2 {
+                out(
+                    &json!({"type": "tool_progress", "tool_use_id": tool_id, "tool_name": name, "parent_tool_use_id": null, "elapsed_time_seconds": i, "session_id": self.id, "uuid": uuid()}),
+                );
+                self.sleep();
+            }
+            out(
+                &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": output, "is_error": is_error}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            );
+        }
+    }
+
+    /// Runs `command` with `sh` in a `Bash` tool call.
+    fn bash(&mut self, command: &str, description: &str) {
+        let (output, failed) = sh(command);
+        self.tool(
+            "Bash",
+            json!({"command": command, "description": description}),
+            &output,
+            failed,
+        );
+    }
+
+    /// Looks around the working directory before it changes anything, as
+    /// Claude Code does: a run of tool calls with thoughts among them, two
+    /// of the calls at once. The session page folds such a run into a line.
+    fn explore(&mut self) {
+        self.think(
+            "Before I change anything, I want to see what is here: the history, the files and what the notes say.",
+        );
+        self.bash("git log --oneline -5", "Show the recent commits");
+        self.bash(
+            "git status --short --branch",
+            "Check the branch and what changed",
+        );
+        let (found, _) = sh("find . -name '*.md' -not -path './.git/*' | sort");
+        let mut calls = vec![(
+            "Glob",
+            json!({"pattern": "**/*.md"}),
+            if found.trim().is_empty() {
+                "No files found".to_owned()
+            } else {
+                found.clone()
+            },
+            false,
+        )];
+        if let Some(path) = found.lines().next().map(|l| l.trim_start_matches("./")) {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            let numbered: String = text
+                .lines()
+                .zip(1..)
+                .map(|(line, n)| format!("{n:>6}\t{line}\n"))
+                .collect();
+            let file = std::env::current_dir().unwrap_or_default().join(path);
+            calls.push((
+                "Read",
+                json!({"file_path": file.display().to_string()}),
+                numbered,
+                false,
+            ));
+        }
+        self.tools(calls);
+        self.think(
+            "Nothing here says how the work is laid out yet, so what I write should start with that. Let me check for loose ends first.",
+        );
+        let (todos, _) = sh("grep -rn --exclude-dir=.git TODO . || true");
+        self.tool(
+            "Grep",
+            json!({"pattern": "TODO", "output_mode": "content", "-n": true}),
+            if todos.trim().is_empty() {
+                "No matches found"
+            } else {
+                &todos
+            },
+            false,
+        );
+        self.bash(
+            "find . -type f -not -path './.git/*' | wc -l",
+            "Count the files",
         );
     }
 
@@ -707,6 +817,10 @@ impl Session {
             &ls,
             false,
         );
+        if says(&lower, "explore") {
+            self.explore();
+            self.stream_text("I have what I need.");
+        }
         if let Some(name) = lower
             .split("write ")
             .nth(1)

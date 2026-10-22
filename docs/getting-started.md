@@ -263,7 +263,10 @@ turns them off.
 
 - **Web app** — the session page streams the transcript as the agent writes
   it: tool calls, diffs, and the files changed, commits and pull requests
-  so far, seconds after the agent makes them. Where the agent delegated to
+  so far, seconds after the agent makes them. The tool calls and thoughts
+  between two things the agent says fold into one line that says what they
+  did, like "Ran 6 commands, read 2 files", and opens into them; while the
+  agent works, its newest step shows under that line. Where the agent delegated to
   a subagent, its line opens into what the subagent was asked, its steps
   as it takes them, in the background too, and its report. A click on an
   image or a screenshot shows it at full size, where the arrow keys, or a

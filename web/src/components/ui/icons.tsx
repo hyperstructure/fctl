@@ -77,6 +77,26 @@ export function ChecksIcon({ state, className }: { state: keyof typeof CHECKS_PA
   return <Octicon path={CHECKS_PATHS[state]} className={className} />;
 }
 
+/** A thought: a cloud with the bubbles that lead up to it, as comics draw one. */
+export function ThoughtIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "size-4"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18.4 13.7h-6.8a5.6 5.6 0 1 1 5.37-7.2h1.43a3.6 3.6 0 1 1 0 7.2Z" />
+      <circle cx="6.1" cy="17.6" r="1.9" fill="currentColor" stroke="none" />
+      <circle cx="3.2" cy="20.85" r="1.15" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 /**
  * An effort level by the symbol Claude Code shows for it: ○ low, ◐ medium, ● high, ◉ extra high,
  * ◈ max, and a dotted circle for Claude's default (`""`).
