@@ -182,7 +182,7 @@ export function OpenLine({
         aria-controls={open ? controls : undefined}
         title={title}
         className={cn(
-          "group/line flex w-full items-start rounded-md px-1.5 py-1 text-left leading-5 transition-colors duration-150 hover:bg-hover",
+          "group/line flex w-full items-start rounded-md px-1.5 py-1 text-left leading-5 transition-colors duration-150 hover:bg-hover active:bg-hover pointer-coarse:py-1.5",
           nested ? "gap-2 text-[13px]" : "gap-2.5 text-[13.5px]",
           error ? "text-danger" : "text-ink-2",
         )}

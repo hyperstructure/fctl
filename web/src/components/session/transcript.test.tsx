@@ -412,6 +412,10 @@ describe("a run of work", () => {
     expect(container.textContent?.split("Preparing Bash")).toHaveLength(2);
     // What it streamed in takes the place of its newest step.
     expect(container.textContent).not.toContain("Check the branch");
+    // After a call on its own, it shows after it.
+    const single = mount([prose("Looking."), bash("List the files", "a")], "running", live).container;
+    expect(single.textContent?.split("Preparing Bash")).toHaveLength(2);
+    expect(single.textContent).toContain("List the files");
   });
 
   it("says how many of its calls failed", () => {

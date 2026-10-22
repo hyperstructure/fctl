@@ -42,12 +42,11 @@ import { repoChanges } from "@/lib/git";
 import { useKeepPlace } from "@/lib/keep-place";
 import { isPublishedLink, linkToken, markdown } from "@/lib/published";
 import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
-import { lastRun, parts } from "@/lib/runs";
+import { callsIn, lastRun, parts } from "@/lib/runs";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
 import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
-import { Thinking } from "./thinking";
 import { Run, ToolRow, WorkDir } from "./tool";
 
 const UserMessage = memo(function UserMessage({
@@ -411,8 +410,6 @@ const ItemView = memo(function ItemView({
           <Markdown text={item.text} />
         </div>
       );
-    case "thinking":
-      return <Thinking text={item.text} />;
     case "tool":
       return <ToolRow t={item} running={!item.result && !!running} up={up} seconds={seconds} />;
     case "turn":
@@ -633,7 +630,9 @@ export const Transcript = memo(function Transcript({
   const last = lastRun(ps);
   const writing = live.blocks.some((b) => b.type === "text");
   const tail = last && running && last.index > turnStart && !writing ? last : undefined;
-  const coming = tail ? live.blocks.filter((b) => b.type !== "text") : [];
+  // What streams in shows in the run, once it is folded; until then, after it.
+  const folded = !!tail && callsIn(tail.steps).length > 1;
+  const coming = folded ? live.blocks.filter((b) => b.type !== "text") : [];
   const progress = live.tool;
   // Paths start where Claude Code works, which its first message says.
   const cwd = items.find((it) => it.kind === "init")?.cwd;
@@ -709,7 +708,7 @@ export const Transcript = memo(function Transcript({
               </div>
             ))}
           </WorkDir>
-          <LiveTurnView live={live} status={status} stall={stall} inRun={!!tail} />
+          <LiveTurnView live={live} status={status} stall={stall} inRun={folded} />
         </div>
       </Gallery>
     </ImageSizes>

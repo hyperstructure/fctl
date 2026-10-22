@@ -88,7 +88,7 @@ export const WorkDir = createContext<string | undefined>(undefined);
 const str = (v: Json | undefined) => (typeof v === "string" ? v : "");
 
 /** How long something has run, by the second: "12 s", "1m 4s". */
-const seconds = (s: number) => (s < 60 ? `${Math.round(s)} s` : duration(s * 1000));
+const ranFor = (s: number) => (s < 60 ? `${Math.round(s)} s` : duration(s * 1000));
 
 /** A call that took this long (ms) says so on its line. */
 const SLOW = 10_000;
@@ -383,8 +383,6 @@ function WorkList({ steps, running, up }: { steps: Step[]; running: boolean; up:
         <Run steps={p.steps} running={running} active={running && n === ps.length - 1} up={up} />
       ) : p.item.kind === "tool" ? (
         <ToolRow t={p.item} running={running} up={up} />
-      ) : p.item.kind === "thinking" ? (
-        <Thinking text={p.item.text} />
       ) : (
         <Prose text={p.item.text} />
       )}
@@ -492,7 +490,7 @@ export const ToolRow = memo(function ToolRow({
                 `${t.children} ${t.children === 1 ? "step" : "steps"}${t.childLast ? ` · ${t.childLast}` : ""}`,
               lines && <LinesChanged lines={lines} />,
               pending
-                ? elapsed !== undefined && elapsed > 2 && seconds(elapsed)
+                ? elapsed !== undefined && elapsed > 2 && ranFor(elapsed)
                 : !agent && ms !== undefined && ms >= SLOW && duration(ms),
             ]}
           </Facts>
@@ -575,7 +573,7 @@ export const Run = memo(
       });
       setShown((s) => (s.has(key) ? s : new Set(s).add(key)));
     }, []);
-    const calls = useMemo(() => callsIn(steps), [steps]);
+    const calls = callsIn(steps);
     const step = (s: Work, nested: boolean) => (
       <Unreadable key={s.key}>
         {s.kind === "tool" ? (
