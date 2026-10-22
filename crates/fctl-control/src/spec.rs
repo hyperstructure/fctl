@@ -96,9 +96,9 @@ pub async fn runner_serves(db: &D1Database, runner_id: &str, session_id: &str) -
     }))
 }
 
-/// The error for a runner that doesn't serve a session's workspace.
+/// The error for a runner that no longer runs a session ([`runner_serves`]).
 pub fn not_served() -> AppError {
-    crate::error::forbidden("This runner no longer runs this workspace's sessions")
+    crate::error::forbidden("This runner no longer runs this session")
 }
 
 /// Whether Claude credential `credential_id` still runs sessions of

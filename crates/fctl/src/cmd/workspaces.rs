@@ -1055,13 +1055,16 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                     "Your sessions in {} run only on runners you registered",
                     style::bold(&w.name)
                 );
-                println!(
-                    "{}",
-                    style::dim(&format!(
-                        "Add yours with `fctl workspaces add-runner -w {}` on it, or register a machine with `fctl host install --workspace {}`.",
-                        w.slug, w.slug
-                    ))
-                );
+                let runners = api.workspace_runners(w.id.as_str()).await?;
+                if !runners.runners.iter().any(|r| r.yours) {
+                    println!(
+                        "{}",
+                        style::dim(&format!(
+                            "None of yours runs its sessions yet, so they wait. Add one with `fctl workspaces add-runner -w {}` on it, or register a machine with `fctl host install --workspace {}`.",
+                            w.slug, w.slug
+                        ))
+                    );
+                }
             } else {
                 println!(
                     "Your sessions in {} run on any of its runners for everyone's sessions, and on yours",

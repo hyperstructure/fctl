@@ -1018,9 +1018,10 @@ impl FleetObject {
             .unwrap_or_default()
     }
 
-    /// Stops the sessions `runner_id` runs in workspaces it no longer serves
-    /// (it was taken out of one, its owner left it or was disabled), so that
-    /// they resume on a runner of their workspace.
+    /// Stops the sessions `runner_id` runs that it no longer may (it was
+    /// taken out of their workspace, its owner left it or was disabled, or
+    /// their person keeps their sessions there on their own runners), so
+    /// that they resume on a runner that runs them.
     async fn stop_unserved(&self, runner_id: &str) {
         let Ok(db) = self.env.d1("DB") else { return };
         for a in self.assigned_to_runner(runner_id) {
@@ -1048,9 +1049,10 @@ impl FleetObject {
         }
     }
 
-    /// Takes a session from a runner that no longer serves its workspace:
-    /// it stops now, whatever the host does, and resumes elsewhere; the
-    /// runner's uplink to it closes. Its host is asked to stop the run.
+    /// Takes a session from a runner that no longer runs it
+    /// (`spec::runner_serves`): it stops now, whatever the host does, and
+    /// resumes elsewhere; the runner's uplink to it closes. Its host is
+    /// asked to stop the run.
     async fn unserved(&self, runner_id: &str, session_id: &str) {
         let _ = self.sql.exec(
             "DELETE FROM assignments WHERE session_id = ? AND runner_id = ?",
@@ -1070,7 +1072,7 @@ impl FleetObject {
                 &id,
                 Some(SessionStatus::Stopped),
                 Some(
-                    "Its runner no longer runs this workspace's sessions. A message or a resume starts it on another one."
+                    "Its runner no longer runs this session. A message or a resume starts it on another one."
                         .into(),
                 ),
                 true,
@@ -2333,11 +2335,16 @@ impl FleetObject {
     /// ([`Wait::Workspace`]), by the runners, online or not, of its
     /// workspace (as of the last dispatch).
     fn no_runner_takes(&self, want: &spec::SessionWants) -> String {
+        let others_online = self
+            .candidates()
+            .iter()
+            .any(|c| c.serves.runs(&want.workspace_id) && !c.serves.takes(want));
         let runners = self.runner_workspaces.borrow();
         fctl_domain::schedule::no_runner_takes(
             want.own_runners.then_some(want.person_name.as_str()),
             runners.values().any(|s| s.takes(want)),
             runners.values().any(|s| s.runs(&want.workspace_id)),
+            others_online,
         )
     }
 

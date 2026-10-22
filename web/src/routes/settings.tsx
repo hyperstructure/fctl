@@ -410,9 +410,11 @@ function Workspaces({ me }: { me: G.Me }) {
                   <div className="truncate text-[14px] text-ink">{w.name}</div>
                   <div className="truncate text-[12px] text-ink-4">
                     {roleLabel(w.role)} · as {w.email}
-                    {w.own_runners && " · your sessions only on your runners"}
                     {w.blocked && <span className="text-amber"> · closed until you set up two-factor</span>}
                   </div>
+                  {w.own_runners && (
+                    <div className="truncate text-[12px] text-ink-4">Only on your runners</div>
+                  )}
                 </div>
               </Link>
               <div className="flex items-center gap-2">

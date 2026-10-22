@@ -891,7 +891,7 @@ function Runners({ w }: { w: G.Workspace }) {
                       {r.status === "online" && r.drain ? "draining" : r.status}
                     </span>
                     {r.personal?.includes(w.id) && (
-                      <span className="ml-2 rounded-full border border-line px-2 py-px text-[11.5px] text-ink-3">
+                      <span className="ml-2 inline-block whitespace-nowrap rounded-full border border-line px-2 py-px text-[11.5px] text-ink-3">
                         {r.yours
                           ? "Only your sessions"
                           : `Only ${r.created_by?.name ?? "its owner"}'s sessions`}
