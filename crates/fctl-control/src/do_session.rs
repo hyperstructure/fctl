@@ -1463,10 +1463,10 @@ impl SessionObject {
                     // A published screenshot's link only to this instance's.
                     if let EventBody::Notice(n) = &mut body
                         && n.published.as_ref().is_some_and(|p| {
-                            !p.url.starts_with(&format!(
-                                "{}/api/v1/published/",
-                                crate::config::Config::from_env(&self.env).public_url
-                            ))
+                            !fctl_domain::published::is_link(
+                                &p.url,
+                                &crate::config::Config::from_env(&self.env).public_url,
+                            )
                         })
                     {
                         n.published = None;

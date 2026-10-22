@@ -96,15 +96,25 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
         ws::invitations_for(&ctx.db, &user.id, ctx.now).await?
     };
     let settings = ctx.settings();
+    let limited = ctx.limits().is_some();
     http::ok(&WorkspaceList {
         workspaces: rows
             .iter()
             .map(|r| {
-                r.to_workspace(
+                let mut w = r.to_workspace(
                     &settings,
                     ws::blocked_for(ctx, user, r.require_two_factor),
                     &live.online,
-                )
+                );
+                // A limited token reaches projects and sessions alone: not
+                // the workspace's people, GitHub accounts or its person's
+                // Claude connections (`fctl_domain::limits`).
+                if limited {
+                    w.primary = None;
+                    w.github = Vec::new();
+                    w.claude = None;
+                }
+                w
             })
             .collect(),
         invitations: invitations

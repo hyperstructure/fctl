@@ -62,7 +62,14 @@ export function target(url) {
     return undefined;
   }
   const { pathname, search } = parsed;
-  if (pathname === "/cdn-cgi" || pathname.startsWith("/cdn-cgi/")) return undefined;
+  // As it reads once decoded too (`/%63dn-cgi/`), in any case.
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return undefined;
+  }
+  if (/^\/cdn-cgi(?:\/|$)/i.test(pathname) || /^\/cdn-cgi(?:\/|$)/i.test(decoded)) return undefined;
   return pathname + search;
 }
 

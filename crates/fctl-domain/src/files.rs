@@ -24,11 +24,24 @@ pub const INLINE_MESSAGE_MAX_BASE64: usize = 5 * 1024 * 1024;
 /// Longest file name kept, in bytes.
 const MAX_NAME_BYTES: usize = 200;
 
+/// Characters that change the direction text shows in: in a file name,
+/// `invoice\u{202E}gnp.exe` shows as `invoiceexe.png`.
+fn bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 /// A name that is safe as one path component: no directories, no control
-/// characters, at most 200 bytes (keeping the extension), never empty.
+/// characters or ones that turn the text around, at most 200 bytes
+/// (keeping the extension), never empty.
 pub fn sanitize_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
-    let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control() && !bidi_control(*c))
+        .collect();
     let cleaned = cleaned.trim();
     if cleaned.is_empty() || cleaned.chars().all(|c| c == '.') {
         return "file".to_owned();
@@ -447,6 +460,9 @@ mod tests {
         assert_eq!(sanitize_name("../../etc/passwd"), "passwd");
         assert_eq!(sanitize_name("C:\\Users\\ada\\notes.txt"), "notes.txt");
         assert_eq!(sanitize_name("  a\u{0}b\nc.md "), "abc.md");
+        // Shown as `invoiceexe.png` with the override.
+        assert_eq!(sanitize_name("invoice\u{202E}gnp.exe"), "invoicegnp.exe");
+        assert_eq!(sanitize_name("a\u{2067}b\u{2069}\u{200F}.txt"), "ab.txt");
         assert_eq!(sanitize_name(""), "file");
         assert_eq!(sanitize_name(".."), "file");
         assert_eq!(sanitize_name("dir/"), "file");

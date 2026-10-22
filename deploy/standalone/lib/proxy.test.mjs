@@ -38,6 +38,9 @@ test("requests go on in origin-form, except to the edge's paths", () => {
   assert.equal(target("/cdn-cgi/handler/scheduled?cron=1"), undefined);
   assert.equal(target("/cdn-cgi"), undefined);
   assert.equal(target("/api/../cdn-cgi/handler/scheduled"), undefined);
+  assert.equal(target("/%63dn-cgi/handler/scheduled"), undefined);
+  assert.equal(target("/CDN-CGI/trace"), undefined);
+  assert.equal(target("/%E0%A4%A"), undefined);
   assert.equal(target("http://[bad"), undefined);
 });
 

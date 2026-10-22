@@ -95,8 +95,10 @@ impl Limits {
         }))
     }
 
+    /// As D1 keeps them. Limits that didn't serialize would be kept as
+    /// ones that reach nothing ([`Self::parse`]), never as none.
     pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_owned())
     }
 
     /// Whether it reaches the project `project_id` of workspace
@@ -348,6 +350,10 @@ mod tests {
             .unwrap_or(limits(TokenAccess::Full));
         assert_eq!(newer.access, TokenAccess::Read);
         assert!(!newer.reaches("wsp_1", "prj_1"));
+        // What `to_json` keeps when serializing fails reaches nothing too.
+        let fallback = Limits::parse(Some("{}")).unwrap_or(limits(TokenAccess::Full));
+        assert_eq!(fallback.access, TokenAccess::Read);
+        assert!(!fallback.reaches("wsp_1", "prj_1"));
     }
 
     #[test]

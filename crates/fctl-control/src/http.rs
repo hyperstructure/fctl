@@ -72,14 +72,22 @@ pub async fn body<T: DeserializeOwned>(req: &mut Request) -> AppResult<T> {
             "Send the body as application/json",
         )));
     }
+    let too_large = || AppError(ApiError::bad_request("The request body is too large"));
+    // Refused before it's read, where the client says how large it is.
+    if length(req).is_some_and(|l| l > MAX_BODY_BYTES as u64) {
+        return Err(too_large());
+    }
     let bytes = req.bytes().await?;
     if bytes.len() > MAX_BODY_BYTES {
-        return Err(AppError(ApiError::bad_request(
-            "The request body is too large",
-        )));
+        return Err(too_large());
     }
     serde_json::from_slice(&bytes)
         .map_err(|e| AppError(ApiError::bad_request(format!("Invalid request body: {e}"))))
+}
+
+/// The size of the request's body, as its `Content-Length` says.
+pub fn length(req: &Request) -> Option<u64> {
+    header(req, "Content-Length").and_then(|l| l.trim().parse().ok())
 }
 
 /// A path segment as it was before percent-encoding (`ada%40example.com`

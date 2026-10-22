@@ -147,7 +147,10 @@ on). The control plane limits sign-in attempts and records addresses in
 the audit log by the address each request comes from, which a proxy puts
 in the `X-Forwarded-For` header it adds: without the setting, every request
 seems to come from the proxy. With it, the server takes the address the
-outermost proxy saw, and ignores what a client wrote there itself.
+outermost proxy saw, and ignores what a client wrote there itself. It
+counts proxies rather than knowing them, so the server's port must be
+reachable only through them: a client that connects to it directly would
+choose its own address.
 
 ### Operating it
 

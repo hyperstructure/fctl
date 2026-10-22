@@ -377,6 +377,19 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         },
     )
     .await?;
+    // Putting a session away hides it from its workspace's lists.
+    if let Some(archived) = body.archived {
+        ctx.audit_in(
+            Some(a.workspace_id()),
+            if archived {
+                "session.archived"
+            } else {
+                "session.unarchived"
+            },
+            Some(id),
+            None,
+        );
+    }
     get(ctx, id).await
 }
 
@@ -748,5 +761,11 @@ pub async fn remove_share(ctx: &mut Ctx, id: &str, user_id: &str) -> AppResult<R
     if changed == 0 {
         return Err(not_found("Share"));
     }
+    ctx.audit_in(
+        Some(a.workspace_id()),
+        "session.unshared",
+        Some(id),
+        Some(serde_json::json!({ "user": user_id })),
+    );
     shares(ctx, id).await
 }
