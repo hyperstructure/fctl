@@ -1860,7 +1860,8 @@ function SensitiveActions({
   const owner = me?.user.role === "owner";
   const on = !!s?.verify_sensitive_actions;
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
-  const without = active.filter((u) => !secured(u));
+  // Who has nothing to confirm it with: the others, and you.
+  const without = active.filter((u) => !secured(u) && u.id !== me?.user.id);
   const mine = !!me && (me.user.two_factor || me.passkeys.length > 0);
   return (
     <Section
@@ -1885,7 +1886,7 @@ function SensitiveActions({
             label="Confirm sensitive actions"
           />
         </div>
-        {(!owner || (on && without.length > 0) || (on && !mine)) && (
+        {(!owner || (on && without.length > 0) || (on && !!me && !mine)) && (
           <ul className="flex flex-col gap-1.5 text-[12.5px] leading-relaxed text-ink-4">
             {!owner && (
               <li className="flex items-start gap-2">
@@ -1897,15 +1898,13 @@ function SensitiveActions({
               <li className="flex items-start gap-2">
                 <ShieldOff className="mt-[3px] size-3.5 shrink-0" />
                 <span>
-                  {without.length === 1
-                    ? `${without[0]?.name} has`
-                    : `${without.length} of ${active.length} people have`}{" "}
-                  neither a passkey nor an authenticator app, so {without.length === 1 ? "isn't" : "aren't"}{" "}
-                  asked. Requiring two-factor sign-in gives everyone one.
+                  {without.length === 1 ? `${without[0]?.name} has` : `${without.length} people have`} neither
+                  a passkey nor an authenticator app, so {without.length === 1 ? "isn't" : "aren't"} asked.
+                  Requiring two-factor sign-in gives everyone one.
                 </span>
               </li>
             )}
-            {on && owner && !mine && (
+            {on && me && !mine && (
               <li className="flex items-start gap-2">
                 <Fingerprint className="mt-[3px] size-3.5 shrink-0" />
                 <span>

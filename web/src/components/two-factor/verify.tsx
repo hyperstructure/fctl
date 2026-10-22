@@ -308,7 +308,7 @@ export function VerifyStep({ onDone, onCancel }: { onDone: () => void; onCancel:
           {mode !== "passkey" && passkeys && (
             <button
               type="button"
-              className="group inline-flex items-center gap-1.5 hover:text-ink"
+              className="group inline-flex items-center gap-1.5 text-left hover:text-ink"
               onClick={() => switchTo("passkey")}
             >
               <Fingerprint className="size-3.5" />
@@ -318,13 +318,13 @@ export function VerifyStep({ onDone, onCancel }: { onDone: () => void; onCancel:
             </button>
           )}
           {mode !== "app" && has("totp") && (
-            <button type="button" className="hover:text-ink" onClick={() => switchTo("app")}>
+            <button type="button" className="text-left hover:text-ink" onClick={() => switchTo("app")}>
               <span className="text-ink-2 underline underline-offset-2">Use your authenticator app</span>{" "}
               instead
             </button>
           )}
           {mode !== "recovery" && has("recovery_code") && (
-            <button type="button" className="hover:text-ink" onClick={() => switchTo("recovery")}>
+            <button type="button" className="text-left hover:text-ink" onClick={() => switchTo("recovery")}>
               {mode === "app" ? "Lost your phone? " : ""}
               <span className="text-ink-2 underline underline-offset-2">Use a recovery code</span>
             </button>
