@@ -1958,6 +1958,13 @@ impl FleetObject {
                 let cred_id = row.credential_id.clone().ok_or_else(|| {
                     ApiError::new(ErrorCode::NotConfigured, "No Claude credential")
                 })?;
+                // Nor once its owner left the session's workspace.
+                if !spec::credential_serves(&db, &cred_id, session_id.as_str())
+                    .await
+                    .map_err(|e| e.0)?
+                {
+                    return Err(spec::credential_not_lent().0);
+                }
                 // One refresh per credential at a time; others wait for it.
                 for _ in 0..80 {
                     if !self.refreshing.borrow().contains(&cred_id) {

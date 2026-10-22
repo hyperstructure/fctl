@@ -601,14 +601,16 @@ async fn stop_sessions_of(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRe
     struct S {
         id: String,
     }
-    // Theirs, and the workspace's on their machines, which it no longer
-    // trusts with its code and tokens.
+    // Theirs, those that run on their subscription (they resumed them),
+    // and the workspace's on their machines, which it no longer trusts with
+    // its code and tokens.
     let running: Vec<S> = q(
         &ctx.db,
         &format!(
             "SELECT s.id FROM sessions s JOIN projects p ON p.id = s.project_id \
              WHERE p.workspace_id = ?1 AND s.status IN {ACTIVE} \
-             AND (s.created_by = ?2 OR s.runner_id IN (SELECT id FROM runners WHERE created_by = ?2))"
+             AND (s.created_by = ?2 OR s.runner_id IN (SELECT id FROM runners WHERE created_by = ?2) \
+             OR s.credential_id IN (SELECT id FROM claude_credentials WHERE user_id = ?2))"
         ),
         &[s(workspace_id), s(user_id)],
     )?

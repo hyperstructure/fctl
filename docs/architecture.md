@@ -548,7 +548,12 @@ A message to a stopped session resumes it: from the web app, `fctl send`,
 `fctl attach` or the API, for anyone who may message the agent. SessionDO
 queues the session again and keeps the message in its outbox for the new
 run, which runs on the Claude subscription the session ran on, as a
-message to an idle session does. A resume (**Resume** for the session's
+message to an idle session does. That subscription's owner must still be
+an active member of the session's workspace, as a runner's owner must
+(`spec::credential_serves`): once they left it, were removed or disabled,
+the session's runs and token refreshes get no credential, and it fails
+with a reason instead, and leaving stops the sessions that run on their
+subscription. A resume (**Resume** for the session's
 owners, `fctl resume`) runs it on the resumer's subscription instead, and
 also starts a failed session, which a message doesn't. A message that comes
 while the session stops queues it too: FleetDO starts the new run once the

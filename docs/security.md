@@ -185,7 +185,11 @@ outside it except through these channels:
   ([ADR 0029](adr/0029-workspaces-connect-github-accounts-with-a-github-sign-in.md)).
 - **Claude.** A short-lived access token for the session's owner. Refresh
   tokens never enter a sandbox: when the access token expires, Claude asks
-  the control plane for a new one through its host.
+  the control plane for a new one through its host. A session gets the
+  token only while the person it runs for is an active member of its
+  workspace: once they leave it, are removed or disabled, the sessions that
+  run on their subscription stop, and a message to one doesn't start it on
+  their subscription again; resuming it runs it on the resumer's.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),
   and the agent can use them with that person's access without asking, also

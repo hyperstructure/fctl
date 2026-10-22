@@ -78,6 +78,40 @@ pub fn not_served() -> AppError {
     crate::error::forbidden("This runner no longer runs this workspace's sessions")
 }
 
+/// Whether Claude credential `credential_id` still runs sessions of
+/// session `session_id`'s workspace: its owner's account is active and they
+/// are a member there, as for runners (`serves!`). A session keeps the
+/// credential it last ran on, and a message resumes a stopped one, so
+/// without this whoever can message it there would run it on the
+/// subscription, and in the sandbox with the token, of someone who left the
+/// workspace, was removed from it or disabled.
+pub async fn credential_serves(
+    db: &D1Database,
+    credential_id: &str,
+    session_id: &str,
+) -> AppResult<bool> {
+    let c: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM claude_credentials c JOIN users u ON u.id = c.user_id \
+         JOIN sessions s ON s.id = ?2 JOIN projects p ON p.id = s.project_id \
+         JOIN workspace_members m ON m.workspace_id = p.workspace_id AND m.user_id = c.user_id \
+         WHERE c.id = ?1 AND u.status = 'active'",
+        &[s(credential_id), s(session_id)],
+    )?
+    .first()
+    .await?;
+    Ok(c.is_some_and(|c| c.n > 0))
+}
+
+/// The error for a session whose Claude credential no longer serves its
+/// workspace ([`credential_serves`]).
+pub fn credential_not_lent() -> AppError {
+    AppError(ApiError::new(
+        ErrorCode::NotConfigured,
+        "This session ran on the Claude subscription of someone who is no longer in its workspace. Resume it to run it on yours.",
+    ))
+}
+
 /// The repositories a project's agents may use besides its primary one.
 pub async fn grants(db: &D1Database, project_id: &str) -> AppResult<Vec<RepoGrant>> {
     let rows: Vec<RepoRow> = q(db, REPO_SELECT, &[s(project_id)])?.all().await?;
@@ -155,6 +189,9 @@ pub async fn build(
             "The session has no Claude credential",
         ))
     })?;
+    if !credential_serves(db, &cred_id, &row.id).await? {
+        return Err(credential_not_lent());
+    }
     let claude = claude_credential(db, keys, &cred_id, now).await?;
     let repo = project.repo();
     let grants = grants(db, &project.id).await?;
