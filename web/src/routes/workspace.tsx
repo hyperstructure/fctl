@@ -51,7 +51,7 @@ import { ago, agoShort } from "@/lib/format";
 import { BREW_INSTALL, installCommand } from "@/lib/install";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspace } from "@/lib/queries";
 import { repoSummary } from "@/lib/repos";
-import { BASE_ROLES, claudeOptions, roleLabel } from "@/lib/workspaces";
+import { BASE_ROLES, claudeOptions, createsProjects, roleLabel } from "@/lib/workspaces";
 
 export type WorkspaceTab = "projects" | "people" | "runners" | "github" | "settings" | "audit";
 
@@ -210,6 +210,7 @@ function Projects({ w }: { w: G.Workspace }) {
   const projects = useProjects();
   const sessions = useSessions({ workspace: w.id, limit: 8 });
   const mine = (projects.data?.projects ?? []).filter((p) => p.workspace?.id === w.id);
+  const creates = createsProjects(w);
   // Projects its base role doesn't open to you, which you aren't a member of.
   const hidden = projects.data ? Math.max(0, w.projects - mine.length) : 0;
   const closed = `${hidden === 1 ? "1 project" : `${hidden} projects`} you aren't a member of`;
@@ -219,11 +220,13 @@ function Projects({ w }: { w: G.Workspace }) {
       <section>
         <div className="mb-2 flex items-baseline justify-between">
           <h2 className="text-[13px] font-semibold text-ink">Projects</h2>
-          <Link to="/new" search={{ workspace: w.slug }}>
-            <Button size="sm" variant="ghost" icon={<Plus className="size-3.5" />}>
-              New project
-            </Button>
-          </Link>
+          {creates && (
+            <Link to="/new" search={{ workspace: w.slug }}>
+              <Button size="sm" variant="ghost" icon={<Plus className="size-3.5" />}>
+                New project
+              </Button>
+            </Link>
+          )}
         </div>
         {projects.isPending ? (
           <div className="space-y-3 py-3">
@@ -235,9 +238,11 @@ function Projects({ w }: { w: G.Workspace }) {
             icon={<FolderPlus className="size-6" />}
             title={`${w.name} has ${closed}`}
             action={
-              <Link to="/new" search={{ workspace: w.slug }}>
-                <Button icon={<Plus className="size-3.5" />}>Create a project</Button>
-              </Link>
+              creates ? (
+                <Link to="/new" search={{ workspace: w.slug }}>
+                  <Button icon={<Plus className="size-3.5" />}>Create a project</Button>
+                </Link>
+              ) : undefined
             }
           >
             Its admins add people to its projects. You see the ones you are added to here, and on the home
@@ -248,14 +253,18 @@ function Projects({ w }: { w: G.Workspace }) {
             icon={<FolderPlus className="size-6" />}
             title="No projects yet"
             action={
-              <Link to="/new" search={{ workspace: w.slug }}>
-                <Button variant="primary" icon={<Plus className="size-3.5" />}>
-                  Create a project
-                </Button>
-              </Link>
+              creates ? (
+                <Link to="/new" search={{ workspace: w.slug }}>
+                  <Button variant="primary" icon={<Plus className="size-3.5" />}>
+                    Create a project
+                  </Button>
+                </Link>
+              ) : undefined
             }
           >
-            A project is a repository plus what agents need to know to work in it.
+            {creates
+              ? "A project is a repository plus what agents need to know to work in it."
+              : "Its admins create its projects, and add you to the ones you work in."}
           </Empty>
         ) : (
           <ul className="border-t border-line">

@@ -8,6 +8,11 @@ import { workspaces as workspacesApi } from "./api";
 import { pending, withPendingProjects, withPendingWorkspaces } from "./order";
 import { keys, queryClient, useMe, useWorkspaces } from "./queries";
 
+/** Whether you create projects in `w`: its admins do, while it is open to them (two-factor sign-in). */
+export function createsProjects(w: Pick<G.Workspace, "role" | "blocked">): boolean {
+  return (w.role === "owner" || w.role === "admin") && !w.blocked;
+}
+
 /** Your workspaces by id, with the reference something carries as a fallback. */
 export function useWorkspaceIndex() {
   const { data } = useWorkspaces();

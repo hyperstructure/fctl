@@ -39,7 +39,10 @@ owner and purpose), so a value copied between rows does not decrypt.
   members: people outside one are told its projects and sessions don't
   exist, whatever they started there or was shared with them, and instance
   admins see inside only the ones they are members of. A workspace sees
-  only the address each member joined as.
+  only the address each member joined as. Only its admins create its
+  projects, so its members' agents reach the repositories of the projects
+  the admins made and opened to them, not every one its GitHub accounts
+  cover.
 - Browser sessions are `__Host-` cookies (`Secure`, `HttpOnly`,
   `SameSite=Lax`). An instance served over plain http at an address other
   than localhost, which only [a control plane of your own](#the-control-plane-without-cloudflare)

@@ -22,6 +22,7 @@ import { useMe, useProjects, useSessions, useWorkspaces } from "@/lib/queries";
 import { repoLabel } from "@/lib/repos";
 import { focusTaskBox } from "@/lib/task-box";
 import { getTheme, setTheme } from "@/lib/theme";
+import { createsProjects } from "@/lib/workspaces";
 
 interface Entry {
   id: string;
@@ -99,14 +100,17 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         run: go(() => navigate({ to: "/w/$slug", params: { slug: w.slug } })),
       });
     }
-    list.push(
-      {
+    // Only where you create projects: in workspaces you are an admin of.
+    if (workspaces?.workspaces.some(createsProjects)) {
+      list.push({
         id: "a-new",
         group: "Actions",
         label: "New project",
         icon: <FolderPlus className="size-4" />,
         run: go(() => navigate({ to: "/new" })),
-      },
+      });
+    }
+    list.push(
       {
         id: "a-new-workspace",
         group: "Actions",

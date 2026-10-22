@@ -41,6 +41,7 @@ import { keys, queryClient, useInstance, useMe, useProjects, useWorkspaces } fro
 import { type Sortable, useSortable } from "@/lib/sortable";
 import { useTheme } from "@/lib/theme";
 import {
+  createsProjects,
   groupProjects,
   reorderProjects,
   reorderWorkspaces,
@@ -465,7 +466,7 @@ function WorkspaceGroup({
             folded && active > 0 && <span className="text-[11.5px] text-accent tabular-nums">{active}</span>
           )}
         </Link>
-        {!workspace.blocked && (
+        {createsProjects(workspace) && (
           <Link
             to="/new"
             search={{ workspace: workspace.slug }}
@@ -522,7 +523,7 @@ function WorkspaceGroup({
                   )}
                 </Link>
               ))}
-              {projects.length === 0 && (
+              {projects.length === 0 && createsProjects(workspace) && (
                 <Link
                   to="/new"
                   search={{ workspace: workspace.slug }}

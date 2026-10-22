@@ -11,6 +11,7 @@ import { api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago } from "@/lib/format";
 import { keys, queryClient, useInstance, useWorkspaces } from "@/lib/queries";
+import { createsProjects } from "@/lib/workspaces";
 
 type Mode = "link" | "create" | "none";
 
@@ -19,7 +20,8 @@ export function NewProject() {
   const search = useSearch({ from: "/app/new" });
   const { data: instance } = useInstance();
   const list = useWorkspaces();
-  const open = (list.data?.workspaces ?? []).filter((w) => !w.blocked);
+  // Its admins create a workspace's projects.
+  const open = (list.data?.workspaces ?? []).filter(createsProjects);
   const [chosen, setChosen] = useState<string | undefined>(search.workspace);
   // The workspace asked for, else the first one.
   const ws = open.find((w) => w.slug === chosen || w.id === chosen) ?? open[0];
@@ -108,6 +110,24 @@ export function NewProject() {
         ? !!(newRepo || name) && (connections.isPending || owners.length > 0)
         : !!name.trim());
   const field = (create.error as { field?: string } | null)?.field;
+  const member = (list.data?.workspaces.length ?? 0) > 0;
+  if (list.data && open.length === 0 && member)
+    return (
+      <div className="mx-auto max-w-[680px] px-6 py-14">
+        <Empty
+          icon={<FolderGit2 className="size-6" />}
+          title="Its admins create a workspace's projects"
+          action={
+            <Link to="/w/new">
+              <Button icon={<Plus className="size-3.5" />}>Create a workspace</Button>
+            </Link>
+          }
+        >
+          Ask an admin of your workspace to create the project and add you to it, or create a workspace of
+          your own.
+        </Empty>
+      </div>
+    );
   if (list.data && open.length === 0)
     return (
       <div className="mx-auto max-w-[680px] px-6 py-14">

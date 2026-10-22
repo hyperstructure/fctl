@@ -285,7 +285,9 @@ the instance creates one, as its primary admin.
   The project and session queries join the caller's membership
   (`model::PROJECT_SELECT`, `PROJECT_VISIBLE`).
 - **Roles.** Admins invite and remove people, change roles, choose the
-  runners and GitHub accounts, and change the settings; the primary admin
+  runners and GitHub accounts, create its projects
+  ([ADR 0035](adr/0035-only-a-workspaces-admins-create-its-projects.md)),
+  and change the settings; the primary admin
   also deletes the workspace and hands the role to another admin. Nobody
   else can demote or remove the primary admin, who leaves only after
   handing the role over (`fctl_domain::workspace::check_*`).
