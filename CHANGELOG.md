@@ -2,6 +2,18 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.16.1 (2026-10-22)
+
+### Features
+
+- **web:** Always show how to add a runner on a workspace's Runners tab ([#186](https://github.com/hyperstructure/fctl/pull/186))
+- **web:** Ask people on the home page to update their runners' fctl ([#187](https://github.com/hyperstructure/fctl/pull/187))
+- **web:** Show what subagents do under the calls that started them ([#188](https://github.com/hyperstructure/fctl/pull/188))
+
+### Fixes
+
+- Close the access gaps a security review of fctl found ([#189](https://github.com/hyperstructure/fctl/pull/189))
+
 ## 0.16.0 (2026-10-21)
 
 ### Features
