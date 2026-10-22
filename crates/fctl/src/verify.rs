@@ -43,7 +43,7 @@ pub async fn confirm(api: &Api, error: Option<&ApiError>) -> fctl_client::http::
     }
     if codes {
         let prompt = if passkey {
-            "Code from your authenticator app or a recovery code (Enter: your passkey, in the browser): "
+            "Code from your authenticator app or a recovery code, or Enter to use your passkey in the browser: "
         } else {
             "Code from your authenticator app, or a recovery code: "
         };

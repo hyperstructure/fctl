@@ -198,6 +198,10 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
                             "pass --code with a code from your authenticator app: there is no terminal to ask in"
                         );
                     } else if crate::verify::confirm(&api, None).await? {
+                        // It said so already.
+                        if !json {
+                            return Ok(());
+                        }
                         api.verification().await?
                     } else {
                         bail!("Nothing was confirmed.");
