@@ -619,7 +619,7 @@ version (sessions keep running) and refreshes installed completions.
 Installed with Homebrew (`brew install hyperstructure/tap/fctl`)? Update with
 `brew upgrade fctl` instead; Homebrew owns those files.
 
-The web app's home page says when a runner of yours is online with an older
+The web app's Agent Floor says when a runner of yours is online with an older
 fctl than the control plane, and shows this command.
 
 ## Shell completions

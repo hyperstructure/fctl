@@ -18,17 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import {
-  Avatar,
-  HomeIcon,
-  Kbd,
-  Logo,
-  Menu,
-  MenuItem,
-  MenuSeparator,
-  StatusDot,
-  toast,
-} from "@/components/ui";
+import { Avatar, Kbd, Logo, Menu, MenuItem, MenuSeparator, StatusDot, toast } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -48,6 +38,7 @@ import {
   useFolded,
 } from "@/lib/workspaces";
 import { CommandPalette, usePaletteKeys } from "./command-palette";
+import { FloorLink } from "./floor-link";
 import { MenuButton, ShellContext, useHeaderButtons } from "./menu-button";
 
 export function AppShell() {
@@ -182,6 +173,8 @@ export function Sidebar({
   const { workspaces, projects, kept } = useSidebarLists(me?.user.id, workspaceList, projectList);
   const [folded, toggleFold] = useFolded();
   const groups = groupProjects(workspaces?.workspaces ?? [], projects ?? []);
+  // Each session at work lights a thread on the Agent Floor's row.
+  const working = (projects ?? []).reduce((n, p) => n + p.active_sessions, 0);
   const sort = useSortable({
     // Kept lists don't move: a new order names the workspaces the control plane sent.
     ids: kept ? [] : groups.map((g) => g.workspace.id),
@@ -229,9 +222,7 @@ export function Sidebar({
         </button>
       </div>
       <nav className="mt-4 flex flex-col gap-0.5 px-3">
-        <NavLink to="/" icon={<HomeIcon />} active={path === "/"} onClick={onNavigate}>
-          Home
-        </NavLink>
+        <FloorLink active={path === "/"} working={working} onClick={onNavigate} />
       </nav>
       <nav
         aria-label="Workspaces"
@@ -247,7 +238,7 @@ export function Sidebar({
             <WorkspaceAvatar workspace={i.workspace} size={18} />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-ink">{i.workspace.name}</span>
-              <span className="block truncate text-[11.5px] text-ink-3">Invited · join on Home</span>
+              <span className="block truncate text-[11.5px] text-ink-3">Invited · join on Agent Floor</span>
             </span>
           </Link>
         ))}

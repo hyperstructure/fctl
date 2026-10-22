@@ -1,5 +1,5 @@
-// The home page's task box takes the focus as the page opens, so that a task
-// can be typed right away, and whenever ⌘K's Home asks for it. Phones and
+// The Agent Floor's task box takes the focus as the page opens, so that a task
+// can be typed right away, and whenever ⌘K's Agent Floor asks for it. Phones and
 // tablets keep their keyboard down until the box is tapped.
 
 import { type RefObject, useEffect } from "react";
