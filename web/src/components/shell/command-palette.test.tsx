@@ -43,6 +43,7 @@ const session: G.Session = {
     additions: 0,
     deletions: 0,
     busy_ms: 0,
+    compactions: 0,
   },
   archived: false,
 };

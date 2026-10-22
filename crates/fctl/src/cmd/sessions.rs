@@ -10,7 +10,7 @@ use fctl_client::Api;
 use fctl_domain::{files, pulls};
 use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
 use fctl_proto::api::{CreateSessionRequest, UpdateSessionRequest};
-use fctl_proto::session::{GithubAccess, PullRequestRef, Session};
+use fctl_proto::session::{GithubAccess, PullRequestRef, Session, SessionStats};
 use fctl_proto::{AttachmentId, SessionId};
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
@@ -403,6 +403,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         st.additions,
         st.deletions
     );
+    if let Some(context) = context_line(st) {
+        println!("context:  {context}");
+    }
     if let Some(rc) = s
         .remote_control
         .as_ref()
@@ -412,6 +415,50 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     }
     println!("{}", style::dim(&format!("{}/s/{}", api.base(), s.id)));
     Ok(())
+}
+
+/// How full Claude's context is, for `fctl show`: `412.3k of 1M tokens
+/// (41%) · compacts at 967k · compacted twice`. `None` before the session's
+/// first call.
+fn context_line(st: &SessionStats) -> Option<String> {
+    let tokens = st.context_tokens?;
+    let window = st.context_window.filter(|&w| w > 0);
+    let mut line = match window {
+        Some(w) => format!(
+            "{} of {} tokens ({}%)",
+            short(tokens),
+            short(w),
+            tokens.saturating_mul(100) / w
+        ),
+        None => format!("{} tokens", short(tokens)),
+    };
+    if let Some(at) = st.compact_at.filter(|&at| window.is_some_and(|w| at < w)) {
+        line.push_str(&format!(" · compacts at {}", short(at)));
+    }
+    match st.compactions {
+        0 => {}
+        1 => line.push_str(" · compacted once"),
+        2 => line.push_str(" · compacted twice"),
+        n => line.push_str(&format!(" · compacted {n} times")),
+    }
+    Some(line)
+}
+
+/// A number of tokens in short: `950`, `18k`, `412.3k`, `1M`.
+fn short(n: u64) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+    let (unit, suffix) = if n < 999_950 {
+        (1_000, "k")
+    } else {
+        (1_000_000, "M")
+    };
+    let tenths = n.saturating_mul(10).saturating_add(unit / 2) / unit;
+    match tenths % 10 {
+        0 => format!("{}{suffix}", tenths / 10),
+        t => format!("{}.{t}{suffix}", tenths / 10),
+    }
 }
 
 /// `fctl edit`. In the sandbox of the session it edits (an agent naming its
@@ -738,6 +785,32 @@ mod tests {
         assert_eq!(
             sandbox_session(Some("/s.sock".into()), Some(String::new()), None),
             None
+        );
+    }
+
+    #[test]
+    fn show_says_how_full_claudes_context_is() {
+        let mut st = SessionStats::default();
+        assert_eq!(context_line(&st), None);
+        // From agents that don't say which window Claude works in.
+        st.context_tokens = Some(41_250);
+        assert_eq!(context_line(&st).as_deref(), Some("41.3k tokens"));
+        st.context_window = Some(1_000_000);
+        st.compact_at = Some(967_000);
+        st.context_tokens = Some(412_345);
+        assert_eq!(
+            context_line(&st).as_deref(),
+            Some("412.3k of 1M tokens (41%) · compacts at 967k")
+        );
+        st.compact_at = None;
+        st.compactions = 2;
+        assert_eq!(
+            context_line(&st).as_deref(),
+            Some("412.3k of 1M tokens (41%) · compacted twice")
+        );
+        assert_eq!(
+            [950, 18_000, 999_949, 999_950, 1_500_000].map(short),
+            ["950", "18k", "999.9k", "1M", "1.5M"]
         );
     }
 
