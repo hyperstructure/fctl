@@ -1,10 +1,11 @@
 //! What agents ask of the control plane about their session's project
-//! ([`AgentCall`]): `fctl memory`, `fctl retro` and `fctl resolve` in a
-//! sandbox go through fctl-agent to its host, which sends them here with
-//! its runner token, for a session it runs. Each needs its project's
-//! setting: `project_memory` for the memory, `retrospectives` for
+//! ([`AgentCall`]): `fctl memory`, `fctl retro`, `fctl resolve` and `fctl
+//! review` in a sandbox go through fctl-agent to its host, which sends them
+//! here with its runner token, for a session it runs. Each needs its
+//! project's setting: `project_memory` for the memory, `retrospectives` for
 //! retrospectives; resolving review threads needs an agent that may
-//! comment on GitHub.
+//! comment on GitHub, and reviews a review agent's session
+//! (`crate::reviews`).
 
 use crate::api::{memories, retrospectives, runners};
 use crate::ctx::Ctx;
@@ -228,6 +229,23 @@ pub async fn runner_call(
         }
         AgentCall::ResolveThread { thread, unresolve } => AgentAnswer::Thread {
             thread: resolve_thread(ctx, &session, &thread, unresolve).await?,
+        },
+        AgentCall::ReviewThreads => AgentAnswer::ReviewThreads {
+            threads: crate::reviews::threads(ctx, &session.id).await?,
+        },
+        AgentCall::SubmitReview {
+            summary,
+            findings,
+            resolved,
+        } => AgentAnswer::ReviewPosted {
+            review: crate::reviews::submit(
+                ctx,
+                &session.id,
+                summary.as_deref(),
+                &findings,
+                &resolved,
+            )
+            .await?,
         },
     };
     http::ok(&answer)

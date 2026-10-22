@@ -843,6 +843,28 @@ pub struct Session {
     /// waits for a reply, pauses on a usage limit or fails. Absent from live
     /// updates, which go to everyone watching.
     pub following: Option<bool>,
+    /// The pull request it reviews, for the session of a review agent
+    /// (`api::ReviewAgents`). Such a session takes no messages, stays off
+    /// the Agent Floor and its project's session list, and its agent posts
+    /// what it found on GitHub through fctl. Absent for other sessions, and
+    /// from control planes before review agents.
+    pub review: Option<SessionReview>,
+}
+
+/// What a review agent's session reviews: a pull request, at the commit
+/// that was its head when the review started.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SessionReview {
+    pub repo: RepoRef,
+    /// The pull request's number.
+    pub number: u64,
+    pub url: String,
+    /// Its title when the review started.
+    pub title: Option<String>,
+    /// The commit it reviews.
+    pub head_sha: String,
 }
 
 /// A session, as a memory or a retrospective names it.

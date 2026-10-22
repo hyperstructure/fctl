@@ -9,8 +9,8 @@ use fctl_proto::api::{
 use fctl_proto::runner::{ClaudeAccount, ClaudeCredentialKind, HostHello};
 use fctl_proto::session::{
     GithubAccess, InstanceRole, Project, ProjectRole, ProjectSettings, PullRequestRef,
-    RemoteControlState, RepoAccess, RepoGrant, RepoRef, RunnerRef, Session, SessionRole,
-    SessionStats, SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
+    RemoteControlState, RepoAccess, RepoGrant, RepoRef, RunnerRef, Session, SessionReview,
+    SessionRole, SessionStats, SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use fctl_proto::{
     AllowId, CredentialId, IdentityId, ProjectId, RunnerId, SessionId, UserId, WorkspaceId,
@@ -480,9 +480,12 @@ impl RepoRow {
 pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.repo_owner, p.repo_name, \
     p.default_branch, p.settings, p.session_counter, p.created_by, cu.name AS creator_name, \
     cu.avatar_url AS creator_avatar, p.created_at, p.updated_at, p.archived_at, m.role AS member_role, \
-    (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping')) AS active_sessions, \
-    (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) AS total_sessions, \
-    (SELECT MAX(COALESCE(s.last_activity_at, s.created_at)) FROM sessions s WHERE s.project_id = p.id) AS last_activity_at, \
+    (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping') \
+      AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id)) AS active_sessions, \
+    (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id \
+      AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id)) AS total_sessions, \
+    (SELECT MAX(COALESCE(s.last_activity_at, s.created_at)) FROM sessions s WHERE s.project_id = p.id \
+      AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id)) AS last_activity_at, \
     (SELECT COUNT(*) FROM project_repos r WHERE r.project_id = p.id AND r.name != '*') AS other_repos, \
     (SELECT r.owner FROM project_repos r WHERE r.project_id = p.id AND r.name = '*' LIMIT 1) AS all_repos_of, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
@@ -594,11 +597,40 @@ pub struct SessionRow {
     /// Whether the caller follows it (a LEFT JOIN).
     #[serde(deserialize_with = "int_bool", default)]
     pub following: bool,
+    /// For a review agent's session, the pull request it reviews (a LEFT
+    /// JOIN of `reviews`): its repository, number, URL, title and commit.
+    #[serde(default)]
+    pub review_repo: Option<String>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub review_number: Option<i64>,
+    #[serde(default)]
+    pub review_pr_url: Option<String>,
+    #[serde(default)]
+    pub review_title: Option<String>,
+    #[serde(default)]
+    pub review_sha: Option<String>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
 
 impl SessionRow {
+    /// The pull request a review agent's session reviews; `None` for other
+    /// sessions.
+    pub fn review(&self) -> Option<SessionReview> {
+        Some(SessionReview {
+            repo: RepoRef::parse(self.review_repo.as_deref()?)?,
+            number: u64::try_from(self.review_number?).ok()?,
+            url: self.review_pr_url.clone()?,
+            title: self.review_title.clone(),
+            head_sha: self.review_sha.clone()?,
+        })
+    }
+
+    /// Whether it is a review agent's session, which takes no messages.
+    pub fn is_review(&self) -> bool {
+        self.review_repo.is_some()
+    }
+
     /// What its agent may do on GitHub now, as its tokens are minted and
     /// its pages say: what it started with, within its project's settings
     /// as they are now. A value this version doesn't know reads as the
@@ -696,6 +728,7 @@ impl SessionRow {
             role,
             archived: self.archived,
             following: Some(self.following),
+            review: self.review(),
         };
         fctl_domain::pulls::backfill(&mut s);
         s
@@ -713,11 +746,14 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     s.github_access, json_extract(p.settings, '$.github_access') AS project_github_access, \
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
+    rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \
+    rv.head_sha AS review_sha, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
     w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \
     FROM sessions s \
     JOIN projects p ON p.id = s.project_id \
+    LEFT JOIN reviews rv ON rv.session_id = s.id \
     LEFT JOIN workspaces w ON w.id = p.workspace_id \
     LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
     LEFT JOIN users cu ON cu.id = s.created_by \

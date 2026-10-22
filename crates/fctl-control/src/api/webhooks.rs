@@ -1,6 +1,8 @@
 //! The GitHub App's webhook, `POST /api/v1/github/webhook`: GitHub says
 //! that pull requests or their checks changed, and the sessions that list
-//! them hear what (`crate::pull_requests`). GitHub signs each delivery with
+//! them hear what (`crate::pull_requests`); a pull request's new commit
+//! starts a review where a project's review agents are on
+//! (`crate::reviews`). GitHub signs each delivery with
 //! the webhook's secret (`GITHUB_WEBHOOK_SECRET`); without the secret the
 //! instance takes none.
 
@@ -47,21 +49,35 @@ pub async fn receive(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let Some(payload) = payload(&body) else {
         return Err(AppError(ApiError::bad_request("The delivery is not JSON")));
     };
+    // A new pull request or commit starts reviews where review agents are
+    // on; a failure there doesn't keep the sessions that list it from
+    // hearing of it.
+    let reviews = if event == "pull_request" {
+        match crate::reviews::on_delivery(ctx, &payload).await {
+            Ok(n) => n,
+            Err(e) => {
+                worker::console_error!("webhook {delivery}: starting reviews: {}", e.0.message);
+                0
+            }
+        }
+    } else {
+        0
+    };
     let told = match webhooks::delivery(&event, &payload) {
         Delivery::Ping => return http::ok(&json!({ "ok": true })),
         Delivery::Other => 0,
         Delivery::Hook(hook) => {
             let told = pull_requests::hook(&ctx.env, &ctx.cfg, &ctx.db, &hook, ctx.now).await?;
-            if told > 0 {
+            if told > 0 || reviews > 0 {
                 worker::console_log!(
-                    "webhook {delivery} ({event}, {}): told {told} sessions",
+                    "webhook {delivery} ({event}, {}): told {told} sessions, started {reviews} reviews",
                     hook.repo.full_name()
                 );
             }
             told
         }
     };
-    http::ok(&json!({ "ok": true, "sessions": told }))
+    http::ok(&json!({ "ok": true, "sessions": told, "reviews": reviews }))
 }
 
 /// The delivery's JSON: its body, or the `payload` of a form, as GitHub

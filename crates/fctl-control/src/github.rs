@@ -805,6 +805,32 @@ impl<'a> Github<'a> {
         Ok(answer)
     }
 
+    /// A GraphQL query through installation `inst`, with the token the
+    /// control plane looks things up with: GitHub's answer, which may hold
+    /// `errors`.
+    pub async fn lookup(&self, inst: u64, body: Value) -> AppResult<Value> {
+        let token = self.lookup_token(inst).await?;
+        let (status, answer) = self
+            .call(
+                Method::Post,
+                "/graphql",
+                &format!("token {token}"),
+                Some(body),
+            )
+            .await?;
+        if status == 401 {
+            LOOKUP_TOKENS.with(|m| m.borrow_mut().remove(&inst));
+        }
+        if status != 200 {
+            worker::console_error!("a GraphQL lookup: GitHub answered {status}");
+            return Err(unavailable("GitHub did not answer"));
+        }
+        if let Some(errors) = answer.get("errors") {
+            worker::console_error!("a GraphQL lookup: {errors}");
+        }
+        Ok(answer)
+    }
+
     /// Review thread `id`, as installation `inst` sees it: the pull
     /// request it is on, and whether it is resolved. `None` when GitHub has
     /// no thread by that id there.
@@ -874,6 +900,251 @@ impl<'a> Github<'a> {
                 format!("GitHub didn't change the review thread: {message}"),
             ))
         })
+    }
+
+    // ───────────────────────────── reviews ─────────────────────────────
+
+    /// A token for a review's repository alone, which posts its review,
+    /// edits fctl's earlier findings, adds its reaction and writes its
+    /// check. `Ok((token, None))`; without checks when the installation
+    /// hasn't granted the app to write them, with why. It never leaves the
+    /// control plane: revoke it with [`Self::revoke_installation_token`].
+    pub async fn review_token(
+        &self,
+        inst: u64,
+        repo: &RepoRef,
+    ) -> AppResult<(GithubCredential, Option<String>)> {
+        let names = [repo.name.as_str()];
+        match self
+            .mint(inst, Some(&names), Some(repos::review_permissions(true)))
+            .await?
+        {
+            Ok(token) => return Ok((token, None)),
+            // "The permissions requested are not granted to this installation."
+            Err((422, _)) => {}
+            Err((_, msg)) => return Err(refused(&msg)),
+        }
+        let token = self
+            .installation_token(inst, Some(&names), Some(repos::review_permissions(false)))
+            .await?;
+        Ok((
+            token,
+            Some(format!(
+                "The {} GitHub App can't write checks on {}: its installation there needs the Checks permission (read and write), which the app's owners add and the account accepts.",
+                self.cfg.slug, repo.owner
+            )),
+        ))
+    }
+
+    /// Revokes an installation token the control plane minted for itself.
+    pub async fn revoke_installation_token(&self, token: &GithubCredential) {
+        let auth = format!("token {}", token.token);
+        match self
+            .call(Method::Delete, "/installation/token", &auth, None)
+            .await
+        {
+            Ok((204, _)) => {}
+            Ok((status, _)) => worker::console_error!("revoking a token: GitHub answered {status}"),
+            Err(e) => worker::console_error!("revoking a token: {}", e.0.message),
+        }
+    }
+
+    /// A REST call with `token`: GitHub's status and answer.
+    pub async fn with_token(
+        &self,
+        token: &GithubCredential,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> AppResult<(u16, Value)> {
+        self.call(method, path, &format!("token {}", token.token), body)
+            .await
+    }
+
+    /// A GraphQL query or mutation with `token`: GitHub's answer, which may
+    /// hold `errors`. Fails when GitHub gives no answer.
+    pub async fn graphql(&self, token: &GithubCredential, body: Value) -> AppResult<Value> {
+        let (status, answer) = self
+            .with_token(token, Method::Post, "/graphql", Some(body))
+            .await?;
+        if status != 200 {
+            worker::console_error!("GitHub's GraphQL API answered {status}");
+            return Err(unavailable("GitHub did not answer"));
+        }
+        if let Some(errors) = answer.get("errors") {
+            worker::console_error!("GitHub's GraphQL API: {errors}");
+        }
+        Ok(answer)
+    }
+
+    /// Creates a review's check on its commit: its id, or why GitHub
+    /// refused.
+    pub async fn create_check(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        body: Value,
+    ) -> AppResult<Result<u64, String>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Post,
+                &format!("/repos/{}/{}/check-runs", repo.owner, repo.name),
+                Some(body),
+            )
+            .await?;
+        Ok(match v.get("id").and_then(Value::as_u64) {
+            Some(id) if status == 201 => Ok(id),
+            _ => Err(github_message(status, &v)),
+        })
+    }
+
+    /// Changes a review's check. Says why GitHub refused.
+    pub async fn update_check(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        id: u64,
+        body: Value,
+    ) -> AppResult<Result<(), String>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Patch,
+                &format!("/repos/{}/{}/check-runs/{id}", repo.owner, repo.name),
+                Some(body),
+            )
+            .await?;
+        Ok(if status == 200 {
+            Ok(())
+        } else {
+            Err(github_message(status, &v))
+        })
+    }
+
+    /// Reacts to a pull request (`eyes`: a review picked it up). GitHub
+    /// keeps one reaction of each kind per account, so doing it again
+    /// changes nothing.
+    pub async fn react(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        number: u64,
+        content: &str,
+    ) -> AppResult<Result<(), String>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Post,
+                &format!(
+                    "/repos/{}/{}/issues/{number}/reactions",
+                    repo.owner, repo.name
+                ),
+                Some(json!({ "content": content })),
+            )
+            .await?;
+        Ok(if status == 200 || status == 201 {
+            Ok(())
+        } else {
+            Err(github_message(status, &v))
+        })
+    }
+
+    /// The files a pull request changes, each with its patch (`None` where
+    /// GitHub shows none: binary or huge files), up to GitHub's 3,000.
+    pub async fn pull_files(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        number: u64,
+    ) -> AppResult<std::collections::BTreeMap<String, Option<String>>> {
+        let mut files = std::collections::BTreeMap::new();
+        for page in 1..=30 {
+            let (status, v) = self
+                .with_token(
+                    token,
+                    Method::Get,
+                    &format!(
+                        "/repos/{}/{}/pulls/{number}/files?per_page=100&page={page}",
+                        repo.owner, repo.name
+                    ),
+                    None,
+                )
+                .await?;
+            if status != 200 {
+                return Err(unavailable(&format!(
+                    "GitHub didn't list the pull request's files: {}",
+                    github_message(status, &v)
+                )));
+            }
+            let list = v.as_array().cloned().unwrap_or_default();
+            for f in &list {
+                if let Some(path) = f.get("filename").and_then(Value::as_str) {
+                    files.insert(
+                        path.to_owned(),
+                        f.get("patch").and_then(Value::as_str).map(str::to_owned),
+                    );
+                }
+            }
+            if list.len() < 100 {
+                break;
+            }
+        }
+        Ok(files)
+    }
+
+    /// Posts a review (`fctl_domain::reviews::review_request`): its page,
+    /// or GitHub's status and why it refused.
+    pub async fn post_review(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        number: u64,
+        body: Value,
+    ) -> AppResult<Result<String, (u16, String)>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Post,
+                &format!("/repos/{}/{}/pulls/{number}/reviews", repo.owner, repo.name),
+                Some(body),
+            )
+            .await?;
+        Ok(match v.get("html_url").and_then(Value::as_str) {
+            Some(url) if status == 200 => Ok(url.to_owned()),
+            _ => Err((status, github_message(status, &v))),
+        })
+    }
+
+    /// Resolves review threads of `repo`, with one token that can write its
+    /// contents, as GitHub asks, which does this alone, never leaves the
+    /// control plane and is revoked after. Each thread's result, in order.
+    pub async fn resolve_threads(
+        &self,
+        inst: u64,
+        repo: &RepoRef,
+        ids: &[String],
+    ) -> AppResult<Vec<Result<bool, String>>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let token = self
+            .installation_token(
+                inst,
+                Some(&[repo.name.as_str()]),
+                Some(repos::resolve_permissions()),
+            )
+            .await?;
+        let mut results = Vec::with_capacity(ids.len());
+        for id in ids {
+            let r = match self.graphql(&token, threads::resolve(id, false)).await {
+                Ok(answer) => threads::resolved(&answer),
+                Err(e) => Err(e.0.message),
+            };
+            results.push(r);
+        }
+        self.revoke_installation_token(&token).await;
+        Ok(results)
     }
 
     async fn installation_call(
@@ -965,6 +1236,24 @@ struct Reach {
 
 fn refused(msg: &str) -> AppError {
     unavailable(&format!("GitHub refused a token: {msg}"))
+}
+
+/// What GitHub said when it refused a request: its message, and the first
+/// of its errors' when it gives them.
+fn github_message(status: u16, v: &Value) -> String {
+    let message = v
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("no message");
+    match v.pointer("/errors/0").map(|e| {
+        e.as_str()
+            .map(str::to_owned)
+            .or_else(|| e.get("message").and_then(Value::as_str).map(str::to_owned))
+            .unwrap_or_else(|| e.to_string())
+    }) {
+        Some(detail) => format!("{message} ({status}: {detail})"),
+        None => format!("{message} ({status})"),
+    }
 }
 
 fn to_repo(r: RepoJson) -> GithubRepo {

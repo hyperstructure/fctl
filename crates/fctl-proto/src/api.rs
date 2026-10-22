@@ -7,7 +7,7 @@
 use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, SandboxLimits};
 use crate::session::{
-    GithubAccess, InstanceRole, Memory, Project, ProjectRole, ProjectSettings, RepoAccess,
+    GithubAccess, InstanceRole, Memory, Project, ProjectRole, ProjectSettings, RepoAccess, RepoRef,
     Retrospective, RetrospectiveOutcome, Session, SessionRole, SessionStatus, UserRef,
     WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
@@ -2275,15 +2275,294 @@ pub struct OutcomeCounts {
     pub blocked: u32,
 }
 
+// ───────────────────────────── review agents ─────────────────────────────
+
+/// A project's review agents (`GET /api/v1/projects/{id}/review-agents`):
+/// whether an agent reviews each new commit of the pull requests in its
+/// repositories, on whose Claude subscription, and how.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ReviewAgents {
+    pub enabled: bool,
+    /// The person whose Claude subscription runs the reviews: who turned
+    /// them on, or took them over since. Kept while they are off.
+    pub operator: Option<UserRef>,
+    /// The model they run on; absent: the project's.
+    pub model: Option<String>,
+    /// Their effort level; absent: the project's.
+    pub effort: Option<String>,
+    /// What they are told besides fctl's own review instructions.
+    pub instructions: Option<String>,
+    /// The repositories whose pull requests they review: those the
+    /// project's agents may write to.
+    pub repos: Vec<RepoRef>,
+    /// Why no review starts now (they are on), or would start once they
+    /// are on: no GitHub webhook, their person's Claude connection is gone…
+    pub problem: Option<String>,
+    pub updated_by: Option<UserRef>,
+    pub updated_at: Option<Millis>,
+}
+
+/// `PATCH /api/v1/projects/{id}/review-agents`, for the project's owners
+/// (and its workspace's admins), and the person they run for, who may
+/// turn them off: absent fields stay as they are.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateReviewAgentsRequest {
+    /// Turning them on runs them on the caller's Claude subscription.
+    pub enabled: Option<bool>,
+    /// `true`: run them on the caller's subscription from now on.
+    pub run_as_me: Option<bool>,
+    /// A model; `""` for the project's.
+    pub model: Option<String>,
+    /// An effort level; `""` for the project's.
+    pub effort: Option<String>,
+    /// `""` for none.
+    pub instructions: Option<String>,
+}
+
+/// How a review went, or that it is still under way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewState {
+    /// Waiting for a runner, or reviewing.
+    Running,
+    /// Done, with nothing to point out: its check passed.
+    Passed,
+    /// Done: it posted findings, or earlier ones are still open. Its check
+    /// is neutral, since acting on them is up to the pull request's people.
+    Commented,
+    /// A newer commit came before it finished, and the review of that one
+    /// took its place.
+    Superseded,
+    /// It ended without posting: someone stopped it, or its agent ended
+    /// without a review.
+    Stopped,
+    /// It couldn't run, or couldn't post.
+    Failed,
+}
+
+impl ReviewState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Passed => "passed",
+            Self::Commented => "commented",
+            Self::Superseded => "superseded",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// What D1 keeps; a state this version doesn't know reads as failed.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "running" => Self::Running,
+            "passed" => Self::Passed,
+            "commented" => Self::Commented,
+            "superseded" => Self::Superseded,
+            "stopped" => Self::Stopped,
+            _ => Self::Failed,
+        }
+    }
+
+    /// Whether it ended, one way or another.
+    pub fn is_done(self) -> bool {
+        self != Self::Running
+    }
+}
+
+/// A review agent's pass over a pull request at one commit: its session,
+/// what it reviewed and what came of it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct Review {
+    /// Its session, whose page shows the agent's work.
+    pub session_id: SessionId,
+    /// The session's number in its project (`#12`).
+    pub session_number: u32,
+    pub status: SessionStatus,
+    pub state: ReviewState,
+    /// Why it stopped or failed, or what came in its place.
+    pub reason: Option<String>,
+    pub repo: RepoRef,
+    /// The pull request's number.
+    pub number: u64,
+    pub url: String,
+    pub title: Option<String>,
+    /// Who opened the pull request: their GitHub login.
+    pub author: Option<String>,
+    pub draft: bool,
+    /// The commit it reviews.
+    pub head_sha: String,
+    /// Findings it posted.
+    pub findings: u32,
+    /// Earlier findings it marked fixed and resolved.
+    pub resolved: u32,
+    /// Findings of earlier reviews still open after it.
+    pub still_open: u32,
+    /// The review it posted on GitHub; absent while it posted none.
+    pub review_url: Option<String>,
+    /// Why GitHub shows no check for it (the app can't write checks).
+    pub check_error: Option<String>,
+    /// On whose Claude subscription it ran.
+    pub operator: UserRef,
+    pub created_at: Millis,
+    pub finished_at: Option<Millis>,
+    /// How long its agent worked.
+    pub busy_ms: u64,
+}
+
+/// `GET /api/v1/projects/{id}/reviews`: newest first. With `?session=`, that
+/// session's review alone.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ReviewList {
+    pub reviews: Vec<Review>,
+    /// Pass as `?before=` for the next page.
+    pub next_before: Option<Millis>,
+}
+
+/// `POST /api/v1/projects/{id}/reviews` (people who start sessions there,
+/// while its review agents are on): review a pull request's head now, in
+/// place of a review of it that is still under way.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct StartReviewRequest {
+    /// `owner/name#12`, its URL, or `12` in the project's repository.
+    pub pull_request: String,
+}
+
+/// How much a finding matters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// A bug or a security problem that will hurt.
+    High,
+    /// A likely problem, or a clear break of the repository's rules.
+    Medium,
+    /// Worth fixing, harmless meanwhile.
+    Low,
+}
+
+impl Severity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+}
+
+/// A problem a review agent found, on lines of the pull request.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ReviewFinding {
+    /// The file, by its path in the repository.
+    pub path: String,
+    /// The line, in the pull request's version of the file (in the old
+    /// one for `deleted` lines): the last one, for several.
+    pub line: u32,
+    /// The first line, for a finding about several.
+    pub start_line: Option<u32>,
+    /// About lines the pull request deletes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub deleted: bool,
+    pub severity: Severity,
+    /// What is wrong, in a few words.
+    pub title: String,
+    /// What goes wrong, when and where, in a few short sentences.
+    pub body: String,
+    /// The lines that fix it, in place of `start_line` to `line`, which
+    /// GitHub offers to apply.
+    pub suggestion: Option<String>,
+}
+
+/// An earlier finding the new commits fixed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ResolvedFinding {
+    /// Its review thread (`PRRT_…`), as `fctl review threads` lists it.
+    pub thread: String,
+    /// What changed, in a sentence.
+    pub note: String,
+}
+
+/// One of the review threads fctl started on a pull request: an earlier
+/// review's finding, with what people answered.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct FindingThread {
+    /// GitHub's id (`PRRT_…`).
+    pub id: String,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    pub resolved: bool,
+    /// The lines it is about changed since it was posted.
+    pub outdated: bool,
+    /// The finding, as posted.
+    pub body: String,
+    pub url: Option<String>,
+    /// The answers in it, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<ThreadReply>>", optional))]
+    pub replies: Vec<ThreadReply>,
+}
+
+/// An answer in a review thread.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ThreadReply {
+    /// Their GitHub login.
+    pub author: Option<String>,
+    pub body: String,
+}
+
+/// What fctl posted for a review session (`fctl review submit`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PostedReview {
+    pub state: ReviewState,
+    /// The review on GitHub; absent when it had nothing to post.
+    pub url: Option<String>,
+    /// Findings posted on their lines.
+    pub comments: u32,
+    /// Findings whose lines the pull request doesn't change, posted in the
+    /// review's text instead.
+    pub in_text: u32,
+    /// The earlier findings marked fixed, by thread.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub resolved: Vec<String>,
+    /// Earlier findings still open.
+    pub still_open: u32,
+    /// It was posted already: this answers a second submission.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub again: bool,
+}
+
 // ───────────────────────────── what agents ask ─────────────────────────────
 
 /// What an agent asks of the control plane about its session's project,
-/// with `fctl memory`, `fctl retro` and `fctl resolve` in its sandbox.
-/// fctl-agent hands it to its host, which sends it with its runner token
-/// (`POST /api/v1/runner/sessions/{id}/calls`) and hands the
+/// with `fctl memory`, `fctl retro`, `fctl resolve` and `fctl review` in its
+/// sandbox. fctl-agent hands it to its host, which sends it with its runner
+/// token (`POST /api/v1/runner/sessions/{id}/calls`) and hands the
 /// [`AgentAnswer`] back. Each needs the project's setting:
 /// `project_memory`, or `retrospectives`; resolving review threads needs a
-/// session whose agent may comment.
+/// session whose agent may comment, and reviews a review agent's session.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -2363,6 +2642,29 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
         unresolve: bool,
     },
+    /// The review threads fctl started on the pull request a review
+    /// session reviews (`fctl review threads`): earlier reviews' findings,
+    /// whether they are resolved, and what people answered. Only for review
+    /// sessions; fctl-agents and control planes from before review agents
+    /// refuse it.
+    ReviewThreads,
+    /// Posts a review session's review, once (`fctl review submit`): its
+    /// findings as comments on their lines, in one review, and the earlier
+    /// findings the new commits fixed, which fctl marks fixed and resolves.
+    /// Without findings it posts nothing new and passes the check. Only
+    /// for review sessions.
+    SubmitReview {
+        /// A sentence or two on the pull request as a whole, for the
+        /// review's text.
+        #[cfg_attr(feature = "ts", ts(optional))]
+        summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<Vec<ReviewFinding>>", optional))]
+        findings: Vec<ReviewFinding>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<Vec<ResolvedFinding>>", optional))]
+        resolved: Vec<ResolvedFinding>,
+    },
 }
 
 /// The control plane's answer to an [`AgentCall`].
@@ -2396,6 +2698,14 @@ pub enum AgentAnswer {
     /// The review thread as it is now.
     Thread {
         thread: ReviewThread,
+    },
+    /// fctl's review threads on the pull request, oldest first.
+    ReviewThreads {
+        threads: Vec<FindingThread>,
+    },
+    /// What fctl posted.
+    ReviewPosted {
+        review: PostedReview,
     },
 }
 

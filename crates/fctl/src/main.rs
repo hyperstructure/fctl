@@ -123,6 +123,16 @@ enum Command {
                             fctl retro list my-app#12"
     )]
     Retro(cmd::retro::RetroArgs),
+    /// Review agents: a project's reviews of its pull requests, asking for
+    /// one, and turning them on or off (people); reading fctl's earlier
+    /// findings and posting a review (review agents, in their sandbox).
+    #[command(after_help = "Examples:
+  fctl review                          # the project's reviews, newest first
+                              fctl review settings --on --effort high
+                              fctl review start acme/web#12
+                              fctl review threads                  # a review agent, in its sandbox
+                              fctl review submit review.json       # a review agent, in its sandbox")]
+    Review(cmd::review::ReviewArgs),
     /// Follow a session live and message the agent (Ctrl-C detaches).
     Attach {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -301,6 +311,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Unpublish { links } => cmd::publish::unpublish(server, &links, json).await,
         Command::Memory(args) => cmd::memory::run(server, args, json).await,
         Command::Retro(args) => cmd::retro::run(server, args, json).await,
+        Command::Review(args) => cmd::review::run(server, args, json).await,
         Command::Attach { session, read_only } => {
             cmd::attach::attach(server, &session, read_only).await
         }

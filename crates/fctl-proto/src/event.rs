@@ -314,7 +314,7 @@ pub struct Notice {
     /// Stable identifier, for example `usage_limit`, `overage_blocked`,
     /// `api_key_refused`, `credential_expired`, `runner_lost`,
     /// `screenshot_published`, `memory_added`, `memory_stale`,
-    /// `retrospective`.
+    /// `retrospective`, `review_posted`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).
@@ -328,6 +328,9 @@ pub struct Notice {
     /// The retrospective a `retrospective` notice holds. Clients from
     /// before it show the message.
     pub retrospective: Option<Retrospective>,
+    /// What fctl posted for a review agent, in a `review_posted` notice.
+    /// Clients from before it show the message.
+    pub review: Option<crate::api::PostedReview>,
 }
 
 /// A screenshot an agent published on the control plane (`fctl publish`):
@@ -450,6 +453,7 @@ mod tests {
             }),
             memory: None,
             retrospective: None,
+            review: None,
         };
         let json = serde_json::to_value(EventBody::Notice(shot.clone()))?;
         assert_eq!(json["kind"], "notice");

@@ -101,7 +101,7 @@ pub async fn resolve(api: &Api, reference: &str) -> Result<Session> {
         let n: u32 = number
             .parse()
             .context("use project#number, like my-app#12")?;
-        let list = api.sessions(Some(project), None, 200).await?;
+        let list = api.sessions_with_reviews(project, 200).await?;
         return list
             .sessions
             .into_iter()

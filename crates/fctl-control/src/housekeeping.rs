@@ -179,6 +179,11 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
         }
         Err(e) => worker::console_error!("looking up pull requests: {}", e.0.message),
     }
+    match crate::reviews::sweep(env, &db).await {
+        Ok(0) => {}
+        Ok(ended) => worker::console_log!("housekeeping: ended {ended} reviews"),
+        Err(e) => worker::console_error!("ending reviews: {}", e.0.message),
+    }
     if purged > 0 || purged_files > 0 || deleted > 0 {
         worker::console_log!(
             "housekeeping: purged {purged} sessions and the files of {purged_files} projects, deleted {deleted} rows"

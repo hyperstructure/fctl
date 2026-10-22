@@ -101,6 +101,11 @@ pub struct HostHello {
     /// only resumes of the ones whose sandboxes it has. Absent when it
     /// keeps none, and from older hosts.
     pub min_free_disk_mb: Option<u64>,
+    /// What its agents can do beyond the protocol version, for example
+    /// [`FEATURE_REVIEWS`]. Older hosts send none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub features: Vec<String>,
 }
 
 #[skip_serializing_none]
@@ -337,6 +342,41 @@ pub struct SessionSpec {
     /// Older hosts leave it out of the agent's configuration, and their
     /// agents' pushes fail.
     pub github_access: Option<GithubAccess>,
+    /// What a review agent's session reviews, and how. Its agent checks
+    /// the pull request out at the commit, reviews it, posts what it found
+    /// with `fctl review submit` and takes no messages. Absent for other
+    /// sessions. FleetDO gives review sessions only to hosts that announce
+    /// [`FEATURE_REVIEWS`].
+    pub review: Option<ReviewSpec>,
+}
+
+/// What hosts whose agents run review sessions announce in their hello
+/// ([`HostHello::features`]).
+pub const FEATURE_REVIEWS: &str = "reviews";
+
+/// The pull request a review session reviews, and what its agent is told.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ReviewSpec {
+    /// The repository, which the agent's working directory holds.
+    pub repo: RepoRef,
+    /// The pull request's number.
+    pub number: u64,
+    pub url: String,
+    pub title: String,
+    /// The commit to review: its head when the review started.
+    pub head_sha: String,
+    /// The branch it comes from (in a fork, for a pull request from one).
+    pub head_ref: String,
+    /// The branch it goes into.
+    pub base_ref: String,
+    /// The commit fctl's last review of it reviewed: what changed since is
+    /// what the new commits did.
+    pub previous_sha: Option<String>,
+    /// The review instructions the control plane gives the agent's system
+    /// prompt, with the project's own after them.
+    pub instructions: String,
 }
 
 /// A project's memory, as a session's agent starts with it.

@@ -5,6 +5,7 @@ import type { PullRequestRef } from "./PullRequestRef";
 import type { RemoteControlState } from "./RemoteControlState";
 import type { RunnerRef } from "./RunnerRef";
 import type { SessionId } from "./SessionId";
+import type { SessionReview } from "./SessionReview";
 import type { SessionRole } from "./SessionRole";
 import type { SessionStats } from "./SessionStats";
 import type { SessionStatus } from "./SessionStatus";
@@ -68,4 +69,12 @@ role?: SessionRole, archived: boolean,
  * waits for a reply, pauses on a usage limit or fails. Absent from live
  * updates, which go to everyone watching.
  */
-following?: boolean, };
+following?: boolean, 
+/**
+ * The pull request it reviews, for the session of a review agent
+ * (`api::ReviewAgents`). Such a session takes no messages, stays off
+ * the Agent Floor and its project's session list, and its agent posts
+ * what it found on GitHub through fctl. Absent for other sessions, and
+ * from control planes before review agents.
+ */
+review?: SessionReview, };

@@ -15,6 +15,7 @@ pub mod projects;
 pub mod published;
 pub mod repos;
 pub mod retrospectives;
+pub mod reviews;
 pub mod runners;
 pub mod sessions;
 pub mod tokens;
