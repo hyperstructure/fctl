@@ -197,6 +197,21 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
             },
         )
         .await?;
+    // A control plane from before GitHub access ignores it, and its agent
+    // would push.
+    if args
+        .github
+        .is_some_and(|g| g != super::tokens::Github::Push)
+        && session.github_access.is_none()
+    {
+        let _ = api.stop(session.id.as_str()).await;
+        bail!(
+            "{} can't hold agents to less than pushing yet, so fctl stopped {}#{}. Update the instance, or start the session without --github.",
+            api.base(),
+            session.project_slug,
+            session.number
+        );
+    }
     if json {
         return style::print_json(&session);
     }

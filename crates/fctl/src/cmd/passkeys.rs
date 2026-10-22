@@ -28,7 +28,7 @@ pub enum PasskeysCmd {
 }
 
 pub async fn run(api: &Api, cmd: PasskeysCmd, json: bool) -> Result<()> {
-    let me = super::auth::account(&api).await?;
+    let me = super::auth::account(api).await?;
     match cmd {
         PasskeysCmd::List => {
             if json {

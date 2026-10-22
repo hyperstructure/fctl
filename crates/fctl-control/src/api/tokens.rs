@@ -210,13 +210,20 @@ async fn places(
             &format!("A token reaches at most {MAX_PLACES} workspaces and projects"),
         ));
     }
+    // A blank one would leave the token reaching every project.
+    if workspaces
+        .iter()
+        .chain(projects)
+        .any(|p| p.trim().is_empty())
+    {
+        return Err(validation(
+            "projects",
+            "Name each workspace and project the token reaches, or none for all of them",
+        ));
+    }
     let user = ctx.user()?;
     let mut out = Places::default();
-    for w in workspaces
-        .iter()
-        .map(|w| w.trim())
-        .filter(|w| !w.is_empty())
-    {
+    for w in workspaces.iter().map(|w| w.trim()) {
         #[derive(Deserialize)]
         struct Id {
             id: String,
@@ -239,7 +246,7 @@ async fn places(
             out.workspaces.push(found.id);
         }
     }
-    for p in projects.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
+    for p in projects.iter().map(|p| p.trim()) {
         let found = access::project(ctx, p)
             .await
             .map_err(|_| validation("projects", &format!("You don't see a project called {p}")))?;

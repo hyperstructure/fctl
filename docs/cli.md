@@ -20,13 +20,42 @@ server it signs in to: a server that sends you to approve the sign-in on
 another site could be relaying that site's code to get a token there, so
 it stops and says which site to sign in to instead.
 
-For scripts and CI, create a personal access token and pass it as
-`FCTL_TOKEN`:
+For scripts, CI and bots, create an access token, limited to what it is
+for, and pass it as `FCTL_TOKEN`:
 
 ```sh
-fctl token "deploy bot" --days 90
-FCTL_TOKEN=fctl_pat_… fctl sessions --json
+fctl token "PR reviews" --access run -p my-app --github comment --days 90
+FCTL_TOKEN=fctl_pat_… fctl run -p my-app --github comment -d "Review pull request #12"
 ```
+
+### Access tokens
+
+`fctl token` prints a new token once. Without `--access`, `-p`, `-w` and
+`--github` it does everything you can, as you do when signed in; with any,
+it is limited, and reaches projects and sessions only: never your account,
+your workspaces' people and settings, your Claude connections or your other
+tokens.
+
+```sh
+fctl token "Dashboard" --access read -w acme   # reads every project of acme, those made later too
+fctl token "Nightly" --access run -p my-app    # starts and steers sessions in my-app
+fctl token "Admin script" --access full -p my-app   # everything you can do in my-app
+fctl token "PR reviews" --access run -p my-app --github comment --days 90
+fctl tokens                                    # your tokens and what each does, and where you are signed in
+fctl tokens revoke "PR reviews"                # by name or id (tok_…), at once
+```
+
+`--access` says what it does: `read` reads projects, sessions, transcripts,
+memory and retrospectives and changes nothing; `run` also starts sessions,
+messages and interrupts their agents, stops and resumes the sessions it
+started, and keeps projects' memory; `full` does all you can in its
+projects. `-p` and `-w` (repeat them) keep it to some projects, or to every
+project of some workspaces. `--github` is the most the agents of its
+sessions may do on GitHub (below): sessions it starts get that unless they
+ask for less, and it can't message or resume a session whose agent may do
+more. Sessions it starts don't notify you; follow the ones you want.
+`fctl whoami` with a token says what it does. [Automation](automation.md)
+runs review agents from GitHub Actions with one.
 
 Configuration lives in `~/.config/fctl/` (`config.toml`, and
 `credentials.toml` with mode 0600). `FCTL_CONFIG_DIR` moves it.
@@ -40,6 +69,8 @@ fctl run -p my-app "Add a dark mode toggle"   # start one and follow it
 fctl run -p my-app -d -f task.md              # start from a file, don't follow
 echo "Fix the flaky test" | fctl run -p my-app
 fctl run --model opus --effort high "…"       # override the project's agent settings
+fctl run --github comment "Review pull request #12"   # its agent reviews and comments, and pushes nothing
+fctl run --github read "Plan the move to Postgres"    # its agent only reads on GitHub
 fctl run --branch fix/login --base develop "…"
 fctl run -p my-app -a screenshot.png "Make the header match this"   # attach files (repeat -a)
 
@@ -65,6 +96,20 @@ fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 ```
 
 `fctl run` uses the project from `fctl projects use` when `-p` is missing.
+
+A session's agent pushes, comments or only reads on GitHub (`--github`):
+one that pushes commits and pushes its branch, as agents always did; one
+that comments reviews, comments and labels, with a token that can't push;
+one that reads writes nothing. It gets as much as its project's settings
+and the token that starts it allow unless it asks for less, and `fctl
+show` says what it got. GitHub lets only tokens that can push resolve
+review threads, so an agent that comments resolves them through fctl, in
+its sandbox:
+
+```sh
+fctl resolve PRRT_kwDOABCD1234         # in a session's sandbox: resolve a review thread
+fctl resolve --unresolve PRRT_kwDOABCD1234
+```
 
 `fctl attach` also says when the session's runner goes away or can't reach
 the agent in its sandbox, and when it is back.
@@ -191,6 +236,7 @@ fctl projects set -p my-app --setup-script 'npm ci'   # or @setup.sh, or - to re
 fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
+fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
 fctl projects use my-app
 fctl projects order my-app site        # these first in their workspace, the others after them
 fctl projects delete my-app            # with its sessions; asks you to type the slug
