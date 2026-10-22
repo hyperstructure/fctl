@@ -27,10 +27,13 @@ export function useKeepPlace(list: RefObject<HTMLElement | null>, loading: boole
     const held = marks.current;
     if (loading || !held) return;
     marks.current = undefined;
-    list.current?.style.removeProperty("overflow-anchor");
+    // Measured with the browser's anchoring still off: measuring lays the
+    // page out, and Chrome would move it by what went in above too, when
+    // what it anchors to is an item (the button is out of view).
     const mark = held.find((m) => m.el.isConnected);
     const moved = mark ? pageTop(mark.el) - mark.top : 0;
     if (moved) window.scrollBy({ top: moved, behavior: "instant" });
+    list.current?.style.removeProperty("overflow-anchor");
   });
   return useCallback(() => {
     const el = list.current;
