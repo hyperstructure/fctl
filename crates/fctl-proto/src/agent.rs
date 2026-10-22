@@ -357,6 +357,7 @@ mod tests {
             AgentCall::Remember {
                 text: "Run npm ci in web/ first".into(),
                 replaces: None,
+                also_replaces: vec![],
             }
         );
         // `stale` may be left out.
@@ -385,6 +386,75 @@ mod tests {
         };
         assert_eq!(answer, None);
         assert_eq!(error.map(|e| e.code), Some(crate::ErrorCode::Forbidden));
+        Ok(())
+    }
+
+    #[test]
+    fn duplicates_and_notes_that_replace_several_on_the_wire() -> Result<(), serde_json::Error> {
+        use crate::MemoryId;
+        // What fctl from before them sends still reads.
+        let stale: AgentCall =
+            serde_json::from_str(r#"{"type":"mark_stale","id":"mem_1","reason":"Moved"}"#)?;
+        assert!(matches!(
+            stale,
+            AgentCall::MarkStale {
+                duplicate_of: None,
+                ..
+            }
+        ));
+        // A duplicate keeps its reason for hosts from before duplicates.
+        let duplicate = serde_json::to_value(AgentCall::MarkStale {
+            id: MemoryId("mem_2".into()),
+            reason: "Duplicate of mem_1".into(),
+            duplicate_of: Some(MemoryId("mem_1".into())),
+        })?;
+        assert_eq!(duplicate["duplicate_of"], "mem_1");
+        assert_eq!(duplicate["reason"], "Duplicate of mem_1");
+        assert!(
+            serde_json::to_value(AgentCall::MarkStale {
+                id: MemoryId("mem_2".into()),
+                reason: "Moved".into(),
+                duplicate_of: None,
+            })?
+            .get("duplicate_of")
+            .is_none()
+        );
+        // The first note it replaces goes as `replaces`, which hosts from
+        // before `also_replaces` take alone.
+        let several: AgentCall = serde_json::from_value(serde_json::json!({
+            "type": "remember", "text": "Run npm ci first",
+            "replaces": "mem_1", "also_replaces": ["mem_2", "mem_3"]
+        }))?;
+        let AgentCall::Remember {
+            replaces,
+            also_replaces,
+            ..
+        } = several
+        else {
+            panic!("expected remember");
+        };
+        assert_eq!(replaces, Some(MemoryId("mem_1".into())));
+        assert_eq!(also_replaces.len(), 2);
+        let one = serde_json::to_value(AgentCall::Remember {
+            text: "Run npm ci first".into(),
+            replaces: Some(MemoryId("mem_1".into())),
+            also_replaces: vec![],
+        })?;
+        assert!(one.get("also_replaces").is_none());
+        // Control planes from before `also_replaced` answer without it.
+        let answer: crate::api::AgentAnswer = serde_json::from_value(serde_json::json!({
+            "type": "memory",
+            "memory": { "id": "mem_4", "project_id": "prj_1", "text": "Run npm ci first", "created_at": 5 }
+        }))?;
+        assert!(matches!(
+            answer,
+            crate::api::AgentAnswer::Memory { replaced: None, ref also_replaced, .. } if also_replaced.is_empty()
+        ));
+        assert!(
+            serde_json::to_value(&answer)?
+                .get("also_replaced")
+                .is_none()
+        );
         Ok(())
     }
 

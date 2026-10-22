@@ -222,8 +222,10 @@ fctl memory -p my-app --stale          # the stale ones too
 fctl memory show mem_01JC3V…
 fctl memory add -p my-app "Deploys happen on Fridays: merge migrations by Wednesday."
 fctl memory add -p my-app "Deploys happen on Thursdays." --replaces mem_01JC3V…   # the old one goes stale
+fctl memory add -p my-app "…what both say…" --replaces mem_01JC3V…,mem_01JC2Q…     # in place of both
 fctl memory edit mem_01JC3V… "Deploys happen on Thursdays."
 fctl memory stale mem_01JC3V… --reason "We deploy every day now"   # agents no longer start with it
+fctl memory duplicate mem_01JC3V… --of mem_01JC2Q…   # stale, linked to the note it repeats
 fctl memory restore mem_01JC3V…        # current again
 fctl memory rm mem_01JC3V…             # for good
 ```
@@ -250,12 +252,14 @@ fctl memory                            # the notes as they are now, other sessio
 fctl memory add "The e2e tests need Chromium: run npx playwright install chromium first."
 fctl memory add "Run cargo xtask check before pushing." --replaces mem_01JC3V…   # the old one goes stale
 fctl memory stale mem_01JC3V… --reason "The script moved to xtask"
+fctl memory duplicate mem_01JC3V… --of mem_01JC2Q…   # it repeats a current note
 fctl retro --outcome completed --worked-on "Retried failed uploads (#41)." \
   --approach "Used the existing backoff helper." --challenges "The tests need MinIO." \
   --insights "Start MinIO with docker compose up minio before the tests."
 ```
 
-Agents can't change or delete notes, only mark them stale with a reason.
+Agents can't change or delete notes, only mark them stale with a reason,
+or as duplicates of current notes. A note replaces at most 20 others.
 Both are on in new projects and projects from before them; `fctl projects
 set --project-memory off` and `--retrospectives off` turn them off, and the
 notes and retrospectives stay for people to read. A project keeps at most

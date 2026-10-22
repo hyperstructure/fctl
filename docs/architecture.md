@@ -1023,7 +1023,8 @@ tests or deploys really behave, or a decision people made in conversation
 D1 keeps them (`memories`): the text (Markdown, at most 2,000 characters),
 the session whose agent wrote it and the person who started that session,
 or the person who wrote it, who last changed it, and for a stale note when,
-why and who marked it (`fctl_domain::memory`).
+why and who marked it, and the note that took its place or that it repeats
+(`fctl_domain::memory`).
 
 1. **What agents start with.** As FleetDO builds a run's spec, it adds the
    project's current notes, newest first, as many as fit in 24 KB and 200
@@ -1037,10 +1038,13 @@ why and who marked it (`fctl_domain::memory`).
    in the sandbox's `~/.claude/projects/` and go with it.
 2. **What agents do.** In the sandbox, `fctl memory` lists the notes as
    they are now, those other sessions added since the run started too;
-   `fctl memory add` writes one, in place of another that goes stale with
-   `--replaces`; and `fctl memory stale` marks one stale, with the reason
-   agents must give (not one someone else marked stale already). Agents
-   can't change or delete notes. fctl reaches
+   `fctl memory add` writes one, in place of others that go stale with
+   `--replaces` (as many as 20, for a note that says what overlapping
+   notes did); `fctl memory stale` marks one stale, with the reason agents
+   must give (not one someone else marked stale already); and `fctl memory
+   duplicate` marks one stale as a duplicate of another, a current note
+   that agents go on starting with, and links the two. Agents can't change
+   or delete notes. fctl reaches
    fctl-agent over the session socket, which hands the call to its host
    (`AgentToHost::Call`); the host sends it with its runner token (`POST
    /api/v1/runner/sessions/{id}/calls`, an `AgentCall`), and the control
@@ -1048,13 +1052,20 @@ why and who marked it (`fctl_domain::memory`).
    runner still serves its workspace and that the project keeps a memory,
    as for published screenshots. The answer comes back the same way, and
    fctl-agent adds a `memory_added` or `memory_stale` notice with the note
-   to the transcript. The host retries reading the memory and marking a
-   note stale on errors that may pass, and not a new note, which the
-   control plane may have kept already.
+   to the transcript, one for each note a new one replaced. The host
+   retries reading the memory and marking a note stale (a duplicate too)
+   on errors that may pass, and not a new note, which the control plane
+   may have kept already. The first note a new one replaces travels as
+   `replaces` and the others as `also_replaces`, and a duplicate as
+   `mark_stale` with `duplicate_of` and the reason `Duplicate of mem_…`:
+   a sandbox's fctl may be newer than its host, and fctl-agents, hosts and
+   control planes from before them replace the first note alone (fctl
+   says which notes are still current) and mark a duplicate stale with
+   that reason.
 3. **What people do.** Everyone who sees the project reads its memory (its
    Memory tab, `fctl memory -p …`, `GET /api/v1/projects/{id}/memories`);
    editors and up add notes, in place of others too, change them, mark
-   them stale or current again and delete them (`POST
+   them stale (duplicates too) or current again and delete them (`POST
    /api/v1/projects/{id}/memories`, `PATCH` and `DELETE
    /api/v1/memories/{id}`), which the workspace's audit log records. A
    project keeps at most 500 notes, stale ones included. Session pages ask

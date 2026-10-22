@@ -19,4 +19,9 @@ by?: UserRef,
 /**
  * The memory that took its place (`fctl memory add --replaces`).
  */
-replaced_by?: MemoryId, };
+replaced_by?: MemoryId, 
+/**
+ * The memory it repeats, which was current when it was marked
+ * (`fctl memory duplicate`).
+ */
+duplicate_of?: MemoryId, };

@@ -425,6 +425,28 @@ describe("what the agent keeps", () => {
     expect(c.textContent).not.toContain("mem_2");
   });
 
+  it("says which note a duplicate repeats, with a link to it", () => {
+    const copy = memory({ stale: { at: 1, reason: "Duplicate of mem_0", duplicate_of: "mem_0" } });
+    const c = render(
+      <Transcript
+        sessionId="ses_1"
+        startedBy={ada}
+        items={[kept("memory_stale", copy)]}
+        live={emptyLive()}
+        status="idle"
+        projectSlug="app"
+        onLoadOlder={() => {}}
+        hasMoreBefore={false}
+        loadingOlder={false}
+      />,
+    );
+    expect(c.textContent).toContain("Marked a note a duplicate");
+    expect(c.textContent).toContain("It repeats another note.");
+    expect(c.textContent).not.toContain("Duplicate of mem_0");
+    const links = [...c.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    expect(links).toContain("/p/app?tab=memory#note-mem_0");
+  });
+
   it("shows a retrospective with its outcome and the parts that say something", () => {
     const r: G.Retrospective = {
       id: "rtr_1",

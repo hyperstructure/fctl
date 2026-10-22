@@ -714,7 +714,7 @@ impl Supervisor {
     }
 
     /// Adds to the transcript what an answer says the agent kept: a note it
-    /// remembered (and the one it replaced), a note it marked stale, a
+    /// remembered (and those it replaced), a note it marked stale, a
     /// retrospective.
     fn notice_kept(&mut self, answer: &AgentAnswer) {
         let notices = kept_notices(answer);
@@ -1918,8 +1918,8 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
 }
 
 /// What the transcript says about what the agent kept: the note it
-/// remembered (and the one that took its place), or marked stale, or the
-/// retrospective it recorded. The message stands alone for clients from
+/// remembered (and those it took the place of), or marked stale (a
+/// duplicate too), or the retrospective it recorded. The message stands alone for clients from
 /// before the notice's `memory` and `retrospective`.
 fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
     let notice = |code: &str, message: String| Notice {
@@ -1933,7 +1933,11 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
     };
     match answer {
         AgentAnswer::Memories { .. } => vec![],
-        AgentAnswer::Memory { memory, replaced } => {
+        AgentAnswer::Memory {
+            memory,
+            replaced,
+            also_replaced,
+        } => {
             let mut notices = Vec::new();
             if memory.stale.is_some() {
                 notices.push(Notice {
@@ -1945,7 +1949,7 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
                     memory: Some(memory.clone()),
                     ..notice("memory_added", fctl_domain::memory::added_message(memory))
                 });
-                if let Some(old) = replaced {
+                for old in replaced.iter().chain(also_replaced) {
                     notices.push(Notice {
                         memory: Some(old.clone()),
                         ..notice("memory_stale", fctl_domain::memory::stale_message(old))
@@ -2331,6 +2335,7 @@ mod tests {
                 session: None,
                 by: None,
                 replaced_by: None,
+                duplicate_of: None,
             }),
         }
     }
@@ -2358,6 +2363,7 @@ mod tests {
             request: calling(AgentCall::Remember {
                 text: "Run npm ci in web/ first".into(),
                 replaces: Some(fctl_proto::MemoryId("mem_old".into())),
+                also_replaces: vec![fctl_proto::MemoryId("mem_older".into())],
             }),
             reply: tx,
         });
@@ -2367,7 +2373,7 @@ mod tests {
             panic!("expected a call frame");
         };
         assert!(
-            matches!(call, AgentCall::Remember { ref text, .. } if text == "Run npm ci in web/ first")
+            matches!(call, AgentCall::Remember { ref text, ref also_replaces, .. } if text == "Run npm ci in web/ first" && also_replaces.len() == 1)
         );
         assert!(rx.try_recv().is_err());
         let answer = AgentAnswer::Memory {
@@ -2377,6 +2383,7 @@ mod tests {
                 "Run npm install",
                 Some("Replaced by mem_new"),
             )),
+            also_replaced: vec![note("mem_older", "Run yarn", Some("Replaced by mem_new"))],
         };
         sup.on_frame(HostToAgent::Answer {
             request_id: request_id.clone(),
@@ -2389,7 +2396,7 @@ mod tests {
         );
         // The transcript says what was remembered, and what it replaced.
         let n = notices(&mut host_rx)?;
-        assert_eq!(n.len(), 2);
+        assert_eq!(n.len(), 3);
         assert_eq!(n[0].code, "memory_added");
         assert_eq!(n[0].message, "Remembered: Run npm ci in web/ first");
         assert_eq!(n[0].memory.as_ref().map(|m| m.id.as_str()), Some("mem_new"));
@@ -2397,6 +2404,11 @@ mod tests {
         assert_eq!(
             n[1].message,
             "Marked a memory stale: Run npm install (Replaced by mem_new)"
+        );
+        assert_eq!(n[2].code, "memory_stale");
+        assert_eq!(
+            n[2].memory.as_ref().map(|m| m.id.as_str()),
+            Some("mem_older")
         );
         // A late or repeated answer goes nowhere.
         sup.on_answer(&request_id, Some(answer), None);
@@ -2426,6 +2438,7 @@ mod tests {
             request: calling(AgentCall::MarkStale {
                 id: fctl_proto::MemoryId("mem_gone".into()),
                 reason: "Moved".into(),
+                duplicate_of: None,
             }),
             reply: tx,
         });
@@ -2436,6 +2449,50 @@ mod tests {
         sup.on_answer(&request_id, None, Some(ApiError::not_found("Memory")));
         assert!(
             matches!(rx.try_recv(), Ok(SessionReply::Error { ref error }) if error.code == fctl_proto::ErrorCode::NotFound)
+        );
+
+        // A duplicate goes stale, and the transcript says which note it
+        // repeats.
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(AgentCall::MarkStale {
+                id: fctl_proto::MemoryId("mem_copy".into()),
+                reason: "Duplicate of mem_keep".into(),
+                duplicate_of: Some(fctl_proto::MemoryId("mem_keep".into())),
+            }),
+            reply: tx,
+        });
+        let AgentToHost::Call { request_id, call } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a call frame");
+        };
+        assert!(
+            matches!(call, AgentCall::MarkStale { duplicate_of: Some(ref of), .. } if of.as_str() == "mem_keep")
+        );
+        let mut copy = note(
+            "mem_copy",
+            "Run npm ci first",
+            Some("Duplicate of mem_keep"),
+        );
+        if let Some(stale) = copy.stale.as_mut() {
+            stale.duplicate_of = Some(fctl_proto::MemoryId("mem_keep".into()));
+        }
+        sup.on_answer(
+            &request_id,
+            Some(AgentAnswer::Memory {
+                memory: copy,
+                replaced: None,
+                also_replaced: vec![],
+            }),
+            None,
+        );
+        assert!(matches!(rx.try_recv(), Ok(SessionReply::Answer { .. })));
+        let n = notices(&mut host_rx)?;
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].code, "memory_stale");
+        assert_eq!(
+            n[0].message,
+            "Marked a memory a duplicate of mem_keep: Run npm ci first"
         );
         Ok(())
     }
@@ -2544,6 +2601,7 @@ mod tests {
             request: calling(AgentCall::Remember {
                 text: "Deploys happen on Fridays".into(),
                 replaces: None,
+                also_replaces: vec![],
             }),
             reply: tx,
         });
@@ -2563,6 +2621,7 @@ mod tests {
         let answer = AgentAnswer::Memory {
             memory: note("mem_1", "Deploys happen on Fridays", None),
             replaced: None,
+            also_replaced: vec![],
         };
         sup.on_answer(&request_id, Some(answer.clone()), None);
         let n = notices(&mut host_rx)?;

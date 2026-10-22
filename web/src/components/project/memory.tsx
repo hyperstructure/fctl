@@ -40,7 +40,15 @@ import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, stamp } from "@/lib/format";
-import { canEditMemory, headline, MAX_NOTE_CHARS, matches, noteAnchor, replacement } from "@/lib/memory";
+import {
+  canEditMemory,
+  headline,
+  MAX_NOTE_CHARS,
+  matches,
+  noteAnchor,
+  original,
+  replacement,
+} from "@/lib/memory";
 import { keys, queryClient, useMemories } from "@/lib/queries";
 
 /** Puts a changed note in the cached list, or takes a deleted one out. */
@@ -317,6 +325,8 @@ function Note({
     onError: (e) => toast(e.message, "error"),
   });
   const next = replacement(all, note);
+  // The note it repeats, unless a newer one took its place since.
+  const first = next ? undefined : original(all, note);
   const author = note.created_by;
   return (
     <li id={noteAnchor(note.id)} className="group/note scroll-mt-24 border-b border-line py-1">
@@ -367,7 +377,7 @@ function Note({
                 ) : note.stale.by ? (
                   `, marked by ${note.stale.by.name}`
                 ) : null}
-                {note.stale.reason && !next ? `: ${note.stale.reason}` : ""}
+                {note.stale.reason && !next && !first ? `: ${note.stale.reason}` : ""}
                 {next && (
                   <>
                     {": "}
@@ -377,6 +387,18 @@ function Note({
                       className="text-ink-2 underline underline-offset-2 hover:text-ink"
                     >
                       a newer note takes its place
+                    </button>
+                  </>
+                )}
+                {first && (
+                  <>
+                    {": "}
+                    <button
+                      type="button"
+                      onClick={() => onShow(first.id)}
+                      className="text-ink-2 underline underline-offset-2 hover:text-ink"
+                    >
+                      a duplicate of another note
                     </button>
                   </>
                 )}

@@ -4,6 +4,11 @@ import type { MemoryId } from "./MemoryId";
 /**
  * `POST /api/v1/projects/{id}/memories` (editors): a note from a person
  * for the project's agents; with `replaces`, in place of that note, which
- * goes stale.
+ * goes stale, and with `also_replaces` in place of those too.
  */
-export type AddMemoryRequest = { text: string, replaces?: MemoryId, };
+export type AddMemoryRequest = { text: string, replaces?: MemoryId, 
+/**
+ * More notes it takes the place of. Control planes from before it
+ * replace only `replaces`.
+ */
+also_replaces?: Array<MemoryId>, };
