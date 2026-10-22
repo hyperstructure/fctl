@@ -71,10 +71,13 @@ Retrospectives tabs, and the session page, show them),
 `slow` streams slowly, `background <seconds>` starts a shell command in
 the background that ends after that many seconds and takes its result in
 a turn of its own (the session waits for it, then runs again, as with
-Claude Code),
-`limit` hits a usage limit that resets 20 seconds later (the session
-pauses and continues half a minute after the reset; a message that also
-says `reset`, like the one fctl-agent continues it with, doesn't count),
+Claude Code), `delegate` hands a look around the sandbox to a subagent,
+whose steps the session page shows under its Delegated line as they come
+(`delegate in the background` runs it in the background: the turn ends,
+the subagent works on, and a turn of its own takes its report), `limit`
+hits a usage limit that resets 20 seconds later (the session pauses and
+continues half a minute after the reset; a message that also says
+`reset`, like the one fctl-agent continues it with, doesn't count),
 `overage` reports paid usage (the session must pause), `refresh` asks
 the host for a new OAuth token, `effort <level>` (or Claude Code's
 `/effort <level>`) changes the effort level it works at (`low` … `max`, or
