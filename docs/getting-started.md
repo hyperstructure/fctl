@@ -70,7 +70,7 @@ fctl whoami
 Projects, the machines that run their agents and the GitHub accounts they
 work in belong to workspaces: one for your company's repositories, one for
 your own, one for a side project with friends. An invitation to a workspace
-shows on your home page, where you join it; or choose **New workspace** in
+shows on your Agent Floor, where you join it; or choose **New workspace** in
 the sidebar (`fctl workspaces create "Side project"`) and be its primary
 admin. Each workspace has its own people, admins, runners, GitHub accounts
 and audit log, and can require two-factor sign-in of its members. You can be
@@ -108,10 +108,10 @@ fctl claude status
 Once a session runs on it, the connection shows how much of your plan's
 limits is used: the five-hour window, the week, and a model's own weekly
 limit when Claude reports one, each with when it resets. You see it under
-each connection in Settings → Claude, under the task box on the home page
+each connection in Settings → Claude, under the task box on the Agent Floor
 (for the connection new sessions use), and in `fctl claude status`. Sessions
 report it as they work, so it is as recent as your latest session. From
-80 % of a limit the home page says how much of it is used, in red from
+80 % of a limit the Agent Floor says how much of it is used, in red from
 90 %; sessions pause when one is used up, until it resets.
 
 With more than one connection, say your own plan and a seat your company
@@ -183,7 +183,7 @@ while none of those is online. A Claude sign-in through a host runs on one
 of your runners when one is online.
 
 Keep it on the version of fctl the app runs. While a runner of yours is
-online with an older one, your home page says so, and **How to update**
+online with an older one, your Agent Floor says so, and **How to update**
 shows what to run on it: `fctl self update`, which restarts the host
 service while its sessions carry on (or `brew upgrade fctl`, then `fctl
 host restart`, where Homebrew installed fctl). **Skip this version** hides
@@ -220,13 +220,14 @@ reach. From the terminal: `fctl projects repos add my-org/my-lib --write`.
 
 ## 7. Start a session
 
-Describe the task on the home page or the project page, or:
+Describe the task on the Agent Floor, the page the web app opens on, or on
+the project page, or:
 
 ```sh
 fctl run "Add a dark mode toggle to the settings page"
 ```
 
-On a computer, the home page opens with the cursor in its task box. From
+On a computer, the Agent Floor opens with the cursor in its task box. From
 anywhere in the app, ⌘K and then Enter take you there (Ctrl+K and Enter on
 Linux and Windows), and ⌘Enter (Ctrl+Enter) starts the session. ⌘K opens
 the search that jumps to sessions, projects and workspaces, and ⌘P and ⌘⇧P
@@ -246,7 +247,7 @@ paperclip, by pasting them into the message box, or by dropping them on the
 page (`fctl run -a screenshot.png "…"` in the terminal). The agent sees
 them in its sandbox and gets screenshots in the message itself.
 
-A task you write on the home page stays in your browser, with its project,
+A task you write on the Agent Floor stays in your browser, with its project,
 model, effort level and files, until a session starts with it: leave the
 page, and it is there when you come back.
 
@@ -261,7 +262,7 @@ session opens, with its repository (`fctl#120`, `design#14`), as does
 changed since it left the base, the first ten files of each repository and
 the rest a click away; once its pull request is merged, Changes
 says so, and fctl no longer pushes the branch. Once it understands the task it renames the session to what it
-is working on and describes it in a sentence or two, so the home page shows
+is working on and describes it in a sentence or two, so the Agent Floor shows
 the work rather than the first line of your task.
 
 The agent's commits are authored by the GitHub App, with Claude as
@@ -324,7 +325,7 @@ needs its owner to **Resume** it (or `fctl resume my-app#12 "…"`).
 
 A workspace's admins invite people from its **People** tab (`fctl
 workspaces invite grace@example.com`), by an address they sign in with;
-they join it from their home page. An address the instance doesn't admit yet
+they join it from their Agent Floor. An address the instance doesn't admit yet
 needs an instance admin's invitation first (**Admin → People → Invite**, or
 `fctl admin invite grace@example.com -w side-project`), which can invite it
 to the admin's workspaces at the same time. One the allowlist admits but

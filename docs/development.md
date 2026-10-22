@@ -109,7 +109,7 @@ attached files also gets a sentence about them: how many images it holds,
 and whether each listed file is on disk. Turns other than `limit` and
 `crash` report plan usage as Claude Code does (`unifiedWindows`), with
 five-hour and weekly windows that follow the clock, so Settings → Claude,
-the home page and `fctl claude status` show it. Each of its API calls reports
+the Agent Floor and `fctl claude status` show it. Each of its API calls reports
 tokens as Claude Code's do, its input as it starts and with its assistant
 messages, and its output in the `message_delta` that ends it, so the
 session page's Work counters move during a turn. Its `system/init` message lists a
@@ -336,9 +336,9 @@ into a text field), and `src/lib/zoom.ts` cancels the pinches Safari on
 iOS allows anyway. The image viewer zooms its picture by itself instead:
 `src/components/ui/lightbox.tsx` follows the fingers, and `Zoom` in
 `src/lib/zoom.ts` works out where they take the picture. No page is wider
-than the screen: what can be wider
-than a phone, like Home's workspace chips or a page's tabs, scrolls in a
-row of its own (`overflow-x-auto`), long names, addresses and links wrap
+than the screen: what can be wider than a phone, like the Agent Floor's
+workspace chips or a page's tabs, scrolls in a row of its own
+(`overflow-x-auto`), long names, addresses and links wrap
 (`[overflow-wrap:anywhere]`) or truncate, and the signed-in layout clips
 whatever still sticks out. When you change a page, look at it 320 to 430
 px wide, with long names in its data.

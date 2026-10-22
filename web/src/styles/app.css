@@ -212,6 +212,65 @@
   }
 }
 
+/* The Agent Floor's row in the sidebar (components/shell/floor-link.tsx). While
+   its bar is lit, packets run down the icon's traces into its core, whose light
+   flashes as they land, and the label stands out from the threads behind it: a
+   halo of the sidebar's color and a drop shadow, faint on light backgrounds.
+   Where motion is reduced, the icon holds still. */
+@keyframes floor-packet {
+  from {
+    stroke-dashoffset: 0.5;
+  }
+  55%,
+  to {
+    stroke-dashoffset: -1.2;
+  }
+}
+@keyframes floor-core {
+  0%,
+  42% {
+    scale: 1;
+  }
+  52% {
+    scale: 1.7;
+  }
+  75%,
+  to {
+    scale: 1;
+  }
+}
+.floor-packet {
+  stroke: var(--c-pink);
+  stroke-dasharray: 0.35 3;
+  stroke-dashoffset: 0.5;
+  opacity: 0;
+}
+.floor-core {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-lit] .floor-packet {
+    opacity: 1;
+    animation: floor-packet 1.8s linear infinite;
+    animation-delay: calc(var(--i, 0) * 120ms);
+  }
+  [data-lit] .floor-core {
+    animation: floor-core 1.8s var(--ease-out) infinite;
+  }
+}
+.floor-label {
+  --floor-drop: rgb(0 0 0 / 0.9);
+  text-shadow:
+    0 1px 3px var(--floor-drop),
+    0 0 2px var(--c-surface),
+    0 0 4px var(--c-surface),
+    0 0 8px var(--c-surface);
+}
+:root[data-theme="light"] .floor-label {
+  --floor-drop: rgb(0 0 0 / 0.2);
+}
+
 /* Select (components/ui/select.tsx): the list grows out of its trigger, its
    options settle in one after another, the picked one flashes, its check draws
    itself and the new value rolls into the trigger. */

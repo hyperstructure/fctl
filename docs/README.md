@@ -48,5 +48,5 @@ Three pieces make up a factory:
   the way and what a future agent should know. One for each piece of work:
   the agent updates it as later turns carry on with that work.
 - **Runner** — a host registered with the control plane.
-- **Home page** — where the web app opens: the box for your next task, and
-  every active session as a thread of light.
+- **Agent Floor** — the web app's home page, where it opens: the box for
+  your next task, and every active session as a thread of light.

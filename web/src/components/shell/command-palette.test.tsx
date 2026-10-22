@@ -91,13 +91,22 @@ function palette() {
 }
 
 describe("⌘K", () => {
-  it("lists Home first, before the sessions, while nothing is typed", () => {
+  it("lists the Agent Floor first, before the sessions, while nothing is typed", () => {
     const { entries } = palette();
-    expect(entries()[0]).toBe("Homenew session");
+    expect(entries()[0]).toBe("Agent Floornew session");
     expect(entries()[1]).toBe("Fix the flaky login testweb#12");
   });
 
-  it("goes home on Enter, with the focus in the task box", () => {
+  it("finds the Agent Floor by the name it had before, Home", () => {
+    const { entries, input } = palette();
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "home");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(entries()).toEqual(["Agent Floornew session"]);
+  });
+
+  it("goes to the Agent Floor on Enter, with the focus in the task box", () => {
     const { onClose, press, input, box } = palette();
     expect(document.activeElement).toBe(input);
     const enter = press("Enter");

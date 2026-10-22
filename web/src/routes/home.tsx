@@ -1,4 +1,5 @@
-// Home: every agent at work as a thread of light, and what to do next.
+// The Agent Floor, the home page: every agent at work as a thread of light, and
+// what to do next.
 
 import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstructure/design/gl/foundry";
 import { useMutation } from "@tanstack/react-query";

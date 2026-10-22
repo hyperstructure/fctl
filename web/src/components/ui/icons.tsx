@@ -2,8 +2,14 @@
 // checks, as GitHub draws them (16 units, filled), and fctl's own, drawn on lucide's grid
 // (24 units, 2-unit round strokes) so that they sit beside its icons.
 
-/** Home: a house with its light on, as a project's dot lights up while its agents work. */
-export function HomeIcon({ className }: { className?: string }) {
+import type { CSSProperties } from "react";
+
+/**
+ * The Agent Floor: three agents whose traces run into a core with its light on, as the
+ * foundry's threads stream into its planet, drawn as a circuit board. With `live`, packets run
+ * down the traces into the core while an ancestor has `data-lit` (styles/app.css).
+ */
+export function AgentFloorIcon({ className, live }: { className?: string; live?: boolean }) {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -15,12 +21,30 @@ export function HomeIcon({ className }: { className?: string }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="m2.5 11 9.5-8 9.5 8" />
-      <path d="M5 10v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-9" />
-      <circle cx="12" cy="15" r="2.25" fill="currentColor" stroke="none" />
+      <circle cx="16.5" cy="12" r="4.5" />
+      <circle
+        className={live ? "floor-core" : undefined}
+        cx="16.5"
+        cy="12"
+        r="1.5"
+        fill="currentColor"
+        stroke="none"
+      />
+      {FLOOR_TRACES.map((d, i) => (
+        <g key={d}>
+          <circle cx="4" cy={6 + i * 6} r="2" fill="currentColor" stroke="none" />
+          <path d={d} />
+          {live && (
+            <path d={d} pathLength={1} className="floor-packet" style={{ "--i": i } as CSSProperties} />
+          )}
+        </g>
+      ))}
     </svg>
   );
 }
+
+/** The Agent Floor's traces, from each agent into the core: the outer two turn towards its center. */
+const FLOOR_TRACES = ["M6 6h4.5l2.8 2.8", "M6 12h6", "M6 18h4.5l2.8-2.8"];
 
 export function GithubIcon({ className }: { className?: string }) {
   return (

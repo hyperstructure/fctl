@@ -359,7 +359,7 @@ the instance creates one, as its primary admin.
   anyone (`check_assign_primary`).
 - **Invitations** (`workspace_invitations`) are for an address and last 30
   days. Whoever has it (an account's, or connected to one) sees it on their
-  home page and in `fctl workspaces`, and joins as that address. A
+  Agent Floor and in `fctl workspaces`, and joins as that address. A
   workspace's admins invite any address and get the same answer whether it
   can sign in to the instance, has an account or is another address of a
   member, so that inviting tells them nothing about who uses the instance:
@@ -531,7 +531,7 @@ uplinks. A Claude sign-in runs on one of the person's own runners when one
 is online, else on a runner that runs their sessions in one of their
 workspaces.
 
-The home page tells the person who registered a runner when it is online
+The Agent Floor tells the person who registered a runner when it is online
 with an older fctl than the control plane: the version in its hello against
 the one `GET /api/v1/instance` reports, which on app.fctl.sh is the latest
 release, since each release redeploys it. It shows the command that updates
@@ -991,7 +991,7 @@ the latest model of each family; or a model's ID) and the effort level
 (Claude's default, or `low` … `max`), which fctl-agent passes to Claude as
 `--model` and `--effort`. A session can ask for others as it starts
 (`CreateSessionRequest`, `fctl run --model … --effort …`), and the
-composers on the home page and a project's page have a list for each.
+composers on the Agent Floor and a project's page have a list for each.
 They start on what the person asked for when they last started a session
 in the project, else on the project's settings, and a session asks only
 for what differs from those, so that where it takes the project's it
@@ -1390,7 +1390,7 @@ until the limit resets.
 
 ### Plan usage
 
-Settings shows how much of each connection's plan is used, and the home page
+Settings shows how much of each connection's plan is used, and the Agent Floor
 shows it for the connection new sessions run on, so people see what is left
 before they start work. Sessions report it; fctl asks Anthropic for nothing.
 Claude Code writes a `rate_limit_event` when a limit's status changes and,
@@ -1408,7 +1408,7 @@ message.
    per credential and limit, which a later reading replaces.
 3. `/auth/me` returns them on each credential (`ClaudeCredentialInfo.usage`,
    `fctl claude status`), and FleetDO sends the credential's owner a
-   `claude_usage` feed message, so Settings and the home page change while
+   `claude_usage` feed message, so Settings and the Agent Floor change while
    sessions run.
 
 Readings change only while sessions run, so the apps say when a session last
@@ -1416,7 +1416,7 @@ reported them, and a window whose reset time has passed counts as started
 over. Removing the connection deletes them. Hosts and agents need no update:
 they already pass every Claude message on.
 
-The apps go by the share used. From 80 % of a limit, the home page says how
+The apps go by the share used. From 80 % of a limit, the Agent Floor says how
 much of it is used, in amber, and from 90 % in red. At 100 %, or when Claude
 refuses requests (`rejected`), the limit is reached, and only then does a
 session's transcript say so. Claude's warning status (`allowed_warning`)

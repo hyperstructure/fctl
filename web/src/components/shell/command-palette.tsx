@@ -1,5 +1,5 @@
-// ⌘K: jump to workspaces, projects and sessions, or run an action. Home comes
-// first, so that ⌘K and Enter open the task box for a new session from anywhere.
+// ⌘K: jump to workspaces, projects and sessions, or run an action. The Agent Floor
+// comes first, so that ⌘K and Enter open the task box for a new session from anywhere.
 
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { HomeIcon, StatusDot } from "@/components/ui";
+import { AgentFloorIcon, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
@@ -29,6 +29,8 @@ interface Entry {
   id: string;
   label: string;
   hint?: string;
+  /** More words it is found by. */
+  keywords?: string;
   icon: ReactNode;
   run: () => void;
   group: string;
@@ -71,9 +73,11 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       {
         id: "home",
         group: "Go to",
-        label: "Home",
+        label: "Agent Floor",
         hint: "new session",
-        icon: <HomeIcon className="size-4" />,
+        // What it was called before.
+        keywords: "home",
+        icon: <AgentFloorIcon className="size-4" />,
         run: go(() => {
           void navigate({ to: "/" });
           focusTaskBox();
@@ -156,7 +160,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     const needle = q.trim().toLowerCase();
     if (!needle) return list.slice(0, 40);
     return list
-      .map((e) => ({ e, score: score(`${e.label} ${e.hint ?? ""}`.toLowerCase(), needle) }))
+      .map((e) => ({
+        e,
+        score: score(`${e.label} ${e.hint ?? ""} ${e.keywords ?? ""}`.toLowerCase(), needle),
+      }))
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 40)
