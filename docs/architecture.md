@@ -423,6 +423,13 @@ its token closes its control connection and its sessions' uplinks. A
 Claude sign-in runs only on a runner of the person's workspaces, or their
 own.
 
+The home page tells the person who registered a runner when it is online
+with an older fctl than the control plane: the version in its hello against
+the one `GET /api/v1/instance` reports, which on app.fctl.sh is the latest
+release, since each release redeploys it. It shows the command that updates
+the runner, `fctl self update`. Skipping the notice hides it for that
+version of the control plane, in that browser (localStorage, per person).
+
 ## Data
 
 **D1** (`crates/fctl-control/migrations`) holds relational state: users and
