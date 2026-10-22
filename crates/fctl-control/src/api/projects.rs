@@ -444,17 +444,35 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
 pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let p = access::project(ctx, id).await?;
     p.require_owner()?;
-    let active: Option<Count> = q(
+    #[derive(serde::Deserialize)]
+    struct Active {
+        #[serde(deserialize_with = "crate::db::int")]
+        sessions: i64,
+        #[serde(deserialize_with = "crate::db::int")]
+        reviews: i64,
+    }
+    let active: Option<Active> = q(
         &ctx.db,
-        "SELECT COUNT(*) AS n FROM sessions WHERE project_id = ? AND status IN ('queued','provisioning','preparing','running','idle','paused','stopping')",
+        "SELECT COUNT(*) - COUNT(rv.session_id) AS sessions, COUNT(rv.session_id) AS reviews FROM sessions s \
+         LEFT JOIN reviews rv ON rv.session_id = s.id WHERE s.project_id = ? \
+         AND s.status IN ('queued','provisioning','preparing','running','idle','paused','stopping')",
         &[s(&p.row.id)],
     )?
     .first()
     .await?;
-    if active.map_or(0, |c| c.n) > 0 {
-        return Err(conflict("Stop the project's sessions before deleting it"));
+    match active {
+        Some(a) if a.sessions > 0 => {
+            return Err(conflict("Stop the project's sessions before deleting it"));
+        }
+        Some(a) if a.reviews > 0 => {
+            return Err(conflict(
+                "A review agent is reviewing a pull request in this project: stop it under Reviews, or let it finish, before deleting the project",
+            ));
+        }
+        _ => {}
     }
     ctx.verified(fctl_domain::verify::Sensitive::DeleteProject)?;
+    crate::reviews::cancel_project(ctx, &p.row.id).await;
     // The rows cascade; the sessions' event logs and the project's files
     // live in Durable Objects, so they are queued for purging in the same batch.
     batch(

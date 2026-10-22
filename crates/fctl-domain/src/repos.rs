@@ -245,6 +245,23 @@ pub fn resolve_permissions() -> Value {
     })
 }
 
+/// The permissions of the token the control plane posts a review with, for
+/// a review agent, whose own token only reads: it writes the review, edits
+/// fctl's earlier findings and reacts to the pull request, and with
+/// `checks`, writes the review's check. Contents stay read only, so it
+/// can't push; it never leaves the control plane.
+pub fn review_permissions(checks: bool) -> Value {
+    let mut p = json!({
+        "contents": "read",
+        "pull_requests": "write",
+        "metadata": "read"
+    });
+    if checks {
+        p["checks"] = json!("write");
+    }
+    p
+}
+
 /// What an agent may do in `repo`: write to the primary repository and the
 /// writable grants, read the others it is granted.
 pub fn access(

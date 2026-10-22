@@ -509,6 +509,16 @@ impl Api {
         self.get(&q).await
     }
 
+    /// A project's sessions with its review agents' among them, which the
+    /// other lists leave out: to find one by its number.
+    pub async fn sessions_with_reviews(&self, project: &str, limit: u32) -> Result<SessionList> {
+        self.get(&format!(
+            "/sessions?limit={limit}&project={}&reviews=1",
+            enc(project)
+        ))
+        .await
+    }
+
     pub async fn session(&self, id: &str) -> Result<Session> {
         self.get(&format!("/sessions/{}", enc(id))).await
     }
@@ -710,6 +720,59 @@ impl Api {
     /// Deletes a retrospective (for people who manage its session).
     pub async fn delete_retrospective(&self, id: &str) -> Result<Ok> {
         self.delete(&format!("/retrospectives/{}", enc(id))).await
+    }
+
+    // ── review agents ──
+
+    /// A project's review agents: on or off, on whose Claude subscription,
+    /// and how they review.
+    pub async fn review_agents(&self, project: &str) -> Result<ReviewAgents> {
+        self.get(&format!("/projects/{}/review-agents", enc(project)))
+            .await
+    }
+
+    /// Turns a project's review agents on or off, takes them over or
+    /// changes how they review (owners; the person they run for may turn
+    /// them off).
+    pub async fn update_review_agents(
+        &self,
+        project: &str,
+        req: &UpdateReviewAgentsRequest,
+    ) -> Result<ReviewAgents> {
+        self.patch(&format!("/projects/{}/review-agents", enc(project)), req)
+            .await
+    }
+
+    /// A project's reviews, newest first, before `before` for the next page.
+    pub async fn reviews(
+        &self,
+        project: &str,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<ReviewList> {
+        let mut q = format!("/projects/{}/reviews?limit={limit}", enc(project));
+        if let Some(b) = before {
+            q.push_str(&format!("&before={b}"));
+        }
+        self.get(&q).await
+    }
+
+    /// The review of a review agent's session; `None` for other sessions.
+    pub async fn get_review(&self, project: &str, session: &str) -> Result<Option<Review>> {
+        let list: ReviewList = self
+            .get(&format!(
+                "/projects/{}/reviews?session={}",
+                enc(project),
+                enc(session)
+            ))
+            .await?;
+        Ok(list.reviews.into_iter().next())
+    }
+
+    /// Asks for a review of a pull request's head now.
+    pub async fn start_review(&self, project: &str, req: &StartReviewRequest) -> Result<Review> {
+        self.post(&format!("/projects/{}/reviews", enc(project)), req)
+            .await
     }
 
     /// What an agent asks about its session's project (with the runner

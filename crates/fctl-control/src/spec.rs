@@ -157,6 +157,8 @@ pub struct SessionWants {
     pub person_name: String,
     /// They keep their sessions in its workspace on their own runners.
     pub own_runners: bool,
+    /// It is a review agent's session: only runners that run them take it.
+    pub review: bool,
 }
 
 /// The CPUs, memory and image each of these sessions asks for (its
@@ -176,14 +178,18 @@ pub async fn session_wants(
         person_name: Option<String>,
         #[serde(deserialize_with = "crate::db::int_bool", default)]
         own_runners: bool,
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        review: bool,
     }
     let rows: Vec<Row> = q(
         db,
         "SELECT s.id AS id, p.settings AS settings, p.repo_owner AS repo_owner, p.repo_name AS repo_name, \
          p.workspace_id AS workspace_id, c.user_id AS person, u.name AS person_name, \
-         om.own_runners AS own_runners FROM sessions s JOIN projects p ON p.id = s.project_id \
+         om.own_runners AS own_runners, rv.session_id IS NOT NULL AS review \
+         FROM sessions s JOIN projects p ON p.id = s.project_id \
          LEFT JOIN claude_credentials c ON c.id = s.credential_id LEFT JOIN users u ON u.id = c.user_id \
          LEFT JOIN workspace_members om ON om.workspace_id = p.workspace_id AND om.user_id = c.user_id \
+         LEFT JOIN reviews rv ON rv.session_id = s.id \
          WHERE s.id IN (SELECT value FROM json_each(?))",
         &[s(&serde_json::to_string(ids)?)],
     )?
@@ -204,6 +210,7 @@ pub async fn session_wants(
                 person: r.person,
                 person_name: r.person_name.unwrap_or_default(),
                 own_runners: r.own_runners,
+                review: r.review,
             };
             (r.id, wants)
         })
@@ -233,6 +240,9 @@ pub async fn build(
         return Err(credential_not_lent());
     }
     let claude = claude_credential(db, keys, &cred_id, now).await?;
+    if let Some(review) = crate::reviews::of_session(db, &row.id).await? {
+        return review_spec(db, cfg, &row, &project, &review, claude, now).await;
+    }
     let repo = project.repo();
     let grants = grants(db, &project.id).await?;
     let workspace_id = project.workspace_id().to_owned();
@@ -359,6 +369,167 @@ pub async fn build(
         memory,
         retrospectives,
         github_access: (!github_access.pushes()).then_some(github_access),
+        review: None,
+    })
+}
+
+/// A review agent's spec (`crate::reviews`): the reviewed repository is
+/// its working directory, checked out at the pull request's commit, and
+/// the project's others, its primary one too, it reads. It reads alone on
+/// GitHub, gets none of the project's secrets, setup script, memory or
+/// claude.ai connectors, stops a minute after its last turn, and is told
+/// how to review.
+async fn review_spec(
+    db: &D1Database,
+    cfg: &Config,
+    row: &SessionRow,
+    project: &ProjectRow,
+    review: &crate::reviews::ReviewRow,
+    claude: ClaudeCredential,
+    now: i64,
+) -> AppResult<SessionSpec> {
+    let reviewed = review
+        .repo()
+        .ok_or_else(|| internal("a review without a repository"))?;
+    let mut grants: Vec<RepoGrant> = grants(db, &project.id)
+        .await?
+        .into_iter()
+        .filter(|g| g.repo().is_none_or(|r| !r.same(&reviewed)))
+        .collect();
+    if let Some(primary) = project.repo().filter(|p| !p.same(&reviewed)) {
+        grants.insert(
+            0,
+            RepoGrant {
+                owner: primary.owner,
+                name: Some(primary.name),
+                access: fctl_proto::session::RepoAccess::Read,
+            },
+        );
+    }
+    let tokens = github_tokens(
+        cfg,
+        db,
+        project.workspace_id(),
+        Some(&reviewed),
+        &grants,
+        GithubAccess::Read,
+        now,
+    )
+    .await?;
+    let repos = (!grants.is_empty()).then(|| {
+        grants
+            .iter()
+            .map(|g| {
+                let label = g.name.as_deref().unwrap_or("*");
+                let refused = tokens.refused.iter().any(|r| r.eq_ignore_ascii_case(label));
+                let unreachable = g
+                    .name
+                    .as_ref()
+                    .is_some_and(|n| tokens.unreachable.iter().any(|u| u.eq_ignore_ascii_case(n)));
+                SessionRepo {
+                    owner: g.owner.clone(),
+                    name: g.name.clone(),
+                    access: fctl_proto::session::RepoAccess::Read,
+                    unavailable: if refused {
+                        Some(refused_notice(g))
+                    } else if unreachable {
+                        Some(unreachable_notice(cfg, g))
+                    } else {
+                        None
+                    },
+                }
+            })
+            .collect()
+    });
+    let p = project.settings();
+    let mut settings = ProjectSettings {
+        image: p.image.clone(),
+        image_build: p.image_build.clone(),
+        setup_script: None,
+        model: p.model.clone(),
+        effort: p.effort.clone(),
+        instructions: None,
+        cpus: p.cpus,
+        memory_mb: p.memory_mb,
+        idle_timeout_minutes: Some(1),
+        auto_pull_request: false,
+        remote_control: false,
+        claude_ai_connectors: false,
+        credit_people: false,
+        credit_claude: p.credit_claude,
+        publish_screenshots: false,
+        screenshot_days: None,
+        project_memory: false,
+        retrospectives: false,
+        github_access: Some(GithubAccess::Read),
+        env: p.env.clone(),
+    };
+    settings.env = fctl_domain::settings::session_env(&settings);
+    let conf = crate::reviews::settings(db, &project.id).await?;
+    let branch = row
+        .branch
+        .clone()
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| format!("pull/{}", review.number));
+    let base = row
+        .base_branch
+        .clone()
+        .unwrap_or_else(|| project.default_branch.clone());
+    let spec_review = crate::reviews::spec_of(
+        review,
+        &branch,
+        &base,
+        conf.as_ref().and_then(|c| c.instructions.as_deref()),
+    );
+    Ok(SessionSpec {
+        session_id: row.session_id(),
+        number: row.number.max(0) as u32,
+        title: row.title.clone(),
+        project: ProjectSpec {
+            id: ProjectId(project.id.clone()),
+            slug: project.slug.clone(),
+            name: project.name.clone(),
+            repo: Some(reviewed),
+            default_branch: base.clone(),
+            settings,
+            repos,
+        },
+        branch,
+        base_branch: base,
+        prompt: if row.started_at.is_some() {
+            None
+        } else {
+            Some(row.prompt.clone())
+        },
+        task: Some(row.prompt.clone()),
+        task_attachments: Vec::new(),
+        author: row.creator_ref(),
+        claude_session_id: row.claude_session_id.clone(),
+        resume: row.started_at.is_some(),
+        model: row.model.clone(),
+        effort: row.effort.clone(),
+        secrets: Default::default(),
+        credentials: SessionCredentials {
+            claude,
+            github: tokens.write,
+            github_read: tokens.read,
+        },
+        git_author: bot_identity(cfg, now).await,
+        co_authors: Vec::new(),
+        co_authored_by: Vec::new(),
+        web_url: cfg.url(&format!("/s/{}", row.id)),
+        idle_timeout_secs: 60,
+        run_id: None,
+        pull_requests: row
+            .to_session(None)
+            .pull_requests
+            .into_iter()
+            .map(|pr| PullRequestRef { checks: None, ..pr })
+            .collect(),
+        memory: None,
+        retrospectives: false,
+        github_access: Some(GithubAccess::Read),
+        review: spec_review,
     })
 }
 

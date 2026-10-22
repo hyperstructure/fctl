@@ -5,6 +5,7 @@ import type { GithubAccess } from "./GithubAccess";
 import type { MemorySpec } from "./MemorySpec";
 import type { ProjectSpec } from "./ProjectSpec";
 import type { PullRequestRef } from "./PullRequestRef";
+import type { ReviewSpec } from "./ReviewSpec";
 import type { SessionCredentials } from "./SessionCredentials";
 import type { SessionId } from "./SessionId";
 import type { UserRef } from "./UserRef";
@@ -107,4 +108,12 @@ retrospectives?: boolean,
  * Older hosts leave it out of the agent's configuration, and their
  * agents' pushes fail.
  */
-github_access?: GithubAccess, };
+github_access?: GithubAccess, 
+/**
+ * What a review agent's session reviews, and how. Its agent checks
+ * the pull request out at the commit, reviews it, posts what it found
+ * with `fctl review submit` and takes no messages. Absent for other
+ * sessions. FleetDO gives review sessions only to hosts that announce
+ * [`FEATURE_REVIEWS`].
+ */
+review?: ReviewSpec, };

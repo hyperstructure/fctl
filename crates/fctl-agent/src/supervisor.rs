@@ -78,7 +78,17 @@ struct Persisted {
     /// The pull requests fctl-agent follows for the session.
     #[serde(default)]
     pulls: Pulls,
+    /// A review agent posted its review (`fctl review submit`).
+    #[serde(default)]
+    review_posted: bool,
+    /// fctl-agent reminded a review agent that ended without posting.
+    #[serde(default)]
+    review_nudged: bool,
 }
+
+/// How long a review agent that ended without posting waits before
+/// fctl-agent reminds it ([`Supervisor::remind_reviewer`]).
+const REVIEW_REMINDER_AFTER: Duration = Duration::from_secs(5);
 
 pub(crate) enum Work {
     Prepared(Result<(), String>),
@@ -431,6 +441,7 @@ impl Supervisor {
             published: None,
             memory: None,
             retrospective: None,
+            review: None,
         }));
     }
 
@@ -675,6 +686,11 @@ impl Supervisor {
                     "This session's agent only reads on GitHub, so it can't resolve review threads.",
                 ));
             }
+            AgentCall::ReviewThreads | AgentCall::SubmitReview { .. } if spec.review.is_none() => {
+                return Err(ApiError::forbidden(
+                    "This session doesn't review a pull request: `fctl review` is for review agents' sessions.",
+                ));
+            }
             _ => {}
         }
         if self.host.is_none() {
@@ -728,6 +744,10 @@ impl Supervisor {
     /// remembered (and those it replaced), a note it marked stale, a
     /// retrospective it recorded or updated.
     fn notice_kept(&mut self, answer: &AgentAnswer) {
+        if matches!(answer, AgentAnswer::ReviewPosted { .. }) && !self.persisted.review_posted {
+            self.persisted.review_posted = true;
+            self.persist();
+        }
         let notices = kept_notices(answer);
         if notices.is_empty() {
             return;
@@ -772,6 +792,11 @@ impl Supervisor {
         description: Option<String>,
     ) -> std::result::Result<SessionReply, ApiError> {
         let spec = self.this_session(session_id.as_ref())?;
+        if spec.review.is_some() {
+            return Err(ApiError::forbidden(
+                "fctl names a review session after the pull request it reviews: leave its title as it is.",
+            ));
+        }
         if title.is_none() && description.is_none() {
             return Err(ApiError::bad_request("Give a title, a description or both"));
         }
@@ -1069,7 +1094,18 @@ impl Supervisor {
         // Whether the agent keeps the project's memory: then Claude Code's
         // own, which would last only as long as the sandbox, is off.
         let mut keeps_memory = false;
-        if self.session_socket.is_some() && fctl_can(&paths, "edit").await {
+        if spec.review.is_some() {
+            // A review agent posts what it found through fctl, which named
+            // its session: without `fctl review` its work would be lost.
+            if self.session_socket.is_none() || !fctl_can(&paths, "review submit").await {
+                anyhow::bail!(
+                    "this sandbox's fctl can't post reviews (`fctl review`), so the review agent couldn't post what it finds. The default image, ghcr.io/hyperstructure/sandbox, can; an image of your own needs a recent fctl on the PATH."
+                );
+            }
+            if let Err(e) = claude::write_instructions(&paths.home, prompt::REVIEW_AGENTS_MD) {
+                tracing::warn!("writing ~/AGENTS.md failed: {e:#}");
+            }
+        } else if self.session_socket.is_some() && fctl_can(&paths, "edit").await {
             // Publishing needs the project's consent and an fctl that can.
             let screenshots =
                 spec.project.settings.publish_screenshots && fctl_can(&paths, "publish").await;
@@ -1172,7 +1208,24 @@ impl Supervisor {
             && (self.persisted.claude_started
                 || claude::conversation_exists(&paths.home, &spec.claude_session_id));
         let fresh_resume = wants_resume && !resume;
-        let system = prompt::system_prompt(spec, &workdir, &paths, config.sandbox);
+        let system = match &spec.review {
+            Some(review) => {
+                let previous_here = match review.previous_sha.as_deref() {
+                    Some(sha) => workspace::has_commit(&paths.workdir, &paths.home, sha).await,
+                    None => false,
+                };
+                prompt::review_system_prompt(
+                    spec,
+                    review,
+                    &workdir,
+                    &workspace::review_branch(spec, review),
+                    previous_here,
+                    &paths,
+                    config.sandbox,
+                )
+            }
+            None => prompt::system_prompt(spec, &workdir, &paths, config.sandbox),
+        };
         let launch = LaunchSpec {
             bin: &bin,
             cwd: &paths.workdir,
@@ -1495,7 +1548,16 @@ impl Supervisor {
     /// The session waits: for Claude's background tasks while any run,
     /// then for a message.
     fn wait(&mut self) {
-        let reason = tasks::waiting_reason(self.tasks.len());
+        let reviews = self
+            .config
+            .as_ref()
+            .is_some_and(|c| c.spec.review.is_some());
+        let reason = if reviews && self.tasks.is_empty() {
+            // It waits for nobody: once its turn ends, it stops.
+            "The review session stops in a minute".to_owned()
+        } else {
+            tasks::waiting_reason(self.tasks.len())
+        };
         self.set_status(SessionStatus::Idle, Some(reason));
         if self.idle_since.is_none() && self.nothing_runs() {
             self.idle_since = Some(Instant::now());
@@ -1799,11 +1861,44 @@ impl Supervisor {
 
     // ───────────────────────────── timers and stopping ─────────────────────────────
 
+    /// A review agent that ended its turn without posting its review, with
+    /// nothing running, is reminded once: its review would be lost.
+    async fn remind_reviewer(&mut self) {
+        let reviews = self
+            .config
+            .as_ref()
+            .is_some_and(|c| c.spec.review.is_some());
+        let waited = self
+            .idle_since
+            .is_some_and(|t| t.elapsed() >= REVIEW_REMINDER_AFTER);
+        if !reviews
+            || self.persisted.review_posted
+            || self.persisted.review_nudged
+            || !waited
+            || !self.nothing_runs()
+            || self.stopping.is_some()
+            || self.claude.is_none()
+        {
+            return;
+        }
+        self.persisted.review_nudged = true;
+        self.persist();
+        self.notice(
+            NoticeLevel::Info,
+            "review_reminder",
+            "The review agent ended its turn without posting its review, so fctl reminded it to.",
+            None,
+        );
+        self.send_turn(prompt::REVIEW_REMINDER, None, None, &[])
+            .await;
+    }
+
     async fn on_tick(&mut self) {
         let now = now_ms();
         self.expire_publishes();
         self.expire_calls();
         self.sync();
+        self.remind_reviewer().await;
         // Usage limit reset: continue.
         if self.state.status == SessionStatus::Paused && self.resume_at.is_some_and(|t| now >= t) {
             self.resume_at = None;
@@ -1841,8 +1936,15 @@ impl Supervisor {
         {
             let limit = tasks::limit(idle);
             if self.idle_since.is_some_and(|t| t.elapsed() > idle) {
-                self.begin_stop(stop_text(StopReason::Idle).to_owned(), 30_000)
-                    .await;
+                // A review agent's session ends when its review is done.
+                let reason = match &self.config {
+                    Some(c) if c.spec.review.is_some() && self.persisted.review_posted => {
+                        "Finished: its review is posted"
+                    }
+                    Some(c) if c.spec.review.is_some() => "Finished without posting its review",
+                    _ => stop_text(StopReason::Idle),
+                };
+                self.begin_stop(reason.to_owned(), 30_000).await;
             } else if (!self.tasks.is_empty() || self.claude_running)
                 && self.waiting_since.is_some_and(|t| t.elapsed() > limit)
             {
@@ -1965,6 +2067,7 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
         published: Some(file.clone()),
         memory: None,
         retrospective: None,
+        review: None,
     }
 }
 
@@ -1983,6 +2086,7 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
         published: None,
         memory: None,
         retrospective: None,
+        review: None,
     };
     match answer {
         AgentAnswer::Memories { .. } | AgentAnswer::Retrospectives { .. } => vec![],
@@ -2023,8 +2127,39 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
             )
         }],
         // The tool call shows it.
-        AgentAnswer::Thread { .. } => vec![],
+        AgentAnswer::Thread { .. } | AgentAnswer::ReviewThreads { .. } => vec![],
+        AgentAnswer::ReviewPosted { review } if !review.again => vec![Notice {
+            review: Some(review.clone()),
+            ..notice("review_posted", posted_message(review))
+        }],
+        AgentAnswer::ReviewPosted { .. } => vec![],
     }
+}
+
+/// What the transcript says fctl posted for a review agent.
+fn posted_message(r: &fctl_proto::api::PostedReview) -> String {
+    let findings = r.comments + r.in_text;
+    let found = match findings {
+        0 => "nothing to point out".to_owned(),
+        1 => "1 issue".to_owned(),
+        n => format!("{n} issues"),
+    };
+    let mut s = format!("fctl posted the review: {found}");
+    if let Some(url) = &r.url {
+        s.push_str(&format!(" ({url})"));
+    }
+    s.push('.');
+    match r.resolved.len() {
+        0 => {}
+        1 => s.push_str(" It marked 1 earlier finding fixed."),
+        n => s.push_str(&format!(" It marked {n} earlier findings fixed.")),
+    }
+    match r.still_open {
+        0 => {}
+        1 => s.push_str(" 1 earlier finding is still open."),
+        n => s.push_str(&format!(" {n} earlier findings are still open.")),
+    }
+    s
 }
 
 /// Asks Claude which effort level it works at; the answer comes back as

@@ -39,6 +39,7 @@
 //! | `refresh` | asks its host for a fresh OAuth token |
 //! | `crash` | exits with status 3 |
 //! | `effort <level>` | works at that effort level from then on (`low` … `max`, or `none` as a model that takes none), as Claude Code does after `/effort <level>`, which it takes too; `get_settings` says so |
+//! | a review session's task (`Review acme/web#12, … at commit …`) | reviews the pull request checked out as a review agent does: reads its commits and diff and fctl's earlier findings (`fctl review threads`), then posts with `fctl review submit`: earlier findings still open as fixed, and without any, an issue on the first line the pull request adds |
 //! | (attached files) | says how many images the message holds and checks that each listed file is on disk |
 //!
 //! Plan usage comes as Claude Code reports it after a response
@@ -561,6 +562,67 @@ impl Session {
         );
     }
 
+    /// Reviews the pull request checked out here, as a review agent does:
+    /// reads what it changes and fctl's earlier findings (`fctl review
+    /// threads`), then posts its review in one pass (`fctl review submit`).
+    /// Earlier findings still open count as fixed by the new commits, and
+    /// the review then finds nothing new; without any, it finds an issue
+    /// on the first line the pull request adds, so that a pull request's
+    /// first review comments and the next one passes.
+    fn review(&mut self) {
+        self.bash(
+            "git log --oneline origin/HEAD..HEAD",
+            "List the pull request's commits",
+        );
+        let (diff, _) = sh("git diff -U0 origin/HEAD...HEAD");
+        self.tool(
+            "Bash",
+            json!({"command": "git diff -U0 origin/HEAD...HEAD", "description": "Read what the pull request changes"}),
+            &diff,
+            false,
+        );
+        let threads = self
+            .fctl(
+                &["review", "threads", "--json"],
+                "Read fctl's earlier findings",
+            )
+            .and_then(|out| serde_json::from_str::<Vec<Value>>(&out).ok())
+            .unwrap_or_default();
+        let open: Vec<Value> = threads
+            .iter()
+            .filter(|t| t["resolved"] == json!(false))
+            .filter_map(|t| t["id"].as_str())
+            .map(|id| json!({"thread": id, "note": "The new commits changed the line this was about."}))
+            .collect();
+        let findings: Vec<Value> = match first_added_line(&diff) {
+            Some((path, line)) if open.is_empty() => vec![json!({
+                "path": path,
+                "line": line,
+                "severity": "medium",
+                "title": "This line has no test",
+                "body": "fake-claude finds an issue on the first line a pull request adds, so that the next commit's review can mark it fixed.",
+            })],
+            _ => Vec::new(),
+        };
+        let review = json!({
+            "summary": if findings.is_empty() { Value::Null } else { json!("fake-claude reviewed what the pull request changes.") },
+            "findings": findings,
+            "resolved": open,
+        });
+        let dir = std::env::temp_dir().join(format!("fake-claude-{}", std::process::id()));
+        let path = dir.join("review.json");
+        let written =
+            std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, review.to_string()));
+        if let Err(e) = written {
+            self.stream_text(&format!("I couldn't write the review: {e}"));
+            return;
+        }
+        self.fctl(
+            &["review", "submit", &path.display().to_string()],
+            "Post the review",
+        );
+    }
+
     /// Pushes the branch, as agents do before they open a pull request:
     /// without an `origin`, a bare repository in `~/.fake-github` stands in
     /// for GitHub.
@@ -1029,6 +1091,13 @@ impl Session {
         if says(&lower, "revise") {
             self.revise();
         }
+        if is_review(&lower) {
+            self.review();
+            let done = "Done: I posted what I found on the pull request.";
+            self.stream_text(done);
+            self.result(started, done, "success");
+            return;
+        }
         if let Some(secs) = watch_for(text)
             && self.watch(secs)
         {
@@ -1103,6 +1172,35 @@ fn number_after(text: &str, word: &str) -> Option<u64> {
 }
 
 /// Whether a lowercased turn has `word` as a word of its own.
+/// Whether a turn asks for a review: a review session's task (`Review
+/// acme/web#12, "…", at commit 3f2a1c9.`), or fctl-agent's reminder to post
+/// one.
+fn is_review(lower: &str) -> bool {
+    (lower.starts_with("review ") && lower.contains(" at commit "))
+        || lower.contains("you haven't posted your review")
+}
+
+/// The first line a diff (`git diff -U0`) adds: its file and its number in
+/// the new version.
+fn first_added_line(diff: &str) -> Option<(String, u32)> {
+    let mut path = None;
+    let mut line = 0;
+    for l in diff.lines() {
+        if let Some(p) = l.strip_prefix("+++ b/") {
+            path = Some(p.to_owned());
+        } else if let Some(h) = l.strip_prefix("@@ ") {
+            line = h
+                .split_whitespace()
+                .find_map(|part| part.strip_prefix('+'))
+                .and_then(|n| n.split(',').next()?.parse().ok())
+                .unwrap_or(0);
+        } else if l.starts_with('+') && !l.starts_with("+++") {
+            return Some((path?, line));
+        }
+    }
+    None
+}
+
 fn says(lower: &str, word: &str) -> bool {
     lower
         .split(|c: char| !c.is_alphanumeric())
@@ -1439,8 +1537,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        adler32, asks_for_limit, background_for, crc32, effort_in, explorations, rename_to, says,
-        screenshot_png, short_id, watch_for,
+        adler32, asks_for_limit, background_for, crc32, effort_in, explorations, first_added_line,
+        is_review, rename_to, says, screenshot_png, short_id, watch_for,
     };
 
     #[test]
@@ -1532,5 +1630,19 @@ mod tests {
         // Other words after it change nothing.
         assert_eq!(effort_in("put some effort into it"), None);
         assert_eq!(effort_in("write notes.md"), None);
+    }
+
+    #[test]
+    fn reviews_find_the_first_line_a_pull_request_adds() {
+        let diff = "diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -3,0 +4,2 @@ Notes\n+one\n+two\n";
+        assert_eq!(first_added_line(diff), Some(("notes.md".to_owned(), 4)));
+        assert_eq!(first_added_line("@@ -1 +0,0 @@\n-gone\n"), None);
+        assert!(is_review(
+            "review acme/web#12, \u{201c}fix it\u{201d}, at commit 3f2a1c9."
+        ));
+        assert!(is_review(
+            "you haven't posted your review yet, and the session ends soon."
+        ));
+        assert!(!is_review("review the login code"));
     }
 }

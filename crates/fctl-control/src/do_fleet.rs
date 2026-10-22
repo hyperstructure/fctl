@@ -19,8 +19,8 @@ use fctl_domain::schedule::{Home, Slot, Wait};
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
-    ClaudeLoginUpdate, CredentialKind, FleetToHost, HostHello, HostSessionReport, HostToFleet,
-    SandboxLimits, StopReason,
+    ClaudeLoginUpdate, CredentialKind, FEATURE_REVIEWS, FleetToHost, HostHello, HostSessionReport,
+    HostToFleet, SandboxLimits, StopReason,
 };
 use fctl_proto::session::{RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
@@ -174,6 +174,8 @@ struct Candidate {
     image: Option<String>,
     allowed_images: Option<Vec<String>>,
     allowed_builds: Option<Vec<String>>,
+    /// Its host runs review agents' sessions.
+    reviews: bool,
     /// The workspaces whose sessions it runs.
     serves: Serves,
 }
@@ -228,6 +230,7 @@ impl Candidate {
                 allowed: self.allowed_images.as_deref(),
                 builds: self.allowed_builds.as_deref(),
             },
+            reviews: self.reviews,
         }
     }
 }
@@ -996,6 +999,7 @@ impl FleetObject {
             published: None,
             memory: None,
             retrospective: None,
+            review: None,
         };
         if let Ok(stub) = internal::session_stub(&self.env, id) {
             let done: std::result::Result<serde_json::Value, _> = internal::post(
@@ -1710,6 +1714,7 @@ impl FleetObject {
                     image: hello.image,
                     allowed_images: hello.allowed_images,
                     allowed_builds: hello.allowed_builds,
+                    reviews: hello.features.iter().any(|f| f == FEATURE_REVIEWS),
                     serves,
                 })
             })
@@ -1800,7 +1805,8 @@ impl FleetObject {
                 name: &c.name,
                 wait,
             });
-        let chosen = fctl_domain::schedule::pick(&slots, &[], want.size, &want.image, home)?;
+        let chosen =
+            fctl_domain::schedule::pick(&slots, &[], want.size, &want.image, home, want.review)?;
         let name = candidates
             .iter()
             .find(|c| c.id == chosen.id)

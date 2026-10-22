@@ -25,26 +25,7 @@ pub async fn default_credential(
     user: &crate::model::UserRow,
     workspace_id: &str,
 ) -> AppResult<CredentialRow> {
-    let creds: Vec<CredentialRow> = q(
-        &ctx.db,
-        "SELECT * FROM claude_credentials WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC",
-        &[s(&user.id)],
-    )?
-    .all()
-    .await?;
-    let for_workspace = crate::workspaces::member(&ctx.db, workspace_id, &user.id)
-        .await?
-        .and_then(|m| m.credential_id);
-    let chosen = for_workspace
-        .as_deref()
-        .and_then(|id| creds.iter().find(|c| c.id == id))
-        .or_else(|| {
-            user.default_credential_id
-                .as_deref()
-                .and_then(|id| creds.iter().find(|c| c.id == id))
-        })
-        .or_else(|| creds.first())
-        .cloned();
+    let chosen = credential_for(&ctx.db, user, workspace_id).await?;
     chosen.ok_or_else(|| {
         AppError(ApiError {
             code: ErrorCode::NotConfigured,
@@ -53,6 +34,35 @@ pub async fn default_credential(
             retry_after: None,
         })
     })
+}
+
+/// The Claude connection `user`'s sessions in `workspace_id` run on (see
+/// [`default_credential`]), or `None` without one.
+pub async fn credential_for(
+    db: &worker::D1Database,
+    user: &crate::model::UserRow,
+    workspace_id: &str,
+) -> AppResult<Option<CredentialRow>> {
+    let creds: Vec<CredentialRow> = q(
+        db,
+        "SELECT * FROM claude_credentials WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC",
+        &[s(&user.id)],
+    )?
+    .all()
+    .await?;
+    let for_workspace = crate::workspaces::member(db, workspace_id, &user.id)
+        .await?
+        .and_then(|m| m.credential_id);
+    Ok(for_workspace
+        .as_deref()
+        .and_then(|id| creds.iter().find(|c| c.id == id))
+        .or_else(|| {
+            user.default_credential_id
+                .as_deref()
+                .and_then(|id| creds.iter().find(|c| c.id == id))
+        })
+        .or_else(|| creds.first())
+        .cloned())
 }
 
 #[derive(serde::Deserialize)]
@@ -255,7 +265,8 @@ fn source_of(ctx: &Ctx) -> MessageSource {
 }
 
 /// `GET /api/v1/sessions`: the sessions the caller sees, in all their
-/// workspaces (`?workspace=` one), newest first.
+/// workspaces (`?workspace=` one), newest first, without review agents'
+/// (`?reviews=1` keeps them).
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let user = ctx.user()?;
     let settings = ctx.settings();
@@ -296,6 +307,11 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     }
     if http::query(req, "mine").is_some_and(|v| v == "1" || v == "true") {
         sql.push_str(" AND s.created_by = ?1");
+    }
+    // Review agents' sessions have a list of their own (the project's
+    // reviews), and stay off the Agent Floor and the project's sessions.
+    if !http::query(req, "reviews").is_some_and(|v| v == "1" || v == "true") {
+        sql.push_str(" AND rv.session_id IS NULL");
     }
     if !http::query(req, "archived").is_some_and(|v| v == "1" || v == "true") {
         sql.push_str(" AND s.archived = 0");
@@ -393,10 +409,22 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     get(ctx, id).await
 }
 
+/// Review agents' sessions take no messages, interrupts or resumes: their
+/// agent reviews one commit, posts and ends.
+pub fn refuse_review(row: &SessionRow) -> AppResult<()> {
+    if row.is_review() {
+        return Err(conflict(
+            "Review agents take no messages: this one reviews its pull request's commit, posts what it found on GitHub, and ends. A new commit starts a new review.",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: SendMessageRequest = http::body(req).await?;
     let a = access::session(ctx, id).await?;
     a.require_editor()?;
+    refuse_review(&a.row)?;
     let files = validate::attachment_ids(&body.attachments)?;
     let text = validate::message_with_files("text", &body.text, files.len())?;
     // A stopped session resumes for the message (SessionObject::wake).
@@ -471,6 +499,7 @@ pub async fn deliver_message(
 pub async fn interrupt(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let a = access::session(ctx, id).await?;
     a.require_editor()?;
+    refuse_review(&a.row)?;
     let by = ctx.user()?.to_ref();
     let delivery_id = fctl_domain::ids::delivery_id(ctx.now);
     let stub = internal::session_stub(&ctx.env, id)?;
@@ -530,6 +559,7 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     };
     let a = access::session(ctx, id).await?;
     a.require_owner()?;
+    refuse_review(&a.row)?;
     if !a.row.status().is_terminal() {
         return Err(conflict("The session is still running"));
     }

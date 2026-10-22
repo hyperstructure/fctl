@@ -7,6 +7,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { MemoryTab } from "@/components/project/memory";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
+import { ReviewsTab } from "@/components/project/reviews";
 import {
   AttachButton,
   DraftTray,
@@ -69,10 +70,18 @@ import {
 import { repoLabel, repoSummary } from "@/lib/repos";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
-type Tab = "sessions" | "memory" | "retrospectives" | "repositories" | "settings" | "members" | "secrets";
+type Tab =
+  | "sessions"
+  | "reviews"
+  | "memory"
+  | "retrospectives"
+  | "repositories"
+  | "settings"
+  | "members"
+  | "secrets";
 
 /** Everyone in the project sees these; owners and maintainers the rest. */
-const OPEN_TABS: Tab[] = ["sessions", "memory", "retrospectives", "repositories", "members"];
+const OPEN_TABS: Tab[] = ["sessions", "reviews", "memory", "retrospectives", "repositories", "members"];
 
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
@@ -161,6 +170,7 @@ export function ProjectPage() {
           {(
             [
               "sessions",
+              "reviews",
               "memory",
               "retrospectives",
               "repositories",
@@ -191,6 +201,7 @@ export function ProjectPage() {
       </nav>
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
+        {p && tab === "reviews" && <ReviewsTab project={p} />}
         {p && tab === "memory" && <MemoryTab project={p} />}
         {p && tab === "retrospectives" && <RetrospectivesTab project={p} />}
         {p && tab === "repositories" && <Repositories project={p} />}

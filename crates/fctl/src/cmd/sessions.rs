@@ -101,7 +101,7 @@ pub async fn resolve(api: &Api, reference: &str) -> Result<Session> {
         let n: u32 = number
             .parse()
             .context("use project#number, like my-app#12")?;
-        let list = api.sessions(Some(project), None, 200).await?;
+        let list = api.sessions_with_reviews(project, 200).await?;
         return list
             .sessions
             .into_iter()
@@ -361,7 +361,32 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
             .map(|r| style::dim(&format!(" — {}", style::terminal_safe(r))))
             .unwrap_or_default()
     );
-    println!("by:       {}", s.created_by.name);
+    if let Some(review) = &s.review {
+        // What came of it, as the project's reviews have it.
+        let found = api
+            .get_review(s.project_id.as_str(), s.id.as_str())
+            .await
+            .ok()
+            .flatten();
+        println!(
+            "review:   {}#{} at {}{}",
+            review.repo.full_name(),
+            review.number,
+            fctl_domain::reviews::short(&review.head_sha),
+            found
+                .map(|r| style::dim(&format!(" · {}", super::review::outcome(&r))))
+                .unwrap_or_default()
+        );
+    }
+    println!(
+        "{}{}",
+        if s.review.is_some() {
+            "runs on:  "
+        } else {
+            "by:       "
+        },
+        s.created_by.name
+    );
     if let Some(b) = &s.branch {
         println!(
             "branch:   {b}{}",

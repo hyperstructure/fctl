@@ -83,6 +83,10 @@ this file is the overview. Order within a section is priority.
       wrong ones stale; people read, change and delete them
 - [x] Retrospectives: agents record what they worked on, how, what got in
       the way and what a future agent should know, for each piece of work
+- [x] Review agents: each new commit of a project's pull requests gets a
+      review, posted in one pass with a check, on an owner's subscription
+- [ ] Review agents: choose the repositories they review, and whether
+      drafts get reviews
 - [ ] Learning from retrospectives: a session that reads a project's and
       proposes notes and AGENTS.md changes
 - [ ] GitHub webhooks: agents react to CI failures and review comments on
