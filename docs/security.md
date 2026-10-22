@@ -190,6 +190,10 @@ outside it except through these channels:
   the instance mint tokens there, but no workspace uses it until one of its
   admins connects it with a GitHub sign-in
   ([ADR 0029](adr/0029-workspaces-connect-github-accounts-with-a-github-sign-in.md)).
+  A connection is to the account, by GitHub's id, not its name: when a
+  connected account is renamed or deleted and someone else takes its name,
+  the workspace's sessions get no tokens there, and their pull requests no
+  news from it, until its admins connect the account again.
 - **Claude.** A short-lived access token for the session's owner. Refresh
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host. A session gets the

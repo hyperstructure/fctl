@@ -3,10 +3,11 @@
 //! telling people's feeds when their workspaces change.
 
 use crate::ctx::Ctx;
-use crate::db::{Count, Query, int, int_bool, n, opt_int, os, q, s};
+use crate::db::{Count, Query, int, int_bool, n, on, opt_int, os, q, s};
 use crate::error::{AppError, AppResult, forbidden, not_found};
 use crate::internal::{self, FeedIdentity};
 use crate::model::{UserRow, WORKSPACE_ORDER, workspace_ref};
+use fctl_domain::github::Binding;
 use fctl_domain::repos::Scope;
 use fctl_domain::workspace as policy;
 use fctl_proto::api::{
@@ -535,13 +536,17 @@ pub struct ConnectionRow {
     pub approver_name: Option<String>,
     /// The GitHub account its admin signed in to GitHub as.
     pub github_user: Option<String>,
+    /// GitHub's id of the account it is to (`None` from before ids were
+    /// kept, until it is used).
+    #[serde(deserialize_with = "opt_int", default)]
+    pub account_id: Option<i64>,
     #[serde(deserialize_with = "int")]
     pub created_at: i64,
 }
 
 pub const CONNECTION_SELECT: &str = "SELECT g.workspace_id, g.account, g.installation_id, g.repos, g.status, \
     g.requested_by, ru.name AS requester_name, ru.avatar_url AS requester_avatar, g.approved_by, \
-    au.name AS approver_name, g.github_user, g.created_at FROM workspace_github g \
+    au.name AS approver_name, g.github_user, g.account_id, g.created_at FROM workspace_github g \
     LEFT JOIN users ru ON ru.id = g.requested_by LEFT JOIN users au ON au.id = g.approved_by";
 
 impl ConnectionRow {
@@ -608,31 +613,77 @@ pub fn scope(connections: &[ConnectionRow], owner: &str) -> Option<Scope> {
         .map(|c| Scope::of(c.repos()))
 }
 
-/// The installation of the GitHub App on `account`, as GitHub says now
-/// (the app may have been installed again since), remembered with the
-/// workspaces' connections to it.
+/// The installation of the GitHub App that serves a workspace's connection
+/// to `account`: the one on that login as GitHub says now (the app may have
+/// been installed again since), while the login still belongs to the
+/// account the workspace connected, by id (`fctl_domain::github::binding`).
+/// A connection from before ids were kept takes the account of the
+/// installation it recorded, when GitHub still has it, else the one that
+/// has the login now. The installation is remembered with the connections
+/// to that account.
 pub async fn installation(
     db: &D1Database,
     gh: &crate::github::Github<'_>,
     connections: &[ConnectionRow],
     account: &str,
 ) -> AppResult<u64> {
-    let id = gh.installation_id(account).await?;
-    let known = connections
+    let found = gh.installation(account).await?;
+    let connection = connections
         .iter()
-        .find(|c| c.account.eq_ignore_ascii_case(account))
+        .find(|c| c.account.eq_ignore_ascii_case(account));
+    let known = connection
         .and_then(|c| c.installation_id)
         .and_then(|id| u64::try_from(id).ok());
-    if known != Some(id) {
+    let stored = connection
+        .and_then(|c| c.account_id)
+        .and_then(|id| u64::try_from(id).ok());
+    let mut connected = stored;
+    if stored.is_none()
+        && let Some(recorded) = known.filter(|k| *k != found.id)
+        && let Some(info) = gh.installation_by_id(recorded).await?
+    {
+        connected = info.account_id;
+    }
+    if fctl_domain::github::binding(connected, found.account_id) == Binding::Other {
+        return Err(not_connected(account));
+    }
+    // A connection from before ids were kept keeps the account from now on.
+    if stored.is_none()
+        && let (Some(c), Some(id)) = (connection, found.account_id)
+    {
         q(
             db,
-            "UPDATE workspace_github SET installation_id = ? WHERE account = ?",
-            &[n(id as i64), s(account)],
+            "UPDATE workspace_github SET account_id = ? WHERE workspace_id = ? AND account = ? AND account_id IS NULL",
+            &[n(id as i64), s(&c.workspace_id), s(account)],
         )?
         .run()
         .await?;
     }
-    Ok(id)
+    if known != Some(found.id) {
+        q(
+            db,
+            "UPDATE workspace_github SET installation_id = ? WHERE account = ? AND (account_id IS NULL OR account_id = ?)",
+            &[
+                n(found.id as i64),
+                s(account),
+                on(found.account_id.map(|id| id as i64)),
+            ],
+        )?
+        .run()
+        .await?;
+    }
+    Ok(found.id)
+}
+
+/// The error for a connection whose login belongs to another GitHub
+/// account now.
+pub fn not_connected(account: &str) -> AppError {
+    AppError(ApiError::new(
+        ErrorCode::Forbidden,
+        format!(
+            "The GitHub account {account} isn't the one this workspace connected: it was renamed or deleted, and its name may be someone else's now. The workspace's admins connect the account again under its GitHub tab, by its name now."
+        ),
+    ))
 }
 
 // ───────────────────────────── feeds ─────────────────────────────

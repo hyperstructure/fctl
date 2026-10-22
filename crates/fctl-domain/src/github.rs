@@ -81,6 +81,32 @@ impl Refusal {
     }
 }
 
+/// Whether a workspace's connection to a GitHub account still points at
+/// the account it connected, now that its login belongs to `found` (GitHub's
+/// id of the account the app's installation on that login is for).
+/// `connected` is the account's id the connection keeps: `None` for one
+/// from before ids were kept, which takes the account it finds the first
+/// time. A login can change hands (an account renamed or deleted, and its
+/// name taken by someone else); an id can't.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Binding {
+    /// The account it connected.
+    Same,
+    /// A connection from before ids were kept: it keeps this one from now on.
+    Adopt(u64),
+    /// Another account has the login now, or GitHub didn't say which.
+    Other,
+}
+
+pub fn binding(connected: Option<u64>, found: Option<u64>) -> Binding {
+    match (connected, found) {
+        (Some(c), Some(f)) if c == f => Binding::Same,
+        (Some(_), _) => Binding::Other,
+        (None, Some(f)) => Binding::Adopt(f),
+        (None, None) => Binding::Same,
+    }
+}
+
 /// What the person may connect of the account, from which they choose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Offer {
@@ -485,6 +511,17 @@ mod tests {
             grant(&mine, &names(&["notes"])),
             Err((Refusal::Unreachable, names(&["notes"])))
         );
+    }
+
+    #[test]
+    fn connections_keep_to_the_account_they_connected() {
+        assert_eq!(binding(Some(7), Some(7)), Binding::Same);
+        // The login belongs to someone else now.
+        assert_eq!(binding(Some(7), Some(9)), Binding::Other);
+        assert_eq!(binding(Some(7), None), Binding::Other);
+        // From before ids were kept: it takes the account it finds.
+        assert_eq!(binding(None, Some(9)), Binding::Adopt(9));
+        assert_eq!(binding(None, None), Binding::Same);
     }
 
     #[test]

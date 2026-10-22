@@ -409,7 +409,11 @@ pub async fn github_tokens(
     let mut tokens = if plan.write.is_empty() && plan.read == fctl_domain::repos::ReadScope::None {
         github::SessionTokens::default()
     } else {
-        github::from_config(cfg, now)?.session_tokens(&plan).await?
+        // Through the installation on the account the workspace connected,
+        // while its login is still that account's.
+        let gh = github::from_config(cfg, now)?;
+        let inst = crate::workspaces::installation(db, &gh, &connections, &plan.owner).await?;
+        gh.session_tokens(inst, &plan).await?
     };
     tokens.refused = refused;
     if let Some(p) = primary

@@ -383,6 +383,19 @@ connected at once instead, as far as GitHub says the admin may
 (`fctl_domain::github::grant`). The sign-in's details ride in a signed
 cookie (`__Host-fctl-github`), its PKCE state checked on the way back.
 
+A connection is to an account by GitHub's id (`workspace_github.account_id`),
+since a login can change hands: an account renamed or deleted, and its
+name taken by someone else, who installs the app there. The control plane
+mints a session's tokens, links and creates repositories, and tells
+sessions what pull request lookups and webhooks say only through the
+installation on a login that still belongs to the account the workspace
+connected (`workspaces::installation`, `fctl_domain::github::binding`).
+Otherwise sessions fail, and links refuse, saying that the workspace's
+admins connect the account again, by its name now. A connection from
+before ids were kept takes the account of the installation it recorded,
+when GitHub still has it, else the one that has the login, the first time
+it is used.
+
 Installing the app from a workspace, or giving it more repositories, goes
 through `/api/v1/github/install`, which keeps the workspace in a signed
 cookie (`__Host-fctl-github-install`, for an hour) on the way to GitHub.

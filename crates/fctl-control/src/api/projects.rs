@@ -249,6 +249,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     if let Some(create) = &body.create_repo {
         let gh = github::from_config(&ctx.cfg, ctx.now)?;
         let owner = new_repo_owner(&gh, &connections, create.owner.as_deref())?;
+        // The account the workspace connected, while its login is still its.
+        ws::installation(&ctx.db, &gh, &connections, &owner).await?;
         let repo_name = naming::slugify(&create.name, 100);
         if repo_name.is_empty() {
             return Err(validation("create_repo.name", "Enter a repository name"));
