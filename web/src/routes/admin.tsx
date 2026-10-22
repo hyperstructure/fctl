@@ -994,56 +994,69 @@ function Workspaces() {
         {list.data?.workspaces.map((w) => (
           <li key={w.workspace.id} className="flex items-center gap-3.5 border-b border-line py-3.5">
             <WorkspaceAvatar workspace={w.workspace} size={32} />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-[14px] text-ink">
-                <span className="truncate">{w.workspace.name}</span>
-                {w.require_two_factor && (
-                  <ShieldCheck className="size-3.5 text-accent" aria-label="Requires two-factor sign-in" />
+            {/* On a phone the actions go under the workspace's details. */}
+            <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3.5">
+              <div className="min-w-0 flex-1">
+                {/* Your role goes under the name where it doesn't fit beside it. */}
+                <div className="flex flex-wrap items-center gap-x-2 text-[14px] text-ink">
+                  <span className="truncate">{w.workspace.name}</span>
+                  {w.require_two_factor && (
+                    <ShieldCheck className="size-3.5 text-accent" aria-label="Requires two-factor sign-in" />
+                  )}
+                  {w.role && (
+                    <span className="text-[12px] text-ink-4">
+                      {w.role === "owner"
+                        ? "you are its primary admin"
+                        : w.role === "admin"
+                          ? "you are an admin"
+                          : "you are a member"}
+                    </span>
+                  )}
+                </div>
+                <div className="truncate text-[12px] text-ink-4">
+                  {w.primary ? `Run by ${w.primary.name} · ` : ""}
+                  {count(w.members, "member", "members")} · {count(w.projects, "project", "projects")} ·{" "}
+                  {count(w.runners, "runner", "runners")}
+                  {w.github.length > 0 && ` · ${w.github.join(", ")}`} · since {ago(w.created_at)}
+                </div>
+                {w.needs_primary && (
+                  <div className="mt-1 text-[12px] text-amber">
+                    {w.primary
+                      ? `${w.primary.name}'s account is disabled, so nobody can hand its primary admin role over.`
+                      : "It has no primary admin."}
+                  </div>
+                )}
+              </div>
+              <div
+                className={cn(
+                  "flex shrink-0 flex-wrap items-center gap-1 sm:ml-0 sm:gap-3.5",
+                  // On a phone the first action lines up with the details: the button by its border,
+                  // Open by its text, the delete icon by its glyph.
+                  !w.needs_primary && (w.role ? "-ml-2.5" : "-ml-1.5"),
+                )}
+              >
+                {w.needs_primary && (
+                  <Button size="sm" icon={<Crown className="size-3.5" />} onClick={() => choose(w)}>
+                    Choose a primary admin
+                  </Button>
                 )}
                 {w.role && (
-                  <span className="text-[12px] text-ink-4">
-                    {w.role === "owner"
-                      ? "you are its primary admin"
-                      : w.role === "admin"
-                        ? "you are an admin"
-                        : "you are a member"}
-                  </span>
+                  <Link to="/w/$slug" params={{ slug: w.workspace.slug }}>
+                    <Button size="sm" variant="ghost">
+                      Open
+                    </Button>
+                  </Link>
                 )}
+                <button
+                  type="button"
+                  aria-label={`Delete ${w.workspace.name}`}
+                  className="rounded p-1.5 text-ink-4 hover:text-danger"
+                  onClick={() => setDeleting(w)}
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
               </div>
-              <div className="truncate text-[12px] text-ink-4">
-                {w.primary ? `Run by ${w.primary.name} · ` : ""}
-                {count(w.members, "member", "members")} · {count(w.projects, "project", "projects")} ·{" "}
-                {count(w.runners, "runner", "runners")}
-                {w.github.length > 0 && ` · ${w.github.join(", ")}`} · since {ago(w.created_at)}
-              </div>
-              {w.needs_primary && (
-                <div className="mt-1 text-[12px] text-amber">
-                  {w.primary
-                    ? `${w.primary.name}'s account is disabled, so nobody can hand its primary admin role over.`
-                    : "It has no primary admin."}
-                </div>
-              )}
             </div>
-            {w.needs_primary && (
-              <Button size="sm" icon={<Crown className="size-3.5" />} onClick={() => choose(w)}>
-                Choose a primary admin
-              </Button>
-            )}
-            {w.role && (
-              <Link to="/w/$slug" params={{ slug: w.workspace.slug }}>
-                <Button size="sm" variant="ghost">
-                  Open
-                </Button>
-              </Link>
-            )}
-            <button
-              type="button"
-              aria-label={`Delete ${w.workspace.name}`}
-              className="rounded p-1.5 text-ink-4 hover:text-danger"
-              onClick={() => setDeleting(w)}
-            >
-              <Trash2 className="size-3.5" />
-            </button>
           </li>
         ))}
         {list.data?.workspaces.length === 0 && (
@@ -1195,14 +1208,14 @@ function Github() {
                 {i.workspaces.map((w) => (
                   <li
                     key={w.workspace.id}
-                    className="flex items-start gap-2.5 text-[13px] text-ink-2 sm:items-center"
+                    className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 text-[13px] text-ink-2"
                   >
                     <WorkspaceAvatar workspace={w.workspace} size={18} />
-                    {/* On a phone the repositories go under the workspace's name; beside it, they
+                    {/* The repositories go under the workspace's name on a phone; beside it, they
                         give way to it. */}
-                    <div className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-center sm:gap-2.5">
+                    <div className="contents sm:flex sm:items-center sm:gap-2.5">
                       <span className="truncate sm:max-w-1/2 sm:shrink-0">{w.workspace.name}</span>
-                      <span className="text-[12px] text-ink-4 sm:truncate">
+                      <span className="col-start-2 text-[12px] text-ink-4 sm:truncate">
                         {scopeOf(w.repos)}
                         {w.github_user && ` · by ${w.requested_by?.name ?? "an admin"} as @${w.github_user}`}
                       </span>
@@ -1210,7 +1223,7 @@ function Github() {
                     <button
                       type="button"
                       aria-label={`Disconnect ${w.workspace.name} from ${i.account}`}
-                      className="rounded p-1 text-ink-4 hover:text-danger"
+                      className="col-start-3 row-start-1 rounded p-1 text-ink-4 hover:text-danger"
                       onClick={() => setDropping({ account: i.account, workspace: w.workspace })}
                     >
                       <Trash2 className="size-3.5" />
