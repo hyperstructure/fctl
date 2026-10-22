@@ -128,6 +128,19 @@ pub async fn logout(server: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Your account, for commands about it: a limited access token sees only
+/// whose it is, which would read as an account without addresses, Claude
+/// connections or passkeys.
+pub async fn account(api: &Api) -> Result<fctl_proto::api::Me> {
+    let me = api.me().await?;
+    if me.token.as_ref().is_some_and(|t| t.scope.is_some()) {
+        anyhow::bail!(
+            "This access token is limited to projects and sessions, so it doesn't see your account. Sign in (`fctl login`), or use a token without limits."
+        );
+    }
+    Ok(me)
+}
+
 pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
     let api = config::api(server)?;
     let me = api.me().await?;

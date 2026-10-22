@@ -23,6 +23,7 @@ Three pieces make up a factory:
 |---|---|
 | Start using fctl on an instance someone set up | [Getting started](getting-started.md) |
 | Drive everything from a terminal or a script | [The CLI](cli.md) |
+| Run agents from CI or a bot, such as review agents on your pull requests | [Automation](automation.md) |
 | Run your own instance, on a machine of yours or on Cloudflare | [Self-hosting](self-hosting.md) |
 | Know what sessions run in, give a project its own image, or choose the images a host runs | [Sandbox images](sandbox-images.md) |
 | Understand how the pieces talk to each other | [Architecture](architecture.md) |
@@ -35,7 +36,10 @@ Three pieces make up a factory:
   (setup script, instructions, model, secrets). Projects have members.
 - **Session** — one agent working on one task: one Claude conversation in
   one sandbox, on its own branch. Sessions are numbered per project
-  (`my-app#12`).
+  (`my-app#12`). Its agent pushes, comments or only reads on GitHub.
+- **Access token** — a token for scripts, CI and bots, which can be limited
+  to reading or running sessions, to some projects, and in what its
+  sessions' agents may do on GitHub.
 - **Memory** — a project's notes for its agents: what earlier agents and
   people learned that the repository doesn't say. Each session's agent
   starts with them.

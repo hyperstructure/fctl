@@ -90,7 +90,8 @@ pub async fn issue_token(
             os(ctx.user_agent.as_deref()),
             os(ctx.ip.as_deref()),
             n(ctx.now),
-            n(ctx.now),
+            // An access token is used once something uses it.
+            on((kind != TokenKind::Pat).then_some(ctx.now)),
             on(expires_at),
             os(scope.as_deref()),
         ],

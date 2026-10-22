@@ -163,7 +163,11 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     .run()
     .await?;
     // Following is not worth failing a session over: it can be done later.
-    if let Err(e) = crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await {
+    // Sessions a limited token starts, for CI or a bot, notify nobody unless
+    // someone follows them: each review's end would.
+    if ctx.limits().is_none()
+        && let Err(e) = crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await
+    {
         worker::console_error!("following a new session failed: {}", e.0.message);
     }
     // Nor is remembering what it asked for.
@@ -539,7 +543,9 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     )?
     .run()
     .await?;
-    if let Err(e) = crate::notify::follow_own(&ctx.db, id, &user.id, ctx.now).await {
+    if ctx.limits().is_none()
+        && let Err(e) = crate::notify::follow_own(&ctx.db, id, &user.id, ctx.now).await
+    {
         worker::console_error!("following a resumed session failed: {}", e.0.message);
     }
     let stub = internal::session_stub(&ctx.env, id)?;

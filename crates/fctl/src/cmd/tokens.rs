@@ -200,13 +200,11 @@ fn print_token(t: &TokenInfo) {
         TokenKind::Cli => "fctl",
         TokenKind::Web => "browser",
     };
-    let mut meta = vec![
-        kind.to_owned(),
-        format!(
-            "active {}",
-            style::ago(t.last_used_at.unwrap_or(t.created_at))
-        ),
-    ];
+    let used = match (t.last_used_at, t.kind) {
+        (None, TokenKind::Pat) => "not used yet".to_owned(),
+        (used, _) => format!("active {}", style::ago(used.unwrap_or(t.created_at))),
+    };
+    let mut meta = vec![kind.to_owned(), used];
     if let (Some(expires), TokenKind::Pat) = (t.expires_at, t.kind) {
         meta.push(format!("expires {}", style::until(expires)));
     }

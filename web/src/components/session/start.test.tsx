@@ -265,4 +265,16 @@ describe("StartChoices", () => {
       [undefined, true],
     ]);
   });
+
+  it("says what the agent may do on GitHub where the project has a repository", () => {
+    const repo = { repo: { owner: "acme", name: "web" } };
+    const { container, rerender } = render(<Choices p={project({})} />);
+    // Without a repository there is nothing to do there.
+    expect(shown(container).map(([label]) => label)).toEqual(["Model", "Effort"]);
+    rerender(<Choices p={{ ...project({}), ...repo }} />);
+    expect(shown(container)[2]).toEqual(["On GitHub", "Can push"]);
+    // A project that holds its agents to commenting starts there.
+    rerender(<Choices p={{ ...project({ github_access: "comment" }), ...repo }} />);
+    expect(shown(container)[2]).toEqual(["On GitHub", "Comments only"]);
+  });
 });

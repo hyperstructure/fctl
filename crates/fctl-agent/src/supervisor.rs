@@ -867,7 +867,9 @@ impl Supervisor {
                 &prompt::repos_line(repos, &paths.repos.display().to_string(), github),
             );
         }
-        if let Some(line) = prompt::github_line(github) {
+        if let Some(line) = prompt::github_line(github)
+            && (spec.project.repo.is_some() || !repos.is_empty())
+        {
             self.log(LogSource::Agent, LogLevel::Info, line);
         }
         for r in repos {

@@ -23,6 +23,32 @@ describe("repoChanges", () => {
     expect(primary).toMatchObject({ name: undefined, additions: 3, deletions: 1, ahead: 1, pushed: true });
   });
 
+  it("keeps every commit in the sandbox when the agent doesn't push", () => {
+    const git: G.GitState = {
+      ahead: 2,
+      behind: 0,
+      files: [file("a", 1, 0)],
+      uncommitted: 0,
+      pushed: false,
+      repos: [
+        {
+          owner: "acme",
+          name: "lib",
+          access: "write",
+          ahead: 1,
+          behind: 0,
+          files: [],
+          uncommitted: 0,
+          pushed: false,
+        },
+      ],
+    };
+    const [primary, lib] = repoChanges(git, false);
+    expect(primary && whereCommits(primary)).toEqual(["kept in the sandbox"]);
+    expect(lib && whereCommits(lib)).toEqual(["kept in the sandbox"]);
+    expect(repoChanges(git).map(whereCommits)).toEqual([["not pushed yet"], ["not pushed yet"]]);
+  });
+
   it("lists the other repositories after the primary one", () => {
     const pr = { number: 7, url: "https://github.com/acme/lib/pull/7" };
     const git: G.GitState = {

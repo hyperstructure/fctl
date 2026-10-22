@@ -6,6 +6,7 @@
 // default (the model's), or low … max.
 
 import type * as G from "@/gen";
+import { projectGithub, within } from "./github-access";
 
 /** Claude Code's aliases for the latest model of each family, as lists show them. */
 export const ALIASES = [
@@ -50,23 +51,33 @@ export const modelLabel = (model: string) =>
 export const effortLabel = (effort: string) =>
   effort ? (EFFORTS.find((e) => e.value === effort)?.label ?? effort) : "Claude's default";
 
-/** The model and effort level of a session about to start; "" is Claude's default. */
+/**
+ * The model and effort level of a session about to start ("" is Claude's default), and what its
+ * agent may do on GitHub.
+ */
 export interface Choice {
   model: string;
   effort: string;
+  github: G.GithubAccess;
 }
 
 type Project = Pick<G.Project, "settings" | "last_model" | "last_effort">;
 
 /** What the project's sessions run with unless they ask for something else. */
 export function projectChoice(p: Project): Choice {
-  return { model: p.settings.model?.trim() ?? "", effort: p.settings.effort?.trim() ?? "" };
+  return {
+    model: p.settings.model?.trim() ?? "",
+    effort: p.settings.effort?.trim() ?? "",
+    github: projectGithub(p),
+  };
 }
 
 /**
  * What the composer shows in project `p`: what was picked in it (`picked`), else what you asked
  * for when you last started a session there, else the project's. A session can ask for a model
  * or an effort level but not for Claude's default, which stands only where the project has it.
+ * Its agent does on GitHub what was picked, as far as the project allows it, else the most the
+ * project allows: each session asks anew.
  */
 export function startChoice(p: Project, picked: Partial<Choice> = {}): Choice {
   const own = projectChoice(p);
@@ -75,6 +86,7 @@ export function startChoice(p: Project, picked: Partial<Choice> = {}): Choice {
   return {
     model: one(picked.model, p.last_model, own.model),
     effort: one(picked.effort, p.last_effort, own.effort),
+    github: picked.github && within(picked.github, own.github) ? picked.github : own.github,
   };
 }
 
@@ -83,11 +95,15 @@ export function startChoice(p: Project, picked: Partial<Choice> = {}): Choice {
  * so that a session follows them where you took them (also when it resumes after they change),
  * and the next one starts on them again.
  */
-export function asked(p: Project, c: Choice): Pick<G.CreateSessionRequest, "model" | "effort"> {
+export function asked(
+  p: Project,
+  c: Choice,
+): Pick<G.CreateSessionRequest, "model" | "effort" | "github_access"> {
   const own = projectChoice(p);
   return {
     model: c.model && c.model !== own.model ? c.model : undefined,
     effort: c.effort && c.effort !== own.effort ? c.effort : undefined,
+    github_access: c.github !== own.github ? c.github : undefined,
   };
 }
 

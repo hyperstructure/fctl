@@ -11,7 +11,7 @@ use crate::model::{PROJECT_SELECT, ProjectRow, SESSION_SELECT, SessionRow, UserR
 use fctl_domain::limits::Limits;
 use fctl_domain::perm::{self, SessionAccess};
 use fctl_proto::api::InstanceSettings;
-use fctl_proto::session::{ProjectRole, SessionRole};
+use fctl_proto::session::{GithubAccess, ProjectRole, SessionRole};
 use worker::D1Database;
 
 pub struct ProjectAccess {
@@ -103,6 +103,10 @@ impl ProjectAccess {
 pub struct SessionAccessRow {
     pub row: SessionRow,
     pub role: SessionRole,
+    /// The caller's access token lets its sessions' agents do less on
+    /// GitHub than this one's, which leaves the session read only to it:
+    /// what it lets them do, for what refusals say.
+    pub held_to: Option<GithubAccess>,
 }
 
 /// A session with the caller's effective role; hidden ones are not found.
@@ -113,7 +117,11 @@ pub async fn session(ctx: &Ctx, id: &str) -> AppResult<SessionAccessRow> {
     let row = row.ok_or_else(|| not_found("Session"))?;
     let role = session_role(user, &ctx.settings(), ctx.limits(), &row)
         .ok_or_else(|| not_found("Session"))?;
-    Ok(SessionAccessRow { row, role })
+    let held_to = ctx
+        .limits()
+        .and_then(|l| l.github_access)
+        .filter(|most| row.github_access() > *most);
+    Ok(SessionAccessRow { row, role, held_to })
 }
 
 /// The role `user` has in session `id` now (`settings`: the instance's;
@@ -167,10 +175,24 @@ impl SessionAccessRow {
             .unwrap_or_default()
     }
 
+    /// Why a token whose agents may do less on GitHub than this session's
+    /// can't act on it.
+    fn held(&self) -> AppResult<()> {
+        match self.held_to {
+            Some(most) => Err(forbidden(&format!(
+                "This access token's sessions' agents may at most {} on GitHub, and this session's agent may {}: the token only reads it.",
+                most.as_str(),
+                self.row.github_access().as_str()
+            ))),
+            None => Ok(()),
+        }
+    }
+
     pub fn require_editor(&self) -> AppResult<()> {
         if self.role.can_message() {
             Ok(())
         } else {
+            self.held()?;
             Err(forbidden(
                 "You can view this session but not message the agent",
             ))
@@ -181,6 +203,7 @@ impl SessionAccessRow {
         if self.role.can_manage() {
             Ok(())
         } else {
+            self.held()?;
             Err(forbidden("Only the session's owner can do this"))
         }
     }

@@ -20,6 +20,7 @@ import {
   Users,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { GithubAccessChip, GithubAccessLabel } from "@/components/github-access";
 import { Changes } from "@/components/session/changes";
 import { Composer } from "@/components/session/composer";
 import {
@@ -57,6 +58,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, duration, num, until } from "@/lib/format";
 import { hasChanges, repoChanges } from "@/lib/git";
+import { onGithub, sessionGithub } from "@/lib/github-access";
 import { useLiveSession } from "@/lib/live";
 import {
   checksText,
@@ -217,6 +219,7 @@ export function SessionPage() {
                           </Link>
                         </span>
                         <StatusPill status={session.status} />
+                        <SessionGithub session={session} />
                         {statusReason(session) && (
                           <span className="truncate text-ink-4">{statusReason(session)}</span>
                         )}
@@ -538,6 +541,12 @@ export function SessionPage() {
   );
 }
 
+/** What the session's agent may do on GitHub, beside its status, when that is less than push. */
+function SessionGithub({ session }: { session: G.Session }) {
+  const project = useProject(session.project_slug).data;
+  return <GithubAccessChip access={sessionGithub(session, project)} />;
+}
+
 function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-line px-5 py-4 last:border-b-0">
@@ -704,6 +713,7 @@ function Details({
   const memory = useSessionMemory(session, project);
   const [primary, ...others] = repoChanges(
     git ?? { ahead: 0, behind: 0, files: [], uncommitted: 0, pushed: false },
+    sessionGithub(session, project) === "push",
   );
   // Several repositories: each under its name, those without changes left out.
   const changed = others.filter(hasChanges);
@@ -803,6 +813,9 @@ function Details({
         {session.base_branch && <Row k="From" v={<span className="font-mono">{session.base_branch}</span>} />}
         {(model ?? session.model) && <Row k="Model" v={model ?? session.model} />}
         {session.effort && <Row k="Effort" v={session.effort} />}
+        {project && onGithub(project) && (
+          <Row k="On GitHub" v={<GithubAccessLabel access={sessionGithub(session, project)} />} />
+        )}
         {session.runner && (
           <Row
             k="Runner"

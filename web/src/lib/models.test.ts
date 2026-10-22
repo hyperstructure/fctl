@@ -36,37 +36,54 @@ const project = (
 
 describe("the composer's model and effort", () => {
   it("starts on what you last asked for in the project, else on the project's", () => {
-    expect(startChoice(project({}))).toEqual({ model: "", effort: "" });
+    expect(startChoice(project({}))).toEqual({ model: "", effort: "", github: "push" });
     expect(startChoice(project({ model: "opus", effort: "high" }))).toEqual({
       model: "opus",
       effort: "high",
+      github: "push",
     });
     expect(
       startChoice(project({ model: "opus", effort: "high" }, { last_model: "haiku", last_effort: "low" })),
-    ).toEqual({ model: "haiku", effort: "low" });
+    ).toEqual({ model: "haiku", effort: "low", github: "push" });
     // Where you took the project's last time, its settings now.
     expect(startChoice(project({ model: "opus", effort: "high" }, { last_effort: "max" }))).toEqual({
       model: "opus",
       effort: "max",
+      github: "push",
     });
   });
 
   it("keeps what was picked, as far as the project allows it", () => {
     const p = project({ model: "opus" }, { last_model: "sonnet" });
-    expect(startChoice(p, { model: "fable" })).toEqual({ model: "fable", effort: "" });
-    expect(startChoice(p, { effort: "xhigh" })).toEqual({ model: "sonnet", effort: "xhigh" });
+    expect(startChoice(p, { model: "fable" })).toEqual({ model: "fable", effort: "", github: "push" });
+    expect(startChoice(p, { effort: "xhigh" })).toEqual({ model: "sonnet", effort: "xhigh", github: "push" });
     // Claude's default, picked in a project without a model, isn't one a session can ask for here.
-    expect(startChoice(p, { model: "" })).toEqual({ model: "sonnet", effort: "" });
-    expect(startChoice(project({}), { model: "" })).toEqual({ model: "", effort: "" });
+    expect(startChoice(p, { model: "" })).toEqual({ model: "sonnet", effort: "", github: "push" });
+    expect(startChoice(project({}), { model: "" })).toEqual({ model: "", effort: "", github: "push" });
   });
 
   it("asks only for what differs from the project's settings", () => {
     const p = project({ model: "opus", effort: "high" });
-    expect(asked(p, { model: "opus", effort: "high" })).toEqual({});
-    expect(asked(p, { model: "haiku", effort: "high" })).toEqual({ model: "haiku" });
-    expect(asked(p, { model: "opus", effort: "max" })).toEqual({ effort: "max" });
-    expect(asked(project({}), { model: "", effort: "" })).toEqual({});
-    expect(asked(project({}), { model: "fable", effort: "low" })).toEqual({ model: "fable", effort: "low" });
+    expect(asked(p, { model: "opus", effort: "high", github: "push" })).toEqual({});
+    expect(asked(p, { model: "haiku", effort: "high", github: "push" })).toEqual({ model: "haiku" });
+    expect(asked(p, { model: "opus", effort: "max", github: "push" })).toEqual({ effort: "max" });
+    expect(asked(project({}), { model: "", effort: "", github: "push" })).toEqual({});
+    expect(asked(project({}), { model: "fable", effort: "low", github: "push" })).toEqual({
+      model: "fable",
+      effort: "low",
+    });
+  });
+
+  it("does on GitHub what was picked, as far as the project allows it", () => {
+    const reviews = project({ github_access: "comment" });
+    expect(startChoice(project({})).github).toBe("push");
+    expect(startChoice(reviews).github).toBe("comment");
+    expect(startChoice(reviews, { github: "read" }).github).toBe("read");
+    // A project that holds its agents to commenting doesn't let one push.
+    expect(startChoice(reviews, { github: "push" }).github).toBe("comment");
+    // A session asks only for less than the project allows.
+    expect(asked(reviews, { model: "", effort: "", github: "comment" })).toEqual({});
+    expect(asked(reviews, { model: "", effort: "", github: "read" })).toEqual({ github_access: "read" });
   });
 
   it("offers the aliases, Claude's default where the project has it, and the models it names", () => {
