@@ -226,6 +226,22 @@ export const api = {
   sessionRetrospectives: (id: string) =>
     request<G.RetrospectiveList>("GET", `/sessions/${enc(id)}/retrospectives`),
   deleteRetrospective: (id: string) => request<G.Ok>("DELETE", `/retrospectives/${enc(id)}`),
+  /** A project's review agents: on or off, on whose Claude subscription, how they review, and why none runs. */
+  reviewAgents: (project: string) =>
+    request<G.ReviewAgents>("GET", `/projects/${enc(project)}/review-agents`),
+  updateReviewAgents: (project: string, b: G.UpdateReviewAgentsRequest) =>
+    request<G.ReviewAgents>("PATCH", `/projects/${enc(project)}/review-agents`, b),
+  /** A project's reviews, newest first; with `session`, that session's alone. */
+  reviews: (project: string, q: { before?: number; limit?: number; session?: string } = {}) => {
+    const p = new URLSearchParams();
+    if (q.before) p.set("before", String(q.before));
+    if (q.limit) p.set("limit", String(q.limit));
+    if (q.session) p.set("session", q.session);
+    return request<G.ReviewList>("GET", `/projects/${enc(project)}/reviews?${p}`);
+  },
+  /** Reviews a pull request's head now: `owner/name#12`, its URL, or its number in the project's repository. */
+  startReview: (project: string, b: G.StartReviewRequest) =>
+    request<G.Review>("POST", `/projects/${enc(project)}/reviews`, b),
   github: () => request<G.GithubInfo>("GET", "/github"),
   /** The repositories a workspace's projects may use. */
   githubRepos: (workspace: string) =>

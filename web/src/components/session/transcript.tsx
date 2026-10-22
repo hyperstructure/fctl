@@ -23,6 +23,7 @@ import { type MouseEvent, memo, useId, useMemo, useRef, useState } from "react";
 import { ImageSizes, Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
 import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
+import { ReviewPostedNotice } from "@/components/review";
 import {
   Avatar,
   Button,
@@ -478,6 +479,7 @@ const ItemView = memo(function ItemView({
       if (item.notice.published && shown(item.notice.published))
         return <PublishedShot file={item.notice.published} canManage={canManage} />;
       if (item.notice.retrospective) return <RetrospectiveNotice r={item.notice.retrospective} />;
+      if (item.notice.review) return <ReviewPostedNotice posted={item.notice.review} />;
       if (item.notice.memory)
         return (
           <MemoryNotice

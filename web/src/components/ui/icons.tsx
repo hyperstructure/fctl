@@ -101,6 +101,17 @@ export function ChecksIcon({ state, className }: { state: keyof typeof CHECKS_PA
   return <Octicon path={CHECKS_PATHS[state]} className={className} />;
 }
 
+/** GitHub's octicons for what a review left: comments (comment), or nothing, superseded or stopped (skip). */
+const REVIEW_PATHS = {
+  comment:
+    "M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z",
+  skip: "M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm9.78-2.22-5.5 5.5a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734l5.5-5.5a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042Z",
+} as const;
+
+export function ReviewIcon({ kind, className }: { kind: keyof typeof REVIEW_PATHS; className?: string }) {
+  return <Octicon path={REVIEW_PATHS[kind]} className={className} />;
+}
+
 /** A thought: a cloud with the bubbles that lead up to it, as comics draw one. */
 export function ThoughtIcon({ className }: { className?: string }) {
   return (

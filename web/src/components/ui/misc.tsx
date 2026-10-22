@@ -151,12 +151,21 @@ export function StatusDot({ status, className }: { status: G.SessionStatus; clas
   );
 }
 
-export function StatusPill({ status, className }: { status: G.SessionStatus; className?: string }) {
+/** A session's status; `label` says it otherwise, as for a review agent's session, which waits for nobody. */
+export function StatusPill({
+  status,
+  label,
+  className,
+}: {
+  status: G.SessionStatus;
+  label?: string;
+  className?: string;
+}) {
   const s = STATUS[status];
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-[12.5px] font-medium", s.tone, className)}>
       <StatusDot status={status} />
-      {s.label}
+      {label ?? s.label}
     </span>
   );
 }
