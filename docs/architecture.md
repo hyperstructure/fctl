@@ -921,7 +921,11 @@ no effort level.
 
 Browsers and the CLI open `GET /api/v1/sessions/{id}/ws`. The first frame is a
 snapshot (summary, recent events, presence, in-progress text); after that
-frames are incremental. Older history is paged over HTTP.
+frames are incremental. Older history is paged over HTTP. The session page
+pages it in as it opens, too, until it has about a screenful to show: the
+recent events can show next to nothing, since Claude Code says how far the
+agent's thinking got about once a second, and the tool calls in a row fold
+into one line.
 
 The Worker checks access as the socket opens, and SessionDO checks it again
 while it stays open: the token it was opened with and the role it gives,

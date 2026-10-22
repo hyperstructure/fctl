@@ -8,6 +8,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type * as G from "@/gen";
 import { api, wsUrl } from "./api";
 import { patchSession, queryClient } from "./queries";
+import { parts } from "./runs";
 import {
   applyStream,
   emptyLive,
@@ -18,6 +19,22 @@ import {
 } from "./transcript";
 
 export type Connection = "connecting" | "live" | "reconnecting" | "closed";
+
+/** Events in a page of earlier activity, at most. */
+const PAGE = 400;
+/**
+ * About as many parts of the transcript (`parts`: a message, a line of the
+ * agent's work, a milestone) as fill the page. A page of events can show
+ * next to nothing: while the agent thinks, Claude Code says how far it got
+ * about once a second, and the tool calls it makes in a row fold into one
+ * line.
+ */
+export const SCREENFUL = 12;
+/** Pages of events one load of earlier activity fetches at most, however little they show. */
+export const MAX_PAGES = 5;
+
+/** How many parts (`parts`) the transcript of these events shows. */
+const shown = (events: G.SessionEvent[]) => parts(new TranscriptBuilder().add(events)).length;
 
 export interface LiveState {
   session?: G.Session;
@@ -225,6 +242,8 @@ export class LiveSession {
           error: undefined,
         });
         patchSession(queryClient, m.session);
+        // The newest events may show next to nothing: earlier ones fill the page.
+        if (fresh) void this.loadOlder(SCREENFUL);
         return;
       }
       case "events": {
@@ -343,25 +362,46 @@ export class LiveSession {
     this.raw({ type: "typing" });
   }
 
-  /** Loads the page of events before the first one we have. */
-  async loadOlder() {
-    if (this.state.loadingOlder || !this.state.hasMoreBefore || !this.state.firstSeq) return;
+  /**
+   * Loads the events before the first one we have, a page at a time, until
+   * the transcript shows `want` parts (by default a screenful more than it
+   * does) or starts where the session did, for at most `MAX_PAGES` pages. The
+   * transcript changes once, when they are all in, so that the reader's
+   * place can be kept (`useKeepPlace`).
+   */
+  async loadOlder(want?: number) {
+    const { loadingOlder, hasMoreBefore, firstSeq } = this.state;
+    if (loadingOlder || !hasMoreBefore || !firstSeq) return;
+    const now = parts(this.builder.items).length;
+    const target = want ?? now + SCREENFUL;
+    if (now >= target) return;
     this.set({ loadingOlder: true });
+    let older: G.SessionEvent[] = [];
+    let more = true;
     try {
-      const page = await api.events(this.id, { before: this.state.firstSeq, limit: 400 });
-      this.events = [...page.events, ...this.events];
-      this.builder = new TranscriptBuilder();
-      const items = this.show(this.builder.add(this.events));
-      this.set({
-        items,
-        hasMoreBefore: page.has_more,
-        firstSeq: this.events[0]?.seq ?? this.state.firstSeq,
-        loadingOlder: false,
-        git: this.builder.latestGit,
-      });
+      for (let n = 0; n < MAX_PAGES && more; n++) {
+        const page = await api.events(this.id, { before: older[0]?.seq ?? firstSeq, limit: PAGE });
+        older = page.events.concat(older);
+        more = page.has_more;
+        if (shown(older.concat(this.events)) >= target) break;
+      }
     } catch {
-      this.set({ loadingOlder: false });
+      // What came in shows; the rest loads when the reader asks for it.
     }
+    if (!older.length) {
+      this.set({ loadingOlder: false, hasMoreBefore: more });
+      return;
+    }
+    this.events = older.concat(this.events);
+    this.builder = new TranscriptBuilder();
+    const items = this.show(this.builder.add(this.events));
+    this.set({
+      items,
+      hasMoreBefore: more,
+      firstSeq: this.events[0]?.seq ?? firstSeq,
+      loadingOlder: false,
+      git: this.builder.latestGit,
+    });
   }
 }
 
