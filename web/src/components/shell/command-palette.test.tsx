@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys } from "@/lib/queries";
 import { useTaskBoxFocus } from "@/lib/task-box";
-import { CommandPalette } from "./command-palette";
+import { CommandPalette, usePaletteKeys } from "./command-palette";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 // No request is answered: the palette lists what the cache holds.
@@ -137,5 +137,70 @@ describe("⌘K", () => {
     // Safari on iPhones and iPads puts the caret's views in the layer that draws the field:
     // in the palette's, which holds the list, they send a swipe over the list to the page.
     expect(input.className.split(" ")).toContain("pointer-coarse:will-change-transform");
+  });
+});
+
+/** The home page with the palette's keys, as the app shell listens for them, in a browser on `ua`. */
+function withKeys(ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/141.0.0.0") {
+  const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(ua);
+  cleanups.push(() => userAgent.mockRestore());
+  const open = vi.fn();
+  function Page() {
+    usePaletteKeys(open);
+    return <TaskBox />;
+  }
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() => root.render(<Page />));
+  cleanups.push(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+  const box = container.querySelector("textarea");
+  if (!box) throw new Error("no task box");
+  const press = (key: string, mods: KeyboardEventInit) => {
+    const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...mods });
+    act(() => {
+      box.dispatchEvent(e);
+    });
+    return e;
+  };
+  return { open, press };
+}
+
+describe("the palette's keys", () => {
+  it("open it with ⌘K, ⌘P and ⌘⇧P, while typing in the task box too", () => {
+    const { open, press } = withKeys();
+    expect(press("k", { metaKey: true }).defaultPrevented).toBe(true);
+    // In place of printing the page.
+    expect(press("p", { metaKey: true }).defaultPrevented).toBe(true);
+    expect(press("P", { metaKey: true, shiftKey: true }).defaultPrevented).toBe(true);
+    expect(open).toHaveBeenCalledTimes(3);
+  });
+
+  it("open it with Ctrl on Linux and Windows", () => {
+    const { open, press } = withKeys();
+    press("k", { ctrlKey: true });
+    press("p", { ctrlKey: true });
+    press("P", { ctrlKey: true, shiftKey: true });
+    expect(open).toHaveBeenCalledTimes(3);
+  });
+
+  it("open it with ⌘ alone on a Mac, leaving Ctrl+K and Ctrl+P to the task box", () => {
+    const { open, press } = withKeys("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15");
+    expect(press("k", { ctrlKey: true }).defaultPrevented).toBe(false);
+    // Ctrl+P goes up a line.
+    expect(press("p", { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(open).not.toHaveBeenCalled();
+    press("p", { metaKey: true });
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("leave other letters to the task box", () => {
+    const { open, press } = withKeys();
+    expect(press("o", { metaKey: true }).defaultPrevented).toBe(false);
+    expect(press("p", {}).defaultPrevented).toBe(false);
+    expect(open).not.toHaveBeenCalled();
   });
 });
