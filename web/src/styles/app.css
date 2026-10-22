@@ -214,9 +214,9 @@
 
 /* The Agent Floor's row in the sidebar (components/shell/floor-link.tsx). While
    its bar is lit, packets run down the icon's traces into its core, whose light
-   flashes as they land, and the label keeps a halo of the sidebar's color, which
-   sets it apart from the threads behind it. Where motion is reduced, the icon
-   holds still. */
+   flashes as they land, and the label stands out from the threads behind it: a
+   halo of the sidebar's color and a drop shadow, faint on light backgrounds.
+   Where motion is reduced, the icon holds still. */
 @keyframes floor-packet {
   from {
     stroke-dashoffset: 0.5;
@@ -260,10 +260,15 @@
   }
 }
 .floor-label {
+  --floor-drop: rgb(0 0 0 / 0.9);
   text-shadow:
+    0 1px 3px var(--floor-drop),
     0 0 2px var(--c-surface),
     0 0 4px var(--c-surface),
     0 0 8px var(--c-surface);
+}
+:root[data-theme="light"] .floor-label {
+  --floor-drop: rgb(0 0 0 / 0.2);
 }
 
 /* Select (components/ui/select.tsx): the list grows out of its trigger, its

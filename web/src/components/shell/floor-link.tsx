@@ -132,7 +132,16 @@ export function FloorLink({
       >
         <AgentFloorIcon live />
       </span>
-      <span className={cn(shown && "floor-label")}>Agent Floor</span>
+      {/* Lit, it turns semibold as the bar powers on, and back as it dissolves. */}
+      <span
+        className={cn(
+          "transition-[font-weight] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
+          lit && "font-semibold",
+          shown && "floor-label",
+        )}
+      >
+        Agent Floor
+      </span>
     </Link>
   );
 }
