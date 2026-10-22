@@ -200,6 +200,7 @@ describe("the Retrospectives tab", () => {
       session: { id: "ses_3", number: 3, title: "Fix the login redirect" },
       started_by: ada,
       created_at: 1,
+      updated_at: 3,
       outcome: "completed",
       worked_on: "Fixed the redirect.",
     },
@@ -221,6 +222,11 @@ describe("the Retrospectives tab", () => {
     expect(c.textContent).toContain("Blocked1");
     expect(c.textContent).toContain("#4 Move uploads to the new bucket");
     expect(c.textContent).toContain("Worked onMoving the uploads.");
+    // The one its agent updated says so; the other when it was recorded.
+    const times = [...c.querySelectorAll("time")];
+    expect(times.map((t) => t.textContent?.startsWith("Updated "))).toEqual([false, true]);
+    expect(times[1]?.getAttribute("title")).toMatch(/^Recorded .+, updated .+/);
+    expect(times[1]?.getAttribute("dateTime")).toBe(new Date(3).toISOString());
   });
 
   it("lets editors put an insight in the memory, and not viewers", () => {

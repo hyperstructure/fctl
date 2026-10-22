@@ -1,6 +1,6 @@
 // A retrospective, as the session page, its transcript and the project's
-// Retrospectives tab show it: how the work ended, and what the agent wrote
-// of it. An insight can go into the project's memory from here.
+// Retrospectives tab show it: how the work ended, what the agent wrote of
+// it, and when. An insight can go into the project's memory from here.
 
 import { BookMarked, CircleCheck, CircleDashed, Hand } from "lucide-react";
 import { useState } from "react";
@@ -8,6 +8,7 @@ import { Markdown } from "@/components/markdown";
 import { RememberDialog } from "@/components/remember";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
+import { ago, stamp } from "@/lib/format";
 import { outcomeLabel, parts } from "@/lib/retrospectives";
 
 const OUTCOME_ICON = { completed: CircleCheck, partial: CircleDashed, blocked: Hand } as const;
@@ -43,6 +44,22 @@ export function OutcomeBadge({
       <OutcomeIcon outcome={outcome} className="size-3" />
       {outcomeLabel(outcome)}
     </span>
+  );
+}
+
+/** When the agent recorded it, or last updated it, which it says. */
+export function RetrospectiveTime({ r, className }: { r: G.Retrospective; className?: string }) {
+  const at = r.updated_at ?? r.created_at;
+  return (
+    <time
+      dateTime={new Date(at).toISOString()}
+      title={
+        r.updated_at ? `Recorded ${stamp(r.created_at)}, updated ${stamp(r.updated_at)}` : stamp(r.created_at)
+      }
+      className={cn("text-[12px] whitespace-nowrap text-ink-4", className)}
+    >
+      {r.updated_at ? `Updated ${ago(r.updated_at)}` : ago(r.created_at)}
+    </time>
   );
 }
 

@@ -20,6 +20,9 @@ pub struct Extras<'a> {
     pub memory: Option<&'a MemorySpec>,
     /// The project asks for retrospectives.
     pub retrospectives: bool,
+    /// The sandbox's fctl updates them too (`fctl retro update`), so the
+    /// agent keeps one for each piece of work rather than one a turn.
+    pub update_retrospectives: bool,
     /// The agent may comment but not push, and resolves review threads
     /// with `fctl resolve`.
     pub review_threads: bool,
@@ -50,6 +53,11 @@ pub fn agents_md(extras: &Extras<'_>) -> String {
     }
     if extras.retrospectives {
         s.push_str(RETROSPECTIVES_MD);
+        s.push_str(if extras.update_retrospectives {
+            RETROSPECTIVE_UPDATES_MD
+        } else {
+            ONE_RETROSPECTIVE_EACH_MD
+        });
         if extras.memory.is_some() {
             s.push_str(RETROSPECTIVES_AND_MEMORY_MD);
         }
@@ -156,10 +164,28 @@ fctl retro --outcome completed \
 - A sentence or three for each part, plain and specific; leave out a part
   that has nothing to say. What got in the way and what a future agent
   should know help the people most.
-- One for each piece of work: a follow-up that changes the work (review
-  comments, a new request) gets one of its own; a turn that only answers a
-  question needs none.
 "#;
+
+/// How many retrospectives, where the sandbox's fctl updates them.
+const RETROSPECTIVE_UPDATES_MD: &str = r#"- One for each piece of work, not one for each turn. When a later turn
+  carries on with work you recorded one for (review comments, a failed
+  check, an answer that unblocks you, the rest of a partial one), update
+  that one instead, so that it tells the whole piece of work as it now
+  stands:
+
+  ```sh
+  fctl retro update rtr_… --outcome completed \
+    --challenges "The worker's tests need MinIO, which CI lacked until #42."
+  ```
+
+  The parts you give replace what it said, and the others stay.
+  `fctl retro list` lists this session's retrospectives, with their ids.
+- Record another one when the session turns to different work. A turn
+  that only answers a question needs none.
+"#;
+
+/// How many retrospectives, where the sandbox's fctl only records them.
+const ONE_RETROSPECTIVE_EACH_MD: &str = "- One for each piece of work: a follow-up that changes the work (review\n  comments, a new request) gets one of its own; a turn that only answers a\n  question needs none.\n";
 
 const RETROSPECTIVES_AND_MEMORY_MD: &str = "- What a future agent should know before it starts goes in the project's\n  memory too, with `fctl memory add`.\n";
 
@@ -1057,6 +1083,21 @@ mod tests {
         assert!(md.contains("--worked-on"));
         assert!(md.contains("`partial`"));
         assert!(!md.contains("fctl memory"));
+        assert!(md.ends_with("- If `fctl retro` fails, carry on.\n"));
+        // An fctl that can't update them records one for each follow-up.
+        assert!(md.contains("a follow-up that changes the work (review\n  comments, a new request) gets one of its own"));
+        assert!(!md.contains("fctl retro update"));
+        // One that can keeps one for each piece of work, and updates it.
+        let md = agents_md(&Extras {
+            retrospectives: true,
+            update_retrospectives: true,
+            ..Default::default()
+        });
+        assert!(md.contains("One for each piece of work, not one for each turn."));
+        assert!(md.contains("fctl retro update rtr_… --outcome completed"));
+        assert!(md.contains("`fctl retro list` lists this session's retrospectives"));
+        assert!(md.contains("Record another one when the session turns to different work."));
+        assert!(!md.contains("gets one of its own"));
         assert!(md.ends_with("- If `fctl retro` fails, carry on.\n"));
         // With memory, what a future agent should know goes there too.
         let memory = MemorySpec::default();

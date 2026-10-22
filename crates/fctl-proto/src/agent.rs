@@ -461,6 +461,55 @@ mod tests {
     }
 
     #[test]
+    fn updating_and_listing_retrospectives_on_the_wire() -> Result<(), serde_json::Error> {
+        use crate::RetrospectiveId;
+        use crate::api::AgentAnswer;
+        use crate::session::RetrospectiveOutcome;
+        // Only what changes goes: the parts left out stay as they were.
+        let update = serde_json::to_value(AgentCall::UpdateRetrospective {
+            id: RetrospectiveId("rtr_1".into()),
+            outcome: Some(RetrospectiveOutcome::Completed),
+            worked_on: None,
+            approach: None,
+            challenges: Some(String::new()),
+            insights: None,
+        })?;
+        assert_eq!(
+            update,
+            serde_json::json!({
+                "type": "update_retrospective", "id": "rtr_1",
+                "outcome": "completed", "challenges": ""
+            })
+        );
+        let read: AgentCall = serde_json::from_value(update)?;
+        assert!(matches!(
+            read,
+            AgentCall::UpdateRetrospective { worked_on: None, ref challenges, .. }
+                if challenges.as_deref() == Some("")
+        ));
+        let list = serde_json::to_value(AgentCall::Retrospectives)?;
+        assert_eq!(list, serde_json::json!({ "type": "retrospectives" }));
+        assert_eq!(
+            serde_json::from_value::<AgentCall>(list)?,
+            AgentCall::Retrospectives
+        );
+        let listed: AgentAnswer = serde_json::from_value(serde_json::json!({
+            "type": "retrospectives",
+            "retrospectives": [{
+                "id": "rtr_1", "project_id": "prj_1",
+                "session": { "id": "ses_1", "number": 3, "title": "Fix it" },
+                "created_at": 5, "updated_at": 8, "outcome": "partial",
+                "worked_on": "The login redirect."
+            }]
+        }))?;
+        let AgentAnswer::Retrospectives { retrospectives } = listed else {
+            panic!("expected retrospectives");
+        };
+        assert_eq!(retrospectives[0].updated_at, Some(8));
+        Ok(())
+    }
+
+    #[test]
     fn state_from_older_agents_has_no_title() -> Result<(), serde_json::Error> {
         let st: SessionState = serde_json::from_str(r#"{"status":"running"}"#)?;
         assert_eq!(st.title, None);

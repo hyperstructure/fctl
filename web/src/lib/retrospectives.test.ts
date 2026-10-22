@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { canDelete, outcomeLabel, parts, total, unlisted } from "./retrospectives";
+import { canDelete, changedAt, outcomeLabel, parts, total, unlisted } from "./retrospectives";
 import type { Item } from "./transcript";
 
 const retro = (over: Partial<G.Retrospective> = {}): G.Retrospective => ({
@@ -37,8 +37,25 @@ describe("unlisted", () => {
       notice(retro({ id: "rtr_1", created_at: 10 }), 1),
       notice(retro({ id: "rtr_2", created_at: 20 }), 2),
     ];
-    expect(unlisted(listed, items)).toEqual(["rtr_2"]);
+    expect(unlisted(listed, items)).toEqual(["rtr_2@20"]);
     expect(unlisted(undefined, [])).toEqual([]);
+  });
+
+  it("names updates newer than the list's, once for each", () => {
+    const recorded = retro({ id: "rtr_1", created_at: 10, outcome: "blocked" });
+    const updated = retro({ id: "rtr_1", created_at: 10, updated_at: 30 });
+    const items = [notice(recorded, 1), notice(updated, 2)];
+    expect(unlisted([recorded], items)).toEqual(["rtr_1@30"]);
+    // The list has caught up, or is newer still.
+    expect(unlisted([updated], items)).toEqual([]);
+    expect(unlisted([retro({ id: "rtr_1", created_at: 10, updated_at: 40 })], items)).toEqual([]);
+  });
+});
+
+describe("changedAt", () => {
+  it("is when the agent last said something", () => {
+    expect(changedAt(retro({ created_at: 10 }))).toBe(10);
+    expect(changedAt(retro({ created_at: 10, updated_at: 30 }))).toBe(30);
   });
 });
 

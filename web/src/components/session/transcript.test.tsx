@@ -675,9 +675,37 @@ describe("what the agent keeps", () => {
       "idle",
     );
     expect(c.textContent).toContain("Retrospective");
+    expect(c.textContent).not.toContain("Retrospective updated");
     expect(c.textContent).toContain("Blocked");
     expect(c.textContent).toContain("Worked onMoving the uploads to the new bucket.");
     expect(c.textContent).toContain("ChallengesThe sandbox has no credentials for it.");
     expect(c.textContent).not.toContain("Approach");
+  });
+
+  it("says when the agent updated a retrospective, as it now is", () => {
+    const r: G.Retrospective = {
+      id: "rtr_1",
+      project_id: "prj_1",
+      session: { id: "ses_1", number: 3, title: "Fix the login redirect" },
+      created_at: 0,
+      updated_at: 5,
+      outcome: "completed",
+      worked_on: "Moved the uploads to the new bucket.",
+    };
+    const c = transcript(
+      [
+        {
+          kind: "notice",
+          key: "n-retro",
+          seq: 99,
+          ts: 5,
+          notice: { level: "info", code: "retrospective_updated", message: "Updated", retrospective: r },
+        },
+      ],
+      "idle",
+    );
+    expect(c.textContent).toContain("Retrospective updated");
+    expect(c.textContent).toContain("Completed");
+    expect(c.textContent).toContain("Worked onMoved the uploads to the new bucket.");
   });
 });

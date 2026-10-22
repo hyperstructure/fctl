@@ -6,12 +6,11 @@ import { useQuery } from "@tanstack/react-query";
 import { Archive, BookMarked } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { NoteLine, NoteLink } from "@/components/project/memory";
-import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
+import { OutcomeBadge, RetrospectiveParts, RetrospectiveTime } from "@/components/retrospective";
 import { Dialog } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, stamp } from "@/lib/format";
 import { canEditMemory, headline, ofSession } from "@/lib/memory";
 import { keys } from "@/lib/queries";
 import { unlisted } from "@/lib/retrospectives";
@@ -20,8 +19,8 @@ import type { Item } from "@/lib/transcript";
 /**
  * The session's retrospectives, newest first, as the control plane lists
  * them. One that comes in the transcript, which the list doesn't have yet,
- * reads the list again, once; a deleted one stays in the transcript and
- * out of the list.
+ * or an update newer than the list's, reads the list again, once; a
+ * deleted one stays in the transcript and out of the list.
  */
 export function useRetrospectives(session: G.Session, items: Item[]) {
   const listed = useQuery({
@@ -65,13 +64,7 @@ export function SessionRetrospectives({ list, project }: { list: G.Retrospective
       >
         <span className="flex items-center justify-between gap-2">
           <OutcomeBadge outcome={latest.outcome} />
-          <time
-            dateTime={new Date(latest.created_at).toISOString()}
-            title={stamp(latest.created_at)}
-            className="text-[12px] text-ink-4"
-          >
-            {ago(latest.created_at)}
-          </time>
+          <RetrospectiveTime r={latest} />
         </span>
         <span className="mt-2 line-clamp-4 block text-[12.5px] leading-relaxed text-ink-2 [overflow-wrap:anywhere]">
           {latest.worked_on}
@@ -96,13 +89,7 @@ export function SessionRetrospectives({ list, project }: { list: G.Retrospective
             <li key={r.id} className="border-b border-line py-4 last:border-b-0">
               <div className="mb-3 flex items-center gap-2">
                 <OutcomeBadge outcome={r.outcome} />
-                <time
-                  dateTime={new Date(r.created_at).toISOString()}
-                  title={stamp(r.created_at)}
-                  className="text-[12px] text-ink-4"
-                >
-                  {ago(r.created_at)}
-                </time>
+                <RetrospectiveTime r={r} />
               </div>
               <RetrospectiveParts
                 r={r}

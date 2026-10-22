@@ -177,7 +177,12 @@ impl Renderer {
                         "{} {}\n",
                         style::accent("◆"),
                         style::bold(&format!(
-                            "Retrospective: {}",
+                            "{}: {}",
+                            if r.updated_at.is_some() {
+                                "Retrospective updated"
+                            } else {
+                                "Retrospective"
+                            },
                             fctl_domain::retrospectives::outcome_label(r.outcome).to_lowercase()
                         ))
                     ));

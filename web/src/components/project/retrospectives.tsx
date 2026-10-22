@@ -6,7 +6,7 @@ import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Ellipsis, ScrollText, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { OutcomeIcon, RetrospectiveParts } from "@/components/retrospective";
+import { OutcomeIcon, RetrospectiveParts, RetrospectiveTime } from "@/components/retrospective";
 import {
   Avatar,
   Banner,
@@ -22,7 +22,6 @@ import {
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ago, stamp } from "@/lib/format";
 import { canEditMemory } from "@/lib/memory";
 import { keys, queryClient, useMe } from "@/lib/queries";
 import { canDelete, OUTCOMES, outcomeLabel, total } from "@/lib/retrospectives";
@@ -206,13 +205,7 @@ function Entry({
           </Link>
         </div>
         {r.started_by && <Avatar user={r.started_by} size={18} />}
-        <time
-          dateTime={new Date(r.created_at).toISOString()}
-          title={stamp(r.created_at)}
-          className="shrink-0 text-[12px] whitespace-nowrap text-ink-4"
-        >
-          {ago(r.created_at)}
-        </time>
+        <RetrospectiveTime r={r} className="shrink-0" />
         {deletable && (
           <Menu
             trigger={(toggle, open) => (

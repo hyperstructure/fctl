@@ -2266,6 +2266,28 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(optional))]
         insights: Option<String>,
     },
+    /// The retrospectives the session recorded, newest first, for the
+    /// agent to find the one to update. fctl-agents and control planes
+    /// from before it refuse it.
+    Retrospectives,
+    /// Updates a retrospective the session recorded, as a later turn
+    /// carries on with its piece of work: the outcome and parts given
+    /// replace those it had, an empty part leaves it out (what it worked
+    /// on can't be empty), and the others stay. fctl-agents and control
+    /// planes from before it refuse it.
+    UpdateRetrospective {
+        id: RetrospectiveId,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        outcome: Option<RetrospectiveOutcome>,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        worked_on: Option<String>,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        approach: Option<String>,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        challenges: Option<String>,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        insights: Option<String>,
+    },
     /// Resolves a review thread of a pull request in a repository the
     /// session may write to, or with `unresolve` opens it again. GitHub
     /// lets only tokens that can push resolve threads, so the control plane
@@ -2300,8 +2322,13 @@ pub enum AgentAnswer {
         #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Memory>>", optional))]
         also_replaced: Vec<Memory>,
     },
+    /// The retrospective recorded, or as it is now updated.
     Retrospective {
         retrospective: Retrospective,
+    },
+    /// The session's retrospectives, newest first.
+    Retrospectives {
+        retrospectives: Vec<Retrospective>,
     },
     /// The review thread as it is now.
     Thread {
