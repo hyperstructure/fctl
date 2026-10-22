@@ -7,6 +7,7 @@ use crate::error::{AppError, AppResult};
 use crate::http;
 use crate::model::UserRow;
 use fctl_domain::limits::Limits;
+use fctl_domain::verify::{self, Sensitive};
 use fctl_proto::api::{InstanceSettings, TokenKind};
 use fctl_proto::{ApiError, ErrorCode};
 use std::future::Future;
@@ -22,6 +23,9 @@ pub struct Authed {
     pub via_cookie: bool,
     /// When the token was issued: the sign-in, for a browser session.
     pub signed_in_at: i64,
+    /// When it last confirmed it's its person, before sensitive actions
+    /// ([`Ctx::verified`]).
+    pub verified_at: Option<i64>,
     /// The instance requires two-factor of this account and it has none
     /// yet: only setting it up works (`crate::api::two_factor::gate`).
     pub two_factor_setup_required: bool,
@@ -39,6 +43,7 @@ impl Authed {
         token_id: String,
         now: i64,
         settings: InstanceSettings,
+        verified_at: Option<i64>,
     ) -> Self {
         Self {
             user: user.clone(),
@@ -46,6 +51,7 @@ impl Authed {
             kind: TokenKind::Web,
             via_cookie: true,
             signed_in_at: now,
+            verified_at,
             two_factor_setup_required: false,
             settings,
             limits: None,
@@ -121,6 +127,33 @@ impl Ctx {
                 worker::console_error!("deferred task failed: {}", e.0.message);
             }
         });
+    }
+
+    /// Refuses a sensitive action until the caller confirms it's them,
+    /// with a passkey or a code (`POST /api/v1/auth/verify`), where the
+    /// instance asks for that and they have one to confirm it with
+    /// (`fctl_domain::verify`). Call it once the action is allowed and
+    /// checked, right before it changes anything, so that nobody confirms
+    /// for something that then fails.
+    pub fn verified(&self, action: Sensitive) -> AppResult<()> {
+        let a = self
+            .auth
+            .as_ref()
+            .ok_or_else(|| AppError(ApiError::unauthorized()))?;
+        let factors = a.user.factors();
+        if !verify::needed(&a.settings, factors, a.verified_at, self.now) {
+            return Ok(());
+        }
+        let mut message = verify::message(action, factors);
+        if a.limits.is_some() {
+            message.push_str(
+                " Access tokens with limits can't: do it in the browser, or with the CLI signed in as you.",
+            );
+        }
+        Err(AppError(ApiError::new(
+            ErrorCode::VerificationRequired,
+            message,
+        )))
     }
 
     /// What the caller's access token is limited to, when it is.

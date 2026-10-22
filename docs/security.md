@@ -92,6 +92,19 @@ owner and purpose), so a value copied between rows does not decrypt.
   Adding one takes the password unless the browser signed in within 15
   minutes, so a stolen session can't add a way in, and emails the person.
   Where two-factor is required, a passkey also counts as the second factor.
+- **Sensitive actions take a passkey or a code**, where the primary
+  instance owner turns that on (off by default): inviting and promoting
+  admins, handing over the primary owner's and workspaces' primary admin
+  roles, turning two-factor sign-in or this off, resetting someone's
+  two-factor sign-in, removing a passkey, adding a runner to a workspace,
+  new access tokens and CLI sign-ins, exporting your data, and deleting
+  accounts, projects and workspaces. So a stolen browser session, CLI or
+  access token can't do them alone. A passkey (which must verify the
+  person), a code from the authenticator app or a recovery code confirms
+  it, for 15 minutes, for the browser, CLI or token that confirmed; a
+  sign-in with a passkey or a second factor counts. People with neither a
+  passkey nor an authenticator app aren't asked, and only the primary
+  instance owner turns it on or off, which takes confirming it too.
 - The CLI signs in with a device flow (you approve a code in the browser) and
   gets a revocable token; Settings lists every device and token.
 - **Access tokens** for scripts, CI and bots can be limited to reading,

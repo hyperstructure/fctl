@@ -163,8 +163,8 @@ pub enum AdminCmd {
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google"])),
-        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on"
     )]
     Set {
         /// Let projects publish their agents' screenshots on this instance,
@@ -182,6 +182,15 @@ pub enum AdminCmd {
         /// who has one. With --require-two-factor, everyone needs one.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         two_factor_google: Option<bool>,
+        /// Ask people to confirm it's them, with a passkey or a code from
+        /// their authenticator app, before sensitive actions: inviting and
+        /// promoting admins, turning two-factor sign-in off, adding a
+        /// runner to a workspace, new access tokens and CLI sign-ins,
+        /// exporting data, and deleting accounts, projects and workspaces.
+        /// Only the primary instance owner changes it; off takes confirming
+        /// it's you.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        verify_sensitive_actions: Option<bool>,
     },
 }
 
@@ -437,6 +446,22 @@ fn print_settings(s: &InstanceSettings) {
             (false, false) => {
                 "People choose whether to use it. Google sign-ins ask only those who chose that."
             }
+        })
+    );
+    println!(
+        "Sensitive actions      {}",
+        if s.verify_sensitive_actions {
+            style::accent("ask to confirm")
+        } else {
+            style::dim("don't ask")
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(if s.verify_sensitive_actions {
+            "Deleting projects, new access tokens and other sensitive actions take a passkey or a code first, from people who have one."
+        } else {
+            "Sensitive actions don't ask people to confirm it's them."
         })
     );
 }
@@ -894,12 +919,14 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             publish_screenshots,
             require_two_factor,
             two_factor_google,
+            verify_sensitive_actions,
         } => {
             let settings = api
                 .update_instance_settings(&UpdateInstanceSettingsRequest {
                     publish_screenshots,
                     require_two_factor,
                     two_factor_google,
+                    verify_sensitive_actions,
                 })
                 .await?;
             if json {

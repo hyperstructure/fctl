@@ -15,7 +15,34 @@ export class ApiFailure extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+/**
+ * Asks the person to confirm it's them, with a passkey or a code, when a
+ * sensitive action needs it first (`verification_required`): whether they
+ * did. The app's dialog registers itself (components/two-factor/verify.tsx).
+ */
+export type Confirmer = () => Promise<boolean>;
+let confirmer: Confirmer | undefined;
+
+/** Registers what asks the person to confirm it's them; returns what unregisters it. */
+export function setConfirmer(c: Confirmer): () => void {
+  confirmer = c;
+  return () => {
+    if (confirmer === c) confirmer = undefined;
+  };
+}
+
+/**
+ * Before something that can't go again by itself, as a download the browser
+ * makes: asks the person to confirm it's them when a sensitive action would
+ * ask now. Whether it may go on.
+ */
+export async function confirmFirst(): Promise<boolean> {
+  const v = await api.verification();
+  if (!v.required || v.verified) return true;
+  return (await confirmer?.()) ?? false;
+}
+
+async function request<T>(method: string, path: string, body?: unknown, again = true): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`/api/v1${path}`, {
@@ -38,6 +65,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     // The instance now requires two-factor sign-in of this account: the app
     // shows the page that sets it up (router.tsx).
     if (failure.code === "two_factor_setup_required") window.dispatchEvent(new Event(TWO_FACTOR_REQUIRED));
+    // A sensitive action goes again once the person confirmed it's them.
+    if (failure.code === "verification_required" && again && confirmer && (await confirmer()))
+      return request<T>(method, path, body, false);
     throw failure;
   }
   return data as T;
@@ -110,6 +140,12 @@ export const api = {
   createToken: (b: G.CreateTokenRequest) => request<G.CreatedToken>("POST", "/auth/tokens", b),
   deleteToken: (id: string) => request<G.Ok>("DELETE", `/auth/tokens/${enc(id)}`),
   unlinkIdentity: (id: string) => request<G.Me>("DELETE", `/auth/identities/${enc(id)}`),
+  /** Whether sensitive actions ask you to confirm it's you, with what, and whether this browser has. */
+  verification: () => request<G.Verification>("GET", "/auth/verify"),
+  /** Confirms it's you with a code or a passkey: this browser isn't asked again for 15 minutes. */
+  verify: (b: G.VerifyRequest) => request<G.Verification>("POST", "/auth/verify", b),
+  /** Options to confirm it's you with one of your passkeys. */
+  verifyPasskeyOptions: () => request<G.PasskeyRequestOptions>("POST", "/auth/verify/passkey", {}),
   /** The sign-in this browser waits to finish with a second factor. */
   twoFactorChallenge: () => request<G.TwoFactorChallenge>("GET", "/auth/two-factor/challenge"),
   verifyTwoFactor: (b: G.VerifyTwoFactorRequest) =>

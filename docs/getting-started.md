@@ -25,7 +25,9 @@ Two-factor sign-in**, so that a password alone can't sign anyone in: scan
 the QR code with an authenticator app (1Password, Google Authenticator, the
 passwords app on your phone) and keep the recovery codes it gives you. If
 your instance requires two-factor, it asks you to add a passkey or set up
-an app when you first sign in.
+an app when you first sign in. Where the instance asks for it, sensitive
+actions, such as deleting a project or making an access token, take your
+passkey or a code too, at most once every 15 minutes in each browser.
 
 The app installs on your phone and computer and then opens in its own
 window, from the home screen or the Dock: in Safari on an iPhone or iPad,

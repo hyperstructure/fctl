@@ -44,3 +44,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0036](0036-members-run-their-sessions-on-their-own-runners.md) | Members run their sessions on their own runners |
 | [0037](0037-access-tokens-and-sessions-limit-what-agents-do-on-github.md) | Access tokens and sessions limit what agents do on GitHub |
 | [0038](0038-agents-keep-one-retrospective-for-each-piece-of-work.md) | Agents keep one retrospective for each piece of work, and update it |
+| [0039](0039-sensitive-actions-take-a-passkey-or-a-code.md) | Sensitive actions take a passkey or a code, where the primary instance owner asks for it |

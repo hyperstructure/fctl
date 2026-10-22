@@ -24,4 +24,16 @@ require_two_factor: boolean,
  * one (each person can also choose this for themselves). With
  * `require_two_factor`, everyone needs one.
  */
-two_factor_google: boolean, };
+two_factor_google: boolean, 
+/**
+ * Sensitive actions ask people to confirm it's them first, with a
+ * passkey or a code from their authenticator app, when they have one
+ * (`fctl_domain::verify::Sensitive` lists them: inviting and promoting
+ * admins, turning two-factor sign-in off, adding a runner to a
+ * workspace, new access tokens and CLI sign-ins, exporting data, and
+ * deleting accounts, projects and workspaces). Once confirmed, a
+ * browser, CLI or token isn't asked again for 15 minutes. Off by
+ * default; only the primary instance owner turns it on or off, and
+ * turning it off is one of those actions.
+ */
+verify_sensitive_actions: boolean, };

@@ -3,4 +3,11 @@
 /**
  * `GET /api/v1/auth/device/{user_code}`: what the approval page shows.
  */
-export type DeviceInfo = { user_code: string, client_name: string, created_at: number, expires_at: number, ip?: string, location?: string, user_agent?: string, };
+export type DeviceInfo = { user_code: string, client_name: string, created_at: number, expires_at: number, ip?: string, location?: string, user_agent?: string, 
+/**
+ * The CLI is signed in already, as you, and asks you to confirm it's
+ * you for a sensitive action (`POST /api/v1/auth/verify/device`):
+ * approving it confirms that CLI for 15 minutes instead of signing one
+ * in.
+ */
+verify: boolean, };

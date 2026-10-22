@@ -60,6 +60,8 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::ChallengeReason,
         api::TwoFactorChallenge,
         api::VerifyTwoFactorRequest,
+        api::Verification,
+        api::VerifyRequest,
         api::StartAuthenticatorRequest,
         api::AuthenticatorSetup,
         api::ConfirmAuthenticatorRequest,

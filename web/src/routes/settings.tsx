@@ -24,7 +24,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
 import { AccessTokens } from "@/components/tokens";
@@ -51,7 +51,7 @@ import {
 } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
-import { api, emails, workspaces as wsApi } from "@/lib/api";
+import { api, confirmFirst, emails, workspaces as wsApi } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { ago, browserName } from "@/lib/format";
@@ -1344,16 +1344,47 @@ function YourData() {
           connections (without their secrets), notification settings and browsers, projects, the sessions you
           started with their full transcripts, the sessions you follow, and your activity log.
         </p>
-        <a
-          href="/api/v1/me/export"
-          download
-          className="inline-flex h-8.5 items-center gap-2 rounded-md border border-line-strong bg-raised px-3.5 text-[13.5px] font-medium text-ink transition-colors hover:border-ink-4"
-        >
+        <ExportLink className="inline-flex h-8.5 items-center gap-2 rounded-md border border-line-strong bg-raised px-3.5 text-[13.5px] font-medium text-ink transition-colors hover:border-ink-4">
           <Download className="size-3.5" />
           Export your data
-        </a>
+        </ExportLink>
       </div>
     </Section>
+  );
+}
+
+const EXPORT = "/api/v1/me/export";
+
+/**
+ * Downloads your data. Where sensitive actions ask you to confirm it's you,
+ * it asks first: the browser makes the download, so it can't ask itself.
+ */
+function ExportLink({ className, children }: { className: string; children: ReactNode }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <a
+      href={EXPORT}
+      download
+      aria-busy={busy || undefined}
+      className={className}
+      onClick={(e) => {
+        e.preventDefault();
+        if (busy) return;
+        setBusy(true);
+        confirmFirst()
+          .then((confirmed) => {
+            if (!confirmed) return;
+            const a = document.createElement("a");
+            a.href = EXPORT;
+            a.download = "";
+            a.click();
+          })
+          .catch((err: Error) => toast(err.message, "error"))
+          .finally(() => setBusy(false));
+      }}
+    >
+      {children}
+    </a>
   );
 }
 
@@ -1460,13 +1491,9 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
           </ul>
           <p className="text-[13px] leading-relaxed text-ink-3">
             Want a copy first?{" "}
-            <a
-              href="/api/v1/me/export"
-              download
-              className="text-ink underline decoration-accent underline-offset-2"
-            >
+            <ExportLink className="text-ink underline decoration-accent underline-offset-2">
               Export your data
-            </a>
+            </ExportLink>
             .
           </p>
           <Field

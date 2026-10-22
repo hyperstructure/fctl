@@ -521,6 +521,7 @@ fctl admin settings                        # what the instance allows and requir
 fctl admin set --publish-screenshots on    # projects may publish screenshots
 fctl admin set --require-two-factor on     # everyone who signs in with a password needs it
 fctl admin set --two-factor-google on      # Google sign-ins ask for codes too
+fctl admin set --verify-sensitive-actions on   # sensitive actions take a passkey or a code (the primary instance owner)
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 ```
 
@@ -568,6 +569,20 @@ fctl account two-factor disable            # asks for a code (not while the inst
 `2fa` is short for `two-factor`. Without a terminal, `enable --json` prints
 the setup (the key, the `otpauth://` link and the QR code's rows), and
 `fctl account two-factor confirm --setup … --code …` finishes it.
+
+Where the primary instance owner turns it on, sensitive actions (inviting
+and promoting admins, turning two-factor sign-in off, adding a runner to a
+workspace, new access tokens, exporting your data, and deleting accounts,
+projects and workspaces) ask you to confirm it's you first. In a terminal
+fctl asks by itself, and then does what you asked: for a code from your
+authenticator app, or, with a passkey, to approve a code in the browser,
+as `fctl login` does. The CLI is then confirmed for 15 minutes. Without a
+terminal, confirm first:
+
+```sh
+fctl account verify                        # asks for a code, or opens the browser for your passkey
+fctl account verify --code 123456          # a code from your authenticator app, or a recovery code
+```
 
 Passkeys sign you in with your fingerprint, face or screen lock. Your
 browser makes them, in Settings → Passkeys; the CLI lists and manages them:

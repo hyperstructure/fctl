@@ -119,6 +119,10 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["auth", "two-factor", "passkey"]) => {
             api::passkeys::second_factor_options(ctx, req).await
         }
+        (Get, ["auth", "verify"]) => api::verify::status(ctx).await,
+        (Post, ["auth", "verify"]) => api::verify::verify(ctx, req).await,
+        (Post, ["auth", "verify", "passkey"]) => api::passkeys::verify_options(ctx).await,
+        (Post, ["auth", "verify", "device"]) => api::verify::device(ctx, req).await,
         (Post, ["auth", "passkey", "options"]) => api::passkeys::sign_in_options(ctx).await,
         (Post, ["auth", "passkey"]) => api::passkeys::sign_in(ctx, req).await,
         (Get, ["auth", "google", "start"]) => api::google::start(ctx, req).await,

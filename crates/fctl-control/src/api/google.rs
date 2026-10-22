@@ -298,7 +298,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
             .await?;
             return http::redirect("/two-factor");
         }
-        auth::start_web_session(ctx, &user).await?;
+        auth::start_web_session(ctx, &user, false).await?;
         ctx.audit(
             "user.login",
             Some(&user.id),
@@ -364,7 +364,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let user = auth::user_by_id(ctx, id.as_str())
         .await?
         .ok_or_else(|| not_found("User"))?;
-    auth::start_web_session(ctx, &user).await?;
+    auth::start_web_session(ctx, &user, false).await?;
     ctx.audit(
         "user.signup",
         Some(&user.id),

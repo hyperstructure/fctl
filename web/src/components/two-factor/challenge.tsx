@@ -51,7 +51,7 @@ export function challengeCopy(c: G.TwoFactorChallenge | null | undefined, instan
 }
 
 /** Re-renders every second while `until` is in the future; the time now. */
-function useNow(until?: number) {
+export function useNow(until?: number) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!until || until <= Date.now()) return;
@@ -352,7 +352,8 @@ export function SecondFactorStep({
   );
 }
 
-function Hint({
+/** What goes under a code: how it works, what was wrong with the last one, or how long codes wait. */
+export function Hint({
   id,
   error,
   errors,

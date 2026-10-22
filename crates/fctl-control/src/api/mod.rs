@@ -19,5 +19,6 @@ pub mod runners;
 pub mod sessions;
 pub mod tokens;
 pub mod two_factor;
+pub mod verify;
 pub mod webhooks;
 pub mod workspaces;

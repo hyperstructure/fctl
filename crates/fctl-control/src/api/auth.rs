@@ -102,7 +102,7 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let user = auth::user_by_id(ctx, id.as_str())
         .await?
         .ok_or_else(|| conflict("Setup is already complete. Sign in instead."))?;
-    auth::start_web_session(ctx, &user).await?;
+    auth::start_web_session(ctx, &user, false).await?;
     ctx.audit("instance.setup", Some(&user.id), None);
     http::created(&signed_in(auth::me(ctx, &user).await?))
 }
@@ -255,7 +255,7 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let user = auth::user_by_id(ctx, id.as_str())
         .await?
         .ok_or_else(|| crate::error::internal("user vanished after insert"))?;
-    auth::start_web_session(ctx, &user).await?;
+    auth::start_web_session(ctx, &user, false).await?;
     ctx.audit(
         "user.signup",
         Some(&user.id),
@@ -308,7 +308,7 @@ pub async fn login(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .await?;
         return http::ok(&waits_for(challenge));
     }
-    auth::start_web_session(ctx, &user).await?;
+    auth::start_web_session(ctx, &user, false).await?;
     ctx.audit("user.login", Some(&user.id), None);
     http::ok(&signed_in(auth::me(ctx, &user).await?))
 }
@@ -621,7 +621,7 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
         ],
     )
     .await?;
-    auth::start_web_session(ctx, &user).await?;
+    auth::start_web_session(ctx, &user, false).await?;
     ctx.audit("user.password_reset", Some(&user.id), None);
     password_reset_notice(ctx, &user).await?;
     http::ok(&signed_in(auth::me(ctx, &user).await?))
@@ -652,7 +652,18 @@ const DEVICE_INTERVAL_S: u32 = 2;
 pub async fn device_start(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     ctx.rate_limit(&format!("device:{}", ctx.ip_key())).await?;
     let body: DeviceStartRequest = http::body(req).await?;
-    let client_name = validate::name("client_name", &body.client_name)?;
+    http::created(&new_device_code(ctx, &body.client_name, None).await?)
+}
+
+/// A code for the browser to approve: a CLI's sign-in, or, with `verify`
+/// (its person and token), a CLI that is signed in already and asks its
+/// person to confirm it's them (`api::verify::device`).
+pub async fn new_device_code(
+    ctx: &Ctx,
+    client_name: &str,
+    verify: Option<(&str, &str)>,
+) -> AppResult<DeviceStartResponse> {
+    let client_name = validate::name("client_name", client_name)?;
     let device_code = new_secret(SecretKind::DeviceCode);
     // Retry on the (unlikely) user code collision.
     let mut user_code = tokens::new_user_code();
@@ -678,12 +689,14 @@ pub async fn device_start(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respons
     .await?;
     q(
         &ctx.db,
-        "INSERT INTO device_codes (device_hash, user_code, client_name, status, ip, location, user_agent, created_at, expires_at) \
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+        "INSERT INTO device_codes (device_hash, user_code, client_name, status, user_id, token_id, ip, location, user_agent, created_at, expires_at) \
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(&hash_secret(&device_code)),
             s(&user_code),
             s(&client_name),
+            os(verify.map(|(user, _)| user)),
+            os(verify.map(|(_, token)| token)),
             os(ctx.ip.as_deref()),
             os(ctx.location.as_deref()),
             os(ctx.user_agent.as_deref()),
@@ -693,7 +706,7 @@ pub async fn device_start(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respons
     )?
     .run()
     .await?;
-    http::created(&DeviceStartResponse {
+    Ok(DeviceStartResponse {
         verification_uri: ctx.cfg.url("/device"),
         verification_uri_complete: ctx.cfg.url(&format!("/device?code={user_code}")),
         device_code,
@@ -710,6 +723,9 @@ struct DeviceRow {
     client_name: String,
     status: String,
     user_id: Option<String>,
+    /// A CLI's token that asks its person (`user_id`) to confirm it's them.
+    #[serde(default)]
+    token_id: Option<String>,
     ip: Option<String>,
     location: Option<String>,
     user_agent: Option<String>,
@@ -765,6 +781,27 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
     )?
     .run()
     .await?;
+    // A CLI that confirmed it's its person keeps its token; approving the
+    // code confirmed it (`device_decide`), and it never signs one in.
+    if let Some(token_id) = &row.token_id {
+        #[derive(serde::Deserialize)]
+        struct Verified {
+            #[serde(deserialize_with = "crate::db::opt_int", default)]
+            verified_at: Option<i64>,
+        }
+        let token: Option<Verified> = q(
+            &ctx.db,
+            "SELECT verified_at FROM tokens WHERE id = ?",
+            &[s(token_id)],
+        )?
+        .first()
+        .await?;
+        let until = token.and_then(|t| fctl_domain::verify::until(t.verified_at, ctx.now));
+        return http::ok(&match until.filter(|_| claimed == 1) {
+            Some(verified_until) => DevicePollResponse::Verified { verified_until },
+            None => DevicePollResponse::Expired,
+        });
+    }
     let Some(user_id) = row.user_id.filter(|_| claimed == 1) else {
         return http::ok(&DevicePollResponse::Expired);
     };
@@ -781,6 +818,7 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
         Some(&row.client_name),
         None,
         None,
+        None,
     )
     .await?;
     let me = auth::me(ctx, &user).await?;
@@ -790,7 +828,10 @@ pub async fn device_poll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response
     })
 }
 
-async fn device_by_user_code(ctx: &Ctx, code: &str) -> AppResult<DeviceRow> {
+/// A code waiting for `user_id` to approve it. One with which a CLI asks
+/// its person to confirm it's them is theirs alone: to anyone else, it is
+/// as if it didn't exist.
+async fn device_by_user_code(ctx: &Ctx, code: &str, user_id: &str) -> AppResult<DeviceRow> {
     let code = tokens::normalize_user_code(code)
         .ok_or_else(|| validation("code", "Check the code and try again"))?;
     let row: Option<DeviceRow> = q(
@@ -801,10 +842,11 @@ async fn device_by_user_code(ctx: &Ctx, code: &str) -> AppResult<DeviceRow> {
     .first()
     .await?;
     row.filter(|r| r.expires_at > ctx.now && r.status == "pending")
+        .filter(|r| r.token_id.is_none() || r.user_id.as_deref() == Some(user_id))
         .ok_or_else(|| {
             validation(
                 "code",
-                "This code has expired or was already used. Run fctl login again.",
+                "This code has expired or was already used. Run the fctl command again.",
             )
         })
 }
@@ -813,8 +855,9 @@ pub async fn device_info(ctx: &Ctx, code: &str) -> AppResult<Response> {
     let user = ctx.user()?;
     // Codes are short enough to type: nobody tries many of them.
     ctx.rate_limit(&format!("device-code:{}", user.id)).await?;
-    let row = device_by_user_code(ctx, code).await?;
+    let row = device_by_user_code(ctx, code, &user.id).await?;
     http::ok(&DeviceInfo {
+        verify: row.token_id.is_some(),
         user_code: row.user_code,
         client_name: row.client_name,
         created_at: row.created_at,
@@ -829,15 +872,33 @@ pub async fn device_decide(ctx: &mut Ctx, req: &mut Request, code: &str) -> AppR
     let body: DeviceDecisionRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     ctx.rate_limit(&format!("device-code:{}", user.id)).await?;
-    let row = device_by_user_code(ctx, code).await?;
+    let row = device_by_user_code(ctx, code, &user.id).await?;
+    // Approving signs a CLI in, or confirms one that asks: either gives it
+    // what this browser has, so a stolen session must not do it alone.
+    if body.approve {
+        ctx.verified(fctl_domain::verify::Sensitive::ApproveCli)?;
+    }
     let status = if body.approve { "approved" } else { "denied" };
-    q(
+    let decided = q(
         &ctx.db,
-        "UPDATE device_codes SET status = ?, user_id = ? WHERE device_hash = ? AND status = 'pending'",
+        "UPDATE device_codes SET status = ?1, user_id = ?2 WHERE device_hash = ?3 AND status = 'pending' \
+         AND (token_id IS NULL OR user_id = ?2)",
         &[s(status), s(&user.id), s(&row.device_hash)],
     )?
     .run()
     .await?;
+    if body.approve
+        && decided == 1
+        && let Some(token_id) = &row.token_id
+    {
+        q(
+            &ctx.db,
+            "UPDATE tokens SET verified_at = ? WHERE id = ? AND user_id = ?",
+            &[n(ctx.now), s(token_id), s(&user.id)],
+        )?
+        .run()
+        .await?;
+    }
     ctx.audit(
         if body.approve {
             "device.approved"
@@ -845,7 +906,7 @@ pub async fn device_decide(ctx: &mut Ctx, req: &mut Request, code: &str) -> AppR
             "device.denied"
         },
         Some(&user.id),
-        Some(serde_json::json!({ "client": row.client_name })),
+        Some(serde_json::json!({ "client": row.client_name, "verify": row.token_id.is_some() })),
     );
     http::ok(&Ok { ok: true })
 }

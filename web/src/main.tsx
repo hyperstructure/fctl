@@ -3,6 +3,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { VerifyDialog } from "@/components/two-factor/verify";
 import { Toaster } from "@/components/ui";
 import { queryClient } from "@/lib/queries";
 import { syncShimmers } from "@/lib/shimmer";
@@ -24,6 +25,7 @@ if (root) {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
+        <VerifyDialog />
         <Toaster />
       </QueryClientProvider>
     </StrictMode>,

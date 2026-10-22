@@ -358,7 +358,7 @@ pub async fn verify(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         apply_reset(ctx, &user, &row).await?;
         crate::api::auth::password_reset_notice(ctx, &user).await?;
     }
-    auth::start_web_session(ctx, &user).await?;
+    auth::start_web_session(ctx, &user, true).await?;
     let (factor, passkey) = match &used {
         CodeUse::Totp => ("totp", None),
         CodeUse::Recovery { .. } => ("recovery_code", None),
@@ -1002,6 +1002,7 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if !target.has_second_factor() && !remove_passkeys {
         return Err(conflict("They have no two-factor sign-in to reset"));
     }
+    ctx.verified(fctl_domain::verify::Sensitive::ResetTwoFactor)?;
     let mut statements = forget_statements(ctx, &target.id)?;
     if remove_passkeys {
         statements.push(q(

@@ -18,6 +18,7 @@ use crate::http;
 use crate::internal as dobj;
 use crate::model::{UserRow, WORKSPACE_ORDER, workspace_ref};
 use fctl_domain::account::{self as acct, iso8601};
+use fctl_domain::verify::Sensitive;
 use fctl_proto::api::{
     AccountDeletion, DeleteAccountRequest, DeletedProject, Handover, Ok as Done,
 };
@@ -382,6 +383,7 @@ pub async fn delete(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     if let Some(reason) = plan.self_blocker() {
         return Err(conflict(&reason));
     }
+    ctx.verified(Sensitive::DeleteAccount)?;
     erase(ctx, &user, &plan).await?;
     auth::clear_session_cookie(ctx);
     ctx.audit(
@@ -514,6 +516,7 @@ fn opened(json: &str) -> AppResult<String> {
 /// `GET /me/export`: a JSON file with the account's personal data.
 pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     let user = ctx.user()?.clone();
+    ctx.verified(Sensitive::Export)?;
     ctx.rate_limit(&format!("export:{}", user.id)).await?;
     let me = || [s(&user.id)];
     // What they made in workspaces is theirs to export while those are
@@ -596,7 +599,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "devices_and_tokens".into(),
         rows(
             ctx,
-            "SELECT kind, name, user_agent, ip, created_at, last_used_at, expires_at, scope FROM tokens WHERE user_id = ? ORDER BY created_at",
+            "SELECT kind, name, user_agent, ip, created_at, last_used_at, expires_at, scope, verified_at FROM tokens WHERE user_id = ? ORDER BY created_at",
             &me(),
         )
         .await?,
@@ -605,7 +608,8 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "cli_sign_in_requests".into(),
         rows(
             ctx,
-            "SELECT client_name, status, ip, location, user_agent, created_at, expires_at FROM device_codes WHERE user_id = ? ORDER BY created_at",
+            "SELECT client_name, CASE WHEN token_id IS NULL THEN 'sign_in' ELSE 'confirm' END AS purpose, status, ip, location, user_agent, created_at, expires_at \
+             FROM device_codes WHERE user_id = ? ORDER BY created_at",
             &me(),
         )
         .await?,

@@ -91,10 +91,11 @@ pub fn token(server: &str) -> Option<String> {
         .or_else(|| Credentials::load().tokens.get(server).cloned())
 }
 
-/// An API client, signed in.
+/// An API client, signed in. Where a sensitive action needs you to
+/// confirm it's you first, it asks in a terminal (`crate::verify`).
 pub fn api(flag: Option<&str>) -> Result<fctl_client::Api> {
     let server = server(flag)?;
     let token =
         token(&server).with_context(|| format!("Not signed in to {server}. Run `fctl login`."))?;
-    Ok(fctl_client::Api::new(&server, Some(token)))
+    Ok(fctl_client::Api::new(&server, Some(token)).with_verifier(crate::verify::verifier()))
 }

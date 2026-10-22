@@ -237,6 +237,8 @@ export type { UserList } from "./UserList";
 export type { UserMessage } from "./UserMessage";
 export type { UserRef } from "./UserRef";
 export type { UserStatus } from "./UserStatus";
+export type { Verification } from "./Verification";
+export type { VerifyRequest } from "./VerifyRequest";
 export type { VerifyTwoFactorRequest } from "./VerifyTwoFactorRequest";
 export type { ViewerClient } from "./ViewerClient";
 export type { ViewerServer } from "./ViewerServer";

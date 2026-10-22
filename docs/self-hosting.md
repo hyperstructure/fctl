@@ -275,7 +275,13 @@ two-factor sign-in of everyone, turn it on under **Admin → Settings →
 Sign-in** (or `fctl admin set --require-two-factor on`); it seals each
 authenticator app's secret with `FCTL_MASTER_KEY`. Passkeys belong to the
 host name in `FCTL_PUBLIC_URL`: moving the instance to another host name
-leaves them behind, and people add new ones.
+leaves them behind, and people add new ones. As the primary instance
+owner, you can also make sensitive actions, such as deleting projects,
+making access tokens and inviting admins, take a passkey or a code first,
+under **Admin → Settings → Sensitive actions** (or `fctl admin set
+--verify-sensitive-actions on`). It is off by default, which may suit an
+instance only you or a few people use; turning it off again asks you to
+confirm it's you.
 
 ## Connect GitHub (optional, recommended)
 

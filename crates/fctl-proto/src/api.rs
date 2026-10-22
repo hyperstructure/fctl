@@ -440,6 +440,45 @@ pub struct VerifyTwoFactorRequest {
     pub passkey: Option<PasskeyAssertion>,
 }
 
+/// `GET /api/v1/auth/verify`: whether sensitive actions ask you to confirm
+/// it's you first, and what you can confirm it with.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct Verification {
+    /// The instance asks for it
+    /// ([`InstanceSettings::verify_sensitive_actions`]), and you have a
+    /// passkey or an authenticator app to confirm it's you with.
+    pub required: bool,
+    /// The browser, CLI or token that asks counts as confirmed now, by the
+    /// server's clock: sensitive actions don't ask it until
+    /// `verified_until`.
+    pub verified: bool,
+    /// Until when the browser, CLI or token that asks counts as confirmed:
+    /// 15 minutes after it last confirmed it's you, or signed in with a
+    /// passkey or a second factor. Absent when it doesn't.
+    pub verified_until: Option<Millis>,
+    /// What you can confirm it's you with.
+    pub methods: Vec<SecondFactor>,
+    /// After too many wrong codes: codes from the app are taken again from
+    /// then on.
+    pub locked_until: Option<Millis>,
+}
+
+/// `POST /api/v1/auth/verify`: confirms it's you before sensitive actions,
+/// with a code or a passkey. The answer is the [`Verification`] after it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct VerifyRequest {
+    /// A code from the authenticator app (six digits) or a recovery code.
+    pub code: Option<String>,
+    /// A passkey's answer to `POST /api/v1/auth/verify/passkey`'s options.
+    pub passkey: Option<PasskeyAssertion>,
+}
+
 /// `POST /api/v1/me/two-factor/authenticator`: starts setting up an
 /// authenticator app.
 #[skip_serializing_none]
@@ -959,6 +998,12 @@ pub enum DevicePollResponse {
         token: String,
         me: Box<Me>,
     },
+    /// Approved, for a CLI that asked its person to confirm it's them
+    /// (`POST /api/v1/auth/verify/device`): its token counts as confirmed
+    /// until then.
+    Verified {
+        verified_until: Millis,
+    },
 }
 
 /// `GET /api/v1/auth/device/{user_code}`: what the approval page shows.
@@ -973,6 +1018,12 @@ pub struct DeviceInfo {
     pub ip: Option<String>,
     pub location: Option<String>,
     pub user_agent: Option<String>,
+    /// The CLI is signed in already, as you, and asks you to confirm it's
+    /// you for a sensitive action (`POST /api/v1/auth/verify/device`):
+    /// approving it confirms that CLI for 15 minutes instead of signing one
+    /// in.
+    #[serde(default)]
+    pub verify: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1206,6 +1257,16 @@ pub struct InstanceSettings {
     /// one (each person can also choose this for themselves). With
     /// `require_two_factor`, everyone needs one.
     pub two_factor_google: bool,
+    /// Sensitive actions ask people to confirm it's them first, with a
+    /// passkey or a code from their authenticator app, when they have one
+    /// (`fctl_domain::verify::Sensitive` lists them: inviting and promoting
+    /// admins, turning two-factor sign-in off, adding a runner to a
+    /// workspace, new access tokens and CLI sign-ins, exporting data, and
+    /// deleting accounts, projects and workspaces). Once confirmed, a
+    /// browser, CLI or token isn't asked again for 15 minutes. Off by
+    /// default; only the primary instance owner turns it on or off, and
+    /// turning it off is one of those actions.
+    pub verify_sensitive_actions: bool,
 }
 
 /// `PATCH /api/v1/admin/settings`: absent fields stay as they are.
@@ -1216,6 +1277,8 @@ pub struct UpdateInstanceSettingsRequest {
     pub publish_screenshots: Option<bool>,
     pub require_two_factor: Option<bool>,
     pub two_factor_google: Option<bool>,
+    /// Only the primary instance owner changes it.
+    pub verify_sensitive_actions: Option<bool>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────

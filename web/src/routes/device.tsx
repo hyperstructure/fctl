@@ -1,4 +1,5 @@
-// Approving `fctl login` on another device.
+// Approving `fctl login` on another device, or a CLI signed in already that
+// asks you to confirm it's you before a sensitive action (`verify`).
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
@@ -21,6 +22,7 @@ export function DevicePage() {
     retry: false,
   });
   const decide = useMutation({ mutationFn: (approve: boolean) => api.decideDevice(entered, approve) });
+  const verify = !!info.data?.verify;
   return (
     <div className="mx-auto flex min-h-[80dvh] max-w-md flex-col justify-center px-6">
       <div className="animate-rise">
@@ -28,14 +30,22 @@ export function DevicePage() {
           <Laptop className="size-5" />
         </div>
         <h1 className="font-display text-[30px] leading-tight font-medium tracking-[-0.02em]">
-          Sign in on another device
+          {verify ? "Confirm it's you for the CLI" : "Sign in on another device"}
         </h1>
         {decide.isSuccess ? (
           <Banner tone={decide.variables ? "ok" : "info"} className="mt-6">
             {decide.variables ? (
-              <>
-                Approved. Go back to your terminal — <b>fctl</b> is signed in as {me?.user.name}.
-              </>
+              verify ? (
+                <>
+                  Confirmed. Go back to your terminal — <b>fctl</b> carries on.
+                </>
+              ) : (
+                <>
+                  Approved. Go back to your terminal — <b>fctl</b> is signed in as {me?.user.name}.
+                </>
+              )
+            ) : verify ? (
+              "Denied. The CLI doesn't do what it asked for."
             ) : (
               "Denied. That device stays signed out."
             )}
@@ -84,11 +94,26 @@ export function DevicePage() {
                       {info.data.ip ? ` (${info.data.ip})` : ""}
                     </div>
                     <div className="mt-2 text-ink-3">
-                      It will act as <b className="text-ink-2">{me?.user.email}</b> until you revoke it in
-                      Settings.
+                      {verify ? (
+                        <>
+                          It's signed in as <b className="text-ink-2">{me?.user.email}</b> and asks you to
+                          confirm it's you for a sensitive action. Approving lets it do sensitive actions for
+                          15 minutes.
+                        </>
+                      ) : (
+                        <>
+                          It will act as <b className="text-ink-2">{me?.user.email}</b> until you revoke it in
+                          Settings.
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
+                {decide.isError && (
+                  <Banner tone="error" className="mt-4">
+                    {decide.error.message}
+                  </Banner>
+                )}
                 <div className="mt-5 flex justify-end gap-2">
                   <Button
                     variant="ghost"

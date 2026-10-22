@@ -60,6 +60,20 @@ pub enum AccountCmd {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Confirm it's you, where the instance asks for it before sensitive
+    /// actions (deleting projects, new access tokens, exporting your
+    /// data…): with a code from your authenticator app, or your passkey in
+    /// the browser. This CLI then isn't asked again for 15 minutes. In a
+    /// terminal, fctl also asks by itself when an action needs it.
+    #[command(
+        after_help = "Examples:\n  fctl account verify\n  fctl account verify --code 123456 && fctl projects delete old-app --confirm old-app"
+    )]
+    Verify {
+        /// A code from your authenticator app, or a recovery code (asked
+        /// for in a terminal when left out).
+        #[arg(long)]
+        code: Option<String>,
+    },
     /// Delete your account and the projects only you are a member of, with
     /// their sessions. This cannot be undone.
     Delete {
@@ -160,6 +174,47 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
             println!(
                 "{}",
                 style::dim("Sessions take the change when they next start or resume.")
+            );
+            Ok(())
+        }
+        AccountCmd::Verify { code } => {
+            let status = match code {
+                Some(code) => api.verify(&code).await?,
+                None => {
+                    let status = api.verification().await?;
+                    if !status.required {
+                        if json {
+                            return style::print_json(&status);
+                        }
+                        println!(
+                            "Sensitive actions don't ask you to confirm it's you here: the instance doesn't ask for it, or you have neither a passkey nor an authenticator app."
+                        );
+                        return Ok(());
+                    }
+                    if status.verified {
+                        status
+                    } else if !std::io::stdin().is_terminal() {
+                        bail!(
+                            "pass --code with a code from your authenticator app: there is no terminal to ask in"
+                        );
+                    } else if crate::verify::confirm(&api, None).await? {
+                        // It said so already.
+                        if !json {
+                            return Ok(());
+                        }
+                        api.verification().await?
+                    } else {
+                        bail!("Nothing was confirmed.");
+                    }
+                }
+            };
+            if json {
+                return style::print_json(&status);
+            }
+            println!(
+                "{} {}",
+                style::accent("✓"),
+                crate::verify::done(&status, style::now_ms())
             );
             Ok(())
         }

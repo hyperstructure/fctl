@@ -3,4 +3,4 @@
 /**
  * Machine-readable error codes. Clients branch on these, never on messages.
  */
-export type ErrorCode = "bad_request" | "validation" | "unauthorized" | "forbidden" | "access_denied" | "invalid_credentials" | "not_found" | "conflict" | "rate_limited" | "setup_required" | "unavailable" | "not_configured" | "two_factor_setup_required" | "internal";
+export type ErrorCode = "bad_request" | "validation" | "unauthorized" | "forbidden" | "access_denied" | "invalid_credentials" | "not_found" | "conflict" | "rate_limited" | "setup_required" | "unavailable" | "not_configured" | "two_factor_setup_required" | "verification_required" | "internal";
