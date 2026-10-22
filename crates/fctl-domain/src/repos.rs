@@ -187,6 +187,23 @@ pub fn access(
         .max()
 }
 
+/// Whether the control plane may ask GitHub about a pull request of `repo`
+/// for a session, with the app's installation on its account: only where
+/// the session's own tokens reach, which its project uses ([`access`]) and
+/// its workspace may use (`scope`, what the workspace may use on the
+/// repository's account; `None`: it doesn't work there). Agents report the
+/// pull requests they find, and a host, or anything in the sandbox, can
+/// claim any pull request at all; GitHub's answer (title, state, head
+/// commit, checks) goes to the session's viewers.
+pub fn may_look_up(
+    primary: Option<&RepoRef>,
+    grants: &[RepoGrant],
+    scope: Option<&Scope>,
+    repo: &RepoRef,
+) -> bool {
+    access(primary, grants, repo).is_some() && scope.is_some_and(|s| s.allows(&repo.name))
+}
+
 /// The GitHub repository a git remote points at (`https://github.com/o/n.git`,
 /// with or without credentials, `git@github.com:o/n.git`, `ssh://…`).
 pub fn parse_remote(url: &str) -> Option<RepoRef> {
@@ -418,6 +435,33 @@ mod tests {
             name,
             access,
         }
+    }
+
+    #[test]
+    fn pull_requests_are_looked_up_only_where_the_sessions_tokens_reach() {
+        let primary = r("acme/web");
+        let grants = [
+            g("acme/lib", RepoAccess::Read),
+            g("acme/*", RepoAccess::Read),
+        ];
+        let some = Scope::Repos(vec!["web".into(), "lib".into(), "docs".into()]);
+        let look = |scope: Option<&Scope>, repo: &str| {
+            may_look_up(Some(&primary), &grants, scope, &r(repo))
+        };
+        // The primary repository, a listed one, and one the owner-wide grant
+        // reads, within what the workspace may use.
+        assert!(look(Some(&some), "acme/web"));
+        assert!(look(Some(&some), "ACME/Lib"));
+        assert!(look(Some(&some), "acme/docs"));
+        // The account's other repositories, which the workspace may not use.
+        assert!(!look(Some(&some), "acme/secret"));
+        assert!(look(Some(&Scope::All), "acme/secret"));
+        // Another account, wherever the app is installed.
+        assert!(!look(Some(&Scope::All), "victim/private"));
+        // An account the workspace doesn't work in.
+        assert!(!look(None, "acme/web"));
+        // A project without repositories looks nothing up.
+        assert!(!may_look_up(None, &[], Some(&Scope::All), &r("acme/web")));
     }
 
     #[test]
