@@ -418,6 +418,22 @@ describe("a run of work", () => {
     expect(single.textContent).toContain("List the files");
   });
 
+  it("says how far the thought streaming in got", () => {
+    const thinking = (tokens?: number) => ({
+      ...emptyLive(),
+      blocks: [{ index: 0, type: "thinking" as const, text: "", tokens, done: false }],
+    });
+    // After a call on its own…
+    const single = mount([prose("Looking."), bash("List the files", "a")], "running", thinking(900));
+    expect(single.container.textContent).toContain("Thinking · 900 tokens");
+    // …and in the run it will go in, once that is folded.
+    const run = [bash("List the files", "a"), bash("Check the branch", "main")];
+    const folded = mount(run, "running", thinking(1)).container;
+    expect(folded.querySelector("[data-item]")?.textContent).toContain("Thinking · 1 token");
+    // Until Claude Code says, it thinks.
+    expect(mount(run, "running", thinking()).container.textContent).toMatch(/Thinking$/);
+  });
+
   it("says how many of its calls failed", () => {
     const c = transcript([bash("Find the tests", "", true), bash("Run them", "ok")], "idle");
     expect(line(c, "Ran 2 commands")?.textContent).toContain("1 failed");

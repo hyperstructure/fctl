@@ -3,7 +3,12 @@
 import { useId, useState } from "react";
 import { ThoughtIcon } from "@/components/ui";
 import { cn } from "@/lib/cn";
+import { num } from "@/lib/format";
 import { OpenLine, RailIcon, Thread } from "./lines";
+
+/** What a thought that streams in says, with how far it got once Claude Code says: "Thinking · 1.2K tokens". */
+export const thinkingNow = (tokens?: number) =>
+  tokens ? `Thinking · ${num(tokens)} ${tokens === 1 ? "token" : "tokens"}` : "Thinking";
 
 export function Thinking({
   text,

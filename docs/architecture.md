@@ -915,8 +915,14 @@ no effort level.
   to the agent or an uplink that closed: they wait for it, for at most a
   minute, rather than acknowledge the older ones unseen
   (`crates/fctl-domain/src/journal.rs`).
-- Streaming deltas (`stream_event`) are forwarded but not stored; SessionDO
-  keeps the in-progress text in memory so late viewers see it.
+- Streaming deltas (`stream_event`), tool heartbeats (`tool_progress`) and
+  Claude Code's word on how far the agent's thinking got
+  (`system/thinking_tokens`, about once a second while it thinks, which the
+  session page counts after "Thinking") are forwarded but not stored.
+  SessionDO keeps the response in progress in memory so late viewers see
+  it, with only the newest thinking progress: each counts the whole
+  thought (`fctl_domain::events::Live`). Older agents store the thinking
+  progress; SessionDO acknowledges it and drops it.
 - The session's counters (`SessionStats`) move as the agent works. Each
   API call's input and cache reads count as its response starts
   (`message_start`), or with its stored messages if that stream event went
@@ -940,9 +946,9 @@ Browsers and the CLI open `GET /api/v1/sessions/{id}/ws`. The first frame is a
 snapshot (summary, recent events, presence, in-progress text); after that
 frames are incremental. Older history is paged over HTTP. The session page
 pages it in as it opens, too, until it has about a screenful to show: the
-recent events can show next to nothing, since Claude Code says how far the
-agent's thinking got about once a second, and the tool calls in a row fold
-into one line.
+recent events can show next to nothing, since the tool calls in a row fold
+into one line, and older agents stored Claude Code's word on how far the
+agent's thinking got, about once a second.
 
 The Worker checks access as the socket opens, and SessionDO checks it again
 while it stays open: the token it was opened with and the role it gives,

@@ -37,7 +37,7 @@ const prose = (text: string) =>
   });
 /**
  * A command, after `thought` events of Claude Code's word on how far the
- * agent's thinking got, which show nothing.
+ * agent's thinking got, which older agents stored and show nothing.
  */
 const command = (thought: number) => {
   const thinking = Array.from({ length: thought }, () =>

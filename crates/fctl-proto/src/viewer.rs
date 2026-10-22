@@ -36,8 +36,9 @@ pub struct Snapshot {
     pub has_more_before: bool,
     /// The `seq` the next event will get.
     pub next_seq: u64,
-    /// `stream_event` messages of the turn in progress, so a viewer that joins
-    /// mid-turn sees the text being written.
+    /// The live messages of the response in progress (`Stream`), so a viewer
+    /// that joins mid-turn sees the text being written: of its thinking
+    /// progress, only the newest, last.
     #[cfg_attr(
         feature = "ts",
         ts(type = "Array<import('../lib/claude-types').ClaudeStreamEvent>")
@@ -67,7 +68,9 @@ pub enum ViewerServer {
     Events {
         events: Vec<SessionEvent>,
     },
-    /// An ephemeral Claude `stream_event` (token deltas). Not stored.
+    /// A Claude message that is shown live and not stored: a
+    /// `stream_event` (token deltas), a tool heartbeat (`tool_progress`) or
+    /// how far its thinking got (`system/thinking_tokens`).
     Stream {
         #[cfg_attr(
             feature = "ts",

@@ -11,6 +11,9 @@ use std::collections::VecDeque;
 pub const MAX_STORED_STRING_BYTES: usize = 128 * 1024;
 /// Stored events larger than this (serialized) are reduced further.
 pub const MAX_STORED_EVENT_BYTES: usize = 1_500_000;
+/// Live messages [`Live`] keeps at most: a response that streams more starts
+/// over.
+pub const LIVE_MAX_EVENTS: usize = 6_000;
 
 /// The kind of a Claude stream-json message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +30,10 @@ pub enum ClaudeKind {
     Stream,
     /// Tool heartbeats.
     ToolProgress,
+    /// How far Claude's thinking got (`system/thinking_tokens`): its
+    /// estimate of the block's tokens so far, about once a second while it
+    /// thinks.
+    ThinkingProgress,
     /// Other `system` messages (`status`, `api_retry`, `compact_boundary`, …).
     System,
     Other,
@@ -36,6 +43,7 @@ pub fn classify(v: &Value) -> ClaudeKind {
     match v.get("type").and_then(Value::as_str) {
         Some("system") => match v.get("subtype").and_then(Value::as_str) {
             Some("init") => ClaudeKind::Init,
+            Some("thinking_tokens") => ClaudeKind::ThinkingProgress,
             _ => ClaudeKind::System,
         },
         Some("assistant") => ClaudeKind::Assistant,
@@ -50,7 +58,61 @@ pub fn classify(v: &Value) -> ClaudeKind {
 
 /// Messages that are shown live but not stored.
 pub fn is_ephemeral(kind: ClaudeKind) -> bool {
-    matches!(kind, ClaudeKind::Stream | ClaudeKind::ToolProgress)
+    matches!(
+        kind,
+        ClaudeKind::Stream | ClaudeKind::ToolProgress | ClaudeKind::ThinkingProgress
+    )
+}
+
+/// The live messages of the response Claude writes, which SessionDO keeps
+/// so that a viewer who joins in the middle of it sees it so far: its
+/// stream events and tool heartbeats, and the newest of its thinking
+/// progress, which comes about once a second and each time counts the
+/// whole block.
+#[derive(Clone, Debug, Default)]
+pub struct Live {
+    /// As JSON, in the order they came.
+    messages: Vec<String>,
+    /// The newest thinking progress, as JSON.
+    thought: Option<String>,
+}
+
+impl Live {
+    /// Takes a live message `v`, serialized as `text`.
+    pub fn push(&mut self, v: &Value, text: &str) {
+        if classify(v) == ClaudeKind::ThinkingProgress {
+            self.thought = Some(text.to_owned());
+            return;
+        }
+        // The agent's next response, not a subagent's.
+        if v.pointer("/event/type").and_then(Value::as_str) == Some("message_start")
+            && v.get("parent_tool_use_id").is_none_or(Value::is_null)
+        {
+            self.clear();
+        }
+        if self.messages.len() >= LIVE_MAX_EVENTS {
+            self.messages.clear();
+        }
+        self.messages.push(text.to_owned());
+    }
+
+    /// Forgets them: what they streamed is stored, or the turn is over.
+    pub fn clear(&mut self) {
+        self.messages.clear();
+        self.thought = None;
+    }
+
+    /// The elements of a JSON array of them (`a,b,c`), the thinking
+    /// progress last.
+    pub fn to_json_elements(&self) -> String {
+        let all: Vec<&str> = self
+            .messages
+            .iter()
+            .chain(&self.thought)
+            .map(String::as_str)
+            .collect();
+        all.join(",")
+    }
 }
 
 /// A reason the session must not continue as is.
@@ -468,6 +530,78 @@ mod tests {
         );
         let fine = json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "utilization": 0.9}});
         assert_eq!(billing_guard(&fine), None);
+    }
+
+    #[test]
+    fn thinking_progress_is_live_only() {
+        let progress = json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 900,
+                              "estimated_tokens_delta": 100, "session_id": "s", "uuid": "u"});
+        assert_eq!(classify(&progress), ClaudeKind::ThinkingProgress);
+        assert!(is_ephemeral(classify(&progress)));
+        // Claude's other word is kept.
+        let status = json!({"type": "system", "subtype": "status", "status": null});
+        assert_eq!(classify(&status), ClaudeKind::System);
+        assert!(!is_ephemeral(classify(&status)));
+        let init = json!({"type": "system", "subtype": "init", "model": "claude-opus-5-5"});
+        assert!(!is_ephemeral(classify(&init)));
+    }
+
+    /// Hands `live` a stream event of the agent's, or of the subagent that
+    /// `parent` started.
+    fn stream(live: &mut Live, event: Value, parent: Option<&str>) {
+        let v = json!({"type": "stream_event", "event": event, "parent_tool_use_id": parent});
+        live.push(&v, &v.to_string());
+    }
+
+    fn thinking_progress(live: &mut Live, tokens: u64) {
+        let v = json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": tokens});
+        live.push(&v, &v.to_string());
+    }
+
+    /// What a snapshot gives a viewer that joins now.
+    fn snapshot(live: &Live) -> Vec<Value> {
+        serde_json::from_str(&format!("[{}]", live.to_json_elements())).unwrap_or_default()
+    }
+
+    #[test]
+    fn live_keeps_a_response_and_its_newest_thinking_progress() {
+        let mut live = Live::default();
+        let start = |id: &str| json!({"type": "message_start", "message": {"id": id}});
+        stream(&mut live, start("m1"), None);
+        let thought = json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}});
+        stream(&mut live, thought, None);
+        // A long think keeps one, the newest.
+        for n in 1..=600 {
+            thinking_progress(&mut live, n * 50);
+        }
+        let seen = snapshot(&live);
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0]["event"]["type"], "message_start");
+        assert_eq!(seen[2]["estimated_tokens"], 30_000);
+        // A subagent's response leaves the agent's.
+        stream(&mut live, start("m2"), Some("toolu_1"));
+        assert_eq!(snapshot(&live).len(), 4);
+        // The agent's next response starts over.
+        stream(&mut live, start("m3"), None);
+        let seen = snapshot(&live);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["event"]["message"]["id"], "m3");
+        // A response that streams too much starts over too, its thinking
+        // progress kept.
+        thinking_progress(&mut live, 50);
+        for _ in 0..LIVE_MAX_EVENTS {
+            stream(
+                &mut live,
+                json!({"type": "content_block_delta", "index": 0}),
+                None,
+            );
+        }
+        let seen = snapshot(&live);
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0]["event"]["type"], "content_block_delta");
+        assert_eq!(seen[1]["estimated_tokens"], 50);
+        live.clear();
+        assert!(snapshot(&live).is_empty());
     }
 
     #[test]

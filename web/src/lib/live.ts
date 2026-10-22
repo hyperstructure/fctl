@@ -25,9 +25,9 @@ const PAGE = 400;
 /**
  * About as many parts of the transcript (`parts`: a message, a line of the
  * agent's work, a milestone) as fill the page. A page of events can show
- * next to nothing: while the agent thinks, Claude Code says how far it got
- * about once a second, and the tool calls it makes in a row fold into one
- * line.
+ * next to nothing: the tool calls the agent makes in a row fold into one
+ * line, and older agents stored Claude Code's word on how far its thinking
+ * got, about once a second.
  */
 export const SCREENFUL = 12;
 /** Pages of events one load of earlier activity fetches at most, however little they show. */

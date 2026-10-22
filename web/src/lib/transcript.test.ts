@@ -390,6 +390,36 @@ describe("live streaming", () => {
     expect(applyStream(live, { type: "stream_event", parent_tool_use_id: "t1", event: {} })).toBe(live);
   });
 
+  it("counts the tokens of the thought streaming in, as Claude Code says how far it got", () => {
+    const progress = (estimated_tokens: number) =>
+      ({ type: "system", subtype: "thinking_tokens", estimated_tokens }) as const;
+    const thought = (index: number) =>
+      ({
+        type: "stream_event",
+        event: { type: "content_block_start", index, content_block: { type: "thinking" } },
+      }) as const;
+    let live = applyStream(emptyLive(), {
+      type: "stream_event",
+      event: { type: "message_start", message: { id: "m1" } },
+    });
+    // Before a thought starts, there is nothing to count.
+    expect(applyStream(live, progress(50))).toBe(live);
+    live = applyStream(live, thought(0));
+    live = applyStream(live, progress(50));
+    live = applyStream(live, progress(1200));
+    expect(live.blocks[0]?.tokens).toBe(1200);
+    expect(applyStream(live, progress(1200))).toBe(live);
+    // Each thought counts from the start.
+    live = applyStream(live, { type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    live = applyStream(live, thought(1));
+    expect(live.blocks.map((b) => b.tokens)).toEqual([1200, undefined]);
+    live = applyStream(live, progress(5));
+    expect(live.blocks.map((b) => b.tokens)).toEqual([1200, 5]);
+    // The stored thoughts take their place.
+    const settled = settleLive(live, [assistant("m1", [{ type: "thinking", thinking: "" }])]);
+    expect(settled.blocks.map((b) => b.tokens)).toEqual([5]);
+  });
+
   it("keeps the agent's tool running through a subagent's tool results", () => {
     const live = applyStream(emptyLive(), {
       type: "tool_progress",

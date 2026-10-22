@@ -38,7 +38,6 @@ const TAG_UPLINK: &str = "uplink";
 const SNAPSHOT_EVENTS: i64 = 400;
 /// Byte budget of the events in one snapshot or page.
 const SNAPSHOT_BYTES: usize = 3_000_000;
-const LIVE_MAX_EVENTS: usize = 6_000;
 /// An uplink that sends nothing for this long counts as away until it does:
 /// hosts ping every 20 seconds, so this one's host is frozen or cut off (a
 /// laptop that went to sleep), and its socket may stay open for a long time.
@@ -114,8 +113,8 @@ struct Mem {
     summary: Option<Session>,
     /// The API calls whose tokens the summary counts (`ev::Counted`).
     counted: Option<ev::Counted>,
-    /// `stream_event`s of the block being written.
-    live: Vec<String>,
+    /// The live messages of the response being written.
+    live: ev::Live,
     last_pulse: i64,
     pulse_weight: u32,
     last_d1_write: i64,
@@ -1074,7 +1073,7 @@ impl SessionObject {
                 (ev, more || truncated)
             }
         };
-        let live = self.mem.borrow().live.join(",");
+        let live = self.mem.borrow().live.to_json_elements();
         let viewers = serde_json::to_string(&self.presence(None)).unwrap_or_else(|_| "[]".into());
         let session = serde_json::to_string(&summary).unwrap_or_else(|_| "null".into());
         let role = serde_json::to_string(&role).unwrap_or_else(|_| "\"viewer\"".into());
@@ -1385,6 +1384,7 @@ impl SessionObject {
             }
             UplinkUp::Events { events } => {
                 let mut acked = self.acked_agent_seq();
+                let acked_before = acked;
                 let mut out = Vec::new();
                 let mut summary = self.summary();
                 let mut summary_changed = false;
@@ -1435,6 +1435,14 @@ impl SessionObject {
                         worker::console_error!("dropping a {} event from an uplink", body.kind());
                         continue;
                     }
+                    // Claude's thinking progress is only live, but older
+                    // agents store it, about once a second: acknowledged
+                    // and dropped.
+                    if let EventBody::Claude(v) = &body
+                        && ev::is_ephemeral(ev::classify(v))
+                    {
+                        continue;
+                    }
                     if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
                         summary_changed |= Self::apply_claude(s, &mut counted, v, e.ts, &self.mem);
                         turn_ended |= self.remember_reply(v);
@@ -1480,7 +1488,8 @@ impl SessionObject {
                     }
                     self.pulse(&body, now);
                 }
-                if waiting_since.is_some() && !waits && !out.is_empty() {
+                // The events it waited for came, stored or dropped.
+                if waiting_since.is_some() && !waits && acked > acked_before {
                     self.delete_meta("waiting_since");
                 }
                 self.set_meta("acked_agent_seq", &acked.to_string());
@@ -1517,7 +1526,7 @@ impl SessionObject {
             }
             UplinkUp::Stream { event } => {
                 let text = event.to_string();
-                self.track_live(&event, &text);
+                self.mem.borrow_mut().live.push(&event, &text);
                 self.broadcast(&format!(r#"{{"type":"stream","event":{text}}}"#));
                 self.pulse_kind("delta", 1, now);
                 if ev::reports_usage(&event) {
@@ -1784,24 +1793,6 @@ impl SessionObject {
         self.notify_fleet(&s);
         self.mark_dirty(now).await;
         Ok(serde_json::json!({ "ok": true, "changed": true }))
-    }
-
-    fn track_live(&self, event: &serde_json::Value, text: &str) {
-        let inner = event
-            .pointer("/event/type")
-            .and_then(serde_json::Value::as_str);
-        let mut mem = self.mem.borrow_mut();
-        if inner == Some("message_start")
-            && event
-                .get("parent_tool_use_id")
-                .is_none_or(serde_json::Value::is_null)
-        {
-            mem.live.clear();
-        }
-        if mem.live.len() >= LIVE_MAX_EVENTS {
-            mem.live.clear();
-        }
-        mem.live.push(text.to_owned());
     }
 
     async fn apply_state(&self, state: SessionState, now: i64) {

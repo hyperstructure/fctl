@@ -56,8 +56,9 @@ access, as app.fctl.sh does: signed out, the sign-in page links to
 
 fake-claude reacts to words in the prompt: `explore` looks around the
 working directory first, as agents do before they change something (a
-thought, commands, searches and a read, two of them at once, with another
-thought among them), which the session page folds into a line that opens
+thought, whose tokens the session page counts as it comes, then
+commands, searches and a read, two of them at once, with another thought
+among them), which the session page folds into a line that opens
 into its steps (`explore <n>` looks around that many times in one line,
 more than the newest events the session page gets first, which then loads
 earlier ones until it has a screenful to show), `write <name>` creates and

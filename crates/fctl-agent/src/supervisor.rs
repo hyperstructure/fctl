@@ -2969,6 +2969,32 @@ done
     }
 
     #[tokio::test]
+    async fn thinking_progress_goes_out_live_and_is_not_kept() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_turn(dir.path())?;
+        let journaled = sup.journal.last_seq();
+        // Claude Code 2.1.307 says how far its thinking got about once a second.
+        let progress = json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 900,
+                              "estimated_tokens_delta": 100, "session_id": "s", "uuid": "u"});
+        sup.on_claude_message(progress.clone()).await;
+        assert_eq!(sup.journal.last_seq(), journaled);
+        sup.on_claude_message(bash("t1", "ls")).await;
+        sup.flush();
+        let (mut live, mut kept) = (vec![], vec![]);
+        while let Ok(text) = host.try_recv() {
+            match serde_json::from_str::<AgentToHost>(&text)? {
+                AgentToHost::Stream { event } => live.push(event),
+                AgentToHost::Events { events } => kept.extend(events.into_iter().map(|e| e.body)),
+                _ => {}
+            }
+        }
+        assert_eq!(live, [progress]);
+        assert_eq!(kinds(&kept), ["claude"]);
+        assert_eq!(sup.journal.last_seq(), journaled + 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn the_idle_clock_waits_for_background_tasks() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let (mut sup, _host) = in_a_turn(dir.path())?;

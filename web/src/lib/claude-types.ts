@@ -131,13 +131,21 @@ export type RawStreamEvent =
   | { type: "message_delta"; delta: { stop_reason?: string } }
   | { type: "message_stop" };
 
+/**
+ * A message that is shown live and not stored: a `stream_event`, a tool
+ * heartbeat (`tool_progress`) or how far the agent's thinking got
+ * (`system/thinking_tokens`, about once a second while it thinks).
+ */
 export interface ClaudeStreamEvent {
-  type: "stream_event" | "tool_progress";
+  type: "stream_event" | "tool_progress" | "system";
+  subtype?: "thinking_tokens";
   event?: RawStreamEvent;
-  parent_tool_use_id: string | null;
+  parent_tool_use_id?: string | null;
   tool_use_id?: string;
   tool_name?: string;
   elapsed_time_seconds?: number;
+  /** Claude Code's estimate of the thinking block's tokens so far. */
+  estimated_tokens?: number;
   uuid?: string;
 }
 

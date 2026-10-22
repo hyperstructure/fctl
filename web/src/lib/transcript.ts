@@ -473,6 +473,8 @@ export interface LiveBlock {
   type: "text" | "thinking" | "tool_use";
   text: string;
   name?: string;
+  /** A thought's tokens so far, as Claude Code estimates them (`system/thinking_tokens`). */
+  tokens?: number;
   done: boolean;
 }
 
@@ -486,16 +488,21 @@ export interface LiveTurn {
 
 export const emptyLive = (): LiveTurn => ({ blocks: [], updatedAt: 0 });
 
-/** Applies one `stream_event` or `tool_progress` to the live turn (returns a new object when it changed). */
+/**
+ * Applies one `stream_event`, `tool_progress` or thinking progress to the
+ * live turn (returns a new object when it changed).
+ */
 export function applyStream(
   live: LiveTurn,
   e: {
     type: string;
+    subtype?: string;
     event?: unknown;
     parent_tool_use_id?: string | null;
     tool_use_id?: string;
     tool_name?: string;
     elapsed_time_seconds?: number;
+    estimated_tokens?: number;
   },
 ): LiveTurn {
   if (e.parent_tool_use_id) return live;
@@ -504,6 +511,17 @@ export function applyStream(
     return {
       ...live,
       tool: { id: e.tool_use_id ?? "", name: e.tool_name ?? "tool", seconds: e.elapsed_time_seconds ?? 0 },
+      updatedAt: now,
+    };
+  }
+  if (e.type === "system") {
+    // How far the newest thought got: each time, Claude Code counts it all.
+    const i = live.blocks.findLastIndex((b) => b.type === "thinking");
+    const tokens = e.estimated_tokens;
+    if (e.subtype !== "thinking_tokens" || i < 0 || !tokens || live.blocks[i]?.tokens === tokens) return live;
+    return {
+      ...live,
+      blocks: live.blocks.map((b, n) => (n === i ? { ...b, tokens } : b)),
       updatedAt: now,
     };
   }
