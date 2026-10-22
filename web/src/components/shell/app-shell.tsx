@@ -41,11 +41,18 @@ import { CommandPalette, usePaletteKeys } from "./command-palette";
 import { FloorLink } from "./floor-link";
 import { MenuButton, ShellContext, useHeaderButtons } from "./menu-button";
 
+/**
+ * The sidebar on phones: open, closed with its button or the shade (it slides away), or
+ * gone, closed by one of its links (at once).
+ */
+type Drawer = "open" | "closed" | "gone";
+
 export function AppShell() {
   const [palette, setPalette] = useState(false);
-  const [drawer, setDrawer] = useState(false);
+  const [drawer, setDrawer] = useState<Drawer>("closed");
   const openPalette = useCallback(() => setPalette(true), []);
-  const openDrawer = useCallback(() => setDrawer(true), []);
+  const openDrawer = useCallback(() => setDrawer("open"), []);
+  const closeDrawer = () => setDrawer("closed");
   // A page whose header holds the menu button (the session's) takes the top bar's place.
   const [headerButton, shell] = useHeaderButtons(openDrawer);
   usePaletteKeys(openPalette);
@@ -58,21 +65,30 @@ export function AppShell() {
       {/* On phones the sidebar is a drawer over the page: opaque, and out of the page once
           it has slid away (display: none), so that it is drawn anew each time it opens.
           Kept off screen with a blur, it sometimes stopped showing properly in Safari on iOS
-          until a reload. */}
+          until a reload. A link in it takes it out at once, without the slide: the router's
+          view transition snapshots the page as the link is followed, and a drawer that had
+          only started to slide away showed there open, fading out over the page the link
+          opened. */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] transition-[translate,display] transition-discrete duration-300 ease-out max-md:starting:-translate-x-full md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
-          drawer ? "translate-x-0" : "-translate-x-full max-md:hidden",
+          "fixed inset-y-0 left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
+          drawer !== "gone" && "transition-[translate,display] transition-discrete duration-300 ease-out",
+          drawer === "open" ? "translate-x-0" : "-translate-x-full max-md:hidden",
         )}
       >
-        <Sidebar onPalette={openPalette} onNavigate={() => setDrawer(false)} path={path} />
+        <Sidebar
+          onPalette={openPalette}
+          onNavigate={() => setDrawer("gone")}
+          onClose={closeDrawer}
+          path={path}
+        />
       </aside>
-      {drawer && (
+      {drawer === "open" && (
         <button
           type="button"
           aria-label="Close menu"
           className="fixed inset-0 z-20 bg-black/40 md:hidden"
-          onClick={() => setDrawer(false)}
+          onClick={closeDrawer}
         />
       )}
       {/* The page is never wider than the window: what is wider scrolls in its own row. The
@@ -159,10 +175,14 @@ function NavLink({
 export function Sidebar({
   onPalette,
   onNavigate,
+  onClose,
   path,
 }: {
   onPalette: () => void;
+  /** A link or menu item in it opens a page. */
   onNavigate: () => void;
+  /** Its close button, which phones show, was pressed. */
+  onClose: () => void;
   path: string;
 }) {
   const { data: me } = useMe();
@@ -205,7 +225,7 @@ export function Sidebar({
           type="button"
           aria-label="Close menu"
           className="-mr-2 flex size-11 items-center justify-center rounded-lg text-ink-4 hover:text-ink md:hidden"
-          onClick={onNavigate}
+          onClick={onClose}
         >
           <X className="size-5" />
         </button>
