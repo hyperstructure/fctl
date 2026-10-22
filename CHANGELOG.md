@@ -2,6 +2,20 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.18.0 (2026-10-22)
+
+### Features
+
+- Limit access tokens, and what agents may do on GitHub ([#207](https://github.com/hyperstructure/fctl/pull/207))
+- **web:** Load earlier activity as the reader scrolls up to it ([#208](https://github.com/hyperstructure/fctl/pull/208))
+
+### Fixes
+
+- **web:** Stop zoomed images jumping or switching pictures by mistake ([#202](https://github.com/hyperstructure/fctl/pull/202))
+- **web:** Keep workspace names whole in Admin on phones ([#205](https://github.com/hyperstructure/fctl/pull/205))
+- Warn about Claude plan limits only from 80% and say reached at 100% ([#206](https://github.com/hyperstructure/fctl/pull/206))
+- Close the gaps a review found in limited access tokens ([#209](https://github.com/hyperstructure/fctl/pull/209))
+
 ## 0.17.1 (2026-10-22)
 
 ### Features
