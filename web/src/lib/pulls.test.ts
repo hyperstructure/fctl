@@ -38,6 +38,18 @@ describe("pullRequests", () => {
     expect(pullRequests({ pull_request: all[0] })).toEqual([all[0]]);
     expect(pullRequests({})).toEqual([]);
   });
+
+  it("lists only GitHub's own links", () => {
+    const real = pr("acme/app", 12);
+    const forged = [
+      { ...real, url: "https://evil.example/acme/app/pull/12" },
+      { ...real, url: "https://github.com.evil.example/acme/app/pull/12" },
+      { ...real, url: "javascript:alert(1)//github.com/acme/app/pull/12" },
+      { ...real, url: "https://github.com/acme/app/pull/12/../../../../evil" },
+    ];
+    expect(pullRequests({ pull_request: real, pull_requests: [real, ...forged] })).toEqual([real]);
+    expect(pullRequests({ pull_request: forged[0] })).toEqual([]);
+  });
 });
 
 describe("naming pull requests", () => {

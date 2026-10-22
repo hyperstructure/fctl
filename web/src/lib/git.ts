@@ -1,6 +1,7 @@
 // A session's changes per repository: the primary one, then the others the
 // agent cloned (GitState.repos).
 import type * as G from "@/gen";
+import { isGithubPull } from "./pulls";
 
 export type RepoChanges = {
   /** `owner/name`; absent for the primary repository. */
@@ -33,7 +34,7 @@ function changes(name: string | undefined, readOnly: boolean, s: State): RepoCha
     deletions: s.files.reduce((n, f) => n + (f.deletions ?? 0), 0),
     ahead: s.ahead,
     pushed: s.pushed,
-    pr: s.pull_request,
+    pr: s.pull_request && isGithubPull(s.pull_request) ? s.pull_request : undefined,
     unmerged: s.unmerged,
   };
 }
