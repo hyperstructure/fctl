@@ -290,8 +290,10 @@ fctl memory rm mem_01JC3V…             # for good
 
 As agents finish a piece of work, they record a retrospective of it: how
 it ended, what they worked on, the approach they took, what got in the way
-and what a future agent should know. Session pages show them, and the
-project's Retrospectives tab lists them all:
+and what a future agent should know. One for each piece of work, not for
+each turn: when a later turn carries on with it, the agent updates the one
+it recorded. Session pages show them, and the project's Retrospectives tab
+lists them all:
 
 ```sh
 fctl retro list -p my-app              # newest first, with how many ended each way
@@ -302,8 +304,8 @@ fctl retro rm rtr_01JC3W…              # people who manage the session
 
 In a session's sandbox, the same commands without `-p` are the agent's,
 through fctl-agent and without a sign-in, as for `fctl edit`. `~/AGENTS.md`
-lists the project's notes and says how to keep them and when to record a
-retrospective:
+lists the project's notes and says how to keep them, and when to record a
+retrospective and when to update one:
 
 ```sh
 fctl memory                            # the notes as they are now, other sessions' new ones too
@@ -314,10 +316,14 @@ fctl memory duplicate mem_01JC3V… --of mem_01JC2Q…   # it repeats a current 
 fctl retro --outcome completed --worked-on "Retried failed uploads (#41)." \
   --approach "Used the existing backoff helper." --challenges "The tests need MinIO." \
   --insights "Start MinIO with docker compose up minio before the tests."
+fctl retro list                        # this session's, with their ids
+fctl retro update rtr_01JC3W… --outcome completed \
+  --challenges "The tests need MinIO, which CI lacked until #42."   # the parts left out stay
 ```
 
 Agents can't change or delete notes, only mark them stale with a reason,
-or as duplicates of current notes. A note replaces at most 20 others.
+or as duplicates of current notes. They update only their own session's
+retrospectives, and delete none. A note replaces at most 20 others.
 Both are on in new projects and projects from before them; `fctl projects
 set --project-memory off` and `--retrospectives off` turn them off, and the
 notes and retrospectives stay for people to read. A project keeps at most

@@ -1242,9 +1242,26 @@ with its session (`retrospectives`), at most 50 a session
 (`fctl_domain::retrospectives`), and the transcript shows it as a
 `retrospective` notice.
 
+A retrospective is of a piece of work, not of a turn
+([ADR 0038](adr/0038-agents-keep-one-retrospective-for-each-piece-of-work.md)).
+When a later turn carries on with work the session recorded one for
+(review comments, a failed check, the answer that unblocks a blocked one,
+the rest of a partial one), `~/AGENTS.md` asks the agent to update that
+one rather than record another: `fctl retro update rtr_… --outcome
+completed …` replaces the outcome and the parts it gives and keeps the
+others, and `fctl retro list` in the sandbox lists the session's own, with
+their ids. The control plane changes only retrospectives of the calling
+session, in place, and keeps when (`updated_at`); the transcript shows the
+retrospective as it now is in a `retrospective_updated` notice, and keeps
+the earlier notices as they were. A new one is for different work. Where
+the sandbox's fctl can't update them (fctl-agent asks `fctl retro update
+--help`), `~/AGENTS.md` asks instead for one for each follow-up that
+changes the work.
+
 The session page shows the newest beside the transcript and all of them a
-click away, and the project's Retrospectives tab lists the project's,
-newest first, with how many ended each way and a filter by outcome,
+click away, each saying when its agent last updated it, and the project's
+Retrospectives tab lists the project's, newest first (as they were
+recorded), with how many ended each way and a filter by outcome,
 leaving out those of archived sessions (`GET
 /api/v1/projects/{id}/retrospectives`, a page at a time after the id of
 the last one, which sort as they were recorded; `GET
@@ -1499,9 +1516,9 @@ A second socket beside
 it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
 serves programs in the sandbox: `fctl edit` names and describes the session
 there, `fctl publish` publishes screenshots, `fctl memory` and `fctl retro`
-keep the project's memory and record retrospectives, and `fctl resolve`
-resolves review threads ([GitHub access](#github-access)), with no fctl
-credentials in the sandbox.
+keep the project's memory and record and update retrospectives, and
+`fctl resolve` resolves review threads ([GitHub access](#github-access)),
+with no fctl credentials in the sandbox.
 
 A stopped session keeps its sandbox, so resuming it on the same host
 continues Claude's conversation ([Idle sessions](#idle-sessions)). The host

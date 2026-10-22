@@ -45,7 +45,8 @@ Three pieces make up a factory:
   starts with them.
 - **Retrospective** — what an agent records as it finishes a piece of
   work: how it ended, what it worked on, the approach it took, what got in
-  the way and what a future agent should know.
+  the way and what a future agent should know. One for each piece of work:
+  the agent updates it as later turns carry on with that work.
 - **Runner** — a host registered with the control plane.
 - **Home page** — where the web app opens: the box for your next task, and
   every active session as a thread of light.

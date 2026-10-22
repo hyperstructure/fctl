@@ -43,3 +43,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0035](0035-only-a-workspaces-admins-create-its-projects.md) | Only a workspace's admins create its projects |
 | [0036](0036-members-run-their-sessions-on-their-own-runners.md) | Members run their sessions on their own runners |
 | [0037](0037-access-tokens-and-sessions-limit-what-agents-do-on-github.md) | Access tokens and sessions limit what agents do on GitHub |
+| [0038](0038-agents-keep-one-retrospective-for-each-piece-of-work.md) | Agents keep one retrospective for each piece of work, and update it |

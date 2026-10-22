@@ -19,7 +19,7 @@ use crate::util::{self, run};
 use anyhow::{Context, Result, bail};
 use fctl_proto::api::{EventPage, MemoryList, RetrospectiveList};
 use fctl_proto::event::{CommitInfo, EventBody, SessionEvent, StatusChange};
-use fctl_proto::session::{Project, Session, SessionStatus};
+use fctl_proto::session::{Project, RetrospectiveOutcome, Session, SessionStatus};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -257,8 +257,9 @@ fn wrangler_dev(root: &Path, children: &mut Children) -> Result<()> {
 /// `--smoke`: starts a session with the CLI as a person would, on Haiku,
 /// and fails unless the agent commits and pushes a file and the session
 /// shows both while the turn still runs (the agent watches its checks
-/// meanwhile), keeps a note in the project's memory and records a
-/// retrospective (`fctl memory add`, `fctl retro`), the agent finishes its
+/// meanwhile), keeps a note in the project's memory, records a
+/// retrospective and updates it (`fctl memory add`, `fctl retro`, `fctl
+/// retro update`), the agent finishes its
 /// turn, the session waits for the command the agent left running in the
 /// background and the agent takes its result in a turn of its own, the
 /// session stops when asked, it says which model and effort level Claude
@@ -278,7 +279,7 @@ fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
         "haiku",
         "--detach",
         &format!(
-            "write notes.md, push it, watch 12 seconds of checks, record a retro, then run the checks in the background 3\nremember {SMOKE_NOTE}"
+            "write notes.md, push it, watch 12 seconds of checks, record a partial retro and revise it, then run the checks in the background 3\nremember {SMOKE_NOTE}"
         ),
     ]))?;
     let session: Session =
@@ -303,14 +304,15 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
         &auth,
         children,
         Duration::from_secs(60),
-        "show its commit and push, keep a note and a retrospective, finish its turn and wait for its background task",
+        "show its commit and push, keep a note, record a retrospective and update it, finish its turn and wait for its background task",
         |s| match s.status() {
             Some(SessionStatus::Stopped) => bail!("the session stopped before its turn ended"),
             Some(SessionStatus::Idle) => Ok(s.turn_ok
                 && s.commit.is_some()
                 && s.waited_for_background
                 && s.remembered
-                && s.retrospective),
+                && s.retrospective
+                && s.retrospective_updated),
             _ => Ok(false),
         },
     )?;
@@ -335,10 +337,17 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
     ok("reading the session's retrospectives", &read)?;
     let retros: RetrospectiveList =
         serde_json::from_value(read.1).context("reading the session's retrospectives")?;
-    if retros.retrospectives.len() != 1 {
+    let [retro] = retros.retrospectives.as_slice() else {
         bail!(
-            "the session has {} retrospectives, not the one its agent recorded",
+            "the session has {} retrospectives, not the one its agent recorded and updated",
             retros.retrospectives.len()
+        );
+    };
+    if retro.outcome != RetrospectiveOutcome::Completed || retro.updated_at.is_none() {
+        bail!(
+            "the session's retrospective says {:?}, updated at {:?}: its agent recorded it partial and updated it completed",
+            retro.outcome,
+            retro.updated_at
         );
     }
     seen.until(
@@ -399,7 +408,8 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
     eprintln!(
         "\n\x1b[1msmoke test passed\x1b[0m: the agent committed \"{subject}\" and \
          pushed it, the session showed both before the turn ended, the agent \
-         kept a note in the project's memory and recorded a retrospective, \
+         kept a note in the project's memory, recorded a retrospective and \
+         updated it, \
          finished its turn, the session waited for its background task and \
          the agent took its result in a turn of its own, the session stopped, \
          it said Claude worked with haiku at medium effort, and the project \
@@ -420,9 +430,11 @@ struct Seen {
     commit: Option<CommitInfo>,
     /// The session showed the agent's commit pushed before the turn ended.
     pushed_in_turn: bool,
-    /// The transcript showed a note the agent kept, and a retrospective.
+    /// The transcript showed a note the agent kept, a retrospective it
+    /// recorded, and that retrospective updated.
     remembered: bool,
     retrospective: bool,
+    retrospective_updated: bool,
 }
 
 impl Seen {
@@ -506,6 +518,8 @@ impl Seen {
             EventBody::Notice(n) => {
                 self.remembered |= n.code == "memory_added" && n.memory.is_some();
                 self.retrospective |= n.code == "retrospective" && n.retrospective.is_some();
+                self.retrospective_updated |=
+                    n.code == "retrospective_updated" && n.retrospective.is_some();
             }
             _ => {}
         }

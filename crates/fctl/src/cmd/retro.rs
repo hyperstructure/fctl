@@ -127,6 +127,17 @@ pub async fn run(server: Option<&str>, args: RetroArgs, json: bool) -> Result<()
                         outcomes: None,
                     };
                     only(&mut list, outcome, limit);
+                    if list.retrospectives.is_empty() && !json {
+                        println!(
+                            "This session recorded no retrospectives{}. Record one as you finish a piece of work: fctl retro --outcome … --worked-on …",
+                            if outcome.is_some() {
+                                " that ended that way"
+                            } else {
+                                ""
+                            }
+                        );
+                        return Ok(());
+                    }
                     list
                 }
                 (None, Some(reference)) => {

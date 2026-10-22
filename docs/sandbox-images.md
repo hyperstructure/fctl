@@ -333,8 +333,10 @@ An image that doesn't start from the default one needs:
   branch. Without it, sessions show no pull request.
 - **fctl** on the PATH, for agents to name their sessions, publish
   screenshots, keep their project's memory and record retrospectives
-  (`fctl memory` and `fctl retro` need an fctl that has them). Without it,
-  sessions keep the title they start with, and their agents keep no memory.
+  (`fctl memory` and `fctl retro` need an fctl that has them; agents
+  update their retrospectives where it has `fctl retro update`, and
+  record one for each follow-up where it doesn't). Without it, sessions
+  keep the title they start with, and their agents keep no memory.
 - **A non-root user with a writable home.** fctl copies its supervisor into
   `/opt/fctl/bin` as root at session start, and runs it as the image's
   user (its `USER`), in `~/workspace`.
