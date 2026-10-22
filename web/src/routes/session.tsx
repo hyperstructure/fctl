@@ -601,7 +601,7 @@ function AgentTime({ stats, until }: { stats: G.SessionStats; until?: number }) 
  * there, and how often it compacted. The text says what the meter shows for
  * screen readers.
  */
-function SessionContext({ stats }: { stats: G.SessionStats }) {
+function ContextMeter({ stats }: { stats: G.SessionStats }) {
   const use = contextUse(stats);
   if (!use) return null;
   const note = contextNote(use);
@@ -882,7 +882,7 @@ function Details({
         <Row k="Agent time" v={<AgentTime stats={st} until={stall?.since} />} />
         <Row k="Tokens in / out" v={`${num(st.input_tokens)} / ${num(st.output_tokens)}`} />
         <Row k="Cache reads" v={num(st.cache_read_tokens)} />
-        <SessionContext stats={st} />
+        <ContextMeter stats={st} />
       </RailSection>
       <RailSection title="Session">
         <Row
