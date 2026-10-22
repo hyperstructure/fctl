@@ -134,7 +134,8 @@ fn print_usage(usage: &[PlanLimit]) {
                 "started over {}",
                 l.resets_at.map(style::ago).unwrap_or_default()
             )),
-            Standing::Reached => style::amber(&join(&["limit reached".into(), resets])),
+            Standing::Reached => style::red(&join(&["limit reached".into(), resets])),
+            Standing::Critical => style::red(&join(&[used.unwrap_or_default(), resets])),
             Standing::Close => style::amber(&join(&[used.unwrap_or_default(), resets])),
             Standing::Fine => join(&[used.unwrap_or_default(), resets]),
         };

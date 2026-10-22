@@ -7,9 +7,12 @@ import { clock } from "./format";
 
 /** Most of a limit is used from this share on. */
 export const CLOSE = 0.8;
+/** Almost nothing of a limit is left from this share on. */
+export const CRITICAL = 0.9;
 
-/** Where a limit stands: plenty left, mostly used, used up, or started over since the reading. */
-export type Standing = "fine" | "close" | "reached" | "reset";
+/** Where a limit stands: plenty left, mostly used, nearly used up, used up, or started over
+ * since the reading. */
+export type Standing = "fine" | "close" | "critical" | "reached" | "reset";
 
 const words = (s: string) => {
   const t = s.replaceAll("_", " ");
@@ -29,11 +32,15 @@ export function limitLabel(window: string): string {
 /** For tight spaces: "5-hour", "Weekly", "Weekly Opus". */
 export const shortLabel = (window: string) => limitLabel(window).replace(/ limit$/, "");
 
+/** Only the share used and a refusal count. Claude Code warns (`allowed_warning`) when a limit
+ * goes faster than its window passes, as with a quarter of the week used in its first day,
+ * however much is left. */
 export function standing(l: G.PlanLimit, now: number): Standing {
   const used = l.utilization ?? 0;
   if (l.resets_at !== undefined && l.resets_at <= now) return "reset";
   if (l.status === "rejected" || used >= 1) return "reached";
-  if (l.status === "allowed_warning" || used >= CLOSE) return "close";
+  if (used >= CRITICAL) return "critical";
+  if (used >= CLOSE) return "close";
   return "fine";
 }
 
@@ -72,7 +79,12 @@ export function resetTime(ms: number, now: number): string {
 /** A label inside a sentence: "weekly Opus limit". */
 export const inSentence = (label: string) => label.charAt(0).toLowerCase() + label.slice(1);
 
-/** The limit to tell people about before they start work: one used up, else one nearly used up. */
+/** The limit to tell people about before they start work, once one is mostly used: one used
+ * up, else one nearly used up, else one mostly used. */
 export function pressing(usage: G.PlanLimit[], now: number): G.PlanLimit | undefined {
-  return usage.find((l) => standing(l, now) === "reached") ?? usage.find((l) => standing(l, now) === "close");
+  for (const s of ["reached", "critical", "close"] as const) {
+    const l = usage.find((l) => standing(l, now) === s);
+    if (l) return l;
+  }
+  return undefined;
 }

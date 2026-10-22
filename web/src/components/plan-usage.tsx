@@ -23,7 +23,8 @@ import {
 const TONE: Record<Standing, { bar: string; text: string }> = {
   fine: { bar: "bg-ink-3", text: "text-ink-3" },
   close: { bar: "bg-amber", text: "text-amber" },
-  reached: { bar: "bg-pink", text: "text-pink" },
+  critical: { bar: "bg-danger", text: "text-danger" },
+  reached: { bar: "bg-danger", text: "text-danger" },
   reset: { bar: "bg-ink-4", text: "text-ink-4" },
 };
 
@@ -122,16 +123,16 @@ export function PlanUsageStrip({ usage, className }: { usage: G.PlanLimit[]; cla
         })}
       </Link>
       {urgent && s === "reached" && (
-        <p className="text-pink">
+        <p className={TONE[s].text}>
           Your {inSentence(limitLabel(urgent.window))} is used up. Sessions you start now pause until it
           resets
           {when ? ` ${when}` : ""}.
         </p>
       )}
-      {urgent && s === "close" && (
-        <p className="text-amber">
-          {percent(urgent) ? `${percent(urgent)} of` : "Most of"} your {inSentence(limitLabel(urgent.window))}{" "}
-          is used{when ? `. It resets ${when}` : ""}.
+      {urgent && (s === "close" || s === "critical") && (
+        <p className={TONE[s].text}>
+          {percent(urgent)} of your {inSentence(limitLabel(urgent.window))} is used
+          {when ? `. It resets ${when}` : ""}.
         </p>
       )}
     </div>

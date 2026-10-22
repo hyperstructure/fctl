@@ -1,7 +1,7 @@
 //! Printing a session transcript in the terminal, live.
 
 use crate::style;
-use fctl_domain::branches;
+use fctl_domain::{branches, usage};
 use fctl_proto::event::{EventBody, FileChange, GitState, NoticeLevel, SessionEvent};
 use fctl_proto::session::PullRequestRef;
 use serde_json::Value;
@@ -352,15 +352,19 @@ impl Renderer {
                 ));
             }
             Some("rate_limit_event") => {
-                let status = v
-                    .pointer("/rate_limit_info/status")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if status != "allowed" {
+                // Claude Code reports usage as it moves, and warns
+                // (`allowed_warning`) when a limit goes faster than its
+                // window passes: only a refusal means a limit is reached.
+                let status = v.pointer("/rate_limit_info/status").and_then(Value::as_str);
+                if status == Some("rejected") {
+                    let limit = v
+                        .pointer("/rate_limit_info/rateLimitType")
+                        .and_then(Value::as_str)
+                        .map_or_else(|| "Usage limit".into(), usage::label);
                     self.end_text();
                     out(&format!(
                         "{}\n",
-                        style::amber(&format!("◍ usage: {status}"))
+                        style::amber(&format!("◍ {limit} reached"))
                     ));
                 }
             }

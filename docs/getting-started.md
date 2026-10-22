@@ -110,7 +110,9 @@ limits is used: the five-hour window, the week, and a model's own weekly
 limit when Claude reports one, each with when it resets. You see it under
 each connection in Settings → Claude, under the task box on the home page
 (for the connection new sessions use), and in `fctl claude status`. Sessions
-report it as they work, so it is as recent as your latest session.
+report it as they work, so it is as recent as your latest session. From
+80 % of a limit the home page says how much of it is used, in red from
+90 %; sessions pause when one is used up, until it resets.
 
 With more than one connection, say your own plan and a seat your company
 pays for, choose which one each workspace's sessions run on in **Settings
