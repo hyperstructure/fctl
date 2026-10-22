@@ -632,6 +632,40 @@ async fn stop_sessions_of(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRe
     Ok(running.len() as u32)
 }
 
+/// Stops the active sessions that run on `user_id`'s Claude subscription,
+/// in every workspace: their account was disabled, so nobody's sessions
+/// run on it any more (`spec::credential_serves`).
+pub(crate) async fn stop_sessions_on(ctx: &Ctx, user_id: &str) -> AppResult<()> {
+    #[derive(Deserialize)]
+    struct S {
+        id: String,
+    }
+    let running: Vec<S> = q(
+        &ctx.db,
+        &format!(
+            "SELECT s.id FROM sessions s WHERE s.status IN {ACTIVE} \
+             AND s.credential_id IN (SELECT id FROM claude_credentials WHERE user_id = ?)"
+        ),
+        &[s(user_id)],
+    )?
+    .all()
+    .await?;
+    let fleet = internal::fleet_stub(&ctx.env)?;
+    for session in &running {
+        let _: serde_json::Value = internal::post(
+            &fleet,
+            "/stop",
+            &internal::Stop {
+                session_id: fctl_proto::SessionId(session.id.clone()),
+                reason: fctl_proto::runner::StopReason::User,
+                destroy: false,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Takes someone out of a workspace, with their project memberships,
 /// shares and last choices there, their runners and the invitations of
 /// their other addresses; their sessions in it stop, and its sessions on

@@ -108,7 +108,7 @@ pub async fn credential_serves(
 pub fn credential_not_lent() -> AppError {
     AppError(ApiError::new(
         ErrorCode::NotConfigured,
-        "This session ran on the Claude subscription of someone who is no longer in its workspace. Resume it to run it on yours.",
+        "This session ran on the Claude subscription of someone who is no longer in its workspace, or whose account is disabled. Resume it to run it on yours.",
     ))
 }
 
