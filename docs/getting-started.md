@@ -120,9 +120,9 @@ name or id `fctl claude status` shows).
 ## 5. Bring a machine online
 
 A workspace's sessions run only on its runners: until one is online, they
-wait in the queue, and the app says so under the task box. Until it has
-one, its **Runners** tab shows its admins how to add one, and its members
-whom to ask.
+wait in the queue, and the app says so under the task box. Its **Runners**
+tab shows its admins how to add a runner, under the ones it has, and its
+members whom to ask.
 
 Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
 
@@ -171,6 +171,13 @@ Elsewhere, that command takes the runner's name or the id `fctl host
 status` shows. For a Mac that runs around the clock, keep it plugged in
 and turn on automatic login, so the host starts again after a reboot or a
 power cut.
+
+Keep it on the version of fctl the app runs. While a runner of yours is
+online with an older one, your home page says so, and **How to update**
+shows what to run on it: `fctl self update`, which restarts the host
+service while its sessions carry on (or `brew upgrade fctl`, then `fctl
+host restart`, where Homebrew installed fctl). **Skip this version** hides
+the notice in that browser until the app runs a newer version.
 
 ## 6. Create a project
 
@@ -256,13 +263,15 @@ turns them off.
 
 - **Web app** — the session page streams the transcript as the agent writes
   it: tool calls, diffs, and the files changed, commits and pull requests
-  so far, seconds after the agent makes them. A click on an image or a
-  screenshot shows it at full size, where the arrow keys, or a swipe on a
-  phone, step through the session's others. On a phone, tap the session's
-  title for its details: its pull requests, the files changed, its branch
-  and who else is watching. Type below to message the agent, with files
-  attached if you like; it reads your message at its next step.
-  **Interrupt** stops the current turn.
+  so far, seconds after the agent makes them. Where the agent delegated to
+  a subagent, its line opens into what the subagent was asked, its steps
+  as it takes them, in the background too, and its report. A click on an
+  image or a screenshot shows it at full size, where the arrow keys, or a
+  swipe on a phone, step through the session's others. On a phone, tap
+  the session's title for its details: its pull requests, the files
+  changed, its branch and who else is watching. Type below to message the
+  agent, with files attached if you like; it reads your message at its
+  next step. **Interrupt** stops the current turn.
 - **Terminal** — `fctl attach my-app#12` streams the session and lets you
   type messages; `fctl send my-app#12 "Use the existing Button component"`
   sends one from a script.

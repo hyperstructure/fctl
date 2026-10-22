@@ -850,9 +850,7 @@ function Runners({ w }: { w: G.Workspace }) {
         </div>
       )}
       {list.data?.runners.length === 0 ? (
-        admin ? (
-          <FirstRunner w={w} yours={yours.length > 0} />
-        ) : (
+        !admin && (
           <Empty icon={<Cpu className="size-6" />} title="No runners yet">
             {w.name}'s sessions wait until an admin adds a runner: a machine that runs its agents in
             sandboxes.{" "}
@@ -912,6 +910,19 @@ function Runners({ w }: { w: G.Workspace }) {
           })}
         </ul>
       )}
+      {list.data &&
+        (admin ? (
+          <AddRunner w={w} first={list.data.runners.length === 0} yours={yours.length > 0} />
+        ) : (
+          list.data.runners.length > 0 && (
+            <p className="mt-4 max-w-2xl text-[13.5px] leading-relaxed text-ink-3">
+              Only {w.name}'s admins add runners.{" "}
+              {w.primary
+                ? `To add another, ask ${w.primary.name}, its primary admin.`
+                : "To add another, ask one of them."}
+            </p>
+          )
+        ))}
       <Dialog
         open={!!takingOut}
         onClose={() => setTakingOut(null)}
@@ -959,8 +970,11 @@ function Runners({ w }: { w: G.Workspace }) {
   );
 }
 
-/** For admins of a workspace without runners: what bringing a machine online takes, under the form. */
-function FirstRunner({ w, yours }: { w: G.Workspace; yours: boolean }) {
+/**
+ * For a workspace's admins: what bringing a machine online takes, under its runners, or under the form
+ * while it has none (`first`). `yours`: the form offers runners of theirs to add instead.
+ */
+function AddRunner({ w, first, yours }: { w: G.Workspace; first: boolean; yours: boolean }) {
   const steps: { title: string; body: ReactNode }[] = [
     {
       title: "Choose a machine that stays on",
@@ -997,10 +1011,14 @@ function FirstRunner({ w, yours }: { w: G.Workspace; yours: boolean }) {
   ];
   return (
     <section className="mt-10 animate-rise">
-      <h3 className="font-display text-xl text-ink">No runners yet</h3>
+      <h3 className="font-display text-xl text-ink">{first ? "No runners yet" : "Add another runner"}</h3>
       <p className="mt-1 max-w-2xl text-[14px] leading-relaxed text-ink-3">
-        {w.name}'s sessions wait until one of its runners is online.{" "}
-        {yours ? "Add one of yours above, or bring another machine online:" : "To bring a machine online:"}
+        {first
+          ? `${w.name}'s sessions wait until one of its runners is online.`
+          : `With more runners, more of ${w.name}'s sessions run at once.`}{" "}
+        {yours
+          ? "Add one of yours above, or bring another machine online:"
+          : `To bring ${first ? "a" : "another"} machine online:`}
       </p>
       <ol className="mt-4 divide-y divide-line border-y border-line">
         {steps.map((s, i) => (

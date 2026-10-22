@@ -102,6 +102,166 @@ fn background_work_ends_in_a_turn_of_its_own() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// What fake-claude sends for a turn, without its stream events, until
+/// `until_results` turns have ended.
+fn subagent_messages(turn: &str, until_results: usize) -> Result<Vec<Value>, Box<dyn Error>> {
+    let mut claude = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+        .env("FAKE_CLAUDE_DELAY_MS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
+        return Err("fake-claude's stdin and stdout aren't piped".into());
+    };
+    let turn = json!({"type": "user", "message": {"role": "user", "content": turn}});
+    stdin.write_all(format!("{turn}\n").as_bytes())?;
+    let mut messages = Vec::new();
+    let mut results = 0;
+    for line in BufReader::new(stdout).lines() {
+        let v: Value = serde_json::from_str(&line?)?;
+        if v["type"] == "stream_event" {
+            continue;
+        }
+        results += usize::from(v["type"] == "result");
+        messages.push(v);
+        if results == until_results {
+            break;
+        }
+    }
+    drop(stdin);
+    claude.wait()?;
+    Ok(messages)
+}
+
+/// A message, for comparing sequences: its type (a system message's
+/// subtype), after `sub` for the subagent's and `task` for Claude Code's
+/// word on it.
+fn shape(v: &Value, agent: &str) -> String {
+    let what = match v["type"].as_str() {
+        Some("system") => v["subtype"].as_str(),
+        other => other,
+    }
+    .unwrap_or("?");
+    if v["parent_tool_use_id"] == agent {
+        format!("sub {what}")
+    } else if v["tool_use_id"] == agent {
+        format!("task {what}")
+    } else {
+        what.to_owned()
+    }
+}
+
+#[test]
+fn a_subagent_names_its_call_and_returns_its_report() -> Result<(), Box<dyn Error>> {
+    let messages = subagent_messages("delegate a look around", 1)?;
+    let call = messages
+        .iter()
+        .flat_map(|v| {
+            v["message"]["content"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|b| b["type"] == "tool_use" && b["name"] == "Agent")
+        .ok_or("no Agent call")?;
+    let agent = call["id"].as_str().ok_or("an Agent call without an id")?;
+    let shapes: Vec<String> = messages
+        .iter()
+        .map(|v| shape(v, agent))
+        .filter(|s| s.starts_with("sub") || s.starts_with("task") || s == "result")
+        .collect();
+    assert_eq!(
+        shapes,
+        [
+            "task task_started",
+            "sub user",
+            "task task_progress",
+            "sub assistant",
+            "sub user",
+            "sub assistant",
+            "task task_progress",
+            "sub assistant",
+            "sub user",
+            "task task_notification",
+            "result"
+        ]
+    );
+    let ended = messages
+        .iter()
+        .find(|v| v["subtype"] == "task_notification")
+        .ok_or("no task_notification")?;
+    assert_eq!(ended["status"], "completed");
+    // The call returns the report, which Claude Code's copy has alone.
+    let returned = messages
+        .iter()
+        .find(|v| v["message"]["content"][0]["tool_use_id"] == agent)
+        .ok_or("the Agent call returned nothing")?;
+    assert_eq!(returned["parent_tool_use_id"], Value::Null);
+    assert_eq!(
+        returned["tool_use_result"]["content"][0]["text"],
+        ended["summary"]
+    );
+    assert!(
+        returned["message"]["content"][0]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with(ended["summary"].as_str().unwrap_or("?")))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_subagent_in_the_background_works_after_its_turn() -> Result<(), Box<dyn Error>> {
+    let messages = subagent_messages("delegate it in the background", 2)?;
+    let started = messages
+        .iter()
+        .find(|v| v["subtype"] == "task_started")
+        .ok_or("no task_started")?;
+    assert_eq!(started["is_backgrounded"], true);
+    let agent = started["tool_use_id"]
+        .as_str()
+        .ok_or("a task without its call")?;
+    let shapes: Vec<String> = messages
+        .iter()
+        .map(|v| shape(v, agent))
+        .filter(|s| s.starts_with("sub") || s.starts_with("task") || s == "result")
+        .collect();
+    // Its call returns, the turn ends, and its steps come after.
+    assert_eq!(
+        shapes,
+        [
+            "task task_started",
+            "sub user",
+            "result",
+            "task task_progress",
+            "sub assistant",
+            "sub user",
+            "sub assistant",
+            "task task_progress",
+            "sub assistant",
+            "sub user",
+            "sub assistant",
+            "task task_notification",
+            "result"
+        ]
+    );
+    let returned = messages
+        .iter()
+        .find(|v| v["message"]["content"][0]["tool_use_id"] == agent)
+        .ok_or("the Agent call returned nothing")?;
+    assert_eq!(returned["tool_use_result"]["isAsync"], true);
+    // Its last words are its report.
+    let last = messages
+        .iter()
+        .rfind(|v| v["parent_tool_use_id"] == agent)
+        .ok_or("no last words")?;
+    let ended = messages
+        .iter()
+        .find(|v| v["subtype"] == "task_notification")
+        .ok_or("no task_notification")?;
+    assert_eq!(last["message"]["content"][0]["text"], ended["summary"]);
+    Ok(())
+}
+
 #[test]
 fn get_settings_says_the_effort_it_works_at() -> Result<(), Box<dyn Error>> {
     let mut claude = Command::new(env!("CARGO_BIN_EXE_fake-claude"))

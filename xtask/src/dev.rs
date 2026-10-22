@@ -162,7 +162,7 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
          sign in   {DEV_EMAIL} / {DEV_PASSWORD}\n  \
          api       {api}/api/v1\n  \
          cli       export FCTL_SERVER={api} FCTL_TOKEN=$(cat {state_dir}/token)\n\n\
-         Agents run fake-claude: try a task like \"write notes.md\", \"rename Fix the login test\", \"screenshot\", \"remember Run npm ci first\", \"retro\", \"slow\", \"background 30\", \"limit\" or \"crash\".\n\
+         Agents run fake-claude: try a task like \"write notes.md\", \"rename Fix the login test\", \"screenshot\", \"remember Run npm ci first\", \"retro\", \"slow\", \"background 30\", \"delegate\", \"limit\" or \"crash\".\n\
          Ctrl-C stops everything. State lives in {state_dir}/.\n"
     );
 
