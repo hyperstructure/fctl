@@ -52,25 +52,48 @@ pub async fn project_row(db: &D1Database, id: &str) -> AppResult<Option<ProjectR
     .await
 }
 
-/// Whether runner `runner_id` runs the sessions of session `session_id`'s
-/// workspace now: it is enabled, was added to the workspace, and its owner
-/// is still an active member there (`serves!`). A runner taken out of a
-/// workspace, or whose owner left it, gets nothing more for the sessions it
-/// still has there: no credentials, uplinks, files or screenshots.
+/// Whether runner `runner_id` runs session `session_id` now: it is
+/// enabled, was added to the session's workspace, its owner is still an
+/// active member there (`serves!`), and it runs the sessions of the person
+/// the session runs as (`fctl_domain::schedule::runs_for`: a runner added
+/// for its owner's sessions runs only theirs, and someone who keeps their
+/// sessions on their own runners has them run nowhere else). A runner that
+/// no longer does gets nothing more for the sessions it still has there:
+/// no credentials, uplinks, files or screenshots.
 pub async fn runner_serves(db: &D1Database, runner_id: &str, session_id: &str) -> AppResult<bool> {
-    let c: Option<crate::db::Count> = q(
+    #[derive(serde::Deserialize)]
+    struct Row {
+        owner: Option<String>,
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        personal: bool,
+        person: Option<String>,
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        own_runners: bool,
+    }
+    let row: Option<Row> = q(
         db,
         concat!(
-            "SELECT COUNT(*) AS n FROM sessions s JOIN projects p ON p.id = s.project_id \
+            "SELECT r.created_by AS owner, rw.personal AS personal, c.user_id AS person, \
+             om.own_runners AS own_runners FROM sessions s JOIN projects p ON p.id = s.project_id \
              JOIN runner_workspaces rw ON rw.workspace_id = p.workspace_id AND rw.runner_id = ?1 \
-             JOIN runners r ON r.id = rw.runner_id WHERE s.id = ?2 AND r.enabled = 1 AND ",
+             JOIN runners r ON r.id = rw.runner_id \
+             LEFT JOIN claude_credentials c ON c.id = s.credential_id \
+             LEFT JOIN workspace_members om ON om.workspace_id = p.workspace_id AND om.user_id = c.user_id \
+             WHERE s.id = ?2 AND r.enabled = 1 AND ",
             crate::serves!()
         ),
         &[s(runner_id), s(session_id)],
     )?
     .first()
     .await?;
-    Ok(c.is_some_and(|c| c.n > 0))
+    Ok(row.is_some_and(|r| {
+        fctl_domain::schedule::runs_for(
+            r.owner.as_deref(),
+            r.personal,
+            r.person.as_deref(),
+            r.own_runners,
+        )
+    }))
 }
 
 /// The error for a runner that doesn't serve a session's workspace.
@@ -127,10 +150,17 @@ pub struct SessionWants {
     pub image: ImageWant,
     /// Its workspace: only the workspace's runners take it.
     pub workspace_id: String,
+    /// Whom it runs as: the owner of its Claude connection. Runners added
+    /// for their owner's sessions take only theirs.
+    pub person: Option<String>,
+    /// Their name, for why it waits.
+    pub person_name: String,
+    /// They keep their sessions in its workspace on their own runners.
+    pub own_runners: bool,
 }
 
 /// The CPUs, memory and image each of these sessions asks for (its
-/// project's sandbox settings), in one query.
+/// project's sandbox settings), and whom each runs as, in one query.
 pub async fn session_wants(
     db: &D1Database,
     ids: &[&str],
@@ -142,11 +172,18 @@ pub async fn session_wants(
         repo_owner: Option<String>,
         repo_name: Option<String>,
         workspace_id: Option<String>,
+        person: Option<String>,
+        person_name: Option<String>,
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        own_runners: bool,
     }
     let rows: Vec<Row> = q(
         db,
         "SELECT s.id AS id, p.settings AS settings, p.repo_owner AS repo_owner, p.repo_name AS repo_name, \
-         p.workspace_id AS workspace_id FROM sessions s JOIN projects p ON p.id = s.project_id \
+         p.workspace_id AS workspace_id, c.user_id AS person, u.name AS person_name, \
+         om.own_runners AS own_runners FROM sessions s JOIN projects p ON p.id = s.project_id \
+         LEFT JOIN claude_credentials c ON c.id = s.credential_id LEFT JOIN users u ON u.id = c.user_id \
+         LEFT JOIN workspace_members om ON om.workspace_id = p.workspace_id AND om.user_id = c.user_id \
          WHERE s.id IN (SELECT value FROM json_each(?))",
         &[s(&serde_json::to_string(ids)?)],
     )?
@@ -164,6 +201,9 @@ pub async fn session_wants(
                 size: Want::of(&settings),
                 image: ImageWant::of(&settings, repo.as_ref()),
                 workspace_id: r.workspace_id.unwrap_or_default(),
+                person: r.person,
+                person_name: r.person_name.unwrap_or_default(),
+                own_runners: r.own_runners,
             };
             (r.id, wants)
         })

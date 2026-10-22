@@ -40,3 +40,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0032](0032-githubs-webhook-keeps-sessions-pull-requests-current.md) | GitHub's webhook keeps sessions' pull requests current, with their checks |
 | [0033](0033-the-control-plane-looks-pull-requests-up-50-at-a-time.md) | The control plane looks pull requests up 50 at a time |
 | [0034](0034-agents-keep-a-project-memory-and-record-retrospectives.md) | Agents keep a project memory and record retrospectives |
+| [0036](0036-members-run-their-sessions-on-their-own-runners.md) | Members run their sessions on their own runners |

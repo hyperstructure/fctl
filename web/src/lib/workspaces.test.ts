@@ -51,6 +51,8 @@ describe("runnersOf", () => {
     ...r,
   });
 
+  const ws = (id: string, own_runners = false) => ({ id, own_runners });
+
   it("counts the runners that serve the workspace, and those online", () => {
     const runners = [
       runner({ id: "studio", workspaces: [ref("ws_side"), ref("ws_work")] }),
@@ -58,18 +60,38 @@ describe("runnersOf", () => {
       runner({ id: "old", status: "disabled", workspaces: [ref("ws_side")] }),
       runner({ id: "office", workspaces: [ref("ws_work")] }),
     ];
-    expect(runnersOf(runners, "ws_side")).toEqual({ total: 3, online: 1 });
-    expect(runnersOf(runners, "ws_work")).toEqual({ total: 2, online: 2 });
+    expect(runnersOf(runners, ws("ws_side"))).toEqual({ total: 3, online: 1, others: 0 });
+    expect(runnersOf(runners, ws("ws_work"))).toEqual({ total: 2, online: 2, others: 0 });
+  });
+
+  it("leaves out other members' runners for their own sessions, and with own runners everyone else's", () => {
+    const runners = [
+      runner({ id: "office", workspaces: [ref("ws_work")] }),
+      runner({ id: "bos-laptop", workspaces: [ref("ws_work")], personal: ["ws_work"] }),
+      runner({
+        id: "mine",
+        status: "offline",
+        workspaces: [ref("ws_work")],
+        personal: ["ws_work"],
+        yours: true,
+      }),
+    ];
+    expect(runnersOf(runners, ws("ws_work"))).toEqual({ total: 2, online: 1, others: 1 });
+    expect(runnersOf(runners, ws("ws_work", true))).toEqual({ total: 1, online: 0, others: 2 });
   });
 
   it("finds none in a new workspace, even beside runners of no workspace", () => {
-    expect(runnersOf([], "ws_new")).toEqual({ total: 0, online: 0 });
-    expect(runnersOf([runner({ id: "spare", yours: true })], "ws_new")).toEqual({ total: 0, online: 0 });
+    expect(runnersOf([], ws("ws_new"))).toEqual({ total: 0, online: 0, others: 0 });
+    expect(runnersOf([runner({ id: "spare", yours: true })], ws("ws_new"))).toEqual({
+      total: 0,
+      online: 0,
+      others: 0,
+    });
   });
 
   it("can't tell from a control plane before workspaces", () => {
     const before = runner({ id: "studio" });
     delete before.workspaces;
-    expect(runnersOf([before], "ws_side")).toBeUndefined();
+    expect(runnersOf([before], ws("ws_side"))).toBeUndefined();
   });
 });

@@ -726,6 +726,9 @@ struct RunnerWorkspace {
     color: Option<String>,
     #[serde(default)]
     avatar_at: Option<f64>,
+    /// It runs only its owner's sessions there.
+    #[serde(deserialize_with = "int_bool", default)]
+    personal: bool,
 }
 
 impl RunnerRow {
@@ -761,10 +764,18 @@ impl RunnerRow {
 
     pub fn to_runner(&self, live: &LiveRunners, view: &RunnerView) -> Runner {
         let hello = self.hello();
-        let workspaces = self
+        let seen: Vec<RunnerWorkspace> = self
             .workspace_list()
             .into_iter()
             .filter(|w| view.workspaces.is_none_or(|mine| mine.contains(&w.id)))
+            .collect();
+        let personal = seen
+            .iter()
+            .filter(|w| w.personal)
+            .map(|w| WorkspaceId(w.id.clone()))
+            .collect();
+        let workspaces = seen
+            .into_iter()
             .map(|w| {
                 workspace_ref(
                     &w.id,
@@ -821,6 +832,7 @@ impl RunnerRow {
             },
             workspaces,
             yours: view.user_id.is_some() && self.created_by.as_deref() == view.user_id,
+            personal,
         }
     }
 }
@@ -841,7 +853,7 @@ pub const RUNNER_SELECT: &str = concat!(
     u.name AS creator_name, r.created_at, \
     (SELECT COUNT(*) FROM sessions s WHERE s.runner_id = r.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping')) AS active_sessions, \
     (SELECT json_group_array(json_object('id', w.id, 'slug', w.slug, 'name', w.name, 'color', w.color, \
-      'avatar_at', w.avatar_updated_at)) FROM runner_workspaces rw JOIN workspaces w ON w.id = rw.workspace_id \
+      'avatar_at', w.avatar_updated_at, 'personal', rw.personal)) FROM runner_workspaces rw JOIN workspaces w ON w.id = rw.workspace_id \
       WHERE rw.runner_id = r.id AND ",
     serves!(),
     ") AS workspaces \

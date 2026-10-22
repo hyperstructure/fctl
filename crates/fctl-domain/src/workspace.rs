@@ -201,17 +201,26 @@ pub fn avatar(bytes: &[u8]) -> Result<&'static str> {
 }
 
 /// Whether someone may add a runner to a workspace: they registered the
-/// runner (it is their machine) and they are an admin of the workspace (it
-/// trusts the machine with its code and secrets).
-pub fn check_add_runner(registered_it: bool, role: Option<WorkspaceRole>) -> Result<()> {
-    if !role.is_some_and(WorkspaceRole::is_admin) {
-        return Err(denied(
-            "Only the workspace's admins can choose the runners its sessions run on",
-        ));
-    }
+/// runner (it is their machine) and they are a member of the workspace. A
+/// runner that runs everyone's sessions there sees their code, secrets and
+/// tokens, so only its admins add one; a member adds theirs for their own
+/// sessions alone (`personal`), which see nothing they couldn't.
+pub fn check_add_runner(
+    registered_it: bool,
+    role: Option<WorkspaceRole>,
+    personal: bool,
+) -> Result<()> {
+    let Some(role) = role else {
+        return Err(denied("Only the workspace's members can add runners to it"));
+    };
     if !registered_it {
         return Err(denied(
             "Only the person who registered a runner can add it to workspaces",
+        ));
+    }
+    if !personal && !role.is_admin() {
+        return Err(denied(
+            "Only the workspace's admins add runners that run everyone's sessions. Add yours for your own sessions.",
         ));
     }
     Ok(())
@@ -384,12 +393,18 @@ mod tests {
     }
 
     #[test]
-    fn runners_join_workspaces_with_their_owner_and_its_admins() {
-        assert!(check_add_runner(true, Some(Admin)).is_ok());
-        assert!(check_add_runner(true, Some(Owner)).is_ok());
-        assert!(check_add_runner(true, Some(Member)).is_err());
-        assert!(check_add_runner(false, Some(Admin)).is_err());
-        assert!(check_add_runner(true, None).is_err());
+    fn members_add_their_runners_for_themselves_and_admins_for_everyone() {
+        // Admins add theirs for everyone's sessions or their own.
+        for personal in [false, true] {
+            assert!(check_add_runner(true, Some(Admin), personal).is_ok());
+            assert!(check_add_runner(true, Some(Owner), personal).is_ok());
+            assert!(check_add_runner(false, Some(Admin), personal).is_err());
+            assert!(check_add_runner(true, None, personal).is_err());
+        }
+        // Members only for their own.
+        assert!(check_add_runner(true, Some(Member), true).is_ok());
+        assert!(check_add_runner(true, Some(Member), false).is_err());
+        assert!(check_add_runner(false, Some(Member), true).is_err());
         assert!(can_remove_runner(true, None, false));
         assert!(can_remove_runner(false, Some(Admin), false));
         assert!(can_remove_runner(false, None, true));

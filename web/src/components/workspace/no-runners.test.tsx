@@ -59,6 +59,7 @@ const side: G.Workspace = {
   runners_online: 0,
   github: [],
   skip_invites: false,
+  own_runners: false,
   created_at: 0,
 };
 const member: G.Workspace = { ...side, role: "member", email: "grace@example.com" };
@@ -90,12 +91,36 @@ describe("the note under a start form", () => {
     expect(text.querySelector("a")?.getAttribute("href")).toBe("/w/side-project?tab=runners");
   });
 
-  it("tells members whom to ask", () => {
+  it("tells members whom to ask, or to add their own", () => {
     const text = note(member, []);
     expect(text.textContent).toBe(
-      "Side project has no runners yet: sessions you start here wait until its admins add one. Ask Ada Lovelace, its primary admin.",
+      "Side project has no runners yet: sessions you start here wait until its admins add one (ask Ada Lovelace, its primary admin), or you add one of yours. Add a runner",
     );
-    expect(text.querySelector("a")).toBeNull();
+    expect(text.querySelector("a")?.getAttribute("href")).toBe("/w/side-project?tab=runners");
+  });
+
+  it("doesn't count another member's runner for their own sessions", () => {
+    const bos = runner({ id: "bos-laptop", yours: false, personal: [side.id] });
+    expect(note(member, [bos]).textContent).toBe(
+      "Side project's runners run only their owners' sessions: sessions you start here wait until its admins add one for everyone's, or you add yours. Add a runner",
+    );
+    expect(note(side, [bos]).textContent).toBe(
+      "Side project's runners run only their owners' sessions: sessions you start here wait until one for everyone's is online. Add a runner",
+    );
+  });
+
+  it("counts only your own runners while your sessions run only on them", () => {
+    const own = { ...member, own_runners: true };
+    const shared = runner({ id: "office", yours: false });
+    expect(note(own, [shared]).textContent).toBe(
+      "Your sessions in Side project run only on your runners, and none of yours is in it yet: sessions you start here wait until one is. Add a runner",
+    );
+    expect(
+      note(own, [shared, runner({ id: "mini", status: "offline", personal: [side.id] })]).textContent,
+    ).toBe(
+      "None of your runners in Side project is online: your sessions here run only on yours, so sessions you start wait until one is. See its runners",
+    );
+    expect(note(own, [runner({ id: "mini", personal: [side.id] })]).textContent).toBe("");
   });
 
   it("says when none of its runners is online", () => {

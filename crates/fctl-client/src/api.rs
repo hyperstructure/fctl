@@ -726,18 +726,22 @@ impl Api {
         self.get("/runners").await
     }
 
-    /// Registers a runner for a workspace you are an admin of (`None`:
-    /// your only one).
+    /// Registers a runner for a workspace you are in (`None`: the one you
+    /// are an admin of, else the one you are a member of). With
+    /// `personal`, it runs only your sessions there; absent, only yours
+    /// when you are a member, everyone's when you are an admin.
     pub async fn create_runner(
         &self,
         name: &str,
         workspace: Option<&str>,
+        personal: Option<bool>,
     ) -> Result<RunnerRegistration> {
         self.post(
             "/runners",
             &CreateRunnerRequest {
                 name: name.to_owned(),
                 workspace: workspace.map(str::to_owned),
+                personal,
             },
         )
         .await
@@ -1088,10 +1092,18 @@ impl Api {
     }
 
     /// Lets one of your runners run a workspace's sessions.
-    pub async fn add_workspace_runner(&self, id: &str, runner: &str) -> Result<RunnerList> {
+    /// Lets one of your runners run a workspace's sessions: with
+    /// `personal`, only yours. Absent: only yours when you are a member,
+    /// everyone's when you are an admin.
+    pub async fn add_workspace_runner(
+        &self,
+        id: &str,
+        runner: &str,
+        personal: Option<bool>,
+    ) -> Result<RunnerList> {
         self.put(
             &format!("/workspaces/{}/runners/{}", enc(id), enc(runner)),
-            &serde_json::json!({}),
+            &AddRunnerRequest { personal },
         )
         .await
     }

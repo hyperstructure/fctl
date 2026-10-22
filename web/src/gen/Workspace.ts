@@ -69,4 +69,10 @@ github: Array<string>,
  * Its admins skipped inviting people while setting it up, as in a
  * workspace for one: the app's setup checklist leaves that step out.
  */
-skip_invites: boolean, created_at: number, };
+skip_invites: boolean, 
+/**
+ * Your sessions in it run only on runners you registered: not on the
+ * ones of its other people, which see a session's Claude token. False
+ * from control planes before it.
+ */
+own_runners: boolean, created_at: number, };

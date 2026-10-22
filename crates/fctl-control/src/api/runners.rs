@@ -50,39 +50,32 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
 }
 
 /// `POST /api/v1/runners`: registers a runner for a workspace the caller
-/// is an admin of (the one, without `workspace`). Instance admins may
+/// is in: for everyone's sessions there (its admins), or for the caller's
+/// own (`api::workspaces::runs_whose`). Without `workspace`, the one they
+/// are an admin of, else the one they are a member of. Instance admins may
 /// register one for no workspace yet.
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: CreateRunnerRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     let workspace = match body.workspace.as_deref().filter(|w| !w.trim().is_empty()) {
-        Some(w) => {
-            let a = crate::workspaces::load(ctx, w.trim()).await?;
-            a.require_admin()?;
-            Some(a.row.id)
-        }
+        Some(w) => Some(w.trim().to_owned()),
         None => {
-            let admin_of: Vec<String> = crate::workspaces::mine(&ctx.db, &user.id)
-                .await?
-                .into_iter()
+            let mine = crate::workspaces::mine(&ctx.db, &user.id).await?;
+            let admin_of: Vec<&str> = mine
+                .iter()
                 .filter(|w| {
                     w.role()
                         .is_some_and(fctl_proto::session::WorkspaceRole::is_admin)
                 })
-                .map(|w| w.id)
+                .map(|w| w.id.as_str())
                 .collect();
-            match admin_of.as_slice() {
-                // The same checks as when it is named: open to them (its
-                // two-factor requirement), and theirs to administer.
-                [only] => {
-                    let a = crate::workspaces::load(ctx, only).await?;
-                    a.require_admin()?;
-                    Some(a.row.id)
-                }
-                [] if user.is_admin() => None,
-                [] => {
+            match (admin_of.as_slice(), mine.as_slice()) {
+                ([only], _) => Some((*only).to_owned()),
+                ([], [only]) => Some(only.id.clone()),
+                ([], []) if user.is_admin() => None,
+                ([], []) => {
                     return Err(forbidden(
-                        "Only workspace admins register runners, for their workspaces",
+                        "A runner runs the sessions of a workspace you are in, and you are in none yet",
                     ));
                 }
                 _ => {
@@ -94,8 +87,19 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             }
         }
     };
+    // The same checks whether it is named or not: open to them (its
+    // two-factor requirement), and whose sessions they may have it run.
+    let (workspace, personal) = match workspace {
+        Some(w) => {
+            let a = crate::workspaces::load(ctx, &w).await?;
+            let personal = crate::api::workspaces::runs_whose(&a, body.personal)?;
+            (Some(a.row.id), personal)
+        }
+        None => (None, false),
+    };
     let reg =
-        crate::api::workspaces::register_runner(ctx, &body.name, workspace.as_deref()).await?;
+        crate::api::workspaces::register_runner(ctx, &body.name, workspace.as_deref(), personal)
+            .await?;
     http::created(&reg)
 }
 

@@ -241,6 +241,47 @@ fn too_big(online: &[&Slot], want: Want) -> Wait {
     }
 }
 
+/// Whether a runner of a session's workspace runs the session, by whose
+/// sessions it runs there and whom the session runs as. `owner` registered
+/// the runner, and `personal` says it runs only their sessions in the
+/// workspace (they added it for their own). `person` owns the Claude
+/// connection the session runs on, and with `own_runners` keeps their
+/// sessions in the workspace on runners they registered.
+pub fn runs_for(
+    owner: Option<&str>,
+    personal: bool,
+    person: Option<&str>,
+    own_runners: bool,
+) -> bool {
+    let theirs = person.is_some() && owner == person;
+    theirs || !(personal || own_runners)
+}
+
+/// Why a session waits when no online runner of its workspace takes it
+/// ([`Wait::Workspace`]). `own`: the name of the person it runs as, when
+/// they keep their sessions in the workspace on their own runners.
+/// `takes`: one of the workspace's runners that is offline now would take
+/// it; `any`: the workspace has runners at all.
+pub fn no_runner_takes(own: Option<&str>, takes: bool, any: bool) -> String {
+    match own.map(str::trim) {
+        Some(name) => {
+            let name = if name.is_empty() { "its person" } else { name };
+            if takes {
+                format!(
+                    "Waiting for one of {name}'s runners: their sessions in this workspace run only on their own, and none of those is online"
+                )
+            } else {
+                format!(
+                    "Waiting for one of {name}'s runners: their sessions in this workspace run only on their own, and none of theirs runs its sessions yet. They add one on its Runners tab."
+                )
+            }
+        }
+        None if takes => Wait::Workspace.reason(),
+        None if any => "Waiting for a runner: this workspace's runners run only their owners' sessions. Its admins add one for everyone's on its Runners tab.".into(),
+        None => "Waiting for a runner: this workspace has none yet. Its admins add one on its Runners tab.".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,6 +775,50 @@ mod tests {
             Err(Wait::Build {
                 repo: "acme/app".into()
             })
+        );
+    }
+
+    #[test]
+    fn personal_runners_and_own_runners_keep_sessions_to_their_people() {
+        let (ada, bo) = (Some("usr_ada"), Some("usr_bo"));
+        // A runner for everyone's sessions takes anyone's, unless they keep
+        // theirs on their own runners.
+        assert!(runs_for(ada, false, bo, false));
+        assert!(!runs_for(ada, false, bo, true));
+        assert!(runs_for(ada, false, ada, true));
+        // One for its owner's sessions takes only theirs.
+        assert!(runs_for(ada, true, ada, false));
+        assert!(runs_for(ada, true, ada, true));
+        assert!(!runs_for(ada, true, bo, false));
+        // A session that runs as nobody, and a runner nobody owns, belong
+        // to no one.
+        assert!(runs_for(ada, false, None, false));
+        assert!(!runs_for(ada, true, None, false));
+        assert!(runs_for(None, false, bo, false));
+        assert!(!runs_for(None, false, bo, true));
+        assert!(!runs_for(None, true, None, false));
+    }
+
+    #[test]
+    fn sessions_say_whose_runners_they_wait_for() {
+        assert_eq!(
+            no_runner_takes(None, true, true),
+            "Waiting for a runner: none of this workspace's runners is online"
+        );
+        assert!(no_runner_takes(None, false, false).contains("has none yet"));
+        assert!(no_runner_takes(None, false, true).contains("only their owners' sessions"));
+        assert_eq!(
+            no_runner_takes(Some("Ada Lovelace"), true, true),
+            "Waiting for one of Ada Lovelace's runners: their sessions in this workspace run only on their own, and none of those is online"
+        );
+        assert!(
+            no_runner_takes(Some("Ada Lovelace"), false, true).ends_with(
+                "none of theirs runs its sessions yet. They add one on its Runners tab."
+            )
+        );
+        assert!(
+            no_runner_takes(Some(" "), true, true)
+                .starts_with("Waiting for one of its person's runners")
         );
     }
 }

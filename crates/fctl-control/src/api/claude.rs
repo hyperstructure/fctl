@@ -183,7 +183,7 @@ pub async fn start_login(ctx: &mut Ctx) -> AppResult<Response> {
     .await?;
     if started.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         return Err(unavailable(
-            "None of your workspaces' runners is online to run the Claude sign-in. Start one, or connect a long-lived token instead.",
+            "None of the runners that may run your Claude sign-in is online: yours, and those that run your sessions in your workspaces. Start one, or connect a long-lived token instead.",
         ));
     }
     job(ctx, id.as_str()).await
@@ -237,20 +237,27 @@ pub fn _kind_name(k: ClaudeCredentialKind) -> &'static str {
 }
 
 /// The runners that may run someone's Claude sign-in, which passes their
-/// tokens through the host: their own, and those of the workspaces open to
-/// them (not ones whose two-factor requirement shuts them out).
+/// tokens through the host, in the order to try them: the ones they
+/// registered, then those that run their sessions in the workspaces open to
+/// them (not ones whose two-factor requirement shuts them out). A runner of
+/// someone else's runs them only where it runs everyone's sessions and
+/// they don't keep theirs on their own runners
+/// (`fctl_domain::schedule::runs_for`).
 async fn login_runners(ctx: &Ctx, user: &UserRow) -> AppResult<Vec<String>> {
     #[derive(serde::Deserialize)]
     struct R {
         id: String,
+        owner: Option<String>,
         workspace_id: Option<String>,
-        #[serde(deserialize_with = "crate::db::int_bool")]
-        mine: bool,
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        personal: bool,
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        own_runners: bool,
     }
     let rows: Vec<R> = q(
         &ctx.db,
         concat!(
-            "SELECT r.id, rw.workspace_id, (r.created_by IS ?1) AS mine FROM runners r \
+            "SELECT r.id, r.created_by AS owner, rw.workspace_id, rw.personal, m.own_runners FROM runners r \
              LEFT JOIN runner_workspaces rw ON rw.runner_id = r.id \
              LEFT JOIN workspace_members m ON m.workspace_id = rw.workspace_id AND m.user_id = ?1 \
              WHERE r.enabled = 1 AND ((m.user_id IS NOT NULL AND ",
@@ -267,12 +274,30 @@ async fn login_runners(ctx: &Ctx, user: &UserRow) -> AppResult<Vec<String>> {
         .filter(|w| !crate::workspaces::blocked_for(ctx, user, w.require_two_factor))
         .map(|w| w.id)
         .collect();
+    let mine = |r: &R| r.owner.as_deref() == Some(user.id.as_str());
     let mut ids: Vec<String> = rows
-        .into_iter()
-        .filter(|r| r.mine || r.workspace_id.as_ref().is_some_and(|w| open.contains(w)))
-        .map(|r| r.id)
+        .iter()
+        .filter(|r| mine(r))
+        .map(|r| r.id.clone())
         .collect();
     ids.sort();
     ids.dedup();
+    let mut others: Vec<String> = rows
+        .iter()
+        .filter(|r| {
+            !mine(r)
+                && r.workspace_id.as_ref().is_some_and(|w| open.contains(w))
+                && fctl_domain::schedule::runs_for(
+                    r.owner.as_deref(),
+                    r.personal,
+                    Some(&user.id),
+                    r.own_runners,
+                )
+        })
+        .map(|r| r.id.clone())
+        .collect();
+    others.sort();
+    others.dedup();
+    ids.extend(others);
     Ok(ids)
 }

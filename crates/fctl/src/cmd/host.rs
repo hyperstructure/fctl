@@ -52,11 +52,15 @@ pub enum HostCmd {
         /// more; it replaces the list, and "" builds none).
         #[arg(long = "allow-build", value_name = "REPO")]
         allow_builds: Vec<String>,
-        /// The workspace whose sessions it runs, one you are an admin of
-        /// (default from `fctl workspaces use`, or the one you administer).
-        /// Add it to more with `fctl workspaces add-runner`.
+        /// The workspace whose sessions it runs (default from `fctl
+        /// workspaces use`, else the one you administer, else the one you
+        /// are in). Add it to more with `fctl workspaces add-runner`.
         #[arg(short, long, conflicts_with = "token")]
         workspace: Option<String>,
+        /// Run only your sessions in the workspace. A member's runner
+        /// always does; an admin's runs everyone's without it.
+        #[arg(long, conflicts_with = "token")]
+        personal: bool,
         /// Use an existing runner token instead of registering a new runner.
         #[arg(long, env = "FCTL_RUNNER_TOKEN", hide_env_values = true)]
         token: Option<String>,
@@ -145,12 +149,12 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             allow_images,
             allow_builds,
             workspace,
+            personal,
             token,
             no_service,
             build_image,
         } => {
-            const SIGN_IN: &str =
-                "Sign in as an admin of the workspace first (`fctl login`), or pass --token";
+            const SIGN_IN: &str = "Sign in first (`fctl login`), or pass --token";
             let server = config::server(server)?;
             let mut cfg = HostConfig::load().unwrap_or_default();
             cfg.server = server.clone();
@@ -242,7 +246,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     let workspace = workspace.or_else(|| config::CliConfig::load().workspace);
                     let reg = api
                         .context(SIGN_IN)?
-                        .create_runner(&cfg.name, workspace.as_deref())
+                        .create_runner(&cfg.name, workspace.as_deref(), personal.then_some(true))
                         .await?;
                     println!(
                         "{} Registered runner {} ({}){}",
@@ -254,7 +258,11 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                             ws => format!(
                                 " for {}",
                                 ws.iter()
-                                    .map(|w| w.name.as_str())
+                                    .map(|w| if reg.runner.personal.contains(&w.id) {
+                                        format!("your sessions in {}", w.name)
+                                    } else {
+                                        format!("{}'s sessions", w.name)
+                                    })
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             ),

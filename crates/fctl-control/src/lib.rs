@@ -190,7 +190,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["workspaces", id, "runners"]) => api::workspaces::runners(ctx, id).await,
         (Post, ["workspaces", id, "runners"]) => api::workspaces::create_runner(ctx, req, id).await,
         (Put, ["workspaces", id, "runners", runner]) => {
-            api::workspaces::add_runner(ctx, id, runner).await
+            api::workspaces::add_runner(ctx, req, id, runner).await
         }
         (Delete, ["workspaces", id, "runners", runner]) => {
             api::workspaces::remove_runner(ctx, id, runner).await

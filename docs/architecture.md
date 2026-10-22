@@ -405,23 +405,40 @@ repositories are created in an organization the workspace uses all of.
 ### Runners and workspaces
 
 A runner belongs to the person who registered it (`runners.created_by`) and
-runs the sessions of the workspaces it is added to (`runner_workspaces`).
-Its owner adds it to workspaces they are an admin of, since a workspace
-trusts its runners with its code, secrets and the tokens of the people who
-start its sessions; a workspace's admins take any runner out of it; its
-owner and instance admins rename, drain, disable and remove it. FleetDO
-reads which workspaces each runner serves before it dispatches, and starts
-a session only on a runner of its workspace (`Slot.serves`); a session whose
-workspace has no runner online says so. A runner serves a workspace while
-its owner is an active member there (`serves!`). Once it stops serving one
-(taken out of it, its owner left, was demoted from admin or disabled), the
-sessions it runs there stop and resume on another runner, whatever its host
-does: FleetDO stops them (`/runner-changed`), closes the runner's uplinks
-to them, and the runner gets no credentials, uplinks, files or screenshots
-for them any more (`spec::runner_serves`). Disabling a runner or replacing
-its token closes its control connection and its sessions' uplinks. A
-Claude sign-in runs only on a runner of the person's workspaces, or their
-own.
+runs the sessions of the workspaces it is added to (`runner_workspaces`):
+everyone's there, or only its owner's (`personal`). A workspace trusts a
+runner for everyone's sessions with their code, secrets and the tokens of
+the people who start them, so its owner adds one only as an admin of the
+workspace; a member adds theirs for their own sessions, which show it
+nothing they couldn't read in the session
+([ADR 0036](adr/0036-members-run-their-sessions-on-their-own-runners.md)).
+Admins add theirs for everyone's sessions unless they ask otherwise
+(`--personal`), and adding a runner again changes whose; a demoted admin's
+runners run only their own sessions from then on. A workspace's admins take
+any runner out of it; its owner and instance admins rename, drain, disable
+and remove it.
+
+A session runs as the owner of its Claude connection. A member may keep
+their sessions in a workspace on runners they registered
+(`workspace_members.own_runners`, **Only on my runners** in its Settings,
+`fctl workspaces own-runners`): no one else's machine then sees their
+Claude token or their sessions' work. FleetDO reads which workspaces each
+runner serves, and for whom, before it dispatches, and starts a session
+only on a runner of its workspace that runs the sessions of its person
+(`Slot.serves`, `fctl_domain::schedule::runs_for`). A session that no
+online runner takes says why: the workspace has no runner, none online,
+only its members' own, or none of its person's, when they keep theirs on
+their own runners. A runner serves a workspace while its owner is an active
+member there (`serves!`). Once it stops running a session (taken out of the
+workspace, its owner left, was disabled, or the session's person turned on
+own runners), the session stops and resumes on another runner, whatever
+its host does: FleetDO stops it (`/runner-changed`), closes the runner's
+uplink to it, and the runner gets no credentials, uplinks, files or
+screenshots for it any more (`spec::runner_serves`). Disabling a runner or
+replacing its token closes its control connection and its sessions'
+uplinks. A Claude sign-in runs on one of the person's own runners when one
+is online, else on a runner that runs their sessions in one of their
+workspaces.
 
 The home page tells the person who registered a runner when it is online
 with an older fctl than the control plane: the version in its hello against
