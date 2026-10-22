@@ -51,9 +51,11 @@ async fn verification(
         None
     };
     let (codes, locked_until) = row.map_or((0, None), |r| (r.codes, r.locked_until));
+    let verified_until = verify::until(verified_at, ctx.now);
     Ok(Verification {
         required: verify::required(&ctx.settings(), factors),
-        verified_until: verify::until(verified_at, ctx.now),
+        verified: verified_until.is_some(),
+        verified_until,
         methods: verify::methods(factors, u32::try_from(codes).unwrap_or(0)),
         locked_until: locked_until.filter(|t| *t > ctx.now),
     })

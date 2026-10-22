@@ -451,9 +451,9 @@ fn print_settings(s: &InstanceSettings) {
     println!(
         "Sensitive actions      {}",
         if s.verify_sensitive_actions {
-            style::accent("confirmed")
+            style::accent("ask to confirm")
         } else {
-            style::dim("not confirmed")
+            style::dim("don't ask")
         }
     );
     println!(

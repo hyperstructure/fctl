@@ -191,15 +191,17 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
                         );
                         return Ok(());
                     }
-                    if !std::io::stdin().is_terminal() {
+                    if status.verified {
+                        status
+                    } else if !std::io::stdin().is_terminal() {
                         bail!(
                             "pass --code with a code from your authenticator app: there is no terminal to ask in"
                         );
-                    }
-                    if !crate::verify::confirm(&api, None).await? {
+                    } else if crate::verify::confirm(&api, None).await? {
+                        api.verification().await?
+                    } else {
                         bail!("Nothing was confirmed.");
                     }
-                    api.verification().await?
                 }
             };
             if json {

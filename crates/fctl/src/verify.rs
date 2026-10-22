@@ -129,6 +129,7 @@ async fn in_browser(api: &Api) -> fctl_client::http::Result<bool> {
             DevicePollResponse::Verified { verified_until } => {
                 confirmed(&Verification {
                     required: true,
+                    verified: true,
                     verified_until: Some(verified_until),
                     ..Default::default()
                 });
@@ -156,7 +157,8 @@ fn confirmed(v: &Verification) {
 pub fn done(v: &Verification, now: i64) -> String {
     match v.verified_until {
         Some(until) => {
-            let minutes = ((until - now) / 60_000).max(1);
+            // Up: a confirmation that lasts 15 minutes says so, not 14.
+            let minutes = ((until - now + 59_999) / 60_000).max(1);
             format!(
                 "Confirmed: sensitive actions don't ask again on this CLI for {}.",
                 if minutes == 1 {
@@ -178,11 +180,16 @@ mod tests {
     fn says_how_long_the_confirmation_lasts() {
         let at = |until| Verification {
             required: true,
+            verified: true,
             verified_until: Some(until),
             ..Default::default()
         };
         assert_eq!(
             done(&at(15 * 60_000), 0),
+            "Confirmed: sensitive actions don't ask again on this CLI for 15 minutes."
+        );
+        assert_eq!(
+            done(&at(15 * 60_000 - 1500), 0),
             "Confirmed: sensitive actions don't ask again on this CLI for 15 minutes."
         );
         assert_eq!(

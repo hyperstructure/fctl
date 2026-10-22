@@ -13,6 +13,12 @@ export type Verification = {
  */
 required: boolean, 
 /**
+ * The browser, CLI or token that asks counts as confirmed now, by the
+ * server's clock: sensitive actions don't ask it until
+ * `verified_until`.
+ */
+verified: boolean, 
+/**
  * Until when the browser, CLI or token that asks counts as confirmed:
  * 15 minutes after it last confirmed it's you, or signed in with a
  * passkey or a second factor. Absent when it doesn't.

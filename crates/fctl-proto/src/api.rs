@@ -451,6 +451,10 @@ pub struct Verification {
     /// ([`InstanceSettings::verify_sensitive_actions`]), and you have a
     /// passkey or an authenticator app to confirm it's you with.
     pub required: bool,
+    /// The browser, CLI or token that asks counts as confirmed now, by the
+    /// server's clock: sensitive actions don't ask it until
+    /// `verified_until`.
+    pub verified: bool,
     /// Until when the browser, CLI or token that asks counts as confirmed:
     /// 15 minutes after it last confirmed it's you, or signed in with a
     /// passkey or a second factor. Absent when it doesn't.

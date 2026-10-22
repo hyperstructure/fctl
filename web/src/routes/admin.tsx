@@ -1639,6 +1639,7 @@ function InstanceSettings() {
   return (
     <>
       <SignInSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
+      <SensitiveActions settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <Section title="Agents" description="What projects may let their agents do on this instance.">
         <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
           <span>
@@ -1663,6 +1664,10 @@ function InstanceSettings() {
 
 /** What changed, for the toast. */
 function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest): string {
+  if (b.verify_sensitive_actions !== undefined)
+    return s.verify_sensitive_actions
+      ? "Sensitive actions now ask people to confirm it's them"
+      : "Sensitive actions no longer ask people to confirm it's them";
   if (b.require_two_factor !== undefined)
     return s.require_two_factor
       ? "Two-factor sign-in is required"
@@ -1832,6 +1837,85 @@ function SignInSettings({
           </div>
         )}
       </Dialog>
+    </Section>
+  );
+}
+
+/**
+ * Whether sensitive actions ask people to confirm it's them with a passkey or
+ * a code: only the primary instance owner turns it on or off, and turning it
+ * off asks them to confirm it's them (lib/api.ts opens the dialog).
+ */
+function SensitiveActions({
+  settings: s,
+  save,
+  saving,
+}: {
+  settings?: G.InstanceSettings;
+  save: (b: G.UpdateInstanceSettingsRequest) => void;
+  saving: boolean;
+}) {
+  const { data: me } = useMe();
+  const users = useQuery({ queryKey: keys.users, queryFn: api.users });
+  const owner = me?.user.role === "owner";
+  const on = !!s?.verify_sensitive_actions;
+  const active = users.data?.users.filter((u) => u.status === "active") ?? [];
+  const without = active.filter((u) => !secured(u));
+  const mine = !!me && (me.user.two_factor || me.passkeys.length > 0);
+  return (
+    <Section
+      title="Sensitive actions"
+      description="What people confirm with a passkey or a code from their authenticator app before they do it."
+    >
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Confirm sensitive actions
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              Inviting and promoting admins, turning two-factor sign-in off, adding a runner to a workspace,
+              new access tokens and CLI sign-ins, exporting data, and deleting accounts, projects and
+              workspaces ask for a passkey or a code first. A browser or CLI that confirmed isn't asked again
+              for 15 minutes.
+            </span>
+          </span>
+          <Switch
+            checked={on}
+            disabled={!s || saving || !owner}
+            onChange={(v) => save({ verify_sensitive_actions: v })}
+            label="Confirm sensitive actions"
+          />
+        </div>
+        {(!owner || (on && without.length > 0) || (on && !mine)) && (
+          <ul className="flex flex-col gap-1.5 text-[12.5px] leading-relaxed text-ink-4">
+            {!owner && (
+              <li className="flex items-start gap-2">
+                <Crown className="mt-[3px] size-3.5 shrink-0" />
+                <span>Only the primary instance owner turns this on or off.</span>
+              </li>
+            )}
+            {on && without.length > 0 && (
+              <li className="flex items-start gap-2">
+                <ShieldOff className="mt-[3px] size-3.5 shrink-0" />
+                <span>
+                  {without.length === 1
+                    ? `${without[0]?.name} has`
+                    : `${without.length} of ${active.length} people have`}{" "}
+                  neither a passkey nor an authenticator app, so {without.length === 1 ? "isn't" : "aren't"}{" "}
+                  asked. Requiring two-factor sign-in gives everyone one.
+                </span>
+              </li>
+            )}
+            {on && owner && !mine && (
+              <li className="flex items-start gap-2">
+                <Fingerprint className="mt-[3px] size-3.5 shrink-0" />
+                <span>
+                  You have neither yourself, so it doesn't ask you either. Add a passkey in Settings.
+                </span>
+              </li>
+            )}
+          </ul>
+        )}
+      </div>
     </Section>
   );
 }
