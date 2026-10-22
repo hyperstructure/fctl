@@ -19,7 +19,7 @@ use js_sys::{Array, Object, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
-use worker::{D1Database, Fetch, Headers, Method, Request, RequestInit};
+use worker::{D1Database, Fetch, Headers, Method, Request, RequestInit, RequestRedirect};
 
 /// How long a push service keeps a message for a browser that is offline.
 const TTL_SECS: u32 = 12 * 3600;
@@ -247,8 +247,12 @@ async fn send(signer: &Signer, device: &DeviceRow, payload: &[u8]) -> AppResult<
     headers.set("TTL", &TTL_SECS.to_string())?;
     headers.set("Urgency", "normal")?;
     let mut init = RequestInit::new();
+    // A push service answers itself: a redirect, which would take the
+    // request to any address (another scheme, an IP address, another port),
+    // counts as a failure.
     init.with_method(Method::Post)
         .with_headers(headers)
+        .with_redirect(RequestRedirect::Manual)
         .with_body(Some(Uint8Array::from(body.as_slice()).into()));
     let req = Request::new_with_init(&device.endpoint, &init)?;
     let status = Fetch::Request(req).send().await?.status_code();
@@ -296,8 +300,15 @@ pub async fn deliver(
         now: now_ms(),
     };
     let payload = serde_json::to_vec(message)?;
-    let outcomes =
-        futures::future::join_all(devices.iter().map(|d| send(&signer, d, &payload))).await;
+    // Subscriptions from before the endpoint rules of now that break them
+    // (another port, say) go as gone ones do, unsent.
+    let outcomes = futures::future::join_all(devices.iter().map(|d| async {
+        if fctl_domain::validate::push_endpoint(&d.endpoint, cfg.dev).is_err() {
+            return Ok(Delivery::Gone);
+        }
+        send(&signer, d, &payload).await
+    }))
+    .await;
     let mut sent: Vec<Val> = vec![n(signer.now)];
     let mut gone: Vec<Val> = Vec::new();
     for (device, outcome) in devices.iter().zip(outcomes) {

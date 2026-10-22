@@ -122,7 +122,8 @@ owner and purpose), so a value copied between rows does not decrypt.
   quote the start of the agent's last message, and show like any
   notification, on a lock screen too; people choose what notifies them in
   Settings. The control plane only sends to `https://` addresses of named
-  hosts, and to at most 20 browsers per person.
+  hosts on port 443, follows no redirects from them, and sends to at most
+  20 browsers per person.
 - File uploads are `application/octet-stream` bodies, which browsers cannot
   send cross-site without asking first, and pass the same origin check.
   Attached files are served with `nosniff` and a sandboxing
