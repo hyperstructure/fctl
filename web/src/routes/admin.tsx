@@ -240,11 +240,7 @@ function Access() {
         open={!!invite}
         onClose={() => setInvite(null)}
         title="Invitation ready"
-        description={
-          invite?.emailed
-            ? `We emailed ${invite.email}. You can also send them this link.`
-            : `Send this link to ${invite?.email}. It works once, for 14 days.`
-        }
+        description={invitationSent(invite)}
       >
         {invite?.url && <CodeBox value={invite.url} />}
         <div className="mt-5 flex justify-end">
@@ -480,6 +476,9 @@ function RequestRow({
           </Menu>
         </div>
       </div>
+      {invitation && !invitation.url && (
+        <p className="animate-rise text-[12px] text-ink-4 sm:pl-[42px]">{invitationSent(invitation)}</p>
+      )}
       {invitation?.url && (
         <div className="flex animate-rise flex-col gap-2 sm:pl-[42px]">
           <CodeBox value={invitation.url} />
@@ -504,6 +503,21 @@ function RequestRow({
       )}
     </li>
   );
+}
+
+/**
+ * What happened to an invitation's link. Where the instance sends email, it goes to the address alone: whoever holds
+ * it joins the workspaces that invited the address.
+ */
+function invitationSent(invite: G.Invite | null | undefined): string {
+  if (!invite) return "";
+  if (invite.url)
+    return invite.emailed
+      ? `We emailed ${invite.email}. You can also send them this link.`
+      : `Send this link to ${invite.email}. It works once, for 14 days.`;
+  return invite.emailed
+    ? `We emailed ${invite.email} the link. It works once, for 14 days.`
+    : `The invitation couldn't be emailed to ${invite.email}. Invite them again in a while.`;
 }
 
 /** Instance roles: the primary instance owner hands their own role over instead. */
@@ -567,8 +581,12 @@ function Users() {
     onError: (e) => toast(e.message, "error"),
   });
   const link = useMutation({
-    mutationFn: (id: string) => api.resetLink(id),
-    onSuccess: (r) => setReset(r.url),
+    mutationFn: (u: G.User) => api.resetLink(u.id),
+    // Where the instance sends email, the link goes to them alone.
+    onSuccess: (r, u) =>
+      r.url
+        ? setReset(r.url)
+        : toast(`We emailed ${u.name} a link to reset their password. It works for an hour.`),
     onError: (e) => toast(e.message, "error"),
   });
   return (
@@ -656,7 +674,7 @@ function Users() {
                         size="sm"
                         variant="ghost"
                         icon={<Link2 className="size-3.5" />}
-                        onClick={() => link.mutate(u.id)}
+                        onClick={() => link.mutate(u)}
                       >
                         Reset link
                       </Button>
@@ -808,9 +826,7 @@ function InviteDialog({
       title={done ? "Invitation ready" : "Invite someone"}
       description={
         done
-          ? done.emailed
-            ? `We emailed ${done.email}. You can also send them this link.`
-            : `Send this link to ${done.email}. It works once, for 14 days.`
+          ? invitationSent(done)
           : "They create an account with the link, or connect the address to the account they have."
       }
     >

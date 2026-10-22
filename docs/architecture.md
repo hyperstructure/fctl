@@ -88,7 +88,10 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   or more [email addresses](#email-addresses), and any of them signs in.
 - **Access is an allowlist.** Admins add exact emails or `*@domain` patterns.
   Signing up requires a matching entry; removing an exact entry disables that
-  user. The first account is created through a one-time setup link
+  user. Inviting an address adds its entry, which revoking the invitation
+  removes again while no account has the address; an entry gives the role
+  it names, so demoting or removing an admin makes those of their addresses
+  give a member's. The first account is created through a one-time setup link
   (`/setup#token=…`, from the `FCTL_SETUP_TOKEN` secret) and becomes the
   primary instance owner.
 - **Early access**, where the deployment turns it on (as app.fctl.sh's
@@ -163,8 +166,11 @@ with an authenticator app: TOTP (RFC 6238) with HMAC-SHA1, six digits and
    and the first app comes with ten recovery codes, of which D1 keeps the
    SHA-256. Setting up an app takes the password unless this browser
    signed in within the last 15 minutes (with a CLI or access token, it
-   always does). Replacing the app, turning two-factor off and getting new
-   recovery codes take a current code, from the app or a recovery code.
+   always does). Without a password, a first app takes that sign-in, which
+   nothing stands in for: its codes then add passkeys, so a stolen session
+   or token must not set one up (`two_factor::setup_proof`). Replacing the
+   app, turning two-factor off and getting new recovery codes take a
+   current code, from the app or a recovery code.
 2. **Signing in.** A sign-in with a password then starts no web session. It
    leaves a challenge (`sign_in_challenges`, for ten minutes) that the
    browser holds in the `__Host-fctl-2fa` cookie, and the page asks for a
@@ -331,6 +337,13 @@ the instance creates one, as its primary admin.
   whichever is higher. New workspaces start with `editor`. Starting a
   session, a share or a project role counts for nothing once someone leaves
   the workspace, or while its two-factor requirement closes it to them.
+  Starting a session makes someone its owner only while they may start
+  sessions in its project: made a viewer of it, or taken out of it, they
+  have the session as its viewers do, or not at all, so that they neither
+  steer its agent nor resume it with the project's secrets and new tokens
+  (`fctl_domain::perm::session_role`). Nobody shares a session with
+  themselves, and a share someone gave themselves before counts for
+  nothing: it would outlast the role that let them make it.
   The project and session queries join the caller's membership
   (`model::PROJECT_SELECT`, `PROJECT_VISIBLE`).
 - **Roles.** Admins invite and remove people, change roles, choose the
@@ -339,7 +352,11 @@ the instance creates one, as its primary admin.
   and change the settings; the primary admin
   also deletes the workspace and hands the role to another admin. Nobody
   else can demote or remove the primary admin, who leaves only after
-  handing the role over (`fctl_domain::workspace::check_*`).
+  handing the role over (`fctl_domain::workspace::check_*`). Once the
+  primary admin's account is disabled or gone, an instance admin gives
+  the role to one of its members (`fctl admin set-primary`), themselves
+  only where they are one of its admins already, since they can disable
+  anyone (`check_assign_primary`).
 - **Invitations** (`workspace_invitations`) are for an address and last 30
   days. Whoever has it (an account's, or connected to one) sees it on their
   home page and in `fctl workspaces`, and joins as that address. A

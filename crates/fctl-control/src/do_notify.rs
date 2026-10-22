@@ -12,6 +12,7 @@ use crate::ctx::now_ms;
 use crate::db::{q, s};
 use crate::error::AppResult;
 use crate::internal::{self, Notify};
+use crate::model::{SESSION_SELECT, SessionRow, UserRow, user_columns};
 use crate::push;
 use fctl_domain::notify::{self, Event};
 use fctl_proto::session::SessionStatus;
@@ -175,11 +176,12 @@ impl NotifyObject {
             let _ = self.sql.exec("DELETE FROM pending", None);
             return;
         };
+        // Unchecked, nothing goes: they may have lost the session meanwhile.
         let current = match self.still_current(&user, &events).await {
             Ok(current) => current,
             Err(e) => {
                 worker::console_error!("notify: checking sessions failed: {}", e.0.message);
-                events.clone()
+                Vec::new()
             }
         };
         if let Some(message) = notify::compose(&current) {
@@ -210,13 +212,9 @@ impl NotifyObject {
     }
 
     /// The events whose session is still in the state they announce, and
-    /// that `user` still follows.
+    /// that `user` still follows and sees: they may have lost it while the
+    /// events waited (left the workspace, a role or a share went).
     async fn still_current(&self, user: &str, events: &[Event]) -> AppResult<Vec<Event>> {
-        #[derive(Deserialize)]
-        struct Row {
-            id: String,
-            status: String,
-        }
         let ids = serde_json::to_string(
             &events
                 .iter()
@@ -224,11 +222,20 @@ impl NotifyObject {
                 .collect::<Vec<_>>(),
         )?;
         let db = self.env.d1("DB")?;
-        let rows: Vec<Row> = q(
+        let person: Option<UserRow> = q(
             &db,
-            "SELECT s.id AS id, s.status AS status FROM sessions s \
-             JOIN session_followers f ON f.session_id = s.id AND f.user_id = ? \
-             WHERE s.id IN (SELECT value FROM json_each(?))",
+            &format!("SELECT {} FROM users u WHERE u.id = ?", user_columns("u")),
+            &[s(user)],
+        )?
+        .first()
+        .await?;
+        let Some(person) = person.filter(UserRow::is_active) else {
+            return Ok(Vec::new());
+        };
+        let settings = crate::instance::settings(&db).await?;
+        let rows: Vec<SessionRow> = q(
+            &db,
+            &format!("{SESSION_SELECT} WHERE s.id IN (SELECT value FROM json_each(?2))"),
             &[s(user), s(&ids)],
         )?
         .all()
@@ -238,6 +245,8 @@ impl NotifyObject {
             .filter(|e| {
                 rows.iter().any(|r| {
                     r.id == e.session_id.as_str()
+                        && r.following
+                        && crate::access::session_role(&person, &settings, None, r).is_some()
                         && SessionStatus::parse(&r.status).is_some_and(|st| e.kind.still(st))
                 })
             })

@@ -48,10 +48,12 @@ pub async fn runner_publish(
         project_id: String,
         runner_id: Option<String>,
         settings: String,
+        #[serde(default)]
+        workspace_id: Option<String>,
     }
     let row: Option<Row> = q(
         &ctx.db,
-        "SELECT s.project_id, s.runner_id, p.settings FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ?",
+        "SELECT s.project_id, s.runner_id, p.settings, p.workspace_id FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ?",
         &[s(session_id)],
     )?
     .first()
@@ -170,7 +172,9 @@ pub async fn runner_publish(
         height: Some(stored.height),
         expires_at,
     };
-    ctx.audit(
+    // In the workspace's log: what its sessions publish is its own.
+    ctx.audit_in(
+        row.workspace_id.as_deref(),
         "screenshot.published",
         Some(session_id),
         Some(serde_json::json!({
@@ -283,7 +287,8 @@ pub async fn delete(ctx: &mut Ctx, token: &str) -> AppResult<Response> {
     )?
     .run()
     .await?;
-    ctx.audit(
+    ctx.audit_in(
+        Some(a.workspace_id()),
         "screenshot.deleted",
         Some(&row.session_id),
         Some(serde_json::json!({ "project_id": row.project_id, "name": row.name })),

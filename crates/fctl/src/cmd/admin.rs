@@ -9,7 +9,7 @@ use clap::{ArgGroup, Subcommand};
 use fctl_domain::size;
 use fctl_proto::api::{
     AccessRequest, AccessRequestList, CreateInviteRequest, GithubConnectionStatus,
-    InstanceSettings, InviteWorkspace, Runner, RunnerSession, RunnerStatus,
+    InstanceSettings, Invite, InviteWorkspace, Runner, RunnerSession, RunnerStatus,
     UpdateInstanceSettingsRequest, UpdateRunnerRequest, UpdateUserRequest, User, UserStatus,
 };
 use fctl_proto::session::{InstanceRole, WorkspaceRole};
@@ -383,6 +383,22 @@ fn invitation(r: &AccessRequest, now: i64) -> String {
     s
 }
 
+/// An invitation's link, or where it went: an instance that sends email
+/// sends it to the address alone.
+fn print_invite_link(invite: &Invite) {
+    match (&invite.url, invite.emailed) {
+        (Some(url), emailed) => println!(
+            "Invitation link (valid 14 days{}):\n  {url}",
+            if emailed { ", also emailed" } else { "" }
+        ),
+        (None, true) => println!("Emailed them the invitation link (valid 14 days)."),
+        (None, false) => println!(
+            "The invitation couldn't be emailed to {}. Invite them again in a while.",
+            invite.email
+        ),
+    }
+}
+
 fn print_settings(s: &InstanceSettings) {
     println!(
         "Published screenshots  {}",
@@ -474,12 +490,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     )
                 }
             );
-            if let Some(url) = invite.url {
-                println!(
-                    "Invitation link (valid 14 days{}):\n  {url}",
-                    if invite.emailed { ", also emailed" } else { "" }
-                );
-            }
+            print_invite_link(&invite);
         }
         AdminCmd::Transfer { user } => {
             let users = api.users().await?.users;
@@ -772,13 +783,8 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 return style::print_json(&created);
             }
             println!("{} Allowed {}", style::accent("✓"), created.entry.pattern);
-            if let Some(inv) = created.invite
-                && let Some(url) = inv.url
-            {
-                println!(
-                    "Invitation link (valid 14 days{}):\n  {url}",
-                    if inv.emailed { ", also emailed" } else { "" }
-                );
+            if let Some(inv) = created.invite {
+                print_invite_link(&inv);
             }
         }
         AdminCmd::Disallow { pattern } => {

@@ -257,6 +257,9 @@ pub struct FleetObject {
     /// runner id → the workspaces it serves, read from D1 before each
     /// dispatch.
     runner_workspaces: RefCell<std::collections::HashMap<String, Serves>>,
+    /// session id → when it last asked for credentials
+    /// (`fctl_domain::throttle`).
+    credential_asks: RefCell<std::collections::HashMap<String, std::collections::VecDeque<i64>>>,
 }
 
 impl DurableObject for FleetObject {
@@ -296,6 +299,7 @@ impl DurableObject for FleetObject {
             refreshing: RefCell::new(HashSet::new()),
             dispatching: RefCell::new(false),
             runner_workspaces: RefCell::new(std::collections::HashMap::new()),
+            credential_asks: RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -772,7 +776,14 @@ impl FleetObject {
                 session_id,
                 kind,
             } => {
-                let reply = self.credential(&rs.id, &session_id, kind, now).await;
+                let reply = if self.may_ask(session_id.as_str(), now) {
+                    self.credential(&rs.id, &session_id, kind, now).await
+                } else {
+                    Err(ApiError::new(
+                        ErrorCode::RateLimited,
+                        "This session asked for its credentials too often. It gets them again in a few minutes.",
+                    ))
+                };
                 let msg = match reply {
                     Ok(c) => FleetToHost::Credential {
                         request_id,
@@ -1912,6 +1923,26 @@ impl FleetObject {
 
     // ───────────────────────────── credentials ─────────────────────────────
 
+    /// Whether a session may ask for its credentials now, at most
+    /// `throttle::CREDENTIALS_PER_WINDOW` times in its window: each answer
+    /// mints tokens, here, for every runner's sessions.
+    fn may_ask(&self, session_id: &str, now: i64) -> bool {
+        use fctl_domain::throttle;
+        let mut asks = self.credential_asks.borrow_mut();
+        // Sessions that stopped asking a while ago are forgotten.
+        asks.retain(|_, times| {
+            times
+                .back()
+                .is_some_and(|t| now - *t < throttle::CREDENTIAL_WINDOW_MS)
+        });
+        throttle::allow(
+            asks.entry(session_id.to_owned()).or_default(),
+            now,
+            throttle::CREDENTIAL_WINDOW_MS,
+            throttle::CREDENTIALS_PER_WINDOW,
+        )
+    }
+
     /// A session's credentials, for the runner it runs on (`runner_id`)
     /// only: as its uplink, another runner gets nothing, so that nobody's
     /// runner gets the GitHub tokens or Claude credential of sessions in
@@ -2281,7 +2312,7 @@ impl FleetObject {
     fn feed_session(&self, s: &fctl_proto::session::Session) {
         let workspace = s.workspace.as_ref().map(|w| w.id.as_str());
         for (ws, ident) in self.feed_sockets() {
-            if ident.sees(s.project_id.as_str(), workspace, s.created_by.id.as_str()) {
+            if ident.sees(s.project_id.as_str(), workspace) {
                 let mut copy = s.clone();
                 copy.role = None;
                 if let Ok(text) = serde_json::to_string(&FeedServer::Session {
@@ -2309,7 +2340,7 @@ impl FleetObject {
             _ => String::new(),
         };
         for (ws, ident) in self.feed_sockets() {
-            if ident.sees(&project, workspace.as_deref(), "") {
+            if ident.sees(&project, workspace.as_deref()) {
                 let _ = ws.send_with_str(&text);
             }
         }

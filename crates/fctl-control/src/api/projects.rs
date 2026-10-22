@@ -277,6 +277,14 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             let gh = github::from_config(&ctx.cfg, ctx.now)?;
             check_repo(ctx, &gh, &connections, &parsed).await?;
             let found = gh.get_repo(&parsed).await?;
+            // GitHub answers for a repository by its old name too, once it
+            // was renamed or moved to another account: the one it names
+            // must be the workspace's to use as well.
+            fctl_domain::repos::check_scope(
+                ws::scope(&connections, &found.owner).as_ref(),
+                &found.owner,
+                Some(&found.name),
+            )?;
             default_branch = default_branch.or(Some(found.default_branch.clone()));
             repo = Some(RepoRef {
                 owner: found.owner,

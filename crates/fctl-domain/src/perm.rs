@@ -25,7 +25,11 @@ pub struct SessionAccess {
 
 /// The effective role, or `None` for no access. Nothing in a workspace is
 /// open to people outside it, whatever they started or was shared with
-/// them.
+/// them. Starting a session makes someone its owner only while they may
+/// start sessions in its project: one made a viewer of the project, or
+/// who lost it, has the session as its viewers do, or not at all, so that
+/// they can't go on steering its agent, or resume it with the project's
+/// secrets and new tokens.
 pub fn session_role(a: SessionAccess) -> Option<SessionRole> {
     session_role_within(a, ProjectRole::Owner)
 }
@@ -42,10 +46,11 @@ pub fn session_role_within(a: SessionAccess, cap: ProjectRole) -> Option<Session
             _ => r,
         });
     };
-    if a.is_creator {
+    let project = project_role(a.membership, a.project_role);
+    if a.is_creator && can_start_sessions(project) {
         grant(SessionRole::Owner);
     }
-    match project_role(a.membership, a.project_role).map(|r| lower_project_role(r, cap)) {
+    match project.map(|r| lower_project_role(r, cap)) {
         Some(ProjectRole::Owner | ProjectRole::Maintainer) => grant(SessionRole::Owner),
         Some(ProjectRole::Editor) => grant(SessionRole::Editor),
         Some(ProjectRole::Viewer) => grant(SessionRole::Viewer),
@@ -239,6 +244,33 @@ mod tests {
         assert_eq!(
             lower_project_role(ProjectRole::Viewer, ProjectRole::Owner),
             ProjectRole::Viewer
+        );
+    }
+
+    #[test]
+    fn starting_a_session_counts_while_they_may_start_sessions() {
+        use WorkspaceRole::*;
+        let m = member(Member);
+        // Started as an editor: theirs.
+        assert_eq!(
+            session_role(access(m, Some(ProjectRole::Editor), None, true)),
+            Some(SessionRole::Owner)
+        );
+        // Made a viewer of the project since: as its viewers.
+        assert_eq!(
+            session_role(access(m, Some(ProjectRole::Viewer), None, true)),
+            Some(SessionRole::Viewer)
+        );
+        // Taken out of it: nothing, unless someone shares it with them.
+        assert_eq!(session_role(access(m, None, None, true)), None);
+        assert_eq!(
+            session_role(access(m, None, Some(SessionRole::Editor), true)),
+            Some(SessionRole::Editor)
+        );
+        // A workspace admin owns every project, and so their sessions.
+        assert_eq!(
+            session_role(access(member(Admin), None, None, true)),
+            Some(SessionRole::Owner)
         );
     }
 

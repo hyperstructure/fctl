@@ -472,7 +472,14 @@ pub fn push_endpoint(input: &str, local: bool) -> Result<String> {
     {
         return Err(bad());
     }
-    if !local && (scheme != "https" || !public_name(&webpush::service(s))) {
+    // Push services listen on 443: another port would point the control
+    // plane's requests at whatever else listens on a host.
+    let port = host.rsplit_once(':').map(|(_, port)| port);
+    if !local
+        && (scheme != "https"
+            || !public_name(&webpush::service(s))
+            || port.is_some_and(|p| p != "443"))
+    {
         return Err(ApiError::validation(
             "endpoint",
             "Push endpoints are https:// addresses of a push service",
@@ -634,6 +641,10 @@ mod tests {
         assert!(push_endpoint("https://push.example.xn--p1ai/x", false).is_ok());
         assert!(push_endpoint("https://user@evil.example/x", false).is_err());
         assert!(push_endpoint("https://fcm.googleapis.com/a b", false).is_err());
+        // Push services listen on 443, and nothing else is theirs to reach.
+        assert!(push_endpoint("https://fcm.googleapis.com:443/fcm/send/x", false).is_ok());
+        assert!(push_endpoint("https://evil.example:9200/_search", false).is_err());
+        assert!(push_endpoint("https://evil.example:80/x", false).is_err());
         assert!(push_endpoint("javascript:alert(1)", true).is_err());
         // Development: a push service on this machine.
         assert!(push_endpoint("http://127.0.0.1:9000/push/1", true).is_ok());

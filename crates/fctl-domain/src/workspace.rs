@@ -126,6 +126,21 @@ pub fn check_transfer(actor: Option<WorkspaceRole>, to: Option<WorkspaceRole>) -
     }
 }
 
+/// Whether an instance admin may give the primary admin role of a workspace
+/// whose primary admin's account is disabled or gone to someone (`to_self`:
+/// to themselves, whose role there is `own`). Instance admins can disable
+/// any member, so an instance admin who could take the role would take any
+/// workspace they are in: they give it to themselves only where they are
+/// one of its admins already, and to anyone else of its members.
+pub fn check_assign_primary(to_self: bool, own: Option<WorkspaceRole>) -> Result<()> {
+    if to_self && !own.is_some_and(WorkspaceRole::is_admin) {
+        return Err(denied(
+            "Instance admins make themselves the primary admin only of workspaces they are an admin of. Give the role to one of its admins, or have another instance admin give it to you.",
+        ));
+    }
+    Ok(())
+}
+
 /// Whether a workspace's admins may set its two-factor requirement to
 /// `require`: not off while the instance requires two-factor sign-in, as
 /// every workspace then does ([`crate::two_factor::workspace_requires`]).
@@ -441,5 +456,17 @@ mod tests {
         // An instance admin who didn't register it would run the sessions
         // of workspaces they may not be in.
         assert!(check_replace_runner_token(false).is_err());
+    }
+
+    #[test]
+    fn instance_admins_take_a_primary_admin_role_only_as_its_admins() {
+        // To one of its members: theirs to give.
+        assert!(check_assign_primary(false, None).is_ok());
+        assert!(check_assign_primary(false, Some(Member)).is_ok());
+        // To themselves, once they disabled its primary admin: only where
+        // they are an admin already.
+        assert!(check_assign_primary(true, Some(Admin)).is_ok());
+        assert!(check_assign_primary(true, Some(Member)).is_err());
+        assert!(check_assign_primary(true, None).is_err());
     }
 }

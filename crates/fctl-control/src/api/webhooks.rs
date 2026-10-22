@@ -27,6 +27,10 @@ pub async fn receive(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "This instance takes no GitHub webhooks: set GITHUB_WEBHOOK_SECRET",
         ));
     };
+    // Anyone can post here: a delivery that says it is too large isn't read.
+    if http::length(req).is_some_and(|l| l > MAX_DELIVERY_BYTES as u64) {
+        return Err(AppError(ApiError::bad_request("The delivery is too large")));
+    }
     let body = req.bytes().await?;
     if body.len() > MAX_DELIVERY_BYTES {
         return Err(AppError(ApiError::bad_request("The delivery is too large")));

@@ -101,6 +101,29 @@ pub fn token_in(link: &str) -> Option<&str> {
     is_token(token).then_some(token)
 }
 
+/// Whether `url` is the link of a screenshot that this instance (its
+/// origin, `public_url`) published, as [`path`] makes them:
+/// `<origin>/api/v1/published/<token>/<name>`, nothing more. A notice that
+/// says the agent published one comes from the sandbox, which can pose as
+/// the agent, so its link is held to that.
+pub fn is_link(url: &str, public_url: &str) -> bool {
+    let Some(rest) = url
+        .strip_prefix(public_url)
+        .and_then(|r| r.strip_prefix(PATH_PREFIX))
+    else {
+        return false;
+    };
+    let Some((token, name)) = rest.split_once('/') else {
+        return false;
+    };
+    is_token(token)
+        && !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
 /// The file's name as the link's last segment, which only people read: a
 /// readable name with the image's extension, in characters links keep as
 /// they are.
@@ -225,6 +248,27 @@ mod tests {
         assert!(!is_token("short"));
         assert!(!is_token(&format!("{}-", &a[..42])));
         assert!(!is_token(&format!("{a}0")));
+    }
+
+    #[test]
+    fn links_are_held_to_the_shape_the_control_plane_makes() {
+        let token = new_token();
+        let app = "https://app.fctl.sh";
+        let link = format!("{app}{}", path(&token, "after shot.png", "image/png"));
+        assert!(is_link(&link, app));
+        for bad in [
+            // Another instance's, or another page of this one.
+            format!("https://evil.example{PATH_PREFIX}{token}/after.png"),
+            format!("{app}.evil.example{PATH_PREFIX}{token}/after.png"),
+            format!("{app}{PATH_PREFIX}../../github/install?workspace=acme"),
+            format!("{app}{PATH_PREFIX}{token}/../../../auth/google/start"),
+            format!("{app}{PATH_PREFIX}{token}/after.png?next=/device"),
+            format!("{app}{PATH_PREFIX}{token}"),
+            format!("{app}{PATH_PREFIX}short/after.png"),
+            format!("{app}{PATH_PREFIX}{token}/.."),
+        ] {
+            assert!(!is_link(&bad, app), "{bad}");
+        }
     }
 
     #[test]

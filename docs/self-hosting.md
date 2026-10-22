@@ -147,7 +147,10 @@ on). The control plane limits sign-in attempts and records addresses in
 the audit log by the address each request comes from, which a proxy puts
 in the `X-Forwarded-For` header it adds: without the setting, every request
 seems to come from the proxy. With it, the server takes the address the
-outermost proxy saw, and ignores what a client wrote there itself.
+outermost proxy saw, and ignores what a client wrote there itself. It
+counts proxies rather than knowing them, so the server's port must be
+reachable only through them: a client that connects to it directly would
+choose its own address.
 
 ### Operating it
 
@@ -485,7 +488,10 @@ sign up with it.
 ## Email (optional)
 
 Without email, admins copy invite and password-reset links from the app. To
-send them, use [Resend](https://resend.com) with a verified domain.
+send them, use [Resend](https://resend.com) with a verified domain. With
+email, the links go only to the addresses they are for, and admins don't see
+them: a reset link signs in as its person, and an invitation's link joins
+the workspaces that invited its address.
 
 On your own machine, set `RESEND_API_KEY` and `FCTL_EMAIL_FROM`
 (`Acme factory <fctl@acme.dev>`) and start the server again. On Cloudflare:

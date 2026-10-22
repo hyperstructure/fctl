@@ -431,8 +431,8 @@ async fn apply_reset(ctx: &Ctx, user: &UserRow, row: &ChallengeRow) -> AppResult
             )?,
             q(
                 &ctx.db,
-                "UPDATE password_resets SET used_at = ? WHERE token_hash = ?",
-                &[n(ctx.now), s(reset_hash)],
+                "UPDATE password_resets SET used_at = ? WHERE token_hash = ? OR (user_id = ? AND used_at IS NULL)",
+                &[n(ctx.now), s(reset_hash), s(&user.id)],
             )?,
             q(
                 &ctx.db,
@@ -720,10 +720,17 @@ pub fn fresh_sign_in(ctx: &Ctx) -> bool {
         .is_some_and(|a| a.kind == TokenKind::Web && a.signed_in_at >= ctx.now - FRESH_SIGN_IN_MS)
 }
 
-/// Setting up an app takes the password, unless this browser signed in
-/// within the last 15 minutes.
-fn password_required(ctx: &Ctx, user: &UserRow) -> bool {
-    user.has_password() && !fresh_sign_in(ctx)
+/// What setting up an app takes (`policy::setup_proof`): the password,
+/// unless this browser signed in within the last 15 minutes. Without a
+/// password, a first app takes that sign-in, which nothing stands in for.
+fn setup_proof(ctx: &Ctx, user: &UserRow, replacing: bool) -> AppResult<policy::SetupProof> {
+    match policy::setup_proof(replacing, user.has_password(), fresh_sign_in(ctx)) {
+        policy::SetupProof::FreshSignIn => Err(validation(
+            "sign_in",
+            "Setting up two-factor sign-in takes a sign-in from the last 15 minutes. Sign out and in again in the browser, then set it up.",
+        )),
+        proof => Ok(proof),
+    }
 }
 
 /// `POST /api/v1/me/two-factor/authenticator`: a new secret, its link and
@@ -749,6 +756,7 @@ pub async fn start_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult<
             })?;
         confirm_code(ctx, &user, code).await?;
     }
+    let proof = setup_proof(ctx, &user, replace)?;
     let secret = totp::base32(&totp::new_secret());
     let issuer = crate::instance::name(&ctx.db, &ctx.cfg).await?;
     let uri = totp::uri(&issuer, &user.email, &secret);
@@ -768,7 +776,7 @@ pub async fn start_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult<
         qr,
         setup,
         expires_at,
-        password_required: password_required(ctx, &user),
+        password_required: proof == policy::SetupProof::Password,
     })
 }
 
@@ -785,7 +793,15 @@ pub async fn confirm_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResul
         .ok()
         .filter(|st: &SealedSetup| st.exp > ctx.now)
         .ok_or_else(|| validation("setup", "This setup took too long. Start again."))?;
-    if password_required(ctx, &user) {
+    let replacing = app(ctx, &user.id).await?.is_some();
+    if replacing && !setup.replace {
+        return Err(validation(
+            "setup",
+            "Your two-factor sign-in changed meanwhile. Start again.",
+        ));
+    }
+    // A replacement only while there is still an app to replace.
+    if setup_proof(ctx, &user, setup.replace && replacing)? == policy::SetupProof::Password {
         let given = body.password.as_deref().unwrap_or_default();
         let right = user
             .password_hash
@@ -809,13 +825,6 @@ pub async fn confirm_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResul
             "That code doesn't match. Enter the code the app shows for this account; if it still doesn't work, check that your phone sets its clock automatically.",
         ));
     };
-    let replacing = app(ctx, &user.id).await?.is_some();
-    if replacing && !setup.replace {
-        return Err(validation(
-            "setup",
-            "Your two-factor sign-in changed meanwhile. Start again.",
-        ));
-    }
     let codes = (unused_codes(ctx, &user.id).await? == 0).then(policy::new_recovery_codes);
     let mut statements = vec![q(
         &ctx.db,

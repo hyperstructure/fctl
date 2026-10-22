@@ -32,6 +32,7 @@ pub mod schedule;
 pub mod settings;
 pub mod size;
 pub mod threads;
+pub mod throttle;
 pub mod tokens;
 pub mod totp;
 pub mod two_factor;

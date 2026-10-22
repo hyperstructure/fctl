@@ -120,6 +120,7 @@ const FOLLOWERS: &str = "SELECT f.user_id AS user_id, m.role AS member_role, \
     JOIN users u ON u.id = f.user_id \
     LEFT JOIN project_members m ON m.project_id = s.project_id AND m.user_id = f.user_id \
     LEFT JOIN session_shares sh ON sh.session_id = f.session_id AND sh.user_id = f.user_id \
+      AND (sh.created_by IS NULL OR sh.created_by != sh.user_id) \
     LEFT JOIN notification_settings ns ON ns.user_id = f.user_id \
     WHERE f.session_id = ? AND u.status = 'active' \
     AND EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.user_id = f.user_id)";
