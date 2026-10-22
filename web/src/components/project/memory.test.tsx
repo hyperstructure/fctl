@@ -223,10 +223,13 @@ describe("the Retrospectives tab", () => {
     expect(c.textContent).toContain("#4 Move uploads to the new bucket");
     expect(c.textContent).toContain("Worked onMoving the uploads.");
     // The one its agent updated says so; the other when it was recorded.
-    const times = [...c.querySelectorAll("time")];
-    expect(times.map((t) => t.textContent?.startsWith("Updated "))).toEqual([false, true]);
-    expect(times[1]?.getAttribute("title")).toMatch(/^Recorded .+, updated .+/);
-    expect(times[1]?.getAttribute("dateTime")).toBe(new Date(3).toISOString());
+    // Each shows its time twice: beside the outcome on phones, at the end
+    // of the row elsewhere.
+    const [blocked, completed] = [...c.querySelectorAll("li")].map((li) => [...li.querySelectorAll("time")]);
+    expect(blocked?.map((t) => t.textContent?.startsWith("Updated "))).toEqual([false, false]);
+    expect(completed?.map((t) => t.textContent?.startsWith("Updated "))).toEqual([true, true]);
+    expect(completed?.[0]?.getAttribute("title")).toMatch(/^Recorded .+, updated .+/);
+    expect(completed?.[0]?.getAttribute("dateTime")).toBe(new Date(3).toISOString());
   });
 
   it("lets editors put an insight in the memory, and not viewers", () => {

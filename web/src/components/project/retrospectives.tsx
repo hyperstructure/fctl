@@ -196,16 +196,18 @@ function Entry({
         <OutcomeIcon outcome={r.outcome} className="size-4" />
         <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <span className="text-[12.5px] font-medium text-ink-2">{outcomeLabel(r.outcome)}</span>
+          {/* On phones, the time goes beside the outcome and the session's title gets a line of its own. */}
+          <RetrospectiveTime r={r} className="sm:hidden" />
           <Link
             to="/s/$id"
             params={{ id: r.session.id }}
-            className="min-w-0 text-[14px] text-ink transition-colors [overflow-wrap:anywhere] hover:text-accent"
+            className="min-w-0 basis-full text-[14px] text-ink transition-colors [overflow-wrap:anywhere] hover:text-accent sm:basis-auto"
           >
             <span className="font-mono text-[12.5px] text-ink-3">#{r.session.number}</span> {r.session.title}
           </Link>
         </div>
         {r.started_by && <Avatar user={r.started_by} size={18} />}
-        <RetrospectiveTime r={r} className="shrink-0" />
+        <RetrospectiveTime r={r} className="hidden shrink-0 sm:inline" />
         {deletable && (
           <Menu
             trigger={(toggle, open) => (
