@@ -165,7 +165,7 @@ export function OpenLine({
   /** Its whole text, for a pointer that rests on it. */
   title?: string;
   meta?: ReactNode;
-  /** What it says, wrapping, in place of `children`. */
+  /** What it says, wrapping, in place of `children`; `className` styles the text (its words and chevron). */
   wrap?: { text: string; className?: string };
   children?: ReactNode;
 }) {
@@ -189,11 +189,13 @@ export function OpenLine({
       >
         <span className={cn("flex shrink-0 items-center", tall)}>{icon}</span>
         {wrap ? (
-          <span className={cn("min-w-0 flex-1 text-pretty", !nested && "py-0.5", wrap.className)}>
-            {words.length > 0 && `${words.join(" ")} `}
-            <span className="whitespace-nowrap">
-              {last}
-              <Chevron open={open} className="ml-1.5 inline-block align-[-3px]" />
+          <span className={cn("min-w-0 flex-1 text-pretty", !nested && "py-0.5")}>
+            <span className={wrap.className}>
+              {words.length > 0 && `${words.join(" ")} `}
+              <span className="whitespace-nowrap">
+                {last}
+                <Chevron open={open} className="ml-1.5 inline-block align-[-3px]" />
+              </span>
             </span>
           </span>
         ) : (

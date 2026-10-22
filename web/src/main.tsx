@@ -5,10 +5,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Toaster } from "@/components/ui";
 import { queryClient } from "@/lib/queries";
+import { syncShimmers } from "@/lib/shimmer";
 import { stopPinchZoom } from "@/lib/zoom";
 import { router } from "./router";
 
 stopPinchZoom();
+syncShimmers();
 
 // Makes the app installable and shows an offline page (public/sw.js). Not in
 // development, where it would outlive the dev server on this origin.
