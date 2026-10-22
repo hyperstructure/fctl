@@ -70,6 +70,8 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     // spelling of the names is the one kept.
     if let Some(app) = ctx.cfg.github.as_ref() {
         let gh = github::from_config(&ctx.cfg, ctx.now)?;
+        // The account the workspace connected, while its login is still its.
+        crate::workspaces::installation(&ctx.db, &gh, &connections, &grant.owner).await?;
         match grant.repo() {
             Some(r) => {
                 let found = gh.get_repo(&r).await?;

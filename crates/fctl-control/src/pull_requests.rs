@@ -14,7 +14,7 @@
 
 use crate::config::Config;
 use crate::db::{int, n, os, q, s};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::github;
 use crate::internal;
 use fctl_domain::pulls;
@@ -61,16 +61,27 @@ fn key(repo: &RepoRef) -> String {
 /// SQL of `fctl_domain::repos::may_look_up`. A host or an agent can claim
 /// any pull request, and a workspace can lose an account, so rows kept from
 /// before are held to it too. `l.repo` is `owner/name` in lowercase.
-const IN_REACH: &str = "EXISTS (SELECT 1 FROM sessions rs JOIN projects rp ON rp.id = rs.project_id \
-    JOIN workspace_github rg ON rg.workspace_id = rp.workspace_id AND rg.status = 'active' \
-    AND lower(rg.account) = substr(l.repo, 1, instr(l.repo, '/') - 1) \
-    WHERE rs.id = l.session_id \
-    AND (rg.repos IS NULL OR EXISTS (SELECT 1 FROM json_each(rg.repos) rr \
-      WHERE lower(rr.value) = substr(l.repo, instr(l.repo, '/') + 1))) \
-    AND (lower(rp.repo_owner || '/' || rp.repo_name) = l.repo \
-      OR EXISTS (SELECT 1 FROM project_repos pr WHERE pr.project_id = rp.id \
-        AND lower(pr.owner) = substr(l.repo, 1, instr(l.repo, '/') - 1) \
-        AND (pr.name = '*' OR lower(pr.name) = substr(l.repo, instr(l.repo, '/') + 1)))))";
+///
+/// With `account` (a parameter, `?N`), GitHub's id of the account that
+/// answered: only where the connection is to that account, or from before
+/// ids were kept, since a login can change hands.
+fn in_reach(account: Option<&str>) -> String {
+    let account = account
+        .map(|p| format!(" AND (rg.account_id IS NULL OR rg.account_id = {p})"))
+        .unwrap_or_default();
+    format!(
+        "EXISTS (SELECT 1 FROM sessions rs JOIN projects rp ON rp.id = rs.project_id \
+         JOIN workspace_github rg ON rg.workspace_id = rp.workspace_id AND rg.status = 'active' \
+         AND lower(rg.account) = substr(l.repo, 1, instr(l.repo, '/') - 1){account} \
+         WHERE rs.id = l.session_id \
+         AND (rg.repos IS NULL OR EXISTS (SELECT 1 FROM json_each(rg.repos) rr \
+           WHERE lower(rr.value) = substr(l.repo, instr(l.repo, '/') + 1))) \
+         AND (lower(rp.repo_owner || '/' || rp.repo_name) = l.repo \
+           OR EXISTS (SELECT 1 FROM project_repos pr WHERE pr.project_id = rp.id \
+             AND lower(pr.owner) = substr(l.repo, 1, instr(l.repo, '/') - 1) \
+             AND (pr.name = '*' OR lower(pr.name) = substr(l.repo, instr(l.repo, '/') + 1)))))"
+    )
+}
 
 /// Records that a session lists `prs`, so that webhooks about them reach
 /// it: those its tokens reach (`fctl_domain::repos::may_look_up`), the only
@@ -156,8 +167,9 @@ pub async fn hook(
         db,
         &format!(
             "SELECT DISTINCT l.number AS number FROM pull_request_sessions l WHERE l.repo = ? AND ({}) \
-             AND {IN_REACH} LIMIT {MAX_LOOKUPS}",
-            which.join(" OR ")
+             AND {} LIMIT {MAX_LOOKUPS}",
+            which.join(" OR "),
+            in_reach(None)
         ),
         &params,
     )?
@@ -197,7 +209,7 @@ pub async fn hook(
             });
         }
     }
-    settle(env, db, &seen, now).await
+    settle(env, db, &seen, now, hook.owner_id).await
 }
 
 /// Looks up pull requests sessions list and tells those sessions what
@@ -223,9 +235,16 @@ pub async fn refresh(
     }
     let mut told = 0;
     for (account, prs) in accounts {
+        // Its installation, and who has the login now: what it says goes to
+        // the sessions of workspaces connected to that account.
+        let found = gh.installation(&account).await;
+        let account_id = found.as_ref().ok().and_then(|f| f.account_id);
         let mut batches = prs.chunks(webhooks::MAX_LOOKUP).peekable();
         while let Some(batch) = batches.next() {
-            let answer = gh.pull_requests(None, batch).await;
+            let answer = match &found {
+                Ok(f) => gh.pull_requests(Some(f.id), batch).await,
+                Err(e) => Err(AppError(e.0.clone())),
+            };
             let seen: Vec<Seen> = batch
                 .iter()
                 .enumerate()
@@ -240,7 +259,7 @@ pub async fn refresh(
                 .collect();
             // Those GitHub didn't answer for wait their six hours too, so
             // that one that always fails can't hold up the others.
-            told += settle(env, db, &seen, now).await?;
+            told += settle(env, db, &seen, now, account_id).await?;
             let left = match &answer {
                 Ok(a) => webhooks::remaining(a),
                 Err(e) => {
@@ -281,7 +300,8 @@ pub async fn sweep(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
         &format!(
             "SELECT l.repo AS repo, l.number AS number FROM pull_request_sessions l \
              WHERE (l.state IS NULL OR l.state NOT IN ('merged', 'closed')) AND (l.checked_at IS NULL OR l.checked_at < ?) \
-             AND {IN_REACH} GROUP BY l.repo, l.number ORDER BY MAX(COALESCE(l.checked_at, 0)) LIMIT ?"
+             AND {} GROUP BY l.repo, l.number ORDER BY MAX(COALESCE(l.checked_at, 0)) LIMIT ?",
+            in_reach(None)
         ),
         &[n(now - SWEEP_AFTER_MS), n(SWEEP_LOOKUPS)],
     )?
@@ -316,7 +336,13 @@ struct Listing {
 /// name, and their states, which the sweep goes by. A pull request keeps
 /// its old state there until every session that lists it heard, so that
 /// the sweep asks again for those that didn't. Returns how many heard.
-async fn settle(env: &Env, db: &D1Database, seen: &[Seen], now: i64) -> AppResult<usize> {
+async fn settle(
+    env: &Env,
+    db: &D1Database,
+    seen: &[Seen],
+    now: i64,
+    account_id: Option<u64>,
+) -> AppResult<usize> {
     if seen.is_empty() {
         return Ok(0);
     }
@@ -333,9 +359,13 @@ async fn settle(env: &Env, db: &D1Database, seen: &[Seen], now: i64) -> AppResul
             &format!(
                 "SELECT l.repo AS repo, l.number AS number, l.session_id AS session_id FROM pull_request_sessions l \
                  WHERE (l.repo, l.number) IN \
-                 (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?)) AND {IN_REACH}"
+                 (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?1)) AND {}",
+                in_reach(account_id.map(|_| "?2"))
             ),
-            &[s(&json!(found).to_string())],
+            &[s(&json!(found).to_string())]
+                .into_iter()
+                .chain(account_id.map(|id| n(id as i64)))
+                .collect::<Vec<_>>(),
         )?
         .all()
         .await?

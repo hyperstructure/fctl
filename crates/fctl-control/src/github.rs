@@ -27,8 +27,8 @@ const API: &str = "https://api.github.com";
 const WEB: &str = "https://github.com";
 
 thread_local! {
-    /// owner (lowercase) → installation id, per isolate.
-    static INSTALLATIONS: RefCell<HashMap<String, (u64, i64)>> = RefCell::new(HashMap::new());
+    /// owner (lowercase) → its installation, and when it was found, per isolate.
+    static INSTALLATIONS: RefCell<HashMap<String, (Found, i64)>> = RefCell::new(HashMap::new());
     /// installation id → the token the control plane looks pull requests up
     /// with, per isolate, while it has a while left.
     static LOOKUP_TOKENS: RefCell<HashMap<u64, GithubCredential>> = RefCell::new(HashMap::new());
@@ -65,6 +65,14 @@ struct Account {
     kind: Option<String>,
     #[serde(default)]
     id: Option<u64>,
+}
+
+/// The installation of the GitHub App on a login, and GitHub's id of the
+/// account that has the login now.
+#[derive(Clone, Copy, Debug)]
+pub struct Found {
+    pub id: u64,
+    pub account_id: Option<u64>,
 }
 
 /// An installation of the GitHub App: on which account, and how much of it.
@@ -253,16 +261,17 @@ impl<'a> Github<'a> {
             .await
     }
 
-    /// The installation id for an account (organization or user).
-    pub async fn installation_id(&self, owner: &str) -> AppResult<u64> {
+    /// The installation on an account (organization or user), by its
+    /// login, and the id of the account that has the login now.
+    pub async fn installation(&self, owner: &str) -> AppResult<Found> {
         let key = owner.to_lowercase();
-        if let Some(id) = INSTALLATIONS.with(|m| {
+        if let Some(found) = INSTALLATIONS.with(|m| {
             m.borrow()
                 .get(&key)
                 .filter(|(_, at)| self.now - at < 10 * 60 * 1000)
-                .map(|(id, _)| *id)
+                .map(|(found, _)| *found)
         }) {
-            return Ok(id);
+            return Ok(found);
         }
         for path in [
             format!("/orgs/{owner}/installation"),
@@ -271,8 +280,12 @@ impl<'a> Github<'a> {
             let (status, v) = self.app_call(Method::Get, &path, None).await?;
             if status == 200 {
                 let inst: Installation = serde_json::from_value(v)?;
-                INSTALLATIONS.with(|m| m.borrow_mut().insert(key.clone(), (inst.id, self.now)));
-                return Ok(inst.id);
+                let found = Found {
+                    id: inst.id,
+                    account_id: inst.account.and_then(|a| a.id),
+                };
+                INSTALLATIONS.with(|m| m.borrow_mut().insert(key.clone(), (found, self.now)));
+                return Ok(found);
             }
         }
         Err(AppError(ApiError::new(
@@ -282,6 +295,23 @@ impl<'a> Github<'a> {
                 self.cfg.slug
             ),
         )))
+    }
+
+    /// The installation id for an account (organization or user).
+    pub async fn installation_id(&self, owner: &str) -> AppResult<u64> {
+        Ok(self.installation(owner).await?.id)
+    }
+
+    /// An installation by its id, while it exists.
+    pub async fn installation_by_id(&self, id: u64) -> AppResult<Option<InstallationInfo>> {
+        let (status, v) = self
+            .app_call(Method::Get, &format!("/app/installations/{id}"), None)
+            .await?;
+        match status {
+            200 => Ok(serde_json::from_value::<Installation>(v)?.info()),
+            404 => Ok(None),
+            _ => Err(unavailable("GitHub did not answer")),
+        }
     }
 
     /// Every installation of the app.
@@ -617,8 +647,7 @@ impl<'a> Github<'a> {
     /// installation cannot reach (it left the installation, was renamed or
     /// deleted) is left out and reported, so one stale entry does not stop
     /// every session; the caller decides about the primary repository.
-    pub async fn session_tokens(&self, plan: &TokenPlan) -> AppResult<SessionTokens> {
-        let inst = self.installation_id(&plan.owner).await?;
+    pub async fn session_tokens(&self, inst: u64, plan: &TokenPlan) -> AppResult<SessionTokens> {
         let mut listed = plan.write.clone();
         if let ReadScope::Repos(names) = &plan.read {
             listed.extend(names.iter().cloned());
