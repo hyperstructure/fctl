@@ -2,6 +2,24 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.17.0 (2026-10-22)
+
+### Features
+
+- **web:** List ten changed files per repository, the rest a click away ([#190](https://github.com/hyperstructure/fctl/pull/190))
+- Mark duplicate memory notes and replace several at once ([#191](https://github.com/hyperstructure/fctl/pull/191))
+- **web:** Fold the agent's tool calls in a row into one line ([#192](https://github.com/hyperstructure/fctl/pull/192))
+- **web:** Pinch or double-tap to zoom in on images in the lightbox ([#198](https://github.com/hyperstructure/fctl/pull/198))
+- Let members run their sessions only on their own runners ([#199](https://github.com/hyperstructure/fctl/pull/199))
+
+### Fixes
+
+- **control:** Answer workspace invitations the same for every address ([#193](https://github.com/hyperstructure/fctl/pull/193))
+- **control:** Let only a workspace's admins create its projects ([#194](https://github.com/hyperstructure/fctl/pull/194))
+- **control:** Keep GitHub connections to their account, by id ([#195](https://github.com/hyperstructure/fctl/pull/195))
+- **web:** Show the start shortcut as ⌘+Enter, with room around it ([#196](https://github.com/hyperstructure/fctl/pull/196))
+- **web:** Slow and soften the shimmer over working labels ([#197](https://github.com/hyperstructure/fctl/pull/197))
+
 ## 0.16.1 (2026-10-22)
 
 ### Features
