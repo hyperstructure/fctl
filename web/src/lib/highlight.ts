@@ -19,12 +19,14 @@ const LANG_ALIASES: Record<string, string> = {
 };
 
 export function highlight(code: string, lang: string): Promise<string> {
-  const l = (LANG_ALIASES[lang.toLowerCase()] ?? lang.toLowerCase()) || "text";
+  const lower = lang.toLowerCase();
+  // Own keys only: `constructor` is no language.
+  const l = (Object.hasOwn(LANG_ALIASES, lower) ? LANG_ALIASES[lower] : lower) || "text";
   const key = `${l}\u0000${code}`;
   let p = cache.get(key);
   if (!p) {
     p = import("shiki").then(async ({ codeToHtml, bundledLanguages }) => {
-      const known = l in bundledLanguages ? l : "text";
+      const known = Object.hasOwn(bundledLanguages, l) ? l : "text";
       return codeToHtml(code, {
         lang: known,
         themes: { light: "github-light", dark: "github-dark-default" },

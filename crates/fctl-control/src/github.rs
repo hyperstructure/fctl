@@ -111,14 +111,10 @@ struct RepoList {
     repositories: Vec<RepoJson>,
 }
 
-#[derive(Deserialize)]
-struct Count {
-    total_count: usize,
-}
-
 /// A repository as someone signed in to GitHub sees it.
 #[derive(Deserialize)]
 struct SeenJson {
+    id: u64,
     name: String,
     #[serde(default)]
     permissions: Option<SeenPermissions>,
@@ -353,23 +349,42 @@ impl<'a> Github<'a> {
         Ok(out)
     }
 
-    /// How many repositories an installation reaches.
-    pub async fn reached(&self, inst: u64) -> AppResult<usize> {
-        let token = self.installation_token(inst, None, None).await?;
-        let (status, v) = self
-            .call(
-                Method::Get,
-                "/installation/repositories?per_page=1",
-                &format!("token {}", token.token),
-                None,
-            )
-            .await?;
-        if status != 200 {
-            return Err(unavailable(
-                "GitHub did not list the installation's repositories",
-            ));
+    /// The repositories an installation reaches, by id: none when they are
+    /// more than its first 3,000, which offer nobody every repository
+    /// (`fctl_domain::github::offer`).
+    pub async fn reached(&self, inst: u64) -> AppResult<Vec<u64>> {
+        #[derive(Deserialize)]
+        struct Reached {
+            id: u64,
         }
-        Ok(serde_json::from_value::<Count>(v)?.total_count)
+        #[derive(Deserialize)]
+        struct ReachedList {
+            repositories: Vec<Reached>,
+        }
+        let token = self.installation_token(inst, None, None).await?;
+        let mut out = Vec::new();
+        for page in 1..=30 {
+            let (status, v) = self
+                .call(
+                    Method::Get,
+                    &format!("/installation/repositories?per_page=100&page={page}"),
+                    &format!("token {}", token.token),
+                    None,
+                )
+                .await?;
+            if status != 200 {
+                return Err(unavailable(
+                    "GitHub did not list the installation's repositories",
+                ));
+            }
+            let list: ReachedList = serde_json::from_value(v)?;
+            let n = list.repositories.len();
+            out.extend(list.repositories.into_iter().map(|r| r.id));
+            if n < 100 {
+                return Ok(out);
+            }
+        }
+        Ok(Vec::new())
     }
 
     // ───────────────────────── signing in to GitHub ─────────────────────────
@@ -518,6 +533,7 @@ impl<'a> Github<'a> {
             let list: SeenList = serde_json::from_value(v)?;
             let n = list.repositories.len();
             out.extend(list.repositories.into_iter().map(|r| Seen {
+                id: r.id,
                 name: r.name,
                 admin: r.permissions.is_some_and(|p| p.admin),
             }));

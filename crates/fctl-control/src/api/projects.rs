@@ -822,11 +822,19 @@ pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
     struct A {
         account: String,
     }
+    // Of the workspaces open to them: not one its two-factor requirement
+    // closes to them.
+    let open: Vec<String> = ws::mine(&ctx.db, &user.id)
+        .await?
+        .into_iter()
+        .filter(|w| !ws::blocked_for(ctx, user, w.require_two_factor))
+        .map(|w| w.id)
+        .collect();
     let accounts: Vec<A> = q(
         &ctx.db,
-        "SELECT DISTINCT g.account FROM workspace_github g JOIN workspace_members m ON m.workspace_id = g.workspace_id \
-         WHERE m.user_id = ? AND g.status = 'active' ORDER BY g.account",
-        &[s(&user.id)],
+        "SELECT DISTINCT g.account FROM workspace_github g \
+         WHERE g.workspace_id IN (SELECT value FROM json_each(?)) AND g.status = 'active' ORDER BY g.account",
+        &[s(&serde_json::to_string(&open)?)],
     )?
     .all()
     .await?;
@@ -880,10 +888,18 @@ pub async fn github_repos(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         repo_owner: String,
         repo_name: String,
     }
+    // Only the projects the caller sees: the others' names and repositories
+    // aren't theirs to know (`PROJECT_VISIBLE`).
+    let user = ctx.user()?;
     let linked: Vec<Linked> = q(
         &ctx.db,
-        "SELECT id, repo_owner, repo_name FROM projects WHERE repo_owner IS NOT NULL AND archived_at IS NULL AND workspace_id = ?",
-        &[s(workspace.id())],
+        &format!(
+            "SELECT p.id, p.repo_owner, p.repo_name FROM projects p JOIN workspaces w ON w.id = p.workspace_id \
+             JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
+             LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1 \
+             WHERE p.repo_owner IS NOT NULL AND p.archived_at IS NULL AND p.workspace_id = ?2 AND {PROJECT_VISIBLE}"
+        ),
+        &[s(&user.id), s(workspace.id())],
     )?
     .all()
     .await?;

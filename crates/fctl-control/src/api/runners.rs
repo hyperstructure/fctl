@@ -100,7 +100,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
 }
 
 /// The caller may manage a runner as a machine (rename, disable, drain,
-/// remove, new token): its owner, or an instance admin.
+/// remove): its owner, or an instance admin. A new token is for its owner
+/// alone ([`rotate_token`]).
 async fn require_manager(ctx: &Ctx, id: &str) -> AppResult<()> {
     let user = ctx.user()?;
     if user.is_admin() {
@@ -216,13 +217,31 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     http::ok(&Ok { ok: true })
 }
 
+/// `POST /api/v1/runners/{id}/token`: a new token for a runner, for the
+/// person who registered it (`fctl_domain::workspace::check_replace_runner_token`).
 pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
-    require_manager(ctx, id).await?;
+    let user_id = ctx.user()?.id.clone();
+    #[derive(serde::Deserialize)]
+    struct Owner {
+        created_by: Option<String>,
+    }
+    let owner: Option<Owner> = q(
+        &ctx.db,
+        "SELECT created_by FROM runners WHERE id = ?",
+        &[s(id)],
+    )?
+    .first()
+    .await?;
+    let owner = owner.ok_or_else(|| not_found("Runner"))?;
+    fctl_domain::workspace::check_replace_runner_token(
+        owner.created_by.as_deref() == Some(user_id.as_str()),
+    )?;
     let token = new_secret(SecretKind::Runner);
+    // Only while it is still theirs.
     let changed = q(
         &ctx.db,
-        "UPDATE runners SET token_hash = ? WHERE id = ?",
-        &[s(&hash_secret(&token)), s(id)],
+        "UPDATE runners SET token_hash = ? WHERE id = ? AND created_by = ?",
+        &[s(&hash_secret(&token)), s(id), s(&user_id)],
     )?
     .run()
     .await?;

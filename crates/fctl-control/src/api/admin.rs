@@ -100,6 +100,7 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
     }
     if body.status == Some(UserStatus::Disabled) {
         auth::revoke_tokens(ctx, &target.id, None).await?;
+        crate::api::workspaces::stop_sessions_on(ctx, &target.id).await?;
     }
     if body.status.is_some() {
         crate::api::workspaces::owner_runners_changed(ctx, &target.id).await?;
@@ -368,6 +369,7 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             .run()
             .await?;
             auth::revoke_tokens(ctx, &u.id, None).await?;
+            crate::api::workspaces::stop_sessions_on(ctx, &u.id).await?;
             crate::api::workspaces::owner_runners_changed(ctx, &u.id).await?;
             disabled.push(u.email.clone());
             continue;

@@ -20,7 +20,7 @@ import {
   TriangleAlert,
   Unplug,
 } from "lucide-react";
-import { type MouseEvent, memo, type ReactNode, useMemo, useRef, useState } from "react";
+import { Component, type MouseEvent, memo, type ReactNode, useMemo, useRef, useState } from "react";
 import { ImageSizes, Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
 import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
@@ -41,7 +41,7 @@ import { cn } from "@/lib/cn";
 import { bytes, clock, day, duration, until } from "@/lib/format";
 import { repoChanges } from "@/lib/git";
 import { useKeepPlace } from "@/lib/keep-place";
-import { linkToken, markdown } from "@/lib/published";
+import { isPublishedLink, linkToken, markdown } from "@/lib/published";
 import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
@@ -73,6 +73,28 @@ function Milestone({
       <span className="min-w-0">{children}</span>
     </div>
   );
+}
+
+/**
+ * One item of the transcript, or a line in its place when it can't be shown: events come from the session's sandbox,
+ * where anything can pose as the agent, and one this app can't read mustn't take the page down for everyone.
+ */
+class Unreadable extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? (
+      <Milestone icon={<CircleAlert />} tone="warn">
+        This event couldn't be shown
+      </Milestone>
+    ) : (
+      this.props.children
+    );
+  }
 }
 
 const UserMessage = memo(function UserMessage({
@@ -165,6 +187,9 @@ function RetrospectiveNotice({ r }: { r: G.Retrospective }) {
     </div>
   );
 }
+
+/** Whether a published screenshot is this instance's to show (`isPublishedLink`); others show as the notice's text. */
+const shown = (file: G.PublishedFile) => isPublishedLink(file.url, location.origin, import.meta.env.DEV);
 
 /**
  * A screenshot the agent published for a pull request: the image while its
@@ -477,7 +502,8 @@ const ItemView = memo(function ItemView({
     case "logs":
       return <Logs lines={item.lines} />;
     case "notice":
-      if (item.notice.published) return <PublishedShot file={item.notice.published} canManage={canManage} />;
+      if (item.notice.published && shown(item.notice.published))
+        return <PublishedShot file={item.notice.published} canManage={canManage} />;
       if (item.notice.retrospective) return <RetrospectiveNotice r={item.notice.retrospective} />;
       if (item.notice.memory)
         return (
@@ -666,7 +692,7 @@ export const Transcript = memo(function Transcript({
   // The screenshots the agent published, which its answers show: they take
   // their room before they load. A new map only when it publishes another.
   const shots = items.flatMap((it) =>
-    it.kind === "notice" && it.notice.published ? [it.notice.published] : [],
+    it.kind === "notice" && it.notice.published && shown(it.notice.published) ? [it.notice.published] : [],
   );
   const shotUrls = shots.map((f) => f.url).join(" ");
   // biome-ignore lint/correctness/useExhaustiveDependencies: shotUrls stands for shots
@@ -693,17 +719,19 @@ export const Transcript = memo(function Transcript({
           )}
           {items.map((it, i) => (
             <div key={it.key} data-item>
-              <ItemView
-                item={it}
-                live={it.kind === "tool" ? live : undefined}
-                sessionId={sessionId}
-                running={it.kind === "tool" ? running && i > turnStart : undefined}
-                up={it.kind === "tool" && it.agent ? up : undefined}
-                stalled={it.kind === "setup" ? !!stall : undefined}
-                canManage={canManage}
-                claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}
-                projectSlug={projectSlug}
-              />
+              <Unreadable>
+                <ItemView
+                  item={it}
+                  live={it.kind === "tool" ? live : undefined}
+                  sessionId={sessionId}
+                  running={it.kind === "tool" ? running && i > turnStart : undefined}
+                  up={it.kind === "tool" && it.agent ? up : undefined}
+                  stalled={it.kind === "setup" ? !!stall : undefined}
+                  canManage={canManage}
+                  claudeUrl={it.kind === "remote" ? remoteControlUrl(it.rc, startedBy, me) : undefined}
+                  projectSlug={projectSlug}
+                />
+              </Unreadable>
             </div>
           ))}
           <LiveTurnView live={live} status={status} stall={stall} />

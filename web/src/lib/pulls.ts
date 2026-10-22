@@ -7,9 +7,17 @@ import { ago, stamp } from "./format";
 
 type Pulls = Pick<G.Session, "pull_request" | "pull_requests">;
 
-/** Every pull request of a session, in the order its agent found them. */
+/**
+ * Whether a pull request's link is GitHub's own. Agents report their pull requests, and what runs in a sandbox can
+ * pose as the agent; the control plane keeps only these now, but sessions may list others from before it did.
+ */
+export function isGithubPull(pr: Pick<G.PullRequestRef, "url">): boolean {
+  return /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(pr.url);
+}
+
+/** Every pull request of a session, in the order its agent found them: those GitHub's own links name. */
 export function pullRequests(s: Pulls): G.PullRequestRef[] {
-  return s.pull_requests ?? (s.pull_request ? [s.pull_request] : []);
+  return (s.pull_requests ?? (s.pull_request ? [s.pull_request] : [])).filter(isGithubPull);
 }
 
 /** Its repository's name and its number: "fctl#120" ("#120" when the repository is unknown). */

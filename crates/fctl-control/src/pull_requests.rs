@@ -54,19 +54,52 @@ fn key(repo: &RepoRef) -> String {
     repo.full_name().to_ascii_lowercase()
 }
 
+/// Whether the session of a `pull_request_sessions` row `l` may have its
+/// pull request looked up now: its project uses the repository (its primary
+/// one, one it lists, or every one of the account) and its workspace has an
+/// active connection to the account, for every repository or this one; the
+/// SQL of `fctl_domain::repos::may_look_up`. A host or an agent can claim
+/// any pull request, and a workspace can lose an account, so rows kept from
+/// before are held to it too. `l.repo` is `owner/name` in lowercase.
+const IN_REACH: &str = "EXISTS (SELECT 1 FROM sessions rs JOIN projects rp ON rp.id = rs.project_id \
+    JOIN workspace_github rg ON rg.workspace_id = rp.workspace_id AND rg.status = 'active' \
+    AND lower(rg.account) = substr(l.repo, 1, instr(l.repo, '/') - 1) \
+    WHERE rs.id = l.session_id \
+    AND (rg.repos IS NULL OR EXISTS (SELECT 1 FROM json_each(rg.repos) rr \
+      WHERE lower(rr.value) = substr(l.repo, instr(l.repo, '/') + 1))) \
+    AND (lower(rp.repo_owner || '/' || rp.repo_name) = l.repo \
+      OR EXISTS (SELECT 1 FROM project_repos pr WHERE pr.project_id = rp.id \
+        AND lower(pr.owner) = substr(l.repo, 1, instr(l.repo, '/') - 1) \
+        AND (pr.name = '*' OR lower(pr.name) = substr(l.repo, instr(l.repo, '/') + 1)))))";
+
 /// Records that a session lists `prs`, so that webhooks about them reach
-/// it. Returns the repository and number of each.
+/// it: those its tokens reach (`fctl_domain::repos::may_look_up`), the only
+/// ones the control plane asks GitHub about for it. Returns the repository
+/// and number of each.
 pub async fn track(
     db: &D1Database,
     session_id: &str,
     prs: &[PullRequestRef],
 ) -> AppResult<Vec<(RepoRef, u64)>> {
+    let Some(session) = crate::spec::session_row(db, session_id).await? else {
+        return Ok(Vec::new());
+    };
+    let Some(project) = crate::spec::project_row(db, &session.project_id).await? else {
+        return Ok(Vec::new());
+    };
+    let primary = project.repo();
+    let grants = crate::spec::grants(db, &project.id).await?;
+    let connections = crate::workspaces::connections(db, project.workspace_id()).await?;
     let mut statements = Vec::new();
     let mut tracked = Vec::new();
     for pr in prs {
         let Some(repo) = pr.repo.clone().or_else(|| pulls::repo_of(&pr.url)) else {
             continue;
         };
+        let scope = crate::workspaces::scope(&connections, &repo.owner);
+        if !fctl_domain::repos::may_look_up(primary.as_ref(), &grants, scope.as_ref(), &repo) {
+            continue;
+        }
         statements.push(q(
             db,
             "INSERT OR IGNORE INTO pull_request_sessions (repo, number, session_id, state) VALUES (?, ?, ?, ?)",
@@ -107,13 +140,13 @@ pub async fn hook(
     let numbers: Vec<u64> = hook.numbers.iter().copied().take(MAX_NUMBERS).collect();
     if !numbers.is_empty() {
         which.push(format!(
-            "number IN ({})",
+            "l.number IN ({})",
             vec!["?"; numbers.len()].join(", ")
         ));
         params.extend(numbers.iter().map(|x| n(*x as i64)));
     }
     if let Some(sha) = &hook.sha {
-        which.push("head_sha = ?".to_owned());
+        which.push("l.head_sha = ?".to_owned());
         params.push(s(sha));
     }
     if which.is_empty() {
@@ -122,7 +155,8 @@ pub async fn hook(
     let listed: Vec<Listed> = q(
         db,
         &format!(
-            "SELECT DISTINCT number FROM pull_request_sessions WHERE repo = ? AND ({}) LIMIT {MAX_LOOKUPS}",
+            "SELECT DISTINCT l.number AS number FROM pull_request_sessions l WHERE l.repo = ? AND ({}) \
+             AND {IN_REACH} LIMIT {MAX_LOOKUPS}",
             which.join(" OR ")
         ),
         &params,
@@ -244,9 +278,11 @@ pub async fn sweep(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
     }
     let stale: Vec<Stale> = q(
         db,
-        "SELECT repo, number FROM pull_request_sessions \
-         WHERE (state IS NULL OR state NOT IN ('merged', 'closed')) AND (checked_at IS NULL OR checked_at < ?) \
-         GROUP BY repo, number ORDER BY MAX(COALESCE(checked_at, 0)) LIMIT ?",
+        &format!(
+            "SELECT l.repo AS repo, l.number AS number FROM pull_request_sessions l \
+             WHERE (l.state IS NULL OR l.state NOT IN ('merged', 'closed')) AND (l.checked_at IS NULL OR l.checked_at < ?) \
+             AND {IN_REACH} GROUP BY l.repo, l.number ORDER BY MAX(COALESCE(l.checked_at, 0)) LIMIT ?"
+        ),
         &[n(now - SWEEP_AFTER_MS), n(SWEEP_LOOKUPS)],
     )?
     .all()
@@ -294,8 +330,11 @@ async fn settle(env: &Env, db: &D1Database, seen: &[Seen], now: i64) -> AppResul
     } else {
         q(
             db,
-            "SELECT repo, number, session_id FROM pull_request_sessions WHERE (repo, number) IN \
-             (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?))",
+            &format!(
+                "SELECT l.repo AS repo, l.number AS number, l.session_id AS session_id FROM pull_request_sessions l \
+                 WHERE (l.repo, l.number) IN \
+                 (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?)) AND {IN_REACH}"
+            ),
             &[s(&json!(found).to_string())],
         )?
         .all()

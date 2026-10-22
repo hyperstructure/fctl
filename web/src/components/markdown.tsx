@@ -6,6 +6,7 @@ import { createContext, memo, type ReactNode, useContext, useEffect, useState } 
 import { CopyButton, useLightbox } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { highlight } from "@/lib/highlight";
+import { textLink } from "@/lib/paths";
 
 /**
  * The pixel sizes of images the page knows before they load, by address:
@@ -62,12 +63,12 @@ function inline(tokens: Token[] | undefined, key = "i", linked = false): ReactNo
         return <br key={k} />;
       case "link": {
         const l = t as Tokens.Link;
-        const safe = /^(https?:|mailto:|#|\/)/i.test(l.href);
-        return safe ? (
+        const to = textLink(l.href);
+        return to ? (
           <a
             key={k}
-            href={l.href}
-            target={l.href.startsWith("http") ? "_blank" : undefined}
+            href={to.href}
+            target={to.kind === "web" ? "_blank" : undefined}
             rel="noreferrer noopener"
           >
             {inline(l.tokens, k, true)}

@@ -86,12 +86,12 @@ export function upstreamHeaders(rawHeaders, ip, { upgrade = false } = {}) {
   return out;
 }
 
-/** Response headers to pass back: Miniflare's own (an error's stack, MF-*) stay here. */
-export function downstreamHeaders(rawHeaders) {
+/** Response headers to pass back: Miniflare's own (an error's stack, MF-*) stay here. Upgrades keep Connection and Upgrade. */
+export function downstreamHeaders(rawHeaders, { upgrade = false } = {}) {
   const out = [];
   for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
     const lower = rawHeaders[i].toLowerCase();
-    if (lower.startsWith("mf-") || HOP_BY_HOP.has(lower)) continue;
+    if (lower.startsWith("mf-") || (!upgrade && HOP_BY_HOP.has(lower))) continue;
     out.push(rawHeaders[i], rawHeaders[i + 1]);
   }
   return out;
@@ -154,6 +154,11 @@ export function createProxy({ upstream, trustProxy, onError = () => {} }) {
     req.pipe(up);
   });
 
+  // A WebSocket handshake. What the client sends after it goes on only once
+  // the control plane switched protocols: piped before that, it would reach
+  // the control plane as more requests on the connection, past what this
+  // server drops (CF-Connecting-IP, MF-*, /cdn-cgi/). Any other answer goes
+  // back, and the connection ends with it.
   server.on("upgrade", (req, socket, head) => {
     socket.on("error", () => socket.destroy());
     const path = target(req.url);
@@ -161,26 +166,59 @@ export function createProxy({ upstream, trustProxy, onError = () => {} }) {
       socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
       return;
     }
+    if (req.method !== "GET" || req.headers["content-length"] || req.headers["transfer-encoding"]) {
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
     const ip = clientIp(req.socket.remoteAddress, req.headers["x-forwarded-for"], trustProxy);
-    const up = net.connect(upstream.port, upstream.host);
-    up.on("connect", () => {
-      const headers = upstreamHeaders(req.rawHeaders, ip, { upgrade: true });
-      up.write(`${req.method} ${path} HTTP/1.1\r\n${headerBlock(headers)}\r\n`);
-      if (head.length > 0) up.write(head);
+    const up = http.request({
+      host: upstream.host,
+      port: upstream.port,
+      method: "GET",
+      path,
+      headers: upstreamHeaders(req.rawHeaders, ip, { upgrade: true }),
+      // A connection of its own, which becomes the tunnel.
+      agent: false,
+    });
+    let answered = false;
+    up.on("upgrade", (res, tunnel, tunnelHead) => {
+      answered = true;
+      tunnel.on("error", () => tunnel.destroy());
+      if (socket.destroyed) {
+        tunnel.destroy();
+        return;
+      }
+      const headers = downstreamHeaders(res.rawHeaders, { upgrade: true });
+      socket.write(
+        `HTTP/1.1 101 ${res.statusMessage || "Switching Protocols"}\r\n${headerBlock(headers)}\r\n`,
+      );
+      if (tunnelHead.length > 0) socket.write(tunnelHead);
+      if (head.length > 0) tunnel.write(head);
       socket.setNoDelay(true);
-      up.setNoDelay(true);
-      socket.pipe(up).pipe(socket);
+      tunnel.setNoDelay(true);
+      tunnel.on("close", () => socket.destroy());
+      socket.on("close", () => tunnel.destroy());
+      socket.pipe(tunnel).pipe(socket);
+    });
+    up.on("response", (res) => {
+      answered = true;
+      const headers = [...downstreamHeaders(res.rawHeaders), "Connection", "close"];
+      socket.write(`HTTP/1.1 ${res.statusCode} ${res.statusMessage}\r\n${headerBlock(headers)}\r\n`);
+      res.on("error", () => socket.destroy());
+      res.pipe(socket);
     });
     up.on("error", (e) => {
-      if (!socket.destroyed && up.bytesRead === 0) {
+      if (!answered && !socket.destroyed) {
         socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         onError(e);
       } else {
         socket.destroy();
       }
     });
-    up.on("close", () => socket.destroy());
-    socket.on("close", () => up.destroy());
+    socket.on("close", () => {
+      if (!answered) up.destroy();
+    });
+    up.end();
   });
 
   /** Stops listening and drops every open connection (hosts and viewers reconnect). */

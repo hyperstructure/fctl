@@ -228,6 +228,14 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                 match &job.state {
                     ClaudeLoginState::AwaitingCode { url } if !prompted => {
                         prompted = true;
+                        // From the host the sign-in runs on, through the
+                        // control plane: only Claude's page is opened.
+                        if !fctl_domain::remote_control::is_login_url(url) {
+                            bail!(
+                                "The sign-in link isn't on claude.ai, so it wasn't opened: {}. Start again, or connect a long-lived token with `fctl claude connect`.",
+                                style::terminal_safe(url)
+                            );
+                        }
                         println!();
                         println!("1. Open this link and approve: {}", style::accent(url));
                         let _ = crate::cmd::auth::open_browser(url);

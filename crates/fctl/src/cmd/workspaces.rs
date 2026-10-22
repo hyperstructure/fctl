@@ -946,9 +946,14 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 style::bold(&w.name)
             );
             println!();
-            println!("  {}", link.url);
+            println!("  {}", style::terminal_safe(&link.url));
             println!();
-            if !no_browser && crate::cmd::auth::open_browser(&link.url) {
+            // The link goes through the server, which sends the browser on
+            // to GitHub: one to another site isn't opened.
+            if !no_browser
+                && fctl_client::http::same_site(api.base(), &link.url)
+                && crate::cmd::auth::open_browser(&link.url)
+            {
                 println!("{}", style::dim("Opened it in your browser."));
             }
             println!(

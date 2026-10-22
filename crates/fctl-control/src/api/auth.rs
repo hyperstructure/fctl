@@ -196,15 +196,10 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         body.name.as_deref(),
     )?;
     validate::password(&body.password, Some(&email))?;
-    if auth::user_by_email(ctx, &email).await?.is_some() {
-        return Err(conflict(
-            "An account with this email already exists. Sign in instead.",
-        ));
-    }
+    // The invitation first: without one for this address, the answer must
+    // not say whether it has an account (docs/architecture.md#early-access).
     let invite = match body.invite.as_deref() {
-        Some(token) => find_invite(ctx, token)
-            .await?
-            .filter(|i| i.accepted_at.is_none() && i.expires_at > ctx.now),
+        Some(token) => live_invite(ctx, token).await?,
         None => None,
     };
     let Some(invite) = invite else {
@@ -217,6 +212,11 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         return Err(validation(
             "email",
             "This invitation is for a different email address",
+        ));
+    }
+    if auth::user_by_email(ctx, &email).await?.is_some() {
+        return Err(conflict(
+            "An account with this email already exists. Sign in instead.",
         ));
     }
     if allow_match(ctx, &email).await?.is_none() {
@@ -466,7 +466,10 @@ pub async fn change_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     http::ok(&Ok { ok: true })
 }
 
-/// Always answers the same way, so it cannot be used to probe for accounts.
+/// Always answers the same way, so it cannot be used to probe for accounts:
+/// the link is made and sent after the response, so neither how long the
+/// answer takes nor whether the email could be sent says whether the
+/// address has one.
 pub async fn forgot_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: ForgotPasswordRequest = http::body(req).await?;
     ctx.rate_limit(&format!("forgot:{}", ctx.ip_key())).await?;
@@ -476,15 +479,44 @@ pub async fn forgot_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
         auth::user_by_email(ctx, &email).await?,
     ) && user.is_active()
     {
-        let url = create_reset_link(ctx, &user.id, None).await?;
+        let secret = new_secret(SecretKind::PasswordReset);
+        let url = reset_url(ctx, &secret);
         let text = format!(
             "Someone asked to reset the password of your {} account.\n\nChoose a new password: {url}\n\nThe link works for one hour. If it wasn't you, ignore this email.",
             ctx.cfg.instance_name
         );
-        // To the address they typed: any of the account's.
-        crate::email::send(&mail, &email, "Reset your password", &text).await?;
+        let db = crate::db::handle(&ctx.db);
+        let now = ctx.now;
+        ctx.defer(async move {
+            store_reset(&db, &secret, &user.id, None, now).await?;
+            // To the address they typed: any of the account's.
+            crate::email::send(&mail, &email, "Reset your password", &text).await
+        });
     }
     http::ok(&Ok { ok: true })
+}
+
+/// Where the reset link with `secret` opens.
+fn reset_url(ctx: &Ctx, secret: &str) -> String {
+    ctx.cfg.url(&format!("/reset#token={secret}"))
+}
+
+/// Keeps a one-hour password reset link's secret (its SHA-256) for `user_id`.
+async fn store_reset(
+    db: &worker::D1Database,
+    secret: &str,
+    user_id: &str,
+    created_by: Option<&str>,
+    now: i64,
+) -> AppResult<()> {
+    q(
+        db,
+        "INSERT INTO password_resets (token_hash, user_id, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+        &[s(&hash_secret(secret)), s(user_id), os(created_by), n(now), n(now + 60 * 60 * 1000)],
+    )?
+    .run()
+    .await?;
+    Ok(())
 }
 
 /// A one-hour password reset link for `user_id`.
@@ -494,14 +526,8 @@ pub async fn create_reset_link(
     created_by: Option<&str>,
 ) -> AppResult<String> {
     let secret = new_secret(SecretKind::PasswordReset);
-    q(
-        &ctx.db,
-        "INSERT INTO password_resets (token_hash, user_id, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-        &[s(&hash_secret(&secret)), s(user_id), os(created_by), n(ctx.now), n(ctx.now + 60 * 60 * 1000)],
-    )?
-    .run()
-    .await?;
-    Ok(ctx.cfg.url(&format!("/reset#token={secret}")))
+    store_reset(&ctx.db, &secret, user_id, created_by, ctx.now).await?;
+    Ok(reset_url(ctx, &secret))
 }
 
 #[derive(serde::Deserialize)]
@@ -862,7 +888,9 @@ async fn device_by_user_code(ctx: &Ctx, code: &str) -> AppResult<DeviceRow> {
 }
 
 pub async fn device_info(ctx: &Ctx, code: &str) -> AppResult<Response> {
-    ctx.user()?;
+    let user = ctx.user()?;
+    // Codes are short enough to type: nobody tries many of them.
+    ctx.rate_limit(&format!("device-code:{}", user.id)).await?;
     let row = device_by_user_code(ctx, code).await?;
     http::ok(&DeviceInfo {
         user_code: row.user_code,
@@ -878,6 +906,7 @@ pub async fn device_info(ctx: &Ctx, code: &str) -> AppResult<Response> {
 pub async fn device_decide(ctx: &mut Ctx, req: &mut Request, code: &str) -> AppResult<Response> {
     let body: DeviceDecisionRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
+    ctx.rate_limit(&format!("device-code:{}", user.id)).await?;
     let row = device_by_user_code(ctx, code).await?;
     let status = if body.approve { "approved" } else { "denied" };
     q(

@@ -1441,6 +1441,24 @@ impl SessionObject {
                         plan::merge(&mut usage, plan::readings(v, now));
                         ev::shape_for_storage(v);
                     }
+                    // What runs in the sandbox may pose as the agent, and
+                    // the apps show these as the session's own links:
+                    // pull requests only as GitHub's own URLs name them,
+                    // without checks, which are GitHub's to say.
+                    if let EventBody::Git(g) = &mut body {
+                        fctl_domain::pulls::from_agent_git(g, now);
+                    }
+                    // A published screenshot's link only to this instance's.
+                    if let EventBody::Notice(n) = &mut body
+                        && n.published.as_ref().is_some_and(|p| {
+                            !p.url.starts_with(&format!(
+                                "{}/api/v1/published/",
+                                crate::config::Config::from_env(&self.env).public_url
+                            ))
+                        })
+                    {
+                        n.published = None;
+                    }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
                         let (changed, new) = Self::apply_git(s, g, now);
                         lists_changed |= changed;

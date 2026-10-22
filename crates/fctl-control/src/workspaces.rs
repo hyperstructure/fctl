@@ -549,10 +549,12 @@ impl ConnectionRow {
         self.status == "active"
     }
 
+    /// Its repositories, `None` for every one. A list that doesn't read
+    /// is none of them, never every one.
     pub fn repos(&self) -> Option<Vec<String>> {
         self.repos
             .as_deref()
-            .and_then(|j| serde_json::from_str(j).ok())
+            .map(|j| serde_json::from_str(j).unwrap_or_default())
     }
 
     pub fn status(&self) -> GithubConnectionStatus {
