@@ -1936,8 +1936,15 @@ impl Supervisor {
         {
             let limit = tasks::limit(idle);
             if self.idle_since.is_some_and(|t| t.elapsed() > idle) {
-                self.begin_stop(stop_text(StopReason::Idle).to_owned(), 30_000)
-                    .await;
+                // A review agent's session ends when its review is done.
+                let reason = match &self.config {
+                    Some(c) if c.spec.review.is_some() && self.persisted.review_posted => {
+                        "Finished: its review is posted"
+                    }
+                    Some(c) if c.spec.review.is_some() => "Finished without posting its review",
+                    _ => stop_text(StopReason::Idle),
+                };
+                self.begin_stop(reason.to_owned(), 30_000).await;
             } else if (!self.tasks.is_empty() || self.claude_running)
                 && self.waiting_since.is_some_and(|t| t.elapsed() > limit)
             {
