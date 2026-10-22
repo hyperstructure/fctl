@@ -47,6 +47,56 @@ fn results_count_the_turns_still_waiting() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn warns_about_the_week_as_claude_code_does() -> Result<(), Box<dyn Error>> {
+    let mut claude = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+        .env("FAKE_CLAUDE_DELAY_MS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
+        return Err("fake-claude's stdin and stdout aren't piped".into());
+    };
+    let turns: String = ["Hello", "A warning, please"]
+        .iter()
+        .map(|text| {
+            format!(
+                "{}\n",
+                json!({"type": "user", "message": {"role": "user", "content": text}})
+            )
+        })
+        .collect();
+    stdin.write_all(turns.as_bytes())?;
+    let mut reports = Vec::new();
+    let mut results = 0;
+    for line in BufReader::new(stdout).lines() {
+        let v: Value = serde_json::from_str(&line?)?;
+        match v["type"].as_str() {
+            Some("rate_limit_event") => reports.push(v["rate_limit_info"].clone()),
+            Some("result") => results += 1,
+            _ => {}
+        }
+        if results == 2 {
+            break;
+        }
+    }
+    drop(stdin);
+    claude.wait()?;
+    let [plain, warned] = reports.as_slice() else {
+        return Err(format!("{} usage reports", reports.len()).into());
+    };
+    assert_eq!(plain["status"], "allowed");
+    assert_eq!(plain.get("rateLimitType"), None);
+    // The week's numbers come beside the status too.
+    assert_eq!(warned["status"], "allowed_warning");
+    assert_eq!(warned["rateLimitType"], "seven_day");
+    let week = &warned["unifiedWindows"]["seven_day"];
+    assert!(week["utilization"].is_f64());
+    assert_eq!(warned["utilization"], week["utilization"]);
+    assert_eq!(warned["resetsAt"], week["resetsAt"]);
+    Ok(())
+}
+
+#[test]
 fn background_work_ends_in_a_turn_of_its_own() -> Result<(), Box<dyn Error>> {
     let mut claude = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
         .env("FAKE_CLAUDE_DELAY_MS", "1")

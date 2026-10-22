@@ -35,7 +35,10 @@ describe("plan usage", () => {
     expect(standing(limit({ utilization: 0.42, resets_at: now + hour }), now)).toBe("fine");
     expect(standing(limit({}), now)).toBe("fine");
     expect(standing(limit({ utilization: 0.85, resets_at: now + hour }), now)).toBe("close");
-    expect(standing(limit({ utilization: 0.5, status: "allowed_warning" }), now)).toBe("close");
+    expect(standing(limit({ utilization: 0.9, resets_at: now + hour }), now)).toBe("critical");
+    // Claude Code warns about pace: a quarter of the week in its first day.
+    expect(standing(limit({ utilization: 0.25, status: "allowed_warning" }), now)).toBe("fine");
+    expect(standing(limit({ utilization: 0.93, status: "allowed_warning" }), now)).toBe("critical");
     expect(standing(limit({ utilization: 1.03, resets_at: now + hour }), now)).toBe("reached");
     expect(standing(limit({ status: "rejected", resets_at: now + hour }), now)).toBe("reached");
     // Once the window starts over, the reading says nothing about it.
@@ -53,11 +56,15 @@ describe("plan usage", () => {
 
   it("finds the limit to warn about", () => {
     const fine = limit({ window: "five_hour", utilization: 0.2 });
-    const close = limit({ window: "seven_day", utilization: 0.9, resets_at: now + hour });
+    const warned = limit({ window: "seven_day", utilization: 0.25, status: "allowed_warning" });
+    const close = limit({ window: "five_hour", utilization: 0.8, resets_at: now + hour });
+    const critical = limit({ window: "seven_day", utilization: 0.9, resets_at: now + hour });
     const reached = limit({ window: "seven_day_opus", status: "rejected", resets_at: now + hour });
     expect(pressing([fine], now)).toBeUndefined();
+    expect(pressing([fine, warned], now)).toBeUndefined();
     expect(pressing([fine, close], now)).toBe(close);
-    expect(pressing([fine, close, reached], now)).toBe(reached);
+    expect(pressing([close, critical], now)).toBe(critical);
+    expect(pressing([close, critical, reached], now)).toBe(reached);
     expect(reportedAt([limit({ observed_at: 5 }), limit({ observed_at: 9 })])).toBe(9);
   });
 

@@ -1279,6 +1279,13 @@ reported them, and a window whose reset time has passed counts as started
 over. Removing the connection deletes them. Hosts and agents need no update:
 they already pass every Claude message on.
 
+The apps go by the share used. From 80 % of a limit, the home page says how
+much of it is used, in amber, and from 90 % in red. At 100 %, or when Claude
+refuses requests (`rejected`), the limit is reached, and only then does a
+session's transcript say so. Claude's warning status (`allowed_warning`)
+doesn't count: Claude Code sends it when a limit goes faster than its window
+passes, as with a quarter of the week used in its first day.
+
 ## Sandboxes and drivers
 
 A driver turns a `SandboxSpec` (image, CPUs, memory, environment) into a

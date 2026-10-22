@@ -429,8 +429,10 @@ export class TranscriptBuilder {
       return;
     }
     if (isRateLimit(m)) {
+      // Claude Code reports usage as it moves, and warns (`allowed_warning`) when a limit goes
+      // faster than its window passes: only a refusal means a limit is reached.
       const info = m.rate_limit_info;
-      if (info.status !== "allowed") {
+      if (info.status === "rejected") {
         items.push({
           ...base,
           kind: "limit",

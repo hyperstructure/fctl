@@ -32,6 +32,7 @@
 //! | `delegate … in the background` | the same subagent in the background (`run_in_background`): its call returns at once and the turn ends; it takes a step every two seconds, and when it ends, a turn of its own takes its report |
 //! | `limit` | reports a five-hour usage limit that resets in 20 seconds, unless the turn also says `reset`, as fctl-agent's message that continues the session does |
 //! | `overage` | reports paid extra usage starting |
+//! | `warning` | reports plan usage with Claude Code's warning that the weekly limit goes faster than the week passes (`allowed_warning`), as Claude Code sends with a quarter of the week used in its first day |
 //! | `refresh` | asks its host for a fresh OAuth token |
 //! | `crash` | exits with status 3 |
 //! | `effort <level>` | works at that effort level from then on (`low` … `max`, or `none` as a model that takes none), as Claude Code does after `/effort <level>`, which it takes too; `get_settings` says so |
@@ -724,8 +725,10 @@ impl Session {
 
     /// Plan usage, as Claude Code reports it after a response: each window
     /// starts over on the clock (every five hours, every week since the
-    /// epoch) and fills up as it goes.
-    fn usage(&self) {
+    /// epoch) and fills up as it goes. With `warning`, it warns about the
+    /// week, as Claude Code does when a limit goes faster than its window
+    /// passes: `allowed_warning`, with the week's numbers beside the status.
+    fn usage(&self, warning: bool) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -735,8 +738,16 @@ impl Session {
             let used = start + (end - start) * elapsed;
             json!({"utilization": (used * 100.0).round() / 100.0, "resetsAt": now - now % secs + secs})
         };
+        let week = window(7 * 86_400, 0.1, 0.7);
+        let mut info = json!({"status": "allowed", "isUsingOverage": false, "unifiedWindows": {"five_hour": window(5 * 3600, 0.05, 0.85), "seven_day": week.clone()}});
+        if warning {
+            info["status"] = json!("allowed_warning");
+            info["rateLimitType"] = json!("seven_day");
+            info["utilization"] = week["utilization"].clone();
+            info["resetsAt"] = week["resetsAt"].clone();
+        }
         out(
-            &json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "isUsingOverage": false, "unifiedWindows": {"five_hour": window(5 * 3600, 0.05, 0.85), "seven_day": window(7 * 86_400, 0.1, 0.7)}}, "uuid": uuid(), "session_id": self.id}),
+            &json!({"type": "rate_limit_event", "rate_limit_info": info, "uuid": uuid(), "session_id": self.id}),
         );
     }
 
@@ -770,7 +781,7 @@ impl Session {
             );
             return;
         }
-        self.usage();
+        self.usage(lower.contains("warning"));
         if lower.contains("overage") {
             out(
                 &json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "rateLimitType": "five_hour", "isUsingOverage": true, "overageStatus": "allowed"}, "uuid": uuid(), "session_id": self.id}),

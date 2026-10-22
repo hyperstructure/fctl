@@ -85,10 +85,13 @@ the subagent works on, and a turn of its own takes its report), `limit`
 hits a usage limit that resets 20 seconds later (the session pauses and
 continues half a minute after the reset; a message that also says
 `reset`, like the one fctl-agent continues it with, doesn't count),
-`overage` reports paid usage (the session must pause), `refresh` asks
-the host for a new OAuth token, `effort <level>` (or Claude Code's
-`/effort <level>`) changes the effort level it works at (`low` … `max`, or
-`none` as a model that takes none), and `crash` exits mid-turn. Anything
+`overage` reports paid usage (the session must pause), `warning`
+reports plan usage with Claude Code's warning that the weekly limit goes
+faster than the week passes (`allowed_warning`: the apps go by the share
+used instead), `refresh` asks the host for a new OAuth token,
+`effort <level>` (or Claude Code's `/effort <level>`) changes the effort
+level it works at (`low` … `max`, or `none` as a model that takes none),
+and `crash` exits mid-turn. Anything
 else gets a short answer with a tool call. It answers `get_settings` with
 its model and effort level (`--effort`, else `medium`), which the session
 page and `fctl show` show. A message sent during a turn

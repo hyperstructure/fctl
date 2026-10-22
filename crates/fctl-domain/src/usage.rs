@@ -166,8 +166,10 @@ pub fn label(window: &str) -> String {
 pub enum Standing {
     /// Plenty left, or nothing known about the share.
     Fine,
-    /// Most of it is used: Claude warned, or 80 % is gone.
+    /// Most of it is used: 80 % is gone.
     Close,
+    /// Nearly all of it is used: 90 % is gone.
+    Critical,
     /// Used up: sessions pause until it resets.
     Reached,
     /// The window started over since the reading, so the share is stale.
@@ -176,14 +178,21 @@ pub enum Standing {
 
 /// A share this high counts as close to the limit.
 pub const CLOSE: f64 = 0.8;
+/// A share this high leaves almost nothing.
+pub const CRITICAL: f64 = 0.9;
 
+/// Only the share used and a refusal count. Claude Code warns
+/// (`allowed_warning`) when a limit goes faster than its window passes, as
+/// with a quarter of the week used in its first day, however much is left.
 pub fn standing(limit: &PlanLimit, now: Millis) -> Standing {
     let used = limit.utilization.unwrap_or(0.0);
     if limit.resets_at.is_some_and(|t| t <= now) {
         Standing::Reset
     } else if limit.status == Some(LimitStatus::Rejected) || used >= 1.0 {
         Standing::Reached
-    } else if limit.status == Some(LimitStatus::AllowedWarning) || used >= CLOSE {
+    } else if used >= CRITICAL {
+        Standing::Critical
+    } else if used >= CLOSE {
         Standing::Close
     } else {
         Standing::Fine
@@ -417,8 +426,15 @@ mod tests {
             standing(&at(Some(0.85), Some(2_000), None), now),
             Standing::Close
         );
-        let warned = at(Some(0.5), None, Some(LimitStatus::AllowedWarning));
-        assert_eq!(standing(&warned, now), Standing::Close);
+        assert_eq!(
+            standing(&at(Some(0.9), Some(2_000), None), now),
+            Standing::Critical
+        );
+        // Claude Code warns about pace: a quarter of the week in its first day.
+        let warned = at(Some(0.25), None, Some(LimitStatus::AllowedWarning));
+        assert_eq!(standing(&warned, now), Standing::Fine);
+        let warned = at(Some(0.93), None, Some(LimitStatus::AllowedWarning));
+        assert_eq!(standing(&warned, now), Standing::Critical);
         assert_eq!(
             standing(&at(Some(1.02), Some(2_000), None), now),
             Standing::Reached

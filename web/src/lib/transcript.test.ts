@@ -358,6 +358,32 @@ describe("TranscriptBuilder", () => {
     ]);
     expect(items[0]?.kind === "limit" && items[0].resetsAt).toBe(1_900_000_000_000);
   });
+
+  it("says nothing of usage that Claude only reports or warns about", () => {
+    const b = new TranscriptBuilder();
+    const windows = {
+      five_hour: { resetsAt: 1_792_675_200, utilization: 0.12 },
+      seven_day: { resetsAt: 1_793_192_400, utilization: 0.25 },
+    };
+    const items = b.add([
+      claude({ type: "rate_limit_event", rate_limit_info: { status: "allowed", unifiedWindows: windows } }),
+      // As Claude Code 2.1 sent it with a quarter of the week used in its first day.
+      claude({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "allowed_warning",
+          rateLimitType: "seven_day",
+          resetsAt: 1_793_192_400,
+          utilization: 0.25,
+          isUsingOverage: false,
+          overageStatus: "rejected",
+          overageDisabledReason: "org_level_disabled",
+          unifiedWindows: windows,
+        },
+      }),
+    ]);
+    expect(items).toEqual([]);
+  });
 });
 
 describe("live streaming", () => {
