@@ -85,7 +85,9 @@ pub async fn login(url: Option<&str>, no_browser: bool, json: bool) -> Result<()
             DevicePollResponse::Pending => {}
             DevicePollResponse::SlowDown => interval += Duration::from_secs(1),
             DevicePollResponse::Denied => bail!("The sign-in was denied."),
-            DevicePollResponse::Expired => bail!("The code expired. Run `fctl login` again."),
+            DevicePollResponse::Expired | DevicePollResponse::Verified { .. } => {
+                bail!("The code expired. Run `fctl login` again.")
+            }
             DevicePollResponse::Approved { token, me } => {
                 let mut creds = Credentials::load();
                 creds.tokens.insert(server.clone(), token);

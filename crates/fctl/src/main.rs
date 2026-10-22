@@ -10,6 +10,7 @@ mod prompt;
 mod render;
 mod stall;
 mod style;
+mod verify;
 
 use clap::{Parser, Subcommand};
 
@@ -261,6 +262,14 @@ fn main() {
         Err(e) => {
             if let Some(api) = e.downcast_ref::<fctl_client::Error>().and_then(|e| e.api()) {
                 eprintln!("{} {}", style::red("error:"), api.message);
+                if api.code == fctl_proto::ErrorCode::VerificationRequired {
+                    eprintln!(
+                        "{}",
+                        style::dim(
+                            "In a terminal, fctl asks for it. Without one, confirm first: `fctl account verify --code <code>`."
+                        )
+                    );
+                }
             } else {
                 eprintln!("{} {e:#}", style::red("error:"));
             }

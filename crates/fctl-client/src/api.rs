@@ -1,19 +1,29 @@
 //! A typed client for the control plane's REST API (`/api/v1`).
 
 use crate::http::{Error, HttpClient, Result};
-use fctl_proto::AttachmentId;
 use fctl_proto::api::*;
 use fctl_proto::event::{Attachment, PublishedFile};
 use fctl_proto::session::{Memory, Project, Session};
+use fctl_proto::{ApiError, AttachmentId, ErrorCode};
+use futures::future::BoxFuture;
 use http::Method;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::future::Future;
+use std::sync::Arc;
+
+/// Asks the person to confirm it's them when the server answers that a
+/// request needs it first (`verification_required`, with what it said),
+/// and confirms with the client it gets: whether they did, so that the
+/// request goes again. Without one, the error is the answer.
+pub type Verifier = Arc<dyn Fn(Api, ApiError) -> BoxFuture<'static, Result<bool>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Api {
     base: String,
     token: Option<String>,
     http: HttpClient,
+    verifier: Option<Verifier>,
 }
 
 fn enc(s: &str) -> String {
@@ -27,7 +37,15 @@ impl Api {
             base: base.trim_end_matches('/').to_owned(),
             token,
             http: HttpClient::default(),
+            verifier: None,
         }
+    }
+
+    /// The same client, asking `verifier` when a sensitive action needs the
+    /// person to confirm it's them first, then sending it again.
+    pub fn with_verifier(mut self, verifier: Verifier) -> Self {
+        self.verifier = Some(verifier);
+        self
     }
 
     pub fn base(&self) -> &str {
@@ -42,34 +60,70 @@ impl Api {
         format!("{}/api/v1{path}", self.base)
     }
 
+    /// Sends a request with `send`, and once more after the person
+    /// confirmed it's them, when the server asked for that and there is a
+    /// [`Verifier`] to ask them.
+    async fn confirming<T, F, Fut>(&self, send: F) -> Result<T>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        match send().await {
+            Err(Error::Api(e)) if e.code == ErrorCode::VerificationRequired => {
+                let Some(verifier) = self.verifier.clone() else {
+                    return Err(Error::Api(e));
+                };
+                let api = Self {
+                    verifier: None,
+                    ..self.clone()
+                };
+                if verifier(api, e.clone()).await? {
+                    send().await
+                } else {
+                    Err(Error::Api(e))
+                }
+            }
+            answer => answer,
+        }
+    }
+
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.http
-            .json::<(), T>(Method::GET, &self.url(path), self.token(), None)
-            .await
+        let url = self.url(path);
+        self.confirming(|| {
+            self.http
+                .json::<(), T>(Method::GET, &url, self.token(), None)
+        })
+        .await
     }
 
     async fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
-        self.http
-            .json(Method::POST, &self.url(path), self.token(), Some(body))
+        let url = self.url(path);
+        self.confirming(|| self.http.json(Method::POST, &url, self.token(), Some(body)))
             .await
     }
 
     async fn patch<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
-        self.http
-            .json(Method::PATCH, &self.url(path), self.token(), Some(body))
-            .await
+        let url = self.url(path);
+        self.confirming(|| {
+            self.http
+                .json(Method::PATCH, &url, self.token(), Some(body))
+        })
+        .await
     }
 
     async fn put<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
-        self.http
-            .json(Method::PUT, &self.url(path), self.token(), Some(body))
+        let url = self.url(path);
+        self.confirming(|| self.http.json(Method::PUT, &url, self.token(), Some(body)))
             .await
     }
 
     async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.http
-            .json::<(), T>(Method::DELETE, &self.url(path), self.token(), None)
-            .await
+        let url = self.url(path);
+        self.confirming(|| {
+            self.http
+                .json::<(), T>(Method::DELETE, &url, self.token(), None)
+        })
+        .await
     }
 
     // ── instance and auth ──
@@ -135,31 +189,63 @@ impl Api {
         self.post("/auth/logout", &serde_json::json!({})).await
     }
 
+    // ── confirming it's you ──
+
+    /// Whether sensitive actions ask you to confirm it's you, with what, and
+    /// until when this CLI or token counts as confirmed.
+    pub async fn verification(&self) -> Result<Verification> {
+        self.get("/auth/verify").await
+    }
+
+    /// Confirms it's you, with a code from your authenticator app or a
+    /// recovery code: this CLI or token counts as confirmed for 15 minutes.
+    pub async fn verify(&self, code: &str) -> Result<Verification> {
+        self.post(
+            "/auth/verify",
+            &VerifyRequest {
+                code: Some(code.to_owned()),
+                passkey: None,
+            },
+        )
+        .await
+    }
+
+    /// A code to approve in the browser, where passkeys work, which
+    /// confirms it's you for this CLI or token; [`Api::device_poll`] says
+    /// when it's done (`verified`).
+    pub async fn verify_in_browser(&self, client_name: &str) -> Result<DeviceStartResponse> {
+        self.post(
+            "/auth/verify/device",
+            &DeviceStartRequest {
+                client_name: client_name.to_owned(),
+            },
+        )
+        .await
+    }
+
     // ── your account ──
 
     /// Your personal data, as the JSON document `GET /me/export` streams.
     pub async fn export(&self) -> Result<Vec<u8>> {
         // Transcripts can be large: allow far longer than a normal request.
         let http = HttpClient::new(std::time::Duration::from_secs(600));
-        let (status, _, bytes) = http
-            .send(
-                Method::GET,
-                &self.url("/me/export"),
-                self.token(),
-                None,
-                None,
-            )
-            .await?;
-        if !status.is_success() {
-            if let Ok(e) = serde_json::from_slice::<fctl_proto::ApiError>(&bytes) {
-                return Err(Error::Api(e));
+        let url = self.url("/me/export");
+        self.confirming(|| async {
+            let (status, _, bytes) = http
+                .send(Method::GET, &url, self.token(), None, None)
+                .await?;
+            if !status.is_success() {
+                if let Ok(e) = serde_json::from_slice::<ApiError>(&bytes) {
+                    return Err(Error::Api(e));
+                }
+                return Err(Error::Status {
+                    status: status.as_u16(),
+                    body: String::from_utf8_lossy(&bytes).chars().take(500).collect(),
+                });
             }
-            return Err(Error::Status {
-                status: status.as_u16(),
-                body: String::from_utf8_lossy(&bytes).chars().take(500).collect(),
-            });
-        }
-        Ok(bytes.to_vec())
+            Ok(bytes.to_vec())
+        })
+        .await
     }
 
     /// What deleting your account would delete, and whether it can be deleted now.
