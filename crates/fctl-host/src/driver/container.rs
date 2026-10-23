@@ -288,7 +288,27 @@ impl ContainerDriver {
             root: None,
         };
         match self.state(&spec.name).await?.as_deref() {
-            Some("running") => return Ok(sb),
+            Some("running") => {
+                // Apple's `container` lists a sandbox it failed to stop as
+                // running, and refuses commands in it (see `halt`). A
+                // runtime that doesn't answer says nothing about that.
+                let e = match self.run(&["exec", &spec.name, "true"]).await {
+                    Ok(_) => return Ok(sb),
+                    Err(e) if unanswered(&e) => return Err(e),
+                    Err(e) => e,
+                };
+                tracing::warn!(
+                    "{} is listed as running but takes no commands, so the host starts it again: {e:#}",
+                    spec.name
+                );
+                log(format!(
+                    "Starting the sandbox {} again: it is listed as running but takes no commands",
+                    spec.name
+                ));
+                self.halt(&spec.name).await?;
+                self.run(&["start", &spec.name]).await?;
+                return Ok(sb);
+            }
             Some(_) => {
                 log(format!("Starting the existing sandbox {}", spec.name));
                 self.run(&["start", &spec.name]).await?;
@@ -816,9 +836,29 @@ impl ContainerDriver {
             if self.flavor == Flavor::Apple {
                 self.give_back_space(&sb.name).await;
             }
-            self.run(&["stop", "-t", "20", &sb.name]).await?;
+            self.halt(&sb.name).await?;
         }
         Ok(())
+    }
+
+    /// Stops the running sandbox `name`. Apple's `container` can fail to,
+    /// and leave it half stopped: listed as running, but refusing `exec`,
+    /// `cp` and `clean`, while `start` does nothing. It does when a program
+    /// in the sandbox made cgroups of its own (Podman, say) that the VM's
+    /// init fails to kill. A second `stop` finishes the job, so the host
+    /// stops a sandbox again while it is still listed as running.
+    async fn halt(&self, name: &str) -> Result<()> {
+        let stop = ["stop", "-t", "20", name];
+        let e = match self.run(&stop).await {
+            Ok(_) => return Ok(()),
+            Err(e) if unanswered(&e) => return Err(e),
+            Err(e) => e,
+        };
+        if self.state(name).await?.as_deref() != Some("running") {
+            return Ok(());
+        }
+        tracing::warn!("{name} did not stop, so the host stops it again: {e:#}");
+        self.run(&stop).await.map(drop)
     }
 
     /// Gives the Mac back the space of the files deleted in the running
@@ -1642,6 +1682,176 @@ mod tests {
                 "inspect --format {{.State.Status}} fctl-ses-1",
                 "stop -t 20 fctl-ses-1"
             ]
+        );
+        Ok(())
+    }
+
+    /// A stand-in for Apple's `container` with one sandbox, whose state its
+    /// API server (`listed`) and the VM's runtime (`runtime`) keep apart, as
+    /// Apple's do. With `wedge` there, a `stop` fails as Apple's did when
+    /// the VM's init couldn't kill the cgroups Podman had made in the
+    /// sandbox: the runtime is left stopping, and the API server lists the
+    /// sandbox as running. Then `exec`, `cp` and `clean` are refused, and
+    /// `start` does nothing, until a `stop` succeeds. With `stuck` there,
+    /// every `stop` fails. With `lost` there, it can't be started again once
+    /// it has answered an `inspect`.
+    const APPLE: &str = r##"#!/bin/sh
+d=$(dirname "$0")
+echo "$*" >> "$d/calls"
+for last in "$@"; do :; done
+listed=$(cat "$d/listed")
+runtime=$(cat "$d/runtime")
+refuse() {
+  printf 'Error: failed to %s (cause: "invalidState: "cannot %s: container is not running"")\n' "$1" "$2" >&2
+  exit 1
+}
+case "$1" in
+  inspect)
+    printf '[{"configuration": {"id": "%s"}, "status": "%s"}]\n' "$last" "$listed"
+    [ ! -e "$d/lost" ] || chmod 644 "$0" ;;
+  exec) [ "$runtime" = running ] || refuse "create process in container" exec ;;
+  cp) [ "$runtime" = running ] || refuse "copy into container" copyIn ;;
+  clean) [ "$runtime" = running ] || refuse "clean container" clean ;;
+  stop)
+    if [ -e "$d/stuck" ] || { [ -e "$d/wedge" ] && [ "$runtime" = running ]; }; then
+      [ "$runtime" != running ] || echo stopping > "$d/runtime"
+      printf 'Error: internalError: "failed to stop container" (cause: "internalError: "failed to stop container %s (cause: "internalError: "failed to delete process (cause: "internalError: "deleteProcess: failed with errno 95: failed to write to /sys/fs/cgroup/container/%s/libpod_parent/cgroup.kill"")"")"")\n' "$last" "$last" >&2
+      exit 1
+    fi
+    echo stopped > "$d/listed"
+    echo stopped > "$d/runtime"
+    echo "$last" ;;
+  start)
+    if [ "$listed" != running ]; then
+      echo running > "$d/listed"
+      echo running > "$d/runtime"
+    fi
+    echo "$last" ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+"##;
+
+    /// [`APPLE`] in `dir`, its sandbox `listed` as it says and its runtime
+    /// in the state `runtime`.
+    fn apple_cli(dir: &Path, listed: &str, runtime: &str) -> Result<ContainerDriver> {
+        std::fs::write(dir.join("listed"), listed)?;
+        std::fs::write(dir.join("runtime"), runtime)?;
+        let bin = dir.join("cli");
+        write_script(&bin, APPLE)?;
+        Ok(ContainerDriver::with_bin(
+            Flavor::Apple,
+            bin.display().to_string(),
+        ))
+    }
+
+    /// Readies the sandbox of [`spec`] with `driver`, and puts fctl-agent
+    /// in it: what it said in the session's log.
+    async fn ready(driver: &ContainerDriver) -> Result<Vec<String>> {
+        let lines = Mutex::new(Vec::new());
+        let log = |line: String| {
+            lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line)
+        };
+        let sb = driver.ensure(&spec(VERSION_IMAGE, None), &log).await?;
+        driver.install_agent(&sb, Path::new("fctl-agent")).await?;
+        Ok(lines.into_inner().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    #[tokio::test]
+    async fn apple_sandboxes_that_fail_to_stop_are_stopped_again() -> Result<()> {
+        let sb = Sandbox {
+            name: "fctl-ses-1".into(),
+            root: None,
+        };
+        let dir = tempfile::tempdir()?;
+        let apple = apple_cli(dir.path(), "running", "running")?;
+        std::fs::write(dir.path().join("wedge"), "")?;
+        apple.stop(&sb).await?;
+        assert_eq!(
+            calls_in(dir.path())?,
+            [
+                "inspect fctl-ses-1",
+                "exec fctl-ses-1 sync",
+                "clean fctl-ses-1",
+                "stop -t 20 fctl-ses-1",
+                "inspect fctl-ses-1",
+                "stop -t 20 fctl-ses-1"
+            ]
+        );
+        // The session resumes in it.
+        assert_eq!(
+            ready(&apple).await?,
+            ["Starting the existing sandbox fctl-ses-1"]
+        );
+
+        // One that doesn't stop the second time either is reported.
+        let dir = tempfile::tempdir()?;
+        let apple = apple_cli(dir.path(), "running", "running")?;
+        std::fs::write(dir.path().join("stuck"), "")?;
+        let error = error_of(apple.stop(&sb).await);
+        assert!(
+            error.ends_with("libpod_parent/cgroup.kill\"\")\"\")\"\")"),
+            "{error}"
+        );
+        let stops = calls_in(dir.path())?
+            .into_iter()
+            .filter(|c| c.starts_with("stop "))
+            .count();
+        assert_eq!(stops, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sandboxes_listed_as_running_that_take_no_commands_start_again() -> Result<()> {
+        // As hosts before this left the sandboxes they failed to stop.
+        let dir = tempfile::tempdir()?;
+        let apple = apple_cli(dir.path(), "running", "stopping")?;
+        assert_eq!(
+            ready(&apple).await?,
+            [
+                "Starting the sandbox fctl-ses-1 again: it is listed as running but takes no commands"
+            ]
+        );
+        assert_eq!(
+            calls_in(dir.path())?[..4],
+            [
+                "inspect fctl-ses-1",
+                "exec fctl-ses-1 true",
+                "stop -t 20 fctl-ses-1",
+                "start fctl-ses-1"
+            ]
+        );
+
+        // One that runs is taken as it is.
+        let dir = tempfile::tempdir()?;
+        let apple = apple_cli(dir.path(), "running", "running")?;
+        assert!(ready(&apple).await?.is_empty());
+        assert_eq!(
+            calls_in(dir.path())?[..2],
+            ["inspect fctl-ses-1", "exec fctl-ses-1 true"]
+        );
+        assert!(!calls_in(dir.path())?.contains(&"start fctl-ses-1".to_owned()));
+
+        // One whose runtime stops answering is left as it is.
+        let dir = tempfile::tempdir()?;
+        let apple = apple_cli(dir.path(), "running", "stopping")?;
+        std::fs::write(dir.path().join("lost"), "")?;
+        let lines = Mutex::new(Vec::new());
+        let log = |line: String| {
+            lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line)
+        };
+        let ensured = apple.ensure(&spec(VERSION_IMAGE, None), &log).await;
+        assert!(ensured.is_err_and(|e| e.is::<NotStarted>()));
+        assert!(
+            lines
+                .into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
         );
         Ok(())
     }

@@ -1985,6 +1985,16 @@ session deleted
 While a sandbox runs, it holds the space of the files deleted in it; with
 an older `container`, until the host removes the sandbox.
 
+Apple's `container` can fail to stop a sandbox and leave it half stopped:
+it still lists the sandbox as running, but refuses `exec`, `cp` and
+`clean`, and `container start` does nothing. It does when a program in the
+sandbox, Podman say, made cgroups of its own: as the VM's init stops the
+container, writing `cgroup.kill` in one of them fails (`EOPNOTSUPP`). A
+second `container stop` finishes the stop, so the host stops a sandbox
+again when stopping it fails while it is still listed as running. Before a
+session starts in a sandbox listed as running, the host runs `true` in it,
+and stops and starts one that refuses.
+
 fctl-agent runs detached inside the sandbox and listens on a unix socket; the
 host talks to it through `fctl-agent attach` over the driver's exec channel.
 Restarting or upgrading the host does not stop agents. The host pings the
