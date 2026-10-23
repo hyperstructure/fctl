@@ -721,7 +721,9 @@ queued → provisioning → preparing → running ⇄ idle → stopped
 A session holds a slot on its runner from the moment it starts until its
 sandbox stops. One that waits for a message stops after its project's idle
 timeout (`idle_timeout_minutes`: ten minutes unless the project sets
-another), so that its runner takes other work. fctl-agent ends Claude, and
+another), so that its runner takes other work. A review agent's session
+waits for nobody: it stops as soon as its review is posted and its turn
+has ended ([Review agents](#review-agents)). fctl-agent ends Claude, and
 the host stops the sandbox and keeps it (see
 [Sandboxes and drivers](#sandboxes-and-drivers)).
 
@@ -746,11 +748,12 @@ has ended and Claude Code has said `idle`. Background work keeps a session
 up for at most an hour after its last turn, or for the idle timeout when
 that is longer, so that a forgotten dev server doesn't hold the runner's
 slot for ever. When a session stops with background tasks still running
-(that limit, a person's stop, a drain, an uninstall), the transcript
-names them, and the next message tells Claude they didn't finish. The
-system prompt says how long background work may run after a turn ends.
-Such a session holds its slot as any other does, and a draining runner
-stops it after a minute, as it stops sessions that wait for a message.
+(that limit, a person's stop, a drain, an uninstall, a posted review),
+the transcript names them, and the next message tells Claude they didn't
+finish. The system prompt says how long background work may run after a
+turn ends. Such a session holds its slot as any other does, and a
+draining runner stops it after a minute, as it stops sessions that wait
+for a message.
 
 A message to a stopped session resumes it: from the web app, `fctl send`,
 `fctl attach` or the API, for anyone who may message the agent. SessionDO
@@ -1073,8 +1076,11 @@ posts what it found on GitHub
    holds at the pull request's head (fetched from `refs/pull/<n>/head`,
    forks' too), and the project's others. It gets none of the project's
    secrets, setup script, memory, retrospectives, claude.ai connectors or
-   Remote Control, and stops a minute after its last turn. Its system
-   prompt comes from the control plane (`ReviewSpec::instructions`,
+   Remote Control. Once the review is posted and its agent's turn has
+   ended, or the session paused for a usage limit, it stops at once,
+   background work and all, which frees its runner's slot; without a
+   review, it stops a minute after its last turn. Its system prompt comes
+   from the control plane (`ReviewSpec::instructions`,
    `fctl_domain::reviews::instructions`): review what the pull request
    changes and what that affects, and nothing else; bugs, security
    problems, breaks of the repository's rules and bad practices, without

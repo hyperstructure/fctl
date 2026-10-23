@@ -93,6 +93,9 @@ struct Persisted {
 /// fctl-agent reminds it ([`Supervisor::remind_reviewer`]).
 const REVIEW_REMINDER_AFTER: Duration = Duration::from_secs(5);
 
+/// Why a review agent's session stopped once its review was posted.
+const REVIEW_POSTED: &str = "Finished: its review is posted";
+
 pub(crate) enum Work {
     Prepared(Result<(), String>),
     /// A refresh of the repositories' state at a moment ended: what they
@@ -1380,7 +1383,7 @@ impl Supervisor {
         if self.turn_active {
             self.set_status(SessionStatus::Running, None);
         } else {
-            self.wait();
+            self.wait().await;
         }
         while let Some(d) = self.queue.pop_front() {
             self.on_delivery(d).await;
@@ -1533,7 +1536,7 @@ impl Supervisor {
         // Claude's word on its state: acted on, not kept.
         if let Some(state) = tasks::session_state(&v) {
             match state {
-                "idle" => self.claude_went_idle(),
+                "idle" => self.claude_went_idle().await,
                 "running" | "requires_action" => {
                     self.claude_running = true;
                     if !self.turn_active {
@@ -1587,7 +1590,7 @@ impl Supervisor {
                 && self.stopping.is_none()
                 && self.state.status == SessionStatus::Running
             {
-                self.wait();
+                self.wait().await;
             }
             self.after_turn();
         } else if tasks_changed
@@ -1595,19 +1598,26 @@ impl Supervisor {
             && self.stopping.is_none()
             && self.state.status == SessionStatus::Idle
         {
-            self.wait();
+            self.wait().await;
         }
     }
 
     /// The session waits: for Claude's background tasks while any run,
-    /// then for a message.
-    fn wait(&mut self) {
+    /// then for a message. A review agent's waits for nothing once its
+    /// review is posted: nobody messages it and it posts once, so it stops,
+    /// background work and all, and frees its runner's slot.
+    async fn wait(&mut self) {
+        if self.persisted.review_posted {
+            self.begin_stop(REVIEW_POSTED.to_owned(), 30_000).await;
+            return;
+        }
         let reviews = self
             .config
             .as_ref()
             .is_some_and(|c| c.spec.review.is_some());
         let reason = if reviews && self.tasks.is_empty() {
-            // It waits for nobody: once its turn ends, it stops.
+            // It waits for nobody: fctl-agent reminds it to post, once,
+            // and a minute after its last turn it stops.
             "The review session stops in a minute".to_owned()
         } else {
             tasks::waiting_reason(self.tasks.len())
@@ -1645,7 +1655,7 @@ impl Supervisor {
     /// background work that has ended. A `result` ends each turn, but one
     /// Claude started on its own can end without. A session that waits
     /// starts its idle clock, unless background tasks still run.
-    fn claude_went_idle(&mut self) {
+    async fn claude_went_idle(&mut self) {
         self.claude_running = false;
         let ended = self.turn_active && self.claude_turn;
         if ended {
@@ -1658,7 +1668,7 @@ impl Supervisor {
             _ => false,
         };
         if waits && self.stopping.is_none() {
-            self.wait();
+            self.wait().await;
         }
     }
 
@@ -1947,12 +1957,26 @@ impl Supervisor {
             .await;
     }
 
+    /// A review agent's session whose review was posted while it waited
+    /// (the answer came late) or paused (a usage limit) stops then, as the
+    /// end of the agent's turn stops it otherwise ([`Supervisor::wait`]).
+    async fn stop_reviewed(&mut self) {
+        let waits = matches!(
+            self.state.status,
+            SessionStatus::Idle | SessionStatus::Paused
+        );
+        if self.persisted.review_posted && waits && self.stopping.is_none() {
+            self.begin_stop(REVIEW_POSTED.to_owned(), 30_000).await;
+        }
+    }
+
     async fn on_tick(&mut self) {
         let now = now_ms();
         self.expire_publishes();
         self.expire_calls();
         self.sync();
         self.remind_reviewer().await;
+        self.stop_reviewed().await;
         // Usage limit reset: continue.
         if self.state.status == SessionStatus::Paused && self.resume_at.is_some_and(|t| now >= t) {
             self.resume_at = None;
@@ -1990,11 +2014,9 @@ impl Supervisor {
         {
             let limit = tasks::limit(idle);
             if self.idle_since.is_some_and(|t| t.elapsed() > idle) {
-                // A review agent's session ends when its review is done.
+                // A review agent's session ends when its review is done:
+                // one that posted it stopped already.
                 let reason = match &self.config {
-                    Some(c) if c.spec.review.is_some() && self.persisted.review_posted => {
-                        "Finished: its review is posted"
-                    }
                     Some(c) if c.spec.review.is_some() => "Finished without posting its review",
                     _ => stop_text(StopReason::Idle),
                 };
@@ -3789,6 +3811,263 @@ done
         assert_eq!(sent[5]["request"]["subtype"], "interrupt");
         assert_eq!(sent[8]["request"]["subtype"], "interrupt");
         assert_eq!(waiting(&sup).0, SessionStatus::Stopping);
+        Ok(())
+    }
+
+    /// A review agent's supervisor in the middle of its turn, with a host
+    /// link. Review sessions wait a minute after a turn without a review.
+    fn reviewing(
+        dir: &std::path::Path,
+    ) -> anyhow::Result<(Supervisor, mpsc::UnboundedReceiver<String>)> {
+        let (mut sup, host) = in_a_turn(dir)?;
+        if let Some(c) = sup.config.as_mut() {
+            c.spec.idle_timeout_secs = 60;
+            c.spec.review = Some(fctl_proto::runner::ReviewSpec {
+                repo: fctl_proto::session::RepoRef {
+                    owner: "acme".into(),
+                    name: "widgets".into(),
+                },
+                number: 12,
+                url: "https://github.com/acme/widgets/pull/12".into(),
+                title: "Retry failed uploads".into(),
+                head_sha: "3f2a1c9d00000000000000000000000000000000".into(),
+                head_ref: "fctl/12-retry".into(),
+                base_ref: "main".into(),
+                previous_sha: None,
+                instructions: String::new(),
+            });
+        }
+        Ok((sup, host))
+    }
+
+    /// The agent runs `fctl review submit`: returns the call's id, which
+    /// the host's answer names.
+    fn submit_review(
+        sup: &mut Supervisor,
+        host: &mut mpsc::UnboundedReceiver<String>,
+    ) -> anyhow::Result<(String, oneshot::Receiver<SessionReply>)> {
+        let (tx, rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: calling(AgentCall::SubmitReview {
+                summary: None,
+                findings: vec![],
+                resolved: vec![],
+            }),
+            reply: tx,
+        });
+        let id = std::iter::from_fn(|| host.try_recv().ok())
+            .find_map(|text| match serde_json::from_str(&text) {
+                Ok(AgentToHost::Call { request_id, .. }) => Some(request_id),
+                _ => None,
+            })
+            .ok_or_else(|| anyhow::anyhow!("the call didn't reach the host"))?;
+        Ok((id, rx))
+    }
+
+    /// fctl posted the review: the control plane's answer to the call.
+    fn posted(sup: &mut Supervisor, request_id: &str) {
+        let review = fctl_proto::api::PostedReview {
+            state: fctl_proto::api::ReviewState::Passed,
+            url: Some("https://github.com/acme/widgets/pull/12#issuecomment-80".into()),
+            comments: 0,
+            in_text: 0,
+            resolved: vec![],
+            still_open: 0,
+            again: false,
+            sent_to: None,
+        };
+        sup.on_answer(request_id, Some(AgentAnswer::ReviewPosted { review }), None);
+    }
+
+    /// The frames the host has been sent since last asked.
+    fn sent(host: &mut mpsc::UnboundedReceiver<String>) -> Vec<AgentToHost> {
+        std::iter::from_fn(|| host.try_recv().ok())
+            .filter_map(|text| serde_json::from_str(&text).ok())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_review_session_stops_as_the_turn_that_posted_ends() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = reviewing(dir.path())?;
+        sup.on_claude_message(task_started("b1", "Run the upload tests", "local_bash"))
+            .await;
+        let (call, mut reply) = submit_review(&mut sup, &mut host)?;
+        posted(&mut sup, &call);
+        assert!(matches!(reply.try_recv(), Ok(SessionReply::Answer { .. })));
+        // The agent says what it found: its turn runs until it ends.
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        sup.on_claude_message(says("Nothing to point out.")).await;
+        sent(&mut host);
+
+        sup.on_claude_message(result()).await;
+        // It stops at once, without waiting for a message or its
+        // background work, which the transcript names.
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Stopped,
+                Some("Finished: its review is posted")
+            )
+        );
+        let frames = sent(&mut host);
+        let statuses: Vec<SessionStatus> = frames
+            .iter()
+            .filter_map(|f| match f {
+                AgentToHost::State { state } => Some(state.status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(statuses, [SessionStatus::Stopping, SessionStatus::Stopped]);
+        let stopped_tasks = frames.iter().any(|f| {
+            matches!(f, AgentToHost::Events { events } if events.iter().any(|e| matches!(
+                &e.body,
+                EventBody::Notice(n) if n.code == "background_tasks_stopped"
+                    && n.message.ends_with("Run the upload tests (shell command)")
+            )))
+        });
+        assert!(stopped_tasks, "{frames:?}");
+        assert_eq!(
+            frames.last(),
+            Some(&AgentToHost::Exited {
+                status: SessionStatus::Stopped,
+                reason: Some("Finished: its review is posted".into()),
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_review_session_stops_as_a_turn_claude_starts_on_its_own_ends() -> anyhow::Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = reviewing(dir.path())?;
+        // The agent hands parts of the review to subagents, and waits.
+        sup.on_claude_message(turn_state("running")).await;
+        sup.on_claude_message(task_started("a1", "Review the sync worker", "local_agent"))
+            .await;
+        sup.on_claude_message(result()).await;
+        assert_eq!(
+            waiting(&sup),
+            (SessionStatus::Idle, Some("Waiting for a background task"))
+        );
+        sup.on_claude_message(task_ended("a1")).await;
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Idle,
+                Some("The review session stops in a minute")
+            )
+        );
+
+        // Claude takes their report in a turn of its own, and posts.
+        sup.on_claude_message(init()).await;
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        let (call, _reply) = submit_review(&mut sup, &mut host)?;
+        posted(&mut sup, &call);
+        sup.on_claude_message(says("Posted: one issue.")).await;
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        // The turn ends without a result.
+        sup.on_claude_message(turn_state("idle")).await;
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Stopped,
+                Some("Finished: its review is posted")
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_review_agent_that_doesnt_post_is_reminded_then_stops_a_minute_later()
+    -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = reviewing(dir.path())?;
+        sup.claude = Some(stub_claude(dir.path(), &sup)?);
+        sup.on_claude_message(result()).await;
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Idle,
+                Some("The review session stops in a minute")
+            )
+        );
+        sup.on_tick().await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Idle);
+
+        // Five seconds later, fctl-agent reminds it, once.
+        sup.idle_since = Some(Instant::now() - REVIEW_REMINDER_AFTER);
+        sup.on_tick().await;
+        assert!(sup.persisted.review_nudged && sup.turn_active);
+        assert_eq!(waiting(&sup), (SessionStatus::Running, None));
+        let reminded = sent_to_claude(dir.path(), 3).await?;
+        assert!(reminded.iter().any(|m| {
+            m["message"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("You haven't posted your review yet"))
+        }));
+        sup.on_claude_message(result()).await;
+        sup.idle_since = Some(Instant::now() - REVIEW_REMINDER_AFTER);
+        sup.on_tick().await;
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Idle,
+                Some("The review session stops in a minute")
+            )
+        );
+
+        // Without a review, the session stops a minute after its turn.
+        sup.idle_since = Some(Instant::now() - Duration::from_secs(61));
+        sup.on_tick().await;
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Stopped,
+                Some("Finished without posting its review")
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_review_posted_while_the_session_waits_or_pauses_stops_it() -> anyhow::Result<()> {
+        // The answer comes after the turn ended.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = reviewing(dir.path())?;
+        let (call, _reply) = submit_review(&mut sup, &mut host)?;
+        sup.on_claude_message(result()).await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Idle);
+        posted(&mut sup, &call);
+        sup.on_tick().await;
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Stopped,
+                Some("Finished: its review is posted")
+            )
+        );
+
+        // The usage limit ends the turn that posted it.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = reviewing(dir.path())?;
+        let (call, _reply) = submit_review(&mut sup, &mut host)?;
+        posted(&mut sup, &call);
+        sup.set_status(
+            SessionStatus::Paused,
+            Some("Waiting for the usage limit to reset".into()),
+        );
+        sup.on_claude_message(result()).await;
+        assert_eq!(waiting(&sup).0, SessionStatus::Paused);
+        sup.on_tick().await;
+        assert_eq!(
+            waiting(&sup),
+            (
+                SessionStatus::Stopped,
+                Some("Finished: its review is posted")
+            )
+        );
         Ok(())
     }
 

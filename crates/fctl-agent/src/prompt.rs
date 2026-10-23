@@ -501,7 +501,7 @@ pub fn review_system_prompt(
         ));
     }
     s.push_str("- Never print or log secrets.\n");
-    s.push_str("- Once your turn ends, the session stops a minute later. Background work you start (a subagent, a shell command with `run_in_background`) keeps it up while it runs, for up to an hour: wait for what you started before you post your review.\n");
+    s.push_str("- Once you've posted your review, the session stops as soon as your turn ends, and background work that still runs stops with it. Until then, background work you start (a subagent, a shell command with `run_in_background`) keeps the session up while it runs, for up to an hour: wait for what you started before you post your review.\n");
     s.push_str(&review.instructions);
     s
 }
@@ -1293,6 +1293,9 @@ mod tests {
         assert!(text.contains("fctl last reviewed it at 1a2b3c4: `git diff 1a2b3c4 HEAD`"));
         assert!(text.contains("acme/web (read only)"));
         assert!(text.contains("Neither can push, comment or review: fctl posts your review"));
+        assert!(text.contains(
+            "Once you've posted your review, the session stops as soon as your turn ends"
+        ));
         assert!(text.contains("This sandbox has 2 CPUs and 4 GiB of memory"));
         assert!(text.ends_with("## What to review\n\nThe change.\n"));
         // Nothing of the work other sessions do.
