@@ -272,9 +272,10 @@ outside it except through these channels:
   when a repository or a web page tells it to. Long-lived tokens from
   `claude setup-token` don't reach connectors. The **claude.ai connectors**
   project setting turns them off for a project's sessions, and a
-  repository's Claude settings can't turn them back on. Projects created in
-  the app start with it off (from the CLI: `fctl projects create
-  --no-connectors`); projects from before the setting keep their connectors
+  repository's Claude settings can't turn them back on. New projects start with
+  it off, in the app, from the CLI and through the API (turn it on in the
+  form, with `fctl projects create --connectors`, or in Settings);
+  projects from before the setting keep their connectors
   until a maintainer turns them off.
 - **fctl.** No fctl credentials enter a sandbox. Through fctl-agent's
   session socket, anything the agent runs can rename its own session and
