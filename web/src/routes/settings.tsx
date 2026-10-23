@@ -25,6 +25,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
+import { OnRunnersDetails, OnRunnersSetup } from "@/components/claude/on-runners";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
 import { AccessTokens } from "@/components/tokens";
@@ -52,6 +53,7 @@ import {
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api, confirmFirst, emails, workspaces as wsApi } from "@/lib/api";
+import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { ago, browserName } from "@/lib/format";
@@ -414,8 +416,14 @@ function Workspaces({ me }: { me: G.Me }) {
                     {roleLabel(w.role)} · as {w.email}
                     {w.blocked && <span className="text-amber"> · closed until you set up two-factor</span>}
                   </div>
-                  {w.own_runners && (
-                    <div className="truncate text-[12px] text-ink-4">Only on your runners</div>
+                  {tokenOnRunnersIn(me, w) ? (
+                    <div className="truncate text-[12px] text-ink-4">
+                      Only on your runners that keep your Claude token
+                    </div>
+                  ) : (
+                    w.own_runners && (
+                      <div className="truncate text-[12px] text-ink-4">Only on your runners</div>
+                    )
                   )}
                 </div>
               </Link>
@@ -510,12 +518,13 @@ function Claude({ me }: { me: G.Me }) {
 
   return (
     <Section
+      id="claude"
       title="Claude"
       description={
         <>
           Sessions you start run on your own Claude subscription. fctl refuses API keys and stops a session
           before it would draw on paid extra usage. Each connection shows how much of its plan's limits is
-          used, as sessions last reported it.
+          used, as sessions last reported it. Keep the token on your runners, and fctl never receives it.
         </>
       }
     >
@@ -528,18 +537,28 @@ function Claude({ me }: { me: G.Me }) {
                   <span
                     className={cn(
                       "flex size-8 items-center justify-center rounded-md border",
-                      c.remote_control
+                      c.remote_control || c.on_runners
                         ? "border-accent/30 bg-accent-soft text-accent"
                         : "border-line bg-raised text-ink-3",
                     )}
                   >
-                    {c.remote_control ? <Radio className="size-4" /> : <KeyRound className="size-4" />}
+                    {c.on_runners ? (
+                      <ShieldCheck className="size-4" />
+                    ) : c.remote_control ? (
+                      <Radio className="size-4" />
+                    ) : (
+                      <KeyRound className="size-4" />
+                    )}
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[13.5px] text-ink">
                       {c.account_email ??
                         c.label ??
-                        (c.kind === "oauth" ? "Claude login" : "Long-lived token")}
+                        (c.on_runners
+                          ? "Token on your runners"
+                          : c.kind === "oauth"
+                            ? "Claude login"
+                            : "Long-lived token")}
                       {c.is_default && (
                         <span className="ml-2 rounded-full bg-raised px-1.5 py-0.5 text-[10.5px] text-ink-3">
                           used for new sessions
@@ -547,9 +566,11 @@ function Claude({ me }: { me: G.Me }) {
                       )}
                     </div>
                     <div className="text-[12px] text-ink-4">
-                      {c.kind === "oauth"
-                        ? "Full login · Remote Control"
-                        : "Inference only · no Remote Control"}
+                      {c.on_runners
+                        ? "Kept on your runners · fctl never receives it · no Remote Control"
+                        : c.kind === "oauth"
+                          ? "Full login · Remote Control"
+                          : "Inference only · no Remote Control"}
                       {c.subscription_type && ` · ${c.subscription_type}`}
                       {c.status === "invalid" && <span className="text-danger"> · needs reconnecting</span>}
                       {c.last_used_at && ` · used ${ago(c.last_used_at)}`}
@@ -569,7 +590,8 @@ function Claude({ me }: { me: G.Me }) {
                     <Trash2 className="size-3.5" />
                   </button>
                 </div>
-                <div className="mt-3 pl-11">
+                <div className="mt-3 flex flex-col gap-4 pl-11">
+                  {c.on_runners && <OnRunnersDetails />}
                   {c.usage?.length ? (
                     <PlanUsageList usage={c.usage} />
                   ) : (
@@ -693,6 +715,8 @@ function Claude({ me }: { me: G.Me }) {
           </div>
           {add.error && <p className="mt-2 text-[12.5px] text-danger">{add.error.message}</p>}
         </form>
+
+        {!me.claude.some((c) => c.on_runners) && <OnRunnersSetup />}
       </div>
     </Section>
   );

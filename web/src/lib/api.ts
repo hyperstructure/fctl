@@ -323,6 +323,7 @@ export const api = {
   testNotification: () => request<G.PushTestResult>("POST", "/me/notifications/test", {}),
 
   claudeToken: (b: G.AddClaudeTokenRequest) => request<G.Me>("POST", "/me/claude/token", b),
+  claudeOnRunners: (b: G.AddClaudeOnRunnersRequest = {}) => request<G.Me>("POST", "/me/claude/on-runners", b),
   claudeLogin: () => request<G.ClaudeLoginJob>("POST", "/me/claude/login", {}),
   claudeLoginJob: (id: string) => request<G.ClaudeLoginJob>("GET", `/me/claude/login/${enc(id)}`),
   claudeLoginCode: (id: string, code: string) =>
