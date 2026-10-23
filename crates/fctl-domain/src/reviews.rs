@@ -11,11 +11,12 @@
 
 use crate::threads;
 use crate::validate::{self, Result};
-use fctl_proto::ApiError;
 use fctl_proto::api::{
     FindingThread, ResolvedFinding, ReviewFinding, ReviewState, Severity, ThreadReply,
 };
+use fctl_proto::event::{PassedOnFinding, PassedOnReview};
 use fctl_proto::session::RepoRef;
+use fctl_proto::{ApiError, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1453,9 +1454,13 @@ pub fn spots(listed: &Value, findings: &[ReviewFinding], placed: &[Placed]) -> V
 pub struct Found<'a> {
     pub repo: &'a RepoRef,
     pub number: u64,
+    /// The pull request on GitHub.
+    pub url: &'a str,
     pub title: &'a str,
     /// The commit reviewed, in full.
     pub sha: &'a str,
+    /// The review agent's session.
+    pub session: &'a str,
     /// The review's summary on GitHub, which comes before the review of
     /// the findings on their lines, and that review's id.
     pub summary_url: Option<&'a str>,
@@ -1482,6 +1487,13 @@ impl Found<'_> {
     fn spot(&self, i: usize) -> &Spot {
         self.spots.get(i).unwrap_or(&Spot::Lines)
     }
+
+    /// The findings by their index, most severe first.
+    fn order(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.findings.len()).collect();
+        order.sort_by_key(|&i| self.findings[i].severity);
+        order
+    }
 }
 
 /// The longest a finding's text is in the message about it: what the
@@ -1502,8 +1514,7 @@ pub fn passed_on(f: &Found<'_>) -> String {
         issues(f.findings.len()),
         f.link()
     );
-    let mut order: Vec<usize> = (0..f.findings.len()).collect();
-    order.sort_by_key(|&i| f.findings[i].severity);
+    let order = f.order();
     for (n, &i) in order.iter().enumerate() {
         let finding = &f.findings[i];
         let spot = f.spot(i);
@@ -1589,6 +1600,43 @@ pub fn passed_on(f: &Found<'_>) -> String {
     s.push_str(&after.join(" "));
     s.push('\n');
     s
+}
+
+/// What the transcript of the session that opened the pull request shows
+/// of the message [`passed_on`] writes: the review, and its findings in
+/// the message's order, each with where it is on GitHub (the comment that
+/// starts its thread, or the review's summary).
+pub fn passed_on_review(f: &Found<'_>) -> PassedOnReview {
+    let title = f.title.trim();
+    PassedOnReview {
+        repo: f.repo.clone(),
+        number: f.number,
+        url: f.url.to_owned(),
+        title: (!title.is_empty()).then(|| title.to_owned()),
+        sha: f.sha.to_owned(),
+        summary_url: f.summary_url.map(str::to_owned),
+        session: SessionId(f.session.to_owned()),
+        findings: f
+            .order()
+            .into_iter()
+            .map(|i| {
+                let finding = &f.findings[i];
+                PassedOnFinding {
+                    severity: finding.severity,
+                    title: finding.title.clone(),
+                    path: finding.path.clone(),
+                    line: finding.line,
+                    start_line: finding.start_line,
+                    deleted: finding.deleted,
+                    url: match f.spot(i) {
+                        Spot::Comment { url, .. } => Some(url.clone()),
+                        Spot::Text => f.summary_url.map(str::to_owned),
+                        Spot::Lines => None,
+                    },
+                }
+            })
+            .collect(),
+    }
 }
 
 /// What the transcript of the session that opened the pull request says
@@ -2592,8 +2640,10 @@ mod tests {
         let found = Found {
             repo: &repo,
             number: 12,
+            url: "https://github.com/acme/web/pull/12",
             title: " Fix the login redirect ",
             sha: SHA,
+            session: "ses_review",
             summary_url: Some("https://github.com/acme/web/pull/12#issuecomment-79"),
             review_id: Some(80),
             findings: &findings,
@@ -2661,5 +2711,90 @@ mod tests {
         assert!(!m.contains("review's summary"));
         assert!(held_back(&one).contains("fctl didn't pass it on: "));
         assert!(held_back(&one).ends_with("Message the agent to have it look at this one."));
+    }
+
+    #[test]
+    fn the_opener_s_transcript_shows_the_findings_in_the_message_s_order() {
+        let repo = pr().repo;
+        let mut low = finding("README.md", 3);
+        low.severity = Severity::Low;
+        low.title = "The README names an old flag".into();
+        let mut high = finding("src/sync/upload.rs", 42);
+        high.severity = Severity::High;
+        high.title = "Uploads never stop retrying".into();
+        high.start_line = Some(38);
+        let mut removed = finding("src/auth.rs", 9);
+        removed.deleted = true;
+        let findings = [low, high, removed];
+        let spots = [
+            Spot::Text,
+            Spot::Comment {
+                id: 101,
+                url: "https://github.com/acme/web/pull/12#discussion_r101".into(),
+            },
+            Spot::Lines,
+        ];
+        let summary = "https://github.com/acme/web/pull/12#issuecomment-79";
+        let found = Found {
+            repo: &repo,
+            number: 12,
+            url: "https://github.com/acme/web/pull/12",
+            title: " Fix the login redirect ",
+            sha: SHA,
+            session: "ses_review",
+            summary_url: Some(summary),
+            review_id: Some(80),
+            findings: &findings,
+            spots: &spots,
+        };
+        let shown = passed_on_review(&found);
+        assert_eq!(shown.repo, repo);
+        assert_eq!(shown.url, "https://github.com/acme/web/pull/12");
+        assert_eq!(shown.title.as_deref(), Some("Fix the login redirect"));
+        assert_eq!(shown.sha, SHA);
+        assert_eq!(shown.session.0, "ses_review");
+        assert_eq!(shown.summary_url.as_deref(), Some(summary));
+        // Most severe first, as the message lists them, each where it is:
+        // its comment, the summary for one the diff doesn't show, nowhere
+        // known for one whose comment GitHub didn't list.
+        let titles: Vec<&str> = shown.findings.iter().map(|f| f.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "Uploads never stop retrying",
+                "Retries never stop",
+                "The README names an old flag"
+            ]
+        );
+        let message = passed_on(&found);
+        let at = |t: &str| message.find(&format!(". {t}\n"));
+        assert!(at(titles[0]) < at(titles[1]) && at(titles[1]) < at(titles[2]));
+        let [high, removed, low] = &shown.findings[..] else {
+            panic!("{shown:?}");
+        };
+        assert_eq!(
+            (
+                high.severity,
+                high.path.as_str(),
+                high.start_line,
+                high.line
+            ),
+            (Severity::High, "src/sync/upload.rs", Some(38), 42)
+        );
+        assert_eq!(
+            high.url.as_deref(),
+            Some("https://github.com/acme/web/pull/12#discussion_r101")
+        );
+        assert!(removed.deleted && removed.url.is_none());
+        assert_eq!(low.url.as_deref(), Some(summary));
+        // Without a title or a summary, it says none.
+        let bare = passed_on_review(&Found {
+            title: " ",
+            summary_url: None,
+            ..found.clone()
+        });
+        assert_eq!(bare.title, None);
+        assert_eq!(bare.summary_url, None);
+        assert_eq!(bare.findings[2].url, None);
     }
 }

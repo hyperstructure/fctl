@@ -50,6 +50,7 @@ import { callsIn, lastRun, parts } from "@/lib/runs";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
+import { FindingsMessage } from "./findings";
 import { FollowUpMessage, HeldFollowUp } from "./follow-up";
 import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { thinkingNow } from "./thinking";
@@ -65,6 +66,7 @@ const UserMessage = memo(function UserMessage({
   const author = item.author;
   const files = item.attachments ?? [];
   if (item.followUp) return <FollowUpMessage followUp={item.followUp} text={item.text} ts={item.ts} />;
+  if (item.review) return <FindingsMessage review={item.review} text={item.text} ts={item.ts} />;
   return (
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
       <div className="mb-1.5 flex items-center gap-2.5 text-[12.5px]">
@@ -80,7 +82,7 @@ const UserMessage = memo(function UserMessage({
       </div>
       {item.text && (
         <div className="ml-[34px] rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap wrap-anywhere text-ink">
-          {item.text}
+          {item.source === "system" && long(item.text) ? <LongText text={item.text} /> : item.text}
         </div>
       )}
       {files.length > 0 && (
@@ -91,6 +93,34 @@ const UserMessage = memo(function UserMessage({
     </div>
   );
 });
+
+/** Whether a message is more than a few lines, wherever it shows. */
+const long = (text: string) => text.length > 600 || text.split("\n").length > 8;
+
+/**
+ * A long message from fctl that the transcript has no view of its own for (review findings that fctl
+ * passed on before it had one): its first lines, with the rest a click away.
+ */
+function LongText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <>
+      <div id={id} className={cn(!open && "line-clamp-5")}>
+        {text}
+      </div>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls={id}
+        className="mt-1 text-[12.5px] text-ink-3 transition-colors hover:text-ink"
+      >
+        {open ? "Show less" : "Show all"}
+      </button>
+    </>
+  );
+}
 
 /**
  * A note the agent kept in the project's memory, or marked stale (a
