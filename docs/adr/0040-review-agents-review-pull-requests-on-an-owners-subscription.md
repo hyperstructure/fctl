@@ -55,7 +55,7 @@ to pay for the reviews: the person who turns them on.
   summary, a comment on the pull request (how many issues, the agent's
   sentence or two, findings on lines the diff doesn't show), then one
   review of the commit with the other findings on their lines and no
-  text of its own. GitHub's mobile apps show a review's own text below its
+  text of its own. GitHub's mobile app shows a review's own text below its
   comments, so a summary in the review would come after the findings it
   sums up; as a comment of its own, posted first, it comes above them
   everywhere. Each later review says atop the earlier summaries how
