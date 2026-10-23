@@ -759,6 +759,8 @@ fn host(root: &Path, state: &Path, token: &str) -> Result<Child> {
          agent_bin = {agent}\n\
          data_dir = {data}\n\
          push_on_commit = false\n\
+         # It runs what cargo builds, never a release.\n\
+         auto_update = false\n\
          # Development machines and CI runners may have less free than the 20 GiB\n\
          # a host keeps by default, and would take no sessions.\n\
          min_free_disk_gb = 1\n",

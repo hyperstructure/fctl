@@ -451,9 +451,10 @@ over can't make its hosts install anything else, or an older fctl. The host
 checks the archive against its SHA-256 and runs the new fctl before
 anything changes, as `fctl self update` does. The checksum comes from the
 same server, though: it catches broken downloads, not a release server
-taken over, so leaving updates on means trusting fctl.sh with what runs on
-the machine without choosing when, where `fctl self update` lets you look
-at a release first. Turn updates off on machines where that matters.
+taken over. Leaving updates on trusts fctl.sh with what runs on the
+machine, as installing from it does, without choosing when; with them off,
+`fctl self update` updates the host when you choose, once you have looked
+at the release. Turn updates off on machines where that matters.
 
 Sessions run in their project's sandbox image or, without one, the host's:
 by default `ghcr.io/hyperstructure/sandbox`, which the Image workflow of
