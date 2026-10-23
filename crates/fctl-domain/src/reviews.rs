@@ -1291,9 +1291,12 @@ pub fn restated(summary: &Summary, now: Standing, links: &Links<'_>) -> Option<S
     if (summary.note.fixed, summary.note.resolved) == (now.fixed, now.resolved) {
         return None;
     }
+    // A line atop it, once its note counts what it says: the agent's text
+    // below may hold anything.
+    let said = summary.note.fixed + summary.note.resolved > 0;
     let posted = match summary.body.split_once(STATUS) {
-        Some((_, posted)) => posted,
-        None => &summary.body,
+        Some((_, posted)) if said => posted,
+        _ => &summary.body,
     };
     let note = Note {
         fixed: now.fixed,
@@ -2225,5 +2228,30 @@ mod tests {
             restated(&second, none, &later()).as_deref(),
             Some(summary.body.as_str())
         );
+
+        // fctl's marks in what the agent wrote cut nothing out.
+        let findings = [finding("a.rs", 1)];
+        let placed = [Placed::Text];
+        let body = summary_text(
+            Some(&format!("Small.\n\n{STATUS}\n\nAnd tidy.")),
+            &findings,
+            &placed,
+            0,
+            &links(),
+        );
+        let steered = Summary {
+            id: "IC_2".into(),
+            note: Note::of(&body).unwrap_or_default(),
+            body,
+            minimized: false,
+        };
+        let one = Standing {
+            found: 1,
+            fixed: 0,
+            resolved: 1,
+        };
+        let text = restated(&steered, one, &later()).unwrap_or_default();
+        assert!(text.contains("**fctl reviewed [`3f2a1c9`]"));
+        assert!(text.contains("Small.\n\n\n\nAnd tidy."));
     }
 }
