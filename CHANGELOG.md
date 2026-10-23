@@ -2,6 +2,27 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.21.0 (2026-10-23)
+
+### Features
+
+- Let comments, failed checks and merges bring agents back ([#228](https://github.com/hyperstructure/fctl/pull/228))
+- Start sessions on a schedule, or when another tool asks ([#229](https://github.com/hyperstructure/fctl/pull/229))
+- Show review findings in a few lines in the transcript ([#233](https://github.com/hyperstructure/fctl/pull/233))
+- **web:** List a project's active sessions under it on a session's page ([#234](https://github.com/hyperstructure/fctl/pull/234))
+- **web:** List a project's active sessions under it on its page too ([#237](https://github.com/hyperstructure/fctl/pull/237))
+- Let merge conflicts bring agents back to their pull requests ([#238](https://github.com/hyperstructure/fctl/pull/238))
+- Share package caches between a project's sessions on each runner ([#240](https://github.com/hyperstructure/fctl/pull/240))
+
+### Fixes
+
+- **control:** Look pull requests up fewer at a time when GitHub gives up ([#227](https://github.com/hyperstructure/fctl/pull/227))
+- **xtask:** Run wrangler again when Cloudflare's API throttles it ([#230](https://github.com/hyperstructure/fctl/pull/230))
+- **web:** Keep a start form's files in it while the session starts ([#231](https://github.com/hyperstructure/fctl/pull/231))
+- **agent:** Stop review sessions as soon as their review is posted ([#235](https://github.com/hyperstructure/fctl/pull/235))
+- Start new projects with claude.ai connectors off ([#236](https://github.com/hyperstructure/fctl/pull/236))
+- Close access gaps found in a security pass ([#239](https://github.com/hyperstructure/fctl/pull/239))
+
 ## 0.20.1 (2026-10-23)
 
 ### Features
