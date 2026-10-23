@@ -619,12 +619,15 @@ pub struct FollowUps {
     pub checks: bool,
     /// It was merged, or closed without being merged.
     pub closed: bool,
+    /// It conflicts with its base branch: it can't merge until its branch
+    /// takes in what the base branch got since.
+    pub conflicts: bool,
 }
 
 impl FollowUps {
     /// Whether anything brings agents back.
     pub fn any(&self) -> bool {
-        self.comments || self.checks || self.closed
+        self.comments || self.checks || self.closed || self.conflicts
     }
 }
 

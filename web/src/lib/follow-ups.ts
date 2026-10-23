@@ -1,7 +1,8 @@
 // Follow-ups: what brings an agent back to a pull request its session opened, where its project
 // turns them on. fctl passes on what happened there in a message from fctl: a person's comment
-// that addresses the agent, failed checks, a merge. Here: how the transcript shows it, as GitHub
-// has it, and how a project's settings say what brings its agents back.
+// that addresses the agent, failed checks, conflicts with its base branch, a merge. Here: how the
+// transcript shows it, as GitHub has it, and how a project's settings say what brings its agents
+// back.
 
 import type * as G from "@/gen";
 
@@ -71,7 +72,7 @@ export function lines(c: Pick<G.FollowUpComment, "path" | "line" | "start_line">
 /** `web#12`: the pull request by its repository's name. */
 export const pullRef = (f: Pick<G.FollowUp, "repo" | "number">) => `${f.repo.name}#${f.number}`;
 
-/** What happened, for a line of its own: "web#12 was merged into main by ada". */
+/** What happened, for a line of its own: "Merged into main by ada", "Conflicts with main". */
 export function happenedText(f: Pick<G.FollowUp, "repo" | "number" | "base">, e: Happened): string {
   switch (e.kind) {
     case "checks_failed": {
@@ -84,8 +85,25 @@ export function happenedText(f: Pick<G.FollowUp, "repo" | "number" | "base">, e:
     }
     case "closed":
       return `Closed without merging${e.by ? ` by ${e.by}` : ""}`;
+    case "conflicts": {
+      const into = e.base ?? f.base;
+      return `Conflicts with ${into ?? "its base branch"}`;
+    }
   }
 }
+
+/** The commit a line of what happened is about: failed checks' and conflicts'. */
+export function happenedAt(e: Happened): string | undefined {
+  return e.kind === "checks_failed" || e.kind === "conflicts" ? e.sha : undefined;
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function listed(items: string[]): string {
+  if (items.length < 2) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+const capitalized = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The checks still running and those that passed, after failed ones: "1 still running · 7 passed". */
 export function checksRest(e: Extract<Happened, { kind: "checks_failed" }>): string {
@@ -94,30 +112,32 @@ export function checksRest(e: Extract<Happened, { kind: "checks_failed" }>): str
     .join(" · ");
 }
 
-/** What brings a project's agents back to their pull requests, in a few words, for its settings. */
-export function followUpsSummary(f: G.FollowUps): string {
-  const on = [f.comments && "comments", f.checks && "failed checks", f.closed && "merges"].filter(
+/** What brings agents back besides comments, in words: those that are on. */
+function others(f: Pick<G.FollowUps, "checks" | "conflicts" | "closed">): string[] {
+  return [f.checks && "failed checks", f.conflicts && "merge conflicts", f.closed && "merges"].filter(
     (x): x is string => !!x,
   );
-  if (on.length === 0) return "Off";
-  if (on.length === 3) return "Comments, failed checks and merges";
-  const text = on.join(" and ");
-  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** What brings a project's agents back to their pull requests, in a few words, for its settings. */
+export function followUpsSummary(f: G.FollowUps): string {
+  const on = [...(f.comments ? ["comments"] : []), ...others(f)];
+  return on.length ? capitalized(listed(on)) : "Off";
 }
 
 /**
  * What a session's page says under its pull requests of what brings its agent back to them, or
- * nothing when its project brings it back for nothing.
+ * nothing when its project brings it back for nothing. Settings from a control plane before
+ * conflicts say nothing of them.
  */
 export function followUpHint(f: G.FollowUps | undefined): string | undefined {
   if (!f) return undefined;
-  const others = [f.checks && "failed checks", f.closed && "merges"].filter((x): x is string => !!x);
+  const rest = others(f);
   if (f.comments) {
-    const too = others.length ? `; ${others.join(" and ")} do too` : "";
+    const too = rest.length ? `; ${listed(rest)} do too` : "";
     return `Mention @fctl or @agent on GitHub to bring the agent back${too}.`;
   }
-  if (f.checks && f.closed) return "Failed checks and merges bring the agent back.";
-  if (f.checks) return "Failed checks bring the agent back.";
-  if (f.closed) return "A merge brings the agent back.";
-  return undefined;
+  if (rest.length === 0) return undefined;
+  if (rest.length === 1 && f.closed) return "A merge brings the agent back.";
+  return `${capitalized(listed(rest))} bring the agent back.`;
 }

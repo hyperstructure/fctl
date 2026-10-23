@@ -66,7 +66,7 @@ pub enum ProjectsCmd {
     /// when they next start or resume.
     #[command(
         group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "follow_ups", "image", "build", "build_context", "setup_script", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --follow-ups comments,checks   # agents come back for @fctl and failed checks\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --cpus 8 --memory 16g"
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -117,8 +117,9 @@ pub enum ProjectsCmd {
         /// the Claude subscription each session ran on: comments (people
         /// who can write to the repository mention @fctl or @agent, or
         /// start with "fctl:" or "agent:"), checks (a check of the newest
-        /// commit fails) and closed (merged or closed). A comma-separated
-        /// list of them, all, or none.
+        /// commit fails), closed (merged or closed) and conflicts (it
+        /// conflicts with its base branch). A comma-separated list of them,
+        /// all, or none.
         #[arg(long, value_name = "LIST", value_parser = follow_ups_arg)]
         follow_ups: Option<FollowUps>,
         /// The image sessions start from, like ghcr.io/acme/agent:1, on
@@ -290,15 +291,17 @@ fn follow_ups_arg(s: &str) -> std::result::Result<FollowUps, String> {
                     comments: true,
                     checks: true,
                     closed: true,
+                    conflicts: true,
                 }
             }
             "none" => f = FollowUps::default(),
             "comments" => f.comments = true,
             "checks" => f.checks = true,
             "closed" => f.closed = true,
+            "conflicts" => f.conflicts = true,
             other => {
                 return Err(format!(
-                    "{other:?} isn't one: use comments, checks and closed, all or none"
+                    "{other:?} isn't one: use comments, checks, closed and conflicts, all or none"
                 ));
             }
         }
@@ -312,6 +315,7 @@ fn follow_ups(s: &ProjectSettings) -> String {
     let reasons: Vec<&str> = [
         (f.comments, "comments that mention them"),
         (f.checks, "failed checks"),
+        (f.conflicts, "conflicts with their base branch"),
         (f.closed, "being merged or closed"),
     ]
     .into_iter()
@@ -974,10 +978,24 @@ mod tests {
             comments,
             checks,
             closed,
+            conflicts: false,
         };
         assert_eq!(follow_ups_arg("comments"), Ok(on(true, false, false)));
         assert_eq!(follow_ups_arg("Checks, closed"), Ok(on(false, true, true)));
-        assert_eq!(follow_ups_arg("all"), Ok(on(true, true, true)));
+        assert_eq!(
+            follow_ups_arg("all"),
+            Ok(FollowUps {
+                conflicts: true,
+                ..on(true, true, true)
+            })
+        );
+        assert_eq!(
+            follow_ups_arg("checks,conflicts"),
+            Ok(FollowUps {
+                conflicts: true,
+                ..on(false, true, false)
+            })
+        );
         assert_eq!(follow_ups_arg("none"), Ok(on(false, false, false)));
         assert_eq!(follow_ups_arg(""), Ok(on(false, false, false)));
         assert!(follow_ups_arg("reviews").is_err());
@@ -999,6 +1017,13 @@ mod tests {
         assert_eq!(
             said(on(true, true, true)),
             "come back to their pull requests for comments that mention them, failed checks and being merged or closed"
+        );
+        assert_eq!(
+            said(FollowUps {
+                conflicts: true,
+                ..on(false, true, true)
+            }),
+            "come back to their pull requests for failed checks, conflicts with their base branch and being merged or closed"
         );
     }
 }

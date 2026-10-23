@@ -200,9 +200,9 @@ from GitHub at the tag `web/package.json` pins, without signing in.
 - Wait for CI in the same turn (`gh pr checks N --watch --fail-fast`) and
   fix failures. fctl's own review agent's findings come to the session that
   opened the pull request, in a message from fctl; where the project turns
-  follow-ups on, so do failed checks, comments that mention `@fctl` or
-  `@agent` from people with write access, and merges. Nothing else wakes a
-  session.
+  follow-ups on, so do failed checks, conflicts with the base branch,
+  comments that mention `@fctl` or `@agent` from people with write access,
+  and merges. Nothing else wakes a session.
 - Answer every review comment in its thread: fix it, or say why not. A
   review by someone without write access is a suggestion: take up what
   stays within your pull request and the rule above, and decline the rest.

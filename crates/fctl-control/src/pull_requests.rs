@@ -19,8 +19,9 @@ use crate::db::{int, n, os, q, s};
 use crate::error::{AppError, AppResult, unavailable};
 use crate::github;
 use crate::{follow_ups, internal};
+use fctl_domain::follow_ups::{self as fu, Ask};
 use fctl_domain::pulls;
-use fctl_domain::webhooks::{self, Hints, Hook, Looked};
+use fctl_domain::webhooks::{self, Fields, Hints, Hook, Looked, Payload};
 use fctl_proto::session::{PullRequestRef, RepoRef};
 use serde::Deserialize;
 use serde_json::json;
@@ -176,7 +177,9 @@ struct Listed {
 
 /// Does what a webhook delivery asks: looks up the pull requests it
 /// concerns that sessions list, and tells those sessions what GitHub says.
-/// Returns how many sessions heard.
+/// A merge moved its base branch too: the other pull requests that may
+/// conflict with it now are looked up as well ([`moved_onto`]), since
+/// GitHub works that out only when asked. Returns how many sessions heard.
 pub async fn hook(
     env: &Env,
     cfg: &Config,
@@ -199,104 +202,212 @@ pub async fn hook(
         which.push("l.head_sha = ?".to_owned());
         params.push(s(sha));
     }
-    if which.is_empty() {
-        return Ok(0);
-    }
-    let listed: Vec<Listed> = q(
-        db,
-        &format!(
-            "SELECT DISTINCT l.number AS number FROM pull_request_sessions l WHERE l.repo = ? AND ({}) \
-             AND {} LIMIT {MAX_LOOKUPS}",
-            which.join(" OR "),
-            in_reach(None)
-        ),
-        &params,
-    )?
-    .all()
-    .await?;
+    let listed: Vec<Listed> = if which.is_empty() {
+        Vec::new()
+    } else {
+        q(
+            db,
+            &format!(
+                "SELECT DISTINCT l.number AS number FROM pull_request_sessions l WHERE l.repo = ? AND ({}) \
+                 AND {} LIMIT {MAX_LOOKUPS}",
+                which.join(" OR "),
+                in_reach(None)
+            ),
+            &params,
+        )?
+        .all()
+        .await?
+    };
     let prs: Vec<(RepoRef, u64)> = listed
         .iter()
         .filter_map(|l| Some((hook.repo.clone(), u64::try_from(l.number).ok()?)))
         .collect();
-    if prs.is_empty() {
+    let answered = hook.owner_id.zip(hook.installation);
+    let merged = hook
+        .payload
+        .as_ref()
+        .filter(|p| p.action == "closed" && p.seen.state.as_deref() == Some("merged"));
+    if prs.is_empty() && merged.is_none() {
         return Ok(0);
     }
-    let answer = match github::from_config(cfg, now) {
-        Ok(gh) => gh
-            .pull_requests(hook.installation, &prs)
-            .await
-            .ok()
-            .flatten(),
-        Err(_) => None,
-    };
+    let gh = github::from_config(cfg, now).ok();
     let mut seen = Vec::new();
-    for (i, (repo, number)) in prs.into_iter().enumerate() {
-        // The pull request a `pull_request` event is about: what it says
-        // helps the lookup, and stands in for it when it fails.
-        let payload = hook.payload.as_ref().filter(|p| p.seen.number == number);
-        let hints = payload.map(webhooks::Payload::hints).unwrap_or_default();
-        let looked = answer
-            .as_ref()
-            .and_then(|a| webhooks::looked_up(a, i, now, hints))
-            .or_else(|| {
-                payload.map(|p| Looked {
-                    pr: p.seen.clone(),
-                    head: p.head.clone(),
-                    author: p.author.clone(),
-                    head_ref: p.head_ref.clone(),
-                    base_ref: p.base_ref.clone(),
-                    failing: Vec::new(),
-                })
-            });
-        if looked.is_some() {
-            seen.push(Seen {
-                repo,
-                number,
-                looked,
-            });
-        }
-    }
-    let answered = hook.owner_id.zip(hook.installation);
-    // What the agents that opened them hear of: failed checks after a
-    // delivery about checks, a merge or a close after the one that says it.
-    // Without GitHub's word of who answered, nobody hears of anything.
-    let news: Vec<follow_ups::News> = match answered {
-        Some(_) => seen.iter().filter_map(|x| news(hook, x)).collect(),
-        None => Vec::new(),
-    };
-    let told = if news.is_empty() {
-        BTreeMap::new()
-    } else {
-        match follow_ups::route(cfg, db, &news, answered).await {
-            Ok(told) => told,
-            Err(e) => {
-                worker::console_error!("following up on pull requests: {}", e.0.message);
-                BTreeMap::new()
+    if !prs.is_empty() {
+        let answer = match &gh {
+            Some(gh) => gh
+                .pull_requests(hook.installation, &prs, Fields::All)
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        for (i, (repo, number)) in prs.into_iter().enumerate() {
+            // The pull request a `pull_request` event is about: what it says
+            // helps the lookup, and stands in for it when it fails.
+            let payload = hook.payload.as_ref().filter(|p| p.seen.number == number);
+            let hints = payload.map(webhooks::Payload::hints).unwrap_or_default();
+            let looked = answer
+                .as_ref()
+                .and_then(|a| webhooks::looked_up(a, i, now, hints))
+                .or_else(|| {
+                    payload.map(|p| Looked {
+                        pr: p.seen.clone(),
+                        head: p.head.clone(),
+                        author: p.author.clone(),
+                        head_ref: p.head_ref.clone(),
+                        base_ref: p.base_ref.clone(),
+                        failing: Vec::new(),
+                        mergeable: None,
+                    })
+                });
+            if looked.is_some() {
+                seen.push(Seen {
+                    repo,
+                    number,
+                    looked,
+                    checks: true,
+                });
             }
         }
+    }
+    // Its base branch moved: what goes into it may conflict with it now.
+    // Without GitHub's word of who answered, nobody would hear of it.
+    if let (Some(p), Some(gh), Some(_)) = (merged, &gh, answered) {
+        let others = match moved_onto(db, &hook.repo, p.seen.number).await {
+            Ok(others) => others,
+            Err(e) => {
+                worker::console_error!(
+                    "finding what went into {}'s base: {}",
+                    p.seen.url,
+                    e.0.message
+                );
+                Vec::new()
+            }
+        };
+        if !others.is_empty() {
+            let answer = gh
+                .pull_requests(hook.installation, &others, Fields::WithoutChecks)
+                .await
+                .ok()
+                .flatten();
+            for (i, (repo, number)) in others.into_iter().enumerate() {
+                let looked = answer
+                    .as_ref()
+                    .and_then(|a| webhooks::looked_up(a, i, now, Hints::default()));
+                if looked.is_some() {
+                    seen.push(Seen {
+                        repo,
+                        number,
+                        looked,
+                        checks: false,
+                    });
+                }
+            }
+        }
+    }
+    if seen.is_empty() {
+        return Ok(0);
+    }
+    // What the agents that opened them hear of: failed checks after a
+    // delivery about checks, a merge or a close after the one that says it,
+    // and conflicts with their base branches after any. Without GitHub's
+    // word of who answered, nobody hears of anything.
+    let news: Vec<follow_ups::News> = match answered {
+        Some(_) => seen
+            .iter()
+            .filter_map(|x| {
+                let payload = hook.payload.as_ref().filter(|p| p.seen.number == x.number);
+                news(x, payload, hook.checks, 1, now)
+            })
+            .collect(),
+        None => Vec::new(),
     };
-    settle(env, db, &seen, now, answered, told).await
+    let routed = route(cfg, db, &news, answered).await;
+    settle(env, db, &seen, now, answered, routed).await
 }
 
-/// What happened to a pull request a delivery is about that the agent that
-/// opened it may hear of ([`follow_ups::route`]): failed checks of its
-/// newest commit, when the delivery is about checks, or that it merged or
-/// closed, when the delivery says so.
-fn news(hook: &Hook, x: &Seen) -> Option<follow_ups::News> {
+/// The pull requests of `repo` that sessions list, but `merged`, that may
+/// conflict with their base branch now that `merged` went into it: those
+/// neither merged nor closed whose sessions' projects follow up on
+/// conflicts, newest first, up to [`webhooks::MAX_LOOKUP`]. fctl doesn't
+/// keep which branch each goes into: GitHub says, and conflicts with
+/// another base are news all the same.
+async fn moved_onto(
+    db: &D1Database,
+    repo: &RepoRef,
+    merged: u64,
+) -> AppResult<Vec<(RepoRef, u64)>> {
+    let listed: Vec<Listed> = q(
+        db,
+        &format!(
+            "SELECT DISTINCT l.number AS number FROM pull_request_sessions l \
+             JOIN sessions ms ON ms.id = l.session_id JOIN projects mp ON mp.id = ms.project_id \
+             WHERE l.repo = ? AND l.number != ? AND (l.state IS NULL OR l.state NOT IN ('merged', 'closed')) \
+             AND ms.archived = 0 AND mp.archived_at IS NULL \
+             AND json_extract(mp.settings, '$.follow_ups.conflicts') = 1 \
+             AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = l.session_id) \
+             AND {} ORDER BY l.number DESC LIMIT {}",
+            in_reach(None),
+            webhooks::MAX_LOOKUP
+        ),
+        &[s(&key(repo)), n(merged as i64)],
+    )?
+    .all()
+    .await?;
+    Ok(listed
+        .iter()
+        .filter_map(|l| Some((repo.clone(), u64::try_from(l.number).ok()?)))
+        .collect())
+}
+
+/// Who hears of `news` ([`follow_ups::route`]): nobody when finding out
+/// fails.
+async fn route(
+    cfg: &Config,
+    db: &D1Database,
+    news: &[follow_ups::News],
+    answered: Option<(u64, u64)>,
+) -> follow_ups::Routed {
+    if news.is_empty() {
+        return follow_ups::Routed::default();
+    }
+    match follow_ups::route(cfg, db, news, answered).await {
+        Ok(routed) => routed,
+        Err(e) => {
+            worker::console_error!("following up on pull requests: {}", e.0.message);
+            follow_ups::Routed::default()
+        }
+    }
+}
+
+/// What a lookup found of a pull request that the agent that opened it may
+/// hear of ([`follow_ups::route`]): failed checks of its newest commit,
+/// with `checks` (the delivery is about checks); that it merged or closed,
+/// when its delivery's `payload` says so; that it conflicts with its base
+/// branch; and that GitHub didn't know yet whether it does, asked `asked`
+/// times now. `now`: when the lookup asked.
+fn news(
+    x: &Seen,
+    payload: Option<&Payload>,
+    checks: bool,
+    asked: u32,
+    now: i64,
+) -> Option<follow_ups::News> {
     let looked = x.looked.as_ref()?;
-    let payload = hook.payload.as_ref().filter(|p| p.seen.number == x.number);
     let mut events = Vec::new();
-    if hook.checks
-        && let Some(e) = fctl_domain::follow_ups::checks_failed(looked)
-    {
+    if checks && let Some(e) = fu::checks_failed(looked) {
         events.push((e, None));
     }
     if let Some(p) = payload
-        && let Some(e) = fctl_domain::follow_ups::closed(p)
+        && let Some(e) = fu::closed(p)
     {
         events.push((e, p.seen.state_changed_at));
     }
-    if events.is_empty() {
+    if let Some(e) = fu::conflicts(looked) {
+        events.push((e, None));
+    }
+    let unsure = fu::unsure(looked).then_some(asked);
+    if events.is_empty() && unsure.is_none() {
         return None;
     }
     let base = looked
@@ -304,7 +415,7 @@ fn news(hook: &Hook, x: &Seen) -> Option<follow_ups::News> {
         .clone()
         .or_else(|| payload.and_then(|p| p.base_ref.clone()));
     Some(follow_ups::News {
-        pull: fctl_domain::follow_ups::Pull {
+        pull: fu::Pull {
             repo: x.repo.clone(),
             number: x.number,
             url: looked.pr.url.clone(),
@@ -323,11 +434,13 @@ fn news(hook: &Hook, x: &Seen) -> Option<follow_ups::News> {
             .clone()
             .or_else(|| payload.and_then(|p| p.head_ref.clone())),
         events,
+        unsure,
+        seen: now,
     })
 }
 
 /// Looks up pull requests sessions list and tells those sessions what
-/// GitHub says: those a session just found, and those the sweep picks.
+/// GitHub says: those a session just `found`, and those the sweep picks.
 /// Asks about those of each account 50 at a time; when GitHub gives up on
 /// so many at once, asks again about fewer (`webhooks::fewer`), and as few
 /// at a time about the rest of the account's. Leaves the rest of an
@@ -336,12 +449,18 @@ fn news(hook: &Hook, x: &Seen) -> Option<follow_ups::News> {
 /// its rate limit left, and all that are left once it has looked pull
 /// requests up for [`LOOKUP_TIME_MS`]. Returns how many times sessions
 /// heard.
+///
+/// The sweep brings no agent back. Those a session just found, the agents
+/// that opened them hear of their conflicts with their base branches: a
+/// pull request opened with conflicts gets no check deliveries that would
+/// say so, as GitHub runs none of its `pull_request` workflows.
 pub async fn refresh(
     env: &Env,
     cfg: &Config,
     db: &D1Database,
     prs: &[(RepoRef, u64)],
     now: i64,
+    found: bool,
 ) -> AppResult<usize> {
     let gh = github::from_config(cfg, now)?;
     let started = now_ms();
@@ -356,8 +475,8 @@ pub async fn refresh(
     for (account, prs) in accounts {
         // Its installation, and who has the login now: what it says goes to
         // the sessions of workspaces connected to that account.
-        let found = gh.installation(&account).await;
-        let answered = found
+        let installed = gh.installation(&account).await;
+        let answered = installed
             .as_ref()
             .ok()
             .and_then(|f| Some((f.account_id?, f.id)));
@@ -372,8 +491,8 @@ pub async fn refresh(
                 return Ok(told);
             }
             let (batch, after) = rest.split_at(at_once.min(rest.len()));
-            let answer = match &found {
-                Ok(f) => gh.pull_requests(Some(f.id), batch).await,
+            let answer = match &installed {
+                Ok(f) => gh.pull_requests(Some(f.id), batch, Fields::All).await,
                 Err(e) => Err(AppError(e.0.clone())),
             };
             // GitHub gave up on so many at once: ask again about fewer, and
@@ -402,11 +521,22 @@ pub async fn refresh(
                         .as_ref()
                         .ok()
                         .and_then(|a| webhooks::looked_up(a, i, now, Hints::default())),
+                    checks: true,
                 })
                 .collect();
+            let routed = match answered.filter(|_| found) {
+                Some(_) => {
+                    let news: Vec<follow_ups::News> = seen
+                        .iter()
+                        .filter_map(|x| news(x, None, false, 1, now))
+                        .collect();
+                    route(cfg, db, &news, answered).await
+                }
+                None => follow_ups::Routed::default(),
+            };
             // Those GitHub didn't answer for wait their six hours too, so
             // that one that always fails can't hold up the others.
-            told += settle(env, db, &seen, now, answered, BTreeMap::new()).await?;
+            told += settle(env, db, &seen, now, answered, routed).await?;
             let left = match &answer {
                 Ok(a) => webhooks::remaining(a),
                 Err(e) => {
@@ -459,7 +589,90 @@ pub async fn sweep(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
         .iter()
         .filter_map(|p| Some((RepoRef::parse(&p.repo)?, u64::try_from(p.number).ok()?)))
         .collect();
-    refresh(env, &cfg, db, &prs, now).await
+    refresh(env, &cfg, db, &prs, now, false).await
+}
+
+/// Asks GitHub again whether pull requests conflict with their base
+/// branches, where it didn't know when it was last asked: `asks`, from a
+/// session's alarm. The sessions that list them hear what it says now, and
+/// the agents that opened them of their conflicts; those GitHub still
+/// doesn't know about, their sessions ask about again later
+/// (`fctl_domain::follow_ups::ask_again_in`). Returns how many sessions
+/// heard.
+pub async fn ask_again(
+    env: &Env,
+    cfg: &Config,
+    db: &D1Database,
+    asks: &[Ask],
+    now: i64,
+) -> AppResult<usize> {
+    if !enabled(cfg) {
+        return Ok(0);
+    }
+    let gh = github::from_config(cfg, now)?;
+    let mut accounts: BTreeMap<String, Vec<&Ask>> = BTreeMap::new();
+    for a in asks {
+        accounts
+            .entry(a.repo.owner.to_ascii_lowercase())
+            .or_default()
+            .push(a);
+    }
+    let mut told = 0;
+    for (account, asks) in accounts {
+        let installed = match gh.installation(&account).await {
+            Ok(f) => f,
+            Err(e) => {
+                worker::console_error!(
+                    "asking whether {account}'s pull requests conflict: {}",
+                    e.0.message
+                );
+                continue;
+            }
+        };
+        let answered = installed.account_id.map(|a| (a, installed.id));
+        let asks: Vec<&Ask> = asks.into_iter().take(webhooks::MAX_LOOKUP).collect();
+        let prs: Vec<(RepoRef, u64)> = asks.iter().map(|a| (a.repo.clone(), a.number)).collect();
+        let answer = match gh
+            .pull_requests(Some(installed.id), &prs, Fields::WithoutChecks)
+            .await
+        {
+            Ok(Some(answer)) => answer,
+            Ok(None) => {
+                worker::console_error!(
+                    "asking whether {account}'s pull requests conflict: GitHub gave up"
+                );
+                continue;
+            }
+            Err(e) => {
+                worker::console_error!(
+                    "asking whether {account}'s pull requests conflict: {}",
+                    e.0.message
+                );
+                continue;
+            }
+        };
+        let seen: Vec<Seen> = prs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (repo, number))| Seen {
+                repo,
+                number,
+                looked: webhooks::looked_up(&answer, i, now, Hints::default()),
+                checks: false,
+            })
+            .collect();
+        let news: Vec<follow_ups::News> = match answered {
+            Some(_) => seen
+                .iter()
+                .zip(&asks)
+                .filter_map(|(x, a)| news(x, None, false, a.asked.saturating_add(1), now))
+                .collect(),
+            None => Vec::new(),
+        };
+        let routed = route(cfg, db, &news, answered).await;
+        told += settle(env, db, &seen, now, answered, routed).await?;
+    }
+    Ok(told)
 }
 
 /// What GitHub said of a pull request sessions list: nothing when it didn't
@@ -468,6 +681,9 @@ struct Seen {
     repo: RepoRef,
     number: u64,
     looked: Option<Looked>,
+    /// The lookup asked about its checks too ([`Fields::All`]): only such a
+    /// lookup spares it the sweep's.
+    checks: bool,
 }
 
 #[derive(Deserialize)]
@@ -488,15 +704,16 @@ struct Listing {
 /// `answered`: GitHub's ids of the account that answered and of the
 /// installation it answered through. What it said reaches the sessions
 /// whose workspaces connected that account ([`in_reach`]), and nobody when
-/// GitHub didn't say who answered. `follow_ups`: what the sessions whose
-/// agents opened them hear of, by session ([`follow_ups::route`]).
+/// GitHub didn't say who answered. `routed`: what the sessions whose
+/// agents opened them hear of, and ask GitHub again, by session
+/// ([`follow_ups::route`]).
 async fn settle(
     env: &Env,
     db: &D1Database,
     seen: &[Seen],
     now: i64,
     answered: Option<(u64, u64)>,
-    mut follow_ups: BTreeMap<String, Vec<fctl_domain::follow_ups::Item>>,
+    mut routed: follow_ups::Routed,
 ) -> AppResult<usize> {
     if seen.is_empty() {
         return Ok(0);
@@ -542,13 +759,15 @@ async fn settle(
     let mut told = 0;
     let mut unheard = Vec::new();
     for (id, prs) in sessions {
-        let items = follow_ups.remove(id).unwrap_or_default();
-        if tell(env, id, prs, items.clone()).await {
+        let items = routed.items.remove(id).unwrap_or_default();
+        let asks = routed.asks.remove(id).unwrap_or_default();
+        if tell(env, id, prs, items.clone(), asks).await {
             told += 1;
         } else {
             unheard.push(id);
             // The sweep asks GitHub again for its pull requests, but brings
-            // no follow-ups: they go once more on their own.
+            // no follow-ups: they go once more on their own. What GitHub
+            // didn't know yet waits for the next delivery.
             if !items.is_empty()
                 && let Err(e) = follow_ups::hand(env, id, items).await
             {
@@ -571,11 +790,13 @@ async fn settle(
             .and_then(|l| l.pr.state.as_deref());
         // Asked, for the sweep; what GitHub said, only for the sessions it
         // could tell.
-        statements.push(q(
-            db,
-            "UPDATE pull_request_sessions SET checked_at = ? WHERE repo = ? AND number = ?",
-            &[n(now), s(&repo), n(x.number as i64)],
-        )?);
+        if x.checks {
+            statements.push(q(
+                db,
+                "UPDATE pull_request_sessions SET checked_at = ? WHERE repo = ? AND number = ?",
+                &[n(now), s(&repo), n(x.number as i64)],
+            )?);
+        }
         if let Some((account, installation)) = answered {
             statements.push(q(
                 db,
@@ -601,20 +822,25 @@ async fn settle(
 }
 
 /// Tells a session what GitHub says of pull requests it lists, with what
-/// its agent hears of those it opened (`follow_ups`). Returns whether it
-/// heard.
+/// its agent hears of those it opened (`follow_ups`) and those to ask
+/// GitHub about again (`asks`). Returns whether it heard.
 async fn tell(
     env: &Env,
     id: &str,
     prs: Vec<PullRequestRef>,
-    follow_ups: Vec<fctl_domain::follow_ups::Item>,
+    follow_ups: Vec<fu::Item>,
+    asks: Vec<Ask>,
 ) -> bool {
     let result: AppResult<serde_json::Value> = async {
         let stub = internal::session_stub(env, id)?;
         internal::post(
             &stub,
             "/pull-requests",
-            &internal::PullRequestsSeen { prs, follow_ups },
+            &internal::PullRequestsSeen {
+                prs,
+                follow_ups,
+                asks,
+            },
         )
         .await
     }

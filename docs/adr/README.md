@@ -50,3 +50,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0042](0042-lookups-github-gives-up-on-ask-about-fewer-pull-requests.md) | Lookups GitHub gives up on ask about fewer pull requests at once |
 | [0043](0043-agents-come-back-to-their-pull-requests-for-comments-failed-checks-and-merges.md) | Agents come back to their pull requests for comments, failed checks and merges |
 | [0044](0044-schedules-start-sessions-on-their-owners-subscription.md) | Schedules start sessions on their owner's subscription, and other tools run them when asked |
+| [0045](0045-merge-conflicts-bring-agents-back-too.md) | Merge conflicts bring agents back too |

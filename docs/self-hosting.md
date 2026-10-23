@@ -437,14 +437,19 @@ npx wrangler d1 execute fctl --remote --command \
 Projects can bring their agents back to the pull requests they opened
 ([Architecture](architecture.md#follow-ups)): when someone who can write
 to the repository mentions `@fctl` or `@agent` in a comment, when a check
-fails, when a pull request merges or closes. Each project turns them on in
-its Settings, or with `fctl projects set --follow-ups`; they need the
-webhook's secret, and for comments the app subscribed to **Issue
-comment**, **Pull request review** and **Pull request review comment**.
-For an app made before, subscribe to them under **Permissions & events**:
-installations accept nothing new, since the app reads and writes issues
-and pull requests already. Failed checks and merges come with the events
-above. **Advanced → Recent Deliveries** answers `{"ok":true,"follow_ups":1}`
+fails, when a pull request conflicts with its base branch, when it merges
+or closes. Each project turns them on in its Settings, or with `fctl
+projects set --follow-ups`; they need the webhook's secret, and for
+comments the app subscribed to **Issue comment**, **Pull request review**
+and **Pull request review comment**. For an app made before, subscribe to
+them under **Permissions & events**: installations accept nothing new,
+since the app reads and writes issues and pull requests already. Failed
+checks, conflicts and merges come with the events above: GitHub says
+nothing when a pull request starts to conflict, so after each merge into a
+repository the control plane asks it about the other pull requests there
+whose projects follow up on conflicts, for a point of the installation's
+rate limit, and again, a point at a time, while GitHub works out its
+answer. **Advanced → Recent Deliveries** answers `{"ok":true,"follow_ups":1}`
 for a comment that reached an agent, and fctl puts an 👀 reaction on it.
 
 ### Which workspace uses which account
