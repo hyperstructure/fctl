@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Gallery } from "@/components/ui/gallery";
 import type * as G from "@/gen";
 import type { DraftFile } from "@/lib/draft";
-import { MessageFiles, useAttachments } from "./attachments";
+import { type Draft, DraftTray, MessageFiles, useAttachments } from "./attachments";
 
 const { uploadAttachment, stored, onPage } = vi.hoisted(() => ({
   uploadAttachment: vi.fn(),
@@ -141,18 +141,59 @@ describe("kept attachments", () => {
     expect(onPage.get("usr_a")?.map((f) => f.name)).toEqual(["b.png"]);
   });
 
-  it("go back in the composer when the start fails, uploads and all", async () => {
+  it("stay in the composer as a session starts with them, and can be sent again if the start fails", async () => {
     const m = mount("usr_a");
     await settle();
     act(() => m.files().add([png("shot.png")]));
     await act(async () => pending[0]?.resolve("att_1"));
-    const taken = await act(() => m.files().take());
-    expect(m.files().drafts).toEqual([]);
+    const taken = await act(() => m.files().take({ stay: true }));
+    expect(taken.files.attachments.map((a) => a.id)).toEqual(["att_1"]);
+    expect(m.files().drafts).toMatchObject([{ name: "shot.png", status: "ready" }]);
     act(() => taken.restore());
-    expect(m.files().drafts).toHaveLength(1);
-    const again = await act(() => m.files().take());
+    const again = await act(() => m.files().take({ stay: true }));
     expect(again.files.attachments.map((a) => a.id)).toEqual(["att_1"]);
+    act(() => again.restore());
+    // Kept for when the page comes back, uploads and all.
+    m.unmount();
+    const back = mount("usr_a");
+    await settle();
+    expect(back.files().drafts).toMatchObject([{ name: "shot.png", status: "ready" }]);
     expect(uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it("stay in the composer when a session starts before they finish uploading", async () => {
+    const m = mount("usr_a");
+    await settle();
+    act(() => m.files().add([png("shot.png")]));
+    let taking: ReturnType<Files["take"]> = new Promise(() => {});
+    act(() => {
+      taking = m.files().take({ stay: true });
+    });
+    await act(async () => pending[0]?.resolve("att_1"));
+    const taken = await act(() => taking);
+    await settle();
+    expect(taken.files.attachments.map((a) => a.id)).toEqual(["att_1"]);
+    expect(m.files().drafts).toMatchObject([{ name: "shot.png", status: "ready" }]);
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it("let go of their uploads and previews once a session starts with them", async () => {
+    const m = mount("usr_a");
+    await settle();
+    act(() => m.files().add([png("shot.png")]));
+    await act(async () => pending[0]?.resolve("att_1"));
+    const { preview } = m.files().drafts[0] ?? {};
+    expect(preview).toBeTruthy();
+    await act(() => m.files().take({ stay: true }));
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    m.unmount();
+    expect(revoke).toHaveBeenCalledWith(preview);
+    revoke.mockRestore();
+    // The session has the file: were the page to have it again, it would upload it again.
+    const back = mount("usr_a");
+    await settle();
+    expect(back.files().drafts).toMatchObject([{ name: "shot.png", status: "uploading" }]);
+    expect(uploadAttachment).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -165,6 +206,56 @@ describe("attachments of a message", () => {
     m.unmount();
     expect(pending[0]?.abort).toHaveBeenCalled();
     expect(onPage.size).toBe(0);
+  });
+
+  it("leave the composer once sent, and upload once, even when sent while uploading", async () => {
+    const m = mount();
+    await settle();
+    act(() => m.files().add([png("shot.png")]));
+    let taking: ReturnType<Files["take"]> = new Promise(() => {});
+    act(() => {
+      taking = m.files().take();
+    });
+    await act(async () => pending[0]?.resolve("att_1"));
+    const taken = await act(() => taking);
+    await settle();
+    expect(taken.files.attachments.map((a) => a.id)).toEqual(["att_1"]);
+    expect(m.files().drafts).toEqual([]);
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+    // Back as they are now if sending fails.
+    act(() => taken.restore());
+    expect(m.files().drafts).toMatchObject([
+      { name: "shot.png", status: "ready", progress: 1, attachment: { id: "att_1" } },
+    ]);
+    await settle();
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("files in a composer", () => {
+  const draft: Draft = {
+    key: "k1",
+    file: png("shot.png"),
+    name: "shot.png",
+    preview: "blob:shot",
+    status: "ready",
+    progress: 1,
+  };
+
+  it("can't be removed while a start form starts with them", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const tray = (readOnly: boolean) => (
+      <DraftTray drafts={[draft]} onRemove={() => {}} onRetry={() => {}} readOnly={readOnly} />
+    );
+    act(() => root.render(tray(false)));
+    unmounts.push(() => act(() => root.unmount()));
+    expect(container.querySelector('button[aria-label="Remove shot.png"]')).not.toBeNull();
+    act(() => root.render(tray(true)));
+    expect(container.querySelector('[aria-label="Attached files"] img')?.getAttribute("alt")).toBe(
+      "shot.png",
+    );
+    expect(container.querySelector('button[aria-label="Remove shot.png"]')).toBeNull();
   });
 });
 
