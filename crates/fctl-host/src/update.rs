@@ -1,5 +1,5 @@
 //! Updating fctl in place: `fctl self update`, and hosts that update
-//! themselves ([ADR 0052](../../../docs/adr/0052-hosts-update-themselves-to-the-control-planes-version.md)).
+//! themselves (docs/architecture.md#host-updates).
 //!
 //! A release has an archive for each target on `download_base`,
 //! `v<version>/fctl-<target>.tar.gz`, checked against its `.sha256`, with
@@ -192,19 +192,18 @@ pub async fn download(
     let Some((_, fctl)) = files.iter().find(|(n, _)| n == "fctl") else {
         return Err(Miss::Unusable(format!("fctl is missing from {archive}")));
     };
-    probe(dir, fctl, version)
-        .await
-        .map_err(|e| Miss::Unusable(format!("the new fctl {version} did not run here ({e:#})")))?;
+    // It must run where it goes, and be that version.
+    let probe =
+        write_beside(dir, "fctl-probe", fctl).map_err(|e| Miss::Unusable(format!("{e:#}")))?;
+    let ran = is_version(&probe, version).await;
+    let _ = std::fs::remove_file(&probe);
+    ran.map_err(|e| Miss::Unusable(format!("the new fctl {version} did not run here ({e:#})")))?;
     Ok(Release { version, files })
 }
 
-/// Runs `fctl --version` with the new fctl in `dir`, where it goes: it
-/// must run there, and be `version`.
-async fn probe(dir: &Path, fctl: &[u8], version: Version) -> Result<()> {
-    let path = write_beside(dir, "fctl-probe", fctl)?;
-    let out = says_its_version(&path).await;
-    let _ = std::fs::remove_file(&path);
-    let out = out?;
+/// Whether the fctl at `path` runs, and says it is `version`.
+async fn is_version(path: &Path, version: Version) -> Result<()> {
+    let out = says_its_version(path).await?;
     let said = String::from_utf8_lossy(&out.stdout);
     if !out.status.success() {
         bail!("{}", String::from_utf8_lossy(&out.stderr).trim());

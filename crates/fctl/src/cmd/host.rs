@@ -103,8 +103,8 @@ pub enum HostCmd {
         after_help = "Examples:\n  fctl host auto-update       # whether it does\n  fctl host auto-update off   # update with `fctl self update` instead\n  fctl host auto-update on"
     )]
     AutoUpdate {
-        /// on or off. Without it, shows which it is. Either restarts the
-        /// host service (sessions keep running).
+        /// on or off. Without it, shows which it is. Changing it restarts
+        /// the host service (sessions keep running).
         #[arg(value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         on: Option<bool>,
     },

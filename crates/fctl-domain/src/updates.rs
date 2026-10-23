@@ -2,7 +2,8 @@
 //! host that updates itself tries again.
 //!
 //! A host updates itself to the version its control plane runs, once that
-//! is newer than its own, unless its `host.toml` turns that off (ADR 0052).
+//! is newer than its own, unless its `host.toml` turns that off
+//! (docs/architecture.md#host-updates).
 //! On app.fctl.sh that is the latest release, since each release redeploys
 //! it. The control plane can run a release some minutes before its archives
 //! can be downloaded, though: CI deploys the release commit while the
