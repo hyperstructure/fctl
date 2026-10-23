@@ -278,12 +278,14 @@ pub async fn store(
     Ok(())
 }
 
-/// Marks fctl's app in a Linear workspace revoked: uninstalled there, or
-/// its token no longer renews. Its fctl workspaces' admins connect it again.
+/// Marks fctl's app in a Linear workspace revoked, and forgets its tokens,
+/// which no longer work: uninstalled there, or its token no longer renews.
+/// Its fctl workspaces' admins connect it again.
 pub async fn mark_revoked(db: &D1Database, organization: &str, now: i64) -> AppResult<()> {
     q(
         db,
-        "UPDATE linear_installations SET status = 'revoked', updated_at = ? WHERE organization_id = ?",
+        "UPDATE linear_installations SET status = 'revoked', secret_enc = '', expires_at = NULL, updated_at = ? \
+         WHERE organization_id = ?",
         &[n(now), s(organization)],
     )?
     .run()
@@ -416,7 +418,10 @@ async fn renew(
     };
     q(
         db,
-        "UPDATE linear_installations SET secret_enc = ?, expires_at = ?, updated_at = ? WHERE organization_id = ?",
+        // Active again, in case another renewal of the same token gave up
+        // meanwhile: this one won.
+        "UPDATE linear_installations SET secret_enc = ?, expires_at = ?, status = 'active', updated_at = ? \
+         WHERE organization_id = ?",
         &[
             s(&keys.seal_json(&aad(&row.organization_id), &new)?),
             on(tokens.expires_at(now)),

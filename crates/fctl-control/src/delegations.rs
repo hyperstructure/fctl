@@ -1423,7 +1423,8 @@ pub async fn uninstall_unused(env: &Env, db: &D1Database) -> AppResult<()> {
     }
     let unused: Vec<Row> = q(
         db,
-        "SELECT organization_id FROM linear_installations i WHERE NOT EXISTS          (SELECT 1 FROM workspace_linear wl WHERE wl.organization_id = i.organization_id) LIMIT 20",
+        "SELECT organization_id FROM linear_installations i WHERE NOT EXISTS \
+         (SELECT 1 FROM workspace_linear wl WHERE wl.organization_id = i.organization_id) LIMIT 20",
         &[],
     )?
     .all()
