@@ -166,6 +166,26 @@ trigger. To run it locally:
 curl "http://127.0.0.1:8787/cdn-cgi/handler/scheduled?cron=17+*+*+*+*"
 ```
 
+Schedules (`crates/fctl-control/src/schedules.rs`) start their sessions on
+ScheduleObject's alarm, which rings under `wrangler dev` too: one that runs
+in a minute shows a run start on time, as fake-claude takes its task.
+
+```sh
+cargo run -p fctl -- schedules add "Check" -p playground --at 1m -m "write check.md"
+cargo run -p fctl -- schedules add "Busy" -p playground --cron "*/15 * * * *" -m "watch 90"
+cargo run -p fctl -- schedules run Busy -p playground   # its task now, with --context for a tool's text
+cargo run -p fctl -- schedules runs Busy -p playground  # what each run started, or why it started none
+```
+
+To make a schedule due at once, set its next run in the local D1 and wake
+the alarm with the hourly job (`npx wrangler d1 execute DB --local
+--command "UPDATE schedules SET next_run_at = 0 WHERE name = 'Busy'"` in
+`crates/fctl-control`, then the `curl` above): a run while its last session
+still works (`watch 90`) is skipped. A row in `claude_usage` with a
+`utilization` of 1 and a `resets_at` ahead puts the dev subscription's plan
+at its limit, which skips the runs of a schedule until then. The dev
+`.fctl-dev/token` is an access token, so its runs count as a tool's.
+
 ## The standalone control plane
 
 Outside Cloudflare, the control plane runs as `deploy/standalone/server.mjs`

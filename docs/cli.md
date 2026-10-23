@@ -372,6 +372,52 @@ fctl review threads                    # fctl's earlier findings on the pull req
 fctl review submit review.json         # post the review, once: --help shows the file
 ```
 
+### Schedules
+
+A schedule starts a session for a task on its own: once at a set time,
+or again and again on a cron expression in a time zone. Each run is a
+session of its own, on the Claude subscription of the person the schedule
+runs for, who follows it as they follow the sessions they start. A run is
+skipped while the schedule's last session still works on its task, and
+while that person's plan is at its limit; one that runs once waits for the
+limit to reset instead. People who start sessions in the project set up
+schedules, on their own subscription, and run any of them now, on theirs;
+a schedule's owner and the project's maintainers and owners change, pause
+and delete it, and a change by anyone else runs it on theirs from then on:
+
+```sh
+fctl schedules -p my-app                       # its schedules, when each runs next and what its last run did
+fctl schedules add "Weekly dependencies" -p my-app --cron "0 9 * * 1" --tz Europe/Stockholm \
+  -m "Update the dependencies that have new patch or minor releases, and open a pull request."
+fctl schedules add -p my-app --cron "0 8 * * 1-5" --task-file triage.md --github comment
+fctl schedules add -p my-app --at 2h -m "Check whether the deploy went out, and say so."
+fctl schedules add -p my-app --at 2026-10-30T16:00+01:00 -m "Draft the release notes."
+fctl schedules add "Triage an issue" -p my-app --when-asked -m "Triage the issue that comes with this."
+fctl schedules show "Weekly dependencies" -p my-app   # by name or id: its task, settings and latest runs
+fctl schedules edit "Weekly dependencies" -p my-app --cron "0 7 * * 1" --effort high
+fctl schedules edit sch_01JC… --mine           # run it on your subscription from now on
+fctl schedules pause sch_01JC…                 # it starts nothing until it's resumed
+fctl schedules resume sch_01JC…
+fctl schedules run sch_01JC…                   # its task now, in a session on your subscription
+fctl schedules run sch_01JC… --context "Issue #41 was just opened: the login page hangs"
+fctl schedules runs sch_01JC…                  # the sessions it started, and why it started none
+fctl schedules rm sch_01JC…                    # the sessions it started stay
+```
+
+`--cron` takes five fields (the minute, the hour, the day of the month,
+the month and the day of the week, like `0 9 * * 1-5`) or `@hourly`,
+`@daily`, `@weekly`, `@monthly` and `@yearly`, and runs at most every 15
+minutes; `--tz` defaults to this machine's time zone. `--at` takes how far
+ahead (`2h`, `30m`, `1d`) or a time with its UTC offset. `--when-asked`
+sets up one without a time, which runs only when someone runs it, or
+another tool does, each run on the subscription of whoever runs it; a
+paused schedule starts nothing, not even then. `--model`,
+`--effort`, `--github` and `--base` say what its sessions start with,
+`default` for the project's. What `--context` says comes after the task;
+from an access token, its agent takes it as information, not instructions
+([Automation](automation.md#start-agents-from-other-tools)). A project
+keeps at most 50 schedules.
+
 ## Notifications
 
 A session you follow notifies you when it waits for your reply, pauses on a

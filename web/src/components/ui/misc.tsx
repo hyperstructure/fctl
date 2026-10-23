@@ -254,3 +254,33 @@ export function Section({
     </section>
   );
 }
+
+/**
+ * A line of facts, a dot between each. Each fact carries its dot before it, in a margin the line
+ * hides: where the facts wrap, the next line starts with a fact, not a dot. One that hides on a
+ * phone takes its dot along.
+ */
+export function Meta({
+  parts,
+}: {
+  parts: (false | null | undefined | "" | { key: string; node: ReactNode; className?: string })[];
+}) {
+  const shown = parts.filter((p): p is { key: string; node: ReactNode; className?: string } => !!p);
+  return (
+    <div className="mt-1 overflow-hidden">
+      <div className="-ml-4 flex min-w-0 flex-wrap items-center gap-y-1 text-[12.5px] text-ink-4">
+        {shown.map((p) => (
+          <span
+            key={p.key}
+            className={cn(
+              "relative inline-flex items-center pl-4 before:absolute before:left-[6px] before:content-['·']",
+              p.className,
+            )}
+          >
+            {p.node}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}

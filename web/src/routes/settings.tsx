@@ -1341,8 +1341,9 @@ function YourData() {
       <div className="flex flex-col items-start gap-4">
         <p className="max-w-xl text-[13.5px] leading-relaxed text-ink-3">
           Your account, sign-in methods, passkeys and two-factor sign-in, devices and tokens, Claude
-          connections (without their secrets), notification settings and browsers, projects, the sessions you
-          started with their full transcripts, the sessions you follow, and your activity log.
+          connections (without their secrets), notification settings and browsers, projects, the schedules you
+          set up, the sessions you started with their full transcripts, the sessions you follow, and your
+          activity log.
         </p>
         <ExportLink className="inline-flex h-8.5 items-center gap-2 rounded-md border border-line-strong bg-raised px-3.5 text-[13.5px] font-medium text-ink transition-colors hover:border-ink-4">
           <Download className="size-3.5" />

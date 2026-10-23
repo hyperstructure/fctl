@@ -7,6 +7,7 @@ import type { RunnerRef } from "./RunnerRef";
 import type { SessionId } from "./SessionId";
 import type { SessionReview } from "./SessionReview";
 import type { SessionRole } from "./SessionRole";
+import type { SessionSchedule } from "./SessionSchedule";
 import type { SessionStats } from "./SessionStats";
 import type { SessionStatus } from "./SessionStatus";
 import type { UserRef } from "./UserRef";
@@ -77,4 +78,10 @@ following?: boolean,
  * what it found on GitHub through fctl. Absent for other sessions, and
  * from control planes before review agents.
  */
-review?: SessionReview, };
+review?: SessionReview, 
+/**
+ * The schedule it started from (`api::Schedule`): at its time, or when
+ * someone ran it. Absent for other sessions, and from control planes
+ * before schedules.
+ */
+schedule?: SessionSchedule, };

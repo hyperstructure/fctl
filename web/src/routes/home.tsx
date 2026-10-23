@@ -7,6 +7,7 @@ import { Link } from "@tanstack/react-router";
 import { Check, Cpu, FolderPlus, KeyRound, Plus, ShieldCheck, Users } from "lucide-react";
 import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { PlanUsageStrip } from "@/components/plan-usage";
+import { ScheduleButton } from "@/components/project/schedules";
 import { RunnerUpdate } from "@/components/runner-update";
 import {
   AttachButton,
@@ -269,10 +270,13 @@ function QuickStart({
           className="block px-5 pt-4 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
           aria-label="Task for a new session"
         />
-        <TextareaControls textarea={ref} className="flex-wrap gap-2 pt-4 pr-3 pb-3 pl-2.5">
+        {/* On a phone it keeps one line: where the controls run out of room, the project's name and
+            the model's give way, and their starts show. */}
+        <TextareaControls textarea={ref} className="flex-wrap gap-2 pt-4 pr-3 pb-3 pl-2.5 max-sm:flex-nowrap">
           <AttachButton onFiles={(f) => attach(f)} />
-          {/* It takes the room left on its line, which puts what follows at the end. On a phone what
-              follows shares its line as long as the project keeps room for the start of its name. */}
+          {/* It takes the room left on its line, which puts what follows at the end. On a phone it
+              keeps room for the start of the project's name, and gives up some of it with the model's
+              name where the row has too little. */}
           <div className="flex min-w-0 grow items-center gap-2 text-[12.5px] max-sm:basis-24">
             <span className="hidden text-ink-4 sm:inline">in</span>
             <Select
@@ -317,11 +321,26 @@ function QuickStart({
           <span className="mr-1 ml-5 hidden text-[11.5px] text-ink-4 sm:inline lg:hidden xl:inline">
             ⌘+Enter
           </span>
-          {/* On a phone it can take a line of its own, at its end. */}
+          {target && (
+            <ScheduleButton
+              project={target}
+              prompt={prompt}
+              choice={choice}
+              files={files.drafts.length}
+              disabled={starting}
+              // Its symbol alone, as the row has the project's picker too, and only from xl, where the
+              // row is as wide as it gets: narrower, it would push Start onto a line of its own, or
+              // the row onto another. The project's own task box has it at every width.
+              bare
+              className="max-xl:hidden"
+              // The draft stays here until a schedule is set up with it.
+              onSaved={() => void forgetDraft(user)}
+            />
+          )}
           <StartButton
             starting={starting}
             disabled={!prompt.trim() && !files.drafts.length}
-            className="enabled:hover:scale-[1.03] max-sm:ml-auto"
+            className="enabled:hover:scale-[1.03]"
           >
             Start
           </StartButton>

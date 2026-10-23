@@ -1,10 +1,100 @@
 # Automation
 
-Agents start when you ask, and also when your CI or a bot does: an access
-token lets a workflow start sessions, limited to what it is for. This page
-shows how to make one, how to run review agents on your pull requests from
-GitHub Actions, and other uses: triaging issues, nightly maintenance,
-planning, dashboards.
+Agents start when you ask, at the times you set, and when your CI, a bot
+or another tool asks: schedules start sessions on their own, and an access
+token lets a workflow start them, limited to what it is for. This page
+shows how to set up schedules, how to start agents from other tools, such
+as an issue tracker, how to make a token, how to run review agents on your
+pull requests from GitHub Actions, and other uses: triaging issues,
+nightly maintenance, planning, dashboards.
+
+## Schedules
+
+A schedule is a task that fctl starts a session for on its own: once at a
+set time, or again and again, every hour, day, weekday, week or month, or
+on any cron expression, in a time zone you choose; or only when asked, by
+you or another tool ([below](#start-agents-from-other-tools)). Set one up
+under the project's **Schedules** tab, which offers ideas to start from
+(dependency updates, triaging new issues, tidying the project's memory,
+learning from the week's reviews), or with `fctl schedules add`;
+**Schedule**, beside Start in the project's task box, and in the Agent
+Floor's in a wide window, turns what you wrote there into one.
+
+- **Each run is a session.** It is named after the schedule, works on a
+  branch of its own and shows in the project's sessions with the
+  schedule's mark; its page links to the schedule, and the schedule lists
+  what each of its runs started. The agent gets the task, then a note
+  from fctl: which schedule started it and when, its previous run, and
+  that nobody watches it start, so that it works without waiting for
+  answers and says plainly what only a person can decide.
+- **On whose subscription.** A schedule runs on the Claude subscription of
+  the person who set it up, its owner, who follows its sessions as they
+  follow the ones they start (unless they turned that off in Settings). A
+  change by someone else, as one of the project's maintainers or owners,
+  runs it on theirs from then on: nobody puts work on someone else's
+  subscription. Running one now, from the tab or with `fctl schedules
+  run`, starts a session on your own.
+- **Runs don't pile up.** A run is skipped while the schedule's last
+  session still works on its task, and while its owner's plan is at its
+  limit, until the limit resets; a schedule that runs once waits for the
+  reset instead. The schedule says so, and why, in its runs.
+- **When its owner can't run it.** Once they can no longer start sessions
+  in the project, their account is gone or disabled, or they have no
+  Claude connection, fctl pauses the schedule at its next run and says
+  why; resuming it runs it on the subscription of whoever resumes it.
+- **What it may do.** Its sessions start with the model, effort level and
+  GitHub access it sets, or the project's, and never more on GitHub than
+  the project allows now. Schedules run at most every 15 minutes, and a
+  project keeps at most 50.
+
+```sh
+fctl schedules add "Weekly dependencies" -p web --cron "0 9 * * 1" \
+  -m "Update the dependencies that have new patch or minor releases, run the tests and open a pull request."
+fctl schedules -p web                       # when each runs next, and what its last run did
+fctl schedules run "Weekly dependencies" -p web
+```
+
+## Start agents from other tools
+
+Any tool that can make a web request can start an agent: an issue
+tracker's automation, a chat bot, a deploy pipeline, a script on a
+server. Point it at a schedule whose task says what to do in that case,
+and send what the tool knows of why with it, such as an issue's title and
+text. Each request starts a session with the schedule's task and what
+came with it, on the Claude subscription of the token's person, and the
+schedule lists it as a run by a tool.
+
+1. **A schedule for the case.** One that runs **when asked** has no time
+   of its own, since the tool decides when it runs: choose When asked in
+   its form, or `fctl schedules add "Triage an issue" -p web --when-asked
+   --github comment -m "Triage the issue that comes with this: label it,
+   say what is missing to act on it, link duplicates and point at the code
+   it concerns."` Its details show the request below, with its id, ready
+   to copy (any schedule can be run this way).
+2. **A token that runs sessions.** `fctl token "Issue triage" --access run
+   -p web --github comment --days 90`.
+3. **The request.** The tool posts to the schedule's runs, with what it
+   knows in `context` (at most 20,000 characters):
+
+   ```sh
+   curl -H "Authorization: Bearer $FCTL_TOKEN" -H "Content-Type: application/json" \
+     -d '{"context": "ENG-412: The login page hangs on Safari\n\nSteps: …"}' \
+     https://app.fctl.sh/api/v1/schedules/sch_01JC…/runs
+   ```
+
+   Or from a shell: `fctl schedules run sch_01JC… --context-file -`, with
+   the text on stdin.
+
+What a tool sends comes from outside fctl, often from people who can't
+instruct your agents, such as whoever filed an issue. So the agent gets
+it after the task, marked as information for the task and not as
+instructions. Its token can't do more than run sessions in the projects
+it names, and its sessions' agents can't do more on GitHub than it allows.
+People and tools may run one schedule 20 times an hour, and pausing it
+stops them all. Tools that send webhooks without a way to add a header, as
+some issue trackers do, need a small relay (a serverless function, or a
+no-code tool such as Zapier, Make or n8n) that adds it and picks out the
+fields to send.
 
 ## Access tokens
 
@@ -166,9 +256,10 @@ What to keep in mind:
   that comments: `fctl run -p web --github comment --detach "Triage issue
   #$ISSUE: label it, say what is missing to act on it, and point at the
   code it concerns."`
-- **Nightly maintenance.** On a `schedule`, with a token that runs sessions
-  in one project and whose agents push: `fctl run -p web --detach "Update
-  the dependencies that have patch releases and open a pull request."`
+- **Nightly maintenance.** A schedule does it without a workflow
+  ([Schedules](#schedules)): `fctl schedules add "Nightly dependencies"
+  -p web --cron "0 3 * * *" -m "Update the dependencies that have patch
+  releases and open a pull request."`
 - **Plan before building.** Choose **Read only** in the task box, or `fctl
   run --github read`, and ask for a plan: the agent reads the code, issues
   and pull requests and answers in the session, writing nothing to

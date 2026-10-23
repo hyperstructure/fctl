@@ -13,6 +13,7 @@ import {
   ImageUp,
   Info,
   Radio,
+  Repeat,
   ScrollText,
   Sparkle,
   Trash2,
@@ -47,6 +48,7 @@ import { useLoadInView } from "@/lib/load-in-view";
 import { isPublishedLink, linkToken, markdown } from "@/lib/published";
 import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
 import { callsIn, lastRun, parts } from "@/lib/runs";
+import { splitRunNote } from "@/lib/schedules";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
@@ -64,6 +66,8 @@ const UserMessage = memo(function UserMessage({
 }) {
   const author = item.author;
   const files = item.attachments ?? [];
+  // A schedule's run: its task, then what fctl told the agent about the run.
+  const { task, note } = useMemo(() => splitRunNote(item.text), [item.text]);
   if (item.followUp) return <FollowUpMessage followUp={item.followUp} text={item.text} ts={item.ts} />;
   return (
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
@@ -80,7 +84,13 @@ const UserMessage = memo(function UserMessage({
       </div>
       {item.text && (
         <div className="ml-[34px] rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap wrap-anywhere text-ink">
-          {item.text}
+          {task}
+          {note && (
+            <p className="mt-2.5 flex gap-2 border-t border-line pt-2.5 text-[12.5px] leading-relaxed text-ink-3">
+              <Repeat aria-hidden="true" className="mt-[3px] size-3.5 shrink-0 text-ink-4" />
+              <span className="min-w-0">{note}</span>
+            </p>
+          )}
         </div>
       )}
       {files.length > 0 && (

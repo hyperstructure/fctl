@@ -147,6 +147,18 @@ id_type!(
     RetrospectiveId,
     "rtr"
 );
+id_type!(
+    /// A project's schedule: a task fctl starts sessions for on its own,
+    /// once or again and again.
+    ScheduleId,
+    "sch"
+);
+id_type!(
+    /// One time a schedule ran: the session it started, or why it started
+    /// none.
+    ScheduleRunId,
+    "srn"
+);
 
 #[cfg(test)]
 mod tests {

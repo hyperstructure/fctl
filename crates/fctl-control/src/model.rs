@@ -10,10 +10,12 @@ use fctl_proto::runner::{ClaudeAccount, ClaudeCredentialKind, HostHello};
 use fctl_proto::session::{
     GithubAccess, InstanceRole, Project, ProjectRole, ProjectSettings, PullRequestRef,
     RemoteControlState, RepoAccess, RepoGrant, RepoRef, RunnerRef, Session, SessionReview,
-    SessionRole, SessionStats, SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
+    SessionRole, SessionSchedule, SessionStats, SessionStatus, UserRef, WorkspaceColor,
+    WorkspaceRef, WorkspaceRole,
 };
 use fctl_proto::{
-    AllowId, CredentialId, IdentityId, ProjectId, RunnerId, SessionId, UserId, WorkspaceId,
+    AllowId, CredentialId, IdentityId, ProjectId, RunnerId, ScheduleId, SessionId, UserId,
+    WorkspaceId,
 };
 use serde::Deserialize;
 
@@ -609,6 +611,12 @@ pub struct SessionRow {
     pub review_title: Option<String>,
     #[serde(default)]
     pub review_sha: Option<String>,
+    /// The schedule it started from, and its name while it exists (a LEFT
+    /// JOIN of `schedules`).
+    #[serde(default)]
+    pub schedule_id: Option<String>,
+    #[serde(default)]
+    pub schedule_name: Option<String>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
@@ -629,6 +637,14 @@ impl SessionRow {
     /// Whether it is a review agent's session, which takes no messages.
     pub fn is_review(&self) -> bool {
         self.review_repo.is_some()
+    }
+
+    /// The schedule it started from; `None` for other sessions.
+    pub fn schedule(&self) -> Option<SessionSchedule> {
+        Some(SessionSchedule {
+            id: ScheduleId(self.schedule_id.clone()?),
+            name: self.schedule_name.clone(),
+        })
     }
 
     /// What its agent may do on GitHub now, as its tokens are minted and
@@ -729,6 +745,7 @@ impl SessionRow {
             archived: self.archived,
             following: Some(self.following),
             review: self.review(),
+            schedule: self.schedule(),
         };
         fctl_domain::pulls::backfill(&mut s);
         s
@@ -747,13 +764,14 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \
-    rv.head_sha AS review_sha, \
+    rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
     w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \
     FROM sessions s \
     JOIN projects p ON p.id = s.project_id \
     LEFT JOIN reviews rv ON rv.session_id = s.id \
+    LEFT JOIN schedules sc ON sc.id = s.schedule_id \
     LEFT JOIN workspaces w ON w.id = p.workspace_id \
     LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
     LEFT JOIN users cu ON cu.id = s.created_by \

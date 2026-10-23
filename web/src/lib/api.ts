@@ -242,6 +242,25 @@ export const api = {
   /** Reviews a pull request's head now: `owner/name#12`, its URL, or its number in the project's repository. */
   startReview: (project: string, b: G.StartReviewRequest) =>
     request<G.Review>("POST", `/projects/${enc(project)}/reviews`, b),
+  /** A project's schedules, in the order they were made, each with its latest run. */
+  schedules: (project: string) => request<G.ScheduleList>("GET", `/projects/${enc(project)}/schedules`),
+  /** Sets up a schedule, on your Claude subscription. */
+  createSchedule: (project: string, b: G.CreateScheduleRequest) =>
+    request<G.Schedule>("POST", `/projects/${enc(project)}/schedules`, b),
+  /** Changes, pauses or resumes a schedule; someone else's runs on your subscription once you change it. */
+  updateSchedule: (id: string, b: G.UpdateScheduleRequest) =>
+    request<G.Schedule>("PATCH", `/schedules/${enc(id)}`, b),
+  deleteSchedule: (id: string) => request<G.Ok>("DELETE", `/schedules/${enc(id)}`),
+  /** A schedule's runs, newest first. */
+  scheduleRuns: (id: string, q: { before?: number; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (q.before) p.set("before", String(q.before));
+    if (q.limit) p.set("limit", String(q.limit));
+    return request<G.ScheduleRunList>("GET", `/schedules/${enc(id)}/runs?${p}`);
+  },
+  /** Runs a schedule's task now, in a session on your Claude subscription. */
+  runSchedule: (id: string, b: G.RunScheduleRequest = {}) =>
+    request<G.ScheduleRun>("POST", `/schedules/${enc(id)}/runs`, b),
   github: () => request<G.GithubInfo>("GET", "/github"),
   /** The repositories a workspace's projects may use. */
   githubRepos: (workspace: string) =>

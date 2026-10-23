@@ -8,13 +8,13 @@ use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, SandboxLimits};
 use crate::session::{
     GithubAccess, InstanceRole, Memory, Project, ProjectRole, ProjectSettings, RepoAccess, RepoRef,
-    Retrospective, RetrospectiveOutcome, Session, SessionRole, SessionStatus, UserRef,
+    Retrospective, RetrospectiveOutcome, Session, SessionRef, SessionRole, SessionStatus, UserRef,
     WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use crate::{
     AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId,
     LoginJobId, MemoryId, Millis, PasskeyId, ProjectId, PushDeviceId, RetrospectiveId, RunnerId,
-    SessionId, TokenId, UserId, WorkspaceId, WorkspaceInviteId,
+    ScheduleId, ScheduleRunId, SessionId, TokenId, UserId, WorkspaceId, WorkspaceInviteId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -2566,6 +2566,253 @@ pub struct PostedReview {
     /// the findings to, so that it decides what to do about them. Control
     /// planes from before it leave it out.
     pub sent_to: Option<SessionId>,
+}
+
+// ───────────────────────────── schedules ─────────────────────────────
+
+/// A project's schedule (`GET /api/v1/projects/{id}/schedules`): a task
+/// fctl starts a session for on its own, once at a set time or again and
+/// again, on the Claude subscription of the person it runs for, its owner.
+/// People run it when they choose too, and so do other tools with an
+/// access token (`POST /api/v1/schedules/{id}/runs`), on their own
+/// subscription.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct Schedule {
+    pub id: ScheduleId,
+    pub project_id: ProjectId,
+    pub name: String,
+    /// What each run's agent is asked to do.
+    pub prompt: String,
+    /// When it runs again and again: a cron expression (minute, hour, day
+    /// of the month, month and day of the week) in `timezone`. Absent for a
+    /// schedule that runs once, or when asked.
+    pub cron: Option<String>,
+    /// When it runs once. Absent for one that runs again and again, or when
+    /// asked. Without either, it runs only when someone runs it, or another
+    /// tool does with an access token.
+    pub at: Option<Millis>,
+    /// The IANA time zone its times are in, such as `Europe/Stockholm`.
+    pub timezone: String,
+    /// What its sessions start with; absent: the project's.
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub base_branch: Option<String>,
+    /// What its sessions' agents may do on GitHub; absent: as much as the
+    /// project allows.
+    pub github_access: Option<GithubAccess>,
+    /// `false` while it is paused: it starts nothing until it is resumed,
+    /// not even when asked.
+    pub enabled: bool,
+    pub state: ScheduleState,
+    /// Why fctl paused it: its owner can no longer run it.
+    pub paused_reason: Option<String>,
+    /// Why its next run wouldn't start now, while it is on: its owner's
+    /// plan is at its limit, or they can't start sessions here any more.
+    pub problem: Option<String>,
+    /// When it starts its next session; absent while it is paused, for one
+    /// that runs when asked, and once one that runs once has run.
+    pub next_run_at: Option<Millis>,
+    /// Its latest run.
+    pub last_run: Option<ScheduleRun>,
+    /// Whose Claude subscription its runs start on: who set it up, or took
+    /// it over since. Absent once their account is gone.
+    pub owner: Option<UserRef>,
+    pub created_by: Option<UserRef>,
+    pub created_at: Millis,
+    pub updated_by: Option<UserRef>,
+    pub updated_at: Millis,
+}
+
+/// Where a schedule stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleState {
+    /// It starts a session at its next time, or when asked.
+    Active,
+    /// It starts nothing until someone resumes it.
+    Paused,
+    /// It ran once, as it was set to.
+    Done,
+}
+
+/// One time a schedule ran: the session it started, or why it started
+/// none.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ScheduleRun {
+    pub id: ScheduleRunId,
+    pub schedule_id: ScheduleId,
+    /// When it was due: the schedule's time, or when someone asked.
+    pub due_at: Millis,
+    /// When fctl started its session, or decided to start none.
+    pub at: Millis,
+    pub outcome: ScheduleRunOutcome,
+    /// Why it was skipped, or failed.
+    pub reason: Option<String>,
+    pub trigger: ScheduleTrigger,
+    /// Who it ran for: the owner, at the schedule's time; whoever asked,
+    /// or whose access token did, otherwise.
+    pub by: Option<UserRef>,
+    /// The session it started.
+    pub session: Option<SessionRef>,
+    /// That session's status now.
+    pub status: Option<SessionStatus>,
+}
+
+/// What came of a schedule's run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleRunOutcome {
+    /// A session started.
+    Started,
+    /// No session started, on purpose: its owner's plan was at its limit,
+    /// or its last run was still working.
+    Skipped,
+    /// No session started: something went wrong.
+    Failed,
+}
+
+impl ScheduleRunOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::Skipped => "skipped",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// What D1 keeps; an outcome this version doesn't know reads as failed.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "started" => Self::Started,
+            "skipped" => Self::Skipped,
+            _ => Self::Failed,
+        }
+    }
+}
+
+/// What started a schedule's run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleTrigger {
+    /// Its time came.
+    Time,
+    /// Someone ran it, in the app or the CLI.
+    Person,
+    /// Another tool ran it, with an access token.
+    Token,
+}
+
+impl ScheduleTrigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Time => "time",
+            Self::Person => "person",
+            Self::Token => "token",
+        }
+    }
+
+    /// What D1 keeps; a trigger this version doesn't know reads as its time.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "person" => Self::Person,
+            "token" => Self::Token,
+            _ => Self::Time,
+        }
+    }
+}
+
+/// `GET /api/v1/projects/{id}/schedules`: the project's schedules, in the
+/// order they were made.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ScheduleList {
+    pub schedules: Vec<Schedule>,
+}
+
+/// `GET /api/v1/schedules/{id}/runs`: newest first, before `?before=` for
+/// the next page.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ScheduleRunList {
+    pub runs: Vec<ScheduleRun>,
+    /// Where the next page starts, when there is one.
+    pub next_before: Option<Millis>,
+}
+
+/// `POST /api/v1/projects/{id}/schedules`, for people who start sessions
+/// in the project. It runs on the caller's Claude subscription.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct CreateScheduleRequest {
+    /// Absent: the task's first line.
+    pub name: Option<String>,
+    pub prompt: String,
+    /// When it runs again and again: give this or `at`, or neither for a
+    /// schedule that runs only when asked.
+    pub cron: Option<String>,
+    /// When it runs once.
+    pub at: Option<Millis>,
+    /// Absent: UTC.
+    pub timezone: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub base_branch: Option<String>,
+    /// At most what the project allows; absent: that much.
+    pub github_access: Option<GithubAccess>,
+    /// `false`: it starts paused.
+    pub enabled: Option<bool>,
+}
+
+/// `PATCH /api/v1/schedules/{id}`: absent fields stay as they are. Its
+/// owner changes it, and so do the project's maintainers and owners, which
+/// runs it on their own Claude subscription from then on. Pausing it is
+/// open to both, and resuming it as changing it is.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct UpdateScheduleRequest {
+    pub name: Option<String>,
+    pub prompt: Option<String>,
+    /// A cron expression: it runs again and again from now on; `""`, and no
+    /// `at`, for only when asked.
+    pub cron: Option<String>,
+    /// A time: it runs once, then.
+    pub at: Option<Millis>,
+    pub timezone: Option<String>,
+    /// `""` for the project's.
+    pub model: Option<String>,
+    /// `""` for the project's.
+    pub effort: Option<String>,
+    /// `""` for the project's default branch.
+    pub base_branch: Option<String>,
+    /// `push`, `comment` or `read`; `""` for as much as the project allows.
+    pub github_access: Option<String>,
+    /// `false` pauses it; `true` resumes it.
+    pub enabled: Option<bool>,
+    /// `true`: run it on the caller's Claude subscription from now on.
+    pub run_as_me: Option<bool>,
+}
+
+/// `POST /api/v1/schedules/{id}/runs`: starts its task now, in a session on
+/// the caller's Claude subscription, for people who start sessions in its
+/// project and access tokens that run sessions there, unless it is paused.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct RunScheduleRequest {
+    /// What this run's agent gets after the task: what another tool knows
+    /// of why it runs, such as an issue's title and text. The agent reads it
+    /// as information, not instructions.
+    pub context: Option<String>,
 }
 
 // ───────────────────────────── what agents ask ─────────────────────────────

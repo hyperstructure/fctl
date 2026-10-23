@@ -153,6 +153,7 @@ bindings = [
   {{ name = "FLEET", class_name = "FleetObject" }},
   {{ name = "FILES", class_name = "FilesObject" }},
   {{ name = "NOTIFY", class_name = "NotifyObject" }},
+  {{ name = "SCHEDULES", class_name = "ScheduleObject" }},
 ]
 
 [[migrations]]
@@ -166,6 +167,10 @@ new_sqlite_classes = ["FilesObject"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["NotifyObject"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["ScheduleObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"
@@ -427,6 +432,14 @@ app_slug = "acme-fctl"
         assert_eq!(
             doc["migrations"][2]["new_sqlite_classes"][0].as_str(),
             Some("NotifyObject")
+        );
+        assert_eq!(
+            doc["durable_objects"]["bindings"][4]["class_name"].as_str(),
+            Some("ScheduleObject")
+        );
+        assert_eq!(
+            doc["migrations"][3]["new_sqlite_classes"][0].as_str(),
+            Some("ScheduleObject")
         );
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
         assert!(doc["vars"].get("FCTL_EARLY_ACCESS").is_none());
