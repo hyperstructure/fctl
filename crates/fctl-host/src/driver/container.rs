@@ -290,9 +290,12 @@ impl ContainerDriver {
         match self.state(&spec.name).await?.as_deref() {
             Some("running") => {
                 // Apple's `container` lists a sandbox it failed to stop as
-                // running (see `halt`).
-                let Err(e) = self.run(&["exec", &spec.name, "true"]).await else {
-                    return Ok(sb);
+                // running, and refuses commands in it (see `halt`). A
+                // runtime that doesn't answer says nothing about that.
+                let e = match self.run(&["exec", &spec.name, "true"]).await {
+                    Ok(_) => return Ok(sb),
+                    Err(e) if unanswered(&e) => return Err(e),
+                    Err(e) => e,
                 };
                 tracing::warn!(
                     "{} is listed as running but takes no commands, so the host starts it again: {e:#}",
@@ -1690,7 +1693,8 @@ mod tests {
     /// sandbox: the runtime is left stopping, and the API server lists the
     /// sandbox as running. Then `exec`, `cp` and `clean` are refused, and
     /// `start` does nothing, until a `stop` succeeds. With `stuck` there,
-    /// every `stop` fails.
+    /// every `stop` fails. With `lost` there, it can't be started again once
+    /// it has answered an `inspect`.
     const APPLE: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -1702,7 +1706,9 @@ refuse() {
   exit 1
 }
 case "$1" in
-  inspect) printf '[{"configuration": {"id": "%s"}, "status": "%s"}]\n' "$last" "$listed" ;;
+  inspect)
+    printf '[{"configuration": {"id": "%s"}, "status": "%s"}]\n' "$last" "$listed"
+    [ ! -e "$d/lost" ] || chmod 644 "$0" ;;
   exec) [ "$runtime" = running ] || refuse "create process in container" exec ;;
   cp) [ "$runtime" = running ] || refuse "copy into container" copyIn ;;
   clean) [ "$runtime" = running ] || refuse "clean container" clean ;;
@@ -1827,6 +1833,26 @@ esac
             ["inspect fctl-ses-1", "exec fctl-ses-1 true"]
         );
         assert!(!calls_in(dir.path())?.contains(&"start fctl-ses-1".to_owned()));
+
+        // One whose runtime stops answering is left as it is.
+        let dir = tempfile::tempdir()?;
+        let apple = apple_cli(dir.path(), "running", "stopping")?;
+        std::fs::write(dir.path().join("lost"), "")?;
+        let lines = Mutex::new(Vec::new());
+        let log = |line: String| {
+            lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line)
+        };
+        let ensured = apple.ensure(&spec(VERSION_IMAGE, None), &log).await;
+        assert!(ensured.is_err_and(|e| e.is::<NotStarted>()));
+        assert!(
+            lines
+                .into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty()
+        );
         Ok(())
     }
 
