@@ -10,6 +10,7 @@
 //! heartbeats and pongs keep flowing while a runtime hangs.
 
 use crate::caches;
+use crate::claude_token;
 use crate::config::HostConfig;
 use crate::driver::{DiskSpot, Driver, SandboxInfo, sandbox_name, session_of, timed_out};
 use crate::expiry::{self, Why};
@@ -747,6 +748,7 @@ impl Daemon {
             min_free_disk_mb: self.ctx.cfg.min_free_disk_mb(),
             // Its agents, of its own version, run review agents' sessions.
             features: vec![fctl_proto::runner::FEATURE_REVIEWS.to_owned()],
+            claude_token: Some(claude_token::announce(&self.ctx.cfg.claude_token())),
         }
     }
 
@@ -756,6 +758,8 @@ impl Daemon {
             load1: sysinfo::load1(),
             memory_available_mb: sysinfo::memory_available_mb(),
             disk_available_mb: self.disk_free_mb,
+            // Its owner may have saved or removed it since.
+            claude_token: Some(claude_token::announce(&self.ctx.cfg.claude_token())),
         }
     }
 
@@ -949,11 +953,20 @@ impl Daemon {
             } => self.stop_session(session_id, reason, destroy),
             FleetToHost::Credential {
                 request_id,
-                claude,
+                mut claude,
                 github,
                 github_read,
-                error,
+                mut error,
             } => {
+                // A token kept on this runner comes without it: the host
+                // puts its own in, or says why it can't.
+                if let Some(c) = claude.as_mut()
+                    && let Err(why) =
+                        claude_token::fill(&self.ctx.cfg.claude_token(), c, &self.ctx.cfg.name)
+                {
+                    claude = None;
+                    error = Some(why);
+                }
                 if let Some((sid, agent_request)) = self.pending_creds.remove(&request_id)
                     && let Some(h) = self.sessions.get(&sid)
                 {
@@ -991,8 +1004,14 @@ impl Daemon {
     }
 
     /// Takes on a session, or says why not.
-    fn start_session(&mut self, spec: Box<SessionSpec>) -> Result<(), String> {
+    fn start_session(&mut self, mut spec: Box<SessionSpec>) -> Result<(), String> {
         let id = spec.session_id.clone();
+        // Its person keeps their Claude token on their runners: this one's.
+        claude_token::fill(
+            &self.ctx.cfg.claude_token(),
+            &mut spec.credentials.claude,
+            &self.ctx.cfg.name,
+        )?;
         // The control plane only sends sessions that fit; an older one may
         // not know this host's limits.
         let limits = self.ctx.sandbox_limits();
@@ -1323,6 +1342,106 @@ mod tests {
             "git_author": { "name": "bot", "email": "bot@example.com" },
             "co_authors": [], "web_url": "https://fctl.test/s/ses_1", "idle_timeout_secs": 60
         }))?)
+    }
+
+    const CLAUDE_TOKEN: &str = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ-Xy3Q";
+
+    /// A spec whose Claude connection keeps its token on its owner's
+    /// runners: the control plane sends it without one.
+    fn spec_on_runners(session_id: &str) -> Result<Box<SessionSpec>> {
+        let mut spec = spec(session_id)?;
+        spec.credentials.claude = serde_json::from_value(serde_json::json!({
+            "id": "crd_kept", "kind": "setup_token", "access_token": "",
+            "scopes": ["user:inference"], "on_runners": true
+        }))?;
+        Ok(spec)
+    }
+
+    #[tokio::test]
+    async fn sessions_on_a_token_kept_here_get_it_and_others_keep_theirs() -> Result<()> {
+        let tokens = tempfile::tempdir()?;
+        let file = tokens.path().join("claude-token");
+        let kept = file.clone();
+        let (_dir, mut d) = daemon_where(&[], move |cfg| {
+            cfg.name = "studio-mac".into();
+            cfg.claude_token_file = Some(kept);
+        })
+        .await?;
+        // It says it can keep one, and that it keeps none.
+        assert_eq!(d.hello().claude_token, Some(Default::default()));
+        let refused = d
+            .start_session(spec_on_runners("ses_01KEPT")?)
+            .err()
+            .unwrap_or_default();
+        assert_eq!(
+            refused,
+            "studio-mac keeps no Claude token: run `fctl host claude set-token` on it"
+        );
+        // Saved while it runs: its next heartbeat says so, and sessions get it.
+        claude_token::save(&file, CLAUDE_TOKEN)?;
+        assert!(d.heartbeat().claude_token.is_some_and(|t| t.kept()));
+        assert!(d.hello().claude_token.is_some_and(|t| t.kept()));
+        d.hold("fctl-ses-01kept");
+        d.hold("fctl-ses-01else");
+        assert_eq!(d.start_session(spec_on_runners("ses_01KEPT")?), Ok(()));
+        assert_eq!(d.start_session(spec("ses_01ELSE")?), Ok(()));
+        let token_of = |d: &Daemon, id: &str| {
+            d.pending_starts
+                .get(&SessionId(id.into()))
+                .map(|s| s.credentials.claude.access_token.clone())
+        };
+        assert_eq!(token_of(&d, "ses_01KEPT").as_deref(), Some(CLAUDE_TOKEN));
+        // A session on a token the control plane keeps runs on that one.
+        assert_eq!(token_of(&d, "ses_01ELSE").as_deref(), Some("a"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fresh_credentials_for_a_token_kept_here_come_from_here() -> Result<()> {
+        let tokens = tempfile::tempdir()?;
+        let file = tokens.path().join("claude-token");
+        let kept = file.clone();
+        let (_dir, mut d) = daemon_where(&[], move |cfg| cfg.claude_token_file = Some(kept)).await?;
+        let sid = SessionId("ses_01KEPT".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        d.sessions.insert(
+            sid.clone(),
+            SessionHandle {
+                tx,
+                report: Arc::new(std::sync::Mutex::new(session::Report {
+                    status: SessionStatus::Running,
+                    agent_seq: 0,
+                })),
+            },
+        );
+        let placeholder = spec_on_runners("ses_01KEPT")?.credentials.claude;
+        let mut answer = |d: &mut Daemon, request: &str| {
+            d.pending_creds
+                .insert(request.into(), (sid.clone(), format!("agent-{request}")));
+            d.on_fleet(FleetToHost::Credential {
+                request_id: request.into(),
+                claude: Some(placeholder.clone()),
+                github: None,
+                github_read: None,
+                error: None,
+            });
+            rx.try_recv().ok()
+        };
+        // Replaced on the runner since the session started: it gets the new one.
+        claude_token::save(&file, CLAUDE_TOKEN)?;
+        let Some(SessionCmd::Credentials { claude, error, .. }) = answer(&mut d, "h1") else {
+            anyhow::bail!("no credentials for the agent");
+        };
+        assert_eq!(claude.map(|c| c.access_token).as_deref(), Some(CLAUDE_TOKEN));
+        assert_eq!(error, None);
+        // Removed: the agent hears why, and gets no empty token.
+        claude_token::remove(&file)?;
+        let Some(SessionCmd::Credentials { claude, error, .. }) = answer(&mut d, "h2") else {
+            anyhow::bail!("no answer for the agent");
+        };
+        assert_eq!(claude, None);
+        assert!(error.is_some_and(|e| e.contains("keeps no Claude token")));
+        Ok(())
     }
 
     #[tokio::test]

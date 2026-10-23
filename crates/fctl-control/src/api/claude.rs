@@ -22,22 +22,8 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     let body: AddClaudeTokenRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     let token = body.token.trim().to_owned();
-    // Long-lived tokens look like sk-ant-oat01-… (an API key is sk-ant-api…).
-    if token.starts_with("sk-ant-api") {
-        return Err(validation(
-            "token",
-            "That is an API key, which bills per token. fctl only runs on subscriptions: run `claude setup-token` and paste its output.",
-        ));
-    }
-    if !token.starts_with("sk-ant-oat")
-        || token.len() < 40
-        || token.len() > 500
-        || token.contains(char::is_whitespace)
-    {
-        return Err(validation(
-            "token",
-            "Paste the token `claude setup-token` printed (it starts with sk-ant-oat)",
-        ));
+    if let Some(problem) = fctl_domain::claude::setup_token_problem(&token) {
+        return Err(validation("token", problem));
     }
     let label = body
         .label
@@ -81,6 +67,97 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         .await?
         .ok_or_else(|| not_found("User"))?;
     http::created(&auth::me(ctx, &user).await?)
+}
+
+/// Connects the Claude token the caller keeps on their runners (`fctl
+/// host claude set-token`), which fctl never receives: a connection
+/// without a secret whose sessions run only on those of their runners that
+/// keep one (`spec::claude_credential`, FleetDO's scheduling). One per
+/// person: connecting it again makes it their default again, and names it
+/// anew with a label.
+pub async fn add_on_runners(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
+    let body: AddClaudeOnRunnersRequest = http::body(req).await?;
+    let user = ctx.user()?.clone();
+    let label = body
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| fctl_domain::validate::name("label", l))
+        .transpose()?;
+    #[derive(serde::Deserialize)]
+    struct Existing {
+        id: String,
+    }
+    let existing: Option<Existing> = q(
+        &ctx.db,
+        "SELECT id FROM claude_credentials WHERE user_id = ? AND on_runners = 1",
+        &[s(&user.id)],
+    )?
+    .first()
+    .await?;
+    let (id, created) = match existing {
+        Some(e) => {
+            if let Some(l) = &label {
+                q(
+                    &ctx.db,
+                    "UPDATE claude_credentials SET label = ?, updated_at = ? WHERE id = ?",
+                    &[s(l), n(ctx.now), s(&e.id)],
+                )?
+                .run()
+                .await?;
+            }
+            (e.id, false)
+        }
+        None => {
+            let id = fctl_domain::ids::credential_id(ctx.now).as_str().to_owned();
+            // `INSERT OR IGNORE`: a request alongside this one may have
+            // connected it first (the index allows one per person).
+            q(
+                &ctx.db,
+                "INSERT OR IGNORE INTO claude_credentials (id, user_id, kind, label, secret_enc, scopes, status, on_runners, created_at, updated_at) \
+                 VALUES (?, ?, 'setup_token', ?, '', 'user:inference', 'active', 1, ?, ?)",
+                &[
+                    s(&id),
+                    s(&user.id),
+                    os(label.as_deref()),
+                    n(ctx.now),
+                    n(ctx.now),
+                ],
+            )?
+            .run()
+            .await?;
+            let stored: Option<Existing> = q(
+                &ctx.db,
+                "SELECT id FROM claude_credentials WHERE user_id = ? AND on_runners = 1",
+                &[s(&user.id)],
+            )?
+            .first()
+            .await?;
+            let stored = stored.ok_or_else(|| not_found("Credential"))?.id;
+            let created = stored == id;
+            (stored, created)
+        }
+    };
+    q(
+        &ctx.db,
+        "UPDATE users SET default_credential_id = ? WHERE id = ?",
+        &[s(&id), s(&user.id)],
+    )?
+    .run()
+    .await?;
+    if created {
+        ctx.audit("claude.on_runners_added", Some(&id), None);
+    }
+    let user = auth::user_by_id(ctx, &user.id)
+        .await?
+        .ok_or_else(|| not_found("User"))?;
+    let me = auth::me(ctx, &user).await?;
+    if created {
+        http::created(&me)
+    } else {
+        http::ok(&me)
+    }
 }
 
 pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {

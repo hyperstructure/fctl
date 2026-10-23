@@ -20,9 +20,13 @@
 //! min_free_disk_gb = 20    # below it, remove stopped sandboxes early (0: never)
 //! max_cache_gb = 10        # past it, empty a project's package caches (0: keep none)
 //! keep_caches_days = 14    # then remove the caches of a project with no session here (0 keeps them)
+//! # Where `fctl host claude set-token` keeps your Claude token (unset: claude-token here).
+//! claude_token_file = "/run/secrets/claude-token"
 //! ```
 //!
-//! The runner token lives next to it in `host-token` (mode 0600).
+//! The runner token lives next to it in `host-token`, and the Claude token
+//! the host keeps for its runner's owner, if any, in `claude-token` (both
+//! mode 0600).
 
 use anyhow::{Context, Result};
 use fctl_proto::runner::{SandboxLimits, SandboxSize};
@@ -108,6 +112,9 @@ pub struct HostConfig {
     pub build_timeout_minutes: u32,
     /// The largest image a build may make, in MiB.
     pub max_build_mb: u32,
+    /// Where the Claude token the host keeps for its runner's owner is
+    /// ([`crate::claude_token`]). Unset: `claude-token` next to this file.
+    pub claude_token_file: Option<PathBuf>,
 }
 
 impl Default for HostConfig {
@@ -138,6 +145,7 @@ impl Default for HostConfig {
             allowed_builds: None,
             build_timeout_minutes: 60,
             max_build_mb: 20 * 1024,
+            claude_token_file: None,
         }
     }
 }
@@ -201,6 +209,15 @@ impl HostConfig {
 
     pub fn token_path() -> PathBuf {
         config_dir().join("host-token")
+    }
+
+    /// Where the Claude token the host keeps for its runner's owner is
+    /// ([`crate::claude_token`]): `claude_token_file`, else `claude-token`
+    /// next to `host.toml`.
+    pub fn claude_token(&self) -> PathBuf {
+        self.claude_token_file
+            .clone()
+            .unwrap_or_else(|| config_dir().join("claude-token"))
     }
 
     pub fn load() -> Result<Self> {

@@ -106,6 +106,31 @@ pub struct HostHello {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
     pub features: Vec<String>,
+    /// The Claude token it keeps for its runner's owner. Hosts that can
+    /// keep one always send it; older hosts send none, and get no sessions
+    /// on a Claude connection whose token is kept on runners.
+    pub claude_token: Option<RunnerClaudeToken>,
+}
+
+/// The Claude token a host keeps for its runner's owner (`fctl host claude
+/// set-token`), as its hello and heartbeats say: never the token, only
+/// whether it keeps one and since when. Sessions on a Claude connection
+/// whose token is kept on its owner's runners
+/// ([`ClaudeCredential::on_runners`]) start only on those of their runners
+/// that keep one.
+#[skip_serializing_none]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct RunnerClaudeToken {
+    /// When it was saved on the machine. Absent while it keeps none.
+    pub saved_at: Option<Millis>,
+}
+
+impl RunnerClaudeToken {
+    /// Whether the host keeps a token.
+    pub fn kept(&self) -> bool {
+        self.saved_at.is_some()
+    }
 }
 
 #[skip_serializing_none]
@@ -119,6 +144,9 @@ pub struct HostHeartbeat {
     /// [`HostHello::min_free_disk_mb`]). Older hosts measure their data
     /// directory.
     pub disk_available_mb: Option<u64>,
+    /// As in its hello ([`HostHello::claude_token`]): its owner may save
+    /// or remove the token while the host runs.
+    pub claude_token: Option<RunnerClaudeToken>,
 }
 
 /// Which credential a session needs refreshed.
@@ -190,6 +218,15 @@ pub struct ClaudeCredential {
     /// `pro`, `max`, `team` or `enterprise`.
     pub subscription_type: Option<String>,
     pub account: Option<ClaudeAccount>,
+    /// Its token is the one the runner keeps for its owner, who keeps it on
+    /// their runners rather than in fctl: the control plane sends none
+    /// (`access_token` is empty), and the host puts its own in before the
+    /// agent gets the credential. Only hosts that say they keep one
+    /// ([`HostHello::claude_token`]) get such sessions, and only for the
+    /// sessions of the person who registered them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub on_runners: bool,
 }
 
 /// A GitHub installation token, scoped to some of the session's
@@ -607,6 +644,50 @@ mod tests {
         let json = serde_json::to_value(&spec)?;
         assert_eq!(json["co_authors"], serde_json::json!([]));
         assert!(json.get("co_authored_by").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn tokens_kept_on_runners_are_options_older_hosts_never_see() -> serde_json::Result<()> {
+        // Specs and credentials from before it, and those of other
+        // connections, say nothing about it.
+        let spec: SessionSpec = serde_json::from_value(spec_json())?;
+        assert!(!spec.credentials.claude.on_runners);
+        let json = serde_json::to_value(&spec)?;
+        assert!(json["credentials"]["claude"].get("on_runners").is_none());
+
+        let mut json = spec_json();
+        json["credentials"]["claude"] = serde_json::json!({
+            "id": "crd_1", "kind": "setup_token", "access_token": "",
+            "scopes": ["user:inference"], "on_runners": true
+        });
+        let spec: SessionSpec = serde_json::from_value(json)?;
+        assert!(spec.credentials.claude.on_runners);
+        assert_eq!(spec.credentials.claude.kind, ClaudeCredentialKind::SetupToken);
+
+        // Hellos and heartbeats of older hosts have none; newer ones say
+        // whether they keep one, and since when, never what it is.
+        let hello: HostHello = serde_json::from_value(serde_json::json!({
+            "protocol": 1, "version": "0.21.0", "hostname": "mini", "os": "macos",
+            "arch": "aarch64", "cpus": 8, "memory_mb": 16384, "drivers": [], "driver": "apple",
+            "capacity": 4, "labels": [], "sessions": []
+        }))?;
+        assert_eq!(hello.claude_token, None);
+        let beat: HostHeartbeat = serde_json::from_value(serde_json::json!({ "sessions": [] }))?;
+        assert_eq!(beat.claude_token, None);
+        let beat = HostHeartbeat {
+            claude_token: Some(RunnerClaudeToken::default()),
+            ..beat
+        };
+        assert_eq!(serde_json::to_value(&beat)?["claude_token"], serde_json::json!({}));
+        let kept = RunnerClaudeToken {
+            saved_at: Some(1_800_000_000_000),
+        };
+        assert!(kept.kept() && !RunnerClaudeToken::default().kept());
+        assert_eq!(
+            serde_json::to_value(kept)?,
+            serde_json::json!({ "saved_at": 1_800_000_000_000_i64 })
+        );
         Ok(())
     }
 
