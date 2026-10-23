@@ -108,9 +108,11 @@ pub fn password(pw: &str, email: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// A display name: 1–80 characters, no control characters.
+/// A display name: 1–80 characters, without control characters or ones
+/// that turn the text around, which names show nowhere: a device asking
+/// to sign in, say, could otherwise read as another.
 pub fn name(field: &str, input: &str) -> Result<String> {
-    let s = collapse_spaces(input);
+    let s = collapse_spaces(&plain(input));
     if s.is_empty() {
         return Err(ApiError::validation(field, "Enter a name"));
     }
@@ -145,7 +147,7 @@ pub fn person_name(
     };
     let given = name("given_name", given)
         .map_err(|_| ApiError::validation("given_name", "Enter your first name (all of them)"))?;
-    let family = collapse_spaces(family.unwrap_or_default());
+    let family = collapse_spaces(&plain(family.unwrap_or_default()));
     if family.chars().count() > 80 {
         return Err(ApiError::validation(
             "family_name",
@@ -184,11 +186,10 @@ pub fn text(field: &str, input: &str, max: usize) -> Result<String> {
 /// A session title: a [`name`] without control characters. Agents write
 /// titles too, and terminals print them.
 pub fn session_title(input: &str) -> Result<String> {
-    let s = name("title", input)?;
-    if s.chars().any(char::is_control) {
+    if input.chars().any(|c| c.is_control() && !c.is_whitespace()) {
         return Err(ApiError::validation("title", "Remove control characters"));
     }
-    Ok(s)
+    name("title", input)
 }
 
 /// What a session is about: one paragraph of at most 500 characters (runs
@@ -212,6 +213,15 @@ pub fn session_description(input: &str) -> Result<Option<String>> {
 
 fn collapse_spaces(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Text without control characters, but for spaces, and without the ones
+/// that turn it around (`crate::files::bidi_control`).
+fn plain(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| c.is_whitespace() || !(c.is_control() || crate::files::bidi_control(*c)))
+        .collect()
 }
 
 /// Slugs that would collide with routes.
@@ -525,20 +535,13 @@ pub fn push_keys(p256dh: &str, auth: &str) -> Result<(String, String)> {
 /// What to call a browser in Settings: one line of at most 80 characters.
 /// Empty is no name.
 pub fn device_name(input: &str) -> Result<Option<String>> {
-    let s = collapse_spaces(input);
+    let s = collapse_spaces(&plain(input));
     if s.chars().count() > 80 {
         return Err(ApiError::validation("name", "Use at most 80 characters"));
-    }
-    if s.chars().any(char::is_control) {
-        return Err(ApiError::validation("name", "Remove control characters"));
     }
     Ok((!s.is_empty()).then_some(s))
 }
 
-/// Whether `path` is a path of the app, for redirects after a sign-in: it
-/// starts with one `/`. Browsers read `\` as `/` and drop tabs and
-/// newlines, so `/\evil.example` and `/<tab>/evil.example` would leave the
-/// app: paths with a backslash, whitespace or control character aren't.
 /// A person's avatar: an `https://` image address, at most 500 characters,
 /// on another host than the app's (`app_host`, its host name). Everyone who
 /// sees the person's name loads it, and the browser sends its cookies to
@@ -576,6 +579,10 @@ pub fn avatar_url(input: &str, app_host: &str) -> Result<String> {
     Ok(s.to_owned())
 }
 
+/// Whether `path` is a path of the app, for redirects after a sign-in: it
+/// starts with one `/`. Browsers read `\` as `/` and drop tabs and
+/// newlines, so `/\evil.example` and `/<tab>/evil.example` would leave the
+/// app: paths with a backslash, whitespace or control character aren't.
 pub fn is_app_path(path: &str) -> bool {
     path.starts_with('/')
         && !path.starts_with("//")
@@ -744,6 +751,31 @@ mod tests {
         );
         assert_eq!(device_name(" ").ok(), Some(None));
         assert!(device_name(&"x".repeat(81)).is_err());
+        assert_eq!(
+            device_name("Chrome\u{202E}SOcam no\u{7}")
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("ChromeSOcam no")
+        );
+    }
+
+    #[test]
+    fn names_show_as_they_read() {
+        assert_eq!(
+            name("name", "fctl on Ada's\u{202E}kooBcaM\u{2069}")
+                .ok()
+                .as_deref(),
+            Some("fctl on Ada'skooBcaM")
+        );
+        assert_eq!(
+            name("name", "Ada\u{1b}[2J\nLovelace\u{7}").ok().as_deref(),
+            Some("Ada[2J Lovelace")
+        );
+        assert!(name("name", "\u{200F}\u{7}").is_err());
+        let p = person_name(Some("Ada\u{202D}"), Some("Love\u{0}lace"), None)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(p.full, "Ada Lovelace");
     }
 
     #[test]

@@ -98,8 +98,9 @@ owner and purpose), so a value copied between rows does not decrypt.
   roles, turning two-factor sign-in or this off, resetting someone's
   two-factor sign-in, removing a passkey, adding or registering a runner
   for a workspace and replacing its token, new access tokens and CLI
-  sign-ins, exporting your data, and deleting
-  accounts, projects and workspaces. So a stolen browser session, CLI or
+  sign-ins, exporting your data, deleting accounts, projects and
+  workspaces, and, without email, making someone a password reset link.
+  So a stolen browser session, CLI or
   access token can't do them alone. A passkey (which must verify the
   person), a code from the authenticator app or a recovery code confirms
   it, for 15 minutes, for the browser, CLI or token that confirmed; a
@@ -468,7 +469,9 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   before they can delete their account.
 - Settings → Your data (or `fctl account export`) downloads everything the
   instance keeps about you, as JSON, with the sessions you started in the
-  workspaces open to you: not those of workspaces you left. Files you
+  workspaces open to you: not those of workspaces you left. The notes and
+  schedules you wrote, and the sessions you follow, come from the projects
+  and sessions you still see, since others keep them up to date. Files you
   attached are listed in the transcripts there; each downloads from its
   session.
 - Hosts keep a stopped session's sandbox so it can resume, and remove it

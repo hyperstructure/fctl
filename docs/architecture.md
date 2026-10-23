@@ -308,7 +308,9 @@ token can't do them alone
   handing over or giving a workspace's primary admin role;
 - making an access token, and approving a CLI's sign-in;
 - exporting your data, and deleting your account, someone else's, a
-  project or a workspace.
+  project or a workspace;
+- making someone a password reset link on an instance that sends no
+  email, where the link comes back to the admin.
 
 Only the primary instance owner turns it on or off, and turning it off is
 one of those actions (`verify::check_verify_setting`). Turning off your

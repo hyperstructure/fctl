@@ -892,12 +892,38 @@ pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
     })
 }
 
+/// Whether the caller maintains or owns some project of workspace
+/// `workspace_id`.
+async fn manages_a_project(ctx: &Ctx, workspace_id: &str) -> AppResult<bool> {
+    let user = ctx.user()?;
+    let rows: Vec<ProjectRow> = q(
+        &ctx.db,
+        &format!("{PROJECT_SELECT} WHERE p.workspace_id = ?2 AND {PROJECT_VISIBLE}"),
+        &[s(&user.id), s(workspace_id)],
+    )?
+    .all()
+    .await?;
+    let settings = ctx.settings();
+    Ok(rows
+        .iter()
+        .any(|r| perm::can_manage_project(access::project_role(user, &settings, ctx.limits(), r))))
+}
+
 /// `GET /api/v1/github/repos?workspace=…`: the repositories a workspace's
 /// projects may use (the caller's only workspace without one), newest
 /// push first, with the projects of it that use them.
 pub async fn github_repos(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let workspace = target_workspace(ctx, http::query(req, "workspace").as_deref(), false).await?;
-    workspace.require_open()?;
+    let role = workspace.require_open()?;
+    // For whoever chooses repositories there: its admins, who create its
+    // projects, and the maintainers of one, who add repositories to it.
+    // Other members see the projects they're in, not every repository,
+    // private ones too, that the workspace's GitHub accounts hold.
+    if !role.is_admin() && !manages_a_project(ctx, workspace.id()).await? {
+        return Err(forbidden(
+            "Only the workspace's admins and its projects' maintainers list its repositories",
+        ));
+    }
     let gh = github::from_config(&ctx.cfg, ctx.now)?;
     let connections = ws::connections(&ctx.db, workspace.id()).await?;
     let mut repos = Vec::new();
