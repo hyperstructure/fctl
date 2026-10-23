@@ -235,7 +235,7 @@ pub const MAX_LOOKUP: usize = 50;
 /// same check replaced, and [`failing`] the checks that failed.
 const FIELDS: &str = "fragment pr on PullRequest {
   number url title state isDraft createdAt updatedAt mergedAt closedAt headRefOid
-  headRefName baseRefName author { login }
+  headRefName baseRefName author { login __typename }
   mergeStateStatus
   mergeQueueEntry { enqueuedAt }
   commits(last: 1) {
@@ -387,10 +387,18 @@ pub fn looked_up(answer: &Value, i: usize, at: Millis, hints: Hints<'_>) -> Opti
             checks,
         },
         head,
+        // As REST names an app's bot, and pull requests' authors elsewhere:
+        // `fctl[bot]`, where GraphQL says `fctl`.
         author: pr
             .pointer("/author/login")
             .and_then(Value::as_str)
-            .map(str::to_owned),
+            .map(|login| {
+                if pr.pointer("/author/__typename").and_then(Value::as_str) == Some("Bot") {
+                    format!("{login}[bot]")
+                } else {
+                    login.to_owned()
+                }
+            }),
         head_ref: text("headRefName").map(str::to_owned),
         base_ref: text("baseRefName").map(str::to_owned),
         failing,
@@ -948,7 +956,7 @@ mod tests {
         pr["state"] = json!("OPEN");
         pr["headRefName"] = json!("fctl/119-agent-floor");
         pr["baseRefName"] = json!("main");
-        pr["author"] = json!({ "login": "fctl-sh" });
+        pr["author"] = json!({ "login": "fctl-sh", "__typename": "Bot" });
         let nodes = pr
             .pointer_mut("/commits/nodes/0/commit/statusCheckRollup/contexts/nodes")
             .and_then(Value::as_array_mut)
@@ -971,7 +979,13 @@ mod tests {
             json!({}),
         ]);
         let looked = looked_up(&a, 0, 1, Hints::default()).unwrap_or_else(|| panic!("no found"));
-        assert_eq!(looked.author.as_deref(), Some("fctl-sh"));
+        // GraphQL names an app's bot without `[bot]`, which REST adds.
+        assert_eq!(looked.author.as_deref(), Some("fctl-sh[bot]"));
+        let mut person = a.clone();
+        person["data"]["pr0"]["pullRequest"]["author"] =
+            json!({ "login": "fctl-sh", "__typename": "User" });
+        let by = looked_up(&person, 0, 1, Hints::default()).and_then(|l| l.author);
+        assert_eq!(by.as_deref(), Some("fctl-sh"));
         assert_eq!(looked.head_ref.as_deref(), Some("fctl/119-agent-floor"));
         assert_eq!(looked.base_ref.as_deref(), Some("main"));
         // In the order of their latest runs.
@@ -983,7 +997,7 @@ mod tests {
             (looked.author, looked.head_ref, looked.failing.len()),
             (None, None, 0)
         );
-        assert!(FIELDS.contains("headRefName baseRefName author { login }"));
+        assert!(FIELDS.contains("headRefName baseRefName author { login __typename }"));
         assert!(FIELDS.contains("... on StatusContext { context state }"));
     }
 

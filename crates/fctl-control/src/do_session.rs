@@ -174,10 +174,6 @@ const REVIEWS_PASSED_ON: &str = "reviews_passed_on";
 /// which a person's message, or their comment on GitHub, ends
 /// (`fctl_domain::follow_ups::MAX_CHECKS_IN_A_ROW`).
 const CHECKS_IN_A_ROW: &str = "checks_in_a_row";
-/// The meta key of the commit each of the agent's pull requests has checked
-/// out in its sandbox, as it last said: failed checks of another commit are
-/// old news.
-const PULL_REQUEST_HEADS: &str = "pull_request_heads";
 
 fn api_err(code: ErrorCode, message: &str) -> ApiError {
     ApiError::new(code, message)
@@ -956,7 +952,8 @@ impl SessionObject {
     /// of it has waited [`follow_ups::GATHER_MS`]: one message from fctl for
     /// each pull request, delivered as a person's message is, which resumes
     /// the session if it stopped. Failed checks wait while a turn runs,
-    /// since the agent may be at them, and are dropped once they are old
+    /// since the agent may be at them, and then wait a little longer for
+    /// what it pushed as its turn ended; they are dropped once they are old
     /// news: the pull request merged or closed, its checks passed after a
     /// re-run, or a newer commit came. After
     /// [`follow_ups::MAX_CHECKS_IN_A_ROW`] of them in a row while no person
@@ -1008,7 +1005,6 @@ impl SessionObject {
                 .sql
                 .exec("DELETE FROM follow_ups WHERE key = ?", Some(vec![sv(key)]));
         };
-        let heads = self.pull_request_heads();
         let mut send = Vec::new();
         for w in waiting {
             let Ok(item) = serde_json::from_str::<follow_ups::Item>(&w.data) else {
@@ -1016,7 +1012,7 @@ impl SessionObject {
                 continue;
             };
             if let FollowUpEvent::ChecksFailed { sha, .. } = &item.event {
-                if !Self::still_failing(&s, &heads, &item, sha) {
+                if !Self::still_failing(&s, &item, sha) {
                     done(&w.key);
                     continue;
                 }
@@ -1053,19 +1049,10 @@ impl SessionObject {
     }
 
     /// Whether failed checks of `sha` are still news: their pull request,
-    /// as the session lists it, is neither merged nor closed, its checks
-    /// are still that commit's and still failed, and the agent has that
-    /// commit checked out, as far as it said.
-    fn still_failing(
-        s: &Session,
-        heads: &std::collections::BTreeMap<String, String>,
-        item: &follow_ups::Item,
-        sha: &str,
-    ) -> bool {
-        let url = item.pull.url.to_ascii_lowercase();
-        if heads.get(&url).is_some_and(|head| head != sha) {
-            return false;
-        }
+    /// as GitHub last said of it, is neither merged nor closed, and its
+    /// checks are still that commit's and still failed. A newer commit, the
+    /// agent's push or anyone's, makes GitHub say so within seconds.
+    fn still_failing(s: &Session, item: &follow_ups::Item, sha: &str) -> bool {
         let Some(pr) = s
             .pull_requests
             .iter()
@@ -1081,79 +1068,47 @@ impl SessionObject {
             .is_none_or(|c| c.sha.as_deref().is_none_or(|c_sha| c_sha == sha) && c.failed > 0)
     }
 
-    /// The commit each pull request of the agent's has checked out in its
-    /// sandbox, by its URL in lowercase.
-    fn pull_request_heads(&self) -> std::collections::BTreeMap<String, String> {
-        self.meta(PULL_REQUEST_HEADS)
-            .and_then(|v| serde_json::from_str(&v).ok())
-            .unwrap_or_default()
-    }
-
-    /// Notes the commits the agent's repositories have checked out, by the
-    /// pull requests of their branches.
-    fn note_heads(&self, g: &GitState) {
-        let mut heads = self.pull_request_heads();
-        let before = heads.clone();
-        let branches = std::iter::once((g.pull_request.as_ref(), g.head.as_ref())).chain(
-            g.repos
-                .iter()
-                .flatten()
-                .map(|r| (r.pull_request.as_ref(), r.head.as_ref())),
-        );
-        for (pr, head) in branches {
-            if let (Some(pr), Some(head)) = (pr, head) {
-                heads.insert(pr.url.to_ascii_lowercase(), head.clone());
-            }
-        }
-        if heads != before
-            && let Ok(json) = serde_json::to_string(&heads)
-        {
-            self.set_meta(PULL_REQUEST_HEADS, &json);
-        }
-    }
-
     /// Hands what happened to one pull request (`keys`: its items) to the
     /// agent in a message from fctl, or, for failed checks the agent heard
     /// of too often in a row, says in the transcript what failed.
     async fn pass_on(&self, mut f: FollowUp, keys: Vec<String>, now: i64) {
         let checks = |e: &FollowUpEvent| matches!(e, FollowUpEvent::ChecksFailed { .. });
-        // People wrote to the agent: as a person's message, it ends the
+        // People wrote to the agent: as a person's message, that ends the
         // automatic ones in a row.
         if follow_ups::from_people(&f) {
-            self.delete_meta(CHECKS_IN_A_ROW);
             self.delete_meta(REVIEWS_PASSED_ON);
         }
-        if f.events.iter().any(checks) {
-            let in_a_row = self
-                .meta(CHECKS_IN_A_ROW)
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(0);
-            if in_a_row >= follow_ups::MAX_CHECKS_IN_A_ROW {
-                if let Some(message) = follow_ups::held_back(&f) {
-                    let notice = fctl_proto::event::Notice {
-                        level: fctl_proto::event::NoticeLevel::Info,
-                        code: "follow_up_held".into(),
-                        message,
-                        until: None,
-                        published: None,
-                        memory: None,
-                        retrospective: None,
-                        review: None,
-                    };
-                    if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
-                        self.broadcast_events(&[json]);
-                    }
+        let before = self
+            .meta(CHECKS_IN_A_ROW)
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        let (in_a_row, held) = follow_ups::checks_in_a_row(&f, before);
+        if held {
+            if let Some(message) = follow_ups::held_back(&f) {
+                let notice = fctl_proto::event::Notice {
+                    level: fctl_proto::event::NoticeLevel::Info,
+                    code: "follow_up_held".into(),
+                    message,
+                    until: None,
+                    published: None,
+                    memory: None,
+                    retrospective: None,
+                    review: None,
+                };
+                if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+                    self.broadcast_events(&[json]);
                 }
-                for key in keys
-                    .iter()
-                    .filter(|k| k.starts_with(follow_ups::CHECKS_KEY))
-                {
-                    self.key(key, "", now);
-                }
-                f.events.retain(|e| !checks(e));
-            } else {
-                self.set_meta(CHECKS_IN_A_ROW, &(in_a_row + 1).to_string());
             }
+            for key in keys
+                .iter()
+                .filter(|k| k.starts_with(follow_ups::CHECKS_KEY))
+            {
+                self.key(key, "", now);
+            }
+            f.events.retain(|e| !checks(e));
+        }
+        if in_a_row != before {
+            self.set_meta(CHECKS_IN_A_ROW, &in_a_row.to_string());
         }
         if f.events.is_empty() {
             return;
@@ -1950,7 +1905,6 @@ impl SessionObject {
                         n.published = None;
                     }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
-                        self.note_heads(g);
                         let (changed, new) = Self::apply_git(s, g, now);
                         lists_changed |= changed;
                         found.extend(new);
@@ -2364,7 +2318,12 @@ impl SessionObject {
             && s.status != SessionStatus::Running
             && self.follow_ups_waiting()
         {
-            self.arm(now + follow_ups::GATHER_MS).await;
+            let due = now + follow_ups::GATHER_MS;
+            let _ = self.sql.exec(
+                "UPDATE follow_ups SET due = MAX(due, ?) WHERE key LIKE ? || '%'",
+                Some(vec![iv(due), sv(follow_ups::CHECKS_KEY)]),
+            );
+            self.arm(due).await;
         }
         // The agent stopped on its own (its idle timeout) as a message came,
         // so it didn't take the message: the session resumes for it.

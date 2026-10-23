@@ -23,6 +23,7 @@ use crate::internal;
 use crate::pull_requests::{in_reach, key};
 use fctl_domain::follow_ups::{self as fu, Item, Place, Pull};
 use fctl_domain::reviews as rv;
+use fctl_domain::webhooks::{self, Hints};
 use fctl_proto::Millis;
 use fctl_proto::event::FollowUpEvent;
 use fctl_proto::session::{FollowUps, GithubAccess, ProjectSettings, RepoRef};
@@ -145,7 +146,7 @@ fn takes(follow_ups: &FollowUps, event: &FollowUpEvent) -> bool {
 /// review brings its comments on lines. Once the session has it, an 👀
 /// reaction on the comment says so. Returns how many sessions got one.
 pub async fn on_comment(ctx: &Ctx, event: &str, payload: &Value) -> AppResult<usize> {
-    let Some(c) = fu::commented(event, payload) else {
+    let Some(mut c) = fu::commented(event, payload) else {
         return Ok(0);
     };
     let pr = c.pull.reference();
@@ -161,6 +162,22 @@ pub async fn on_comment(ctx: &Ctx, event: &str, payload: &Value) -> AppResult<us
     let Some(inst) = c.installation else {
         return Ok(0);
     };
+    let gh = github::from_config(&ctx.cfg, ctx.now)?;
+    // A comment on its conversation doesn't name the pull request's
+    // branches: a lookup does, which finds the session on its branch, and
+    // where changes go once it merged.
+    if c.head_ref.is_none() {
+        let pr = [(c.pull.repo.clone(), c.pull.number)];
+        match gh.pull_requests(Some(inst), &pr).await {
+            Ok(answer) => {
+                if let Some(looked) = webhooks::looked_up(&answer, 0, ctx.now, Hints::default()) {
+                    c.head_ref = looked.head_ref;
+                    c.pull.base = looked.base_ref.or(c.pull.base);
+                }
+            }
+            Err(e) => worker::console_error!("looking up {pr:?} for a comment: {}", e.0.message),
+        }
+    }
     let answered = c.owner_id.map(|account| (account, inst));
     let Some(opener) = opener(
         &ctx.db,
@@ -187,7 +204,6 @@ pub async fn on_comment(ctx: &Ctx, event: &str, payload: &Value) -> AppResult<us
     }
     // GitHub says who may write: a member of the repository's organization
     // may only read it.
-    let gh = github::from_config(&ctx.cfg, ctx.now)?;
     match gh.permission(inst, &c.pull.repo, &who).await? {
         Ok(answer) if fu::can_write(&answer) => {}
         Ok(_) => {

@@ -575,6 +575,23 @@ pub fn from_people(f: &FollowUp) -> bool {
         .any(|e| matches!(e, FollowUpEvent::Comment(_)))
 }
 
+/// How many failed checks in a row the agent has heard of once `f` reaches
+/// it, `before` it, and whether fctl holds `f`'s failed checks back: people
+/// who wrote to it end a run, as a person's message does, and failed checks
+/// past [`MAX_CHECKS_IN_A_ROW`] stay out until someone does.
+pub fn checks_in_a_row(f: &FollowUp, before: u32) -> (u32, bool) {
+    let before = if from_people(f) { 0 } else { before };
+    let checks = f
+        .events
+        .iter()
+        .any(|e| matches!(e, FollowUpEvent::ChecksFailed { .. }));
+    match (checks, before >= MAX_CHECKS_IN_A_ROW) {
+        (false, _) => (before, false),
+        (true, true) => (before, true),
+        (true, false) => (before + 1, false),
+    }
+}
+
 /// The message fctl sends the agent of the session that opened the pull
 /// request: what happened there, each part with how to act on it. People's
 /// comments come first.
@@ -723,20 +740,24 @@ fn comments_part(f: &FollowUp, comments: &[&FollowUpComment]) -> String {
     if let [one] = top.as_slice() {
         s.push_str(&review_lines(comments, one, ""));
     }
-    let people: Vec<&str> = comments.iter().fold(Vec::new(), |mut all, c| {
-        if !all.contains(&c.login.as_str()) {
-            all.push(&c.login);
-        }
-        all
-    });
     let repo = f.repo.full_name();
-    let who = match people.as_slice() {
-        [one] => format!("@{one} can write to {repo}"),
-        _ => format!("They can write to {repo}"),
+    let what = if top.len() == 1 && comments.len() == 1 {
+        "it asks"
+    } else {
+        "they ask"
+    };
+    let act = match f.state.as_deref() {
+        Some("merged") => format!(
+            "The pull request is merged: do what {what} in a new pull request from {}, not on its branch",
+            updated(f.base.as_deref())
+        ),
+        Some("closed") => format!(
+            "The pull request is closed: do what {what} if it still makes sense, without opening it again unless they ask you to"
+        ),
+        _ => format!("Do what {what} if it belongs in this pull request, and push"),
     };
     s.push_str(&format!(
-        "\n{who}: fctl passes on what people who can write to it say to you there, and nothing else. Do what they ask if it belongs in this pull request, and push; answer what they ask you; if you think a request is wrong or doesn't belong here, say why instead of doing it.{}\n",
-        merged_note(f)
+        "\nOnly people who can write to {repo} reach you this way. {act}; answer questions; if a request seems wrong or out of place here, say why instead of doing it. "
     ));
     let (owner, name, number) = (&f.repo.owner, &f.repo.name, f.number);
     let mut answers = Vec::new();
@@ -802,20 +823,6 @@ fn review_lines(all: &[&FollowUpComment], review: &FollowUpComment, indent: &str
         s.push_str(&quoted(&c.body, &inner));
     }
     s
-}
-
-/// For a pull request that is merged or closed: where changes go now.
-fn merged_note(f: &FollowUp) -> String {
-    match f.state.as_deref() {
-        Some("merged") => format!(
-            " The pull request is merged: changes go in a new pull request from {}, not on its branch.",
-            updated(f.base.as_deref())
-        ),
-        Some("closed") => {
-            " The pull request is closed: don't open it again unless they ask you to.".to_owned()
-        }
-        _ => String::new(),
-    }
 }
 
 /// `Rust tests`, `Rust tests and Clippy`, `Lint, Rust tests and Clippy`,
@@ -1341,6 +1348,39 @@ mod tests {
     }
 
     #[test]
+    fn failed_checks_reach_the_agent_three_times_in_a_row_at_most() {
+        let checks = FollowUpEvent::ChecksFailed {
+            sha: "abc".into(),
+            names: vec!["Lint".into()],
+            passed: 0,
+            failed: 1,
+            pending: 0,
+        };
+        let failed = follow_up(vec![checks.clone()]);
+        let mut n = 0;
+        for want in [1, 2, 3] {
+            let (next, held) = checks_in_a_row(&failed, n);
+            assert_eq!((next, held), (want, false));
+            n = next;
+        }
+        assert_eq!(checks_in_a_row(&failed, n), (3, true));
+        // Someone wrote to the agent: a new run starts, with them.
+        let with_people = follow_up(vec![
+            FollowUpEvent::Comment(comment(1, "ada", "@fctl look")),
+            checks,
+        ]);
+        assert_eq!(checks_in_a_row(&with_people, n), (1, false));
+        let comment_alone = follow_up(vec![FollowUpEvent::Comment(comment(1, "ada", "@fctl"))]);
+        assert_eq!(checks_in_a_row(&comment_alone, n), (0, false));
+        // A merge counts for nothing.
+        let merged = follow_up(vec![FollowUpEvent::Merged {
+            by: None,
+            base: None,
+        }]);
+        assert_eq!(checks_in_a_row(&merged, 2), (2, false));
+    }
+
+    #[test]
     fn a_comment_reaches_the_agent_with_how_to_answer() {
         let m = message(&follow_up(vec![FollowUpEvent::Comment(comment(
             123,
@@ -1350,10 +1390,8 @@ mod tests {
         assert!(m.starts_with(
             "On GitHub, @ada commented on your pull request acme/web#12, “Fix the login redirect” (https://github.com/acme/web/pull/12#issuecomment-123):\n\n> agent: the redirect should keep the query string too.\n>\n> And the hash.\n"
         ), "{m}");
-        assert!(m.contains("@ada can write to acme/web: fctl passes on what people who can write to it say to you there, and nothing else."));
-        assert!(m.contains(
-            "if you think a request is wrong or doesn't belong here, say why instead of doing it."
-        ));
+        assert!(m.contains("\nOnly people who can write to acme/web reach you this way. Do what it asks if it belongs in this pull request, and push;"), "{m}");
+        assert!(m.contains("if a request seems wrong or out of place here, say why instead of doing it. Then answer where they wrote: "), "{m}");
         assert!(m.trim_end().ends_with(
             "Then answer where they wrote: on the pull request (`gh pr comment 12 --repo acme/web --body '…'`)."
         ), "{m}");
@@ -1375,9 +1413,13 @@ mod tests {
             "@fctl add a test",
         ))]);
         f.state = Some("merged".into());
-        assert!(message(&f).contains(
-            "The pull request is merged: changes go in a new pull request from the updated main, not on its branch."
-        ));
+        let m = message(&f);
+        assert!(m.contains(
+            "reach you this way. The pull request is merged: do what it asks in a new pull request from the updated main, not on its branch; answer questions;"
+        ), "{m}");
+        assert!(!m.contains("and push"), "{m}");
+        f.state = Some("closed".into());
+        assert!(message(&f).contains("The pull request is closed: do what it asks if it still makes sense, without opening it again unless they ask you to;"));
     }
 
     #[test]
@@ -1411,7 +1453,12 @@ mod tests {
             FollowUpEvent::Comment(comment(3, "bob", "@agent and the docs")),
         ]));
         assert!(m.starts_with("On GitHub, people wrote to you on your pull request acme/web#12, “Fix the login redirect”:\n\n1. @ada commented (https://github.com/acme/web/pull/12#issuecomment-1):\n   > @fctl rename it\n\n2. @ada commented on src/login.rs line 42 (https://github.com/acme/web/pull/12#discussion_r2):\n   > agent: and here\n\n3. @bob commented (https://github.com/acme/web/pull/12#issuecomment-3):\n   > @agent and the docs\n"), "{m}");
-        assert!(m.contains("\nThey can write to acme/web: "));
+        assert!(
+            m.contains(
+                "\nOnly people who can write to acme/web reach you this way. Do what they ask"
+            ),
+            "{m}"
+        );
     }
 
     #[test]
