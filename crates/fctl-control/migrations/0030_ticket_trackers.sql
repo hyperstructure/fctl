@@ -87,10 +87,9 @@ CREATE INDEX IF NOT EXISTS linear_threads_waiting ON linear_threads (organizatio
 -- The ticket a session started from (JSON: a SessionTicket).
 ALTER TABLE sessions ADD COLUMN ticket TEXT;
 
--- What sessions' agents wrote in their trackers in the last hour (a
--- comment, a new ticket), which keeps each to a few
--- (fctl_domain::tickets::MAX_COMMENTS_PER_HOUR); the hourly job forgets the
--- rest.
+-- What sessions' agents did in their trackers in the last hour (`kind`:
+-- comment, create, update or read), which keeps each to so many an hour
+-- (fctl_domain::tickets::limit_of); the hourly job forgets the rest.
 CREATE TABLE IF NOT EXISTS ticket_writes (
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   kind TEXT NOT NULL,

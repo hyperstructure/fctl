@@ -87,8 +87,11 @@ had made a Linear OAuth app.
   they open and merge, as each team configures; agents don't move tickets
   themselves unless asked.
 - **Not too much.** One response per turn, cut at 3,000 characters; steps
-  at most every two minutes, ephemeral; an agent comments and files
-  tickets at most 30 and 20 times an hour.
+  at most every two minutes, ephemeral, saying what the agent does without
+  its commands or addresses; in an hour, an agent comments at most 30
+  times, files at most 20 tickets, changes at most 60 and reads at most 300
+  times, so that one workspace's agents can't use up the API of a Linear
+  installation others share.
 
 ## Alternatives
 

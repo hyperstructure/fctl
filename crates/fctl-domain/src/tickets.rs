@@ -36,11 +36,39 @@ pub const MAX_TITLE: usize = 255;
 /// far more, but a ticket is for people to read.
 pub const MAX_BODY: usize = 20_000;
 
-/// The most comments a session's agent posts on tickets in an hour, and the
-/// most tickets it files: an agent that loops would otherwise fill a
-/// team's tracker for good.
+/// The most comments a session's agent posts on tickets in an hour, the
+/// most tickets it files and changes: an agent that loops would otherwise
+/// fill a team's tracker for good.
 pub const MAX_COMMENTS_PER_HOUR: u32 = 30;
 pub const MAX_CREATED_PER_HOUR: u32 = 20;
+pub const MAX_UPDATED_PER_HOUR: u32 = 60;
+/// The most a session's agent reads from its tracker in an hour: one Linear
+/// installation serves every fctl workspace connected to it, and an agent
+/// that loops would use up its share of Linear's API for all of them.
+pub const MAX_READS_PER_HOUR: u32 = 300;
+
+/// What an agent's call to its tracker counts as, for the limits above.
+pub fn limit_of(request: &fctl_proto::tickets::TicketRequest) -> (&'static str, u32) {
+    use fctl_proto::tickets::TicketRequest as R;
+    match request {
+        R::Comment { .. } => ("comment", MAX_COMMENTS_PER_HOUR),
+        R::Create { .. } => ("create", MAX_CREATED_PER_HOUR),
+        R::Update { .. } => ("update", MAX_UPDATED_PER_HOUR),
+        _ => ("read", MAX_READS_PER_HOUR),
+    }
+}
+
+/// What a session's agent hears when it reached a limit above.
+pub fn limited(kind: &str, most: u32) -> String {
+    match kind {
+        "read" => format!(
+            "This session's agent has read its tracker {most} times in the last hour, which is as often as fctl lets an agent: work with what you have read, and say in your reply what's left to look up."
+        ),
+        _ => format!(
+            "This session's agent has done that {most} times in the last hour, which is as often as fctl lets an agent: say in your reply what's left to do in the tracker."
+        ),
+    }
+}
 
 // ───────────────────────────── GitHub's issues ─────────────────────────────
 
@@ -601,6 +629,27 @@ pub fn explores(labels: &[String], label: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_call_counts_within_its_limit() {
+        use fctl_proto::tickets::{StateFilter, TicketRequest as R};
+        let comment = R::Comment {
+            key: "ENG-1".into(),
+            body: "On it".into(),
+            reply_to: None,
+        };
+        assert_eq!(limit_of(&comment), ("comment", MAX_COMMENTS_PER_HOUR));
+        let list = R::List {
+            state: StateFilter::Open,
+            query: None,
+            label: None,
+            limit: None,
+        };
+        assert_eq!(limit_of(&list), ("read", MAX_READS_PER_HOUR));
+        assert_eq!(limit_of(&R::About), ("read", MAX_READS_PER_HOUR));
+        assert!(limited("read", 300).contains("read its tracker 300 times"));
+        assert!(limited("comment", 30).contains("done that 30 times"));
+    }
 
     fn r(full: &str) -> RepoRef {
         RepoRef::parse(full).unwrap_or_else(|| RepoRef {

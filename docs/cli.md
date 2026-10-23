@@ -359,8 +359,9 @@ fctl ticket states                         # the states tickets can be in, in or
 fctl ticket labels
 ```
 
-A session's agent comments at most 30 times an hour, and files at most 20
-tickets.
+In an hour, a session's agent comments at most 30 times, files at most 20
+tickets, changes at most 60 and reads its tracker at most 300 times.
+Review agents reach no tracker.
 
 ### Memory and retrospectives
 

@@ -402,22 +402,35 @@ pub async fn check_linear(
         ));
     }
     let client = linear::client(db, cfg, keys, &l.organization, now).await?;
-    let teams = teams(&client).await?;
-    let team = teams.iter().find(|t| t.id == l.team).ok_or_else(|| {
+    // Looked up by their ids, which a Linear workspace with more teams and
+    // projects than the lists show has too.
+    let found = |query: &'static str, id: &str, field: &'static str| {
+        let client = &client;
+        let id = id.to_owned();
+        async move {
+            match client.graphql(query, json!({ "id": id })).await {
+                Ok(d) => Ok(d.get(field).filter(|v| !v.is_null()).cloned()),
+                Err(e) if e.0.code == ErrorCode::NotFound => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+    };
+    let team = found(lin::TEAM, &l.team, "team").await?.ok_or_else(|| {
         validation(
             "settings.tickets.linear.team",
             "fctl's app doesn't reach that team in Linear: choose another, or give the app the team in Linear's settings",
         )
     })?;
+    let st = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
     let mut out = l.clone();
-    out.team_key = Some(team.key.clone());
-    out.team_name = Some(team.name.clone());
+    out.team_key = st(&team, "key");
+    out.team_name = st(&team, "name");
     out.project_name = match &l.project {
         Some(p) => Some(
-            team.projects
-                .iter()
-                .find(|x| &x.id == p)
-                .map(|x| x.name.clone())
+            found(lin::PROJECT, p, "project")
+                .await?
+                .filter(|v| lin::open_project_of(v, &l.team))
+                .and_then(|v| st(&v, "name"))
                 .ok_or_else(|| {
                     validation(
                         "settings.tickets.linear.project",
@@ -453,6 +466,11 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
             format!("This control plane doesn't know `fctl ticket {op}`"),
         ))
     })?;
+    if session.review {
+        return Err(forbidden(
+            "Review agents don't reach the project's ticket tracker.",
+        ));
+    }
     let grants = crate::spec::grants(&ctx.db, &session.project_id).await?;
     let t = &session.settings.tickets;
     let backend = match t.tracker {
@@ -491,49 +509,56 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
             "This session's agent only reads: it can't write tickets.",
         ));
     }
-    let kind = match &request {
-        TicketRequest::Comment { .. } => Some(("comment", tk::MAX_COMMENTS_PER_HOUR)),
-        TicketRequest::Create { .. } => Some(("create", tk::MAX_CREATED_PER_HOUR)),
-        _ => None,
-    };
-    if let Some((kind, most)) = kind {
-        let c: Option<Count> = q(
-            &ctx.db,
-            "SELECT COUNT(*) AS n FROM ticket_writes WHERE session_id = ? AND kind = ? AND at > ?",
-            &[s(&session.id), s(kind), n(ctx.now - 60 * 60 * 1000)],
-        )?
-        .first()
-        .await?;
-        if c.is_some_and(|c| c.n >= i64::from(most)) {
-            return Err(AppError(
-                ApiError::new(
-                    ErrorCode::RateLimited,
-                    format!(
-                        "This session's agent has done that {most} times in the last hour, which is as often as fctl lets an agent: say in your reply what's left to do in the tracker."
-                    ),
-                )
-                .with_retry_after(600),
-            ));
-        }
+    // The call's place within its limit, taken in one statement, so that
+    // calls at once can't go past it together.
+    let (kind, most) = tk::limit_of(&request);
+    let taken = q(
+        &ctx.db,
+        "INSERT INTO ticket_writes (session_id, kind, at) SELECT ?1, ?2, ?3 \
+         WHERE (SELECT COUNT(*) FROM ticket_writes WHERE session_id = ?1 AND kind = ?2 AND at > ?4) < ?5",
+        &[
+            s(&session.id),
+            s(kind),
+            n(ctx.now),
+            n(ctx.now - 60 * 60 * 1000),
+            n(i64::from(most)),
+        ],
+    )?
+    .run()
+    .await?;
+    if taken == 0 {
+        return Err(AppError(
+            ApiError::new(ErrorCode::RateLimited, tk::limited(kind, most)).with_retry_after(600),
+        ));
     }
     let answer = match backend {
         Backend::Linear(l) => {
             let keys = crypto::keys(&ctx.cfg)?;
-            let client = linear::client(&ctx.db, &ctx.cfg, &keys, &l.organization, ctx.now).await?;
-            linear_call(ctx, session, &client, &l, request).await?
+            match linear::client(&ctx.db, &ctx.cfg, &keys, &l.organization, ctx.now).await {
+                Ok(client) => linear_call(ctx, session, &client, &l, request).await,
+                Err(e) => Err(e),
+            }
         }
-        Backend::Github(repos) => github_call(ctx, session, &repos, request).await?,
+        Backend::Github(repos) => github_call(ctx, session, &repos, request).await,
     };
-    if let Some((kind, _)) = kind {
-        q(
-            &ctx.db,
-            "INSERT INTO ticket_writes (session_id, kind, at) VALUES (?, ?, ?)",
-            &[s(&session.id), s(kind), n(ctx.now)],
-        )?
-        .run()
-        .await?;
+    match answer {
+        Ok(answer) => Ok(serde_json::to_value(answer)?),
+        Err(e) => {
+            // A write that didn't happen doesn't count; a read cost the
+            // tracker's API all the same.
+            if kind != "read" {
+                q(
+                    &ctx.db,
+                    "DELETE FROM ticket_writes WHERE rowid = (SELECT rowid FROM ticket_writes \
+                     WHERE session_id = ? AND kind = ? AND at = ? LIMIT 1)",
+                    &[s(&session.id), s(kind), n(ctx.now)],
+                )?
+                .run()
+                .await?;
+            }
+            Err(e)
+        }
     }
-    Ok(serde_json::to_value(answer)?)
 }
 
 /// Whether fctl workspace `workspace_id` works in Linear workspace
@@ -661,10 +686,10 @@ async fn linear_issue(
         Err(e) => return Err(e),
     };
     let issue = d.get("issue").cloned().unwrap_or(Value::Null);
-    let (team, project) = lin::place(&issue);
-    if !lin::in_scope(l, team.as_deref(), project.as_deref()) {
+    if !lin::takes(l, &issue) {
         return Err(elsewhere());
     }
+    let issue = lin::within(l, issue);
     let ticket = lin::ticket(&issue).ok_or_else(elsewhere)?;
     Ok((issue, ticket))
 }
@@ -775,12 +800,15 @@ async fn linear_call(
             };
             let c = d.get(key).cloned().unwrap_or(Value::Null);
             TicketAnswer::Tickets {
+                // Linear's filter keeps them to the team; this again, and
+                // their parents too.
                 tickets: c
                     .get("nodes")
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten()
-                    .filter_map(lin::ticket)
+                    .filter(|v| lin::takes(l, v))
+                    .filter_map(|v| lin::ticket(&lin::within(l, v.clone())))
                     .collect(),
                 more: c
                     .get("pageInfo")

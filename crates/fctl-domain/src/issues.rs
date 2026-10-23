@@ -84,9 +84,21 @@ pub fn search_q(
     if let Some(l) = label.map(str::trim).filter(|l| !l.is_empty()) {
         q.push_str(&format!(" label:\"{}\"", l.replace('"', "")));
     }
-    if let Some(words) = query.map(str::trim).filter(|w| !w.is_empty()) {
+    // Qualifiers that would reach other repositories go: their issues would
+    // come back as this one's.
+    let words: Vec<&str> = query
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter(|w| {
+            let w = w.to_ascii_lowercase();
+            !["repo:", "org:", "user:", "owner:"]
+                .iter()
+                .any(|q| w.starts_with(q))
+        })
+        .collect();
+    if !words.is_empty() {
         q.push(' ');
-        q.push_str(words);
+        q.push_str(&words.join(" "));
     }
     q
 }
@@ -174,6 +186,14 @@ fn link(repo: &RepoRef, v: &Value) -> Option<TicketLink> {
 /// endpoints list too.
 pub fn ticket(repo: &RepoRef, v: &Value) -> Option<Ticket> {
     if v.get("pull_request").is_some_and(|p| !p.is_null()) {
+        return None;
+    }
+    // Another repository's issue, as a search could find, isn't this one's.
+    if let Some(url) = v.get("repository_url").and_then(Value::as_str)
+        && !url
+            .to_ascii_lowercase()
+            .ends_with(&format!("/repos/{}", repo.full_name().to_ascii_lowercase()))
+    {
         return None;
     }
     let number = v.get("number").and_then(Value::as_u64)?;
@@ -463,5 +483,26 @@ mod tests {
             search_q(&repo(), StateFilter::All, None, None),
             "repo:acme/web is:issue"
         );
+        // Nothing reaches beyond the repository.
+        assert_eq!(
+            search_q(
+                &repo(),
+                StateFilter::All,
+                Some("crash repo:other/app ORG:big user:x"),
+                None
+            ),
+            "repo:acme/web is:issue crash"
+        );
+    }
+
+    #[test]
+    fn search_results_from_other_repositories_are_dropped() {
+        let item = |url: &str| {
+            json!({ "number": 3, "title": "T", "state": "open", "html_url": "u",
+                    "repository_url": url, "created_at": "2026-10-20T10:00:00Z" })
+        };
+        assert!(ticket(&repo(), &item("https://api.github.com/repos/acme/web")).is_some());
+        assert!(ticket(&repo(), &item("https://api.github.com/repos/ACME/Web")).is_some());
+        assert!(ticket(&repo(), &item("https://api.github.com/repos/other/app")).is_none());
     }
 }

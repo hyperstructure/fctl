@@ -165,11 +165,13 @@ owner and purpose), so a value copied between rows does not decrypt.
   fctl workspace connected to that Linear workspace, and only while that
   account may start sessions in the project, so nobody in Linear puts a
   ticket on someone else's session or subscription. A delivery for a
-  Linear agent session fctl has seen starts nothing new, and replies in
-  one reach its fctl session only from linked accounts that may message
-  it. People link a Linear account with a Linear sign-in of their own,
-  whose token the control plane uses once to read who they are and then
-  revokes, so an address in Linear proves nothing on its own.
+  Linear agent session fctl has seen starts nothing new; before its
+  session starts, only the person who made it can start it again or
+  choose its project, and once it has, replies reach its fctl session
+  only from linked accounts that may message it. People link a Linear
+  account with a Linear sign-in of their own, whose token the control
+  plane uses once to read who they are and then revokes, so an address in
+  Linear proves nothing on its own; a sign-in as fctl's app links nothing.
 - Screenshots agents publish for pull requests are public to anyone who
   has a link, which is how GitHub's image proxy fetches them. A link holds
   256 random bits, of which D1 keeps only the SHA-256. The control plane
@@ -263,8 +265,12 @@ outside it except through these channels:
   the control plane mints a token for that repository's issues alone for
   each call and revokes it after. Each call is kept to the project's
   choice, a Linear team (and project) or a repository, and a ticket
-  outside it answers as one that doesn't exist; a session's agent comments
-  at most 30 times an hour and files at most 20 tickets. What tickets and
+  outside it answers as one that doesn't exist, as do the parents,
+  sub-tickets and search results outside it. Review agents reach no
+  tracker. In an hour, a session's agent comments at most 30 times, files
+  at most 20 tickets, changes at most 60 and reads at most 300 times, which
+  also keeps one workspace's agents from using up the API of a Linear
+  installation others share. What tickets and
   their comments say comes from whoever wrote them, inside the team or
   not: agents are told to take it as what the work is about, not as
   instructions, and do what the person who delegated it asks.

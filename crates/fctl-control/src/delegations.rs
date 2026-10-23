@@ -255,21 +255,63 @@ pub async fn prompted(
     let linear = linear::client(db, cfg, &keys, &e.organization_id, now).await?;
     let session = &e.agent_session;
     let activity = e.agent_activity.clone().unwrap_or_default();
+    let replier = activity
+        .user_id
+        .as_deref()
+        .or(activity.user.as_ref().map(|u| u.id.as_str()));
+    let creator = session
+        .creator_id
+        .as_deref()
+        .or(session.creator.as_ref().map(|c| c.id.as_str()));
     let Some(t) = thread(db, &session.id).await? else {
-        // A session fctl never heard begin (its webhook was off): as new.
-        if session.issue.is_some() {
+        // A session fctl never heard begin (its webhook was off, or it went
+        // with its fctl session): as new, when whoever made it says so.
+        if session.issue.is_some() && replier.is_some() && replier == creator {
             return created(env, cfg, db, e, raw, now).await;
         }
         return Ok(());
     };
-    match (t.state.as_str(), t.waiting_for.as_deref()) {
-        ("started", _) => {
-            let Some(session_id) = t.session_id.as_deref() else {
-                return Ok(());
-            };
-            reply(env, cfg, db, &linear, &t, session_id, &activity, raw, now).await
-        }
-        ("waiting", Some("project")) if !activity.stops() => {
+    if t.state == "started" {
+        let Some(session_id) = t.session_id.as_deref() else {
+            return Ok(());
+        };
+        return reply(env, cfg, db, &linear, &t, session_id, &activity, raw, now).await;
+    }
+    if activity.stops() {
+        // Anyone may stop what hasn't started: it starts nothing.
+        set_state(db, &t.id, "refused", None, now).await?;
+        post(
+            &linear,
+            &session.id,
+            &Act::Response("Stopped: fctl started nothing."),
+            false,
+        )
+        .await;
+        return Ok(());
+    }
+    // Before its session starts, only whoever made the agent session moves
+    // it on: anyone else's reply would start it, or choose its project, as
+    // them, on their subscription.
+    let theirs = t.linear_user_id.as_deref().or(creator);
+    if replier.is_none() || replier != theirs {
+        let name = session
+            .creator
+            .as_ref()
+            .and_then(|c| c.name.as_deref())
+            .unwrap_or("the person who asked");
+        post(
+            &linear,
+            &session.id,
+            &Act::Response(&format!(
+                "Only {name} can start this one. To have fctl work on it as you, delegate the issue to fctl, or mention fctl in a new comment."
+            )),
+            false,
+        )
+        .await;
+        return Ok(());
+    }
+    match t.waiting_for.as_deref() {
+        Some("project") if t.state == "waiting" => {
             // The answer to which project: one of the choices, by slug or name.
             let Some(kept) = t
                 .payload
@@ -293,28 +335,14 @@ pub async fn prompted(
             )
             .await
         }
-        _ if activity.stops() => {
-            set_state(db, &t.id, "refused", None, now).await?;
-            post(
-                &linear,
-                &session.id,
-                &Act::Response("Stopped: fctl started nothing."),
-                false,
-            )
-            .await;
-            Ok(())
-        }
-        // Waiting for its person to link their account, or refused: once
-        // more, from the start, as things may have changed.
+        // Waiting for them to link their account, refused, or failed to
+        // start: once more, from the start, as things may have changed.
         _ => {
-            let Some(kept) = t
+            let kept = t
                 .payload
                 .as_deref()
                 .and_then(|p| serde_json::from_str::<Value>(p).ok())
-                .or_else(|| Some(raw.clone()))
-            else {
-                return Ok(());
-            };
+                .unwrap_or_else(|| raw.clone());
             let first = event_of(&kept).unwrap_or_else(|| e.clone());
             take(env, cfg, db, &linear, &first, &kept, None, now).await
         }
@@ -559,8 +587,14 @@ async fn take_up(
         .and_then(|c| c.body.as_deref())
         .map(str::trim)
         .filter(|c| !c.is_empty());
-    let delegated = ticket.delegate.as_ref().is_some_and(|d| d.app);
-    let comment = if delegated { None } else { comment };
+    // A comment with words in it mentioned fctl; without one, the issue was
+    // delegated to it. Only an issue whose delegate is fctl's app user moves
+    // as its session starts, not one delegated to another agent.
+    let delegated = comment.is_none();
+    let delegated_to_fctl = match e.app_user_id.as_deref() {
+        Some(app) => issue.pointer("/delegate/id").and_then(Value::as_str) == Some(app),
+        None => ticket.delegate.as_ref().is_some_and(|d| d.app),
+    };
     // The session that works on the issue already, if they may message it.
     if let Some((session_id, number, slug)) = working_on(db, &ticket.id, &allowed).await?
         && may_message(db, &user, &session_id).await?
@@ -680,7 +714,7 @@ async fn take_up(
         .unwrap_or_else(|_| fctl_domain::naming::title_from_prompt(&ticket.title));
     // Linear asks agents to start what is delegated to them: before the
     // session, so that its agent hears of it.
-    let moved = if delegated && taker.linear.moves_started() {
+    let moved = if delegated && delegated_to_fctl && taker.linear.moves_started() {
         move_started(linear, &ticket, &team).await
     } else {
         None
@@ -880,6 +914,49 @@ async fn move_started(
     states.into_iter().find(|s| s.id.as_deref() == Some(target))
 }
 
+/// Replies kept for people fctl doesn't know yet, by their Linear id,
+/// until they link their account (`linked`) or an hour passes.
+fn pending(t: &ThreadRow) -> serde_json::Map<String, Value> {
+    t.payload
+        .as_deref()
+        .filter(|_| t.waiting_for.as_deref() == Some("reply"))
+        .and_then(|p| serde_json::from_str::<Value>(p).ok())
+        .and_then(|v| v.get("replies").and_then(Value::as_object).cloned())
+        .unwrap_or_default()
+}
+
+/// Keeps the replies still waiting in a started thread, or none.
+async fn keep_pending(
+    db: &D1Database,
+    id: &str,
+    replies: serde_json::Map<String, Value>,
+    now: i64,
+) -> AppResult<()> {
+    if replies.is_empty() {
+        q(
+            db,
+            "UPDATE linear_threads SET waiting_for = NULL, payload = NULL, expires_at = NULL, updated_at = ? WHERE id = ?",
+            &[n(now), s(id)],
+        )?
+        .run()
+        .await?;
+    } else {
+        q(
+            db,
+            "UPDATE linear_threads SET waiting_for = 'reply', payload = ?, expires_at = ?, updated_at = ? WHERE id = ?",
+            &[
+                s(&json!({ "replies": replies }).to_string()),
+                n(now + lin::WAIT_MS),
+                n(now),
+                s(id),
+            ],
+        )?
+        .run()
+        .await?;
+    }
+    Ok(())
+}
+
 /// A reply in a thread that reaches a session: the agent's next message,
 /// as the person who wrote it, once fctl knows them and they may message
 /// the session; or their stop, which interrupts the agent's turn.
@@ -914,14 +991,12 @@ async fn reply(
         None => None,
     };
     let Some(user) = user else {
-        // Kept for when they link their account.
-        q(
-            db,
-            "UPDATE linear_threads SET waiting_for = 'reply', payload = ?, expires_at = ?, updated_at = ? WHERE id = ?",
-            &[s(&raw.to_string()), n(now + lin::WAIT_MS), n(now), s(&t.id)],
-        )?
-        .run()
-        .await?;
+        // Kept for when they link their account, beside others' kept so.
+        if let Some(a) = author {
+            let mut replies = pending(t);
+            replies.insert(a.to_owned(), raw.clone());
+            keep_pending(db, &t.id, replies, now).await?;
+        }
         let input = lin::link_account(
             &t.id,
             "fctl doesn't know who you are in Linear yet, so your reply can't reach its agent. Connect your Linear account to fctl once, and it passes your reply on.",
@@ -961,8 +1036,24 @@ async fn reply(
     if body.is_empty() {
         return Ok(());
     }
-    let text = lin::replied(&user.name, &t.issue_key, body);
     let row = crate::spec::session_row(db, session_id).await?;
+    if row.as_ref().is_some_and(|r| {
+        let status = r.status();
+        !status.accepts_messages() && !status.resumes_for_messages()
+    }) {
+        post(
+            linear,
+            &t.id,
+            &Act::Error(&format!(
+                "The fctl session failed, so your reply didn't reach its agent: resume it in fctl to carry on, at {}",
+                cfg.url(&format!("/s/{session_id}"))
+            )),
+            false,
+        )
+        .await;
+        return Ok(());
+    }
+    let text = lin::replied(&user.name, &t.issue_key, body);
     let st = row
         .as_ref()
         .and_then(|r| r.ticket.as_deref())
@@ -1008,13 +1099,11 @@ async fn reply(
     .await
     {
         Ok(()) => {
-            q(
-                db,
-                "UPDATE linear_threads SET waiting_for = NULL, payload = NULL, expires_at = NULL, updated_at = ? WHERE id = ?",
-                &[n(now), s(&t.id)],
-            )?
-            .run()
-            .await?;
+            // Theirs no longer waits; others' replies still do.
+            let mut replies = pending(t);
+            if author.is_some_and(|a| replies.remove(a).is_some()) {
+                keep_pending(db, &t.id, replies, now).await?;
+            }
             post(
                 linear,
                 &t.id,
@@ -1124,28 +1213,18 @@ pub async fn linked(
     let keys = crypto::keys(cfg)?;
     let mut reached = Vec::new();
     for t in waiting {
-        let Some(raw) = t
-            .payload
-            .as_deref()
-            .and_then(|p| serde_json::from_str::<Value>(p).ok())
-        else {
-            continue;
+        // Their delegation that waited for them, or their reply kept in a
+        // started thread among others'.
+        let raw = match t.waiting_for.as_deref() {
+            Some("link") if t.linear_user_id.as_deref() == Some(linear_user) => t
+                .payload
+                .as_deref()
+                .and_then(|p| serde_json::from_str::<Value>(p).ok()),
+            Some("reply") => pending(&t).remove(linear_user),
+            _ => None,
         };
+        let Some(raw) = raw else { continue };
         let Some(e) = event_of(&raw) else { continue };
-        let theirs = match t.waiting_for.as_deref() {
-            Some("link") => t.linear_user_id.as_deref() == Some(linear_user),
-            Some("reply") => {
-                e.agent_activity.as_ref().and_then(|a| {
-                    a.user_id
-                        .as_deref()
-                        .or(a.user.as_ref().map(|u| u.id.as_str()))
-                }) == Some(linear_user)
-            }
-            _ => false,
-        };
-        if !theirs {
-            continue;
-        }
         let linear = match linear::client(db, cfg, &keys, organization, now).await {
             Ok(l) => l,
             Err(e) => {

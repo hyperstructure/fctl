@@ -30,6 +30,8 @@ pub struct RunnerSession {
     pub repo: Option<RepoRef>,
     /// What its agent may do on GitHub now.
     pub github_access: GithubAccess,
+    /// A review agent's session, which reaches no ticket tracker.
+    pub review: bool,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +48,8 @@ struct Row {
     repo_owner: Option<String>,
     #[serde(default)]
     repo_name: Option<String>,
+    #[serde(default)]
+    review_repo: Option<String>,
 }
 
 impl RunnerSession {
@@ -55,8 +59,9 @@ impl RunnerSession {
         let row: Option<Row> = q(
             &ctx.db,
             "SELECT s.project_id, s.runner_id, s.created_by, p.settings, s.github_access, \
-             p.workspace_id, p.repo_owner, p.repo_name FROM sessions s \
-             JOIN projects p ON p.id = s.project_id WHERE s.id = ?",
+             p.workspace_id, p.repo_owner, p.repo_name, rv.repo AS review_repo FROM sessions s \
+             JOIN projects p ON p.id = s.project_id LEFT JOIN reviews rv ON rv.session_id = s.id \
+             WHERE s.id = ?",
             &[s(session_id)],
         )?
         .first()
@@ -92,6 +97,7 @@ impl RunnerSession {
                 _ => None,
             },
             github_access,
+            review: row.review_repo.is_some(),
         })
     }
 

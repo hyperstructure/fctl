@@ -392,7 +392,12 @@ async fn renew(
         ],
     )
     .await?;
-    if status == 400 || status == 401 {
+    // Only a refresh token Linear no longer takes ends the installation: a
+    // client it refuses (a secret being changed) or a malformed request
+    // says nothing about the token, which stays for the next try.
+    if (status == 400 || status == 401)
+        && v.get("error").and_then(Value::as_str) == Some("invalid_grant")
+    {
         // Another refresh may have used it first, more than half an hour
         // ago: what it kept works.
         if let Some(now_row) = installation(db, &row.organization_id).await?
@@ -410,6 +415,15 @@ async fn renew(
             "Linear no longer takes fctl's access to {}: an admin of the fctl workspace connects it again",
             row.name
         )));
+    }
+    if status == 400 || status == 401 {
+        worker::console_error!(
+            "Linear refused to renew the token of {} ({status}): {v}",
+            row.organization_id
+        );
+        return Err(not_configured(
+            "Linear refused fctl's app: the instance's admins check LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET",
+        ));
     }
     if status != 200 {
         return Err(unavailable(

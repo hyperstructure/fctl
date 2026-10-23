@@ -461,11 +461,14 @@ pub async fn installed(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         })),
         Err(e) => {
             worker::console_error!("a Linear sign-in: {}", e.0.message);
-            http::redirect(&back.url(if e.0.code == ErrorCode::Forbidden {
-                "not_app"
-            } else {
-                "failed"
-            }))
+            // A person's sign-in where fctl's app should have been installed.
+            http::redirect(&back.url(
+                if e.0.code == ErrorCode::Forbidden && sign_in.workspace.is_some() {
+                    "not_app"
+                } else {
+                    "failed"
+                },
+            ))
         }
     }
 }
@@ -548,6 +551,14 @@ async fn linked(
     let viewer = linear::Linear::with_token(&cfg, &tokens.access_token)
         .viewer()
         .await;
+    if viewer.as_ref().is_ok_and(|v| v.app) {
+        // A sign-in as fctl's app (`actor=app` slipped into the link), which
+        // is nobody's account. Its token is left alone: Linear may have put
+        // it in place of the installation's, which revoking would end.
+        return Err(AppError(ApiError::forbidden(
+            "That sign-in was as fctl's app rather than your own Linear account: link it with your own sign-in",
+        )));
+    }
     linear::revoke(&cfg, &tokens.access_token).await;
     let viewer = viewer?;
     let user = ctx.user()?.clone();

@@ -1447,12 +1447,16 @@ project's tracker lets agents, and never reach Linear.
    app: with the Linear workspace's token ([Linear](#linear)), or with a
    token of the GitHub App's for that repository's issues alone, which
    never leaves it and which it revokes at once. Agents that only read on
-   GitHub read tickets alone, in any tracker. A session's agent comments,
-   and files tickets, at most 30 and 20 times an hour (`ticket_writes`):
-   an agent that loops would otherwise fill a team's tracker. The
-   transcript shows what it did there (`ticket_commented`,
-   `ticket_created`, `ticket_updated` notices, which only the control
-   plane adds).
+   GitHub read tickets alone, in any tracker; review agents reach no
+   tracker. In an hour, a session's agent comments at most 30 times,
+   files at most 20 tickets, changes at most 60 and reads at most 300
+   times (`ticket_writes`, each call taking its place in one statement):
+   an agent that loops would otherwise fill a team's tracker, or use up
+   the API of a Linear installation that other workspaces share. Its
+   parents, sub-tickets and search results outside the project's choice
+   don't reach it either. The transcript shows what it did there
+   (`ticket_commented`, `ticket_created`, `ticket_updated` notices, which
+   only the control plane adds).
 2. **What agents are told** comes from the control plane
    (`SessionSpec::tickets`, `fctl_domain::tickets::instructions`), so that
    it grows with the trackers it knows: which tracker, how to reach it,
@@ -1580,8 +1584,13 @@ issue's delegate (the person stays its assignee), and mention.
    its session's agent as a message of the person who wrote it, as fctl
    knows them, when they may message the session (`UserMessage::ticket`),
    resuming a stopped session on the subscription it ran on, as a person's
-   message does; one from someone fctl doesn't know waits for them to link
-   their account. Their stop interrupts the agent's turn.
+   message does (a failed session takes none, and Linear hears so); one
+   from someone fctl doesn't know waits an hour for them to link their
+   account, each person's apart. Their stop interrupts the agent's turn.
+   Before a thread's session starts, only the person who made it moves it
+   on: anyone else's reply would start it, or choose its project, on that
+   person's subscription, so fctl says only they can, while anyone's stop
+   ends it.
 
 Branches carry their ticket's key, so where the Linear workspace has
 Linear's GitHub integration, it links the session's pull requests to the

@@ -78,7 +78,7 @@ pub fn signed(secret: &str, body: &[u8], signature: &str) -> bool {
 /// Whether a delivery's signed `webhookTimestamp` is within a minute of now,
 /// so that nobody replays an old one.
 pub fn fresh(webhook_timestamp: Option<i64>, now: i64) -> bool {
-    webhook_timestamp.is_some_and(|t| (now - t).abs() <= FRESH_MS)
+    webhook_timestamp.is_some_and(|t| now.abs_diff(t) <= FRESH_MS.unsigned_abs())
 }
 
 /// A person, as Linear's payloads name them.
@@ -373,10 +373,25 @@ impl Tokens {
 /// Who signed in, and their Linear workspace.
 pub const VIEWER: &str = "query { viewer { id name displayName email avatarUrl app organization { id name urlKey logoUrl } } }";
 
-/// The teams fctl's app reaches, each with its workflow and its projects.
-/// Linear refuses queries of more than 10,000 points (an object costs one,
-/// times how many a connection asks for), so the lists stay short.
-pub const TEAMS: &str = "query { teams(first: 50) { nodes { id key name color states(first: 25) { nodes { id name type position } } projects(first: 25) { nodes { id name completedAt canceledAt } } } } }";
+/// The teams fctl's app reaches, each with its workflow and its projects,
+/// for people to choose from. Linear refuses queries of more than 10,000
+/// points (an object costs one, times how many a connection asks for), so
+/// the lists stop at 100 teams of 50 projects (7,600); a choice is checked
+/// by its ids ([`TEAM`], [`PROJECT`]), wherever it is in them.
+pub const TEAMS: &str = "query { teams(first: 100) { nodes { id key name color states(first: 25) { nodes { id name type position } } projects(first: 50) { nodes { id name completedAt canceledAt } } } } }";
+
+/// A team fctl's app reaches, by its id.
+pub const TEAM: &str = "query($id: String!) { team(id: $id) { id key name } }";
+
+/// A Linear project, by its id, with the teams it belongs to.
+pub const PROJECT: &str = "query($id: String!) { project(id: $id) { id name completedAt canceledAt teams(first: 50) { nodes { id } } } }";
+
+/// Whether project `v` (as [`PROJECT`] reads it) is an open one of `team`.
+pub fn open_project_of(v: &Value, team: &str) -> bool {
+    let open = v.get("completedAt").is_none_or(Value::is_null)
+        && v.get("canceledAt").is_none_or(Value::is_null);
+    open && nodes(v, "teams").any(|t| s(t, "id").as_deref() == Some(team))
+}
 
 /// A team's workflow states.
 pub const TEAM_STATES: &str = "query($id: String!) { team(id: $id) { id key name states(first: 50) { nodes { id name type position } } } }";
@@ -388,12 +403,12 @@ pub const TEAM_LABELS: &str = "query($id: String!) { team(id: $id) { labels(firs
 const ISSUE_FIELDS: &str = "id identifier title description url priority priorityLabel estimate dueDate createdAt updatedAt \
     state { id name type } team { id key name } project { id name } cycle { name number } \
     labels(first: 20) { nodes { id name } } assignee { id name displayName avatarUrl } \
-    delegate { id name displayName avatarUrl app } parent { id identifier title url state { id name type } }";
+    delegate { id name displayName avatarUrl app } parent { id identifier title url state { id name type } team { id } project { id } }";
 
 /// An issue, with its children and its latest comments.
 pub fn issue_query() -> String {
     format!(
-        "query($id: String!) {{ issue(id: $id) {{ {ISSUE_FIELDS} children(first: 50) {{ nodes {{ id identifier title url state {{ id name type }} }} }} comments(last: 30) {{ nodes {{ id body url createdAt parent {{ id }} user {{ id name displayName avatarUrl app }} botActor {{ name }} }} }} }} }}"
+        "query($id: String!) {{ issue(id: $id) {{ {ISSUE_FIELDS} children(first: 50) {{ nodes {{ id identifier title url state {{ id name type }} team {{ id }} project {{ id }} }} }} comments(last: 30) {{ nodes {{ id body url createdAt parent {{ id }} user {{ id name displayName avatarUrl app }} botActor {{ name }} }} }} }} }}"
     )
 }
 
@@ -457,18 +472,26 @@ pub fn errors(v: &Value) -> Option<GraphqlError> {
         .or_else(|| first.get("message").and_then(Value::as_str))
         .unwrap_or("Linear answered with an error")
         .to_owned();
+    // Linear says an entity wasn't found as an input error ("Entity not
+    // found: Issue", code INPUT_ERROR): its words come before its code.
+    let said = format!(
+        "{} {message}",
+        first
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    )
+    .to_ascii_lowercase();
     let kind = if code.contains("ratelimit") {
         GraphqlErrorKind::RateLimited
     } else if code.contains("authentication") || code.contains("unauthenticated") {
         GraphqlErrorKind::Unauthorized
     } else if code.contains("forbidden") {
         GraphqlErrorKind::Forbidden
+    } else if said.contains("not found") || said.contains("could not find") {
+        GraphqlErrorKind::NotFound
     } else if code.contains("invalid") || code.contains("input") {
         GraphqlErrorKind::Invalid
-    } else if message.to_ascii_lowercase().contains("not found")
-        || message.to_ascii_lowercase().contains("could not find")
-    {
-        GraphqlErrorKind::NotFound
     } else {
         GraphqlErrorKind::Other
     };
@@ -666,6 +689,34 @@ pub fn in_scope(l: &LinearTickets, team: Option<&str>, project: Option<&str>) ->
         && l.project
             .as_deref()
             .is_none_or(|p| project.is_some_and(|q| q == p))
+}
+
+/// Whether issue `v` (as [`ISSUE_FIELDS`] reads it) is one a project takes
+/// tickets from.
+pub fn takes(l: &LinearTickets, v: &Value) -> bool {
+    let (team, project) = place(v);
+    in_scope(l, team.as_deref(), project.as_deref())
+}
+
+/// Issue `v` without its parent and sub-issues outside what a project takes
+/// tickets from, whose keys, titles and states its agents aren't to learn.
+pub fn within(l: &LinearTickets, mut v: Value) -> Value {
+    if let Some(issue) = v.as_object_mut() {
+        if issue
+            .get("parent")
+            .is_some_and(|p| !p.is_null() && !takes(l, p))
+        {
+            issue.remove("parent");
+        }
+        if let Some(nodes) = issue
+            .get_mut("children")
+            .and_then(|c| c.get_mut("nodes"))
+            .and_then(Value::as_array_mut)
+        {
+            nodes.retain(|c| takes(l, c));
+        }
+    }
+    v
 }
 
 /// Linear's priorities by name (`Urgent` is 1, `Low` 4; 0 is none).
@@ -1118,6 +1169,86 @@ pub fn plan(todos: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linear_errors_say_what_went_wrong() {
+        let err = |e: Value| errors(&json!({ "errors": [e] }));
+        // How Linear says an entity isn't there: an input error.
+        let gone = err(json!({ "message": "Entity not found: Issue",
+            "extensions": { "type": "invalid input", "code": "INPUT_ERROR", "userPresentableMessage": "Could not find referenced Issue." } }));
+        assert_eq!(gone.map(|e| e.kind), Some(GraphqlErrorKind::NotFound));
+        let bad = err(json!({ "message": "Argument Validation Error",
+            "extensions": { "code": "INPUT_ERROR", "userPresentableMessage": "title must be shorter" } }));
+        assert_eq!(
+            bad.map(|e| (e.kind, e.message)),
+            Some((
+                GraphqlErrorKind::Invalid,
+                "title must be shorter".to_owned()
+            ))
+        );
+        let limited = err(
+            json!({ "message": "Rate limit exceeded", "extensions": { "code": "RATELIMITED" } }),
+        );
+        assert_eq!(limited.map(|e| e.kind), Some(GraphqlErrorKind::RateLimited));
+        let auth = err(
+            json!({ "message": "Authentication required", "extensions": { "code": "AUTHENTICATION_ERROR" } }),
+        );
+        assert_eq!(auth.map(|e| e.kind), Some(GraphqlErrorKind::Unauthorized));
+        assert!(errors(&json!({ "data": {} })).is_none());
+    }
+
+    #[test]
+    fn links_outside_the_scope_go() {
+        let l = LinearTickets {
+            organization: "o".into(),
+            team: "t1".into(),
+            team_key: None,
+            team_name: None,
+            project: None,
+            project_name: None,
+            move_started: None,
+            explore_label: None,
+        };
+        let issue = json!({
+            "id": "i1", "team": { "id": "t1" },
+            "parent": { "id": "p", "identifier": "DES-1", "team": { "id": "t2" } },
+            "children": { "nodes": [
+                { "id": "c1", "identifier": "ENG-2", "team": { "id": "t1" } },
+                { "id": "c2", "identifier": "DES-3", "team": { "id": "t2" } }
+            ] }
+        });
+        let kept = within(&l, issue);
+        assert!(kept.get("parent").is_none());
+        let children: Vec<&str> = nodes(&kept, "children")
+            .filter_map(|c| c.get("identifier").and_then(Value::as_str))
+            .collect();
+        assert_eq!(children, ["ENG-2"]);
+        let theirs = json!({ "team": { "id": "t1" }, "parent": { "identifier": "ENG-1", "team": { "id": "t1" } } });
+        assert!(within(&l, theirs).get("parent").is_some());
+    }
+
+    #[test]
+    fn only_open_projects_of_the_team_count() {
+        let p = |completed: Value, teams: &[&str]| {
+            json!({ "id": "p1", "name": "Mobile", "completedAt": completed, "canceledAt": null,
+                    "teams": { "nodes": teams.iter().map(|t| json!({ "id": t })).collect::<Vec<_>>() } })
+        };
+        assert!(open_project_of(&p(Value::Null, &["t1", "t2"]), "t2"));
+        assert!(!open_project_of(&p(Value::Null, &["t1"]), "t2"));
+        assert!(!open_project_of(
+            &p(json!("2026-01-01T00:00:00.000Z"), &["t2"]),
+            "t2"
+        ));
+    }
+
+    #[test]
+    fn timestamps_far_off_are_stale_without_overflowing() {
+        assert!(fresh(Some(1_000), 1_000 + FRESH_MS));
+        assert!(!fresh(Some(1_000), 1_001 + FRESH_MS));
+        assert!(!fresh(Some(i64::MIN), i64::MAX));
+        assert!(!fresh(Some(i64::MAX), i64::MIN));
+        assert!(!fresh(None, 1_000));
+    }
 
     #[test]
     fn failures_to_start_say_why_and_how_to_try_again() {
