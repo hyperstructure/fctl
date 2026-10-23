@@ -1194,10 +1194,10 @@ or its agent only reads on GitHub. SessionObject takes them at
 `/follow-up`, and with a lookup's `/pull-requests`, and keeps them for ten
 seconds (`follow_ups`, in its storage, `GATHER_MS`), so that a review and
 its comments, or checks that fail together, reach the agent in one
-message, and what reached it once (a comment by its id, failed checks by
-their commit, a merge) never comes again. Then, for each pull request, a
-message from fctl (`fctl_domain::follow_ups::message`) says what
-happened: who wrote what and where, quoted, a review's comments on lines
+message, and what reached it in the last day (a comment by its id, failed
+checks by their commit, a merge) doesn't come again. Then, for each pull
+request, a message from fctl (`fctl_domain::follow_ups::message`) says
+what happened: who wrote what and where, quoted, a review's comments on lines
 under it, and how to answer each where it was made (`gh pr comment`, `gh
 api …/comments/{id}/replies`); which checks failed and how to look into
 them (`gh pr checks`, `gh run view --log-failed`), waiting for those still

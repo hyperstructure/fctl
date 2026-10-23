@@ -930,13 +930,16 @@ impl SessionObject {
             let Ok(data) = serde_json::to_string(&item) else {
                 continue;
             };
+            // Again while it waits (GitHub sent it twice): taken already.
+            let again = self.follow_up_waits(&item.key);
             let stored = self.sql.exec(
                 "INSERT INTO follow_ups (key, n, due, data) VALUES (?, (SELECT COALESCE(MAX(n), 0) + 1 FROM follow_ups), ?, ?) \
                  ON CONFLICT (key) DO UPDATE SET data = excluded.data",
                 Some(vec![sv(&item.key), iv(now + follow_ups::GATHER_MS), sv(&data)]),
             );
             match stored {
-                Ok(_) => taken += 1,
+                Ok(_) if !again => taken += 1,
+                Ok(_) => {}
                 Err(e) => worker::console_error!("keeping a follow-up: {e}"),
             }
         }
@@ -1232,6 +1235,23 @@ impl SessionObject {
         self.broadcast_summary(s);
         self.write_through().await;
         self.notify_fleet(s);
+    }
+
+    /// Whether the follow-up `key` waits to reach the agent.
+    fn follow_up_waits(&self, key: &str) -> bool {
+        #[derive(Deserialize)]
+        struct N {
+            n: f64,
+        }
+        self.sql
+            .exec(
+                "SELECT COUNT(*) AS n FROM follow_ups WHERE key = ?",
+                Some(vec![sv(key)]),
+            )
+            .and_then(|c| c.to_array::<N>())
+            .ok()
+            .and_then(|r| r.first().map(|x| x.n > 0.0))
+            .unwrap_or(false)
     }
 
     /// Whether follow-ups wait to reach the agent.
