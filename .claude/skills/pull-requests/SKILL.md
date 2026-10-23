@@ -19,9 +19,9 @@ or, for one run, `gh run watch ID --exit-status`. Do it before you end your
 turn. An fctl session goes idle when the turn ends. The findings of fctl's
 own review agent come to the session that opened the pull request, in a
 message from fctl that says how to answer them; where the project turns
-follow-ups on, so do failed checks, comments that mention `@fctl` or
-`@agent` from people with write access, and merges. Otherwise a failure
-you don't watch for stays unnoticed.
+follow-ups on, so do failed checks, conflicts with the base branch,
+comments that mention `@fctl` or `@agent` from people with write access,
+and merges. Otherwise a failure you don't watch for stays unnoticed.
 
 The checks: **Commits** checks the title, and **CI** runs
 `cargo xtask check` (formatting, generated types, Biome and TypeScript,

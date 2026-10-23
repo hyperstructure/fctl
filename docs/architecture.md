@@ -1161,8 +1161,9 @@ GitHub to a pull request one of the instance's own agents opened (its
 author is the GitHub App) brings that agent back to it, in a message from
 fctl delivered as a person's message is: it resumes a stopped session on
 the subscription it ran on
-([ADR 0043](adr/0043-agents-come-back-to-their-pull-requests-for-comments-failed-checks-and-merges.md)).
-Three kinds, each on or off on its own, all off by default:
+([ADR 0043](adr/0043-agents-come-back-to-their-pull-requests-for-comments-failed-checks-and-merges.md),
+[ADR 0045](adr/0045-merge-conflicts-bring-agents-back-too.md)). Four
+kinds, each on or off on its own, all off by default:
 
 1. **Comments that address the agent** (`issue_comment`,
    `pull_request_review` and `pull_request_review_comment` deliveries,
@@ -1197,6 +1198,26 @@ Three kinds, each on or off on its own, all off by default:
 3. **Merged or closed** (`pull_request` deliveries of `closed`): who
    merged or closed it, an app's bot (a merge queue's) counting as nobody,
    and the branch it went into.
+4. **Conflicts with the base branch** (GitHub's `mergeable` is
+   `CONFLICTING`, `fctl_domain::follow_ups::conflicts`), for pull requests
+   neither merged nor closed, drafts too. No delivery says when a pull
+   request starts to conflict, and GitHub works it out only when someone
+   asks after either branch moved, in the background: until then it says
+   `UNKNOWN` (`fctl_domain::webhooks::Mergeable`). So the lookups ask: the
+   one after any delivery about the pull request; the one when a session
+   finds it, since a pull request opened with conflicts gets no check
+   deliveries (GitHub runs none of its `pull_request` workflows); and
+   after a delivery that merged one into a repository, a lookup without
+   checks (`webhooks::Fields::WithoutChecks`, a point of the rate limit
+   for up to 50) of the other pull requests that sessions list there,
+   neither merged nor closed, whose projects follow up on conflicts
+   (`crate::pull_requests::moved_onto`). While GitHub doesn't know yet,
+   the session that opened it asks again (SessionObject's `asks`,
+   `crate::pull_requests::ask_again`), 15 seconds later, then 30, 60, 120
+   and 240 (`ASK_AGAIN_MS`), and after that leaves it to the next
+   delivery. A push straight to the base branch (a release's commit)
+   shows at the next merge into the repository, or the next delivery
+   about the pull request.
 
 The session is the one that opened the pull request
 (`fctl_domain::reviews::opener`), among those it may be looked up for
@@ -1207,33 +1228,41 @@ or its agent only reads on GitHub. SessionObject takes them at
 seconds (`follow_ups`, in its storage, `GATHER_MS`), so that a review and
 its comments, or checks that fail together, reach the agent in one
 message, and what reached it in the last day (a comment by its id, failed
-checks by their commit, a merge) doesn't come again. Then, for each pull
-request, a message from fctl (`fctl_domain::follow_ups::message`) says
-what happened: who wrote what and where, quoted, a review's comments on
-lines under it, and how to answer each where it was made (`gh pr comment`, `gh
-api …/comments/{id}/replies`); which checks failed and how to look into
-them (`gh pr checks`, `gh run view --log-failed`), waiting for those still
-running before a push; after a merge, what may be left to do. It says
-that only people who can write to the repository reach the agent this
-way. Failed checks wait while a turn runs, since the agent may be at
-them, and ten seconds more once it ends, for what it pushed then, and go
-only while GitHub still says that they are the pull request's newest
-commit's and failed: a newer commit, the agent's or anyone's, or a re-run
-that passed, makes them old news. After three in a row
-(`MAX_CHECKS_IN_A_ROW`) while nobody messaged the agent, nor wrote to it
-on GitHub, the transcript says what failed instead (`follow_up_held`,
-with `Notice.follow_up`), until someone does. Only deliveries bring
-agents back: the hourly sweep keeps pull requests' state current without
-waking anyone.
+checks and conflicts by their commit, a merge) doesn't come again: once
+the agent pushed what resolves conflicts, they come again only at its next
+commit. Then, for each pull request, a message from fctl
+(`fctl_domain::follow_ups::message`) says what happened: who wrote what and
+where, quoted, a review's comments on lines under it, and how to answer
+each where it was made (`gh pr comment`, `gh api …/comments/{id}/replies`);
+which checks failed and how to look into them (`gh pr checks`, `gh run
+view --log-failed`), waiting for those still running before a push; for
+conflicts, to merge the updated base branch in, resolve them so that both
+sides' changes still do what they were for, run the tests and push,
+without rebasing or force-pushing, and to ask on the pull request when a
+conflict takes a decision the code doesn't answer; after a merge, what may
+be left to do. It says that only people who can write to the repository
+reach the agent this way. Failed checks and conflicts wait while a turn
+runs, since the agent may be at them, and ten seconds more once it ends,
+for what it pushed then, and go only while GitHub still says that they are
+the pull request's newest commit's: a newer commit, the agent's or
+anyone's, or for checks a re-run that passed, makes them old news. After
+three failed checks in a row (`MAX_CHECKS_IN_A_ROW`) while nobody messaged
+the agent, nor wrote to it on GitHub, the transcript says what failed
+instead (`follow_up_held`, with `Notice.follow_up`), until someone does;
+conflicts count their own three (`MAX_CONFLICTS_IN_A_ROW`), so that a pull
+request nobody merges doesn't take in its base branch after every merge
+for good. Only deliveries, and a session that finds its pull request,
+bring agents back: the hourly sweep keeps pull requests' state current
+without waking anyone.
 
 The message carries what it is about (`UserMessage.follow_up`), which the
 transcript shows as GitHub has it: people's comments with their avatars,
-a review's comments on lines under it, failed checks by name, a merge,
-with what fctl told the agent a click away. A session's page says under
-its pull requests what brings its agent back. Follow-ups need the webhook,
-and for comments the app subscribed to **Issue comment**, **Pull request
-review** and **Pull request review comment**
-([Self-hosting](self-hosting.md#follow-ups)).
+a review's comments on lines under it, failed checks by name, conflicts
+with the base branch, a merge, with what fctl told the agent a click
+away. A session's page says under its pull requests what brings its agent
+back. Follow-ups need the webhook, and for comments the app subscribed to
+**Issue comment**, **Pull request review** and **Pull request review
+comment** ([Self-hosting](self-hosting.md#follow-ups)).
 
 ### Schedules
 
