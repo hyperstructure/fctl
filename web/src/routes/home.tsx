@@ -242,6 +242,7 @@ function QuickStart({
           drafts={files.drafts}
           onRemove={files.remove}
           onRetry={files.retry}
+          readOnly={starting}
           className="px-4 pt-4"
         />
         <Textarea
@@ -270,7 +271,7 @@ function QuickStart({
           aria-label="Task for a new session"
         />
         <TextareaControls textarea={ref} className="flex-wrap gap-2 pt-4 pr-3 pb-3 pl-2.5">
-          <AttachButton onFiles={(f) => attach(f)} />
+          <AttachButton onFiles={(f) => attach(f)} disabled={starting} />
           {/* It takes the room left on its line, which puts what follows at the end. On a phone what
               follows shares its line as long as the project keeps room for the start of its name. */}
           <div className="flex min-w-0 grow items-center gap-2 text-[12.5px] max-sm:basis-24">

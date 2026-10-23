@@ -132,6 +132,29 @@ describe("starting a session", () => {
     expect(createSession).toHaveBeenCalledWith("web", { prompt: " ", attachments: ["att_1"] });
   });
 
+  it("leaves the files in the form, previews and all, until the session page replaces it", async () => {
+    createSession.mockResolvedValue({ id: "ses_1" });
+    navigate.mockResolvedValue(undefined);
+    const shot = { id: "att_1", name: "shot.png", media_type: "image/png", size: 10 };
+    const restore = vi.fn();
+    const files = {
+      drafts: [{}],
+      take: vi.fn(() =>
+        Promise.resolve({ files: { attachments: [shot], previews: { att_1: "blob:shot" } }, restore }),
+      ),
+    };
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    const s = mount();
+    act(() => s().start("web", "Fix it", files));
+    await settle();
+    expect(files.take).toHaveBeenCalledWith({ stay: true });
+    expect(navigate).toHaveBeenCalledWith({ to: "/s/$id", params: { id: "ses_1" } });
+    // The form frees them as it goes.
+    expect(revoke).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
+    revoke.mockRestore();
+  });
+
   it("puts the files back when the start fails", async () => {
     createSession.mockRejectedValueOnce(new Error("No runner is online"));
     const restore = vi.fn();

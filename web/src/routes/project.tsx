@@ -253,6 +253,7 @@ function Sessions({ project }: { project: G.Project }) {
               drafts={files.drafts}
               onRemove={files.remove}
               onRetry={files.retry}
+              readOnly={starting}
               className="px-4 pt-4"
             />
             <Textarea
@@ -280,7 +281,7 @@ function Sessions({ project }: { project: G.Project }) {
             />
             {/* More room above the pickers where they take a line of their own. */}
             <TextareaControls textarea={ref} className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 sm:max-lg:pt-3">
-              <AttachButton onFiles={(f) => attach(f)} />
+              <AttachButton onFiles={(f) => attach(f)} disabled={starting} />
               <span className="flex-1" />
               <StartChoices project={project} choice={choice} onPick={pick} disabled={starting} />
               {/* Set apart from the pickers, as on the home page. On a phone its room goes to the
