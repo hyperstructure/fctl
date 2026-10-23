@@ -1,9 +1,10 @@
 //! What agents ask of the control plane about their session's project
-//! ([`AgentCall`]): `fctl memory`, `fctl retro`, `fctl resolve` and `fctl
-//! review` in a sandbox go through fctl-agent to its host, which sends them
-//! here with its runner token, for a session it runs. Each needs its
-//! project's setting: `project_memory` for the memory, `retrospectives` for
-//! retrospectives; resolving review threads needs an agent that may
+//! ([`AgentCall`]): `fctl memory`, `fctl retro`, `fctl resolve`, `fctl
+//! review` and `fctl ticket` in a sandbox go through fctl-agent to its
+//! host, which sends them here with its runner token, for a session it
+//! runs. Each needs its project's setting: `project_memory` for the memory,
+//! `retrospectives` for retrospectives, a ticket tracker for tickets
+//! (`crate::tickets`); resolving review threads needs an agent that may
 //! comment on GitHub, and reviews a review agent's session
 //! (`crate::reviews`).
 
@@ -25,10 +26,10 @@ pub struct RunnerSession {
     pub created_by: String,
     pub settings: ProjectSettings,
     /// Its project's workspace and primary repository.
-    workspace_id: String,
-    repo: Option<RepoRef>,
+    pub workspace_id: String,
+    pub repo: Option<RepoRef>,
     /// What its agent may do on GitHub now.
-    github_access: GithubAccess,
+    pub github_access: GithubAccess,
 }
 
 #[derive(Deserialize)]
@@ -232,6 +233,9 @@ pub async fn runner_call(
         },
         AgentCall::ReviewThreads => AgentAnswer::ReviewThreads {
             threads: crate::reviews::threads(ctx, &session.id).await?,
+        },
+        AgentCall::Ticket { request } => AgentAnswer::Ticket {
+            answer: crate::tickets::call(ctx, &session, request).await?,
         },
         AgentCall::SubmitReview {
             summary,

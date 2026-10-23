@@ -8,6 +8,7 @@ mod config;
 mod crypto;
 mod ctx;
 mod db;
+mod delegations;
 mod do_files;
 mod do_fleet;
 mod do_notify;
@@ -21,6 +22,7 @@ mod housekeeping;
 mod http;
 mod instance;
 mod internal;
+mod linear;
 mod model;
 mod notify;
 mod pull_requests;
@@ -28,6 +30,8 @@ mod push;
 mod reviews;
 mod schedules;
 mod spec;
+mod starts;
+mod tickets;
 mod usage;
 mod workspaces;
 
@@ -224,6 +228,14 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Delete, ["workspaces", id, "github", "offers", account]) => {
             api::github::dismiss(ctx, id, &http::decode(account)).await
         }
+        (Get, ["workspaces", id, "linear"]) => api::linear::workspace(ctx, id).await,
+        (Post, ["workspaces", id, "linear", "connect"]) => api::linear::connect(ctx, req, id).await,
+        (Delete, ["workspaces", id, "linear", organization]) => {
+            api::linear::disconnect(ctx, id, organization).await
+        }
+        (Get, ["workspaces", id, "linear", organization, "teams"]) => {
+            api::linear::teams(ctx, id, organization).await
+        }
         (Post, ["invitations", id, "accept"]) => api::workspaces::accept(ctx, id).await,
         (Post, ["invitations", id, "decline"]) => api::workspaces::decline(ctx, id).await,
         (Get, ["github", "install"]) => api::github::install(ctx, req).await,
@@ -232,6 +244,11 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["github", "authorized"]) => api::github::authorized(ctx, req).await,
         // GitHub's webhook: signed with its secret, not by a person.
         (Post, ["github", "webhook"]) => api::webhooks::receive(ctx, req).await,
+        (Get, ["linear", "connect"]) => api::linear::connect_link(ctx, req).await,
+        (Get, ["linear", "link"]) => api::linear::link(ctx, req).await,
+        (Get, ["linear", "installed"]) => api::linear::installed(ctx, req).await,
+        // Linear's webhook: signed with its secret, not by a person.
+        (Post, ["linear", "webhook"]) => api::linear::webhook(ctx, req).await,
 
         // Runners (admin) and hosts
         (Get, ["runners"]) => api::runners::list(ctx).await,
@@ -294,6 +311,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::retrospectives::project_list(ctx, req, id).await
         }
         (Delete, ["retrospectives", id]) => api::retrospectives::delete(ctx, id).await,
+        (Get, ["projects", id, "tickets"]) => api::tickets::get(ctx, id).await,
         (Get, ["projects", id, "schedules"]) => api::schedules::list(ctx, id).await,
         (Post, ["projects", id, "schedules"]) => api::schedules::create(ctx, req, id).await,
         (Get, ["schedules", id]) => api::schedules::get(ctx, id).await,
@@ -344,6 +362,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::claude::submit_code(ctx, req, id).await
         }
         (Post, ["me", "claude", id, "default"]) => api::claude::set_default(ctx, id).await,
+        // Linear accounts
+        (Get, ["me", "linear"]) => api::linear::mine(ctx).await,
+        (Delete, ["me", "linear", organization]) => api::linear::unlink(ctx, organization).await,
         (Delete, ["me", "claude", id]) => api::claude::remove(ctx, id).await,
         // Notifications
         (Get, ["me", "notifications"]) => api::notifications::get(ctx).await,

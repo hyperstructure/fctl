@@ -122,6 +122,36 @@ pub enum ProjectsCmd {
         /// all, or none.
         #[arg(long, value_name = "LIST", value_parser = follow_ups_arg)]
         follow_ups: Option<FollowUps>,
+        /// The ticket tracker its agents read and write tickets in: none
+        /// (none at all, GitHub's issues included), github (GitHub Issues)
+        /// or linear (a Linear team, which also starts sessions for the
+        /// issues people delegate to fctl there). Running sessions get its
+        /// GitHub tokens with their next one, within the hour.
+        #[arg(long, value_enum)]
+        tickets: Option<TrackerArg>,
+        /// For GitHub Issues: the one repository whose issues agents read
+        /// and write (owner/name, one they write to), or "all" for every
+        /// repository they write to.
+        #[arg(long, value_name = "OWNER/NAME|all")]
+        tickets_repo: Option<String>,
+        /// For Linear: the team whose issues the project works on, by its
+        /// key (ENG), in the Linear workspace its workspace works in
+        /// (`fctl workspaces linear teams`).
+        #[arg(long, value_name = "KEY")]
+        linear_team: Option<String>,
+        /// For Linear: only the issues of this Linear project of the team,
+        /// by name, or "all" for the whole team's.
+        #[arg(long, value_name = "NAME|all")]
+        linear_project: Option<String>,
+        /// For Linear: move a ticket to the team's first started state (In
+        /// Progress) as its session starts (on by default).
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        linear_start: Option<bool>,
+        /// For Linear: the label that asks for an exploration, where the
+        /// agent looks into a ticket and replies with a plan without
+        /// changing code ("explore" unless set; "" for none).
+        #[arg(long, value_name = "LABEL")]
+        explore_label: Option<String>,
         /// The image sessions start from, like ghcr.io/acme/agent:1, on
         /// runners whose owners allow it ("" for each runner's own). Only
         /// the Apple container and Docker drivers use images.
@@ -159,6 +189,13 @@ pub enum ProjectsCmd {
         /// Memory per sandbox, like 16g ("default" for each runner's default).
         #[arg(long, value_name = "SIZE|default", value_parser = memory_arg)]
         memory: Option<OrDefault>,
+    },
+    /// The project's ticket tracker as it works now, and the sessions its
+    /// tickets started lately. Change it with `fctl projects set --tickets`.
+    Tickets {
+        /// The project (slug or id); default from `fctl projects use`.
+        #[arg(short, long)]
+        project: Option<String>,
     },
     /// Use this project by default for `fctl run` and `fctl sessions`.
     Use {
@@ -654,6 +691,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             println!("idle:    sessions {}", idle(&p.settings));
             println!("agents:  {}", learning(&p.settings));
             println!("github:  agents {}", on_github(&p.settings));
+            println!("tickets: {}", tickets(&p.settings));
             println!("follow:  agents {}", follow_ups(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
             println!("{}", style::dim(&format!("{}/p/{}", api.base(), p.slug)));
@@ -711,6 +749,12 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             retrospectives,
             github,
             follow_ups: new_follow_ups,
+            tickets,
+            tickets_repo,
+            linear_team,
+            linear_project,
+            linear_start,
+            explore_label,
             image: new_image,
             build,
             build_context,
@@ -800,6 +844,28 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(f) = new_follow_ups {
                 settings.follow_ups = f;
+            }
+            let tracker_changed = tickets.is_some()
+                || tickets_repo.is_some()
+                || linear_team.is_some()
+                || linear_project.is_some()
+                || linear_start.is_some()
+                || explore_label.is_some();
+            if tracker_changed {
+                settings.tickets = tracker(
+                    &api,
+                    &p,
+                    settings.tickets.clone(),
+                    TrackerChange {
+                        tracker: tickets,
+                        repo: tickets_repo,
+                        team: linear_team,
+                        project: linear_project,
+                        start: linear_start,
+                        explore_label,
+                    },
+                )
+                .await?;
             }
             let p = api
                 .update_project(
@@ -933,10 +999,69 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     }
                 }
             }
+            if tracker_changed {
+                let t = api.project_tickets(p.id.as_str()).await?;
+                println!(
+                    "{} Agents in {} use {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    t.scope
+                );
+                if let Some(problem) = &t.problem {
+                    println!("{}", style::amber(problem));
+                }
+            }
             println!(
                 "{}",
                 style::dim("Sessions take the change when they next start or resume.")
             );
+        }
+        ProjectsCmd::Tickets { project } => {
+            let project = super::sessions::project_or_default(project)?;
+            let t = api.project_tickets(&project).await?;
+            if json {
+                return style::print_json(&t);
+            }
+            println!("{}", style::bold(&t.scope));
+            println!(
+                "{}",
+                style::dim(match t.via {
+                    fctl_proto::tickets::TicketsVia::Gh => "Agents reach it with gh.",
+                    fctl_proto::tickets::TicketsVia::Fctl =>
+                        "Agents reach it with `fctl ticket`, through fctl.",
+                    fctl_proto::tickets::TicketsVia::Nothing => "Agents reach no tracker.",
+                })
+            );
+            if let Some(problem) = &t.problem {
+                println!("{}", style::amber(problem));
+            }
+            if let (Some(l), Some(linked)) = (&t.linear, t.linked) {
+                println!(
+                    "{}",
+                    style::dim(&format!(
+                        "Linear workspace {} (linear.app/{}). {}",
+                        l.name,
+                        l.url_key,
+                        if linked {
+                            "Your Linear account is linked: what you delegate to fctl there starts sessions."
+                        } else {
+                            "Link your Linear account (`fctl account linear connect`) to delegate tickets to fctl there."
+                        }
+                    ))
+                );
+            }
+            if !t.recent.is_empty() {
+                println!();
+                for r in &t.recent {
+                    println!(
+                        "{:<10} #{:<5} {}  {}",
+                        style::bold(&r.ticket.key),
+                        r.session.number,
+                        style::terminal_safe(&r.session.title),
+                        style::status(r.status)
+                    );
+                }
+            }
         }
         ProjectsCmd::Use { project } => {
             let p = api.project(&project).await?;
@@ -994,6 +1119,157 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
         }
     }
     Ok(())
+}
+
+/// A project's ticket tracker in a few words.
+fn tickets(s: &ProjectSettings) -> String {
+    use fctl_proto::session::Tracker;
+    let t = &s.tickets;
+    match t.tracker {
+        Tracker::None => "none: agents use no ticket tracker".to_owned(),
+        Tracker::Github => match &t.repo {
+            Some(r) => format!("GitHub issues of {}", r.full_name()),
+            None => "GitHub issues of the repositories agents write to".to_owned(),
+        },
+        Tracker::Linear => match &t.linear {
+            Some(l) => fctl_domain::tickets::linear_scope(l, None),
+            None => "Linear, without a team yet".to_owned(),
+        },
+    }
+}
+
+/// A ticket tracker, as `--tickets` names it.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum TrackerArg {
+    None,
+    Github,
+    Linear,
+}
+
+/// What `fctl projects set` changes of a project's tracker.
+struct TrackerChange {
+    tracker: Option<TrackerArg>,
+    repo: Option<String>,
+    team: Option<String>,
+    project: Option<String>,
+    start: Option<bool>,
+    explore_label: Option<String>,
+}
+
+/// A project's tracker with `c`'s changes, the Linear team looked up by its
+/// key in the workspace's Linear workspace.
+async fn tracker(
+    api: &fctl_client::Api,
+    p: &Project,
+    mut t: fctl_proto::session::Tickets,
+    c: TrackerChange,
+) -> Result<fctl_proto::session::Tickets> {
+    use fctl_proto::session::{LinearTickets, RepoRef, Tracker};
+    if let Some(tr) = c.tracker {
+        t.tracker = match tr {
+            TrackerArg::None => Tracker::None,
+            TrackerArg::Github => Tracker::Github,
+            TrackerArg::Linear => Tracker::Linear,
+        };
+    }
+    if let Some(r) = c.repo.as_deref().map(str::trim) {
+        t.repo = if r.eq_ignore_ascii_case("all") {
+            None
+        } else {
+            Some(RepoRef::parse(r).context("--tickets-repo takes owner/name, or all")?)
+        };
+    }
+    if c.team.is_some() || c.project.is_some() {
+        let Some(w) = p.workspace.as_ref() else {
+            bail!("{} belongs to no workspace", p.slug);
+        };
+        let l = api.workspace_linear(w.id.as_str()).await?;
+        let conn = match (l.connections.as_slice(), &t.linear) {
+            (_, Some(current)) if c.team.is_none() => l
+                .connections
+                .iter()
+                .find(|x| x.organization == current.organization)
+                .context("the project's Linear workspace isn't connected any more")?,
+            ([only], _) => only,
+            ([], _) => bail!(
+                "{} works in no Linear workspace yet: `fctl workspaces linear connect -w {}`",
+                w.name,
+                w.slug
+            ),
+            (several, _) => several
+                .iter()
+                .find(|x| t.linear.as_ref().is_some_and(|l| l.organization == x.organization))
+                .context("the workspace works in several Linear workspaces: connect only the one, or choose in the project's Tickets tab")?,
+        };
+        let teams = api.linear_teams(w.id.as_str(), &conn.organization).await?;
+        let current = t
+            .linear
+            .clone()
+            .filter(|l| l.organization == conn.organization);
+        let team = match c.team.as_deref().map(str::trim) {
+            Some(key) => teams
+                .teams
+                .iter()
+                .find(|x| x.key.eq_ignore_ascii_case(key) || x.name.eq_ignore_ascii_case(key))
+                .with_context(|| {
+                    format!(
+                        "fctl's app reaches no team {key} in {}: `fctl workspaces linear teams` lists them",
+                        conn.name
+                    )
+                })?,
+            None => {
+                let id = current
+                    .as_ref()
+                    .map(|l| l.team.clone())
+                    .context("choose the team first, with --linear-team")?;
+                teams
+                    .teams
+                    .iter()
+                    .find(|x| x.id == id)
+                    .context("fctl's app no longer reaches the project's team: choose another with --linear-team")?
+            }
+        };
+        let keep_project = current
+            .as_ref()
+            .filter(|l| l.team == team.id)
+            .and_then(|l| l.project.clone());
+        let project = match c.project.as_deref().map(str::trim) {
+            Some(n) if n.eq_ignore_ascii_case("all") => None,
+            Some(n) => Some(
+                team.projects
+                    .iter()
+                    .find(|x| x.name.eq_ignore_ascii_case(n))
+                    .map(|x| x.id.clone())
+                    .with_context(|| format!("{} has no open project called {n}", team.key))?,
+            ),
+            None => keep_project,
+        };
+        t.linear = Some(LinearTickets {
+            organization: conn.organization.clone(),
+            team: team.id.clone(),
+            team_key: Some(team.key.clone()),
+            team_name: Some(team.name.clone()),
+            project_name: project
+                .as_ref()
+                .and_then(|id| team.projects.iter().find(|x| &x.id == id))
+                .map(|x| x.name.clone()),
+            project,
+            move_started: current.as_ref().and_then(|l| l.move_started),
+            explore_label: current.as_ref().and_then(|l| l.explore_label.clone()),
+        });
+    }
+    if c.start.is_some() || c.explore_label.is_some() {
+        let Some(l) = t.linear.as_mut() else {
+            bail!("choose the project's Linear team first, with --linear-team");
+        };
+        if let Some(on) = c.start {
+            l.move_started = Some(on);
+        }
+        if let Some(label) = c.explore_label {
+            l.explore_label = Some(label);
+        }
+    }
+    Ok(t)
 }
 
 #[cfg(test)]

@@ -2929,6 +2929,15 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(as = "Option<Vec<ResolvedFinding>>", optional))]
         resolved: Vec<ResolvedFinding>,
     },
+    /// Reads or writes the project's ticket tracker (`fctl ticket`): a
+    /// [`crate::tickets::TicketRequest`], which hosts and fctl-agent pass
+    /// on as it is, so that what `fctl ticket` does grows with the control
+    /// plane and the sandbox's fctl. Hosts and control planes from before
+    /// ticket trackers refuse it.
+    Ticket {
+        #[cfg_attr(feature = "ts", ts(type = "TicketRequest"))]
+        request: serde_json::Value,
+    },
 }
 
 /// The control plane's answer to an [`AgentCall`].
@@ -2970,6 +2979,12 @@ pub enum AgentAnswer {
     /// What fctl posted.
     ReviewPosted {
         review: PostedReview,
+    },
+    /// The tracker's answer to a [`AgentCall::Ticket`]: a
+    /// [`crate::tickets::TicketAnswer`], passed on as it is.
+    Ticket {
+        #[cfg_attr(feature = "ts", ts(type = "TicketAnswer"))]
+        answer: serde_json::Value,
     },
 }
 

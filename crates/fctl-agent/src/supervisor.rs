@@ -187,6 +187,8 @@ pub struct Supervisor {
     /// Said once that the sandbox's fctl cannot keep the project's memory
     /// or record retrospectives.
     told_old_fctl: bool,
+    /// Logged once: the sandbox's fctl has no `fctl ticket`.
+    told_old_fctl_tickets: bool,
     /// The project's package caches, once readied for the session.
     cache: Option<caches::Ready>,
 }
@@ -262,6 +264,7 @@ impl Supervisor {
                 calling: HashMap::new(),
                 late_calls: VecDeque::new(),
                 told_old_fctl: false,
+                told_old_fctl_tickets: false,
                 cache: None,
             },
             claude_rx,
@@ -446,6 +449,7 @@ impl Supervisor {
 
     fn notice(&mut self, level: NoticeLevel, code: &str, message: &str, until: Option<i64>) {
         self.emit(EventBody::Notice(Notice {
+            ticket: None,
             level,
             code: code.into(),
             message: message.into(),
@@ -702,6 +706,16 @@ impl Supervisor {
             AgentCall::ReviewThreads | AgentCall::SubmitReview { .. } if spec.review.is_none() => {
                 return Err(ApiError::forbidden(
                     "This session doesn't review a pull request: `fctl review` is for review agents' sessions.",
+                ));
+            }
+            AgentCall::Ticket { .. }
+                if spec
+                    .tickets
+                    .as_ref()
+                    .is_none_or(|t| t.via == fctl_proto::tickets::TicketsVia::Nothing) =>
+            {
+                return Err(ApiError::forbidden(
+                    "This project's agents reach no ticket tracker: its maintainers choose one in the project's Tickets tab.",
                 ));
             }
             _ => {}
@@ -1260,6 +1274,22 @@ impl Supervisor {
             && (self.persisted.claude_started
                 || claude::conversation_exists(&paths.home, &spec.claude_session_id));
         let fresh_resume = wants_resume && !resume;
+        // `fctl ticket` reaches the tracker, where the sandbox's fctl has it.
+        let tickets_cli = match spec.tickets.as_ref() {
+            Some(t) if t.via == fctl_proto::tickets::TicketsVia::Fctl => {
+                let can = self.session_socket.is_some() && fctl_can(&paths, "ticket").await;
+                if !can && !self.told_old_fctl_tickets {
+                    self.told_old_fctl_tickets = true;
+                    self.log(
+                        LogSource::Agent,
+                        LogLevel::Info,
+                        "This sandbox's fctl has no `fctl ticket`, so the agent can't reach the project's ticket tracker. The default image, ghcr.io/hyperstructure/sandbox, has it; an image of your own needs a recent fctl on the PATH.",
+                    );
+                }
+                can
+            }
+            _ => false,
+        };
         let system = match &spec.review {
             Some(review) => {
                 let previous_here = match review.previous_sha.as_deref() {
@@ -1276,9 +1306,14 @@ impl Supervisor {
                     config.sandbox,
                 )
             }
-            None => {
-                prompt::system_prompt(spec, &workdir, &paths, config.sandbox, self.cache.as_ref())
-            }
+            None => prompt::system_prompt(
+                spec,
+                &workdir,
+                &paths,
+                config.sandbox,
+                self.cache.as_ref(),
+                tickets_cli,
+            ),
         };
         let launch = LaunchSpec {
             bin: &bin,
@@ -2133,6 +2168,7 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
         format!("{days} days")
     };
     Notice {
+        ticket: None,
         level: NoticeLevel::Info,
         code: "screenshot_published".into(),
         message: format!(
@@ -2156,6 +2192,7 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
 /// `retrospective`.
 fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
     let notice = |code: &str, message: String| Notice {
+        ticket: None,
         level: NoticeLevel::Info,
         code: code.into(),
         message,
@@ -2211,6 +2248,8 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
             ..notice("review_posted", posted_message(review))
         }],
         AgentAnswer::ReviewPosted { .. } => vec![],
+        // The control plane adds what fctl did in the tracker itself.
+        AgentAnswer::Ticket { .. } => vec![],
     }
 }
 

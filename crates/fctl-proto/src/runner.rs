@@ -348,6 +348,12 @@ pub struct SessionSpec {
     /// sessions. FleetDO gives review sessions only to hosts that announce
     /// [`FEATURE_REVIEWS`].
     pub review: Option<ReviewSpec>,
+    /// The project's ticket tracker, as its agent is told of it, and the
+    /// ticket the session started from (`fctl_domain::tickets`). Absent for
+    /// review agents and from older control planes; older hosts leave it
+    /// out of the agent's configuration, and their agents hear nothing of
+    /// it, while their GitHub tokens still follow the tracker.
+    pub tickets: Option<crate::tickets::TicketsSpec>,
 }
 
 /// What hosts whose agents run review sessions announce in their hello

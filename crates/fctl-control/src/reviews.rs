@@ -637,6 +637,7 @@ pub async fn start(
         &InitSession {
             session,
             prompt: UserMessage {
+                ticket: None,
                 id: fctl_domain::ids::delivery_id(ctx.now),
                 author: None,
                 text: task,

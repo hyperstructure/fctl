@@ -2,6 +2,7 @@
 import type { FollowUps } from "./FollowUps";
 import type { GithubAccess } from "./GithubAccess";
 import type { ImageBuild } from "./ImageBuild";
+import type { Tickets } from "./Tickets";
 
 /**
  * Settings agents use for a project. Every field has a sensible default, so
@@ -125,6 +126,13 @@ github_access?: GithubAccess,
  * what was stored. Control planes from before it leave it out.
  */
 follow_ups?: FollowUps, 
+/**
+ * The ticket tracker its agents read and write tickets in: none,
+ * GitHub Issues or Linear (`fctl_domain::tickets`). Absent: GitHub
+ * Issues of the repositories its agents write to, as before projects
+ * chose one. An update that leaves it out keeps what was stored.
+ */
+tickets?: Tickets, 
 /**
  * Non-secret environment variables for sandboxes.
  */

@@ -16,6 +16,7 @@ pub mod review;
 pub mod schedules;
 pub mod selfcmd;
 pub mod sessions;
+pub mod ticket;
 pub mod tokens;
 pub mod two_factor;
 pub mod workspaces;

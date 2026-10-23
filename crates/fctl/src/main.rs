@@ -92,6 +92,18 @@ enum Command {
                             fctl resolve PRRT_kwDOABCD1234 PRRT_kwDOEFGH5678\n  \
                             fctl resolve --unresolve PRRT_kwDOABCD1234")]
     Resolve(cmd::resolve::ResolveArgs),
+    /// Read and write the project's tickets (agents, in the sandbox of a
+    /// session whose project tracks its work in Linear, or in one
+    /// repository's GitHub issues): fctl reaches the tracker for them,
+    /// whatever it is.
+    #[command(after_help = "Examples:
+  fctl ticket                          # the tracker, and the ticket this session works on
+  fctl ticket list --search \"login\"
+  fctl ticket view ENG-123
+  fctl ticket comment ENG-123 \"The fix needs a migration first: should it run in the deploy?\"
+  fctl ticket create --title \"Add a test for retries\" --parent ENG-123
+  fctl ticket update ENG-123 --state \"In Review\" --add-label Bug")]
+    Ticket(cmd::ticket::TicketArgs),
     /// Delete published screenshots before they expire (people who manage
     /// their session).
     Unpublish {
@@ -362,6 +374,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             cmd::tokens::run(server, c, json).await
         }
         Command::Resolve(args) => cmd::resolve::resolve(args, json).await,
+        Command::Ticket(args) => cmd::ticket::run(args, json).await,
         Command::SelfCmd(c) => cmd::selfcmd::run(c, json).await,
         Command::Completions {
             shell,

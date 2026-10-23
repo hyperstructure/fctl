@@ -172,6 +172,10 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     .run()
     .await?;
     deleted += settle(&db).await?;
+    // Delegations in Linear that waited an hour for their person.
+    if let Err(e) = crate::delegations::expire(&db, now).await {
+        worker::console_error!("forgetting delegations that waited: {}", e.0.message);
+    }
     // A failed lookup leaves the rest to do.
     match crate::pull_requests::sweep(env, &db, now).await {
         Ok(0) => {}

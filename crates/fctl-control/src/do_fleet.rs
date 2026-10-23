@@ -989,6 +989,7 @@ impl FleetObject {
             worker::console_error!("carrying {id} on: {}", e.0.message);
         }
         let notice = Notice {
+            ticket: None,
             level: NoticeLevel::Info,
             code: "runner_back".into(),
             message: format!(
@@ -2011,6 +2012,7 @@ impl FleetObject {
                     project.repo().as_ref(),
                     &grants,
                     row.github_access(),
+                    &project.settings().tickets,
                     now,
                 )
                 .await

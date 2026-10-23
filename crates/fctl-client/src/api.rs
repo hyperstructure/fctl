@@ -4,6 +4,9 @@ use crate::http::{Error, HttpClient, Result};
 use fctl_proto::api::*;
 use fctl_proto::event::{Attachment, PublishedFile};
 use fctl_proto::session::{Memory, Project, Session};
+use fctl_proto::tickets::{
+    ConnectLinearRequest, LinearLink, LinearTeamList, MyLinear, ProjectTickets, WorkspaceLinear,
+};
 use fctl_proto::{ApiError, AttachmentId, ErrorCode};
 use futures::future::BoxFuture;
 use http::Method;
@@ -1333,6 +1336,61 @@ impl Api {
 
     pub async fn disconnect_github(&self, id: &str, account: &str) -> Result<WorkspaceGithub> {
         self.delete(&format!("/workspaces/{}/github/{}", enc(id), enc(account)))
+            .await
+    }
+
+    /// The Linear workspaces a workspace works in.
+    pub async fn workspace_linear(&self, id: &str) -> Result<WorkspaceLinear> {
+        self.get(&format!("/workspaces/{}/linear", enc(id))).await
+    }
+
+    /// The link to the Linear sign-in that installs fctl's app in a Linear
+    /// workspace and connects it (the workspace's admins, who are its
+    /// admins too).
+    pub async fn connect_linear(&self, id: &str, req: &ConnectLinearRequest) -> Result<LinearLink> {
+        self.post(&format!("/workspaces/{}/linear/connect", enc(id)), req)
+            .await
+    }
+
+    pub async fn disconnect_linear(&self, id: &str, organization: &str) -> Result<WorkspaceLinear> {
+        self.delete(&format!(
+            "/workspaces/{}/linear/{}",
+            enc(id),
+            enc(organization)
+        ))
+        .await
+    }
+
+    /// The teams fctl's app reaches in a Linear workspace a workspace works
+    /// in, with their workflows and projects.
+    pub async fn linear_teams(&self, id: &str, organization: &str) -> Result<LinearTeamList> {
+        self.get(&format!(
+            "/workspaces/{}/linear/{}/teams",
+            enc(id),
+            enc(organization)
+        ))
+        .await
+    }
+
+    /// Your Linear accounts, which fctl knows you by.
+    pub async fn my_linear(&self) -> Result<MyLinear> {
+        self.get("/me/linear").await
+    }
+
+    /// Forgets your Linear account in a Linear workspace.
+    pub async fn unlink_linear(&self, organization: &str) -> Result<MyLinear> {
+        self.delete(&format!("/me/linear/{}", enc(organization)))
+            .await
+    }
+
+    /// Where your browser links your Linear account (signed in to fctl).
+    pub fn link_linear_url(&self) -> String {
+        self.url("/linear/link")
+    }
+
+    /// A project's ticket tracker as it works now.
+    pub async fn project_tickets(&self, project: &str) -> Result<ProjectTickets> {
+        self.get(&format!("/projects/{}/tickets", enc(project)))
             .await
     }
 

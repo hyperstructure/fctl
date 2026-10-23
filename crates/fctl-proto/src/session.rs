@@ -604,6 +604,12 @@ pub struct ProjectSettings {
     /// what was stored. Control planes from before it leave it out.
     #[cfg_attr(feature = "ts", ts(as = "Option<FollowUps>", optional))]
     pub follow_ups: FollowUps,
+    /// The ticket tracker its agents read and write tickets in: none,
+    /// GitHub Issues or Linear (`fctl_domain::tickets`). Absent: GitHub
+    /// Issues of the repositories its agents write to, as before projects
+    /// chose one. An update that leaves it out keeps what was stored.
+    #[cfg_attr(feature = "ts", ts(as = "Option<Tickets>", optional))]
+    pub tickets: Tickets,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
 }
@@ -635,6 +641,148 @@ impl FollowUps {
     pub fn any(&self) -> bool {
         self.comments || self.checks || self.closed || self.conflicts
     }
+}
+
+/// A ticket tracker: where a project's agents read and write tickets.
+/// Others may come (Jira, Shortcut…): a value this version doesn't know,
+/// stored by a newer one, reads as [`Tracker::None`], so that its agents
+/// reach no tracker rather than one that wasn't chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Tracker {
+    /// None: agents read and write no tickets anywhere, GitHub's issues
+    /// included, and their GitHub tokens carry no issues permission.
+    None,
+    /// GitHub Issues, of the repositories the project's agents write to, or
+    /// of one of them.
+    #[default]
+    Github,
+    /// Linear: the issues of a team in a Linear workspace connected to the
+    /// project's workspace, which people there delegate to fctl.
+    Linear,
+}
+
+impl Tracker {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Github => "github",
+            Self::Linear => "linear",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "github" => Some(Self::Github),
+            "linear" => Some(Self::Linear),
+            _ => None,
+        }
+    }
+
+    /// Its name, for people: "GitHub Issues", "Linear".
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "No ticket tracker",
+            Self::Github => "GitHub Issues",
+            Self::Linear => "Linear",
+        }
+    }
+}
+
+/// A [`Tracker`] a newer version may have stored, which reads as none when
+/// this version doesn't know it.
+fn none_if_unknown<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Tracker, D::Error> {
+    let v: Option<String> = Option::deserialize(d)?;
+    Ok(v.map_or_else(Tracker::default, |v| {
+        Tracker::parse(&v).unwrap_or(Tracker::None)
+    }))
+}
+
+/// A project's ticket tracker, and which of its tickets its agents work on
+/// (`ProjectSettings::tickets`, `fctl_domain::tickets`). Agents read and
+/// write them with `gh` where their GitHub token may, else with `fctl
+/// ticket`, through the control plane, which holds the tracker's
+/// credentials and keeps them to what is chosen here.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+#[serde(default)]
+pub struct Tickets {
+    #[serde(deserialize_with = "none_if_unknown")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Tracker>", optional))]
+    pub tracker: Tracker,
+    /// GitHub Issues of this repository alone, one the project's agents
+    /// write to: their tokens then reach no issues, and `fctl ticket` reads
+    /// and writes these. Absent: those of every repository they write to.
+    pub repo: Option<RepoRef>,
+    /// Linear's team, and what fctl does there. Kept while another tracker
+    /// is chosen, so that choosing Linear again finds it.
+    pub linear: Option<LinearTickets>,
+}
+
+/// The Linear team whose issues a project's agents work on, in a Linear
+/// workspace connected to the project's workspace: issues delegated to
+/// fctl there, or that mention it, start sessions of the project.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct LinearTickets {
+    /// The Linear workspace (Linear's organization), by Linear's id.
+    pub organization: String,
+    /// The team, by Linear's id.
+    pub team: String,
+    /// Its key (`ENG`) and name as they were when chosen, for display.
+    pub team_key: Option<String>,
+    pub team_name: Option<String>,
+    /// Only the issues of this Linear project, by Linear's id; absent: the
+    /// whole team's.
+    pub project: Option<String>,
+    pub project_name: Option<String>,
+    /// Move a ticket to the team's first started state (In Progress) when
+    /// its session starts, if it hasn't started yet. Absent: yes.
+    pub move_started: Option<bool>,
+    /// The label that asks for an exploration rather than a change: the
+    /// agent looks into the ticket and replies with what it found and a
+    /// plan, without changing code, until someone replies to go ahead.
+    /// Absent: `explore`; empty: none does.
+    pub explore_label: Option<String>,
+}
+
+impl LinearTickets {
+    /// Whether sessions move their tickets to started.
+    pub fn moves_started(&self) -> bool {
+        self.move_started.unwrap_or(true)
+    }
+
+    /// The label that asks for an exploration, if any does.
+    pub fn explore_label(&self) -> Option<&str> {
+        match self.explore_label.as_deref() {
+            None => Some(DEFAULT_EXPLORE_LABEL),
+            Some(l) if l.trim().is_empty() => None,
+            Some(l) => Some(l.trim()),
+        }
+    }
+}
+
+/// The label that asks for an exploration unless a project names another.
+pub const DEFAULT_EXPLORE_LABEL: &str = "explore";
+
+/// A ticket a session started from, or that it works on: by the tracker's
+/// key (`ENG-123`, `acme/web#12`), with a link to it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SessionTicket {
+    pub tracker: Tracker,
+    /// The tracker's own id (Linear's issue id; `owner/name#12` on GitHub).
+    pub id: String,
+    /// What people call it: `ENG-123`, `acme/web#12`.
+    pub key: String,
+    /// Its title when the session started.
+    pub title: Option<String>,
+    pub url: String,
 }
 
 /// A [`GithubAccess`] that a newer version may have stored, which reads as
@@ -671,6 +819,7 @@ impl Default for ProjectSettings {
             retrospectives: true,
             github_access: None,
             follow_ups: FollowUps::default(),
+            tickets: Tickets::default(),
             env: Default::default(),
         }
     }
@@ -912,6 +1061,10 @@ pub struct Session {
     /// someone ran it. Absent for other sessions, and from control planes
     /// before schedules.
     pub schedule: Option<SessionSchedule>,
+    /// The ticket it started from: one delegated to fctl in Linear, say.
+    /// Absent for other sessions, and from control planes before ticket
+    /// trackers.
+    pub ticket: Option<SessionTicket>,
 }
 
 /// The schedule a session started from.

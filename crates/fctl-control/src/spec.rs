@@ -264,6 +264,7 @@ pub async fn build(
         repo.as_ref(),
         &grants,
         github_access,
+        &project.settings().tickets,
         now,
     )
     .await?;
@@ -319,6 +320,8 @@ pub async fn build(
         None
     };
     let retrospectives = settings.retrospectives;
+    let tickets =
+        crate::tickets::spec(db, &row, &project, &settings, &grants, github_access).await?;
     Ok(SessionSpec {
         session_id: row.session_id(),
         number: row.number.max(0) as u32,
@@ -379,6 +382,7 @@ pub async fn build(
         retrospectives,
         github_access: (!github_access.pushes()).then_some(github_access),
         review: None,
+        tickets: Some(tickets),
     })
 }
 
@@ -416,6 +420,17 @@ async fn review_spec(
             },
         );
     }
+    // A review reads issues only where the project's tracker lets agents.
+    let reading = {
+        let t = project.settings().tickets;
+        match fctl_domain::tickets::github_issues(&t, project.repo().as_ref(), &grants) {
+            fctl_domain::tickets::GithubIssues::None => fctl_proto::session::Tickets {
+                tracker: fctl_proto::session::Tracker::None,
+                ..t
+            },
+            _ => t,
+        }
+    };
     let tokens = github_tokens(
         cfg,
         db,
@@ -423,6 +438,7 @@ async fn review_spec(
         Some(&reviewed),
         &grants,
         GithubAccess::Read,
+        &reading,
         now,
     )
     .await?;
@@ -476,6 +492,11 @@ async fn review_spec(
         retrospectives: false,
         github_access: Some(GithubAccess::Read),
         follow_ups: Default::default(),
+        // Review agents work on the pull request alone.
+        tickets: fctl_proto::session::Tickets {
+            tracker: fctl_proto::session::Tracker::None,
+            ..Default::default()
+        },
         env: p.env.clone(),
     };
     settings.env = fctl_domain::settings::session_env(&settings);
@@ -544,6 +565,7 @@ async fn review_spec(
         retrospectives: false,
         github_access: Some(GithubAccess::Read),
         review: spec_review,
+        tickets: None,
     })
 }
 
@@ -612,9 +634,11 @@ async fn bot_identity(cfg: &Config, _now: i64) -> GitIdentity {
 
 /// A session's GitHub tokens (none without a GitHub App or repositories),
 /// within what its workspace may use, for an agent that may do `access` on
-/// GitHub. Listed repositories the workspace may not use, or the GitHub App
-/// cannot reach, are left out; without the primary repository the session
-/// cannot start.
+/// GitHub, reaching the issues its project's ticket tracker lets it
+/// (`fctl_domain::tickets::issue_tokens`). Listed repositories the
+/// workspace may not use, or the GitHub App cannot reach, are left out;
+/// without the primary repository the session cannot start.
+#[allow(clippy::too_many_arguments)]
 pub async fn github_tokens(
     cfg: &Config,
     db: &D1Database,
@@ -622,6 +646,7 @@ pub async fn github_tokens(
     primary: Option<&RepoRef>,
     grants: &[RepoGrant],
     access: GithubAccess,
+    tickets: &fctl_proto::session::Tickets,
     now: i64,
 ) -> AppResult<github::SessionTokens> {
     let (Some(gh), Some(plan)) = (
@@ -658,7 +683,13 @@ pub async fn github_tokens(
         // while its login is still that account's.
         let gh = github::from_config(cfg, now)?;
         let inst = crate::workspaces::installation(db, &gh, &connections, &plan.owner).await?;
-        gh.session_tokens(inst, &plan, access).await?
+        // Which issues they reach is the project's tracker's to say.
+        let issues = fctl_domain::tickets::issue_tokens(
+            &fctl_domain::tickets::github_issues(tickets, primary, grants),
+            &plan.write,
+            access,
+        );
+        gh.session_tokens(inst, &plan, access, issues).await?
     };
     tokens.refused = refused;
     if let Some(p) = primary

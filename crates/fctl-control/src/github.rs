@@ -627,6 +627,7 @@ impl<'a> Github<'a> {
         inst: u64,
         plan: &TokenPlan,
         access: GithubAccess,
+        issues: fctl_domain::tickets::IssueTokens,
     ) -> AppResult<SessionTokens> {
         let mut listed = plan.write.clone();
         if let ReadScope::Repos(names) = &plan.read {
@@ -638,17 +639,27 @@ impl<'a> Github<'a> {
             unreachable: Vec::new(),
         };
         let write = self
-            .listed_token(inst, &plan.write, repos::permissions(access), &mut reach)
+            .listed_token(
+                inst,
+                &plan.write,
+                repos::permissions(access, issues.write),
+                &mut reach,
+            )
             .await?;
         let read = match &plan.read {
             ReadScope::None => None,
             ReadScope::All => Some(
-                self.installation_token(inst, None, Some(repos::read_permissions()))
+                self.installation_token(inst, None, Some(repos::read_permissions(issues.read)))
                     .await?,
             ),
             ReadScope::Repos(names) => {
-                self.listed_token(inst, names, repos::read_permissions(), &mut reach)
-                    .await?
+                self.listed_token(
+                    inst,
+                    names,
+                    repos::read_permissions(issues.read),
+                    &mut reach,
+                )
+                .await?
             }
         };
         Ok(SessionTokens {

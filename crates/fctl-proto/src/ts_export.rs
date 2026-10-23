@@ -11,7 +11,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
             $( <$t as TS>::export_all(&cfg)?; )*
         };
     }
-    use crate::{agent, api, event, runner, session, uplink, viewer};
+    use crate::{agent, api, event, runner, session, tickets, uplink, viewer};
     export!(
         crate::ApiError,
         crate::ErrorCode,
@@ -225,6 +225,39 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::FeedClient,
         api::Empty,
         api::Ok,
+        session::Tracker,
+        session::Tickets,
+        session::LinearTickets,
+        session::SessionTicket,
+        tickets::StateKind,
+        tickets::TicketState,
+        tickets::TicketPerson,
+        tickets::TicketLink,
+        tickets::TicketField,
+        tickets::TicketComment,
+        tickets::Ticket,
+        tickets::StateFilter,
+        tickets::TicketRequest,
+        tickets::TicketAnswer,
+        tickets::TrackerAbout,
+        tickets::TicketsVia,
+        tickets::TicketsSpec,
+        tickets::TicketEvent,
+        tickets::TicketMessage,
+        tickets::TicketNotice,
+        tickets::LinearConnection,
+        tickets::LinearStatus,
+        tickets::LinearProjectUse,
+        tickets::WorkspaceLinear,
+        tickets::LinearTeam,
+        tickets::LinearProject,
+        tickets::LinearTeamList,
+        tickets::LinearAccount,
+        tickets::MyLinear,
+        tickets::LinearLink,
+        tickets::ConnectLinearRequest,
+        tickets::ProjectTickets,
+        tickets::TicketRun,
     );
     Ok(())
 }

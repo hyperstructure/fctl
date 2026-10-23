@@ -196,6 +196,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     let session = created.row.to_session(Some(created.role));
     let stub = internal::session_stub(&ctx.env, id.as_str())?;
     let prompt_msg = UserMessage {
+        ticket: None,
         id: fctl_domain::ids::delivery_id(ctx.now),
         author: Some(user.to_ref()),
         text: prompt,
@@ -486,6 +487,7 @@ pub async fn deliver_message(
             },
             client_key,
             event: EventBody::UserMessage(UserMessage {
+                ticket: None,
                 id: delivery_id,
                 author: Some(author),
                 text,
