@@ -404,7 +404,7 @@ their owner keeps it there, their owner's Claude token
 **Claude tokens on runners.** Someone who would rather not give fctl their
 Claude token keeps it on their runners (`fctl host claude set-token`) and
 connects "On your runners"
-([ADR 0049](adr/0049-claude-tokens-can-stay-on-their-owners-runners.md)).
+([ADR 0050](adr/0050-claude-tokens-can-stay-on-their-owners-runners.md)).
 The control plane is never given the token and stores none for them, hosts
 tell it only whether they keep one and when it was saved, and they take
 the token out of what sessions send wherever it appears whole: a breach of

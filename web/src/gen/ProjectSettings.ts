@@ -2,6 +2,7 @@
 import type { FollowUps } from "./FollowUps";
 import type { GithubAccess } from "./GithubAccess";
 import type { ImageBuild } from "./ImageBuild";
+import type { Verbosity } from "./Verbosity";
 
 /**
  * Settings agents use for a project. Every field has a sensible default, so
@@ -61,6 +62,16 @@ idle_timeout_minutes?: number,
  * Ask agents to open a pull request when they finish.
  */
 auto_pull_request: boolean, 
+/**
+ * How much agents write in the descriptions of the pull requests they
+ * open, whether or not they are asked to open one when they finish:
+ * balanced unless the project chooses otherwise. Agents keep them up
+ * to date as later commits change their pull requests. An update that
+ * leaves it out keeps the stored value, and a value this version
+ * doesn't know reads as balanced. Agents from before it describe pull
+ * requests as before.
+ */
+pull_request_descriptions?: Verbosity, 
 /**
  * Enable Remote Control (follow in the Claude apps) when the credential allows it.
  */

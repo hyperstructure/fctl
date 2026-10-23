@@ -10,7 +10,7 @@ use fctl_proto::api::{
     UpdateMembershipRequest, UpdateProjectRequest,
 };
 use fctl_proto::session::{
-    FollowUps, GithubAccess, ImageBuild, Project, ProjectSettings, RepoAccess,
+    FollowUps, GithubAccess, ImageBuild, Project, ProjectSettings, RepoAccess, Verbosity,
 };
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -65,8 +65,8 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "follow_ups", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "follow_ups", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -113,6 +113,11 @@ pub enum ProjectsCmd {
         /// Running sessions get no more from their next GitHub token on.
         #[arg(long, value_enum)]
         github: Option<super::tokens::Github>,
+        /// How much agents write in the descriptions of the pull requests
+        /// they open (balanced by default). They keep them up to date as
+        /// later commits change the pull request.
+        #[arg(long, value_enum, value_name = "LEVEL")]
+        pr_descriptions: Option<Descriptions>,
         /// What brings agents back to the pull requests they opened, on
         /// the Claude subscription each session ran on: comments (people
         /// who can write to the repository mention @fctl or @agent, or
@@ -293,6 +298,40 @@ fn on_github(s: &ProjectSettings) -> &'static str {
         GithubAccess::Push => "push, or less when a session asks",
         GithubAccess::Comment => "review and comment at most, and push nothing",
         GithubAccess::Read => "only read",
+    }
+}
+
+/// How much agents write in the descriptions of their pull requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Descriptions {
+    /// A few sentences: what changed and why, and how it was verified.
+    Brief,
+    /// A short summary of what changed and why, and the decisions and
+    /// assumptions worth confirming.
+    Balanced,
+    /// Everything: how it works, the choices made and the alternatives,
+    /// how it was verified in detail.
+    Full,
+}
+
+impl From<Descriptions> for Verbosity {
+    fn from(d: Descriptions) -> Self {
+        match d {
+            Descriptions::Brief => Self::Brief,
+            Descriptions::Balanced => Self::Balanced,
+            Descriptions::Full => Self::Full,
+        }
+    }
+}
+
+/// How a project's agents describe their pull requests, in words.
+fn descriptions(s: &ProjectSettings) -> &'static str {
+    match s.pull_request_descriptions {
+        Verbosity::Brief => "describe their pull requests in a few sentences",
+        Verbosity::Balanced => {
+            "describe their pull requests in a short summary, with what's worth confirming"
+        }
+        Verbosity::Full => "describe their pull requests in full",
     }
 }
 
@@ -654,6 +693,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             println!("idle:    sessions {}", idle(&p.settings));
             println!("agents:  {}", learning(&p.settings));
             println!("github:  agents {}", on_github(&p.settings));
+            println!("prs:     agents {}", descriptions(&p.settings));
             println!("follow:  agents {}", follow_ups(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
             println!("{}", style::dim(&format!("{}/p/{}", api.base(), p.slug)));
@@ -710,6 +750,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             project_memory,
             retrospectives,
             github,
+            pr_descriptions,
             follow_ups: new_follow_ups,
             image: new_image,
             build,
@@ -797,6 +838,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(g) = github {
                 settings.github_access = Some(g.into());
+            }
+            if let Some(d) = pr_descriptions {
+                settings.pull_request_descriptions = d.into();
             }
             if let Some(f) = new_follow_ups {
                 settings.follow_ups = f;
@@ -909,6 +953,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     on_github(&p.settings)
                 );
             }
+            if pr_descriptions.is_some() {
+                println!(
+                    "{} Agents in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    descriptions(&p.settings)
+                );
+            }
             if new_follow_ups.is_some() {
                 println!(
                     "{} Agents in {} {}",
@@ -999,6 +1051,49 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Fctl {
+        #[command(subcommand)]
+        projects: ProjectsCmd,
+    }
+
+    #[test]
+    fn pull_request_descriptions_take_a_level() {
+        let set =
+            |level: &str| match Fctl::try_parse_from(["fctl", "set", "--pr-descriptions", level])
+                .map(|f| f.projects)
+            {
+                Ok(ProjectsCmd::Set {
+                    pr_descriptions, ..
+                }) => pr_descriptions.map(Verbosity::from),
+                _ => None,
+            };
+        assert_eq!(set("brief"), Some(Verbosity::Brief));
+        assert_eq!(set("balanced"), Some(Verbosity::Balanced));
+        assert_eq!(set("full"), Some(Verbosity::Full));
+        assert_eq!(set("terse"), None);
+
+        let said = |v: Verbosity| {
+            descriptions(&ProjectSettings {
+                pull_request_descriptions: v,
+                ..Default::default()
+            })
+        };
+        assert_eq!(
+            said(Verbosity::default()),
+            "describe their pull requests in a short summary, with what's worth confirming"
+        );
+        assert_eq!(
+            said(Verbosity::Brief),
+            "describe their pull requests in a few sentences"
+        );
+        assert_eq!(
+            said(Verbosity::Full),
+            "describe their pull requests in full"
+        );
+    }
 
     #[test]
     fn follow_ups_take_a_list_all_or_none() {

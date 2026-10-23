@@ -1,4 +1,4 @@
-# 0049: Claude tokens can stay on their owner's runners
+# 0050: Claude tokens can stay on their owner's runners
 
 2026-10-23 · accepted
 
