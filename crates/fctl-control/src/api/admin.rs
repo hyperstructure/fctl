@@ -58,7 +58,11 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
             ));
         }
         if !perm::can_assign_instance_role(actor.role(), target.role(), role) {
-            return Err(forbidden("You cannot give this role"));
+            return Err(forbidden(if role == InstanceRole::Admin {
+                "Only the primary instance owner makes someone an admin"
+            } else {
+                "You cannot give this role"
+            }));
         }
     }
     if let Some(status) = body.status {

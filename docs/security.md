@@ -96,8 +96,9 @@ owner and purpose), so a value copied between rows does not decrypt.
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin
   roles, turning two-factor sign-in or this off, resetting someone's
-  two-factor sign-in, removing a passkey, adding a runner to a workspace,
-  new access tokens and CLI sign-ins, exporting your data, and deleting
+  two-factor sign-in, removing a passkey, adding or registering a runner
+  for a workspace and replacing its token, new access tokens and CLI
+  sign-ins, exporting your data, and deleting
   accounts, projects and workspaces. So a stolen browser session, CLI or
   access token can't do them alone. A passkey (which must verify the
   person), a code from the authenticator app or a recovery code confirms
@@ -250,9 +251,13 @@ outside it except through these channels:
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host. A session gets the
   token only while the person it runs for is an active member of its
-  workspace: once they leave it, are removed or disabled, the sessions that
-  run on their subscription stop, and a message to one doesn't start it on
-  their subscription again; resuming it runs it on the resumer's.
+  workspace and may still run it: start sessions in its project, or message
+  it through a share. Once they leave the workspace, are removed or
+  disabled, or lose their role in the project or the share, the sessions
+  that run on their subscription stop, get no more Claude or GitHub tokens,
+  and a message to one doesn't start it on their subscription again (nor
+  on their runners, with the project's secrets); resuming it runs it on the
+  resumer's.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),
   and the agent can use them with that person's access without asking, also
@@ -351,7 +356,11 @@ root store); they open no ports. A host authenticates with a runner token
 that its owner can replace, and that its owner and instance admins revoke by
 disabling or removing the runner: whoever holds a runner's token runs the
 sessions of the workspaces it serves, so only its owner gets a new one, not
-an instance admin outside those workspaces. Hosts receive a
+an instance admin outside those workspaces, and only while none of those
+workspaces' two-factor requirement closes it to them: a password alone
+gets no runner token. Registering a runner for a workspace and replacing a
+runner's token take confirming it's you, where the instance asks for
+that, as adding one to a workspace does. Hosts receive a
 session's credentials only while it runs, and keep nothing secret on disk
 but their runner token (`~/.config/fctl/host-token`, mode 0600).
 

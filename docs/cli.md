@@ -585,7 +585,7 @@ of.
 fctl admin users                           # with their other addresses and how many workspaces
 fctl admin invite ada@private.example      # an invitation link (and an email, when set up)
 fctl admin invite grace@example.com -w side-project -w acme:admin   # and to your workspaces
-fctl admin role grace@example.com admin    # an instance admin (or member again)
+fctl admin role grace@example.com admin    # an instance admin, or member again (the primary instance owner)
 fctl admin transfer grace@example.com      # the primary instance owner hands the role to an admin
 fctl admin disable grace@example.com       # can't sign in; their tokens stop working (or enable)
 fctl admin delete-user grace@example.com   # asks you to type their address
@@ -659,8 +659,9 @@ the setup (the key, the `otpauth://` link and the QR code's rows), and
 `fctl account two-factor confirm --setup … --code …` finishes it.
 
 Where the primary instance owner turns it on, sensitive actions (inviting
-and promoting admins, turning two-factor sign-in off, adding a runner to a
-workspace, new access tokens, exporting your data, and deleting accounts,
+and promoting admins, turning two-factor sign-in off, adding or
+registering a runner for a workspace (`fctl host install` too), new access
+tokens, exporting your data, and deleting accounts,
 projects and workspaces) ask you to confirm it's you first. In a terminal
 fctl asks by itself, and then does what you asked: for a code from your
 authenticator app, or, with a passkey, to approve a code in the browser,

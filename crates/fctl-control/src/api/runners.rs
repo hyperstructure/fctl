@@ -8,6 +8,7 @@ use crate::internal::{self, FeedIdentity, LiveRunners};
 use crate::model::{RUNNER_SELECT, RunnerRow, RunnerView};
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
+use fctl_domain::verify::Sensitive;
 use fctl_proto::ApiError;
 use fctl_proto::api::*;
 use worker::{Request, Response};
@@ -240,6 +241,40 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     fctl_domain::workspace::check_replace_runner_token(
         owner.created_by.as_deref() == Some(user_id.as_str()),
     )?;
+    // The new token gets the sessions of the workspaces the runner serves,
+    // as adding it to them would: not while one of them is closed to its
+    // owner by its two-factor requirement, which a password alone would
+    // otherwise get round, and confirming it's them where the instance
+    // asks for that.
+    #[derive(serde::Deserialize)]
+    struct Served {
+        name: String,
+        #[serde(deserialize_with = "crate::db::int_bool")]
+        require_two_factor: bool,
+    }
+    let served: Vec<Served> = q(
+        &ctx.db,
+        "SELECT w.name AS name, w.require_two_factor AS require_two_factor FROM runner_workspaces rw \
+         JOIN workspaces w ON w.id = rw.workspace_id \
+         JOIN workspace_members m ON m.workspace_id = rw.workspace_id AND m.user_id = ? \
+         WHERE rw.runner_id = ?",
+        &[s(&user_id), s(id)],
+    )?
+    .all()
+    .await?;
+    let user = ctx.user()?;
+    if let Some(closed) = served
+        .iter()
+        .find(|w| crate::workspaces::blocked_for(ctx, user, w.require_two_factor))
+    {
+        return Err(forbidden(&format!(
+            "This runner runs the sessions of {}, which requires two-factor sign-in: set it up in Settings before you replace the runner's token.",
+            closed.name
+        )));
+    }
+    if !served.is_empty() {
+        ctx.verified(Sensitive::AddRunner)?;
+    }
     let token = new_secret(SecretKind::Runner);
     // Only while it is still theirs.
     let changed = q(

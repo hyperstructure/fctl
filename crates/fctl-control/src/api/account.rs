@@ -177,6 +177,9 @@ pub async fn plan(ctx: &Ctx, user: &UserRow) -> AppResult<Plan> {
     )?
     .all()
     .await?;
+    // Deleted by an instance admin, the role doesn't pass to them unless
+    // they are one of its admins already (`successor!`).
+    let actor = ctx.user()?.id.clone();
     let successors: Vec<Successor> = q(
         &ctx.db,
         &format!(
@@ -184,9 +187,9 @@ pub async fn plan(ctx: &Ctx, user: &UserRow) -> AppResult<Plan> {
              su.name AS successor_name, su.avatar_url AS successor_avatar FROM workspaces w \
              JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = ?1 AND m.role = 'owner' \
              JOIN users su ON su.id = {} ORDER BY w.name",
-            crate::workspaces::SUCCESSOR
+            crate::successor!("?2")
         ),
-        &[s(&user.id)],
+        &[s(&user.id), s(&actor)],
     )?
     .all()
     .await?;

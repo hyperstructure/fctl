@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult, internal};
 use crate::github;
 use crate::model::{
     CredentialRow, CredentialSecret, PROJECT_SELECT, ProjectRow, REPO_SELECT, RepoRow,
-    SESSION_SELECT, SessionRow,
+    SESSION_SELECT, SessionRow, UserRow, user_columns,
 };
 use fctl_domain::image::ImageWant;
 use fctl_domain::size::Want;
@@ -101,37 +101,46 @@ pub fn not_served() -> AppError {
     crate::error::forbidden("This runner no longer runs this session")
 }
 
-/// Whether Claude credential `credential_id` still runs sessions of
-/// session `session_id`'s workspace: its owner's account is active and they
-/// are a member there, as for runners (`serves!`). A session keeps the
-/// credential it last ran on, and a message resumes a stopped one, so
-/// without this whoever can message it there would run it on the
-/// subscription, and in the sandbox with the token, of someone who left the
-/// workspace, was removed from it or disabled.
+/// Whether Claude credential `credential_id` still runs session
+/// `session_id`: its owner's account is active and they may still message
+/// the session (`fctl_domain::perm::session_role`): they are a member of
+/// its workspace, which its two-factor requirement doesn't close to them,
+/// and they may start sessions in its project, or it was shared with them
+/// to message or own. A session keeps the credential it last ran on, and a
+/// message, a follow-up or a review's findings start a stopped one again,
+/// so without this whoever can message it would run it on the subscription
+/// of someone who left the workspace, was disabled, or lost their role in
+/// the project, and on that person's own runners, which would get the
+/// project's secrets and new GitHub tokens they no longer may.
 pub async fn credential_serves(
     db: &D1Database,
     credential_id: &str,
     session_id: &str,
 ) -> AppResult<bool> {
-    let c: Option<crate::db::Count> = q(
+    let owner: Option<UserRow> = q(
         db,
-        "SELECT COUNT(*) AS n FROM claude_credentials c JOIN users u ON u.id = c.user_id \
-         JOIN sessions s ON s.id = ?2 JOIN projects p ON p.id = s.project_id \
-         JOIN workspace_members m ON m.workspace_id = p.workspace_id AND m.user_id = c.user_id \
-         WHERE c.id = ?1 AND u.status = 'active'",
-        &[s(credential_id), s(session_id)],
+        &format!(
+            "SELECT {} FROM claude_credentials c JOIN users u ON u.id = c.user_id WHERE c.id = ?",
+            user_columns("u")
+        ),
+        &[s(credential_id)],
     )?
     .first()
     .await?;
-    Ok(c.is_some_and(|c| c.n > 0))
+    let Some(owner) = owner.filter(UserRow::is_active) else {
+        return Ok(false);
+    };
+    let settings = crate::instance::settings(db).await?;
+    let role = crate::access::session_role_now(db, &owner, &settings, None, session_id).await?;
+    Ok(role.is_some_and(|r| r.can_message()))
 }
 
-/// The error for a session whose Claude credential no longer serves its
-/// workspace ([`credential_serves`]).
+/// The error for a session whose Claude credential no longer runs it
+/// ([`credential_serves`]).
 pub fn credential_not_lent() -> AppError {
     AppError(ApiError::new(
         ErrorCode::NotConfigured,
-        "This session ran on the Claude subscription of someone who is no longer in its workspace, or whose account is disabled. Resume it to run it on yours.",
+        "This session ran on the Claude subscription of someone who can no longer run it: they left its workspace or lost their role in its project, or their account is disabled. Resume it to run it on yours.",
     ))
 }
 
