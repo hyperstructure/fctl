@@ -7,9 +7,10 @@
 //! the person the project's review agents run for (its operator). It takes
 //! no messages; its agent reviews the pull request at one commit and hands
 //! what it found to the control plane (`fctl review submit`, an agent
-//! call), which posts it in one review, marks the earlier findings it
-//! fixed and completes the check. A new commit stops a review of the pull
-//! request that is still under way.
+//! call), which posts it, a summary followed by one review, marks the
+//! earlier findings it fixed, says so atop earlier reviews' summaries and
+//! completes the check. A new commit stops a review of the pull request
+//! that is still under way.
 
 use crate::access;
 use crate::config::Config;
@@ -1072,11 +1073,13 @@ pub async fn threads(ctx: &Ctx, session_id: &str) -> AppResult<Vec<FindingThread
 }
 
 /// Posts what a review session's agent found (`fctl review submit`), once:
-/// its findings in one review of the commit, on their lines where the diff
-/// shows them and in the review's text where it doesn't; the earlier
-/// findings it says the new commits fixed, marked fixed and resolved; and
-/// its check, passed with nothing to look at, neutral otherwise. A second
-/// submission gets what the first posted.
+/// a summary on the pull request, then its findings in one review of the
+/// commit, on their lines where the diff shows them (those it doesn't
+/// show go in the summary); the earlier findings it says the new commits
+/// fixed, marked fixed and resolved; atop earlier reviews' summaries, how
+/// the issues they found stand, hiding those whose issues are all
+/// addressed as outdated; and its check, passed with nothing to look at,
+/// neutral otherwise. A second submission gets what the first posted.
 pub async fn submit(
     ctx: &Ctx,
     session_id: &str,
@@ -1185,12 +1188,15 @@ async fn post(
     let links = Links {
         sha: &row.head_sha,
         commit_url: &commit_url,
+        session: &row.session_id,
         session_url: &session_url,
         settings_url: &settings_url,
     };
     // fctl's threads on the pull request: those it may resolve, and those
-    // still open after.
-    let threads = rv::threads(&gh.graphql(token, rv::threads_query(repo, number)).await?);
+    // still open after; and its summaries of earlier reviews.
+    let answer = gh.graphql(token, rv::posting_query(repo, number)).await?;
+    let threads = rv::threads(&answer);
+    let summaries = rv::summaries(&answer);
     let ours: Vec<&rv::Thread> = threads.iter().filter(|t| t.ours).collect();
     let mut fixing = Vec::new();
     for r in &sub.resolved {
@@ -1208,16 +1214,17 @@ async fn post(
             }
         }
     }
-    // The findings, in one review: on their lines where the diff shows
-    // them, in its text where it doesn't, or all in its text when GitHub
-    // refuses lines it was given.
+    // The findings: first their summary, so that GitHub shows it above
+    // them, then one review with those that go on their lines, where the
+    // diff shows them. The others go in the summary, as do all of them
+    // when GitHub refuses lines it was given.
     let mut url = None;
     let mut in_text = 0;
     if !sub.findings.is_empty() {
         let files = gh.pull_files(token, repo, number).await?;
         let mut placed = rv::place(&sub.findings, &files);
         let text = |placed: &[rv::Placed]| {
-            rv::review_text(
+            rv::summary_text(
                 sub.summary.as_deref(),
                 &sub.findings,
                 placed,
@@ -1225,44 +1232,50 @@ async fn post(
                 &links,
             )
         };
-        let first = gh
-            .post_review(
-                token,
-                repo,
-                number,
-                rv::review_request(&text(&placed), &sub.findings, &placed, &links),
-            )
-            .await?;
-        let posted = match first {
-            Ok(url) => url,
-            Err((422, why)) => {
-                worker::console_error!(
-                    "GitHub refused a review's lines ({why}): posting it as text"
-                );
-                placed = vec![rv::Placed::Text; sub.findings.len()];
-                gh.post_review(
-                    token,
-                    repo,
-                    number,
-                    rv::review_request(&text(&placed), &sub.findings, &placed, &links),
-                )
-                .await?
-                .map_err(|(_, why)| {
-                    AppError(ApiError::new(
-                        ErrorCode::Unavailable,
-                        format!("GitHub refused the review: {why}"),
-                    ))
-                })?
-            }
-            Err((_, why)) => {
-                return Err(AppError(ApiError::new(
+        let (summary, summary_url) = gh
+            .comment(token, repo, number, &text(&placed))
+            .await?
+            .map_err(|(_, why)| {
+                AppError(ApiError::new(
+                    ErrorCode::Unavailable,
+                    format!("GitHub refused the review's summary: {why}"),
+                ))
+            })?;
+        if let Some(review) = rv::review_request(&sub.findings, &placed, &links) {
+            let refused = |why: String| {
+                AppError(ApiError::new(
                     ErrorCode::Unavailable,
                     format!("GitHub refused the review: {why}"),
-                )));
+                ))
+            };
+            let posted = match gh.post_review(token, repo, number, review).await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err((422, why))) => {
+                    worker::console_error!(
+                        "GitHub refused a review's lines ({why}): its findings go in its summary"
+                    );
+                    placed = vec![rv::Placed::Text; sub.findings.len()];
+                    gh.edit_comment(token, repo, summary, &text(&placed))
+                        .await
+                        .and_then(|r| r.map_err(refused))
+                }
+                Ok(Err((_, why))) => Err(refused(why)),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = posted {
+                // Nor does its summary stay: the agent may submit again.
+                match gh.delete_comment(token, repo, summary).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(why)) => worker::console_error!("deleting a review's summary: {why}"),
+                    Err(e) => {
+                        worker::console_error!("deleting a review's summary: {}", e.0.message)
+                    }
+                }
+                return Err(e);
             }
-        };
+        }
         in_text = placed.iter().filter(|p| **p == rv::Placed::Text).count();
-        url = Some(posted);
+        url = Some(summary_url);
     }
     // The earlier findings the new commits fixed: marked, then resolved.
     let mut resolved_ids = Vec::new();
@@ -1285,6 +1298,24 @@ async fn post(
         }
     }
     let fixed: BTreeSet<&str> = resolved_ids.iter().map(String::as_str).collect();
+    // The summaries of earlier reviews: how the issues each found stand
+    // now, atop it, and hidden as outdated once all are addressed.
+    for s in summaries
+        .iter()
+        .filter(|s| !s.minimized && s.note.session != row.session_id)
+    {
+        let standing = rv::standing(s, &threads, &fixed);
+        if let Some(body) = rv::restated(s, standing, &links)
+            && let Err(e) = gh.graphql(token, rv::edit_summary(&s.id, &body)).await
+        {
+            worker::console_error!("restating an earlier review's summary: {}", e.0.message);
+        }
+        if standing.addressed()
+            && let Err(e) = gh.graphql(token, rv::hide_outdated(&s.id)).await
+        {
+            worker::console_error!("hiding an earlier review's summary: {}", e.0.message);
+        }
+    }
     let still_open = ours
         .iter()
         .filter(|t| !t.resolved && !fixed.contains(t.id.as_str()))

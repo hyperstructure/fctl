@@ -47,7 +47,8 @@ resolved: number,
  */
 still_open: number, 
 /**
- * The review it posted on GitHub; absent while it posted none.
+ * What it posted on GitHub: its summary, above the review of its
+ * findings; absent while it posted none.
  */
 review_url?: string, 
 /**
