@@ -203,9 +203,21 @@ fn seen_in(pr: &Value, action: &str) -> Option<PullRequestRef> {
 /// the pages of connections it could fetch, a hundred to a point of the
 /// installation's rate limit (5,000 an hour): two for each pull request
 /// (its last commit, and that commit's checks), so one of 50 costs one
-/// point. It answers one of 50 in two to three seconds, and gives up after
-/// ten.
+/// point. It answers one of 50 of this repository's pull requests (about
+/// 10 checks each) in two to three seconds, and gives up after ten
+/// ([`fewer`]).
 pub const MAX_LOOKUP: usize = 50;
+
+/// How many pull requests to ask about at once after GitHub gave up on a
+/// lookup of `n`: 10, as a webhook delivery's lookups do, then one at a
+/// time; none after one alone. GitHub gives up on a query that takes more
+/// than ten seconds, and the more checks a pull request's head commit has,
+/// the longer it takes: of vercel/next.js's, with 100 to 240 checks each,
+/// it answered one alone in 1.4 seconds, 10 in 4 to 7 and 25 in 10.7, and
+/// gave up on 50.
+pub fn fewer(n: usize) -> Option<usize> {
+    [10, 1].into_iter().find(|&fewer| fewer < n)
+}
 
 /// What a lookup asks of each pull request: its title, state and times,
 /// whether it is in a merge queue, and the checks of its head commit
@@ -736,6 +748,18 @@ mod tests {
         );
         assert_eq!(remaining(&a), Some(4990));
         assert_eq!(remaining(&json!({ "errors": [] })), None);
+    }
+
+    #[test]
+    fn lookups_github_gives_up_on_ask_about_fewer() {
+        assert_eq!(fewer(MAX_LOOKUP), Some(10));
+        assert_eq!(fewer(11), Some(10));
+        // As few as it asked about already: fewer still.
+        assert_eq!(fewer(10), Some(1));
+        assert_eq!(fewer(2), Some(1));
+        // One alone: nothing smaller to ask.
+        assert_eq!(fewer(1), None);
+        assert_eq!(fewer(0), None);
     }
 
     #[test]
