@@ -16,7 +16,7 @@ use crate::reviews::{by_app, short};
 use crate::webhooks::{Looked, Mergeable, Payload};
 use fctl_proto::Millis;
 use fctl_proto::event::{FollowUp, FollowUpComment, FollowUpEvent};
-use fctl_proto::session::RepoRef;
+use fctl_proto::session::{PullRequestRef, RepoRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -561,6 +561,10 @@ pub struct Item {
     pub key: String,
     pub pull: Pull,
     pub event: FollowUpEvent,
+    /// When the lookup that found it asked GitHub, which tells whether a
+    /// lookup the session heard of since is newer ([`conflicts_still`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<Millis>,
 }
 
 impl Item {
@@ -569,8 +573,29 @@ impl Item {
             key: key(&pull, &event, at),
             pull,
             event,
+            seen: None,
         }
     }
+}
+
+/// Whether conflicts at commit `sha`, which a lookup at `seen` found, are
+/// still news to a session that lists their pull request as `pr`: it is
+/// neither merged nor closed, and no later lookup says its head is another
+/// commit, as one after the agent's push does. Only a lookup of its checks
+/// says which commit is its head (`pr.checks`): one that is older than
+/// `seen`, or another commit's checks without a time to go by, can't make
+/// the conflicts old news. A pull request the session doesn't list keeps
+/// them.
+pub fn conflicts_still(pr: Option<&PullRequestRef>, sha: &str, seen: Option<Millis>) -> bool {
+    let Some(pr) = pr else {
+        return true;
+    };
+    if !is_open(pr.state.as_deref()) {
+        return false;
+    }
+    pr.checks.as_ref().is_none_or(|c| {
+        c.sha.as_deref().is_none_or(|head| head == sha) || seen.is_some_and(|seen| c.at < seen)
+    })
 }
 
 /// How [`key`] begins for failed checks.
@@ -1037,7 +1062,7 @@ fn conflicts_part(f: &FollowUp, sha: &str, base: Option<&str>) -> String {
         ),
     };
     format!(
-        "On GitHub, {} conflicts with {with} at commit {}: it can't merge until they're resolved, and GitHub runs none of its `pull_request` workflows until then.\n\nMerge {merge}, resolve each conflict so that both sides' changes still do what they were for, run the tests that cover them, and push. Don't rebase or force-push: that rewrites commits people may have reviewed. If a conflict takes a decision that the code and the pull request don't answer, ask on the pull request (`gh pr comment {number} --repo {owner}/{name} --body '…'`) instead of guessing.",
+        "On GitHub, {} has conflicts with {with} at commit {}: it can't merge until they're resolved, and GitHub runs none of its `pull_request` workflows until then.\n\nMerge {merge}, resolve each conflict so that both sides' changes still do what they were for, run the tests that cover them, and push. Don't rebase or force-push: that rewrites commits people may have reviewed. If a conflict takes a decision that the code and the pull request don't answer, ask on the pull request (`gh pr comment {number} --repo {owner}/{name} --body '…'`) instead of guessing.",
         your_pull_request_then(f),
         short(sha),
     )
@@ -1063,7 +1088,7 @@ pub fn held_back(f: &FollowUp, kind: Repeats) -> Option<String> {
                 .or(f.base.as_deref())
                 .unwrap_or("its base branch");
             Some(format!(
-                "{pr} conflicts with {with} at commit {}. fctl didn't pass it on: the agent heard of conflicts {most} times in a row, with no message from a person in between. Message the agent to have it resolve them.",
+                "{pr} has conflicts with {with} at commit {}. fctl didn't pass it on: the agent heard of conflicts {most} times in a row, with no message from a person in between. Message the agent to have it resolve them.",
                 short(sha)
             ))
         }
@@ -1704,12 +1729,12 @@ mod tests {
         let m = message(&follow_up(vec![conflicts(Some("main"))]));
         assert_eq!(
             m,
-            "On GitHub, your pull request acme/web#12, “Fix the login redirect”, conflicts with main at commit 8e1d2b7: it can't merge until they're resolved, and GitHub runs none of its `pull_request` workflows until then.\n\nMerge the updated main into its branch (`git fetch origin main && git merge origin/main`), resolve each conflict so that both sides' changes still do what they were for, run the tests that cover them, and push. Don't rebase or force-push: that rewrites commits people may have reviewed. If a conflict takes a decision that the code and the pull request don't answer, ask on the pull request (`gh pr comment 12 --repo acme/web --body '…'`) instead of guessing.\n"
+            "On GitHub, your pull request acme/web#12, “Fix the login redirect”, has conflicts with main at commit 8e1d2b7: it can't merge until they're resolved, and GitHub runs none of its `pull_request` workflows until then.\n\nMerge the updated main into its branch (`git fetch origin main && git merge origin/main`), resolve each conflict so that both sides' changes still do what they were for, run the tests that cover them, and push. Don't rebase or force-push: that rewrites commits people may have reviewed. If a conflict takes a decision that the code and the pull request don't answer, ask on the pull request (`gh pr comment 12 --repo acme/web --body '…'`) instead of guessing.\n"
         );
         // The pull request's base when the event doesn't say.
         let m = message(&follow_up(vec![conflicts(None)]));
         assert!(
-            m.contains(" conflicts with main at commit 8e1d2b7: "),
+            m.contains(" has conflicts with main at commit 8e1d2b7: "),
             "{m}"
         );
         // Nobody said which branch.
@@ -1717,7 +1742,7 @@ mod tests {
         nowhere.base = None;
         let m = message(&nowhere);
         assert!(
-            m.contains(" conflicts with its base branch at commit 8e1d2b7: "),
+            m.contains(" has conflicts with its base branch at commit 8e1d2b7: "),
             "{m}"
         );
         assert!(m.contains("Merge its base branch, updated, into its branch (`gh pr view 12 --repo acme/web --json baseRefName` names it), "), "{m}");
@@ -1734,7 +1759,7 @@ mod tests {
             },
         ]));
         let (first, second) = m.split_once("\n\nOn GitHub, ").unwrap_or_default();
-        assert!(first.starts_with("On GitHub, your pull request acme/web#12, “Fix the login redirect”, conflicts with main"));
+        assert!(first.starts_with("On GitHub, your pull request acme/web#12, “Fix the login redirect”, has conflicts with main"));
         assert!(second.starts_with("a check of your pull request"), "{m}");
         assert_eq!(
             held_back(
@@ -1743,14 +1768,14 @@ mod tests {
             )
             .as_deref(),
             Some(
-                "acme/web#12 conflicts with main at commit 8e1d2b7. fctl didn't pass it on: the agent heard of conflicts 3 times in a row, with no message from a person in between. Message the agent to have it resolve them."
+                "acme/web#12 has conflicts with main at commit 8e1d2b7. fctl didn't pass it on: the agent heard of conflicts 3 times in a row, with no message from a person in between. Message the agent to have it resolve them."
             )
         );
         assert_eq!(
             held_back(&nowhere, Repeats::Conflicts)
                 .as_deref()
                 .map(|h| h.split(" at ").next()),
-            Some(Some("acme/web#12 conflicts with its base branch"))
+            Some(Some("acme/web#12 has conflicts with its base branch"))
         );
         assert_eq!(
             held_back(&follow_up(vec![conflicts(None)]), Repeats::Checks),
@@ -1871,6 +1896,65 @@ mod tests {
         assert!(!unsure(&with("merged", Some(Mergeable::Unknown))));
         assert!(!unsure(&with("open", Some(Mergeable::Conflicts))));
         assert!(!unsure(&with("open", None)));
+    }
+
+    #[test]
+    fn conflicts_are_old_news_once_a_later_lookup_sees_another_commit() {
+        let listed = |state: &str, head: Option<&str>, at: Millis| PullRequestRef {
+            number: 12,
+            url: "https://github.com/acme/web/pull/12".into(),
+            state: Some(state.into()),
+            checks: head.map(|h| PullRequestChecks {
+                sha: Some(h.into()),
+                at,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Still the head GitHub last said, or the session knows no checks.
+        assert!(conflicts_still(
+            Some(&listed("open", Some("abc"), 10)),
+            "abc",
+            Some(20)
+        ));
+        assert!(conflicts_still(
+            Some(&listed("draft", None, 0)),
+            "abc",
+            Some(20)
+        ));
+        assert!(conflicts_still(None, "abc", Some(20)));
+        // The agent pushed since: a later lookup says another commit.
+        assert!(!conflicts_still(
+            Some(&listed("open", Some("def"), 30)),
+            "abc",
+            Some(20)
+        ));
+        assert!(!conflicts_still(
+            Some(&listed("open", Some("def"), 20)),
+            "abc",
+            Some(20)
+        ));
+        // Another commit's checks from before the lookup that found the
+        // conflicts: GitHub had a newer head by then.
+        assert!(conflicts_still(
+            Some(&listed("open", Some("def"), 10)),
+            "abc",
+            Some(20)
+        ));
+        // Without a time to go by, another commit makes them old news.
+        assert!(!conflicts_still(
+            Some(&listed("open", Some("def"), 10)),
+            "abc",
+            None
+        ));
+        // Merged or closed: nothing to resolve.
+        for state in ["merged", "closed"] {
+            assert!(!conflicts_still(
+                Some(&listed(state, Some("abc"), 10)),
+                "abc",
+                Some(20)
+            ));
+        }
     }
 
     #[test]

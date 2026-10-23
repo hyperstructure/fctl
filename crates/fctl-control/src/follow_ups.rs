@@ -325,6 +325,8 @@ pub struct News {
     /// GitHub didn't know yet whether it conflicts with its base branch
     /// (`fctl_domain::follow_ups::unsure`), asked this many times now.
     pub unsure: Option<u32>,
+    /// When the lookup asked GitHub.
+    pub seen: Millis,
 }
 
 /// Who hears of news, by session: what happened, and the pull requests to
@@ -376,7 +378,10 @@ pub async fn route(
             .events
             .iter()
             .filter(|(e, _)| takes(&opener.follow_ups, e))
-            .map(|(e, at)| Item::new(n.pull.clone(), e.clone(), *at))
+            .map(|(e, at)| Item {
+                seen: Some(n.seen),
+                ..Item::new(n.pull.clone(), e.clone(), *at)
+            })
             .collect();
         if !items.is_empty() {
             worker::console_log!(

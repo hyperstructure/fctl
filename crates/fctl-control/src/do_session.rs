@@ -1043,7 +1043,13 @@ impl SessionObject {
                 FollowUpEvent::ChecksFailed { sha, .. } => {
                     Some(Self::still_failing(&s, &item, sha))
                 }
-                FollowUpEvent::Conflicts { sha, .. } => Some(Self::still_at(&s, &item, sha)),
+                FollowUpEvent::Conflicts { sha, .. } => Some(follow_ups::conflicts_still(
+                    s.pull_requests
+                        .iter()
+                        .find(|p| p.url.eq_ignore_ascii_case(&item.pull.url)),
+                    sha,
+                    item.seen,
+                )),
                 _ => None,
             };
             if let Some(still) = still {
@@ -1082,26 +1088,6 @@ impl SessionObject {
         pr.checks
             .as_ref()
             .is_none_or(|c| c.sha.as_deref().is_none_or(|c_sha| c_sha == sha) && c.failed > 0)
-    }
-
-    /// Whether conflicts at commit `sha` are still news: their pull request,
-    /// as GitHub last said of it, is neither merged nor closed, and its head
-    /// is still that commit. Merging its base in makes a new commit, which
-    /// GitHub says within seconds of the push.
-    fn still_at(s: &Session, item: &follow_ups::Item, sha: &str) -> bool {
-        let Some(pr) = s
-            .pull_requests
-            .iter()
-            .find(|p| p.url.eq_ignore_ascii_case(&item.pull.url))
-        else {
-            return true;
-        };
-        follow_ups::is_open(pr.state.as_deref())
-            && pr
-                .checks
-                .as_ref()
-                .and_then(|c| c.sha.as_deref())
-                .is_none_or(|head| head == sha)
     }
 
     /// Hands what happened to one pull request (`keys`: its items) to the

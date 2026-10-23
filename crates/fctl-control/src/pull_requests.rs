@@ -317,7 +317,7 @@ pub async fn hook(
             .iter()
             .filter_map(|x| {
                 let payload = hook.payload.as_ref().filter(|p| p.seen.number == x.number);
-                news(x, payload, hook.checks, 1)
+                news(x, payload, hook.checks, 1, now)
             })
             .collect(),
         None => Vec::new(),
@@ -385,8 +385,14 @@ async fn route(
 /// with `checks` (the delivery is about checks); that it merged or closed,
 /// when its delivery's `payload` says so; that it conflicts with its base
 /// branch; and that GitHub didn't know yet whether it does, asked `asked`
-/// times now.
-fn news(x: &Seen, payload: Option<&Payload>, checks: bool, asked: u32) -> Option<follow_ups::News> {
+/// times now. `now`: when the lookup asked.
+fn news(
+    x: &Seen,
+    payload: Option<&Payload>,
+    checks: bool,
+    asked: u32,
+    now: i64,
+) -> Option<follow_ups::News> {
     let looked = x.looked.as_ref()?;
     let mut events = Vec::new();
     if checks && let Some(e) = fu::checks_failed(looked) {
@@ -429,6 +435,7 @@ fn news(x: &Seen, payload: Option<&Payload>, checks: bool, asked: u32) -> Option
             .or_else(|| payload.and_then(|p| p.head_ref.clone())),
         events,
         unsure,
+        seen: now,
     })
 }
 
@@ -521,7 +528,7 @@ pub async fn refresh(
                 Some(_) => {
                     let news: Vec<follow_ups::News> = seen
                         .iter()
-                        .filter_map(|x| news(x, None, false, 1))
+                        .filter_map(|x| news(x, None, false, 1, now))
                         .collect();
                     route(cfg, db, &news, answered).await
                 }
@@ -658,7 +665,7 @@ pub async fn ask_again(
             Some(_) => seen
                 .iter()
                 .zip(&asks)
-                .filter_map(|(x, a)| news(x, None, false, a.asked.saturating_add(1)))
+                .filter_map(|(x, a)| news(x, None, false, a.asked.saturating_add(1), now))
                 .collect(),
             None => Vec::new(),
         };
