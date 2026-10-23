@@ -719,7 +719,8 @@ pub fn state_named<'a>(states: &'a [TicketState], name: &str) -> Result<&'a Tick
 
 // ───────────────────────────── which project ─────────────────────────────
 
-/// A project that takes tickets from a Linear team.
+/// A project that takes tickets from a Linear team, and what the person
+/// who asked may do there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     pub project_id: String,
@@ -728,25 +729,57 @@ pub struct Candidate {
     pub project: Option<String>,
     /// Its primary repository (`owner/name`), which Linear can rank.
     pub repo: Option<String>,
+    /// The person may start sessions there.
+    pub may_start: bool,
+    /// The person may see it, so that fctl may name it to them.
+    pub may_see: bool,
 }
 
-/// Which of `candidates` take an issue of `team` (and `project`): those
-/// that take only its Linear project come first, as they name it more
-/// closely, then those that take the whole team.
-pub fn candidates<'a>(
-    candidates: &'a [Candidate],
+/// Which projects take an issue of `team` (and `project`) up for the person
+/// who asked.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Takers<'a> {
+    /// Those they may start sessions in: the ones that take only the
+    /// issue's Linear project, as they name it more closely, else those
+    /// that take the whole team.
+    These(Vec<&'a Candidate>),
+    /// No project takes the issue's team.
+    Nobody,
+    /// Some do, but they may start sessions in none of them: those of them
+    /// they may see, to name.
+    NotTheirs(Vec<&'a Candidate>),
+}
+
+/// Which of `candidates` take an issue of `team` (and `project`) up for the
+/// person who asked. Projects they may not start sessions in count for
+/// nothing first, so that a closer one of those hides none they may use.
+pub fn takers<'a>(candidates: &'a [Candidate], team: &str, project: Option<&str>) -> Takers<'a> {
+    let theirs = closest(candidates.iter().filter(|c| c.may_start), team, project);
+    if !theirs.is_empty() {
+        return Takers::These(theirs);
+    }
+    let taken = closest(candidates.iter(), team, project);
+    if taken.is_empty() {
+        return Takers::Nobody;
+    }
+    Takers::NotTheirs(taken.into_iter().filter(|c| c.may_see).collect())
+}
+
+/// Those of `candidates` that take only the issue's Linear project, else
+/// those that take the whole team.
+fn closest<'a>(
+    candidates: impl Iterator<Item = &'a Candidate> + Clone,
     team: &str,
     project: Option<&str>,
 ) -> Vec<&'a Candidate> {
     let narrow: Vec<&Candidate> = candidates
-        .iter()
+        .clone()
         .filter(|c| c.team == team && c.project.is_some() && c.project.as_deref() == project)
         .collect();
     if !narrow.is_empty() {
         return narrow;
     }
     candidates
-        .iter()
         .filter(|c| c.team == team && c.project.is_none())
         .collect()
 }
@@ -856,6 +889,17 @@ pub fn replied(by: &str, key: &str, body: &str) -> String {
     format!("{by} replied on {key} in Linear:\n\n{}", body.trim())
 }
 
+/// What fctl says in an agent session when taking it up failed: why, when
+/// it is something people can act on (`None` for fctl's own errors), and
+/// that a reply tries again.
+pub fn couldnt_start(key: &str, why: Option<&str>) -> String {
+    let why = why
+        .map(|w| w.trim().trim_end_matches(['.', ' ']))
+        .filter(|w| !w.is_empty())
+        .unwrap_or("something went wrong on fctl's side");
+    format!("fctl couldn't start on {key}: {why}. Reply here to try again.")
+}
+
 fn quote(text: &str) -> String {
     text.lines()
         .map(|l| {
@@ -942,7 +986,12 @@ pub fn choose_project(session: &str, body: &str, options: &[(String, String)]) -
 }
 
 /// A step of the agent's, from one of its tool calls, for the session's
-/// live line in Linear: `None` for calls not worth showing.
+/// live line in Linear: `None` for calls not worth showing. Everyone who
+/// can see the issue reads it, people without access to the session among
+/// them, so it says what the agent does rather than all it typed: a
+/// command's description, not the command, which may hold a secret; a
+/// page's site, not its address; and what looks like a token goes from
+/// what it searched for.
 pub fn step(tool: &str, input: &Value) -> Option<(String, String)> {
     let get = |k: &str| {
         input
@@ -953,24 +1002,20 @@ pub fn step(tool: &str, input: &Value) -> Option<(String, String)> {
     };
     let file = || get("file_path").or(get("notebook_path")).map(short_path);
     let (action, parameter) = match tool {
-        "Bash" => match (get("description"), get("command")) {
-            (Some(d), _) => (
-                d.to_owned(),
-                get("command").map(first_line).unwrap_or_default(),
-            ),
-            (None, Some(c)) => ("Running".to_owned(), first_line(c)),
-            _ => return None,
-        },
+        "Bash" => (
+            redact(get("description").unwrap_or("Running a command")),
+            String::new(),
+        ),
         "Edit" | "MultiEdit" | "NotebookEdit" => ("Editing".to_owned(), file()?),
         "Write" => ("Writing".to_owned(), file()?),
         "Read" => ("Reading".to_owned(), file()?),
-        "Grep" => ("Searching".to_owned(), get("pattern")?.to_owned()),
-        "Glob" => ("Looking for files".to_owned(), get("pattern")?.to_owned()),
-        "WebFetch" => ("Reading".to_owned(), get("url")?.to_owned()),
-        "WebSearch" => ("Searching the web".to_owned(), get("query")?.to_owned()),
+        "Grep" => ("Searching".to_owned(), redact(get("pattern")?)),
+        "Glob" => ("Looking for files".to_owned(), redact(get("pattern")?)),
+        "WebFetch" => ("Reading".to_owned(), site(get("url")?)?),
+        "WebSearch" => ("Searching the web".to_owned(), redact(get("query")?)),
         "Task" | "Agent" => (
             "Delegating".to_owned(),
-            get("description").unwrap_or("to a subagent").to_owned(),
+            redact(get("description").unwrap_or("to a subagent")),
         ),
         _ => return None,
     };
@@ -986,8 +1031,56 @@ pub fn step(tool: &str, input: &Value) -> Option<(String, String)> {
     Some((clip(action, 80), clip(parameter, 120)))
 }
 
-fn first_line(s: &str) -> String {
-    s.lines().next().unwrap_or_default().trim().to_owned()
+/// A URL's host, without who signs in there or what it asks for.
+fn site(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?;
+    (!host.is_empty()).then(|| host.to_owned())
+}
+
+/// `text` with what looks like a token (an API key, a signed URL's
+/// signature, a JWT's parts) as `…`: long runs of letters and digits, or
+/// shorter ones that start like keys that services hand out.
+fn redact(text: &str) -> String {
+    const PREFIXES: [&str; 10] = [
+        "ghp_",
+        "gho_",
+        "ghs_",
+        "ghu_",
+        "github_pat_",
+        "sk-",
+        "sk_",
+        "xox",
+        "AKIA",
+        "lin_",
+    ];
+    let token = |run: &str| {
+        let letters = run.chars().any(|c| c.is_ascii_alphabetic());
+        let digits = run.chars().any(|c| c.is_ascii_digit());
+        (run.len() >= 32 && letters && digits)
+            || (run.len() >= 16 && PREFIXES.iter().any(|p| run.starts_with(p)))
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        if token(run) {
+            out.push('…');
+        } else {
+            out.push_str(run);
+        }
+        run.clear();
+    };
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '=') {
+            run.push(c);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
 }
 
 fn short_path(p: &str) -> String {
@@ -1025,6 +1118,26 @@ pub fn plan(todos: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failures_to_start_say_why_and_how_to_try_again() {
+        assert_eq!(
+            couldnt_start("ENG-3", Some("Linear didn't answer: try again in a minute")),
+            "fctl couldn't start on ENG-3: Linear didn't answer: try again in a minute. Reply here to try again."
+        );
+        assert_eq!(
+            couldnt_start("ENG-3", Some("Linear: Entity not found.")),
+            "fctl couldn't start on ENG-3: Linear: Entity not found. Reply here to try again."
+        );
+        assert_eq!(
+            couldnt_start("ENG-3", None),
+            "fctl couldn't start on ENG-3: something went wrong on fctl's side. Reply here to try again."
+        );
+        assert_eq!(
+            couldnt_start("ENG-3", Some(" ")),
+            couldnt_start("ENG-3", None)
+        );
+    }
 
     fn hmac_hex(secret: &str, body: &[u8]) -> String {
         let mut mac =
@@ -1266,28 +1379,75 @@ mod tests {
         assert!(!in_scope(&scope(Some("p1")), Some("team1"), Some("p2")));
     }
 
-    #[test]
-    fn the_closest_project_takes_an_issue() {
-        let c = |id: &str, team: &str, project: Option<&str>| Candidate {
+    fn candidate(id: &str, team: &str, project: Option<&str>) -> Candidate {
+        Candidate {
             project_id: id.into(),
             team: team.into(),
             project: project.map(str::to_owned),
             repo: None,
-        };
+            may_start: true,
+            may_see: true,
+        }
+    }
+
+    fn ids(t: Takers<'_>) -> (&'static str, Vec<String>) {
+        let ids = |v: Vec<&Candidate>| v.into_iter().map(|c| c.project_id.clone()).collect();
+        match t {
+            Takers::These(v) => ("these", ids(v)),
+            Takers::Nobody => ("nobody", Vec::new()),
+            Takers::NotTheirs(v) => ("not theirs", ids(v)),
+        }
+    }
+
+    #[test]
+    fn the_closest_project_takes_an_issue() {
         let all = vec![
-            c("web", "team1", None),
-            c("site", "team1", Some("p1")),
-            c("api", "team2", None),
+            candidate("web", "team1", None),
+            candidate("site", "team1", Some("p1")),
+            candidate("api", "team2", None),
         ];
-        let ids = |v: Vec<&Candidate>| {
-            v.into_iter()
-                .map(|c| c.project_id.clone())
-                .collect::<Vec<_>>()
+        assert_eq!(
+            ids(takers(&all, "team1", Some("p1"))),
+            ("these", vec!["site".into()])
+        );
+        assert_eq!(
+            ids(takers(&all, "team1", Some("p2"))),
+            ("these", vec!["web".into()])
+        );
+        assert_eq!(
+            ids(takers(&all, "team1", None)),
+            ("these", vec!["web".into()])
+        );
+        assert_eq!(ids(takers(&all, "team3", None)), ("nobody", vec![]));
+    }
+
+    #[test]
+    fn projects_people_cant_start_in_hide_nothing_and_stay_unnamed_unless_seen() {
+        let closed = |c: Candidate, see: bool| Candidate {
+            may_start: false,
+            may_see: see,
+            ..c
         };
-        assert_eq!(ids(candidates(&all, "team1", Some("p1"))), ["site"]);
-        assert_eq!(ids(candidates(&all, "team1", Some("p2"))), ["web"]);
-        assert_eq!(ids(candidates(&all, "team1", None)), ["web"]);
-        assert!(candidates(&all, "team3", None).is_empty());
+        // A closer project they can't use leaves the team's to them.
+        let all = vec![
+            candidate("web", "team1", None),
+            closed(candidate("mobile", "team1", Some("p1")), false),
+        ];
+        assert_eq!(
+            ids(takers(&all, "team1", Some("p1"))),
+            ("these", vec!["web".into()])
+        );
+        // None they may use: only those they may see are named.
+        let all = vec![
+            closed(candidate("web", "team1", None), true),
+            closed(candidate("other-workspace", "team1", None), false),
+        ];
+        assert_eq!(
+            ids(takers(&all, "team1", None)),
+            ("not theirs", vec!["web".into()])
+        );
+        let all = vec![closed(candidate("other-workspace", "team1", None), false)];
+        assert_eq!(ids(takers(&all, "team1", None)), ("not theirs", vec![]));
     }
 
     #[test]
@@ -1397,7 +1557,7 @@ mod tests {
                 "Bash",
                 &json!({ "command": "cargo test -p web\necho done", "description": "Run the tests" })
             ),
-            Some(("Run the tests".into(), "cargo test -p web".into()))
+            Some(("Run the tests".into(), String::new()))
         );
         assert_eq!(
             step(
@@ -1408,6 +1568,57 @@ mod tests {
         );
         assert_eq!(step("TodoWrite", &json!({})), None);
         assert_eq!(step("Read", &json!({})), None);
+    }
+
+    #[test]
+    fn steps_keep_secrets_out_of_linear() {
+        // A command can hold a secret: Linear gets what it is for.
+        let curl = json!({ "command": "curl -H 'Authorization: Bearer ghp_0123456789abcdefghijABCDEFGHIJ012345' https://api.github.com/user" });
+        assert_eq!(
+            step("Bash", &curl),
+            Some(("Running a command".into(), String::new()))
+        );
+        // A page's site, not its address.
+        assert_eq!(
+            step(
+                "WebFetch",
+                &json!({ "url": "https://ada:hunter2@files.example.com/report.pdf?X-Amz-Signature=abc123" })
+            ),
+            Some(("Reading".into(), "files.example.com".into()))
+        );
+        assert_eq!(
+            step("WebFetch", &json!({ "url": "docs.rs/serde" })),
+            Some(("Reading".into(), "docs.rs".into()))
+        );
+        // Searches keep their words, and lose what looks like a key.
+        assert_eq!(
+            step("Grep", &json!({ "pattern": "sk_live_51H8xQ2eZvKYlo2C" })),
+            Some(("Searching".into(), "…".into()))
+        );
+        assert_eq!(
+            step("Grep", &json!({ "pattern": "fn handle_login\\(" })),
+            Some(("Searching".into(), "fn handle_login\\(".into()))
+        );
+        assert_eq!(
+            step(
+                "WebSearch",
+                &json!({ "query": "linear agent session 2026 eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" })
+            ),
+            Some((
+                "Searching the web".into(),
+                "linear agent session 2026 …".into()
+            ))
+        );
+        assert_eq!(
+            step(
+                "Glob",
+                &json!({ "pattern": "crates/fctl-control/src/**/*.rs" })
+            ),
+            Some((
+                "Looking for files".into(),
+                "crates/fctl-control/src/**/*.rs".into()
+            ))
+        );
     }
 
     #[test]

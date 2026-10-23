@@ -1301,18 +1301,18 @@ async fn linear(api: &Api, w: &Workspace, cmd: LinearCmd, json: bool) -> Result<
                 };
                 println!(
                     "{:<24} {:<28} {}",
-                    style::bold(&c.name),
-                    style::dim(&format!("linear.app/{}", c.url_key)),
+                    style::bold(&style::terminal_safe(&c.name)),
+                    style::dim(&style::terminal_safe(&format!("linear.app/{}", c.url_key))),
                     state
                 );
                 for p in &c.projects {
                     println!(
                         "  {} {}",
                         style::dim("→"),
-                        match &p.team_key {
+                        style::terminal_safe(&match &p.team_key {
                             Some(t) => format!("{} takes {t}'s tickets", p.slug),
                             None => p.slug.clone(),
-                        }
+                        })
                     );
                 }
             }
@@ -1368,7 +1368,7 @@ async fn linear(api: &Api, w: &Workspace, cmd: LinearCmd, json: bool) -> Result<
                 "{} {} no longer works in {} on Linear",
                 style::accent("✓"),
                 w.name,
-                c.name
+                style::terminal_safe(&c.name)
             );
         }
         LinearCmd::Teams { organization } => {
@@ -1381,14 +1381,26 @@ async fn linear(api: &Api, w: &Workspace, cmd: LinearCmd, json: bool) -> Result<
             for t in &teams.teams {
                 println!(
                     "{:<8} {}",
-                    style::bold(&t.key),
+                    style::bold(&style::terminal_safe(&t.key)),
                     style::terminal_safe(&t.name)
                 );
                 if let Some(s) = &t.start_state {
-                    println!("{}", style::dim(&format!("         tickets start in {s}")));
+                    println!(
+                        "{}",
+                        style::dim(&format!(
+                            "         tickets start in {}",
+                            style::terminal_safe(s)
+                        ))
+                    );
                 }
                 for p in &t.projects {
-                    println!("{}", style::dim(&format!("         project {}", p.name)));
+                    println!(
+                        "{}",
+                        style::dim(&format!(
+                            "         project {}",
+                            style::terminal_safe(&p.name)
+                        ))
+                    );
                 }
             }
         }

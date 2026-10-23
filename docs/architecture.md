@@ -1532,10 +1532,14 @@ issue's delegate (the person stays its assignee), and mention.
    Linear's repository suggestions for the issue choose, by the projects'
    primary repositories, and when they don't, fctl asks which in the agent
    session (an elicitation with the `select` signal) and waits for the
-   answer. Projects the person can't start sessions in don't count, and
+   answer. Projects the person can't start sessions in don't count, before
+   any of that (a closer one they can't use hides none they can), and
    fctl says why it started nothing: no project takes the team, they may
-   start sessions in none of those that do, or they have no Claude
-   connection. A session that works on the issue already (not archived or
+   start sessions in none of those that do (named only when they may see
+   them, as projects of other fctl workspaces connected to the Linear
+   workspace aren't), or they have no Claude connection. When taking a
+   delegation up fails on the way, fctl says so in the agent session and
+   keeps the delivery for an hour: a reply there tries again. A session that works on the issue already (not archived or
    failed) that they may message gets the delegation as their message
    instead, so that a ticket's work stays in one session. Otherwise a new
    session starts (`crate::starts`, as a schedule's do), as the person,
@@ -1564,7 +1568,11 @@ issue's delegate (the person stays its assignee), and mention.
    tool calls) shows as an ephemeral action at most every two minutes,
    which keeps Linear from calling the session stale while the agent works
    (SessionObject, `crate::delegations::step`); and its todo list as the
-   session's plan. A session that pauses on a usage limit, or fails, says so
+   session's plan. Everyone who sees the issue sees those steps, so they
+   say what the agent does without what could hold a secret
+   (`fctl_domain::linear::step`): a command's description and not the
+   command, a page's site and not its address, and searches without what
+   looks like a token. A session that pauses on a usage limit, or fails, says so
    there. The transcript says what fctl posted (`ticket_replied`,
    `ticket_moved`). Nothing goes back for a session whose workspace no
    longer works in the Linear workspace.

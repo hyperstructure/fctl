@@ -23,9 +23,11 @@ use crate::linear::{self, Linear};
 use crate::model::{PROJECT_SELECT, ProjectRow, UserRow, user_columns};
 use fctl_domain::linear::{self as lin, Act, AgentSessionEvent, Candidate};
 use fctl_domain::tickets as tk;
+use fctl_proto::api::InstanceSettings;
+use fctl_proto::error::ErrorCode;
 use fctl_proto::event::{EventBody, MessageSource, Notice, NoticeLevel, UserMessage};
 use fctl_proto::session::{
-    LinearTickets, PullRequestRef, SessionStatus, SessionTicket, Tracker, UserRef,
+    LinearTickets, ProjectRole, PullRequestRef, SessionStatus, SessionTicket, Tracker, UserRef,
 };
 use fctl_proto::tickets::{TicketEvent, TicketLink, TicketMessage, TicketNotice, TicketPerson};
 use fctl_proto::uplink::{Delivery, DeliveryKind};
@@ -357,8 +359,13 @@ async fn takers(db: &D1Database, organization: &str) -> AppResult<Vec<Taker>> {
         .collect())
 }
 
-/// Whether `user` may start sessions in `project`.
-async fn may_start(db: &D1Database, user: &UserRow, project: &ProjectRow) -> AppResult<bool> {
+/// `user`'s role in `project`: `None` when they can't see it.
+async fn role_in(
+    db: &D1Database,
+    user: &UserRow,
+    settings: &InstanceSettings,
+    project: &ProjectRow,
+) -> AppResult<Option<ProjectRole>> {
     let theirs: Option<ProjectRow> = q(
         db,
         &format!("{PROJECT_SELECT} WHERE p.id = ?2"),
@@ -366,9 +373,7 @@ async fn may_start(db: &D1Database, user: &UserRow, project: &ProjectRow) -> App
     )?
     .first()
     .await?;
-    let settings = crate::instance::settings(db).await?;
-    let role = theirs.and_then(|r| crate::access::project_role(user, &settings, None, &r));
-    Ok(fctl_domain::perm::can_start_sessions(role))
+    Ok(theirs.and_then(|r| crate::access::project_role(user, settings, None, &r)))
 }
 
 /// Whether `user` may message session `session_id`.
@@ -383,12 +388,56 @@ fn link_url(cfg: &Config, thread: &str) -> String {
     cfg.url(&format!("/api/v1/linear/link?thread={thread}"))
 }
 
+/// Takes a new agent session (or one that waited) up ([`take_up`]). When
+/// that fails, it says so in the agent session rather than leave it hanging
+/// on "Looking at…", and keeps the delivery for an hour, so that a reply
+/// there tries again (`prompted`). Failing after the session started, or
+/// while it waits for its person, changes nothing there.
+#[allow(clippy::too_many_arguments)]
+async fn take(
+    env: &Env,
+    cfg: &Config,
+    db: &D1Database,
+    linear: &Linear<'_>,
+    e: &AgentSessionEvent,
+    raw: &Value,
+    chosen: Option<&str>,
+    now: i64,
+) -> AppResult<()> {
+    let Err(err) = take_up(env, cfg, db, linear, e, raw, chosen, now).await else {
+        return Ok(());
+    };
+    let id = e.agent_session.id.as_str();
+    if thread(db, id)
+        .await?
+        .is_some_and(|t| t.state == "started" || t.state == "waiting")
+    {
+        return Err(err);
+    }
+    let key = e
+        .agent_session
+        .issue
+        .as_ref()
+        .map_or("this issue", |i| i.identifier.as_str());
+    // fctl's own errors say nothing people can act on.
+    let why = (err.0.code != ErrorCode::Internal).then_some(err.0.message.as_str());
+    wait(db, id, "refused", "retry", None, raw, now).await?;
+    post(
+        linear,
+        id,
+        &Act::Error(&lin::couldnt_start(key, why)),
+        false,
+    )
+    .await;
+    Err(err)
+}
+
 /// Takes a new agent session (or one that waited) to a session: as its
 /// person, in the project that takes its issue, a new one or the one that
 /// works on the issue already. `chosen` answers which project, when it
 /// asked.
 #[allow(clippy::too_many_arguments)]
-async fn take(
+async fn take_up(
     env: &Env,
     cfg: &Config,
     db: &D1Database,
@@ -441,50 +490,68 @@ async fn take(
         return refuse(format!("fctl couldn't read {key}'s team.")).await;
     };
     let all = takers(db, &e.organization_id).await?;
-    let candidates: Vec<Candidate> = all
-        .iter()
-        .map(|t| Candidate {
+    // What they may do in each: a project they can't start sessions in
+    // hides none they can, and isn't named to them unless they see it, as
+    // projects of other fctl workspaces connected to this Linear workspace
+    // aren't (`fctl_domain::linear::takers`).
+    let settings = crate::instance::settings(db).await?;
+    let mut candidates = Vec::with_capacity(all.len());
+    for t in &all {
+        let role = role_in(db, &user, &settings, &t.row).await?;
+        candidates.push(Candidate {
             project_id: t.row.id.clone(),
             team: t.linear.team.clone(),
             project: t.linear.project.clone(),
             repo: t.row.repo().map(|r| r.full_name()),
-        })
-        .collect();
-    let matching = lin::candidates(&candidates, &team, linear_project.as_deref());
-    if matching.is_empty() {
-        let team_name = ticket
+            may_start: fctl_domain::perm::can_start_sessions(role),
+            may_see: role.is_some(),
+        });
+    }
+    let team_name = || {
+        ticket
             .place
             .as_deref()
             .and_then(|p| p.split(" · ").next())
             .unwrap_or("its team")
-            .to_owned();
-        return refuse(format!(
-            "No fctl project takes {team_name}'s tickets yet. In fctl, choose Linear as a project's ticket tracker, with {team_name}, in its Tickets tab: {}",
-            cfg.url("/")
-        ))
-        .await;
-    }
-    let mut allowed: Vec<&Taker> = Vec::new();
-    for c in &matching {
-        if let Some(t) = all.iter().find(|t| t.row.id == c.project_id)
-            && may_start(db, &user, &t.row).await?
-        {
-            allowed.push(t);
-        }
-    }
-    if allowed.is_empty() {
-        let names: Vec<String> = matching
-            .iter()
-            .filter_map(|c| all.iter().find(|t| t.row.id == c.project_id))
+            .to_owned()
+    };
+    let name_of = |c: &Candidate| {
+        all.iter()
+            .find(|t| t.row.id == c.project_id)
             .map(|t| t.row.name.clone())
-            .collect();
-        return refuse(format!(
-            "{}, you can't start sessions in {}, which takes these tickets in fctl: its owners make you an editor of it.",
-            user.name,
-            names.join(" or ")
-        ))
-        .await;
-    }
+    };
+    let matching = match lin::takers(&candidates, &team, linear_project.as_deref()) {
+        lin::Takers::These(these) => these,
+        lin::Takers::Nobody => {
+            let team_name = team_name();
+            return refuse(format!(
+                "No fctl project takes {team_name}'s tickets yet. In fctl, choose Linear as a project's ticket tracker, with {team_name}, in its Tickets tab: {}",
+                cfg.url("/")
+            ))
+            .await;
+        }
+        lin::Takers::NotTheirs(seen) => {
+            let names: Vec<String> = seen.into_iter().filter_map(name_of).collect();
+            return refuse(if names.is_empty() {
+                format!(
+                    "{}, you can't start sessions in the fctl project that takes {}'s tickets: its owners make you an editor of it.",
+                    user.name,
+                    team_name()
+                )
+            } else {
+                format!(
+                    "{}, you can't start sessions in {}, which takes these tickets in fctl: its owners make you an editor of it.",
+                    user.name,
+                    names.join(" or ")
+                )
+            })
+            .await;
+        }
+    };
+    let allowed: Vec<&Taker> = matching
+        .iter()
+        .filter_map(|c| all.iter().find(|t| t.row.id == c.project_id))
+        .collect();
     let explore_of = |t: &Taker| tk::explores(&ticket.labels, t.linear.explore_label());
     let comment = session
         .comment

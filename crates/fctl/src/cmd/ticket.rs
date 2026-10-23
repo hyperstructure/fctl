@@ -277,20 +277,26 @@ async fn ask(
     }
 }
 
+/// Text from the tracker, which anyone who names a label or a state there
+/// writes: without the escape sequences it could hold.
+fn safe(text: &str) -> std::borrow::Cow<'_, str> {
+    style::terminal_safe(text)
+}
+
 fn print(answer: &TicketAnswer) {
     match answer {
         TicketAnswer::About { about } => {
-            println!("{}", style::bold(&about.scope));
+            println!("{}", style::bold(&safe(&about.scope)));
             if let Some(f) = &about.files_in {
-                println!("{}", style::dim(&format!("New tickets go to {f}.")));
+                println!("{}", style::dim(&format!("New tickets go to {}.", safe(f))));
             }
             for t in &about.tickets {
                 println!(
                     "This session works on {} {}",
-                    style::bold(&t.key),
-                    style::terminal_safe(t.title.as_deref().unwrap_or_default())
+                    style::bold(&safe(&t.key)),
+                    safe(t.title.as_deref().unwrap_or_default())
                 );
-                println!("  {}", style::dim(&t.url));
+                println!("  {}", style::dim(&safe(&t.url)));
             }
         }
         TicketAnswer::Tickets { tickets, more } => {
@@ -312,22 +318,22 @@ fn print(answer: &TicketAnswer) {
             println!(
                 "{} Commented on {}{}",
                 style::accent("✓"),
-                style::bold(&ticket.key),
+                style::bold(&safe(&ticket.key)),
                 comment
                     .url
                     .as_deref()
-                    .map(|u| format!(": {}", style::terminal_safe(u)))
+                    .map(|u| format!(": {}", safe(u)))
                     .unwrap_or_default()
             );
         }
         TicketAnswer::States { states } => {
             for s in states {
-                println!("{}  {}", s.name, style::dim(s.kind.as_str()));
+                println!("{}  {}", safe(&s.name), style::dim(s.kind.as_str()));
             }
         }
         TicketAnswer::Labels { labels } => {
             for l in labels {
-                println!("{}", style::terminal_safe(l));
+                println!("{}", safe(l));
             }
         }
     }
@@ -335,8 +341,8 @@ fn print(answer: &TicketAnswer) {
 
 fn state(s: &TicketState) -> String {
     match s.kind {
-        k if k.is_open() => s.name.clone(),
-        _ => style::dim(&s.name),
+        k if k.is_open() => safe(&s.name).into_owned(),
+        _ => style::dim(&safe(&s.name)),
     }
 }
 
@@ -347,15 +353,15 @@ fn line(t: &Ticket) -> String {
         extra.push(state(s));
     }
     if let Some(p) = &t.priority {
-        extra.push(p.clone());
+        extra.push(safe(p).into_owned());
     }
     if !t.labels.is_empty() {
-        extra.push(t.labels.join(", "));
+        extra.push(safe(&t.labels.join(", ")).into_owned());
     }
     format!(
         "{}  {}  {}",
-        style::bold(&t.key),
-        style::terminal_safe(&t.title),
+        style::bold(&safe(&t.key)),
+        safe(&t.title),
         style::dim(&extra.join(" · "))
     )
 }
@@ -363,54 +369,50 @@ fn line(t: &Ticket) -> String {
 fn link(l: &TicketLink) -> String {
     format!(
         "{} {}{}",
-        style::bold(&l.key),
-        style::terminal_safe(&l.title),
+        style::bold(&safe(&l.key)),
+        safe(&l.title),
         l.state
             .as_ref()
-            .map(|s| format!(" ({})", s.name))
+            .map(|s| format!(" ({})", safe(&s.name)))
             .unwrap_or_default()
     )
 }
 
 fn print_ticket(t: &Ticket) {
-    println!(
-        "{}  {}",
-        style::bold(&t.key),
-        style::terminal_safe(&t.title)
-    );
+    println!("{}  {}", style::bold(&safe(&t.key)), safe(&t.title));
     let mut facts = Vec::new();
     if let Some(s) = &t.state {
         facts.push(state(s));
     }
     if let Some(k) = &t.kind {
-        facts.push(k.clone());
+        facts.push(safe(k).into_owned());
     }
     if let Some(p) = &t.priority {
-        facts.push(p.clone());
+        facts.push(safe(p).into_owned());
     }
     if !t.labels.is_empty() {
-        facts.push(t.labels.join(", "));
+        facts.push(safe(&t.labels.join(", ")).into_owned());
     }
     if let Some(a) = &t.assignee {
-        facts.push(format!("assigned to {}", a.name));
+        facts.push(format!("assigned to {}", safe(&a.name)));
     }
     if let Some(d) = &t.delegate {
-        facts.push(format!("delegated to {}", d.name));
+        facts.push(format!("delegated to {}", safe(&d.name)));
     }
     if !facts.is_empty() {
         println!("{}", facts.join(" · "));
     }
     let mut place = Vec::new();
     if let Some(p) = &t.place {
-        place.push(p.clone());
+        place.push(safe(p).into_owned());
     }
-    place.push(t.url.clone());
+    place.push(safe(&t.url).into_owned());
     println!("{}", style::dim(&place.join(" · ")));
     for f in &t.fields {
         println!(
             "{} {}",
-            style::dim(&format!("{}:", f.name)),
-            style::terminal_safe(&f.value)
+            style::dim(&format!("{}:", safe(&f.name))),
+            safe(&f.value)
         );
     }
     if let Some(p) = &t.parent {
@@ -429,7 +431,7 @@ fn print_ticket(t: &Ticket) {
         .map(str::trim)
         .filter(|d| !d.is_empty())
     {
-        Some(d) => println!("{}", style::terminal_safe(d)),
+        Some(d) => println!("{}", safe(d)),
         None => println!("{}", style::dim("No description.")),
     }
     if !t.comments.is_empty() || t.earlier_comments > 0 {
@@ -452,9 +454,9 @@ fn print_comment(c: &TicketComment) {
         .as_ref()
         .map(|a| {
             if a.app {
-                format!("{} (app)", a.name)
+                format!("{} (app)", safe(&a.name))
             } else {
-                a.name.clone()
+                safe(&a.name).into_owned()
             }
         })
         .unwrap_or_else(|| "Someone".into());
@@ -462,13 +464,13 @@ fn print_comment(c: &TicketComment) {
     if let Some(at) = c.created_at {
         head.push(style::ago(at));
     }
-    head.push(format!("id {}", c.id));
+    head.push(format!("id {}", safe(&c.id)));
     if c.parent.is_some() {
         head.push("a reply".into());
     }
     println!();
     println!("{}", style::dim(&head.join(" · ")));
     for l in c.body.lines() {
-        println!("  {}", style::terminal_safe(l));
+        println!("  {}", safe(l));
     }
 }

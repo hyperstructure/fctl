@@ -406,13 +406,13 @@ async fn linear(api: &fctl_client::Api, cmd: LinearAccountCmd, json: bool) -> Re
             for a in &mine.accounts {
                 println!(
                     "{:<24} {:<28} {}",
-                    style::bold(&a.organization_name),
-                    style::dim(
+                    style::bold(&style::terminal_safe(&a.organization_name)),
+                    style::dim(&style::terminal_safe(
                         &a.url_key
                             .as_deref()
                             .map(|k| format!("linear.app/{k}"))
                             .unwrap_or_default()
-                    ),
+                    )),
                     style::terminal_safe(&match &a.email {
                         Some(e) => format!("{} ({e})", a.name),
                         None => a.name.clone(),

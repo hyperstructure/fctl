@@ -1265,6 +1265,17 @@ async fn github_with(
             if !labels.is_empty() {
                 put(&mut body, "labels", json!(labels));
             }
+            // The parent before the issue: a create that failed once the
+            // issue existed would have the agent file it again.
+            let parent = match parent.as_deref() {
+                Some(p) => {
+                    let (parent_repo, parent_number) =
+                        github_target(std::slice::from_ref(repo), p)?;
+                    github_issue(gh, token, &parent_repo, parent_number).await?;
+                    Some((parent_repo, parent_number))
+                }
+                None => None,
+            };
             let (status, v) = gh
                 .with_token(token, Method::Post, &format!("{path}/issues"), Some(body))
                 .await?;
@@ -1272,9 +1283,7 @@ async fn github_with(
                 return Err(github_failed(status, &v));
             }
             let created = v.get("number").and_then(Value::as_u64).unwrap_or_default();
-            if let Some(parent) = parent.as_deref() {
-                let (parent_repo, parent_number) =
-                    github_target(std::slice::from_ref(repo), parent)?;
+            if let Some((parent_repo, parent_number)) = parent {
                 let id = v.get("id").and_then(Value::as_u64).unwrap_or_default();
                 let (status, pv) = gh
                     .with_token(

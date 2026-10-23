@@ -1052,10 +1052,10 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     "{} Agents in {} use {}",
                     style::accent("✓"),
                     style::bold(&p.slug),
-                    t.scope
+                    style::terminal_safe(&t.scope)
                 );
                 if let Some(problem) = &t.problem {
-                    println!("{}", style::amber(problem));
+                    println!("{}", style::amber(&style::terminal_safe(problem)));
                 }
             }
             println!(
@@ -1069,7 +1069,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             if json {
                 return style::print_json(&t);
             }
-            println!("{}", style::bold(&t.scope));
+            println!("{}", style::bold(&style::terminal_safe(&t.scope)));
             println!(
                 "{}",
                 style::dim(match t.via {
@@ -1080,7 +1080,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 })
             );
             if let Some(problem) = &t.problem {
-                println!("{}", style::amber(problem));
+                println!("{}", style::amber(&style::terminal_safe(problem)));
             }
             if let (Some(l), Some(linked)) = (&t.linear, t.linked) {
                 // As people find fctl's app there.
@@ -1088,7 +1088,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 let handle = l.app_handle.as_deref().unwrap_or("fctl");
                 println!(
                     "{}",
-                    style::dim(&format!(
+                    style::dim(&style::terminal_safe(&format!(
                         "Linear workspace {} (linear.app/{}): assign issues to {app} there, or mention @{handle}. {}",
                         l.name,
                         l.url_key,
@@ -1097,7 +1097,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                         } else {
                             "Link your Linear account first: `fctl account linear connect`."
                         }
-                    ))
+                    )))
                 );
             }
             if !t.recent.is_empty() {
@@ -1105,7 +1105,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 for r in &t.recent {
                     println!(
                         "{:<10} #{:<5} {}  {}",
-                        style::bold(&r.ticket.key),
+                        style::bold(&style::terminal_safe(&r.ticket.key)),
                         r.session.number,
                         style::terminal_safe(&r.session.title),
                         style::status(r.status)

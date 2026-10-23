@@ -61,8 +61,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS linear_accounts_linear_user ON linear_accounts
 -- Linear's id, and the fctl session each reaches. `state` is waiting (for
 -- its person to link their Linear account, or to choose the project;
 -- `waiting_for` says which, and `payload` keeps the delivery until
--- `expires_at`), started (it reaches `session_id`) or refused. `stepped_at`
--- is when fctl last showed a step of the agent's there.
+-- `expires_at`), started (it reaches `session_id`) or refused (with
+-- `waiting_for` retry and the delivery kept when starting failed, which a
+-- reply tries again). `stepped_at` is when fctl last showed a step of the
+-- agent's there.
 CREATE TABLE IF NOT EXISTS linear_threads (
   id TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL,

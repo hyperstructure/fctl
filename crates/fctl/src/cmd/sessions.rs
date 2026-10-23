@@ -364,7 +364,7 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     if let Some(t) = &s.ticket {
         println!(
             "ticket:   {} {}{}",
-            style::bold(&t.key),
+            style::bold(&style::terminal_safe(&t.key)),
             style::terminal_safe(t.title.as_deref().unwrap_or_default()),
             style::dim(&format!(" · {}", style::terminal_safe(&t.url)))
         );
