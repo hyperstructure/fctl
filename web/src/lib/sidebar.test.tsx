@@ -56,6 +56,7 @@ const project = (name: string, w: G.Workspace, active_sessions = 0): G.Project =
     credit_people: true,
     credit_claude: true,
     publish_screenshots: false,
+    package_caches: false,
     project_memory: true,
     retrospectives: true,
   },

@@ -12,6 +12,7 @@ use super::{
     Sandbox, SandboxInfo, SandboxSpec, TimedOut, attach_script, run_cmd_within, serve_script,
     timed_out, unanswered,
 };
+use crate::caches::{self, Spot};
 use anyhow::{Context, Result};
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use serde_json::Value;
@@ -326,6 +327,19 @@ impl ContainerDriver {
         image: &str,
         log: &(dyn Fn(String) + Send + Sync),
     ) -> Result<(), Create> {
+        self.start_new(spec, image, log).await?;
+        if let Some(Spot::Volume(_)) = &spec.cache {
+            self.give_cache_to_user(&spec.name).await;
+        }
+        Ok(())
+    }
+
+    async fn start_new(
+        &self,
+        spec: &SandboxSpec,
+        image: &str,
+        log: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<(), Create> {
         let cpus = spec.cpus.max(1).to_string();
         let memory = match self.flavor {
             Flavor::Apple => format!("{}M", spec.memory_mb.max(512)),
@@ -338,6 +352,10 @@ impl ContainerDriver {
         ];
         if let Some(network) = self.sandbox_network().await {
             args.extend(["--network", network]);
+        }
+        let cache = spec.cache.as_ref().map(cache_mount);
+        if let Some(mount) = &cache {
+            args.extend(["--mount", mount.as_str()]);
         }
         args.extend(["--entrypoint", "tail", image, "-f", "/dev/null"]);
         let failed =
@@ -405,6 +423,132 @@ impl ContainerDriver {
                 None
             }
         }
+    }
+
+    /// Gives the user of the new Docker sandbox `name` the package caches
+    /// it mounts: Docker makes a new volume's root root's. Caches that
+    /// another image's user made are given over whole. Where this fails,
+    /// fctl-agent finds it can't write to them, and the session's package
+    /// managers keep their own.
+    async fn give_cache_to_user(&self, name: &str) {
+        let ids = self
+            .run(&["exec", name, "sh", "-c", r#"echo "$(id -u):$(id -g)""#])
+            .await;
+        let owner = match ids {
+            Ok(out) => out.trim().to_owned(),
+            Err(e) => {
+                tracing::warn!("{name} may not write to its package caches: {e:#}");
+                return;
+            }
+        };
+        let numeric = owner
+            .split(':')
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if !numeric || owner.split(':').count() != 2 || owner.starts_with("0:") {
+            return;
+        }
+        let mount = caches::MOUNT;
+        let script = format!(r#"[ "$(stat -c %u:%g {mount})" = "$1" ] || chown -R "$1" {mount}"#);
+        let given = self
+            .run(&["exec", "-u", "0", name, "sh", "-c", &script, "sh", &owner])
+            .await;
+        if let Err(e) = given {
+            tracing::warn!("{name} may not write to its package caches: {e:#}");
+        }
+    }
+
+    /// The projects whose package caches have a Docker volume here.
+    pub async fn cache_volumes(&self) -> Result<Vec<String>> {
+        let out = self.run(&["volume", "ls", "--format", "{{.Name}}"]).await?;
+        let mut projects: Vec<String> = out
+            .lines()
+            .filter_map(|l| caches::project_of(l.trim()))
+            .map(str::to_owned)
+            .collect();
+        projects.sort();
+        Ok(projects)
+    }
+
+    /// What the Docker volume `volume` takes, in MiB: `du` in a
+    /// short-lived container of the first of `images` that is here.
+    pub async fn volume_size_mb(&self, volume: &str, images: &[String]) -> Result<u64> {
+        let out = self
+            .in_volume(volume, false, images, "du", &["-sk", "/cache"])
+            .await?;
+        let kib: u64 = out
+            .split_whitespace()
+            .next()
+            .and_then(|k| k.parse().ok())
+            .with_context(|| format!("du printed {:?}", out.trim()))?;
+        Ok(kib.div_ceil(1024))
+    }
+
+    /// Removes the Docker volume `volume`, or only what it holds: with
+    /// `keep`, and when a container mounts it, which Docker counts even
+    /// when it is stopped. Whether the volume is gone.
+    pub async fn clear_volume(&self, volume: &str, keep: bool, images: &[String]) -> Result<bool> {
+        if !keep {
+            match self.run(&["volume", "rm", volume]).await {
+                Ok(_) => return Ok(true),
+                Err(e) if unanswered(&e) => return Err(e),
+                Err(_) => {}
+            }
+        }
+        // Mounting a volume that isn't here would make it.
+        match self.run(&["volume", "inspect", volume]).await {
+            Ok(_) => {}
+            Err(e) if unanswered(&e) => return Err(e),
+            Err(_) => return Ok(true),
+        }
+        self.in_volume(
+            volume,
+            true,
+            images,
+            "find",
+            &["/cache", "-mindepth", "1", "-delete"],
+        )
+        .await?;
+        Ok(false)
+    }
+
+    /// Runs `program` as root in a short-lived container of the first of
+    /// `images` that is here, with no network and `volume` at `/cache`
+    /// (read-only unless it `writes`), and returns what it printed.
+    async fn in_volume(
+        &self,
+        volume: &str,
+        writes: bool,
+        images: &[String],
+        program: &str,
+        args: &[&str],
+    ) -> Result<String> {
+        let ro = if writes { "" } else { ",readonly" };
+        let mount = format!("type=volume,source={volume},target=/cache{ro}");
+        let mut failed = None;
+        for image in images {
+            let mut run = vec![
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--network",
+                "none",
+                "--user",
+                "0",
+                "--mount",
+                &mount,
+                "--entrypoint",
+                program,
+                image,
+            ];
+            run.extend(args);
+            match self.run(&run).await {
+                Ok(out) => return Ok(out),
+                Err(e) if unanswered(&e) => return Err(e),
+                Err(e) => failed = Some(e),
+            }
+        }
+        Err(failed.unwrap_or_else(|| anyhow::anyhow!("no image is here to run {program} in")))
     }
 
     /// Whether the sandbox `name` exists. An error only when the runtime
@@ -762,6 +906,19 @@ impl ContainerDriver {
     }
 }
 
+/// How a sandbox mounts its project's package caches: a Docker volume, or
+/// with Apple's `container` a directory on the Mac.
+fn cache_mount(spot: &Spot) -> String {
+    match spot {
+        Spot::Volume(name) => format!("type=volume,source={name},target={}", caches::MOUNT),
+        Spot::Dir(dir) => format!(
+            "type=bind,source={},target={}",
+            dir.display(),
+            caches::MOUNT
+        ),
+    }
+}
+
 /// Sends each line `r` gives to `tx`.
 fn forward_lines<R: AsyncRead + Unpin + Send + 'static>(
     r: R,
@@ -1048,6 +1205,7 @@ mod tests {
             fallback_image: fallback.map(str::to_owned),
             cpus: 2,
             memory_mb: 2048,
+            cache: None,
         }
     }
 
@@ -1527,5 +1685,143 @@ mod tests {
             let got = info.detail.unwrap_or_default();
             assert!(got.starts_with(detail), "{bin}: {got}");
         }
+    }
+
+    #[tokio::test]
+    async fn docker_sandboxes_mount_their_projects_caches_and_get_to_write_them() -> Result<()> {
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let cached = SandboxSpec {
+            cache: Some(Spot::Volume(caches::volume("prj_1"))),
+            ..spec(VERSION_IMAGE, None)
+        };
+        cli.ensure(Flavor::Docker, &cached).await?;
+        let calls = cli.calls();
+        let run = calls
+            .iter()
+            .find(|c| c.starts_with("run "))
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            run.contains(
+                " --mount type=volume,source=fctl-cache-prj_1,target=/var/cache/fctl --entrypoint tail "
+            ),
+            "{run}"
+        );
+        // Docker makes a new volume root's: the sandbox's user gets it.
+        let given = calls.iter().find(|c| c.starts_with("exec -u 0 ")).cloned();
+        assert_eq!(
+            given.as_deref(),
+            Some(
+                r#"exec -u 0 fctl-ses-1 sh -c [ "$(stat -c %u:%g /var/cache/fctl)" = "$1" ] || chown -R "$1" /var/cache/fctl sh 1000:1000"#
+            )
+        );
+        assert_eq!(cli.volumes()?, [("fctl-cache-prj_1".to_owned(), 0)]);
+
+        // An image whose user is root has nothing to give.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.user("0:0")?;
+        cli.ensure(Flavor::Docker, &cached).await?;
+        assert!(!cli.calls().iter().any(|c| c.starts_with("exec -u 0")));
+
+        // Without caches, nothing is mounted or given.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.ensure(Flavor::Docker, &spec(VERSION_IMAGE, None))
+            .await?;
+        assert!(
+            !cli.calls()
+                .iter()
+                .any(|c| c.contains("--mount") || c.starts_with("exec"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn apple_sandboxes_mount_their_projects_cache_directory() -> Result<()> {
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let dir = PathBuf::from("/Users/ada/Library/Application Support/fctl/host/caches/prj_1");
+        let cached = SandboxSpec {
+            cache: Some(Spot::Dir(dir.clone())),
+            ..spec(VERSION_IMAGE, None)
+        };
+        cli.ensure(Flavor::Apple, &cached).await?;
+        let run = cli
+            .calls()
+            .into_iter()
+            .find(|c| c.starts_with("run "))
+            .unwrap_or_default();
+        let mount = format!(
+            " --mount type=bind,source={},target=/var/cache/fctl ",
+            dir.display()
+        );
+        assert!(run.contains(&mount), "{run}");
+        // A share of the Mac's needs no owner.
+        assert!(!cli.calls().iter().any(|c| c.starts_with("exec")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docker_volumes_are_listed_measured_and_cleared() -> Result<()> {
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let docker = cli.driver(Flavor::Docker);
+        let images = [LATEST_IMAGE.to_owned(), VERSION_IMAGE.to_owned()];
+        cli.volume("fctl-cache-prj_1", 3 * 1024 * 1024 + 1)?;
+        cli.volume("fctl-cache-prj_2", 10)?;
+        cli.volume("buildx_buildkit_state", 10)?;
+        assert_eq!(docker.cache_volumes().await?, ["prj_1", "prj_2"]);
+        // In the first of the host's images that is here, without its network.
+        assert_eq!(
+            docker.volume_size_mb("fctl-cache-prj_1", &images).await?,
+            3073
+        );
+        let du = cli
+            .calls()
+            .into_iter()
+            .rfind(|c| c.contains(" du "))
+            .unwrap_or_default();
+        assert_eq!(
+            du,
+            format!(
+                "run --rm --pull never --network none --user 0 --mount type=volume,source=fctl-cache-prj_1,target=/cache,readonly --entrypoint du {VERSION_IMAGE} -sk /cache"
+            )
+        );
+        // A sandbox mounts prj_1's, stopped or not: it stays, emptied.
+        cli.uses("fctl-ses-1", "sha256:1")?;
+        std::fs::write(
+            cli.dir.path().join("mounts/fctl-ses-1"),
+            "fctl-cache-prj_1\n",
+        )?;
+        assert!(
+            !docker
+                .clear_volume("fctl-cache-prj_1", false, &images)
+                .await?
+        );
+        // Nothing mounts prj_2's: it goes.
+        assert!(
+            docker
+                .clear_volume("fctl-cache-prj_2", false, &images)
+                .await?
+        );
+        assert_eq!(
+            cli.volumes()?,
+            [
+                ("buildx_buildkit_state".to_owned(), 10),
+                ("fctl-cache-prj_1".to_owned(), 0)
+            ]
+        );
+        // Kept, it is only emptied; gone, nothing makes it again.
+        cli.volume("fctl-cache-prj_2", 10)?;
+        assert!(
+            !docker
+                .clear_volume("fctl-cache-prj_2", true, &images)
+                .await?
+        );
+        assert_eq!(cli.volumes()?[2], ("fctl-cache-prj_2".to_owned(), 0));
+        assert!(
+            docker
+                .clear_volume("fctl-cache-prj_9", true, &images)
+                .await?
+        );
+        assert_eq!(cli.volumes()?.len(), 3);
+        Ok(())
     }
 }

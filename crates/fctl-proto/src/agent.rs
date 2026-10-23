@@ -57,6 +57,24 @@ pub struct AgentConfig {
     /// process driver).
     #[serde(default)]
     pub sandbox: Option<SandboxSize>,
+    /// The project's package caches on this host, when the project shares
+    /// them ([`crate::session::ProjectSettings::package_caches`]) and the
+    /// host keeps them.
+    #[serde(default)]
+    pub cache: Option<SandboxCache>,
+}
+
+/// Where a sandbox finds its project's package caches, which the project's
+/// other sessions on the host share.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SandboxCache {
+    /// The directory, as the sandbox sees it: where the host mounts the
+    /// cache, or with the process driver the cache itself.
+    pub dir: String,
+    /// The size (MiB) past which the host empties it (`max_cache_gb`).
+    pub max_mb: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -117,6 +117,22 @@ checks every build for it:
   managed, so packages go into a virtual environment (`uv venv`,
   `python3 -m venv`).
 
+In projects that share package caches, the Docker and Apple container
+drivers mount the project's caches at `/var/cache/fctl`, over whatever an
+image has there, and fctl-agent points the package managers there, for the
+setup script and for Claude: `npm_config_cache`, `pnpm_config_store_dir`
+and `pnpm_config_cache_dir` (pnpm 11; pnpm 9 and 10 get theirs in
+`~/.config/pnpm/rc`), `COREPACK_HOME`, `YARN_CACHE_FOLDER` and
+`YARN_GLOBAL_FOLDER`, `BUN_INSTALL_CACHE_DIR`, `UV_CACHE_DIR`,
+`PIP_CACHE_DIR`, `GOMODCACHE` and `PLAYWRIGHT_BROWSERS_PATH`, with
+`FCTL_CACHE_DIR` for the directory itself. Cargo keeps its downloads
+beside its tools, so `~/.cargo/registry`, `~/.cargo/git` and their lock
+files become links into the caches. What an image sets stays: its own
+variables, a `~/.cargo/registry` it comes with, and browsers in
+`~/.cache/ms-playwright`. With Docker, the host gives the caches to the
+image's user, `agent` or another; fctl-agent checks it can write to them,
+and without that, the session's package managers keep their own.
+
 An image that installs something as root switches back to `agent` at the
 end:
 

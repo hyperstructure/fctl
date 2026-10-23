@@ -56,7 +56,7 @@ this file is the overview. Order within a section is priority.
 - [x] CI on GitHub Actions: checks on pull requests, deploys from `main`,
       releases from tags
 - [x] Prebuilt sandbox images (GHCR) so `fctl host image build` is a pull (#2)
-- [ ] Shared caches per project (npm, cargo, uv) mounted into sandboxes (#3)
+- [x] Shared caches per project (npm, cargo, uv) mounted into sandboxes (#3)
 - [x] Notifications when a session waits for you or fails: web push, with
       followers, per-person settings and digests (#4)
 - [ ] The same notifications by email (#49)

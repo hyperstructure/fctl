@@ -25,6 +25,14 @@ image_build?: ImageBuild | null,
  */
 setup_script?: string, 
 /**
+ * Package managers keep their downloads (npm, pnpm, Yarn, Bun, Cargo,
+ * uv, pip, Go modules, Playwright's browsers) in a cache that each
+ * runner keeps for the project, which its sessions there share, up to
+ * the size the runner's owner allows (`max_cache_gb`). Off by default.
+ * Review sessions never get it, and older hosts ignore it.
+ */
+package_caches: boolean, 
+/**
  * Claude model alias or name (`opus`, `sonnet`, …). Defaults to Claude's own default.
  */
 model?: string, 

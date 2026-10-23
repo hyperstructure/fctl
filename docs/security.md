@@ -331,6 +331,17 @@ outside it except through these channels:
   whoever can push to its default branch. Hosts' owners decide which images
   their machines run and which repositories they build images from
   ([below](#hosts)).
+- **Package caches.** In a project that shares them (`fctl projects set
+  --package-caches on`), its sessions on a runner share what their package
+  managers download, in a Docker volume or, with Apple's `container`, a
+  directory on the Mac that each sandbox mounts. Anything a session runs
+  can change what they hold, and the project's later sessions on that
+  runner build with it: package managers check a download against a
+  lockfile's hashes as they fetch it, but most don't check again what is
+  in their cache already, such as the sources Cargo unpacked. Projects
+  never share caches, and review sessions, whose pull request could steer
+  their agent, get none. Leave them off in projects whose agents run code
+  from people you don't trust.
 - **Attached files** are saved in the sandbox under `~/attachments/`, where
   anything the agent runs can read them, and Claude sees images in the
   message.
@@ -488,6 +499,11 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   (20 GiB by default). Resuming after that starts a new sandbox on the
   session's branch, with everything that was pushed, and a new Claude
   conversation.
+- Hosts keep the package caches of projects that share them, with what
+  their sessions downloaded, until no session of the project has started
+  there for `keep_caches_days` (14 by default; 0 keeps them). They empty
+  them sooner once they take more than `max_cache_gb` (10 GiB by default),
+  and when the disk runs low.
 
 ## Reporting a vulnerability
 

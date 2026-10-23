@@ -537,6 +537,12 @@ pub struct ProjectSettings {
     pub image_build: Option<ImageBuild>,
     /// Shell script run in the repository after cloning (for example `npm ci`).
     pub setup_script: Option<String>,
+    /// Package managers keep their downloads (npm, pnpm, Yarn, Bun, Cargo,
+    /// uv, pip, Go modules, Playwright's browsers) in a cache that each
+    /// runner keeps for the project, which its sessions there share, up to
+    /// the size the runner's owner allows (`max_cache_gb`). Off by default.
+    /// Review sessions never get it, and older hosts ignore it.
+    pub package_caches: bool,
     /// Claude model alias or name (`opus`, `sonnet`, …). Defaults to Claude's own default.
     pub model: Option<String>,
     /// Claude effort level (`low` … `max`).
@@ -647,6 +653,7 @@ impl Default for ProjectSettings {
             image: None,
             image_build: None,
             setup_script: None,
+            package_caches: false,
             model: None,
             effort: None,
             instructions: None,
@@ -1091,6 +1098,10 @@ mod tests {
         let off: ProjectSettings =
             serde_json::from_str(r#"{"project_memory":false,"retrospectives":false}"#)?;
         assert!(!off.project_memory && !off.retrospectives);
+        // Nothing shared package caches before the setting existed.
+        assert!(!old.package_caches);
+        let on: ProjectSettings = serde_json::from_str(r#"{"package_caches":true}"#)?;
+        assert!(on.package_caches);
         Ok(())
     }
 

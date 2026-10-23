@@ -9,6 +9,7 @@
 //! and measuring the disk run in tasks of their own (`Chore`), so
 //! heartbeats and pongs keep flowing while a runtime hangs.
 
+use crate::caches;
 use crate::config::HostConfig;
 use crate::driver::{DiskSpot, Driver, SandboxInfo, sandbox_name, session_of, timed_out};
 use crate::expiry::{self, Why};
@@ -56,14 +57,18 @@ pub struct Daemon {
     sweep: tokio::time::Interval,
     /// Whether a sweep is under way.
     sweeping: bool,
-    /// What the sweep removes next, one at a time, and why.
-    removals: VecDeque<(String, Why)>,
+    /// What the sweep removes, measures or empties next, one at a time,
+    /// and why.
+    removals: VecDeque<Removal>,
     /// Whether the sweep under way removed a sandbox.
     removed_some: bool,
-    /// Whether a stopped sandbox may be left to remove: false from when a
-    /// sweep plans until one stops here, or the sweep leaves some for lack
-    /// of need.
+    /// Whether a stopped sandbox or package caches may be left to remove:
+    /// false from when a sweep plans until a session stops here, or the
+    /// sweep leaves some for lack of need.
     removable: bool,
+    /// Projects whose package caches a chore measures or empties: their
+    /// sessions wait to start.
+    clearing: HashSet<String>,
     /// Free disk (MiB) where sandboxes are, as last measured.
     disk_free_mb: Option<u64>,
     /// Sandboxes that chores stop or remove, with how many hold each.
@@ -71,16 +76,41 @@ pub struct Daemon {
     busy: HashMap<String, u32>,
 }
 
+/// What the sweep removes, measures or empties.
+enum Removal {
+    Sandbox(String, Why),
+    /// A project's package caches.
+    Cache(String, caches::Why),
+}
+
+/// What a chore did with a project's package caches.
+enum CacheDone {
+    /// Measured them: they take this many MiB, no more than they may.
+    Measured(u64),
+    /// Emptied them, or removed them when `gone`, having found that they
+    /// take this many MiB, when it measured them.
+    Cleared { gone: bool, size_mb: Option<u64> },
+}
+
 /// What background work on sandboxes that no session runs in reports.
 enum Chore {
-    /// The sweep listed this host's sandboxes.
-    Listed(Result<Vec<SandboxInfo>>),
+    /// The sweep listed this host's sandboxes, and the projects whose
+    /// package caches are here.
+    Listed(Result<Vec<SandboxInfo>>, Vec<String>),
     /// The sweep removed a sandbox, or failed to, and measured the disk
     /// again.
     Removed {
         name: String,
         why: Why,
         result: Result<()>,
+        free_mb: Option<u64>,
+    },
+    /// The sweep measured or emptied a project's package caches, or failed
+    /// to, and measured the disk again.
+    Cache {
+        project: String,
+        why: caches::Why,
+        result: Result<CacheDone>,
         free_mb: Option<u64>,
     },
     /// A sandbox the control plane asked to stop is stopped (and removed,
@@ -121,6 +151,19 @@ impl Daemon {
                 ctx.disk_spot()
             );
         }
+        if let (Some(max), Some(_)) = (
+            ctx.cfg.max_cache_mb(),
+            ctx.driver.cache_spot("prj_0", &data),
+        ) {
+            let unused = match ctx.cfg.keep_caches_days {
+                0 => "however long they go unused".to_owned(),
+                days => format!("until {days} days after a session last started with them"),
+            };
+            tracing::info!(
+                "keeping up to {} of package caches for each project that shares them, {unused} (max_cache_gb, keep_caches_days)",
+                size::memory(max)
+            );
+        }
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (login_tx, login_rx) = mpsc::unbounded_channel();
         let (chores_tx, chores_rx) = mpsc::unbounded_channel();
@@ -143,6 +186,7 @@ impl Daemon {
             removals: VecDeque::new(),
             removed_some: false,
             removable: true,
+            clearing: HashSet::new(),
             disk_free_mb: None,
             busy: HashMap::new(),
         })
@@ -197,8 +241,11 @@ impl Daemon {
     }
 
     /// Starts removing session sandboxes that have been stopped for longer
-    /// than `keep_stopped_hours` (0 keeps them), and while the disk is low
-    /// the others, unless a sweep is under way.
+    /// than `keep_stopped_hours` (0 keeps them) and package caches unused
+    /// for longer than `keep_caches_days`, emptying caches past
+    /// `max_cache_gb`, and while the disk is low emptying the other caches
+    /// and removing the other stopped sandboxes, unless a sweep is under
+    /// way.
     fn start_sweep(&mut self) {
         if self.sweeping {
             return;
@@ -206,12 +253,27 @@ impl Daemon {
         self.sweeping = true;
         let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
         tokio::spawn(async move {
-            let _ = chores.send(Chore::Listed(ctx.driver.list().await));
+            let listed = ctx.driver.list().await;
+            let caches = match &listed {
+                Ok(_) => ctx
+                    .driver
+                    .caches(&ctx.cfg.data_dir())
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("listing the package caches: {e:#}");
+                        Vec::new()
+                    }),
+                Err(_) => Vec::new(),
+            };
+            let _ = chores.send(Chore::Listed(listed, caches));
         });
     }
 
-    /// Plans what the sweep removes (see `expiry`), and starts removing it.
-    fn sweep_listed(&mut self, list: Vec<SandboxInfo>) {
+    /// Plans what the sweep removes (see `expiry` and `caches`), and starts
+    /// removing it. Package caches go first: emptied, they cost the next
+    /// session downloads, where a removed sandbox costs Claude's
+    /// conversation.
+    fn sweep_listed(&mut self, list: Vec<SandboxInfo>, here: Vec<String>) {
         let hours = self.ctx.cfg.keep_stopped_hours;
         let in_use: HashSet<String> = self
             .sessions
@@ -219,31 +281,78 @@ impl Daemon {
             .chain(self.pending_starts.keys())
             .map(|id| sandbox_name(id.as_str()))
             .collect();
-        let path = expiry::path(&self.ctx.cfg.data_dir());
+        let data = self.ctx.cfg.data_dir();
+        let path = expiry::path(&data);
         let now = expiry::now_ms();
         let keep_ms = (hours > 0).then(|| i64::from(hours) * 3_600_000);
         let plan = expiry::plan(&expiry::load(&path), &list, &in_use, now, keep_ms);
         if let Err(e) = expiry::save(&path, &plan.stopped) {
             tracing::warn!("saving {}: {e:#}", path.display());
         }
-        self.removals = plan.removals().collect();
+        // A host that keeps no caches now removes those it kept.
+        let keep_caches_ms = match self.ctx.cfg.max_cache_mb() {
+            Some(_) => self.ctx.cfg.keep_caches_ms(),
+            None => Some(0),
+        };
+        let cache_path = caches::path(&data);
+        let cached = caches::plan(
+            &caches::load(&cache_path),
+            &here,
+            &list,
+            &in_use,
+            now,
+            keep_caches_ms,
+        );
+        if let Err(e) = caches::save(&cache_path, &cached.records) {
+            tracing::warn!("saving {}: {e:#}", cache_path.display());
+        }
+        let cache = |why: caches::Why| move |project: String| Removal::Cache(project, why);
+        let sandbox = |why: Why| move |name: String| Removal::Sandbox(name, why);
+        self.removals = cached
+            .unused
+            .into_iter()
+            .map(cache(caches::Why::Unused))
+            .chain(cached.grown.into_iter().map(cache(caches::Why::Grown)))
+            .chain(plan.expired.into_iter().map(sandbox(Why::Expired)))
+            .chain(
+                cached
+                    .least_recent_first
+                    .into_iter()
+                    .map(cache(caches::Why::LowDisk)),
+            )
+            .chain(plan.oldest_first.into_iter().map(sandbox(Why::LowDisk)))
+            .collect();
         // A session that stops from now on sets it again.
         self.removable = false;
         self.remove_next();
     }
 
-    /// Removes the next sandbox the sweep planned, in the background, or
-    /// ends the sweep. One at a time: a session that starts in one meanwhile
-    /// keeps it, and each removal measures the disk again, so that removing
-    /// for a low disk stops once there is room.
+    /// Removes the next sandbox the sweep planned, or measures or empties
+    /// the next package caches, in the background, or ends the sweep. One
+    /// at a time: a session that starts in a sandbox meanwhile keeps it, or
+    /// with the caches waits for them, and each one measures the disk
+    /// again, so that removing for a low disk stops once there is room.
     fn remove_next(&mut self) {
-        while let Some((name, why)) = self.removals.pop_front() {
-            if why == Why::LowDisk && !self.low_on_disk() {
+        while let Some(removal) = self.removals.pop_front() {
+            let for_room = matches!(
+                removal,
+                Removal::Sandbox(_, Why::LowDisk) | Removal::Cache(_, caches::Why::LowDisk)
+            );
+            if for_room && !self.low_on_disk() {
                 // The rest stay, for when the disk runs low again.
                 self.removals.clear();
                 self.removable = true;
                 break;
             }
+            let (name, why) = match removal {
+                Removal::Sandbox(name, why) => (name, why),
+                Removal::Cache(project, why) => {
+                    if self.clear_cache(project, why) {
+                        return;
+                    }
+                    continue;
+                }
+            };
             // A session started in it meanwhile, or a chore holds it: it
             // waits for the next sweep.
             if self.in_use(&name) || self.busy.contains_key(&name) {
@@ -266,7 +375,7 @@ impl Daemon {
         self.sweeping = false;
         if self.low_on_disk() && !self.removable {
             tracing::warn!(
-                "no stopped sandbox is left to remove: taking no new sessions until there is room ({})",
+                "no stopped sandbox or package caches are left to remove: taking no new sessions until there is room ({})",
                 self.below()
             );
         }
@@ -277,12 +386,185 @@ impl Daemon {
         }
     }
 
+    /// Measures or empties `project`'s package caches in the background,
+    /// for the sweep: whether it does, which it doesn't while a session here
+    /// uses them, or when they hold nothing to free for a low disk. A
+    /// session that starts with them meanwhile waits.
+    fn clear_cache(&mut self, project: String, why: caches::Why) -> bool {
+        let data = self.ctx.cfg.data_dir();
+        let records = caches::load(&caches::path(&data));
+        if self.caches_in_use(&records).contains(&project) {
+            return false;
+        }
+        // A sandbox here may mount them again: they stay, emptied.
+        let keep = records.mounted(&project);
+        // Emptied since their last use, they have nothing to free, and
+        // stay while a sandbox may mount them.
+        let empty = records.projects.get(&project).is_some_and(|r| r.empty());
+        if empty && (why == caches::Why::LowDisk || keep) {
+            return false;
+        }
+        let Some(spot) = self.ctx.driver.cache_spot(&project, &data) else {
+            return false;
+        };
+        let max_mb = self.ctx.cfg.max_cache_mb();
+        self.clearing.insert(project.clone());
+        let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
+        tokio::spawn(async move {
+            let images = ctx.cfg.own_images();
+            let result = match why {
+                caches::Why::Grown => match ctx.driver.cache_size_mb(&spot, &images).await {
+                    Ok(size) if max_mb.is_some_and(|max| size > max) => ctx
+                        .driver
+                        .clear_cache(&spot, keep, &images)
+                        .await
+                        .map(|gone| CacheDone::Cleared {
+                            gone,
+                            size_mb: Some(size),
+                        }),
+                    Ok(size) => Ok(CacheDone::Measured(size)),
+                    Err(e) => Err(e),
+                },
+                caches::Why::Unused | caches::Why::LowDisk => ctx
+                    .driver
+                    .clear_cache(&spot, keep, &images)
+                    .await
+                    .map(|gone| CacheDone::Cleared {
+                        gone,
+                        size_mb: None,
+                    }),
+            };
+            let free_mb = ctx.disk_free_mb().await;
+            let _ = chores.send(Chore::Cache {
+                project,
+                why,
+                result,
+                free_mb,
+            });
+        });
+        true
+    }
+
+    /// The projects whose package caches the sessions here use, and those
+    /// of the sessions waiting to start.
+    fn caches_in_use(&self, records: &caches::Records) -> HashSet<String> {
+        let mut projects =
+            records.projects_of(self.sessions.keys().map(|id| sandbox_name(id.as_str())));
+        projects.extend(
+            self.pending_starts
+                .values()
+                .filter(|spec| matches!(self.ctx.cache_of(spec), Ok(Some(_))))
+                .map(|spec| spec.project.id.as_str().to_owned()),
+        );
+        projects
+    }
+
+    /// Records what a chore did with a project's package caches, and says
+    /// so in the log.
+    fn note_cache(&mut self, project: &str, why: caches::Why, done: CacheDone) {
+        let path = caches::path(&self.ctx.cfg.data_dir());
+        let mut records = caches::load(&path);
+        let now = expiry::now_ms();
+        let max = self.ctx.cfg.max_cache_mb().map(size::memory);
+        match done {
+            CacheDone::Measured(size_mb) => {
+                tracing::info!(
+                    "the package caches of {project} take {}",
+                    size::memory(size_mb)
+                );
+                if let Some(r) = records.projects.get_mut(project) {
+                    r.size_mb = Some(size_mb);
+                    r.measured_at = Some(now);
+                }
+            }
+            CacheDone::Cleared { gone, size_mb } => {
+                let what = if gone { "removed" } else { "emptied" };
+                match (why, size_mb, max) {
+                    (caches::Why::Grown, Some(size), Some(max)) => tracing::info!(
+                        "{what} the package caches of {project}: they took {}, more than the {max} a project's may (max_cache_gb)",
+                        size::memory(size)
+                    ),
+                    (caches::Why::LowDisk, ..) => tracing::info!(
+                        "{what} the package caches of {project} to make room on the disk ({})",
+                        self.below()
+                    ),
+                    (_, _, None) => tracing::info!(
+                        "{what} the package caches of {project}: this host keeps none (max_cache_gb = 0)"
+                    ),
+                    _ => tracing::info!(
+                        "{what} the package caches of {project}: no session has started with them for {} days (keep_caches_days)",
+                        self.ctx.cfg.keep_caches_days
+                    ),
+                }
+                if gone {
+                    records.projects.remove(project);
+                } else if let Some(r) = records.projects.get_mut(project) {
+                    r.size_mb = Some(0);
+                    r.measured_at = Some(now);
+                }
+            }
+        }
+        if let Err(e) = caches::save(&path, &records) {
+            tracing::warn!("saving {}: {e:#}", path.display());
+        }
+    }
+
+    /// Ends a chore on a project's package caches, and starts the sessions
+    /// that waited for it.
+    fn release_cache(&mut self, project: &str) {
+        self.clearing.remove(project);
+        let waiting: Vec<SessionId> = self
+            .pending_starts
+            .iter()
+            .filter(|(id, spec)| {
+                spec.project.id.as_str() == project
+                    && !self.sessions.contains_key(*id)
+                    && !self.busy.contains_key(&sandbox_name(id.as_str()))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in waiting {
+            if let Some(spec) = self.pending_starts.remove(&id) {
+                tracing::info!("starting {id}: {}", spec.title);
+                self.spawn_session(spec);
+            }
+        }
+    }
+
+    /// Whether a session's project's package caches are being measured or
+    /// emptied, which it waits for.
+    fn waits_for_caches(&self, spec: &SessionSpec) -> bool {
+        matches!(self.ctx.cache_of(spec), Ok(Some(_)))
+            && self.clearing.contains(spec.project.id.as_str())
+    }
+
     fn on_chore(&mut self, chore: Chore) {
         match chore {
-            Chore::Listed(Ok(list)) => self.sweep_listed(list),
-            Chore::Listed(Err(e)) => {
+            Chore::Listed(Ok(list), caches) => self.sweep_listed(list, caches),
+            Chore::Listed(Err(e), _) => {
                 tracing::warn!("listing sandboxes: {e:#}");
                 self.sweeping = false;
+            }
+            Chore::Cache {
+                project,
+                why,
+                result,
+                free_mb,
+            } => {
+                match result {
+                    Ok(done) => self.note_cache(&project, why, done),
+                    Err(e) => tracing::warn!(
+                        "{} the package caches of {project}: {e:#}",
+                        match why {
+                            caches::Why::Grown => "measuring",
+                            caches::Why::Unused => "removing",
+                            caches::Why::LowDisk => "emptying",
+                        }
+                    ),
+                }
+                self.note_disk(free_mb);
+                self.release_cache(&project);
+                self.remove_next();
             }
             Chore::Removed {
                 name,
@@ -403,6 +685,10 @@ impl Daemon {
         self.busy.remove(name);
         if let Some(id) = session_of(name).map(SessionId)
             && !self.sessions.contains_key(&id)
+            && self
+                .pending_starts
+                .get(&id)
+                .is_some_and(|spec| !self.waits_for_caches(spec))
             && let Some(spec) = self.pending_starts.remove(&id)
         {
             tracing::info!("starting {id}: {}", spec.title);
@@ -412,6 +698,15 @@ impl Daemon {
 
     fn spawn_session(&mut self, spec: Box<SessionSpec>) {
         let id = spec.session_id.clone();
+        // Its sandbox uses the project's package caches from now on, also
+        // after a restart, while the host knows no spec for it.
+        if let Ok(Some(_)) = self.ctx.cache_of(&spec) {
+            let path = caches::path(&self.ctx.cfg.data_dir());
+            let (sandbox, project) = (sandbox_name(id.as_str()), spec.project.id.as_str());
+            if let Err(e) = caches::note_used(&path, &sandbox, project, expiry::now_ms()) {
+                tracing::warn!("saving {}: {e:#}", path.display());
+            }
+        }
         let h = session::spawn(self.ctx.clone(), Start::New(spec), self.events_tx.clone());
         self.sessions.insert(id, h);
     }
@@ -764,6 +1059,11 @@ impl Daemon {
             self.pending_starts.insert(id, spec);
             return Ok(());
         }
+        if self.waits_for_caches(&spec) {
+            tracing::info!("{id} starts once its project's package caches are measured or emptied");
+            self.pending_starts.insert(id, spec);
+            return Ok(());
+        }
         tracing::info!("starting {id}: {}", spec.title);
         self.spawn_session(spec);
         Ok(())
@@ -898,18 +1198,75 @@ mod tests {
     /// A process-driver daemon whose data directory has stopped session
     /// sandboxes, each stopped `minutes` ago.
     async fn daemon_with(stopped: &[(&str, i64)]) -> Result<(tempfile::TempDir, Daemon)> {
+        daemon_where(stopped, |_| {}).await
+    }
+
+    /// [`daemon_with`], with `host.toml` as `configure` leaves it.
+    async fn daemon_where(
+        stopped: &[(&str, i64)],
+        configure: impl FnOnce(&mut HostConfig),
+    ) -> Result<(tempfile::TempDir, Daemon)> {
         let dir = tempfile::tempdir()?;
         let path = expiry::path(dir.path());
         for (name, minutes) in stopped {
             std::fs::create_dir_all(dir.path().join("sandboxes").join(name))?;
             expiry::note_stopped(&path, name, expiry::now_ms() - minutes * MINUTE)?;
         }
-        let cfg = HostConfig {
+        let mut cfg = HostConfig {
             driver: "process".into(),
             data_dir: Some(dir.path().to_owned()),
             ..HostConfig::default()
         };
+        configure(&mut cfg);
         Ok((dir, Daemon::new(cfg, "fctl_rt_test".into()).await?))
+    }
+
+    /// Gives `project` package caches in the data directory, with a file,
+    /// that a session last started with `minutes` ago, and that the host
+    /// measured since when `measured`.
+    fn cache(dir: &std::path::Path, project: &str, minutes: i64, measured: bool) -> Result<()> {
+        let files = caches::dir(dir, project).join("npm/_cacache");
+        std::fs::create_dir_all(&files)?;
+        std::fs::write(files.join("tarball"), vec![7u8; 64 * 1024])?;
+        let path = caches::path(dir);
+        let mut records = caches::load(&path);
+        let used_at = expiry::now_ms() - minutes * MINUTE;
+        records.projects.insert(
+            project.into(),
+            caches::Record {
+                used_at,
+                size_mb: measured.then_some(1),
+                measured_at: measured.then_some(used_at + 1),
+            },
+        );
+        caches::save(&path, &records)
+    }
+
+    /// Notes that `sandbox` was made with `project`'s caches.
+    fn mounts(dir: &std::path::Path, sandbox: &str, project: &str) -> Result<()> {
+        let path = caches::path(dir);
+        let mut records = caches::load(&path);
+        records.sandboxes.insert(sandbox.into(), project.into());
+        caches::save(&path, &records)
+    }
+
+    /// A session of `project`, which shares its package caches.
+    fn cached_spec(session_id: &str, project: &str) -> Result<Box<SessionSpec>> {
+        let mut spec = spec(session_id)?;
+        spec.project.id = fctl_proto::ProjectId(project.into());
+        spec.project.settings.package_caches = true;
+        Ok(spec)
+    }
+
+    /// A session that runs here, as far as the sweep can tell.
+    fn running(d: &mut Daemon, session_id: &str) {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let report = Arc::new(std::sync::Mutex::new(session::Report {
+            status: SessionStatus::Running,
+            agent_seq: 0,
+        }));
+        d.sessions
+            .insert(SessionId(session_id.into()), SessionHandle { tx, report });
     }
 
     /// Runs the sweep under way to its end, as if the disk had
@@ -923,9 +1280,22 @@ mod tests {
         while d.sweeping {
             let next = tokio::time::timeout(Duration::from_secs(10), d.chores_rx.recv());
             let mut chore = next.await?.context("no more chores")?;
-            if let Chore::Removed { name, free_mb, .. } = &mut chore {
-                removed.push(name.clone());
-                *free_mb = Some(free_after(removed.len()));
+            match &mut chore {
+                Chore::Removed { name, free_mb, .. } => {
+                    removed.push(name.clone());
+                    *free_mb = Some(free_after(removed.len()));
+                }
+                Chore::Cache {
+                    project,
+                    result: Ok(CacheDone::Cleared { .. }),
+                    free_mb,
+                    ..
+                } => {
+                    removed.push(format!("caches of {project}"));
+                    *free_mb = Some(free_after(removed.len()));
+                }
+                Chore::Cache { free_mb, .. } => *free_mb = d.disk_free_mb,
+                _ => {}
             }
             d.on_chore(chore);
         }
@@ -1070,6 +1440,155 @@ mod tests {
         let removed = finish_sweep(&mut d, |_| 500 * GIB).await?;
         assert_eq!(removed, ["fctl-ses-01old"]);
         assert!(d.removable);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_low_disk_empties_package_caches_before_it_removes_stopped_sandboxes() -> Result<()> {
+        let (dir, mut d) = daemon_with(&[("fctl-ses-01old", 30), ("fctl-ses-01new", 1)]).await?;
+        cache(dir.path(), "prj_recent", 10, true)?;
+        cache(dir.path(), "prj_least", 60, true)?;
+        d.on_chore(Chore::Disk(Some(17 * GIB)));
+        let removed = finish_sweep(&mut d, |n| [18, 19, 21][n - 1] * GIB).await?;
+        // The caches used least recently first, then the sandbox stopped
+        // longest; the newest sandbox stays, for a resume.
+        assert_eq!(
+            removed,
+            [
+                "caches of prj_least",
+                "caches of prj_recent",
+                "fctl-ses-01old"
+            ]
+        );
+        assert!(!caches::dir(dir.path(), "prj_least").exists());
+        assert!(caches::load(&caches::path(dir.path())).projects.is_empty());
+        assert!(dir.path().join("sandboxes/fctl-ses-01new").is_dir());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn caches_in_use_stay_and_sessions_wait_while_theirs_are_emptied() -> Result<()> {
+        // On a low disk, only sessions whose sandboxes are here resume.
+        let (dir, mut d) = daemon_with(&[("fctl-ses-01wait", 5)]).await?;
+        cache(dir.path(), "prj_busy", 60, true)?;
+        cache(dir.path(), "prj_idle", 10, true)?;
+        mounts(dir.path(), "fctl-ses-01run", "prj_busy")?;
+        running(&mut d, "ses_01RUN");
+        d.on_chore(Chore::Disk(Some(17 * GIB)));
+        // The sweep lists the caches here, and empties the idle ones…
+        let listed = tokio::time::timeout(Duration::from_secs(10), d.chores_rx.recv())
+            .await?
+            .context("no more chores")?;
+        d.on_chore(listed);
+        assert!(d.clearing.contains("prj_idle"));
+        // …while a session of their project waits.
+        let waiting = cached_spec("ses_01WAIT", "prj_idle")?;
+        let sandbox = sandbox_name(waiting.session_id.as_str());
+        d.hold(&sandbox);
+        assert_eq!(d.start_session(waiting.clone()), Ok(()));
+        assert!(d.waits_for_caches(&waiting));
+        let removed = finish_sweep(&mut d, |_| 18 * GIB).await?;
+        assert_eq!(removed, ["caches of prj_idle"]);
+        assert!(
+            caches::dir(dir.path(), "prj_busy")
+                .join("npm/_cacache/tarball")
+                .exists()
+        );
+        // It starts once its sandbox is free too.
+        assert!(!d.waits_for_caches(&waiting));
+        assert!(d.pending_starts.contains_key(&waiting.session_id));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unused_caches_go_whatever_the_disk_has_unless_a_sandbox_mounts_them() -> Result<()> {
+        let day = 24 * 60;
+        let (dir, mut d) = daemon_with(&[("fctl-ses-01stop", 60)]).await?;
+        cache(dir.path(), "prj_old", 15 * day, true)?;
+        cache(dir.path(), "prj_kept", 15 * day, true)?;
+        cache(dir.path(), "prj_recent", day, true)?;
+        mounts(dir.path(), "fctl-ses-01stop", "prj_kept")?;
+        // The hourly sweep.
+        d.start_sweep();
+        let removed = finish_sweep(&mut d, |_| 500 * GIB).await?;
+        assert_eq!(removed, ["caches of prj_kept", "caches of prj_old"]);
+        assert!(!caches::dir(dir.path(), "prj_old").exists());
+        // The stopped sandbox mounts its directory as it starts.
+        let kept = caches::dir(dir.path(), "prj_kept");
+        assert!(kept.is_dir() && std::fs::read_dir(&kept)?.next().is_none());
+        let records = caches::load(&caches::path(dir.path()));
+        assert_eq!(
+            records
+                .projects
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["prj_kept", "prj_recent"]
+        );
+        assert!(records.projects["prj_kept"].empty());
+        // Emptied, it waits for its sandbox to go; then it goes too.
+        d.start_sweep();
+        assert!(finish_sweep(&mut d, |_| 500 * GIB).await?.is_empty());
+        std::fs::remove_dir_all(dir.path().join("sandboxes/fctl-ses-01stop"))?;
+        d.start_sweep();
+        assert_eq!(
+            finish_sweep(&mut d, |_| 500 * GIB).await?,
+            ["caches of prj_kept"]
+        );
+        assert!(!kept.exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_host_that_keeps_no_caches_removes_those_it_kept() -> Result<()> {
+        let (dir, mut d) = daemon_where(&[], |cfg| cfg.max_cache_gb = 0).await?;
+        cache(dir.path(), "prj_1", 1, true)?;
+        let spec = cached_spec("ses_01NEW", "prj_1")?;
+        assert_eq!(
+            d.ctx.cache_of(&spec),
+            Err(format!(
+                "{} keeps no package caches (max_cache_gb = 0 in its host.toml), so this session's package managers download what they need",
+                d.ctx.cfg.name
+            ))
+        );
+        d.start_sweep();
+        assert_eq!(
+            finish_sweep(&mut d, |_| 500 * GIB).await?,
+            ["caches of prj_1"]
+        );
+        assert!(!caches::dir(dir.path(), "prj_1").exists());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn caches_that_grew_past_the_limit_are_emptied() -> Result<()> {
+        let (dir, mut d) = daemon_where(&[], |cfg| cfg.max_cache_gb = 1).await?;
+        cache(dir.path(), "prj_big", 10, false)?;
+        cache(dir.path(), "prj_small", 10, false)?;
+        cache(dir.path(), "prj_measured", 10, true)?;
+        // 1.1 GiB at once, without writing it.
+        let big = caches::dir(dir.path(), "prj_big").join("uv/torch.whl");
+        std::fs::create_dir_all(big.parent().context("no parent")?)?;
+        let allocated = std::process::Command::new("fallocate")
+            .args(["-l", "1100M"])
+            .arg(&big)
+            .status();
+        if !allocated.is_ok_and(|s| s.success()) {
+            eprintln!("skipped: fallocate can't allocate here");
+            return Ok(());
+        }
+        d.start_sweep();
+        let removed = finish_sweep(&mut d, |_| 500 * GIB).await?;
+        assert_eq!(removed, ["caches of prj_big"]);
+        let records = caches::load(&caches::path(dir.path()));
+        assert!(!records.projects.contains_key("prj_big"));
+        // Measured, within the limit; one measured since its last use isn't
+        // measured again.
+        let small = records.projects["prj_small"];
+        assert_eq!(small.size_mb, Some(1));
+        assert!(!small.grown());
+        assert_eq!(records.projects["prj_measured"].size_mb, Some(1));
         Ok(())
     }
 }

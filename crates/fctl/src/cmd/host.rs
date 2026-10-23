@@ -8,7 +8,7 @@ use clap::Subcommand;
 use fctl_domain::{disk, image, size};
 use fctl_host::config::means_default_image;
 use fctl_host::driver::{DiskSpot, Driver};
-use fctl_host::{HostConfig, refresh, service};
+use fctl_host::{HostConfig, caches, refresh, service};
 use fctl_proto::api::{Runner, RunnerDetail, RunnerStatus};
 use std::io::IsTerminal;
 
@@ -335,6 +335,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 None => (None, (None, None)),
             };
             let min_free = cfg.min_free_disk_mb();
+            let cached = caches::load(&caches::path(&cfg.data_dir()));
             // What the control plane says about this runner and its sessions.
             let runner = match runner_api() {
                 Ok(api) => api.this_runner().await.map_err(anyhow::Error::from),
@@ -347,8 +348,13 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     "min_free_mb": min_free,
                     "low": disk::low(free, min_free),
                 });
+                let caches = serde_json::json!({
+                    "max_mb": cfg.max_cache_mb(),
+                    "keep_days": (cfg.keep_caches_days > 0).then_some(cfg.keep_caches_days),
+                    "projects": cached.projects,
+                });
                 return style::print_json(
-                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "disk": disk, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
+                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "disk": disk, "caches": caches, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
@@ -362,6 +368,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             if let Some(spot) = &spot {
                 println!("disk:     {}", disk_line(spot, free, min_free));
+            }
+            if let Some(d) = &driver {
+                println!("caches:   {}", caches_line(&cfg, d, &cached));
             }
             println!("image:    {}", cfg.image());
             if let Some(d) = &driver {
@@ -848,6 +857,35 @@ fn disk_line(spot: &DiskSpot, free: Option<u64>, min_free: Option<u64>) -> Strin
         ),
         Some(min) => format!("{here}, keeps {} free", size::memory(min)),
         None => here,
+    }
+}
+
+/// `2 projects, 3.4 GiB when last measured; up to 10 GiB each, …`: the
+/// package caches this host keeps for the projects that share them.
+fn caches_line(cfg: &HostConfig, driver: &Driver, cached: &caches::Records) -> String {
+    let Some(max) = cfg.max_cache_mb() else {
+        return style::dim("none (max_cache_gb = 0)");
+    };
+    if driver.cache_spot("prj_0", &cfg.data_dir()).is_none() {
+        return style::dim(&format!("none with the {} driver", driver.name()));
+    }
+    let kept = match cfg.keep_caches_days {
+        0 => "kept however long no session uses them".to_owned(),
+        1 => "removed after a day without a session".to_owned(),
+        days => format!("removed after {days} days without a session"),
+    };
+    let limits = format!("up to {} each, {kept}", size::memory(max));
+    let taken: u64 = cached.projects.values().filter_map(|r| r.size_mb).sum();
+    match cached.projects.len() {
+        0 => format!("none yet; {limits}"),
+        1 => format!(
+            "1 project, {} when last measured; {limits}",
+            size::memory(taken)
+        ),
+        n => format!(
+            "{n} projects, {} when last measured; {limits}",
+            size::memory(taken)
+        ),
     }
 }
 

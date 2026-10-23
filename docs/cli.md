@@ -235,6 +235,7 @@ fctl projects set -p my-app --image ghcr.io/acme/agent:1   # sessions start from
 fctl projects set -p my-app --build .devcontainer/devcontainer.json   # or one built from the repository
 fctl projects set -p my-app --build Dockerfile --build-context app    # a Dockerfile, built in app/
 fctl projects set -p my-app --setup-script 'npm ci'   # or @setup.sh, or - to read it from stdin
+fctl projects set -p my-app --package-caches on    # sessions on a runner share their downloads
 fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
@@ -277,6 +278,16 @@ them ([Sandbox images](sandbox-images.md#which-images-a-host-runs)); a
 session that no runner allows stays queued and says why. `fctl projects
 show` says where the project's sessions start from, their size, setup
 script and variables.
+
+With `--package-caches on`, the project's sessions on each runner share
+what npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright download, so
+a setup script like `npm ci` or `cargo fetch` gets only what is new. The
+runner keeps them for the project up to its owner's limit, 10 GiB unless
+`host.toml` says otherwise, empties them past it, and removes them two
+weeks after a session last used them ([Hosts](#hosts)). Sessions get them
+on runners with the Docker or Apple container driver (and the process
+driver), not Lima, and review agents never do. A session in a sandbox
+made before the project turned them on gets them in its next sandbox.
 
 ### Memory and retrospectives
 
@@ -512,6 +523,8 @@ max_cpus = 8             # the most one sandbox may have (unset: all there is)
 max_memory_mb = 12288
 keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them)
 min_free_disk_gb = 20    # disk to keep free for sandboxes (0 keeps none)
+max_cache_gb = 10        # package caches per project that shares them (0 keeps none)
+keep_caches_days = 14    # then remove the caches of a project with no session here (0 keeps them)
 # allowed_images = ["ghcr.io/acme/*"]   # images projects may choose (unset: any)
 # allowed_builds = ["acme/*"]           # repositories it builds images from (unset: none)
 build_timeout_minutes = 60
@@ -578,6 +591,31 @@ running ones stop and the host removes their sandboxes, or once something
 else frees space. Set `min_free_disk_gb = 0` to remove sandboxes by age
 only, or lower `keep_stopped_hours` to remove them sooner whatever the disk
 has, and run `fctl host restart` after changing either.
+
+For projects that share package caches (`fctl projects set
+--package-caches on`), the host keeps what their sessions' package
+managers download: with Docker in a volume per project,
+`fctl-cache-<project id>`, and with Apple's `container` in a directory of
+its data directory, `caches/<project id>`, that its sandboxes mount at
+`/var/cache/fctl`. The sweep that removes stopped sandboxes, when the host
+starts and every hour, looks after them too:
+
+- It measures the caches that a session used since they were last
+  measured, and empties those that take more than `max_cache_gb` (10 GiB
+  unless `host.toml` says otherwise). With Docker, measuring and emptying
+  a volume run in a short-lived container of the host's image.
+- It removes the caches of a project that no session has started with for
+  `keep_caches_days` (14 unless `host.toml` says otherwise). Those that a
+  stopped sandbox here mounts stay, emptied, until the sandbox goes.
+- Below `min_free_disk_gb`, it empties caches, those used least recently
+  first, before it removes stopped sandboxes: an empty cache costs the
+  next session downloads, a removed sandbox Claude's conversation.
+
+It leaves alone the caches of a project with a session running here, and
+a session that starts while the host measures or empties its project's
+caches waits for that. `max_cache_gb = 0` keeps no caches: the next sweep
+removes them, and sessions download what they need. `fctl host status`
+shows what the caches took when last measured.
 
 ## Admin
 
