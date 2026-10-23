@@ -254,7 +254,8 @@ outside it except through these channels:
   token only while the person it runs for is an active member of its
   workspace and may still run it: start sessions in its project, or message
   it through a share. Once they leave the workspace, are removed or
-  disabled, or lose their role in the project or the share, the sessions
+  disabled, lose their role in the project or the share, or the
+  workspace's two-factor requirement closes it to them, the sessions
   that run on their subscription stop, get no more Claude or GitHub tokens,
   and a message to one doesn't start it on their subscription again (nor
   on their runners, with the project's secrets); resuming it runs it on the

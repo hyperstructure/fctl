@@ -765,8 +765,9 @@ message to an idle session does. That subscription's owner must still be
 an active member of the session's workspace, as a runner's owner must, and
 still able to run the session: to start sessions in its project, or to
 message it through a share (`spec::credential_serves`). Once they left the
-workspace, were removed or disabled, or lost their role in the project or
-the share, the session's runs and token refreshes, GitHub's as well as
+workspace, were removed or disabled, lost their role in the project or
+the share, or the workspace's two-factor requirement closed it to them,
+the session's runs and token refreshes, GitHub's as well as
 Claude's, get no credential, and it fails with a reason instead; leaving,
 being disabled, or losing that role stops the sessions that run on their
 subscription (FleetDO, on `/workspaces-changed`). A resume (**Resume** for the session's
