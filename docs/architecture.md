@@ -1173,8 +1173,9 @@ Three kinds, each on or off on its own, all off by default:
    /repos/{owner}/{name}/collaborators/{login}/permission`: admin,
    maintain or write), so that nobody else steers the agent through a
    public repository, nor a member of its organization who may only read
-   it. A comment on the conversation names no branch, so the control plane
-   looks its pull request up. A review brings its comments on lines (`GET
+   it. A comment on the conversation names neither branch: where several
+   sessions list its pull request, or it merged, the control plane looks it
+   up (`fctl_domain::reviews::lookup`). A review brings its comments on lines (`GET
    …/reviews/{id}/comments`), which also come as deliveries of their own.
    Once the session has a comment, fctl adds an `eyes` reaction to it with
    a token for the repository alone, which it revokes at once, and the
@@ -1203,8 +1204,8 @@ its comments, or checks that fail together, reach the agent in one
 message, and what reached it in the last day (a comment by its id, failed
 checks by their commit, a merge) doesn't come again. Then, for each pull
 request, a message from fctl (`fctl_domain::follow_ups::message`) says
-what happened: who wrote what and where, quoted, a review's comments on lines
-under it, and how to answer each where it was made (`gh pr comment`, `gh
+what happened: who wrote what and where, quoted, a review's comments on
+lines under it, and how to answer each where it was made (`gh pr comment`, `gh
 api …/comments/{id}/replies`); which checks failed and how to look into
 them (`gh pr checks`, `gh run view --log-failed`), waiting for those still
 running before a push; after a merge, what may be left to do. It says
