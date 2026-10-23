@@ -70,27 +70,30 @@ fn optional(
 }
 
 /// What a schedule's agents may do on GitHub, as asked: at most what the
-/// project allows, and the caller's access token.
+/// project allows, and the caller's access token. Asked for nothing, the
+/// project's as each run starts, within the token's cap.
 fn github(
     ctx: &Ctx,
     asked: Option<GithubAccess>,
     project: &crate::model::ProjectRow,
 ) -> AppResult<Option<GithubAccess>> {
+    let token = token_github(ctx);
     let Some(asked) = asked else {
-        return Ok(None);
+        return Ok(sch::github_within(None, token));
     };
-    fctl_domain::limits::session_github(
-        Some(asked),
-        project.settings().github_access,
-        ctx.limits().and_then(|l| l.github_access),
-    )
-    .map(Some)
-    .map_err(|e| {
-        AppError(ApiError {
-            field: Some("github_access".into()),
-            ..e
+    fctl_domain::limits::session_github(Some(asked), project.settings().github_access, token)
+        .map(Some)
+        .map_err(|e| {
+            AppError(ApiError {
+                field: Some("github_access".into()),
+                ..e
+            })
         })
-    })
+}
+
+/// How far the caller's access token lets agents go on GitHub, if it caps them.
+fn token_github(ctx: &Ctx) -> Option<GithubAccess> {
+    ctx.limits().and_then(|l| l.github_access)
 }
 
 /// `POST /api/v1/projects/{id}/schedules`: a schedule on the caller's
@@ -269,6 +272,13 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         }
         None => row.github(),
     };
+    // A change, a resume or a take-over with a token capped on GitHub keeps
+    // the schedule within the cap: its runs start after the token is gone.
+    let github_access = if changes || resumes || takes_over {
+        sch::github_within(github_access, token_github(ctx))
+    } else {
+        github_access
+    };
     let enabled = body.enabled.unwrap_or(row.enabled);
     let next = if !enabled {
         None
@@ -435,11 +445,8 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
         (ScheduleTrigger::Person, StartedBy::Person(&user.name))
     };
     let github_access =
-        fctl_domain::limits::effective(row.github(), p.row.settings().github_access).min(
-            ctx.limits()
-                .and_then(|l| l.github_access)
-                .unwrap_or_default(),
-        );
+        fctl_domain::limits::effective(row.github(), p.row.settings().github_access)
+            .min(token_github(ctx).unwrap_or_default());
     let zone = schedules::zone(&row.timezone);
     let previous = schedules::previous(&ctx.db, &row.id).await?;
     let previous_at = previous.as_ref().map(|prev| sch::stamp(&*zone, prev.at));

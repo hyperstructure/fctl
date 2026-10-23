@@ -13,7 +13,7 @@ use crate::cron::{self, Cron, Zone};
 use crate::perm;
 use crate::usage::{self, Standing};
 use fctl_proto::api::{PlanLimit, ScheduleState};
-use fctl_proto::session::{ProjectRole, SessionStatus};
+use fctl_proto::session::{GithubAccess, ProjectRole, SessionStatus};
 use fctl_proto::{ApiError, Millis};
 
 /// Schedules a project keeps at most.
@@ -265,6 +265,21 @@ pub fn rights(role: Option<ProjectRole>, owner: bool) -> Rights {
         run: starts,
         edit: starts && (owner || maintains),
         manage: maintains || (owner && role.is_some()),
+    }
+}
+
+/// What a schedule's sessions may do on GitHub once someone sets it up,
+/// changes it, resumes it or takes it over with an access token capped
+/// there at `token`: its own access (`None`: the project's as each run
+/// starts), at most the token's, since its runs start after the token is
+/// gone. Without a cap, or with one that holds nothing back, as it was.
+pub fn github_within(
+    access: Option<GithubAccess>,
+    token: Option<GithubAccess>,
+) -> Option<GithubAccess> {
+    match token.filter(|t| *t < GithubAccess::Push) {
+        None => access,
+        Some(t) => Some(access.map_or(t, |a| a.min(t))),
     }
 }
 
@@ -575,6 +590,22 @@ mod tests {
                 .as_deref(),
             Some("Vec<u8> <b>x</b> 1 < 2 <contex")
         );
+    }
+
+    #[test]
+    fn a_tokens_cap_on_github_stays_with_the_schedule() {
+        use GithubAccess::*;
+        // Without a cap, or with one that holds nothing back: its own, or
+        // the project's.
+        assert_eq!(github_within(None, None), None);
+        assert_eq!(github_within(Some(Comment), None), Some(Comment));
+        assert_eq!(github_within(None, Some(Push)), None);
+        // A token that may only comment keeps it there, whatever it had,
+        // and the project's too.
+        assert_eq!(github_within(None, Some(Comment)), Some(Comment));
+        assert_eq!(github_within(Some(Push), Some(Comment)), Some(Comment));
+        assert_eq!(github_within(Some(Read), Some(Comment)), Some(Read));
+        assert_eq!(github_within(Some(Push), Some(Read)), Some(Read));
     }
 
     #[test]

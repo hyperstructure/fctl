@@ -1257,7 +1257,9 @@ someone, or another tool, runs one
    role now, and the project's maintainers and owners pause and delete it.
    Limited access tokens read schedules, and run them with `run`; setting
    one up or changing it takes `full`, since its sessions start after the
-   token is gone (`limits::allows`). A project keeps at most 50.
+   token is gone (`limits::allows`). A token's cap on GitHub stays with
+   what it sets up, changes, resumes or takes over
+   (`fctl_domain::schedules::github_within`). A project keeps at most 50.
 2. **When.** Cron expressions have Vixie cron's five fields
    (`fctl_domain::cron`) and run at most every 15 minutes; their times are
    wall-clock times in the schedule's IANA time zone. The control plane
