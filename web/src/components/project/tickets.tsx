@@ -16,7 +16,7 @@ import {
   Play,
   RotateCcw,
 } from "lucide-react";
-import { type KeyboardEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
 import { StateDot } from "@/components/session/ticket";
 import {
   Avatar,
@@ -194,7 +194,7 @@ const TRACKER_ICON: Record<G.Tracker, ReactNode> = {
   linear: <LinearIcon className="size-[16px]" />,
 };
 
-/** The three trackers as cards to choose from, a radio group the arrow keys move through. */
+/** The three trackers as cards to choose from: radios, which the arrow keys move through. */
 function TrackerPicker({
   value,
   onChange,
@@ -209,53 +209,36 @@ function TrackerPicker({
   linear: boolean;
   className?: string;
 }) {
-  const refs = useRef<(HTMLButtonElement | null)[]>([]);
-  const choosable = (t: G.Tracker) => !disabled && (t !== "linear" || linear || value === "linear");
-  const move = (e: KeyboardEvent, from: number) => {
-    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
-    if (!step) return;
-    e.preventDefault();
-    for (let i = 1; i <= TRACKERS.length; i++) {
-      const next = (from + step * i + TRACKERS.length * 2) % TRACKERS.length;
-      const t = TRACKERS[next];
-      if (t && choosable(t.value)) {
-        onChange(t.value);
-        refs.current[next]?.focus();
-        return;
-      }
-    }
-  };
+  const name = useId();
   return (
-    <div
-      role="radiogroup"
-      aria-label="Ticket tracker"
-      className={cn("grid gap-2.5 sm:grid-cols-3", className)}
-    >
-      {TRACKERS.map((t, i) => {
+    <fieldset className={cn("grid gap-2.5 sm:grid-cols-3", className)}>
+      <legend className="sr-only">Ticket tracker</legend>
+      {TRACKERS.map((t) => {
         const checked = value === t.value;
         const unavailable = t.value === "linear" && !linear && !checked;
+        const off = (disabled && !checked) || unavailable;
         return (
-          <button
+          <label
             key={t.value}
-            ref={(el) => {
-              refs.current[i] = el;
-            }}
-            type="button"
-            role="radio"
-            aria-checked={checked}
-            tabIndex={checked ? 0 : -1}
-            disabled={!choosable(t.value) && !checked}
-            onClick={() => choosable(t.value) && onChange(t.value)}
-            onKeyDown={(e) => move(e, i)}
             className={cn(
-              "group relative flex items-start gap-3 rounded-xl border p-3.5 text-left transition-[background-color,border-color,box-shadow] duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--c-accent-soft)]",
+              "group relative flex items-start gap-3 rounded-xl border p-3.5 text-left transition-[background-color,border-color,box-shadow] duration-150 has-[:focus-visible]:shadow-[0_0_0_3px_var(--c-accent-soft)]",
               checked
                 ? "border-accent/55 bg-accent-soft/40 shadow-[inset_0_0_0_1px_var(--c-accent-soft)]"
-                : "border-line bg-surface/60 enabled:hover:border-line-strong enabled:hover:bg-hover",
-              !checked && disabled && "opacity-60",
-              unavailable && "opacity-50",
+                : "border-line bg-surface/60",
+              !checked && !off && "cursor-pointer hover:border-line-strong hover:bg-hover",
+              off && "opacity-55",
+              disabled && checked && "cursor-default",
             )}
           >
+            <input
+              type="radio"
+              name={name}
+              value={t.value}
+              checked={checked}
+              disabled={off}
+              onChange={() => onChange(t.value)}
+              className="sr-only"
+            />
             <span
               aria-hidden="true"
               className={cn(
@@ -282,10 +265,10 @@ function TrackerPicker({
                 {unavailable ? "This instance has no Linear app yet." : t.summary}
               </span>
             </span>
-          </button>
+          </label>
         );
       })}
-    </div>
+    </fieldset>
   );
 }
 

@@ -110,12 +110,20 @@ const workspace = createRoute({
   component: WorkspacePage,
   validateSearch: (
     s: Record<string, unknown>,
-  ): { tab?: WorkspaceTab; github?: GithubOutcome; account?: string; reason?: GithubRefusal } => ({
-    tab: oneOf(s.tab, ["projects", "people", "runners", "github", "settings", "audit"] as const),
+  ): {
+    tab?: WorkspaceTab;
+    github?: GithubOutcome;
+    account?: string;
+    reason?: GithubRefusal;
+    linear?: LinearOutcome;
+  } => ({
+    tab: oneOf(s.tab, ["projects", "people", "runners", "github", "linear", "settings", "audit"] as const),
     // Back from GitHub: installing the app, or the sign-in that connects an account (api::github).
     github: oneOf(s.github, GITHUB_OUTCOMES),
     account: str(s.account),
     reason: oneOf(s.reason, GITHUB_REFUSALS),
+    // Back from Linear: installing fctl's app there (api::linear).
+    linear: oneOf(s.linear, LINEAR_OUTCOMES),
   }),
 });
 type ProjectTab =
@@ -149,7 +157,14 @@ const settings = createRoute({
   getParentRoute: () => app,
   path: "/settings",
   component: SettingsPage,
-  validateSearch: (s: Record<string, unknown>) => ({ linked: str(s.linked), error: str(s.error) }),
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { linked: string | undefined; error: string | undefined; linear?: LinearOutcome } => ({
+    linked: str(s.linked),
+    error: str(s.error),
+    // Back from Linear: linking your account (api::linear).
+    linear: oneOf(s.linear, LINEAR_OUTCOMES),
+  }),
 });
 const admin = createRoute({
   getParentRoute: () => app,

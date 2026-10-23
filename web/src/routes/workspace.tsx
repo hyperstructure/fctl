@@ -44,22 +44,33 @@ import {
 } from "@/components/ui";
 import { WORKSPACE_COLORS, WorkspaceAvatar } from "@/components/workspace/avatar";
 import { avatarImage } from "@/components/workspace/avatar-image";
+import { LinearTab } from "@/components/workspace/linear";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort } from "@/lib/format";
 import { BREW_INSTALL, installCommand } from "@/lib/install";
-import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspace } from "@/lib/queries";
+import {
+  keys,
+  queryClient,
+  useInstance,
+  useMe,
+  useProjects,
+  useRunners,
+  useSessions,
+  useWorkspace,
+} from "@/lib/queries";
 import { repoSummary } from "@/lib/repos";
 import { BASE_ROLES, claudeOptions, createsProjects, roleLabel } from "@/lib/workspaces";
 
-export type WorkspaceTab = "projects" | "people" | "runners" | "github" | "settings" | "audit";
+export type WorkspaceTab = "projects" | "people" | "runners" | "github" | "linear" | "settings" | "audit";
 
-const TABS: { tab: WorkspaceTab; label: string; admin?: boolean }[] = [
+const TABS: { tab: WorkspaceTab; label: string; admin?: boolean; linear?: boolean }[] = [
   { tab: "projects", label: "Projects" },
   { tab: "people", label: "People" },
   { tab: "runners", label: "Runners" },
   { tab: "github", label: "GitHub" },
+  { tab: "linear", label: "Linear", linear: true },
   { tab: "settings", label: "Settings" },
   { tab: "audit", label: "Audit log", admin: true },
 ];
@@ -72,12 +83,15 @@ function refresh() {
 
 export function WorkspacePage() {
   const { slug } = useParams({ from: "/app/w/$slug" });
-  const { tab: asked = "projects", github, account, reason } = useSearch({ from: "/app/w/$slug" });
+  const { tab: asked = "projects", github, account, reason, linear } = useSearch({ from: "/app/w/$slug" });
   const ws = useWorkspace(slug);
   const w = ws.data;
+  const { data: instance } = useInstance();
   const admin = w?.role === "owner" || w?.role === "admin";
+  // Tabs this workspace has: admins' ones for admins, Linear's where the instance has a Linear app.
+  const has = (t: (typeof TABS)[number]) => (!t.admin || admin) && (!t.linear || !!instance?.features.linear);
   // Admins' tabs show members the workspace's projects instead.
-  const tab = !w || TABS.some((t) => t.tab === asked && (!t.admin || admin)) ? asked : "projects";
+  const tab = !w || TABS.some((t) => t.tab === asked && has(t)) ? asked : "projects";
   if (ws.isError)
     return (
       <div className="mx-auto max-w-xl px-6 py-24">
@@ -159,7 +173,7 @@ export function WorkspacePage() {
         <>
           <nav className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
             <div className="flex w-max min-w-full gap-1 border-b border-line">
-              {TABS.filter((t) => !t.admin || admin).map((t) => (
+              {TABS.filter(has).map((t) => (
                 <Link
                   key={t.tab}
                   to="/w/$slug"
@@ -183,6 +197,7 @@ export function WorkspacePage() {
             {w && tab === "people" && <People w={w} />}
             {w && tab === "runners" && <Runners w={w} />}
             {w && tab === "github" && <Github w={w} returned={github} account={account} reason={reason} />}
+            {w && tab === "linear" && <LinearTab w={w} returned={linear} />}
             {w && tab === "settings" && <WorkspaceSettings w={w} />}
             {w && tab === "audit" && admin && <Audit w={w} />}
           </div>
