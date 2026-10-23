@@ -83,7 +83,9 @@ PATH), `screenshot` draws a small PNG and publishes it with `fctl publish`
 (allow that first: `cargo run -p fctl -- admin set --publish-screenshots
 on`, then `cargo run -p fctl -- projects set --publish-screenshots on`),
 `remember <text>` adds the rest of its line to the project's memory with
-`fctl memory add`, `recall` lists the memory with `fctl memory`,
+`fctl memory add`, `recall` lists the memory with `fctl memory`, a line
+that starts with `fctl ticket` runs as it is (`fctl ticket view ENG-1`), as
+agents reach their project's tracker,
 `printenv` shows the `CLAUDE_CODE_…` variables it got and says the token
 back, streamed in pieces (the host redacts the Claude token in both),
 `retro`
@@ -161,6 +163,21 @@ end as Claude Code's do: with Claude's trailer, or with the
 yours, set a commit email
 (`cargo run -p fctl -- account set --commit-email 1+dev@users.noreply.github.com`);
 to see Claude's go, `cargo run -p fctl -- projects set --credit-claude off`.
+
+The dev instance has no Linear app either. To try Linear's side, point
+the control plane at a stand-in for Linear in `crates/fctl-control/.dev.vars`
+(read only as wrangler starts): `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`
+and `LINEAR_WEBHOOK_SECRET` with made-up values, and `LINEAR_API_URL` and
+`LINEAR_AUTHORIZE_URL` with the stand-in's address. It must answer
+`POST /oauth/token` and `/oauth/revoke`, the GraphQL queries and mutations
+in `crates/fctl-domain/src/linear.rs` at `POST /graphql`, and its authorize
+page by sending the browser back to `/api/v1/linear/installed` with a code
+and the `state` it got. Connect it on the workspace's Linear tab, choose a
+team in Playground's Tickets tab and link your account in Settings; then
+deliveries it signs with the webhook secret (`Linear-Signature`, the
+body's HMAC-SHA256 in hex, with a `webhookTimestamp` of now) at
+`/api/v1/linear/webhook` start and message sessions as Linear's do, and
+what fctl posts back arrives as its GraphQL mutations.
 
 Notifications work locally too: `http://localhost:5173` is a secure
 context, so turn them on in Settings → Notifications, follow a session and

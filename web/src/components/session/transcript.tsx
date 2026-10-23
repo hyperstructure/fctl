@@ -56,6 +56,7 @@ import { FindingsMessage } from "./findings";
 import { FollowUpMessage, HeldFollowUp } from "./follow-up";
 import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { thinkingNow } from "./thinking";
+import { TicketMessageView, TicketNoticeView } from "./ticket";
 import { Run, ToolRow, WorkDir } from "./tool";
 
 const UserMessage = memo(function UserMessage({
@@ -70,6 +71,8 @@ const UserMessage = memo(function UserMessage({
   // A schedule's run: its task, then what fctl told the agent about the run.
   const { task, note } = useMemo(() => splitRunNote(item.text), [item.text]);
   if (item.followUp) return <FollowUpMessage followUp={item.followUp} text={item.text} ts={item.ts} />;
+  if (item.ticket)
+    return <TicketMessageView message={item.ticket} author={author} text={item.text} ts={item.ts} />;
   if (item.review) return <FindingsMessage review={item.review} text={item.text} ts={item.ts} />;
   return (
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
@@ -531,6 +534,7 @@ const ItemView = memo(function ItemView({
       if (item.notice.retrospective) return <RetrospectiveNotice r={item.notice.retrospective} />;
       if (item.notice.review) return <ReviewPostedNotice posted={item.notice.review} />;
       if (item.notice.follow_up) return <HeldFollowUp followUp={item.notice.follow_up} ts={item.ts} />;
+      if (item.notice.ticket) return <TicketNoticeView notice={item.notice.ticket} code={item.notice.code} />;
       if (item.notice.memory)
         return (
           <MemoryNotice

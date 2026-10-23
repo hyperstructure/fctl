@@ -1,9 +1,10 @@
 //! What agents ask of the control plane about their session's project
-//! ([`AgentCall`]): `fctl memory`, `fctl retro`, `fctl resolve` and `fctl
-//! review` in a sandbox go through fctl-agent to its host, which sends them
-//! here with its runner token, for a session it runs. Each needs its
-//! project's setting: `project_memory` for the memory, `retrospectives` for
-//! retrospectives; resolving review threads needs an agent that may
+//! ([`AgentCall`]): `fctl memory`, `fctl retro`, `fctl resolve`, `fctl
+//! review` and `fctl ticket` in a sandbox go through fctl-agent to its
+//! host, which sends them here with its runner token, for a session it
+//! runs. Each needs its project's setting: `project_memory` for the memory,
+//! `retrospectives` for retrospectives, a ticket tracker for tickets
+//! (`crate::tickets`); resolving review threads needs an agent that may
 //! comment on GitHub, and reviews a review agent's session
 //! (`crate::reviews`).
 
@@ -25,10 +26,12 @@ pub struct RunnerSession {
     pub created_by: String,
     pub settings: ProjectSettings,
     /// Its project's workspace and primary repository.
-    workspace_id: String,
-    repo: Option<RepoRef>,
+    pub workspace_id: String,
+    pub repo: Option<RepoRef>,
     /// What its agent may do on GitHub now.
-    github_access: GithubAccess,
+    pub github_access: GithubAccess,
+    /// A review agent's session, which reaches no ticket tracker.
+    pub review: bool,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +48,8 @@ struct Row {
     repo_owner: Option<String>,
     #[serde(default)]
     repo_name: Option<String>,
+    #[serde(default)]
+    review_repo: Option<String>,
 }
 
 impl RunnerSession {
@@ -54,8 +59,9 @@ impl RunnerSession {
         let row: Option<Row> = q(
             &ctx.db,
             "SELECT s.project_id, s.runner_id, s.created_by, p.settings, s.github_access, \
-             p.workspace_id, p.repo_owner, p.repo_name FROM sessions s \
-             JOIN projects p ON p.id = s.project_id WHERE s.id = ?",
+             p.workspace_id, p.repo_owner, p.repo_name, rv.repo AS review_repo FROM sessions s \
+             JOIN projects p ON p.id = s.project_id LEFT JOIN reviews rv ON rv.session_id = s.id \
+             WHERE s.id = ?",
             &[s(session_id)],
         )?
         .first()
@@ -91,6 +97,7 @@ impl RunnerSession {
                 _ => None,
             },
             github_access,
+            review: row.review_repo.is_some(),
         })
     }
 
@@ -232,6 +239,9 @@ pub async fn runner_call(
         },
         AgentCall::ReviewThreads => AgentAnswer::ReviewThreads {
             threads: crate::reviews::threads(ctx, &session.id).await?,
+        },
+        AgentCall::Ticket { request } => AgentAnswer::Ticket {
+            answer: crate::tickets::call(ctx, &session, request).await?,
         },
         AgentCall::SubmitReview {
             summary,

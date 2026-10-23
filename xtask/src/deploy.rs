@@ -20,6 +20,7 @@ pub struct Instance {
     pub public_url: String,
     pub d1: D1,
     pub github: Option<Github>,
+    pub linear: Option<Linear>,
     pub email: Option<Email>,
     pub google: Option<Google>,
     /// The sign-in page lets people without an account ask for early
@@ -44,6 +45,14 @@ pub struct Github {
     pub app_slug: String,
     pub client_id: Option<String>,
     pub default_owner: Option<String>,
+}
+
+/// fctl's Linear app: its OAuth client ID (`LINEAR_CLIENT_SECRET` and
+/// `LINEAR_WEBHOOK_SECRET` are secrets).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Linear {
+    pub client_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +116,9 @@ impl Instance {
             if let Some(o) = &g.default_owner {
                 vars.push(("GITHUB_DEFAULT_OWNER", o.clone()));
             }
+        }
+        if let Some(l) = &self.linear {
+            vars.push(("LINEAR_CLIENT_ID", l.client_id.clone()));
         }
         if let Some(e) = &self.email {
             vars.push(("FCTL_EMAIL_FROM", e.from.clone()));
@@ -402,10 +414,16 @@ database_id = "e84e35ee-6755-4bff-a1ff-ba2539406ba0"
 [github]
 app_id = "1"
 app_slug = "acme-fctl"
+[linear]
+client_id = "lin_client"
 "#,
         )
         .unwrap();
         assert_eq!(inst.host(), "fctl.acme.dev");
+        assert!(
+            inst.wrangler_toml()
+                .contains(r#"LINEAR_CLIENT_ID = "lin_client""#)
+        );
         let text = inst.wrangler_toml();
         let doc: toml::Table = toml::from_str(&text).unwrap();
         assert_eq!(

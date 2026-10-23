@@ -190,6 +190,11 @@ fn in_a_row_key(kind: follow_ups::Repeats) -> &'static str {
     }
 }
 
+/// The most of the agent's last message of a turn that SessionDO keeps,
+/// for the ticket's thread its session answers in, which shows a shorter
+/// cut of it (`fctl_domain::tickets::MAX_REPLY`).
+const LAST_RESULT_CHARS: usize = 12_000;
+
 fn api_err(code: ErrorCode, message: &str) -> ApiError {
     ApiError::new(code, message)
 }
@@ -267,6 +272,12 @@ impl DurableObject for SessionObject {
             (worker::Method::Post, "/review-findings") => {
                 match req.json::<internal::ReviewFindings>().await {
                     Ok(b) => self.review_findings(b).await.map(|t| serde_json::json!(t)),
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
+            (worker::Method::Post, "/notice") => {
+                match req.json::<fctl_proto::event::Notice>().await {
+                    Ok(n) => Ok(self.control_notice(n)),
                     Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
                 }
             }
@@ -862,6 +873,7 @@ impl SessionObject {
         if in_a_row >= fctl_domain::reviews::MAX_PASSED_ON {
             self.key(&key, "", now);
             let notice = fctl_proto::event::Notice {
+                ticket: None,
                 level: fctl_proto::event::NoticeLevel::Info,
                 code: "review_held".into(),
                 message: b.held,
@@ -894,6 +906,7 @@ impl SessionObject {
                 },
                 client_key: Some(key),
                 event: EventBody::UserMessage(UserMessage {
+                    ticket: None,
                     id,
                     author: None,
                     text: b.text,
@@ -1113,6 +1126,7 @@ impl SessionObject {
             if held {
                 if let Some(message) = follow_ups::held_back(&f, kind) {
                     let notice = fctl_proto::event::Notice {
+                        ticket: None,
                         level: fctl_proto::event::NoticeLevel::Info,
                         code: "follow_up_held".into(),
                         message,
@@ -1161,6 +1175,7 @@ impl SessionObject {
                 },
                 client_key: None,
                 event: EventBody::UserMessage(UserMessage {
+                    ticket: None,
                     id,
                     author: None,
                     text,
@@ -1319,6 +1334,7 @@ impl SessionObject {
             |r| format!("The runner {}", r.name),
         );
         let notice = fctl_proto::event::Notice {
+            ticket: None,
             level: fctl_proto::event::NoticeLevel::Warn,
             code: "attachments_unsupported".into(),
             message: format!(
@@ -1745,6 +1761,7 @@ impl SessionObject {
             },
             client_key: Some(format!("{}:{client_id}", author.id)),
             event: EventBody::UserMessage(UserMessage {
+                ticket: None,
                 id,
                 author: Some(author),
                 text,
@@ -1920,7 +1937,8 @@ impl SessionObject {
                     }
                     if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
                         summary_changed |= Self::apply_claude(s, &mut counted, v, e.ts, &self.mem);
-                        turn_ended |= self.remember_reply(v);
+                        turn_ended |= self.remember_reply(v, e.agent_seq);
+                        self.mirror_to_linear(s, v, now);
                         plan::merge(&mut usage, plan::readings(v, now));
                         ev::shape_for_storage(v);
                     }
@@ -1948,6 +1966,7 @@ impl SessionObject {
                     // GitHub's pull request.
                     if let EventBody::Notice(n) = &mut body {
                         n.follow_up = None;
+                        n.ticket = None;
                         if let Some(r) = n.review.as_mut() {
                             r.url = r.url.as_deref().and_then(fctl_domain::reviews::posted_link);
                             r.sent_to = r
@@ -2041,6 +2060,7 @@ impl SessionObject {
                 self.set_meta("last_delivered", &now.to_string());
                 if !ok {
                     let notice = fctl_proto::event::Notice {
+                        ticket: None,
                         level: fctl_proto::event::NoticeLevel::Warn,
                         code: "delivery_failed".into(),
                         message: error
@@ -2239,7 +2259,14 @@ impl SessionObject {
     fn track_pull_requests(&self, s: &Session, prs: Vec<PullRequestRef>) {
         let env = self.env.clone();
         let id = s.id.as_str().to_owned();
+        let linear = Self::answers_linear(s);
         self.state.wait_until(async move {
+            if linear && let Err(e) = crate::delegations::pull_requests(&env, &id, &prs).await {
+                worker::console_error!(
+                    "telling Linear of the pull requests of {id}: {}",
+                    e.0.message
+                );
+            }
             let Ok(db) = env.d1("DB") else { return };
             let tracked = match crate::pull_requests::track(&db, &id, &prs).await {
                 Ok(t) => t,
@@ -2507,19 +2534,142 @@ impl SessionObject {
 
     /// The end of a turn: what the agent said last, for the notification that
     /// the session waits for a reply. Returns whether `v` ended a turn.
-    fn remember_reply(&self, v: &serde_json::Value) -> bool {
+    fn remember_reply(&self, v: &serde_json::Value, agent_seq: u64) -> bool {
         if ev::classify(v) != ClaudeKind::Result {
             return false;
         }
-        match v
-            .get("result")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|text| notify::excerpt(text, notify::EXCERPT_CHARS))
-        {
+        let text = v.get("result").and_then(serde_json::Value::as_str);
+        match text.and_then(|text| notify::excerpt(text, notify::EXCERPT_CHARS)) {
             Some(reply) => self.set_meta("last_reply", &reply),
             None => self.delete_meta("last_reply"),
         }
+        // All of it, for the ticket's thread its session answers in.
+        match text.filter(|t| !t.trim().is_empty()) {
+            Some(t) => {
+                let kept: String = t.chars().take(LAST_RESULT_CHARS).collect();
+                self.set_meta("last_result", &kept);
+                self.set_meta("last_result_seq", &agent_seq.to_string());
+            }
+            None => self.delete_meta("last_result"),
+        }
         true
+    }
+
+    /// Whether the session started from a ticket in Linear, whose agent
+    /// session it answers in (`crate::delegations`).
+    fn answers_linear(s: &Session) -> bool {
+        s.ticket
+            .as_ref()
+            .is_some_and(|t| t.tracker == fctl_proto::session::Tracker::Linear)
+    }
+
+    /// What the agent does, for Linear's session: a step now and then (one
+    /// of its tool calls), and its plan (Claude Code's todo list).
+    fn mirror_to_linear(&self, s: &Session, v: &serde_json::Value, now: i64) {
+        if !Self::answers_linear(s) || ev::classify(v) != ClaudeKind::Assistant {
+            return;
+        }
+        let blocks = v
+            .pointer("/message/content")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for b in blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+        {
+            let name = b
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let input = b.get("input").cloned().unwrap_or_default();
+            if name == "TodoWrite" {
+                let Some(plan) = input.get("todos").and_then(fctl_domain::linear::plan) else {
+                    continue;
+                };
+                let text = plan.to_string();
+                if self.meta("linear_plan").as_deref() == Some(text.as_str()) {
+                    continue;
+                }
+                self.set_meta("linear_plan", &text);
+                let env = self.env.clone();
+                let id = s.id.0.clone();
+                self.state.wait_until(async move {
+                    if let Err(e) = crate::delegations::plan(&env, &id, plan).await {
+                        worker::console_error!("the plan of {id} for Linear: {}", e.0.message);
+                    }
+                });
+                continue;
+            }
+            let Some((action, parameter)) = fctl_domain::linear::step(name, &input) else {
+                continue;
+            };
+            let last = self
+                .meta("linear_step_at")
+                .and_then(|t| t.parse::<i64>().ok());
+            if last.is_some_and(|at| now - at < fctl_domain::linear::STEP_EVERY_MS) {
+                continue;
+            }
+            self.set_meta("linear_step_at", &now.to_string());
+            let env = self.env.clone();
+            let id = s.id.0.clone();
+            self.state.wait_until(async move {
+                if let Err(e) = crate::delegations::step(&env, &id, &action, &parameter).await {
+                    worker::console_error!("a step of {id} for Linear: {}", e.0.message);
+                }
+            });
+        }
+    }
+
+    /// Tells the session's agent session in Linear that a turn ended (with
+    /// the agent's last message), or that the session paused or failed.
+    fn report_to_linear(&self, s: &Session, kind: notify::Kind) {
+        if !Self::answers_linear(s) {
+            return;
+        }
+        let env = self.env.clone();
+        let id = s.id.0.clone();
+        match kind {
+            notify::Kind::Waiting => {
+                let (Some(text), Some(seq)) =
+                    (self.meta("last_result"), self.meta("last_result_seq"))
+                else {
+                    return;
+                };
+                // Once for each turn, whichever report of its end comes first.
+                if self.meta("linear_replied_seq").as_deref() == Some(seq.as_str()) {
+                    return;
+                }
+                self.set_meta("linear_replied_seq", &seq);
+                self.state.wait_until(async move {
+                    if let Err(e) = crate::delegations::turn_ended(&env, &id, &text).await {
+                        worker::console_error!("replying in Linear for {id}: {}", e.0.message);
+                    }
+                });
+            }
+            notify::Kind::Paused | notify::Kind::Failed => {
+                let status = s.status;
+                let reason = s.status_reason.clone();
+                let until = s.resume_at;
+                self.state.wait_until(async move {
+                    if let Err(e) =
+                        crate::delegations::halted(&env, &id, status, reason.as_deref(), until)
+                            .await
+                    {
+                        worker::console_error!("telling Linear about {id}: {}", e.0.message);
+                    }
+                });
+            }
+        }
+    }
+
+    /// A notice the control plane adds to the transcript: what it did in
+    /// the session's ticket tracker for it.
+    fn control_notice(&self, n: fctl_proto::event::Notice) -> serde_json::Value {
+        if let Some(json) = self.append(now_ms(), &EventBody::Notice(n), None) {
+            self.broadcast_events(&[json]);
+        }
+        serde_json::json!({ "ok": true })
     }
 
     /// Tells the people who follow the session when a status change means it
@@ -2569,6 +2719,7 @@ impl SessionObject {
     /// Hands `kind` to the people who follow the session (`crate::notify`),
     /// except those who can see it now.
     fn notify(&self, s: &Session, kind: notify::Kind, now: i64) {
+        self.report_to_linear(s, kind);
         let mut except = self.watching();
         let detail = match kind {
             notify::Kind::Waiting => {

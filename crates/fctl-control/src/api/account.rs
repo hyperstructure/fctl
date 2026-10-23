@@ -294,6 +294,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "passkeys",
         "passkey_challenges",
         "workspace_members",
+        "linear_accounts",
         "user_emails",
     ] {
         statements.push(q(
@@ -589,6 +590,15 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         rows(
             ctx,
             "SELECT provider, email, name, avatar_url, created_at FROM identities WHERE user_id = ? ORDER BY created_at",
+            &me(),
+        )
+        .await?,
+    );
+    doc.insert(
+        "linear_accounts".into(),
+        rows(
+            ctx,
+            "SELECT organization_name, url_key, linear_user_id, name, email, avatar_url, linked_at FROM linear_accounts WHERE user_id = ? ORDER BY linked_at",
             &me(),
         )
         .await?,

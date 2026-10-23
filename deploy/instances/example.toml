@@ -28,6 +28,12 @@ database_id = ""
 # client_id = "Iv23li..."
 # default_owner = "my-org"
 
+# Optional: delegate Linear issues to fctl, through your own Linear OAuth app
+# (docs/self-hosting.md#connect-linear-optional). Set LINEAR_CLIENT_SECRET and
+# LINEAR_WEBHOOK_SECRET with `cargo xtask secrets <name> --set …`.
+# [linear]
+# client_id = "..."
+
 # Optional: send invites and password resets by email through Resend
 # (set RESEND_API_KEY with `cargo xtask secrets <name>`). Without it, admins
 # copy invite and reset links from the app.

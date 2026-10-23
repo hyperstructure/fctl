@@ -134,6 +134,32 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
     Ok(s)
 }
 
+/// Checks a project's ticket tracker as an update changes it
+/// (`fctl_domain::tickets::check`): GitHub Issues of a repository its
+/// agents write to; a Linear team fctl's app reaches in a Linear workspace
+/// connected to its workspace, checked with Linear when it changes.
+async fn check_tickets(
+    ctx: &Ctx,
+    workspace_id: &str,
+    project_id: &str,
+    repo: Option<&RepoRef>,
+    new: &fctl_proto::session::Tickets,
+    old: &fctl_proto::session::Tickets,
+) -> AppResult<fctl_proto::session::Tickets> {
+    let grants = crate::spec::grants(&ctx.db, project_id).await?;
+    let mut t = fctl_domain::tickets::check(new, repo, &grants)?;
+    if crate::tickets::linear_changed(&t, old)
+        && let Some(l) = t.linear.clone()
+    {
+        let keys = ctx.keys()?;
+        t.linear = Some(
+            crate::tickets::check_linear(&ctx.db, &ctx.cfg, &keys, workspace_id, &l, ctx.now)
+                .await?,
+        );
+    }
+    Ok(t)
+}
+
 /// A build comes from the project's repository.
 fn needs_repo() -> AppError {
     validation(
@@ -307,6 +333,30 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     if settings.image_build.is_some() && repo.is_none() {
         return Err(needs_repo());
     }
+    let mut settings = settings;
+    if settings.tickets != fctl_proto::session::Tickets::default() {
+        let t = fctl_domain::tickets::check(&settings.tickets, repo.as_ref(), &[])?;
+        settings.tickets = match (&t.linear, t.tracker) {
+            (Some(l), fctl_proto::session::Tracker::Linear) => {
+                let keys = ctx.keys()?;
+                fctl_proto::session::Tickets {
+                    linear: Some(
+                        crate::tickets::check_linear(
+                            &ctx.db,
+                            &ctx.cfg,
+                            &keys,
+                            workspace.id(),
+                            l,
+                            ctx.now,
+                        )
+                        .await?,
+                    ),
+                    ..t
+                }
+            }
+            _ => t,
+        };
+    }
     let id = fctl_domain::ids::project_id(ctx.now);
     batch(
         &ctx.db,
@@ -404,6 +454,27 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     };
     if settings.image_build.is_some() && (owner.is_none() || repo_name.is_none()) {
         return Err(needs_repo());
+    }
+    // The tracker, when the update changes it.
+    let mut settings = settings;
+    let stored = row.settings();
+    if settings.tickets != stored.tickets {
+        let repo = match (&owner, &repo_name) {
+            (Some(o), Some(n)) => Some(RepoRef {
+                owner: o.clone(),
+                name: n.clone(),
+            }),
+            _ => None,
+        };
+        settings.tickets = check_tickets(
+            ctx,
+            p.workspace_id(),
+            &row.id,
+            repo.as_ref(),
+            &settings.tickets,
+            &stored.tickets,
+        )
+        .await?;
     }
     let archived_at = match body.archived {
         Some(true) => row.archived_at.or(Some(ctx.now)),

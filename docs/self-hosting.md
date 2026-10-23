@@ -113,6 +113,7 @@ Docker and Kubernetes secrets do.
 | `FCTL_PORT`, `FCTL_LISTEN` | `8787` (or `PORT`), `0.0.0.0` | Where it listens |
 | `FCTL_TRUST_PROXY` | `0` | How many [reverse proxies](#https-and-reverse-proxies) in front add `X-Forwarded-For` |
 | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
+| `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET` | | [Linear](#connect-linear-optional) |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | | [Google sign-in](#google-sign-in-optional) |
 | `RESEND_API_KEY`, `FCTL_EMAIL_FROM` | | [Email](#email-optional) |
 
@@ -491,6 +492,15 @@ hour and refreshed through its host:
 | Write | the primary repository and those listed as read and write | contents, pull requests, issues and workflows: write; checks, actions, commit statuses: read. For an agent that comments: pull requests and issues: write; contents, checks, actions, commit statuses: read |
 | Read only | those listed as read only, or the account's (`owner/*`); for an agent that only reads, all of them | contents, pull requests, issues, checks, actions, commit statuses: read |
 
+Issues are on them only where the project's ticket tracker says
+([Architecture](architecture.md#ticket-trackers)): GitHub Issues of the
+repositories its agents write to, as above; of one repository, issues
+only on a write token for that repository alone; no tracker, or Linear,
+none at all. For a project that keeps its agents to one repository's
+issues among several it writes to, the control plane reads and writes
+that one's for them (`fctl ticket`), with a token for its issues alone
+that it revokes once used.
+
 What a session's agent may do on GitHub, push, comment or read, is its
 own choice within its project's setting
 ([Architecture](architecture.md#github-access)). The app needs no more
@@ -511,6 +521,91 @@ installation no longer reaches (removed from it, renamed or deleted) is left
 out of the tokens, and the session says so; a session whose primary
 repository is out of reach does not start. People manage the list under the
 project's **Repositories** tab or with `fctl projects repos`.
+
+## Connect Linear (optional)
+
+With a Linear app, teams that track their work in Linear delegate issues
+to fctl there: assigning one to fctl's agent, or mentioning it in a comment,
+starts a session of the project that takes the issue's team, as the person
+who asked, which reports back in the issue
+([Architecture](architecture.md#linear)). An instance has one app, which
+each workspace's admins install in their Linear workspace from fctl.
+
+1. Create an OAuth application in a Linear workspace you administer, in
+   its API settings or from a manifest:
+   - Its **redirect URI**: `https://fctl.acme.dev/api/v1/linear/installed`
+     (your `FCTL_PUBLIC_URL` followed by `/api/v1/linear/installed`).
+     Workspaces install the app there, and people link their Linear
+     accounts.
+   - **Public** distribution, so that Linear workspaces other than yours can
+     install it; without it, only yours can.
+   - Its **webhook**, at `https://fctl.acme.dev/api/v1/linear/webhook` (your
+     `FCTL_PUBLIC_URL` followed by `/api/v1/linear/webhook`), with the
+     resource types `AgentSessionEvent` (delegations, mentions, replies and
+     stops), `OAuthAuthorization` (Linear says fctl's app was uninstalled
+     from a Linear workspace, as an `OAuthApp` revocation) and
+     `PermissionChange` (its admins changed the teams it sees). fctl uses
+     no others: they only send it every change in every Linear workspace
+     that installs the app.
+
+   A manifest with these:
+
+   ```json
+   {
+     "$schema": "https://linear.app/.well-known/oauth-app-manifest.schema.json",
+     "schemaVersion": "1.0.0",
+     "distribution": "public",
+     "oauth": {
+       "client_name": "acme-fctl",
+       "redirect_uris": ["https://fctl.acme.dev/api/v1/linear/installed"],
+       "grant_types": ["authorization_code"]
+     },
+     "webhook": {
+       "url": "https://fctl.acme.dev/api/v1/linear/webhook",
+       "resourceTypes": ["AgentSessionEvent", "OAuthAuthorization", "PermissionChange"]
+     }
+   }
+   ```
+
+   fctl asks for its scopes as workspaces install it: `read`, `write`,
+   `app:assignable` (people assign it issues, which delegates them) and
+   `app:mentionable` (people mention it), as Linear's own agent (`actor=app`);
+   and `read` alone, revoked at once, when someone links their account.
+2. Tell the control plane about it. On your own machine, set
+   `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET` and `LINEAR_WEBHOOK_SECRET`
+   (the webhook's signing secret) and start the server again. On
+   Cloudflare, add the client ID to the instance file and the secrets to
+   the Worker:
+
+   ```toml
+   [linear]
+   client_id = "8f6a…"
+   ```
+
+   ```sh
+   echo "$LINEAR_CLIENT_SECRET" | cargo xtask secrets acme --set LINEAR_CLIENT_SECRET
+   echo "$LINEAR_WEBHOOK_SECRET" | cargo xtask secrets acme --set LINEAR_WEBHOOK_SECRET
+   cargo xtask deploy acme
+   ```
+3. A workspace's admin connects their Linear workspace under the
+   workspace's **Linear** tab, or a project's **Tickets** tab: Linear asks
+   one of its admins to install the app and to choose the teams it sees.
+   Each project then chooses its team. People link their Linear accounts
+   (Settings, the project's Tickets tab, or Linear's own button the first
+   time they delegate an issue), and fctl starts sessions only for people
+   it knows there, as them.
+
+The webhook takes deliveries signed with its secret within a minute of
+their time, and answers others with 401 (without the secret, 501). Each
+delivery is answered at once, as Linear wants within five seconds, and
+fctl answers in the agent session within ten. Linear's **Recent
+deliveries**, under the app's webhook, show what fctl answered:
+`{"ok":true}`.
+
+Let Linear's GitHub integration link the Linear workspace to your GitHub
+organizations too: sessions' branches carry their ticket's key, so it
+links their pull requests to the tickets and moves the tickets on as the
+pull requests open and merge, as each team configures.
 
 ## Google sign-in (optional)
 

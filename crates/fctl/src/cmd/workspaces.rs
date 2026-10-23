@@ -64,6 +64,33 @@ pub enum Role {
 }
 
 #[derive(Subcommand)]
+pub enum LinearCmd {
+    /// The Linear workspaces it works in (the default).
+    #[command(visible_alias = "ls")]
+    List,
+    /// Install fctl's app in a Linear workspace and connect it (admins of
+    /// both). Opens Linear's sign-in in your browser.
+    Connect {
+        /// Print the link without opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Stop working in a Linear workspace (admins): its projects take no
+    /// more tickets from it.
+    Disconnect {
+        /// The Linear workspace: its name, its address (linear.app/<key>)
+        /// or its id.
+        organization: String,
+    },
+    /// The teams fctl's app reaches in a Linear workspace, for a project to
+    /// choose (`fctl projects set --tickets linear --linear-team KEY`).
+    Teams {
+        /// The Linear workspace (default: the only one).
+        organization: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum WorkspacesCmd {
     /// List your workspaces, and the invitations waiting for you.
     List,
@@ -293,6 +320,20 @@ pub enum WorkspacesCmd {
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
         #[arg(short, long)]
+        workspace: Option<String>,
+    },
+    /// The Linear workspaces a workspace works in, whose teams its
+    /// projects take tickets from: connect one (admins, who sign in to
+    /// Linear as one of its admins), disconnect one, or list its teams.
+    #[command(
+        after_help = "Examples:\n  fctl workspaces linear\n  fctl workspaces linear connect\n  fctl workspaces linear teams\n  fctl workspaces linear disconnect acme"
+    )]
+    Linear {
+        #[command(subcommand)]
+        cmd: Option<LinearCmd>,
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
+        #[arg(short, long, global = true)]
         workspace: Option<String>,
     },
     /// Run your sessions in a workspace only on runners you registered,
@@ -1035,6 +1076,10 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 w.name
             );
         }
+        WorkspacesCmd::Linear { cmd, workspace } => {
+            let w = resolve(&api, workspace).await?;
+            linear(&api, &w, cmd.unwrap_or(LinearCmd::List), json).await?;
+        }
         WorkspacesCmd::OwnRunners { on, workspace } => {
             let w = resolve(&api, workspace).await?;
             let w = match on {
@@ -1198,4 +1243,167 @@ async fn invitation(api: &Api, which: &str) -> Result<WorkspaceInvitation> {
         .with_context(|| {
             format!("No invitation to {which} waits for you. `fctl workspaces` lists them.")
         })
+}
+
+/// The Linear workspace of `connections` that `named` names (by name,
+/// address or id), or the only one.
+fn pick_linear<'a>(
+    connections: &'a [fctl_proto::tickets::LinearConnection],
+    named: Option<&str>,
+    workspace: &str,
+) -> Result<&'a fctl_proto::tickets::LinearConnection> {
+    match named.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => connections
+            .iter()
+            .find(|c| {
+                c.organization == n
+                    || c.url_key.eq_ignore_ascii_case(n)
+                    || c.name.eq_ignore_ascii_case(n)
+            })
+            .with_context(|| {
+                format!("{workspace} isn't connected to a Linear workspace called {n}")
+            }),
+        None => match connections {
+            [only] => Ok(only),
+            [] => bail!(
+                "{workspace} works in no Linear workspace yet: `fctl workspaces linear connect`"
+            ),
+            _ => bail!("{workspace} works in several Linear workspaces: name one"),
+        },
+    }
+}
+
+async fn linear(api: &Api, w: &Workspace, cmd: LinearCmd, json: bool) -> Result<()> {
+    match cmd {
+        LinearCmd::List => {
+            let l = api.workspace_linear(w.id.as_str()).await?;
+            if json {
+                return style::print_json(&l);
+            }
+            if !l.configured {
+                println!(
+                    "This instance has no Linear app: its admins set one up (see the self-hosting guide)."
+                );
+                return Ok(());
+            }
+            if l.connections.is_empty() {
+                println!(
+                    "{} works in no Linear workspace yet. Connect one with `fctl workspaces linear connect`.",
+                    w.name
+                );
+            }
+            for c in &l.connections {
+                let state = match c.status {
+                    fctl_proto::tickets::LinearStatus::Active => style::accent("connected"),
+                    fctl_proto::tickets::LinearStatus::Revoked => {
+                        style::amber("access revoked: connect it again")
+                    }
+                };
+                println!(
+                    "{:<24} {:<28} {}",
+                    style::bold(&style::terminal_safe(&c.name)),
+                    style::dim(&style::terminal_safe(&format!("linear.app/{}", c.url_key))),
+                    state
+                );
+                for p in &c.projects {
+                    println!(
+                        "  {} {}",
+                        style::dim("→"),
+                        style::terminal_safe(&match &p.team_key {
+                            Some(t) => format!("{} takes {t}'s tickets", p.slug),
+                            None => p.slug.clone(),
+                        })
+                    );
+                }
+            }
+            if !l.webhook && l.configured {
+                println!(
+                    "{}",
+                    style::dim(
+                        "This instance takes no Linear webhooks yet, so delegating tickets starts nothing: its admins set LINEAR_WEBHOOK_SECRET."
+                    )
+                );
+            }
+        }
+        LinearCmd::Connect { no_browser } => {
+            let link = api
+                .connect_linear(
+                    w.id.as_str(),
+                    &fctl_proto::tickets::ConnectLinearRequest::default(),
+                )
+                .await?;
+            if json {
+                return style::print_json(&link);
+            }
+            println!(
+                "Install fctl's app in a Linear workspace and connect it to {} by signing in to Linear as one of its admins, in a browser where you're signed in to fctl. The link works for 10 minutes:",
+                style::bold(&w.name)
+            );
+            println!();
+            println!("  {}", style::terminal_safe(&link.url));
+            println!();
+            if !no_browser
+                && fctl_client::http::same_site(api.base(), &link.url)
+                && crate::cmd::auth::open_browser(&link.url)
+            {
+                println!("{}", style::dim("Opened it in your browser."));
+            }
+            println!(
+                "{}",
+                style::dim(
+                    "Then choose a project's team with `fctl projects set --tickets linear --linear-team KEY`."
+                )
+            );
+        }
+        LinearCmd::Disconnect { organization } => {
+            let l = api.workspace_linear(w.id.as_str()).await?;
+            let c = pick_linear(&l.connections, Some(&organization), &w.name)?;
+            let l = api
+                .disconnect_linear(w.id.as_str(), &c.organization)
+                .await?;
+            if json {
+                return style::print_json(&l);
+            }
+            println!(
+                "{} {} no longer works in {} on Linear",
+                style::accent("✓"),
+                w.name,
+                style::terminal_safe(&c.name)
+            );
+        }
+        LinearCmd::Teams { organization } => {
+            let l = api.workspace_linear(w.id.as_str()).await?;
+            let c = pick_linear(&l.connections, organization.as_deref(), &w.name)?;
+            let teams = api.linear_teams(w.id.as_str(), &c.organization).await?;
+            if json {
+                return style::print_json(&teams);
+            }
+            for t in &teams.teams {
+                println!(
+                    "{:<8} {}",
+                    style::bold(&style::terminal_safe(&t.key)),
+                    style::terminal_safe(&t.name)
+                );
+                if let Some(s) = &t.start_state {
+                    println!(
+                        "{}",
+                        style::dim(&format!(
+                            "         tickets start in {}",
+                            style::terminal_safe(s)
+                        ))
+                    );
+                }
+                for p in &t.projects {
+                    println!(
+                        "{}",
+                        style::dim(&format!(
+                            "         project {}",
+                            style::terminal_safe(&p.name)
+                        ))
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }

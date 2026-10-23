@@ -199,6 +199,11 @@ fctl workspaces connect acme               # the same, for acme only
 fctl workspaces connect acme --repo web --repo design   # only these repositories of it, without the choice
 fctl workspaces disconnect acme
 
+fctl workspaces linear                     # the Linear workspaces it works in, and which projects take their tickets
+fctl workspaces linear connect             # opens Linear, where one of its admins installs fctl's app
+fctl workspaces linear teams               # the teams fctl's app reaches there, for projects to choose
+fctl workspaces linear disconnect acme     # its projects take no more tickets from it
+
 fctl workspaces audit                      # what happened in it (admins)
 fctl workspaces delete side-project        # with its projects and sessions; asks you to type its name
 ```
@@ -243,6 +248,7 @@ fctl projects set -p my-app --project-memory off --retrospectives off   # agents
 fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
 fctl projects set -p my-app --pr-descriptions brief   # pull requests described in a few sentences (balanced by default, or full)
 fctl projects set -p my-app --follow-ups comments,checks,conflicts   # agents come back for @fctl comments, failed checks and conflicts
+fctl projects set -p my-app --tickets linear --linear-team ENG   # its tickets are a Linear team's
 fctl projects use my-app
 fctl projects order my-app site        # these first in their workspace, the others after them
 fctl projects delete my-app            # with its sessions; asks you to type the slug
@@ -290,6 +296,72 @@ weeks after a session last used them ([Hosts](#hosts)). Sessions get them
 on runners with the Docker or Apple container driver (and the process
 driver), not Lima, and review agents never do. A session in a sandbox
 made before the project turned them on gets them in its next sandbox.
+
+### Ticket trackers
+
+A project's ticket tracker is where its agents read and write tickets,
+and what they are told to use: GitHub Issues, a Linear team, or none.
+Projects that never chose one have GitHub Issues of the repositories
+their agents write to, as agents always worked:
+
+```sh
+fctl projects tickets -p my-app                # its tracker, how agents reach it, and what its tickets started lately
+fctl projects set -p my-app --tickets github   # the issues of every repository its agents write to
+fctl projects set -p my-app --tickets github --tickets-repo my-org/my-app   # one of them only
+fctl projects set -p my-app --tickets none     # no tracker at all, GitHub's issues included
+fctl workspaces linear teams                   # the Linear teams fctl's app reaches
+fctl projects set -p my-app --tickets linear --linear-team ENG
+fctl projects set -p my-app --linear-project "Mobile app"   # only that Linear project's issues ("all": the team's)
+fctl projects set -p my-app --linear-start off # tickets stay in their state as their sessions start
+fctl projects set -p my-app --explore-label plan   # the label that asks for a plan first ("" for none)
+```
+
+With the issues of every repository they write to, agents use `gh`, as
+before. With one repository's, or a Linear team's, they use `fctl
+ticket`, which fctl answers for them: it holds the tracker's access and
+refuses tickets outside the project's choice as tickets that don't exist.
+With none, their GitHub tokens carry no issues permission and they are
+told to leave every tracker alone; a public repository's issues stay
+readable to anyone, though. A token covers all its repositories with one
+set of permissions, so with one repository among several the session's
+tokens get no issues permission either. A change reaches running
+sessions' GitHub tokens with their next one, within the hour, and what
+agents are told from their next session on.
+
+A Linear team takes a Linear workspace the project's workspace works in
+([Workspaces](#workspaces): `fctl workspaces linear connect`). There,
+people assign an issue to fctl, which makes fctl its delegate, or mention
+fctl in a comment, and fctl starts a session of the project that takes
+the issue's team, on the subscription of whoever asked, once they have
+linked their Linear account ([Your account](#your-account)) and only
+while they may start sessions in the project. The ticket moves to the
+team's first started state (In Progress), the session's branch carries
+its key (`fctl/12-eng-123-fix-the-login-loop`) for Linear's GitHub
+integration to link the pull request, and fctl posts the agent's steps,
+its pull requests and each turn's last message to the ticket's agent
+session in Linear. Replies there reach the agent as their writers'
+messages, and stopping the agent session there interrupts it. An issue
+with the explore label (`explore` unless a project names another) gets a
+plan, and no changes until someone asks for them
+([Architecture](architecture.md#linear)).
+
+In a session's sandbox, `fctl ticket` is the agent's, through fctl-agent
+and without a sign-in, as for `fctl edit`:
+
+```sh
+fctl ticket                                # the tracker, and the ticket this session works on
+fctl ticket list --search login --label Bug   # open ones, most recently changed first (--closed, --all)
+fctl ticket view ENG-123                   # its description, parent, sub-tickets and comments
+fctl ticket create --title "Add a test for retries" --parent ENG-123 --description-file notes.md
+fctl ticket comment ENG-123 "The fix needs a migration first: should it run in the deploy?"
+fctl ticket update ENG-123 --state "In Review" --add-label Bug
+fctl ticket states                         # the states tickets can be in, in order
+fctl ticket labels
+```
+
+In an hour, a session's agent comments at most 30 times, files at most 20
+tickets, changes at most 60 and reads its tracker at most 300 times.
+Review agents reach no tracker.
 
 ### Memory and retrospectives
 
@@ -702,7 +774,15 @@ fctl account disconnect ada@private.example      # it stops signing in; you leav
 fctl account export                        # your data as JSON: fctl-export-<date>.json
 fctl account export -o - | jq .sessions    # or print it
 fctl account delete                        # shows what goes, asks for your email address
+fctl account linear                        # who fctl knows you as in Linear workspaces
+fctl account linear connect                # opens Linear's sign-in; what you delegate there runs as you
+fctl account linear disconnect acme
 ```
+
+Linking a Linear account reads who you are there and revokes the sign-in
+at once: fctl keeps your Linear id, name, address and avatar, not a
+token. Each Linear account links to one fctl account, and an fctl account
+to one Linear account in each Linear workspace.
 
 Two-factor sign-in takes a code from an authenticator app after your
 password, and after Google if you choose:

@@ -40,6 +40,8 @@ export type Item =
       followUp?: G.FollowUp;
       /** For a message from fctl that passed a review's findings on: the review. */
       review?: G.PassedOnReview;
+      /** For a message from a ticket tracker: the ticket, and who did what there. */
+      ticket?: G.TicketMessage;
     })
   | (Base & { kind: "prose"; text: string })
   | (Base & { kind: "thinking"; text: string })
@@ -276,6 +278,7 @@ export class TranscriptBuilder {
           attachments: ev.data.attachments,
           followUp: ev.data.follow_up,
           review: ev.data.review,
+          ticket: ev.data.ticket,
         });
         return;
       case "status": {

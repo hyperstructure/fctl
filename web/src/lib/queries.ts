@@ -44,6 +44,10 @@ export const keys = {
   schedules: (project: string) => ["schedules", project] as const,
   /** A schedule's runs, by schedule id. */
   scheduleRuns: (schedule: string) => ["schedule-runs", schedule] as const,
+  /** A project's ticket tracker as it works now, by project id. */
+  projectTickets: (project: string) => ["project-tickets", project] as const,
+  /** Your Linear accounts. */
+  myLinear: ["me", "linear"] as const,
   runners: ["runners"] as const,
   users: ["users"] as const,
   allowlist: ["allowlist"] as const,
@@ -56,6 +60,10 @@ export const keys = {
   workspaceMembers: (id: string) => ["workspace", id, "members"] as const,
   workspaceRunners: (id: string) => ["workspace", id, "runners"] as const,
   workspaceGithub: (id: string) => ["workspace", id, "github"] as const,
+  workspaceLinear: (id: string) => ["workspace", id, "linear"] as const,
+  /** The teams fctl's app reaches in a Linear workspace a workspace works in. */
+  linearTeams: (id: string, organization: string) =>
+    ["workspace", id, "linear", organization, "teams"] as const,
   workspaceAudit: (id: string) => ["workspace", id, "audit"] as const,
   adminWorkspaces: ["admin", "workspaces"] as const,
   adminGithub: ["admin", "github"] as const,

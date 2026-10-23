@@ -9,6 +9,7 @@ import { MemoryTab } from "@/components/project/memory";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
 import { ReviewsTab } from "@/components/project/reviews";
 import { ScheduleButton, SchedulesTab } from "@/components/project/schedules";
+import { TicketsTab } from "@/components/project/tickets";
 import {
   AttachButton,
   DraftTray,
@@ -16,7 +17,7 @@ import {
   useAttachments,
   useFileDrop,
 } from "@/components/session/attachments";
-import { PullRequestLinks, ScheduledMark, SessionLink } from "@/components/session/row";
+import { PullRequestLinks, ScheduledMark, SessionLink, TicketMark } from "@/components/session/row";
 import {
   StartButton,
   StartChoices,
@@ -81,6 +82,7 @@ import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 type Tab =
   | "sessions"
+  | "tickets"
   | "schedules"
   | "reviews"
   | "memory"
@@ -93,6 +95,7 @@ type Tab =
 /** Everyone in the project sees these; owners and maintainers the rest. */
 const OPEN_TABS: Tab[] = [
   "sessions",
+  "tickets",
   "schedules",
   "reviews",
   "memory",
@@ -103,7 +106,7 @@ const OPEN_TABS: Tab[] = [
 
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
-  const { tab = "sessions", schedule } = useSearch({ from: "/app/p/$slug" });
+  const { tab = "sessions", schedule, linear } = useSearch({ from: "/app/p/$slug" });
   const project = useProject(slug);
   const p = project.data;
   const manage = p?.role === "owner" || p?.role === "maintainer";
@@ -188,6 +191,7 @@ export function ProjectPage() {
           {(
             [
               "sessions",
+              "tickets",
               "schedules",
               "reviews",
               "memory",
@@ -220,6 +224,7 @@ export function ProjectPage() {
       </nav>
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
+        {p && tab === "tickets" && <TicketsTab project={p} returned={linear} />}
         {p && tab === "schedules" && <SchedulesTab project={p} open={schedule} />}
         {p && tab === "reviews" && <ReviewsTab project={p} />}
         {p && tab === "memory" && <MemoryTab project={p} />}
@@ -339,6 +344,7 @@ function SessionList({ sessions }: { sessions: G.Session[] }) {
             <SessionLink s={s} />
             <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
               <ScheduledMark s={s} />
+              <TicketMark s={s} />
               {s.branch && <span className="truncate font-mono">{s.branch}</span>}
               <PullRequestLinks s={s} />
             </div>

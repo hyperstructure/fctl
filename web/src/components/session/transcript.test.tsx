@@ -12,7 +12,7 @@ vi.mock("@/components/ui", async () => {
     await vi.importActual<typeof import("@/components/ui/lightbox")>("@/components/ui/lightbox");
   const { Gallery, useLightbox } =
     await vi.importActual<typeof import("@/components/ui/gallery")>("@/components/ui/gallery");
-  const { GithubIcon, ReviewIcon, ThoughtIcon } =
+  const { GithubIcon, LinearIcon, ReviewIcon, ThoughtIcon } =
     await vi.importActual<typeof import("@/components/ui/icons")>("@/components/ui/icons");
   return {
     Avatar: () => null,
@@ -21,6 +21,7 @@ vi.mock("@/components/ui", async () => {
     Dialog: () => null,
     Gallery,
     GithubIcon,
+    LinearIcon,
     Logo: () => null,
     plainClick,
     ReviewIcon,
@@ -31,11 +32,12 @@ vi.mock("@/components/ui", async () => {
   };
 });
 vi.mock("@/components/markdown", async () => {
-  const { ImageSizes } =
+  const { ImageSizes, Pictures } =
     await vi.importActual<typeof import("@/components/markdown")>("@/components/markdown");
   return {
     CodeBlock: () => null,
     ImageSizes,
+    Pictures,
     // With the images whose size it knows, which take their room before they load.
     Markdown: function Markdown({ text }: { text: string }) {
       const sizes = useContext(ImageSizes);
@@ -781,5 +783,87 @@ describe("messages from fctl", () => {
     expect(c.textContent).toContain("Review acme/web#12");
     expect(c.textContent?.split(long.trim())).toHaveLength(3);
     expect(c.textContent).toContain("fctl started this session on Monday");
+  });
+});
+
+describe("tickets", () => {
+  const ticket: G.SessionTicket = {
+    tracker: "linear",
+    id: "iss_1",
+    key: "ENG-12",
+    title: "Fix the login redirect loop",
+    url: "https://linear.app/acme/issue/ENG-12",
+  };
+  const message = (t: G.TicketMessage, text = "Ada delegated ENG-12 to fctl in Linear"): Item => ({
+    kind: "user",
+    key: `u-${++seq}`,
+    seq,
+    ts: 0,
+    author: ada,
+    text,
+    source: "api",
+    ticket: t,
+  });
+
+  it("shows a delegated ticket as a card, with what fctl told the agent a click away", () => {
+    const c = transcript(
+      [
+        message({
+          ticket,
+          event: "delegated",
+          description: "Safari sends people back to /login.",
+          state: { name: "Todo", kind: "unstarted" },
+          labels: ["Bug"],
+          explore: true,
+        }),
+      ],
+      "idle",
+    );
+    expect(c.textContent).toContain("Ada");
+    expect(c.textContent).toContain("delegated");
+    expect(c.textContent).toContain("to fctl in Linear");
+    expect(c.textContent).toContain("Fix the login redirect loop");
+    expect(c.textContent).toContain("Safari sends people back to /login.");
+    expect(c.textContent).toContain("Todo");
+    expect(c.textContent).toContain("Exploration");
+    expect(c.querySelector('a[href="https://linear.app/acme/issue/ENG-12"]')).not.toBeNull();
+    expect(c.textContent).not.toContain("Ada delegated ENG-12 to fctl in Linear");
+    const told = [...c.querySelectorAll("button")].find((b) => b.textContent === "What fctl told the agent");
+    act(() => told?.click());
+    expect(c.textContent).toContain("Ada delegated ENG-12 to fctl in Linear");
+  });
+
+  it("shows a reply from Linear as what its person wrote there", () => {
+    const c = transcript(
+      [message({ ticket, event: "replied", body: "Use the other API." }, "Ada replied")],
+      "idle",
+    );
+    expect(c.textContent).toContain("replied on");
+    expect(c.textContent).toContain("Use the other API.");
+  });
+
+  it("says what fctl posted in the tracker, which opens", () => {
+    const notice: Item = {
+      kind: "notice",
+      key: `n-${++seq}`,
+      seq,
+      ts: 0,
+      notice: {
+        level: "info",
+        code: "ticket_replied",
+        message: "Replied on ENG-12 in Linear",
+        ticket: {
+          tracker: "linear",
+          ticket: { key: "ENG-12", title: "Fix it", url: ticket.url },
+          body: "Fixed: the cookie lost its SameSite setting.",
+        },
+      },
+    };
+    const c = transcript([notice], "idle");
+    expect(c.textContent).toContain("Replied on ENG-12 in Linear");
+    expect(c.textContent).not.toContain("Fixed: the cookie");
+    const line = [...c.querySelectorAll("button")].find((b) => b.textContent?.startsWith("Replied on"));
+    act(() => line?.click());
+    expect(c.textContent).toContain("Fixed: the cookie lost its SameSite setting.");
   });
 });

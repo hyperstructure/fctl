@@ -98,8 +98,12 @@ this file is the overview. Order within a section is priority.
 - [x] Scheduled and recurring sessions (nightly dependency updates, triage):
       schedules start sessions once or again and again, on their owner's
       subscription, and other tools run them when asked (#9)
-- [ ] Integrations with issue trackers (Linear, Jira, ClickUp) that run a
-      project's schedules for the issues they send
+- [x] Ticket trackers: each project chooses GitHub Issues, a Linear team or
+      none, which its agents use with `fctl ticket`
+- [x] Linear: people delegate tickets to fctl or mention it there, and the
+      session reports back in the ticket's agent session
+- [ ] More ticket trackers (Jira, Shortcut, ClickUp), on the same `Ticket`
+      model and `fctl ticket`
 - [ ] Preview links: share a sandbox's dev server through a tunnel (#10)
 - [ ] Search across transcripts (#11)
 - [ ] Session templates and a shared library of project instructions
