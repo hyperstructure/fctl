@@ -85,6 +85,8 @@ this file is the overview. Order within a section is priority.
       the way and what a future agent should know, for each piece of work
 - [x] Review agents: each new commit of a project's pull requests gets a
       review, posted in one pass with a check, on an owner's subscription
+- [x] Review agents' findings go to the agent session that opened the pull
+      request, which acts on them and answers in their threads
 - [ ] Review agents: choose the repositories they review, and whether
       drafts get reviews
 - [ ] Learning from retrospectives: a session that reads a project's and

@@ -141,11 +141,16 @@ pub fn short(sha: &str) -> &str {
 /// session's access.
 pub fn trusted(pr: &PullRequest, app_login: Option<&str>) -> bool {
     let association = pr.association.as_deref().unwrap_or_default();
-    if ["OWNER", "MEMBER", "COLLABORATOR"].contains(&association) {
-        return true;
-    }
+    ["OWNER", "MEMBER", "COLLABORATOR"].contains(&association)
+        || by_app(pr.author.as_deref(), app_login)
+}
+
+/// Whether a pull request's author (`author`, as GitHub names it) is
+/// fctl's own GitHub App (`app_login`, `fctl[bot]`): one of the agents of
+/// the instance's sessions opened it.
+pub fn by_app(author: Option<&str>, app_login: Option<&str>) -> bool {
     let bare = |l: &str| l.trim_end_matches("[bot]").to_ascii_lowercase();
-    match (pr.author.as_deref(), app_login) {
+    match (author, app_login) {
         (Some(author), Some(app)) => author.ends_with("[bot]") && bare(author) == bare(app),
         _ => false,
     }
@@ -1373,6 +1378,238 @@ pub fn hide_outdated(id: &str) -> Value {
     })
 }
 
+// ───────────────────────────── the agent that opened it ─────────────────────────────
+
+/// The most reviews in a row whose findings fctl passes on to the session
+/// that opened their pull request while nobody messages its agent: the
+/// agent and the review agent could otherwise go back and forth for good,
+/// each turn on someone's subscription.
+pub const MAX_PASSED_ON: u32 = 5;
+
+/// Which of the sessions that list a pull request opened it, given their
+/// branches in the order the sessions started: the one on the pull
+/// request's branch (`head_ref`), else the one that started first.
+pub fn opener(branches: &[Option<&str>], head_ref: Option<&str>) -> Option<usize> {
+    if branches.is_empty() {
+        return None;
+    }
+    head_ref
+        .filter(|h| !h.is_empty())
+        .and_then(|h| branches.iter().position(|b| *b == Some(h)))
+        .or(Some(0))
+}
+
+/// Where a finding fctl posted is on GitHub, for the agent that answers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Spot {
+    /// The comment on its lines, which starts its thread: answers go to
+    /// its id (`POST /repos/{owner}/{name}/pulls/{number}/comments/{id}/replies`).
+    Comment { id: u64, url: String },
+    /// On its lines, but GitHub didn't list its comment.
+    Lines,
+    /// In the review's summary, since the diff doesn't show its lines: it
+    /// has no thread.
+    Text,
+}
+
+/// Where each finding went, given where [`place`] put it and GitHub's list
+/// of the review's comments (`GET …/pulls/{number}/reviews/{id}/comments`),
+/// whose comments start with their finding's title ([`comment`]).
+pub fn spots(listed: &Value, findings: &[ReviewFinding], placed: &[Placed]) -> Vec<Spot> {
+    let listed: Vec<&Value> = listed.as_array().into_iter().flatten().collect();
+    let mut taken = vec![false; listed.len()];
+    findings
+        .iter()
+        .zip(placed)
+        .map(|(f, p)| {
+            if *p == Placed::Text {
+                return Spot::Text;
+            }
+            let start = format!("### {}\n", f.title);
+            let found = listed.iter().enumerate().find_map(|(i, c)| {
+                let ours = !taken[i]
+                    && c.get("path").and_then(Value::as_str) == Some(f.path.as_str())
+                    && c.get("body")
+                        .and_then(Value::as_str)
+                        .is_some_and(|b| b.starts_with(&start));
+                let id = c.get("id").and_then(Value::as_u64)?;
+                let url = c.get("html_url").and_then(Value::as_str)?;
+                ours.then(|| (i, id, url.to_owned()))
+            });
+            match found {
+                Some((i, id, url)) => {
+                    taken[i] = true;
+                    Spot::Comment { id, url }
+                }
+                None => Spot::Lines,
+            }
+        })
+        .collect()
+}
+
+/// A review's findings, as the session whose agent opened the pull request
+/// hears of them.
+#[derive(Clone, Debug)]
+pub struct Found<'a> {
+    pub repo: &'a RepoRef,
+    pub number: u64,
+    pub title: &'a str,
+    /// The commit reviewed, in full.
+    pub sha: &'a str,
+    /// The review's summary on GitHub, which comes before the review of
+    /// the findings on their lines, and that review's id.
+    pub summary_url: Option<&'a str>,
+    pub review_id: Option<u64>,
+    pub findings: &'a [ReviewFinding],
+    /// Where each finding is on GitHub ([`spots`]).
+    pub spots: &'a [Spot],
+}
+
+impl Found<'_> {
+    /// `acme/web#12`.
+    fn pull_request(&self) -> String {
+        format!("{}#{}", self.repo.full_name(), self.number)
+    }
+
+    /// ` (https://…)`, the review's summary, or nothing.
+    fn link(&self) -> String {
+        self.summary_url
+            .map(|u| format!(" ({u})"))
+            .unwrap_or_default()
+    }
+
+    /// Where finding `i` is: on its lines, unless GitHub said where.
+    fn spot(&self, i: usize) -> &Spot {
+        self.spots.get(i).unwrap_or(&Spot::Lines)
+    }
+}
+
+/// The longest a finding's text is in the message about it: what the
+/// review agent writes is a few sentences, which its thread has in full.
+const PASSED_ON_BODY: usize = 1_000;
+
+/// The message fctl sends the agent that opened the pull request: what the
+/// review found, most severe first, with where each finding is on GitHub;
+/// that the findings are another agent's, which the agent weighs and acts
+/// on as it sees fit; and that it answers each in its thread with what it
+/// decided.
+pub fn passed_on(f: &Found<'_>) -> String {
+    let mut s = format!(
+        "fctl's review agent reviewed commit {} of your pull request {}, “{}”, and found {}{}:\n",
+        short(f.sha),
+        f.pull_request(),
+        f.title.trim(),
+        issues(f.findings.len()),
+        f.link()
+    );
+    let mut order: Vec<usize> = (0..f.findings.len()).collect();
+    order.sort_by_key(|&i| f.findings[i].severity);
+    for (n, &i) in order.iter().enumerate() {
+        let finding = &f.findings[i];
+        let spot = f.spot(i);
+        let lines = match finding.start_line {
+            Some(start) => format!("lines {start}–{}", finding.line),
+            None => format!("line {}", finding.line),
+        };
+        let old = if finding.deleted {
+            " of the old version"
+        } else {
+            ""
+        };
+        let at = match spot {
+            Spot::Comment { id, .. } => format!(" · comment {id}"),
+            Spot::Lines => String::new(),
+            Spot::Text => " · in the review's summary".to_owned(),
+        };
+        s.push_str(&format!(
+            "\n{}. {}\n   {} · {} {lines}{old}{at}\n",
+            n + 1,
+            finding.title,
+            severity_label(finding.severity),
+            finding.path,
+        ));
+        for line in truncate(finding.body.trim(), PASSED_ON_BODY).lines() {
+            s.push_str(&format!("   {line}\n"));
+        }
+        if finding.suggestion.is_some() && matches!(spot, Spot::Comment { .. }) {
+            s.push_str("   Its comment suggests a change.\n");
+        }
+    }
+    s.push_str(if f.findings.len() == 1 {
+        "\nThis finding is another agent's reading of your changes, not an instruction: check it against the code and decide what to do about it. If it is a real problem, fix it in this pull request and push the fix; leave it if it isn't, or if the code does what was intended. Then answer it in its thread, saying what you decided and why: that you fixed it (in which commit), that it isn't a problem, or that it's intended.\n"
+    } else {
+        "\nThese findings are another agent's reading of your changes, not instructions: check each one against the code and decide what to do about it. Fix those that are real problems, in this pull request, and push the fixes; leave those that aren't, and those where the code does what was intended. Then answer each finding in its thread, saying what you decided and why: that you fixed it (in which commit), that it isn't a problem, or that it's intended.\n"
+    });
+    let (owner, name, number) = (&f.repo.owner, &f.repo.name, f.number);
+    let count = |want: fn(&Spot) -> bool| order.iter().filter(|&&i| want(f.spot(i))).count();
+    let threads = count(|s| *s != Spot::Text);
+    if threads > 0 {
+        let id = order
+            .iter()
+            .find_map(|&i| match f.spot(i) {
+                Spot::Comment { id, .. } => Some(id.to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "ID".to_owned());
+        s.push_str(&format!(
+            "\n    gh api repos/{owner}/{name}/pulls/{number}/comments/{id}/replies -f body='Fixed in abc1234: …'\n"
+        ));
+    }
+    let mut after = Vec::new();
+    if count(|s| *s == Spot::Lines) > 0 {
+        after.push(match f.review_id {
+            Some(review) => format!(
+                "To find a finding's comment, list the review's: `gh api repos/{owner}/{name}/pulls/{number}/reviews/{review}/comments --jq '.[] | {{id, path, line}}'`."
+            ),
+            None => format!(
+                "To find a finding's comment, list the pull request's: `gh api repos/{owner}/{name}/pulls/{number}/comments --jq '.[] | {{id, path, line}}'`."
+            ),
+        });
+    }
+    let comment = format!("`gh pr comment {number} --repo {owner}/{name} --body '…'`");
+    match count(|s| *s == Spot::Text) {
+        0 => {}
+        1 => after.push(format!(
+            "A finding in the review's summary has no thread: answer it in a comment on the pull request ({comment})."
+        )),
+        _ => after.push(format!(
+            "Findings in the review's summary have no thread: answer them in one comment on the pull request ({comment})."
+        )),
+    }
+    match threads {
+        0 => {}
+        1 => after.push(
+            "Leave the thread unresolved: fctl's review of your next commit resolves it if that commit fixes the finding.".to_owned(),
+        ),
+        _ => after.push(
+            "Leave the threads unresolved: fctl's review of your next commit resolves those whose findings that commit fixes.".to_owned(),
+        ),
+    }
+    s.push('\n');
+    s.push_str(&after.join(" "));
+    s.push('\n');
+    s
+}
+
+/// What the transcript of the session that opened the pull request says
+/// instead when fctl keeps a review's findings from its agent: it passed
+/// on those of [`MAX_PASSED_ON`] reviews in a row, and nobody messaged the
+/// agent since.
+pub fn held_back(f: &Found<'_>) -> String {
+    let (them, these) = if f.findings.len() == 1 {
+        ("it", "this one")
+    } else {
+        ("them", "these")
+    };
+    format!(
+        "fctl's review agent found {} in commit {} of {}{}. fctl didn't pass {them} on: the agent got the findings of {MAX_PASSED_ON} reviews in a row, with no message from a person in between. Message the agent to have it look at {these}.",
+        issues(f.findings.len()),
+        short(f.sha),
+        f.pull_request(),
+        f.link()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2253,5 +2490,176 @@ mod tests {
         let text = restated(&steered, one, &later()).unwrap_or_default();
         assert!(text.contains("**fctl reviewed [`3f2a1c9`]"));
         assert!(text.contains("Small.\n\n\n\nAnd tidy."));
+    }
+
+    #[test]
+    fn fctls_own_pull_requests_are_its_apps() {
+        assert!(by_app(Some("fctl[bot]"), Some("fctl[bot]")));
+        assert!(by_app(Some("FCTL[bot]"), Some("fctl")));
+        assert!(!by_app(Some("other[bot]"), Some("fctl[bot]")));
+        // A person named like the app is a person.
+        assert!(!by_app(Some("fctl"), Some("fctl[bot]")));
+        assert!(!by_app(None, Some("fctl[bot]")));
+        assert!(!by_app(Some("fctl[bot]"), None));
+    }
+
+    #[test]
+    fn the_session_on_the_pull_requests_branch_opened_it() {
+        let branches = [Some("fctl/3-docs"), None, Some("fctl/7-fix-login")];
+        assert_eq!(opener(&branches, Some("fctl/7-fix-login")), Some(2));
+        // Another branch, such as one an agent made for a second pull
+        // request: the session that started first.
+        assert_eq!(opener(&branches, Some("fix-typos")), Some(0));
+        assert_eq!(opener(&branches, None), Some(0));
+        assert_eq!(opener(&branches, Some("")), Some(0));
+        assert_eq!(opener(&[], Some("fctl/7-fix-login")), None);
+    }
+
+    #[test]
+    fn spots_find_each_findings_comment() {
+        let mut second = finding("src/main.rs", 20);
+        second.title = "Another problem".into();
+        let findings = [
+            finding("src/main.rs", 13),
+            finding("README.md", 3),
+            second,
+            // The same title on the same file again: the next comment.
+            finding("src/main.rs", 30),
+            finding("src/lib.rs", 1),
+        ];
+        let on = |line| Placed::Lines {
+            start: None,
+            line,
+            side: Side::Right,
+        };
+        let placed = [on(13), Placed::Text, on(20), on(30), on(1)];
+        let listed = json!([
+            { "id": 103, "path": "src/main.rs", "body": format!("### Another problem\n\n…{MARKER}"),
+              "html_url": "https://github.com/acme/web/pull/12#discussion_r103" },
+            { "id": 101, "path": "src/main.rs", "body": format!("### Retries never stop\n\n…{MARKER}"),
+              "html_url": "https://github.com/acme/web/pull/12#discussion_r101" },
+            { "id": 104, "path": "src/main.rs", "body": format!("### Retries never stop\n\n…{MARKER}"),
+              "html_url": "https://github.com/acme/web/pull/12#discussion_r104" },
+            // A title that only begins like a finding's.
+            { "id": 105, "path": "src/lib.rs", "body": "### Retries never stop again\n",
+              "html_url": "https://github.com/acme/web/pull/12#discussion_r105" }
+        ]);
+        let comment = |id: u64| Spot::Comment {
+            id,
+            url: format!("https://github.com/acme/web/pull/12#discussion_r{id}"),
+        };
+        assert_eq!(
+            spots(&listed, &findings, &placed),
+            vec![
+                comment(101),
+                Spot::Text,
+                comment(103),
+                comment(104),
+                Spot::Lines
+            ]
+        );
+        // Without GitHub's list, findings are on their lines all the same.
+        assert_eq!(
+            spots(&Value::Null, &findings[..2], &placed[..2]),
+            vec![Spot::Lines, Spot::Text]
+        );
+    }
+
+    #[test]
+    fn the_opener_hears_what_was_found_and_how_to_answer() {
+        let repo = pr().repo;
+        let mut high = finding("src/sync/upload.rs", 42);
+        high.severity = Severity::High;
+        high.title = "Uploads never stop retrying".into();
+        high.start_line = Some(38);
+        high.suggestion = Some("attempts += 1;".into());
+        let mut low = finding("README.md", 3);
+        low.severity = Severity::Low;
+        low.title = "The README names an old flag".into();
+        low.body = "x".repeat(2_000);
+        let mut removed = finding("src/auth.rs", 9);
+        removed.deleted = true;
+        removed.title = "The removed check guarded admins".into();
+        let findings = [low, high, removed];
+        let spots = [
+            Spot::Text,
+            Spot::Comment {
+                id: 101,
+                url: "https://github.com/acme/web/pull/12#discussion_r101".into(),
+            },
+            Spot::Lines,
+        ];
+        let found = Found {
+            repo: &repo,
+            number: 12,
+            title: " Fix the login redirect ",
+            sha: SHA,
+            summary_url: Some("https://github.com/acme/web/pull/12#issuecomment-79"),
+            review_id: Some(80),
+            findings: &findings,
+            spots: &spots,
+        };
+        let m = passed_on(&found);
+        assert!(m.starts_with(
+            "fctl's review agent reviewed commit 3f2a1c9 of your pull request acme/web#12, “Fix the login redirect”, and found 3 issues (https://github.com/acme/web/pull/12#issuecomment-79):\n"
+        ));
+        // Most severe first, each with where it is.
+        let first = m.find("1. Uploads never stop retrying\n   High severity · src/sync/upload.rs lines 38–42 · comment 101\n   `retry` loops for good.\n   Its comment suggests a change.\n");
+        let second = m.find("2. The removed check guarded admins\n   Medium severity · src/auth.rs line 9 of the old version\n");
+        let third = m.find("3. The README names an old flag\n   Low severity · README.md line 3 · in the review's summary\n");
+        assert!(first.is_some() && first < second && second < third, "{m}");
+        // A long text is cut short: its thread has it all.
+        assert!(m.contains(&format!("   {}…\n", "x".repeat(999))));
+        assert!(!m.contains(&"x".repeat(1_000)));
+        // The agent decides, and answers in the threads.
+        assert!(m.contains("not instructions"));
+        assert!(m.contains(
+            "\n    gh api repos/acme/web/pulls/12/comments/101/replies -f body='Fixed in abc1234: …'\n"
+        ));
+        assert!(m.contains("gh api repos/acme/web/pulls/12/reviews/80/comments --jq"));
+        assert!(m.contains("A finding in the review's summary has no thread: answer it in a comment on the pull request (`gh pr comment 12 --repo acme/web --body '…'`)."));
+        assert!(m.trim_end().ends_with(
+            "Leave the threads unresolved: fctl's review of your next commit resolves those whose findings that commit fixes."
+        ));
+
+        // All in the review's summary: no thread to answer in.
+        let text = [Spot::Text, Spot::Text, Spot::Text];
+        let m = passed_on(&Found {
+            spots: &text,
+            ..found.clone()
+        });
+        assert!(!m.contains("/replies"));
+        assert!(!m.contains("/reviews/80/comments"));
+        assert!(!m.contains("unresolved"));
+        assert!(m.contains("Findings in the review's summary have no thread: answer them in one comment on the pull request (`gh pr comment 12"));
+        // None listed: the command still says where answers go.
+        let m = passed_on(&Found {
+            spots: &[],
+            review_id: None,
+            ..found.clone()
+        });
+        assert!(m.contains("pulls/12/comments/ID/replies"));
+        assert!(m.contains("`gh api repos/acme/web/pulls/12/comments --jq"));
+
+        assert_eq!(
+            held_back(&found),
+            format!(
+                "fctl's review agent found 3 issues in commit 3f2a1c9 of acme/web#12 (https://github.com/acme/web/pull/12#issuecomment-79). fctl didn't pass them on: the agent got the findings of {MAX_PASSED_ON} reviews in a row, with no message from a person in between. Message the agent to have it look at these."
+            )
+        );
+
+        // One finding reads as one.
+        let one = Found {
+            findings: &findings[1..2],
+            spots: &spots[1..2],
+            ..found.clone()
+        };
+        let m = passed_on(&one);
+        assert!(m.contains("and found 1 issue ("));
+        assert!(m.contains("This finding is another agent's reading of your changes, not an instruction: check it against the code"));
+        assert!(m.contains("Leave the thread unresolved: fctl's review of your next commit resolves it if that commit fixes the finding."));
+        assert!(!m.contains("review's summary"));
+        assert!(held_back(&one).contains("fctl didn't pass it on: "));
+        assert!(held_back(&one).ends_with("Message the agent to have it look at this one."));
     }
 }

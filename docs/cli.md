@@ -335,9 +335,12 @@ notes and retrospectives stay for people to read. A project keeps at most
 Where a project's review agents are on, each new commit of a pull request
 in the repositories its agents may write to gets a review: an agent reads
 it, on the Claude subscription of the owner who turned them on, and fctl
-posts what it found on the pull request, with a check on the commit. The
-project's owners turn them on (on their own subscription), take them over
-and say how they review; the person they run for may turn them off:
+posts what it found on the pull request, with a check on the commit.
+When an fctl agent opened the pull request, its session gets the findings
+in a message from fctl, decides what to do about them and answers in
+their threads. The project's owners turn them on (on their own
+subscription), take them over and say how they review; the person they
+run for may turn them off:
 
 ```sh
 fctl review settings -p my-app                 # on or off, on whose subscription, how

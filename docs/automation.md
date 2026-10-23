@@ -72,7 +72,8 @@ says so.
 
 Projects have review agents built in: turn them on under the project's
 **Reviews** tab, or with `fctl review settings --on`, and each new commit
-of a pull request gets a review, with a check on the commit
+of a pull request gets a review, with a check on the commit; when an fctl
+agent opened the pull request, its session gets the findings to act on
 ([Architecture](architecture.md#review-agents)). A workflow of your own
 suits reviews those don't make: ones that run the tests, or that start on
 a label. Here one reads each new pull request, runs its tests if that

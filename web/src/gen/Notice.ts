@@ -10,7 +10,7 @@ export type Notice = { level: NoticeLevel,
  * Stable identifier, for example `usage_limit`, `overage_blocked`,
  * `api_key_refused`, `credential_expired`, `runner_lost`,
  * `screenshot_published`, `memory_added`, `memory_stale`,
- * `retrospective`, `review_posted`.
+ * `retrospective`, `review_posted`, `review_held`.
  */
 code: string, message: string, 
 /**

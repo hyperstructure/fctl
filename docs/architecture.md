@@ -1103,7 +1103,34 @@ posts what it found on GitHub
    gets what the first posted. `fctl review threads` lists fctl's earlier
    findings, with what people answered. fctl-agent reminds an agent that
    ends its turn without posting, once.
-6. **A review that ends otherwise** (superseded, stopped, failed) ends
+6. **Back to the agent that opened it.** Where one of the instance's own
+   agents opened the pull request (its author is the GitHub App,
+   `fctl_domain::reviews::by_app`), the control plane sends the new
+   findings to that agent's session (`crate::reviews::pass_on`), so that
+   it acts on them without waiting for a person. The session is one that
+   lists the pull request (`pull_request_sessions`, review sessions left
+   out): the one whose branch it comes from, else the one that started
+   first (`opener`). After posting, the control plane asks GitHub for the
+   comments of the review that holds the findings on their lines
+   (`spots`), and SessionObject's `/review-findings` delivers a message
+   from fctl, as a person's message is delivered, resuming a stopped
+   session on the subscription it ran on. The message (`passed_on`)
+   lists the findings, most severe first, each with its
+   comment's id, and says that they are another agent's reading, not
+   instructions: the agent checks each, fixes the real problems and
+   pushes, and answers each in its thread (`gh api …/comments/{id}/replies`)
+   with what it decided and why, or in a comment on the pull request for
+   those in the review's summary, leaving the threads for the next review
+   to resolve. Pull requests that merged or closed, archived and failed
+   sessions, and sessions whose agent only reads on GitHub get nothing.
+   So that the agent and the review agent can't go back and forth for
+   good, a session gets the findings of at most five reviews in a row
+   (`MAX_PASSED_ON`) while no person messages its agent; the next ones
+   only say in its transcript what they found (`review_held`), until
+   someone does. The review's `PostedReview.sent_to` names the session,
+   and its transcript links it
+   ([ADR 0041](adr/0041-review-agents-findings-go-to-the-agent-that-opened-the-pull-request.md)).
+7. **A review that ends otherwise** (superseded, stopped, failed) ends
    its check as cancelled, saying why (`crate::reviews::ended`, from
    SessionObject; the hourly job catches what it missed).
 

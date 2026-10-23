@@ -1167,15 +1167,15 @@ impl<'a> Github<'a> {
         })
     }
 
-    /// Posts a review (`fctl_domain::reviews::review_request`): its page,
-    /// or GitHub's status and why it refused.
+    /// Posts a review (`fctl_domain::reviews::review_request`): its page
+    /// and its id, or GitHub's status and why it refused.
     pub async fn post_review(
         &self,
         token: &GithubCredential,
         repo: &RepoRef,
         number: u64,
         body: Value,
-    ) -> AppResult<Result<String, (u16, String)>> {
+    ) -> AppResult<Result<(String, Option<u64>), (u16, String)>> {
         let (status, v) = self
             .with_token(
                 token,
@@ -1185,8 +1185,36 @@ impl<'a> Github<'a> {
             )
             .await?;
         Ok(match v.get("html_url").and_then(Value::as_str) {
-            Some(url) if status == 200 => Ok(url.to_owned()),
+            Some(url) if status == 200 => Ok((url.to_owned(), v.get("id").and_then(Value::as_u64))),
             _ => Err((status, github_message(status, &v))),
+        })
+    }
+
+    /// The comments of review `id` on lines of the pull request, as GitHub
+    /// lists them (`fctl_domain::reviews::spots` reads them), or why it
+    /// didn't. A review of fctl's has at most 25.
+    pub async fn review_comments(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        number: u64,
+        id: u64,
+    ) -> AppResult<Result<Value, String>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Get,
+                &format!(
+                    "/repos/{}/{}/pulls/{number}/reviews/{id}/comments?per_page=100",
+                    repo.owner, repo.name
+                ),
+                None,
+            )
+            .await?;
+        Ok(if status == 200 {
+            Ok(v)
+        } else {
+            Err(github_message(status, &v))
         })
     }
 

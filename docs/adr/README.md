@@ -46,3 +46,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0038](0038-agents-keep-one-retrospective-for-each-piece-of-work.md) | Agents keep one retrospective for each piece of work, and update it |
 | [0039](0039-sensitive-actions-take-a-passkey-or-a-code.md) | Sensitive actions take a passkey or a code, where the primary instance owner asks for it |
 | [0040](0040-review-agents-review-pull-requests-on-an-owners-subscription.md) | Review agents review pull requests on an owner's subscription, and fctl posts for them |
+| [0041](0041-review-agents-findings-go-to-the-agent-that-opened-the-pull-request.md) | Review agents' findings go to the agent that opened the pull request |

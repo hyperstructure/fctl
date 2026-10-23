@@ -24,7 +24,9 @@ use fctl_domain::reviews::{self as rv, Links, PullRequest};
 use fctl_proto::api::{FindingThread, PostedReview, Review, ReviewState};
 use fctl_proto::event::{MessageSource, UserMessage};
 use fctl_proto::runner::{GithubCredential, StopReason};
-use fctl_proto::session::{PullRequestRef, RepoAccess, RepoRef, SessionStats, UserRef};
+use fctl_proto::session::{
+    GithubAccess, PullRequestRef, RepoAccess, RepoRef, SessionStats, UserRef,
+};
 use fctl_proto::{ApiError, ErrorCode, SessionId, UserId};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -132,6 +134,9 @@ pub struct ReviewRow {
     pub operator_id: String,
     pub operator_name: Option<String>,
     pub operator_avatar: Option<String>,
+    /// The pull request's branch, which its session is named after.
+    #[serde(default)]
+    pub head_ref: Option<String>,
 }
 
 /// SELECT for [`ReviewRow`]; `WHERE` and `ORDER BY` follow.
@@ -139,7 +144,7 @@ const REVIEW_SELECT: &str = "SELECT rv.session_id, rv.project_id, rv.repo, rv.nu
     rv.title, rv.author, rv.draft, rv.fork, rv.trusted, rv.previous_sha, rv.installation_id, rv.check_run_id, rv.check_error, rv.state, \
     rv.reason, rv.findings, rv.resolved, rv.still_open, rv.review_url, rv.created_at, rv.finished_at, \
     s.number AS session_number, s.status AS status, s.stats AS stats, s.created_by AS operator_id, \
-    u.name AS operator_name, u.avatar_url AS operator_avatar \
+    u.name AS operator_name, u.avatar_url AS operator_avatar, s.branch AS head_ref \
     FROM reviews rv JOIN sessions s ON s.id = rv.session_id LEFT JOIN users u ON u.id = s.created_by";
 
 impl ReviewRow {
@@ -1104,6 +1109,7 @@ pub async fn submit(
                 resolved: Vec::new(),
                 still_open: count(row.still_open),
                 again: true,
+                sent_to: None,
             });
         }
         ReviewState::Superseded => {
@@ -1142,7 +1148,7 @@ pub async fn submit(
         posted.map(|p| (p, repo))
     }
     .await;
-    let (posted, repo) = match posted {
+    let (posting, repo) = match posted {
         Ok(p) => p,
         Err(e) => {
             // Nothing was kept: the agent may submit again.
@@ -1164,10 +1170,113 @@ pub async fn submit(
             "pull_request": format!("{}#{}", repo.full_name(), row.number),
             "commit": row.head_sha,
             "findings": sub.findings.len(),
-            "resolved": posted.resolved.len(),
+            "resolved": posting.review.resolved.len(),
         })),
     );
-    Ok(posted)
+    let sent_to = match pass_on(ctx, &row, &repo, &sub, &posting).await {
+        Ok(to) => to,
+        Err(e) => {
+            worker::console_error!("passing review {session_id}'s findings on: {}", e.0.message);
+            None
+        }
+    };
+    Ok(PostedReview {
+        sent_to,
+        ..posting.review
+    })
+}
+
+/// What [`post`] posted: what the review agent hears, and where each
+/// finding went on GitHub, for the agent that opened the pull request.
+struct Posting {
+    review: PostedReview,
+    /// The review on GitHub, by its id.
+    review_id: Option<u64>,
+    /// Each finding's place ([`rv::spots`]), when it goes to that agent.
+    spots: Vec<rv::Spot>,
+}
+
+/// Sends what a review found to the session whose agent opened the pull
+/// request, where one of fctl's own agents did (the GitHub App is its
+/// author): a message from fctl with the findings and their threads,
+/// which resumes the session if it stopped, as a person's would, on the
+/// subscription it ran on. Its agent decides what to do about each
+/// finding, and answers in its thread. Not for pull requests that merged
+/// or closed meanwhile, nor sessions whose agent only reads on GitHub now.
+/// Returns the session, once it has the message.
+async fn pass_on(
+    ctx: &Ctx,
+    row: &ReviewRow,
+    repo: &RepoRef,
+    sub: &rv::Submission,
+    posting: &Posting,
+) -> AppResult<Option<SessionId>> {
+    if sub.findings.is_empty() || !rv::by_app(row.author.as_deref(), app_login(&ctx.cfg).as_deref())
+    {
+        return Ok(None);
+    }
+    let pr = format!("{}#{}", repo.full_name(), row.number);
+    let listing = crate::pull_requests::listed_by(&ctx.db, repo, row.number()).await?;
+    let branches: Vec<Option<&str>> = listing.iter().map(|l| l.branch.as_deref()).collect();
+    let Some(opener) = rv::opener(&branches, row.head_ref.as_deref()).and_then(|i| listing.get(i))
+    else {
+        worker::console_log!(
+            "no session lists {pr}, whose review found {} issues",
+            sub.findings.len()
+        );
+        return Ok(None);
+    };
+    let id = opener.session_id.as_str();
+    if let Some(state @ ("merged" | "closed")) = opener.state.as_deref() {
+        worker::console_log!("not passing {pr}'s review on to session {id}: it is {state}");
+        return Ok(None);
+    }
+    let Some(session) = crate::spec::session_row(&ctx.db, id).await? else {
+        return Ok(None);
+    };
+    if session.github_access() == GithubAccess::Read {
+        worker::console_log!(
+            "not passing {pr}'s review on to session {id}: its agent only reads on GitHub"
+        );
+        return Ok(None);
+    }
+    let found = rv::Found {
+        repo,
+        number: row.number(),
+        title: row.title.as_deref().unwrap_or_default(),
+        sha: &row.head_sha,
+        summary_url: posting.review.url.as_deref(),
+        review_id: posting.review_id,
+        findings: &sub.findings,
+        spots: &posting.spots,
+    };
+    let stub = internal::session_stub(&ctx.env, id)?;
+    let told: internal::FindingsTold = internal::post(
+        &stub,
+        "/review-findings",
+        &internal::ReviewFindings {
+            review: SessionId(row.session_id.clone()),
+            text: rv::passed_on(&found),
+            held: rv::held_back(&found),
+        },
+    )
+    .await?;
+    if let Some(why) = told.not_sent {
+        worker::console_log!("not passing {pr}'s review on to session {id}: {why}");
+        return Ok(None);
+    }
+    ctx.audit_in(
+        session.workspace.workspace_id.as_deref(),
+        "review.passed_on",
+        Some(id),
+        Some(json!({
+            "review": row.session_id,
+            "pull_request": pr,
+            "commit": row.head_sha,
+            "findings": sub.findings.len(),
+        })),
+    );
+    Ok(Some(SessionId(id.to_owned())))
 }
 
 /// [`submit`]'s work on GitHub, with a token of the review's repository.
@@ -1179,7 +1288,7 @@ async fn post(
     repo: &RepoRef,
     token: &GithubCredential,
     sub: &rv::Submission,
-) -> AppResult<PostedReview> {
+) -> AppResult<Posting> {
     let number = row.number();
     let session_url = ctx.cfg.url(&format!("/s/{}", row.session_id));
     let commit_url = format!("{}/commits/{}", row.url, row.head_sha);
@@ -1219,6 +1328,8 @@ async fn post(
     // diff shows them. The others go in the summary, as do all of them
     // when GitHub refuses lines it was given.
     let mut url = None;
+    let mut review_id = None;
+    let mut spots = Vec::new();
     let mut in_text = 0;
     if !sub.findings.is_empty() {
         let files = gh.pull_files(token, repo, number).await?;
@@ -1249,7 +1360,10 @@ async fn post(
                 ))
             };
             let posted = match gh.post_review(token, repo, number, review).await {
-                Ok(Ok(_)) => Ok(()),
+                Ok(Ok((_, id))) => {
+                    review_id = id;
+                    Ok(())
+                }
                 Ok(Err((422, why))) => {
                     worker::console_error!(
                         "GitHub refused a review's lines ({why}): its findings go in its summary"
@@ -1276,6 +1390,21 @@ async fn post(
         }
         in_text = placed.iter().filter(|p| **p == rv::Placed::Text).count();
         url = Some(summary_url);
+        // Where each finding went, for the agent that opened the pull
+        // request, where one of fctl's did (`pass_on`).
+        if rv::by_app(row.author.as_deref(), app_login(&ctx.cfg).as_deref()) {
+            let mut listed = Value::Null;
+            if let Some(id) = review_id {
+                match gh.review_comments(token, repo, number, id).await {
+                    Ok(Ok(comments)) => listed = comments,
+                    Ok(Err(why)) => worker::console_error!("listing a review's comments: {why}"),
+                    Err(e) => {
+                        worker::console_error!("listing a review's comments: {}", e.0.message)
+                    }
+                }
+            }
+            spots = rv::spots(&listed, &sub.findings, &placed);
+        }
     }
     // The earlier findings the new commits fixed: marked, then resolved.
     let mut resolved_ids = Vec::new();
@@ -1349,14 +1478,19 @@ async fn post(
     )?
     .run()
     .await?;
-    Ok(PostedReview {
-        state,
-        url,
-        comments: count((sub.findings.len() - in_text) as i64),
-        in_text: count(in_text as i64),
-        resolved: resolved_ids,
-        still_open: count(still_open as i64),
-        again: false,
+    Ok(Posting {
+        review: PostedReview {
+            state,
+            url,
+            comments: count((sub.findings.len() - in_text) as i64),
+            in_text: count(in_text as i64),
+            resolved: resolved_ids,
+            still_open: count(still_open as i64),
+            again: false,
+            sent_to: None,
+        },
+        review_id,
+        spots,
     })
 }
 

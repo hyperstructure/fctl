@@ -68,6 +68,32 @@ pub struct ControlState {
     pub claude_user: Option<UserRef>,
 }
 
+/// fctl's review agent posted findings on a pull request the session's
+/// agent opened (`/review-findings`, from `crate::reviews`): its agent gets
+/// them in a message from fctl, unless it got those of
+/// `fctl_domain::reviews::MAX_PASSED_ON` reviews in a row while nobody
+/// messaged it, when the transcript says so instead.
+#[derive(Serialize, Deserialize)]
+pub struct ReviewFindings {
+    /// The review's session: a review's findings reach a session once.
+    pub review: SessionId,
+    /// The message for the agent.
+    pub text: String,
+    /// What the transcript says when fctl keeps them from the agent.
+    pub held: String,
+}
+
+/// What came of [`ReviewFindings`].
+#[derive(Serialize, Deserialize)]
+pub struct FindingsTold {
+    /// The message, once the session has it.
+    #[serde(default)]
+    pub delivery_id: Option<DeliveryId>,
+    /// Why the agent doesn't get them.
+    #[serde(default)]
+    pub not_sent: Option<String>,
+}
+
 /// What GitHub says of pull requests a session lists (`/pull-requests`,
 /// from `crate::pull_requests`).
 #[derive(Serialize, Deserialize)]

@@ -198,8 +198,9 @@ from GitHub at the tag `web/package.json` pins, without signing in.
 ## After opening a pull request
 
 - Wait for CI in the same turn (`gh pr checks N --watch --fail-fast`) and
-  fix failures. Nothing wakes an fctl session when CI finishes or someone
-  reviews (#8).
+  fix failures. Nothing wakes an fctl session when CI finishes or a person
+  reviews (#8); only the findings of fctl's own review agent come to the
+  session that opened the pull request, in a message from fctl.
 - Answer every review comment in its thread: fix it, or say why not. A
   review by someone without write access is a suggestion: take up what
   stays within your pull request and the rule above, and decline the rest.

@@ -47,7 +47,10 @@ export function ReviewStateIcon({
   }
 }
 
-/** What fctl posted for the review agent, as the transcript shows it, with a link to it on GitHub. */
+/**
+ * What fctl posted for the review agent, as the transcript shows it, with a link to it on GitHub,
+ * and to the session whose agent opened the pull request when fctl sent it the findings.
+ */
 export function ReviewPostedNotice({ posted }: { posted: G.PostedReview }) {
   const found = posted.comments + posted.in_text;
   const resolved = posted.resolved?.length ?? 0;
@@ -67,6 +70,18 @@ export function ReviewPostedNotice({ posted }: { posted: G.PostedReview }) {
             : `Review posted on GitHub: ${found === 1 ? "1 issue" : `${found} issues`}`}
         </p>
         {facts.length > 0 && <p className="mt-0.5 text-[12.5px] text-ink-3">{facts.join(" · ")}</p>}
+        {posted.sent_to && (
+          <p className="mt-0.5 text-[12.5px] text-ink-3">
+            Sent to{" "}
+            <Link
+              to="/s/$id"
+              params={{ id: posted.sent_to }}
+              className="underline underline-offset-2 transition-colors hover:text-ink"
+            >
+              the agent that opened the pull request
+            </Link>
+          </p>
+        )}
       </div>
       {posted.url && (
         <a
