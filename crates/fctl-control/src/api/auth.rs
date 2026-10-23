@@ -33,6 +33,7 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
             google: ctx.cfg.google.is_some(),
             email: ctx.cfg.email.is_some(),
             github: ctx.cfg.github.is_some(),
+            github_webhook: crate::pull_requests::enabled(&ctx.cfg),
             publish_screenshots: settings.publish_screenshots,
             early_access: ctx.cfg.early_access,
         },

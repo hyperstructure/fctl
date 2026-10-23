@@ -657,6 +657,14 @@ const EFFORT_LEVELS: SelectOption[] = [
   ...EFFORTS.map((e) => ({ ...e, icon: <EffortIcon level={e.value} /> })),
 ];
 
+/** What brings agents back to their pull requests where a project says nothing of it. */
+const NO_FOLLOW_UPS: G.FollowUps = { comments: false, checks: false, closed: false };
+
+/** A word that addresses agents on GitHub, as people write it. */
+function Address({ children }: { children: string }) {
+  return <code className="font-mono text-[11.5px] text-ink-2">{children}</code>;
+}
+
 /** How long screenshot links may work, with a project's own choice among them. */
 function dayOptions(current?: number): SelectOption[] {
   const days = [...new Set([...DAY_CHOICES, current ?? DEFAULT_DAYS])].sort((a, b) => a - b);
@@ -715,6 +723,7 @@ function Settings({ project }: { project: G.Project }) {
   });
   const set = <K extends keyof G.ProjectSettings>(k: K, v: G.ProjectSettings[K]) =>
     setS((x) => ({ ...x, [k]: v }));
+  const followUps = s.follow_ups ?? NO_FOLLOW_UPS;
   const err = (f: string) =>
     (save.error as { field?: string } | null)?.field === f ? save.error?.message : undefined;
   return (
@@ -944,6 +953,63 @@ function Settings({ project }: { project: G.Project }) {
               )}
             </Field>
           )}
+        </div>
+      </Section>
+      <Section
+        title="Pull requests"
+        description="What brings an agent back to a pull request it opened. It carries on in its session, on the Claude subscription the session ran on."
+      >
+        <div className="flex flex-col gap-4">
+          {instance && !instance.features.github_webhook && (
+            <p className="text-[12.5px] leading-relaxed text-amber">
+              {instance.features.github
+                ? "This instance takes no GitHub webhooks yet, so nothing brings agents back. Its admins set GITHUB_WEBHOOK_SECRET."
+                : "This instance has no GitHub App, so its agents open no pull requests to come back to."}
+            </p>
+          )}
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Comments that mention the agent
+              <span className="block text-[12.5px] text-ink-4">
+                People who can write to the repository write <Address>@fctl</Address> or{" "}
+                <Address>@agent</Address> in a comment, a review or a comment on a line, or start a comment
+                with <Address>fctl:</Address> or <Address>agent:</Address>. Apps and everyone else are
+                ignored.
+              </span>
+            </span>
+            <Switch
+              checked={followUps.comments}
+              onChange={(v) => set("follow_ups", { ...followUps, comments: v })}
+              label="Comments that mention the agent"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Failed checks
+              <span className="block text-[12.5px] text-ink-4">
+                When a check of the pull request's newest commit fails, the agent fixes what its changes broke
+                and pushes: up to three times in a row while nobody messages it.
+              </span>
+            </span>
+            <Switch
+              checked={followUps.checks}
+              onChange={(v) => set("follow_ups", { ...followUps, checks: v })}
+              label="Failed checks"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Merged or closed
+              <span className="block text-[12.5px] text-ink-4">
+                The agent does what's left, such as noting the merge in the issue it fixed.
+              </span>
+            </span>
+            <Switch
+              checked={followUps.closed}
+              onChange={(v) => set("follow_ups", { ...followUps, closed: v })}
+              label="Merged or closed"
+            />
+          </div>
         </div>
       </Section>
       <Section

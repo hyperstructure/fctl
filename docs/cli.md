@@ -239,6 +239,7 @@ fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
 fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
+fctl projects set -p my-app --follow-ups comments,checks   # agents come back for @fctl comments and failed checks
 fctl projects use my-app
 fctl projects order my-app site        # these first in their workspace, the others after them
 fctl projects delete my-app            # with its sessions; asks you to type the slug
@@ -259,6 +260,15 @@ fctl projects repos remove my-org/design -p my-app
 ```
 
 Changes apply to sessions that start afterwards.
+
+Follow-ups bring agents back to the pull requests they opened, in a
+message from fctl that resumes the session on the Claude subscription it
+ran on (`--follow-ups`, a list of `comments`, `checks` and `closed`, or
+`all` or `none`): a comment that mentions `@fctl` or `@agent`, or starts
+with `fctl:` or `agent:`, from someone who can write to the repository; a
+failed check of the newest commit, at most three times in a row while
+nobody messages the agent; a merge or a close. `fctl projects show` says
+which ([Architecture](architecture.md#follow-ups)).
 
 A project's image and its build run only on runners whose owners allow
 them ([Sandbox images](sandbox-images.md#which-images-a-host-runs)); a

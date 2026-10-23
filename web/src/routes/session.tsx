@@ -17,6 +17,7 @@ import {
   Share2,
   Square,
   Terminal,
+  Undo2,
   Users,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -57,6 +58,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { followUpHint } from "@/lib/follow-ups";
 import { ago, duration, num, until } from "@/lib/format";
 import { hasChanges, repoChanges } from "@/lib/git";
 import { onGithub, sessionGithub } from "@/lib/github-access";
@@ -832,9 +834,16 @@ function Details({
       {rc?.unavailable_reason ?? "Remote Control appears here when the session's Claude login supports it."}
     </p>
   );
+  const hint = session.review ? undefined : followUpHint(project?.settings.follow_ups);
   const pulls = prs.length > 0 && (
     <RailSection title="Pull requests">
       <PullRequests prs={prs} />
+      {hint && (
+        <p className="mt-3 flex gap-2 text-[12px] leading-relaxed text-ink-4">
+          <Undo2 aria-hidden="true" className="mt-[3px] size-3 shrink-0" />
+          {hint}
+        </p>
+      )}
     </RailSection>
   );
   return (

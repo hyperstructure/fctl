@@ -91,8 +91,10 @@ this file is the overview. Order within a section is priority.
       drafts get reviews
 - [ ] Learning from retrospectives: a session that reads a project's and
       proposes notes and AGENTS.md changes
-- [ ] GitHub webhooks: agents react to CI failures and review comments on
-      their pull requests (#8)
+- [x] Follow-ups: comments that mention `@fctl` or `@agent` from people who
+      can write to the repository, failed checks and merges bring agents
+      back to the pull requests they opened (#8)
+- [ ] Follow-ups: merge conflicts with the base branch bring agents back
 - [ ] Scheduled and recurring sessions (nightly dependency updates, triage) (#9)
 - [ ] Preview links: share a sandbox's dev server through a tunnel (#10)
 - [ ] Search across transcripts (#11)

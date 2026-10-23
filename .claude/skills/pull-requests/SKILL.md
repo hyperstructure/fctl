@@ -16,11 +16,12 @@ gh pr checks N --watch --fail-fast
 ```
 
 or, for one run, `gh run watch ID --exit-status`. Do it before you end your
-turn. An fctl session goes idle when the turn ends, and nothing wakes it
-when CI finishes or a person reviews (#8 will), so a failure you don't
-watch for stays unnoticed. Only the findings of fctl's own review agent
-come to the session that opened the pull request, in a message from fctl
-that says how to answer them.
+turn. An fctl session goes idle when the turn ends. The findings of fctl's
+own review agent come to the session that opened the pull request, in a
+message from fctl that says how to answer them; where the project turns
+follow-ups on, so do failed checks, comments that mention `@fctl` or
+`@agent` from people with write access, and merges. Otherwise a failure
+you don't watch for stays unnoticed.
 
 The checks: **Commits** checks the title, and **CI** runs
 `cargo xtask check` (formatting, generated types, Biome and TypeScript,

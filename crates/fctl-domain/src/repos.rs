@@ -262,6 +262,18 @@ pub fn review_permissions(checks: bool) -> Value {
     p
 }
 
+/// The permissions of the token the control plane reacts with to what
+/// people wrote to an agent on a pull request (`fctl_domain::follow_ups`):
+/// comments on its conversation are issues', the others its own. It never
+/// leaves the control plane.
+pub fn reaction_permissions() -> Value {
+    json!({
+        "issues": "write",
+        "pull_requests": "write",
+        "metadata": "read"
+    })
+}
+
 /// What an agent may do in `repo`: write to the primary repository and the
 /// writable grants, read the others it is granted.
 pub fn access(

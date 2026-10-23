@@ -2,9 +2,11 @@
 //! that pull requests or their checks changed, and the sessions that list
 //! them hear what (`crate::pull_requests`); a pull request's new commit
 //! starts a review where a project's review agents are on
-//! (`crate::reviews`). GitHub signs each delivery with
-//! the webhook's secret (`GITHUB_WEBHOOK_SECRET`); without the secret the
-//! instance takes none.
+//! (`crate::reviews`); and what people write on pull requests fctl's
+//! agents opened, their failed checks and their merges bring those agents
+//! back where their projects say so (`crate::follow_ups`). GitHub signs
+//! each delivery with the webhook's secret (`GITHUB_WEBHOOK_SECRET`);
+//! without the secret the instance takes none.
 
 use crate::ctx::Ctx;
 use crate::error::{AppError, AppResult, not_configured};
@@ -63,6 +65,21 @@ pub async fn receive(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     } else {
         0
     };
+    // People wrote on a pull request: its agent hears of what they wrote
+    // to it.
+    if matches!(
+        event.as_str(),
+        "issue_comment" | "pull_request_review" | "pull_request_review_comment"
+    ) {
+        let passed = match crate::follow_ups::on_comment(ctx, &event, &payload).await {
+            Ok(n) => n,
+            Err(e) => {
+                worker::console_error!("webhook {delivery}: passing a comment on: {}", e.0.message);
+                0
+            }
+        };
+        return http::ok(&json!({ "ok": true, "follow_ups": passed }));
+    }
     let told = match webhooks::delivery(&event, &payload) {
         Delivery::Ping => return http::ok(&json!({ "ok": true })),
         Delivery::Other => 0,
