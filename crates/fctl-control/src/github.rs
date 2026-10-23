@@ -759,17 +759,19 @@ impl<'a> Github<'a> {
     }
 
     /// Looks pull requests up, one to `fctl_domain::webhooks::MAX_LOOKUP`
-    /// of one account, with one query (`fctl_domain::webhooks::query`)
-    /// through installation `inst`, or else the one on that account, and
-    /// returns GitHub's answer, or `None` when GitHub gave up on it, as it
-    /// does on a query that takes more than ten seconds (502 or 504): asking
-    /// about fewer at once may get an answer (`fctl_domain::webhooks::fewer`).
-    /// Fails when GitHub gives no answer otherwise: it refused or failed, or
-    /// the installation's rate limit ran out.
+    /// of one account, with one query (`fctl_domain::webhooks::query`) that
+    /// asks `fields` of each, through installation `inst`, or else the one
+    /// on that account, and returns GitHub's answer, or `None` when GitHub
+    /// gave up on it, as it does on a query that takes more than ten seconds
+    /// (502 or 504): asking about fewer at once may get an answer
+    /// (`fctl_domain::webhooks::fewer`). Fails when GitHub gives no answer
+    /// otherwise: it refused or failed, or the installation's rate limit ran
+    /// out.
     pub async fn pull_requests(
         &self,
         inst: Option<u64>,
         prs: &[(RepoRef, u64)],
+        fields: fctl_domain::webhooks::Fields,
     ) -> AppResult<Option<Value>> {
         let Some((repo, number)) = prs.first() else {
             return Err(internal("no pull requests to look up"));
@@ -788,7 +790,7 @@ impl<'a> Github<'a> {
                 Method::Post,
                 "/graphql",
                 &format!("token {token}"),
-                Some(fctl_domain::webhooks::query(prs)),
+                Some(fctl_domain::webhooks::query(prs, fields)),
             )
             .await?;
         if status == 401 {

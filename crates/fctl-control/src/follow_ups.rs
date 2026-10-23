@@ -1,9 +1,10 @@
 //! Follow-ups (`fctl_domain::follow_ups`): what brings an agent back to a
 //! pull request its session opened, where its project turns them on
 //! (`ProjectSettings::follow_ups`). Comments come here from the webhook
-//! ([`on_comment`]); failed checks and closed pull requests come with the
-//! lookups that keep sessions' pull requests current
-//! (`crate::pull_requests::hook`), which ask [`route`] who hears of them.
+//! ([`on_comment`]); failed checks, closed pull requests and conflicts with
+//! their base branches come with the lookups that keep sessions' pull
+//! requests current (`crate::pull_requests::hook`), which ask [`route`] who
+//! hears of them.
 //! Either way the session that opened the pull request gets them
 //! (SessionObject's `/follow-up`), gathers them for a few seconds and
 //! passes them on to its agent in a message from fctl, which resumes it if
@@ -21,7 +22,7 @@ use crate::error::AppResult;
 use crate::github;
 use crate::internal;
 use crate::pull_requests::{in_reach, key};
-use fctl_domain::follow_ups::{self as fu, Item, Place, Pull};
+use fctl_domain::follow_ups::{self as fu, Ask, Item, Place, Pull};
 use fctl_domain::reviews as rv;
 use fctl_proto::Millis;
 use fctl_proto::event::FollowUpEvent;
@@ -164,6 +165,7 @@ fn takes(follow_ups: &FollowUps, event: &FollowUpEvent) -> bool {
         FollowUpEvent::Comment(_) => follow_ups.comments,
         FollowUpEvent::ChecksFailed { .. } => follow_ups.checks,
         FollowUpEvent::Merged { .. } | FollowUpEvent::Closed { .. } => follow_ups.closed,
+        FollowUpEvent::Conflicts { .. } => follow_ups.conflicts,
         FollowUpEvent::Other => false,
     }
 }
@@ -308,34 +310,49 @@ pub async fn on_comment(ctx: &Ctx, event: &str, payload: &Value) -> AppResult<us
     Ok(1)
 }
 
-// ───────────────────────────── checks and merges ─────────────────────────────
+// ─────────────────────── checks, merges and conflicts ───────────────────────
 
-/// What a delivery says happened to a pull request a session lists, as
-/// the lookup after it found it: failed checks of its newest commit, or
-/// that it merged or closed (`at`: when, which tells a close from the
-/// next).
+/// What a lookup of a pull request a session lists found happened to it:
+/// failed checks of its newest commit, that it merged or closed (`at`:
+/// when, which tells a close from the next), or that it conflicts with its
+/// base branch; and whether GitHub didn't know yet whether it does.
 pub struct News {
     pub pull: Pull,
     /// Its author's GitHub login, and the branch it comes from.
     pub author: Option<String>,
     pub head_ref: Option<String>,
     pub events: Vec<(FollowUpEvent, Option<Millis>)>,
+    /// GitHub didn't know yet whether it conflicts with its base branch
+    /// (`fctl_domain::follow_ups::unsure`), asked this many times now.
+    pub unsure: Option<u32>,
+}
+
+/// Who hears of news, by session: what happened, and the pull requests to
+/// ask GitHub about again.
+#[derive(Default)]
+pub struct Routed {
+    pub items: BTreeMap<String, Vec<Item>>,
+    pub asks: BTreeMap<String, Vec<Ask>>,
 }
 
 /// Who hears of `news`: for each pull request fctl's app opened, the
 /// session that opened it, where its project's follow-ups take what
-/// happened. `answered`: GitHub's ids of the account and installation that
-/// said it. By session.
+/// happened, and where they take conflicts, asks GitHub again whether it
+/// has any when GitHub didn't know yet, until
+/// `fctl_domain::follow_ups::ask_again_in` says to stop. `answered`:
+/// GitHub's ids of the account and installation that said it.
 pub async fn route(
     cfg: &Config,
     db: &D1Database,
     news: &[News],
     answered: Option<(u64, u64)>,
-) -> AppResult<BTreeMap<String, Vec<Item>>> {
+) -> AppResult<Routed> {
     let app = app_login(cfg);
-    let mut out: BTreeMap<String, Vec<Item>> = BTreeMap::new();
+    let mut out = Routed::default();
     for n in news {
-        if n.events.is_empty() || !rv::by_app(n.author.as_deref(), app.as_deref()) {
+        if (n.events.is_empty() && n.unsure.is_none())
+            || !rv::by_app(n.author.as_deref(), app.as_deref())
+        {
             continue;
         }
         let pr = n.pull.reference();
@@ -370,7 +387,21 @@ pub async fn route(
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-            out.entry(id).or_default().extend(items);
+            out.items.entry(id.clone()).or_default().extend(items);
+        }
+        if let Some(asked) = n.unsure.filter(|_| opener.follow_ups.conflicts) {
+            if fu::ask_again_in(asked).is_some() {
+                out.asks.entry(id).or_default().push(Ask {
+                    repo: n.pull.repo.clone(),
+                    number: n.pull.number,
+                    url: n.pull.url.clone(),
+                    asked,
+                });
+            } else {
+                worker::console_log!(
+                    "not asking again whether {pr} conflicts: GitHub didn't know after {asked} asks"
+                );
+            }
         }
     }
     Ok(out)

@@ -2,7 +2,8 @@
 //! opened, where its project turns them on (`ProjectSettings::follow_ups`).
 //! GitHub's webhook says that a person wrote to the agent there, that a
 //! check of the pull request's newest commit failed, or that it was merged
-//! or closed, and the control plane passes that on to the session in a
+//! or closed, and the lookups after deliveries say when it conflicts with
+//! its base branch; the control plane passes that on to the session in a
 //! message from fctl, which resumes the session if it stopped, as a
 //! person's message would.
 //!
@@ -12,7 +13,7 @@
 //! let each reach a session once, and what the agent is told.
 
 use crate::reviews::{by_app, short};
-use crate::webhooks::{Looked, Payload};
+use crate::webhooks::{Looked, Mergeable, Payload};
 use fctl_proto::Millis;
 use fctl_proto::event::{FollowUp, FollowUpComment, FollowUpEvent};
 use fctl_proto::session::RepoRef;
@@ -32,6 +33,20 @@ pub const GATHER_MS: i64 = 10_000;
 /// nobody messages its agent: a fix that fails again would otherwise bring
 /// it back for good, each time on someone's subscription.
 pub const MAX_CHECKS_IN_A_ROW: u32 = 3;
+
+/// The most conflicts in a row that fctl passes on to a session while
+/// nobody messages its agent: in a busy repository, a pull request that
+/// nobody merges would otherwise take in its base branch after every merge
+/// into it, for good.
+pub const MAX_CONFLICTS_IN_A_ROW: u32 = 3;
+
+/// How long a session waits to ask GitHub again whether a pull request
+/// conflicts with its base branch, after GitHub didn't know yet
+/// ([`Mergeable::Unknown`]): before the second ask, the third, and so on.
+/// GitHub works it out in seconds once asked, so the first ask after a
+/// branch moved starts it, and one of these tells; after the last, the
+/// session leaves it to the next delivery.
+pub const ASK_AGAIN_MS: [i64; 5] = [15_000, 30_000, 60_000, 120_000, 240_000];
 
 /// The longest a comment is in what fctl passes on: its link has the rest.
 pub const MAX_BODY: usize = 4_000;
@@ -486,6 +501,49 @@ pub fn closed(payload: &Payload) -> Option<FollowUpEvent> {
     }
 }
 
+/// What a lookup of a pull request passes on to the session that opened it
+/// when GitHub says it conflicts with its base branch: its head commit then,
+/// and the branch. Nothing for one that is merged or closed, or that GitHub
+/// says merges, or doesn't know about yet ([`unsure`]).
+pub fn conflicts(looked: &Looked) -> Option<FollowUpEvent> {
+    if looked.mergeable != Some(Mergeable::Conflicts) || !is_open(looked.pr.state.as_deref()) {
+        return None;
+    }
+    Some(FollowUpEvent::Conflicts {
+        sha: looked.head.clone()?,
+        base: looked.base_ref.clone(),
+    })
+}
+
+/// Whether GitHub didn't know yet whether a pull request that is neither
+/// merged nor closed conflicts with its base branch, as it doesn't for a
+/// while after either branch moved: the session that opened it asks again
+/// ([`ask_again_in`]).
+pub fn unsure(looked: &Looked) -> bool {
+    looked.mergeable == Some(Mergeable::Unknown) && is_open(looked.pr.state.as_deref())
+}
+
+/// A pull request whose session asks GitHub again whether it conflicts
+/// with its base branch, after GitHub didn't know ([`unsure`]): `asked`
+/// times so far.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ask {
+    pub repo: RepoRef,
+    pub number: u64,
+    /// On GitHub, which the session lists it by.
+    pub url: String,
+    pub asked: u32,
+}
+
+/// How long to wait before asking GitHub again whether a pull request
+/// conflicts with its base branch, once it was asked `asked` times (the
+/// lookup that found GitHub didn't know counts) without knowing; `None`
+/// once it was asked as many times as [`ASK_AGAIN_MS`] allows.
+pub fn ask_again_in(asked: u32) -> Option<i64> {
+    let i = usize::try_from(asked.checked_sub(1)?).ok()?;
+    ASK_AGAIN_MS.get(i).copied()
+}
+
 /// Whether a pull request in `state` can still change: neither merged nor
 /// closed.
 pub fn is_open(state: Option<&str>) -> bool {
@@ -518,9 +576,14 @@ impl Item {
 /// How [`key`] begins for failed checks.
 pub const CHECKS_KEY: &str = "follow-up:checks:";
 
+/// How [`key`] begins for conflicts.
+pub const CONFLICTS_KEY: &str = "follow-up:conflicts:";
+
 /// What lets `event` reach a session once: the comment or review by its
-/// id, failed checks by their commit, a merge by its pull request, and a
-/// close by when it happened (`at`), since one can be opened again.
+/// id, failed checks and conflicts by their commit (once the agent pushed
+/// what resolves them, conflicts come again only with its next commit), a
+/// merge by its pull request, and a close by when it happened (`at`),
+/// since one can be opened again.
 pub fn key(pull: &Pull, event: &FollowUpEvent, at: Option<Millis>) -> String {
     let pr = pull.reference().to_ascii_lowercase();
     match event {
@@ -530,6 +593,7 @@ pub fn key(pull: &Pull, event: &FollowUpEvent, at: Option<Millis>) -> String {
             Place::Lines => format!("follow-up:line:{}", c.id),
         },
         FollowUpEvent::ChecksFailed { sha, .. } => format!("{CHECKS_KEY}{pr}@{sha}"),
+        FollowUpEvent::Conflicts { sha, .. } => format!("{CONFLICTS_KEY}{pr}@{sha}"),
         FollowUpEvent::Merged { .. } => format!("follow-up:merged:{pr}"),
         FollowUpEvent::Closed { .. } => format!("follow-up:closed:{pr}@{}", at.unwrap_or(0)),
         FollowUpEvent::Other => format!("follow-up:other:{pr}"),
@@ -582,17 +646,53 @@ pub fn from_people(f: &FollowUp) -> bool {
         .any(|e| matches!(e, FollowUpEvent::Comment(_)))
 }
 
-/// How many failed checks in a row the agent has heard of once `f` reaches
-/// it, `before` it, and whether fctl holds `f`'s failed checks back: people
-/// who wrote to it end a run, as a person's message does, and failed checks
-/// past [`MAX_CHECKS_IN_A_ROW`] stay out until someone does.
-pub fn checks_in_a_row(f: &FollowUp, before: u32) -> (u32, bool) {
+/// What comes back on its own, again and again, with nobody writing to the
+/// agent: fctl passes each kind on at most so many times in a row while
+/// nobody messages the agent, or writes to it on GitHub ([`in_a_row`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repeats {
+    /// Failed checks: a fix that fails again.
+    Checks,
+    /// Conflicts with the base branch: one after another merge into it.
+    Conflicts,
+}
+
+impl Repeats {
+    pub const ALL: [Repeats; 2] = [Repeats::Checks, Repeats::Conflicts];
+
+    /// Whether `e` is of this kind.
+    pub fn of(self, e: &FollowUpEvent) -> bool {
+        match self {
+            Repeats::Checks => matches!(e, FollowUpEvent::ChecksFailed { .. }),
+            Repeats::Conflicts => matches!(e, FollowUpEvent::Conflicts { .. }),
+        }
+    }
+
+    /// How the keys of its items begin ([`key`]).
+    pub fn key(self) -> &'static str {
+        match self {
+            Repeats::Checks => CHECKS_KEY,
+            Repeats::Conflicts => CONFLICTS_KEY,
+        }
+    }
+
+    /// The most fctl passes on in a row.
+    pub fn most(self) -> u32 {
+        match self {
+            Repeats::Checks => MAX_CHECKS_IN_A_ROW,
+            Repeats::Conflicts => MAX_CONFLICTS_IN_A_ROW,
+        }
+    }
+}
+
+/// How many of `kind` in a row the agent has heard of once `f` reaches it,
+/// `before` it, and whether fctl holds `f`'s news of that kind back: people
+/// who wrote to it end a run, as a person's message does, and news past
+/// [`Repeats::most`] stays out until someone does.
+pub fn in_a_row(f: &FollowUp, kind: Repeats, before: u32) -> (u32, bool) {
     let before = if from_people(f) { 0 } else { before };
-    let checks = f
-        .events
-        .iter()
-        .any(|e| matches!(e, FollowUpEvent::ChecksFailed { .. }));
-    match (checks, before >= MAX_CHECKS_IN_A_ROW) {
+    let news = f.events.iter().any(|e| kind.of(e));
+    match (news, before >= kind.most()) {
         (false, _) => (before, false),
         (true, true) => (before, true),
         (true, false) => (before + 1, false),
@@ -628,6 +728,9 @@ pub fn message(f: &FollowUp) -> String {
                 parts.push(merged_part(f, by.as_deref(), base.as_deref()))
             }
             FollowUpEvent::Closed { by } => parts.push(closed_part(f, by.as_deref())),
+            FollowUpEvent::Conflicts { sha, base } => {
+                parts.push(conflicts_part(f, sha, base.as_deref()))
+            }
             FollowUpEvent::Comment(_) | FollowUpEvent::Other => {}
         }
     }
@@ -915,21 +1018,57 @@ fn closed_part(f: &FollowUp, by: Option<&str>) -> String {
     )
 }
 
-/// What the transcript says instead of passing failed checks on, once the
-/// agent heard of [`MAX_CHECKS_IN_A_ROW`] in a row with no message from a
-/// person in between.
-pub fn held_back(f: &FollowUp) -> Option<String> {
-    let (sha, failed) = f.events.iter().find_map(|e| match e {
-        FollowUpEvent::ChecksFailed { sha, names, .. } => Some((sha, names)),
-        _ => None,
-    })?;
-    Some(format!(
-        "Checks failed on {}#{} at commit {}: {}. fctl didn't pass it on: the agent heard of failed checks {MAX_CHECKS_IN_A_ROW} times in a row, with no message from a person in between. Message the agent to have it look.",
-        f.repo.full_name(),
-        f.number,
+/// That it conflicts with its base branch: how to resolve that.
+fn conflicts_part(f: &FollowUp, sha: &str, base: Option<&str>) -> String {
+    let (owner, name, number) = (&f.repo.owner, &f.repo.name, f.number);
+    let base = base.or(f.base.as_deref());
+    let (with, merge) = match base {
+        Some(b) => (
+            b.to_owned(),
+            format!(
+                "the updated {b} into its branch (`git fetch origin {b} && git merge origin/{b}`)"
+            ),
+        ),
+        None => (
+            "its base branch".to_owned(),
+            format!(
+                "its base branch, updated, into its branch (`gh pr view {number} --repo {owner}/{name} --json baseRefName` names it)"
+            ),
+        ),
+    };
+    format!(
+        "On GitHub, {} conflicts with {with} at commit {}: it can't merge until they're resolved, and GitHub runs none of its `pull_request` workflows until then.\n\nMerge {merge}, resolve each conflict so that both sides' changes still do what they were for, run the tests that cover them, and push. Don't rebase or force-push: that rewrites commits people may have reviewed. If a conflict takes a decision that the code and the pull request don't answer, ask on the pull request (`gh pr comment {number} --repo {owner}/{name} --body '…'`) instead of guessing.",
+        your_pull_request_then(f),
         short(sha),
-        names(failed)
-    ))
+    )
+}
+
+/// What the transcript says instead of passing news of `kind` on, once the
+/// agent heard of [`Repeats::most`] in a row with no message from a person
+/// in between.
+pub fn held_back(f: &FollowUp, kind: Repeats) -> Option<String> {
+    let pr = format!("{}#{}", f.repo.full_name(), f.number);
+    let most = kind.most();
+    f.events.iter().find_map(|e| match e {
+        FollowUpEvent::ChecksFailed { sha, names: failed, .. } if kind == Repeats::Checks => {
+            Some(format!(
+                "Checks failed on {pr} at commit {}: {}. fctl didn't pass it on: the agent heard of failed checks {most} times in a row, with no message from a person in between. Message the agent to have it look.",
+                short(sha),
+                names(failed)
+            ))
+        }
+        FollowUpEvent::Conflicts { sha, base } if kind == Repeats::Conflicts => {
+            let with = base
+                .as_deref()
+                .or(f.base.as_deref())
+                .unwrap_or("its base branch");
+            Some(format!(
+                "{pr} conflicts with {with} at commit {}. fctl didn't pass it on: the agent heard of conflicts {most} times in a row, with no message from a person in between. Message the agent to have it resolve them.",
+                short(sha)
+            ))
+        }
+        _ => None,
+    })
 }
 
 /// `s` cut to `max` characters, with an ellipsis where it was cut.
@@ -1314,6 +1453,17 @@ mod tests {
             base: None,
         };
         assert_eq!(key(&p, &merged, Some(5)), "follow-up:merged:acme/web#12");
+        let conflicts = FollowUpEvent::Conflicts {
+            sha: "def".into(),
+            base: Some("main".into()),
+        };
+        assert_eq!(
+            key(&p, &conflicts, None),
+            "follow-up:conflicts:acme/web#12@def"
+        );
+        assert!(Repeats::Conflicts.of(&conflicts) && !Repeats::Checks.of(&conflicts));
+        assert!(key(&p, &conflicts, None).starts_with(Repeats::Conflicts.key()));
+        assert!(key(&p, &checks, None).starts_with(Repeats::Checks.key()));
         // A pull request closed, opened again and closed again: twice.
         let closed = FollowUpEvent::Closed { by: None };
         assert_ne!(key(&p, &closed, Some(5)), key(&p, &closed, Some(6)));
@@ -1370,25 +1520,48 @@ mod tests {
         let failed = follow_up(vec![checks.clone()]);
         let mut n = 0;
         for want in [1, 2, 3] {
-            let (next, held) = checks_in_a_row(&failed, n);
+            let (next, held) = in_a_row(&failed, Repeats::Checks, n);
             assert_eq!((next, held), (want, false));
             n = next;
         }
-        assert_eq!(checks_in_a_row(&failed, n), (3, true));
+        assert_eq!(in_a_row(&failed, Repeats::Checks, n), (3, true));
         // Someone wrote to the agent: a new run starts, with them.
         let with_people = follow_up(vec![
             FollowUpEvent::Comment(comment(1, "ada", "@fctl look")),
-            checks,
+            checks.clone(),
         ]);
-        assert_eq!(checks_in_a_row(&with_people, n), (1, false));
+        assert_eq!(in_a_row(&with_people, Repeats::Checks, n), (1, false));
         let comment_alone = follow_up(vec![FollowUpEvent::Comment(comment(1, "ada", "@fctl"))]);
-        assert_eq!(checks_in_a_row(&comment_alone, n), (0, false));
+        assert_eq!(in_a_row(&comment_alone, Repeats::Checks, n), (0, false));
         // A merge counts for nothing.
         let merged = follow_up(vec![FollowUpEvent::Merged {
             by: None,
             base: None,
         }]);
-        assert_eq!(checks_in_a_row(&merged, 2), (2, false));
+        assert_eq!(in_a_row(&merged, Repeats::Checks, 2), (2, false));
+        // Conflicts count apart from failed checks, as many times.
+        let conflicts = follow_up(vec![FollowUpEvent::Conflicts {
+            sha: "def".into(),
+            base: Some("main".into()),
+        }]);
+        assert_eq!(in_a_row(&conflicts, Repeats::Checks, 3), (3, false));
+        let mut n = 0;
+        for want in [1, 2, 3] {
+            let (next, held) = in_a_row(&conflicts, Repeats::Conflicts, n);
+            assert_eq!((next, held), (want, false));
+            n = next;
+        }
+        assert_eq!(in_a_row(&conflicts, Repeats::Conflicts, n), (3, true));
+        assert_eq!(in_a_row(&failed, Repeats::Conflicts, 2), (2, false));
+        let both = follow_up(vec![
+            FollowUpEvent::Comment(comment(1, "ada", "@fctl look")),
+            checks,
+            FollowUpEvent::Conflicts {
+                sha: "def".into(),
+                base: None,
+            },
+        ]);
+        assert_eq!(in_a_row(&both, Repeats::Conflicts, 3), (1, false));
     }
 
     #[test]
@@ -1497,13 +1670,90 @@ mod tests {
         let m = message(&follow_up(vec![checks(&["Lint"], 5, 0)]));
         assert!(m.contains(": Lint. The other 5 passed.\n"), "{m}");
         assert_eq!(
-            held_back(&follow_up(vec![checks(&["Rust tests", "Clippy"], 7, 1)])).as_deref(),
+            held_back(
+                &follow_up(vec![checks(&["Rust tests", "Clippy"], 7, 1)]),
+                Repeats::Checks
+            )
+            .as_deref(),
             Some(
                 "Checks failed on acme/web#12 at commit 3f2a1c9: Rust tests and Clippy. fctl didn't pass it on: the agent heard of failed checks 3 times in a row, with no message from a person in between. Message the agent to have it look."
             )
         );
         assert_eq!(
-            held_back(&follow_up(vec![FollowUpEvent::Closed { by: None }])),
+            held_back(
+                &follow_up(vec![FollowUpEvent::Closed { by: None }]),
+                Repeats::Checks
+            ),
+            None
+        );
+        assert_eq!(
+            held_back(
+                &follow_up(vec![checks(&["Lint"], 0, 0)]),
+                Repeats::Conflicts
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn conflicts_say_how_to_resolve_them() {
+        let conflicts = |base: Option<&str>| FollowUpEvent::Conflicts {
+            sha: "8e1d2b7c6a".into(),
+            base: base.map(str::to_owned),
+        };
+        let m = message(&follow_up(vec![conflicts(Some("main"))]));
+        assert_eq!(
+            m,
+            "On GitHub, your pull request acme/web#12, “Fix the login redirect”, conflicts with main at commit 8e1d2b7: it can't merge until they're resolved, and GitHub runs none of its `pull_request` workflows until then.\n\nMerge the updated main into its branch (`git fetch origin main && git merge origin/main`), resolve each conflict so that both sides' changes still do what they were for, run the tests that cover them, and push. Don't rebase or force-push: that rewrites commits people may have reviewed. If a conflict takes a decision that the code and the pull request don't answer, ask on the pull request (`gh pr comment 12 --repo acme/web --body '…'`) instead of guessing.\n"
+        );
+        // The pull request's base when the event doesn't say.
+        let m = message(&follow_up(vec![conflicts(None)]));
+        assert!(
+            m.contains(" conflicts with main at commit 8e1d2b7: "),
+            "{m}"
+        );
+        // Nobody said which branch.
+        let mut nowhere = follow_up(vec![conflicts(None)]);
+        nowhere.base = None;
+        let m = message(&nowhere);
+        assert!(
+            m.contains(" conflicts with its base branch at commit 8e1d2b7: "),
+            "{m}"
+        );
+        assert!(m.contains("Merge its base branch, updated, into its branch (`gh pr view 12 --repo acme/web --json baseRefName` names it), "), "{m}");
+        // With failed checks of the same pull request: both, in the order
+        // they came.
+        let m = message(&follow_up(vec![
+            conflicts(Some("main")),
+            FollowUpEvent::ChecksFailed {
+                sha: "8e1d2b7c6a".into(),
+                names: vec!["Lint".into()],
+                passed: 0,
+                failed: 1,
+                pending: 0,
+            },
+        ]));
+        let (first, second) = m.split_once("\n\nOn GitHub, ").unwrap_or_default();
+        assert!(first.starts_with("On GitHub, your pull request acme/web#12, “Fix the login redirect”, conflicts with main"));
+        assert!(second.starts_with("a check of your pull request"), "{m}");
+        assert_eq!(
+            held_back(
+                &follow_up(vec![conflicts(Some("main"))]),
+                Repeats::Conflicts
+            )
+            .as_deref(),
+            Some(
+                "acme/web#12 conflicts with main at commit 8e1d2b7. fctl didn't pass it on: the agent heard of conflicts 3 times in a row, with no message from a person in between. Message the agent to have it resolve them."
+            )
+        );
+        assert_eq!(
+            held_back(&nowhere, Repeats::Conflicts)
+                .as_deref()
+                .map(|h| h.split(" at ").next()),
+            Some(Some("acme/web#12 conflicts with its base branch"))
+        );
+        assert_eq!(
+            held_back(&follow_up(vec![conflicts(None)]), Repeats::Checks),
             None
         );
     }
@@ -1577,6 +1827,62 @@ mod tests {
         let mut other = looked("open", &["Lint"]);
         other.head = Some("def".into());
         assert_eq!(checks_failed(&other), None);
+    }
+
+    #[test]
+    fn conflicts_of_open_pull_requests_are_news() {
+        let with = |state: &str, mergeable: Option<Mergeable>| {
+            let mut l = looked(state, &[]);
+            l.base_ref = Some("main".into());
+            l.mergeable = mergeable;
+            l
+        };
+        assert_eq!(
+            conflicts(&with("open", Some(Mergeable::Conflicts))),
+            Some(FollowUpEvent::Conflicts {
+                sha: "abc".into(),
+                base: Some("main".into()),
+            })
+        );
+        // Drafts and pull requests in a merge queue too.
+        for state in ["draft", "queued"] {
+            assert!(conflicts(&with(state, Some(Mergeable::Conflicts))).is_some());
+        }
+        for (state, mergeable) in [
+            ("open", Some(Mergeable::Yes)),
+            ("open", Some(Mergeable::Unknown)),
+            ("open", None),
+            ("merged", Some(Mergeable::Conflicts)),
+            ("closed", Some(Mergeable::Conflicts)),
+        ] {
+            assert_eq!(
+                conflicts(&with(state, mergeable)),
+                None,
+                "{state} {mergeable:?}"
+            );
+        }
+        // Without its head commit, nothing to say it of.
+        let mut headless = with("open", Some(Mergeable::Conflicts));
+        headless.head = None;
+        assert_eq!(conflicts(&headless), None);
+        // GitHub doesn't know yet: worth asking again, while it can merge.
+        assert!(unsure(&with("open", Some(Mergeable::Unknown))));
+        assert!(unsure(&with("draft", Some(Mergeable::Unknown))));
+        assert!(!unsure(&with("merged", Some(Mergeable::Unknown))));
+        assert!(!unsure(&with("open", Some(Mergeable::Conflicts))));
+        assert!(!unsure(&with("open", None)));
+    }
+
+    #[test]
+    fn sessions_ask_again_sooner_then_later_then_not() {
+        assert_eq!(ask_again_in(0), None);
+        assert_eq!(ask_again_in(1), Some(15_000));
+        assert_eq!(ask_again_in(2), Some(30_000));
+        assert_eq!(ask_again_in(5), Some(240_000));
+        assert_eq!(ask_again_in(6), None);
+        assert_eq!(ask_again_in(u32::MAX), None);
+        // About eight minutes in all, once GitHub was first asked.
+        assert_eq!(ASK_AGAIN_MS.iter().sum::<i64>(), 465_000);
     }
 
     #[test]

@@ -103,6 +103,11 @@ pub struct PullRequestsSeen {
     /// where its project's follow-ups say so (`crate::follow_ups`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub follow_ups: Vec<fctl_domain::follow_ups::Item>,
+    /// Those its agent opened that GitHub didn't know yet whether they
+    /// conflict with their base branch, where its project follows up on
+    /// conflicts: the session asks again soon (`crate::pull_requests::ask_again`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<fctl_domain::follow_ups::Ask>,
 }
 
 /// What happened to pull requests the session's agent opened, to pass on

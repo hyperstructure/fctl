@@ -686,7 +686,7 @@ const EFFORT_LEVELS: SelectOption[] = [
 ];
 
 /** What brings agents back to their pull requests where a project says nothing of it. */
-const NO_FOLLOW_UPS: G.FollowUps = { comments: false, checks: false, closed: false };
+const NO_FOLLOW_UPS: G.FollowUps = { comments: false, checks: false, closed: false, conflicts: false };
 
 /** A word that addresses agents on GitHub, as people write it. */
 function Address({ children }: { children: string }) {
@@ -1023,6 +1023,20 @@ function Settings({ project }: { project: G.Project }) {
               checked={followUps.checks}
               onChange={(v) => set("follow_ups", { ...followUps, checks: v })}
               label="Failed checks"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Merge conflicts
+              <span className="block text-[12.5px] text-ink-4">
+                When the pull request conflicts with its base branch, the agent merges the base branch in,
+                resolves the conflicts and pushes: up to three times in a row while nobody messages it.
+              </span>
+            </span>
+            <Switch
+              checked={followUps.conflicts}
+              onChange={(v) => set("follow_ups", { ...followUps, conflicts: v })}
+              label="Merge conflicts"
             />
           </div>
           <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">

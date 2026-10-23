@@ -169,6 +169,15 @@ pub enum FollowUpEvent {
         #[cfg_attr(feature = "ts", ts(optional))]
         by: Option<String>,
     },
+    /// It conflicts with its base branch, as GitHub says
+    /// (`mergeable: CONFLICTING`): it can't merge until they're resolved.
+    Conflicts {
+        /// Its head commit then, in full.
+        sha: String,
+        /// The branch it goes into.
+        #[cfg_attr(feature = "ts", ts(optional))]
+        base: Option<String>,
+    },
     /// Something a newer control plane passes on, which this version
     /// doesn't know.
     #[serde(other)]
@@ -639,6 +648,10 @@ mod tests {
                     by: Some("ada".into()),
                     base: None,
                 },
+                FollowUpEvent::Conflicts {
+                    sha: "8e1d2b7".into(),
+                    base: Some("main".into()),
+                },
             ],
         };
         let json = serde_json::to_value(&fu)?;
@@ -652,6 +665,10 @@ mod tests {
             json["events"][2],
             serde_json::json!({ "kind": "merged", "by": "ada" })
         );
+        assert_eq!(
+            json["events"][3],
+            serde_json::json!({ "kind": "conflicts", "sha": "8e1d2b7", "base": "main" })
+        );
         let back: FollowUp = serde_json::from_value(json)?;
         assert_eq!(back, fu);
         // What a newer control plane passes on, which this version reads
@@ -659,7 +676,7 @@ mod tests {
         let newer: FollowUp = serde_json::from_value(serde_json::json!({
             "repo": { "owner": "acme", "name": "web" }, "number": 12,
             "url": "https://github.com/acme/web/pull/12",
-            "events": [{ "kind": "conflicts", "base": "main" }, { "kind": "closed" }]
+            "events": [{ "kind": "labeled", "label": "bug" }, { "kind": "closed" }]
         }))?;
         assert_eq!(
             newer.events,

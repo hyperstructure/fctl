@@ -57,6 +57,9 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     if unsent("closed") {
         settings.follow_ups.closed = stored.follow_ups.closed;
     }
+    if unsent("conflicts") {
+        settings.follow_ups.conflicts = stored.follow_ups.conflicts;
+    }
     if sent.get("image_build").is_none() && settings.image.is_none() {
         settings.image_build = stored.image_build.clone();
     }
@@ -169,6 +172,7 @@ mod tests {
                 comments: true,
                 checks: true,
                 closed: false,
+                conflicts: true,
             },
             ..Default::default()
         };
@@ -176,7 +180,8 @@ mod tests {
         let mut s = ProjectSettings::default();
         keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
         assert_eq!(s.follow_ups, stored.follow_ups);
-        // Each one sent counts on its own; one a newer version adds stays.
+        // Each one sent counts on its own; one a newer version adds stays,
+        // as conflicts do for a tab from before them.
         let sent = json!({ "follow_ups": { "checks": false, "closed": true } });
         let mut s: ProjectSettings = serde_json::from_value(sent.clone()).unwrap_or_default();
         keep_unsent(&mut s, &stored, &sent);
@@ -186,8 +191,13 @@ mod tests {
                 comments: true,
                 checks: false,
                 closed: true,
+                conflicts: true,
             }
         );
+        let sent = json!({ "follow_ups": { "comments": true, "checks": true, "closed": false, "conflicts": false } });
+        let mut s: ProjectSettings = serde_json::from_value(sent.clone()).unwrap_or_default();
+        keep_unsent(&mut s, &stored, &sent);
+        assert!(!s.follow_ups.conflicts);
     }
 
     #[test]
