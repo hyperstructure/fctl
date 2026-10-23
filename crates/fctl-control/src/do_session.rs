@@ -166,6 +166,9 @@ fn event_json(seq: i64, ts: i64, kind: &str, data: &str) -> String {
 
 /// Why a review agent's session takes no message or interrupt.
 const REVIEWS_TAKE_NO_MESSAGES: &str = "Review agents take no messages: this one reviews its pull request's commit, posts what it found on GitHub, and ends. A new commit starts a new review.";
+/// The meta key that counts the reviews whose findings the agent got in a
+/// row, which a person's message ends (`fctl_domain::reviews::MAX_PASSED_ON`).
+const REVIEWS_PASSED_ON: &str = "reviews_passed_on";
 
 fn api_err(code: ErrorCode, message: &str) -> ApiError {
     ApiError::new(code, message)
@@ -223,6 +226,12 @@ impl DurableObject for SessionObject {
             (worker::Method::Post, "/pull-requests") => {
                 match req.json::<internal::PullRequestsSeen>().await {
                     Ok(b) => self.pull_requests_seen(b).await,
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
+            (worker::Method::Post, "/review-findings") => {
+                match req.json::<internal::ReviewFindings>().await {
+                    Ok(b) => self.review_findings(b).await.map(|t| serde_json::json!(t)),
                     Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
                 }
             }
@@ -661,35 +670,16 @@ impl SessionObject {
             return Err(api_err(ErrorCode::Conflict, REVIEWS_TAKE_NO_MESSAGES));
         }
         if let Some(key) = b.client_key.as_deref() {
-            #[derive(Deserialize)]
-            struct K {
-                delivery_id: String,
-            }
-            let existing = self
-                .sql
-                .exec(
-                    "SELECT delivery_id FROM client_keys WHERE key = ?",
-                    Some(vec![sv(key)]),
-                )
-                .and_then(|c| c.to_array::<K>())
-                .unwrap_or_default();
-            if let Some(k) = existing.first() {
+            if let Some(delivery_id) = self.keyed(key) {
                 // Sent again after an error: it may not have resumed the session.
                 if message {
                     self.wake(now).await?;
                 }
                 return Ok(Delivered {
-                    delivery_id: fctl_proto::DeliveryId(k.delivery_id.clone()),
+                    delivery_id: fctl_proto::DeliveryId(delivery_id),
                 });
             }
-            let _ = self.sql.exec(
-                "INSERT INTO client_keys (key, delivery_id, ts) VALUES (?, ?, ?)",
-                Some(vec![sv(key), sv(b.delivery.id.as_str()), iv(now)]),
-            );
-            let _ = self.sql.exec(
-                "DELETE FROM client_keys WHERE ts < ?",
-                Some(vec![iv(now - 24 * 3600 * 1000)]),
-            );
+            self.key(key, b.delivery.id.as_str(), now);
         }
         // A run that stops takes nothing more: the next one gets messages
         // from the outbox. Nothing is left to interrupt, and an interrupt
@@ -722,6 +712,13 @@ impl SessionObject {
         if let DeliveryKind::Interrupt { by: Some(by) } = &b.delivery.kind {
             self.set_meta("interrupted_by", by.id.as_str());
         }
+        // A person's message: the agent gets reviews' findings again.
+        if let DeliveryKind::Message {
+            author: Some(_), ..
+        } = &b.delivery.kind
+        {
+            self.delete_meta(REVIEWS_PASSED_ON);
+        }
         if let Some(json) = self.append(now, &b.event, None) {
             self.broadcast_events(&[json]);
         }
@@ -739,6 +736,131 @@ impl SessionObject {
         }
         Ok(Delivered {
             delivery_id: b.delivery.id,
+        })
+    }
+
+    /// The delivery an idempotency key went with, when it came before.
+    fn keyed(&self, key: &str) -> Option<String> {
+        #[derive(Deserialize)]
+        struct K {
+            delivery_id: String,
+        }
+        self.sql
+            .exec(
+                "SELECT delivery_id FROM client_keys WHERE key = ?",
+                Some(vec![sv(key)]),
+            )
+            .and_then(|c| c.to_array::<K>())
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+            .map(|k| k.delivery_id)
+    }
+
+    /// Keeps an idempotency key for a day, with what it went with.
+    fn key(&self, key: &str, delivery_id: &str, now: i64) {
+        let _ = self.sql.exec(
+            "INSERT INTO client_keys (key, delivery_id, ts) VALUES (?, ?, ?)",
+            Some(vec![sv(key), sv(delivery_id), iv(now)]),
+        );
+        let _ = self.sql.exec(
+            "DELETE FROM client_keys WHERE ts < ?",
+            Some(vec![iv(now - 24 * 3600 * 1000)]),
+        );
+    }
+
+    /// fctl's review agent posted findings on a pull request this
+    /// session's agent opened (`crate::reviews`): a message from fctl hands
+    /// them to the agent, and resumes the session when it stopped, as a
+    /// person's message would. After the findings of
+    /// [`fctl_domain::reviews::MAX_PASSED_ON`] reviews in a row while
+    /// nobody messaged the agent, the transcript says what was found
+    /// instead, so that the agent and the review agent don't go back and
+    /// forth for good. A review's findings come once; archived and failed
+    /// sessions, and review agents', get none.
+    async fn review_findings(
+        &self,
+        b: internal::ReviewFindings,
+    ) -> std::result::Result<internal::FindingsTold, ApiError> {
+        let Some(s) = self.summary() else {
+            return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        let not_sent = |why: String| internal::FindingsTold {
+            delivery_id: None,
+            not_sent: Some(why),
+        };
+        if s.review.is_some() {
+            return Ok(not_sent("it is a review agent's session".into()));
+        }
+        if s.archived {
+            return Ok(not_sent("it is archived".into()));
+        }
+        if !s.status.accepts_messages() && !s.status.resumes_for_messages() {
+            return Ok(not_sent("it failed".into()));
+        }
+        let held = |n: u32| {
+            not_sent(format!(
+                "its agent got the findings of {n} reviews in a row, and nobody has messaged it since"
+            ))
+        };
+        let key = format!("review:{}", b.review);
+        let in_a_row = self
+            .meta(REVIEWS_PASSED_ON)
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        match self.keyed(&key) {
+            Some(id) if id.is_empty() => return Ok(held(in_a_row)),
+            Some(id) => {
+                return Ok(internal::FindingsTold {
+                    delivery_id: Some(fctl_proto::DeliveryId(id)),
+                    not_sent: None,
+                });
+            }
+            None => {}
+        }
+        let now = now_ms();
+        if in_a_row >= fctl_domain::reviews::MAX_PASSED_ON {
+            self.key(&key, "", now);
+            let notice = fctl_proto::event::Notice {
+                level: fctl_proto::event::NoticeLevel::Info,
+                code: "review_held".into(),
+                message: b.held,
+                until: None,
+                published: None,
+                memory: None,
+                retrospective: None,
+                review: None,
+            };
+            if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+                self.broadcast_events(&[json]);
+            }
+            return Ok(held(in_a_row));
+        }
+        let id = fctl_domain::ids::delivery_id(now);
+        let delivered = self
+            .deliver(Deliver {
+                delivery: Delivery {
+                    id: id.clone(),
+                    kind: DeliveryKind::Message {
+                        text: b.text.clone(),
+                        author: None,
+                        attachments: Vec::new(),
+                    },
+                },
+                client_key: Some(key),
+                event: EventBody::UserMessage(UserMessage {
+                    id,
+                    author: None,
+                    text: b.text,
+                    source: fctl_proto::event::MessageSource::System,
+                    attachments: Vec::new(),
+                }),
+            })
+            .await?;
+        self.set_meta(REVIEWS_PASSED_ON, &(in_a_row + 1).to_string());
+        Ok(internal::FindingsTold {
+            delivery_id: Some(delivered.delivery_id),
+            not_sent: None,
         })
     }
 

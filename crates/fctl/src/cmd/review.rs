@@ -549,4 +549,12 @@ fn print_posted(p: &PostedReview) {
             ))
         );
     }
+    if p.sent_to.is_some() {
+        println!(
+            "  {}",
+            style::dim(
+                "fctl sent the findings to the agent of the session that opened the pull request."
+            )
+        );
+    }
 }

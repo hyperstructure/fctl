@@ -2552,6 +2552,10 @@ pub struct PostedReview {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub again: bool,
+    /// The session whose agent opened the pull request, which fctl sent
+    /// the findings to, so that it decides what to do about them. Control
+    /// planes from before it leave it out.
+    pub sent_to: Option<SessionId>,
 }
 
 // ───────────────────────────── what agents ask ─────────────────────────────

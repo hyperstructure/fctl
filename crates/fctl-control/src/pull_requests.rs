@@ -134,6 +134,33 @@ pub async fn track(
     Ok(tracked)
 }
 
+/// A session that lists a pull request, with its branch and what GitHub
+/// last said of the pull request's state.
+#[derive(Deserialize)]
+pub struct Lister {
+    pub session_id: String,
+    pub branch: Option<String>,
+    pub state: Option<String>,
+}
+
+/// The sessions that list a pull request, but review agents' ones, in the
+/// order they started: those it may be looked up for ([`in_reach`]).
+pub async fn listed_by(db: &D1Database, repo: &RepoRef, number: u64) -> AppResult<Vec<Lister>> {
+    q(
+        db,
+        &format!(
+            "SELECT l.session_id AS session_id, s.branch AS branch, l.state AS state FROM pull_request_sessions l \
+             JOIN sessions s ON s.id = l.session_id WHERE l.repo = ? AND l.number = ? \
+             AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = l.session_id) AND {} \
+             ORDER BY s.created_at, s.id LIMIT 20",
+            in_reach(None)
+        ),
+        &[s(&key(repo)), n(number as i64)],
+    )?
+    .all()
+    .await
+}
+
 #[derive(Deserialize)]
 struct Listed {
     #[serde(deserialize_with = "int")]

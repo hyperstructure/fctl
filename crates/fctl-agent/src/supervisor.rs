@@ -2159,6 +2159,11 @@ fn posted_message(r: &fctl_proto::api::PostedReview) -> String {
         1 => s.push_str(" 1 earlier finding is still open."),
         n => s.push_str(&format!(" {n} earlier findings are still open.")),
     }
+    if r.sent_to.is_some() {
+        s.push_str(
+            " fctl sent the findings to the agent of the session that opened the pull request.",
+        );
+    }
     s
 }
 
@@ -3649,5 +3654,27 @@ done
         assert_eq!(sent[5]["request"]["subtype"], "interrupt");
         assert_eq!(waiting(&sup).0, SessionStatus::Stopping);
         Ok(())
+    }
+
+    #[test]
+    fn posted_reviews_say_what_fctl_did_with_them() {
+        let mut r = fctl_proto::api::PostedReview {
+            state: fctl_proto::api::ReviewState::Commented,
+            url: Some("https://github.com/acme/web/pull/12#pullrequestreview-80".into()),
+            comments: 1,
+            in_text: 1,
+            resolved: vec!["PRRT_1".into()],
+            still_open: 0,
+            again: false,
+            sent_to: None,
+        };
+        assert_eq!(
+            posted_message(&r),
+            "fctl posted the review: 2 issues (https://github.com/acme/web/pull/12#pullrequestreview-80). It marked 1 earlier finding fixed."
+        );
+        r.sent_to = Some(SessionId("ses_7".into()));
+        assert!(posted_message(&r).ends_with(
+            " fctl sent the findings to the agent of the session that opened the pull request."
+        ));
     }
 }
