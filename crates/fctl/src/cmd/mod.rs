@@ -13,6 +13,7 @@ pub mod publish;
 pub mod resolve;
 pub mod retro;
 pub mod review;
+pub mod schedules;
 pub mod selfcmd;
 pub mod sessions;
 pub mod tokens;

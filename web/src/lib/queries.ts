@@ -40,6 +40,10 @@ export const keys = {
   /** A project's reviews, by project id: the list, and each session's under it. */
   reviews: (project: string) => ["reviews", project] as const,
   sessionReview: (project: string, session: string) => ["reviews", project, "session", session] as const,
+  /** A project's schedules, by project id. */
+  schedules: (project: string) => ["schedules", project] as const,
+  /** A schedule's runs, by schedule id. */
+  scheduleRuns: (schedule: string) => ["schedule-runs", schedule] as const,
   runners: ["runners"] as const,
   users: ["users"] as const,
   allowlist: ["allowlist"] as const,

@@ -133,6 +133,21 @@ enum Command {
                               fctl review threads                  # a review agent, in its sandbox
                               fctl review submit review.json       # a review agent, in its sandbox")]
     Review(cmd::review::ReviewArgs),
+    /// Schedules: tasks fctl starts a session for on its own, once at a set
+    /// time or again and again, on the Claude subscription of the person
+    /// each runs for. Run one now, or from another tool with an access
+    /// token.
+    #[command(
+        visible_alias = "schedule",
+        after_help = "Examples:
+  fctl schedules                       # the project's schedules
+  fctl schedules add \"Weekly dependencies\" --cron \"0 9 * * 1\" -m \"Update the dependencies…\"
+  fctl schedules add --at 2h -m \"Check whether the deploy went out.\"
+  fctl schedules run \"Weekly dependencies\"
+  fctl schedules pause sch_01JC…
+  fctl schedules runs sch_01JC…"
+    )]
+    Schedules(cmd::schedules::SchedulesArgs),
     /// Follow a session live and message the agent (Ctrl-C detaches).
     Attach {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -312,6 +327,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Memory(args) => cmd::memory::run(server, args, json).await,
         Command::Retro(args) => cmd::retro::run(server, args, json).await,
         Command::Review(args) => cmd::review::run(server, args, json).await,
+        Command::Schedules(args) => cmd::schedules::run(server, args, json).await,
         Command::Attach { session, read_only } => {
             cmd::attach::attach(server, &session, read_only).await
         }

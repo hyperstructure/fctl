@@ -131,27 +131,36 @@ const joined =
  * Start keeps its place at the end of the row. Where the row is narrow (from `sm` to `lg`, with the
  * sidebar beside it from `md`), they take a line of their own above it, which needs the row to
  * wrap. On a phone they show just the model's name and the symbols of the effort level and the
- * GitHub access, in one control, so that they fit in the row with the others.
+ * GitHub access, in one control, so that they fit in the row with the others; where it has too
+ * little room, the model's name gives way, never the symbols.
  */
 export function StartChoices({
   project,
   choice,
   onPick,
   disabled,
+  className,
 }: {
   project: ChoiceProject;
   choice: Choice;
   onPick: (c: Partial<Choice>) => void;
   disabled?: boolean;
+  className?: string;
 }) {
   const github = onGithub(project);
   return (
-    <div className="flex min-w-0 items-center gap-2 max-sm:gap-0 sm:max-lg:order-first sm:max-lg:w-full">
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-2 max-sm:gap-0 sm:max-lg:order-first sm:max-lg:w-full",
+        className,
+      )}
+    >
       <Select
         size="sm"
         narrow="bare"
-        // On a phone a model named by its ID shows the start of it.
-        className={cn("max-sm:max-w-32 max-sm:rounded-r-none", joined)}
+        // On a phone a model named by its ID shows the start of it, so that the row keeps one line
+        // with the GitHub picker and the buttons beside it, down to 360 px.
+        className={cn("max-sm:max-w-24 max-sm:rounded-r-none", joined)}
         aria-label="Model"
         value={choice.model}
         disabled={disabled}
@@ -168,7 +177,11 @@ export function StartChoices({
       <Select
         size="sm"
         narrow="bare"
-        className={cn("max-sm:-ml-px max-sm:rounded-l-none", github && "max-sm:rounded-r-none", joined)}
+        className={cn(
+          "max-sm:-ml-px max-sm:shrink-0 max-sm:rounded-l-none",
+          github && "max-sm:rounded-r-none",
+          joined,
+        )}
         aria-label="Effort"
         value={choice.effort}
         disabled={disabled}
@@ -188,7 +201,7 @@ export function StartChoices({
           size="sm"
           narrow="bare"
           compact
-          className={cn("max-sm:-ml-px max-sm:rounded-l-none", joined)}
+          className={cn("max-sm:-ml-px max-sm:shrink-0 max-sm:rounded-l-none", joined)}
           aria-label="On GitHub"
           value={choice.github}
           disabled={disabled}

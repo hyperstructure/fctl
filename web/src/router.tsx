@@ -117,21 +117,25 @@ const workspace = createRoute({
     reason: oneOf(s.reason, GITHUB_REFUSALS),
   }),
 });
+type ProjectTab =
+  | "sessions"
+  | "schedules"
+  | "reviews"
+  | "memory"
+  | "retrospectives"
+  | "repositories"
+  | "settings"
+  | "members"
+  | "secrets";
+
 const project = createRoute({
   getParentRoute: () => app,
   path: "/p/$slug",
   component: ProjectPage,
-  validateSearch: (s: Record<string, unknown>) => ({
-    tab: str(s.tab) as
-      | "sessions"
-      | "reviews"
-      | "memory"
-      | "retrospectives"
-      | "repositories"
-      | "settings"
-      | "members"
-      | "secrets"
-      | undefined,
+  validateSearch: (s: Record<string, unknown>): { tab?: ProjectTab; schedule?: string } => ({
+    tab: str(s.tab) as ProjectTab | undefined,
+    // The schedule the Schedules tab opens, from a session it started.
+    schedule: str(s.schedule),
   }),
 });
 const session = createRoute({ getParentRoute: () => app, path: "/s/$id", component: SessionPage });

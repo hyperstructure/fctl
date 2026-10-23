@@ -737,6 +737,20 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         .await?,
     );
     doc.insert(
+        "schedules".into(),
+        rows(
+            ctx,
+            // The schedules they set up, and those that run on their
+            // subscription; what each run started is in the sessions.
+            "SELECT p.slug AS project, sc.name, sc.prompt, sc.cron, sc.at, sc.timezone, sc.model, sc.effort, \
+             sc.base_branch, sc.github_access, sc.enabled, sc.owner_id = ?1 AS runs_on_mine, sc.created_at, sc.updated_at \
+             FROM schedules sc JOIN projects p ON p.id = sc.project_id WHERE (sc.created_by = ?1 OR sc.owner_id = ?1) \
+             AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY sc.created_at",
+            &mine_open()?,
+        )
+        .await?,
+    );
+    doc.insert(
         "activity".into(),
         rows(
             ctx,

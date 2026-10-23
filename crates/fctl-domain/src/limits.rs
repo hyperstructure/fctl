@@ -192,9 +192,12 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
             | [
                 "projects",
                 _,
-                "repos" | "members" | "memories" | "retrospectives" | "review-agents" | "reviews",
+                "repos" | "members" | "memories" | "retrospectives" | "review-agents" | "reviews"
+                | "schedules",
             ]
-            | ["memories", _],
+            | ["memories", _]
+            | ["schedules", _]
+            | ["schedules", _, "runs"],
         ) => Read,
         (
             "GET",
@@ -221,6 +224,10 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
             ],
         ) => Run,
         ("PATCH", ["sessions", _] | ["memories", _]) => Run,
+        // Running a schedule now starts a session; setting one up or
+        // changing it starts sessions after the token is gone.
+        ("POST", ["schedules", _, "runs"]) => Run,
+        ("POST", ["projects", _, "schedules"]) | ("PATCH" | "DELETE", ["schedules", _]) => Full,
         ("PUT" | "DELETE", ["sessions", _, "follow"]) => Run,
         // Managing its projects, and deleting.
         ("PATCH" | "DELETE", ["projects", _]) => Full,
@@ -485,6 +492,9 @@ mod tests {
                 ("GET", "projects/web/memories"),
                 ("GET", "projects/web/review-agents"),
                 ("GET", "projects/web/reviews"),
+                ("GET", "projects/web/schedules"),
+                ("GET", "schedules/sch_1"),
+                ("GET", "schedules/sch_1/runs"),
                 ("GET", "sessions"),
                 ("GET", "sessions/ses_1/events"),
                 ("GET", "sessions/ses_1/ws"),
@@ -546,6 +556,7 @@ mod tests {
             ("POST", "projects/web/memories"),
             ("PATCH", "memories/mem_1"),
             ("POST", "projects/web/reviews"),
+            ("POST", "schedules/sch_1/runs"),
         ] {
             assert!(!can(Read, method, path), "{method} {path}");
             assert!(can(Run, method, path), "{method} {path}");
@@ -562,6 +573,9 @@ mod tests {
             ("DELETE", "memories/mem_1"),
             ("DELETE", "retrospectives/ret_1"),
             ("PATCH", "projects/web/review-agents"),
+            ("POST", "projects/web/schedules"),
+            ("PATCH", "schedules/sch_1"),
+            ("DELETE", "schedules/sch_1"),
         ] {
             assert!(!can(Run, method, path), "{method} {path}");
             assert!(can(Full, method, path), "{method} {path}");

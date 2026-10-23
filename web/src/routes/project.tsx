@@ -8,6 +8,7 @@ import { GithubAccessIcon } from "@/components/github-access";
 import { MemoryTab } from "@/components/project/memory";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
 import { ReviewsTab } from "@/components/project/reviews";
+import { ScheduleButton, SchedulesTab } from "@/components/project/schedules";
 import {
   AttachButton,
   DraftTray,
@@ -15,7 +16,7 @@ import {
   useAttachments,
   useFileDrop,
 } from "@/components/session/attachments";
-import { PullRequestLinks, SessionLink } from "@/components/session/row";
+import { PullRequestLinks, ScheduledMark, SessionLink } from "@/components/session/row";
 import { StartButton, StartChoices, useStartChoice, useStartSession } from "@/components/session/start";
 import {
   Avatar,
@@ -72,6 +73,7 @@ import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 type Tab =
   | "sessions"
+  | "schedules"
   | "reviews"
   | "memory"
   | "retrospectives"
@@ -81,11 +83,19 @@ type Tab =
   | "secrets";
 
 /** Everyone in the project sees these; owners and maintainers the rest. */
-const OPEN_TABS: Tab[] = ["sessions", "reviews", "memory", "retrospectives", "repositories", "members"];
+const OPEN_TABS: Tab[] = [
+  "sessions",
+  "schedules",
+  "reviews",
+  "memory",
+  "retrospectives",
+  "repositories",
+  "members",
+];
 
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
-  const { tab = "sessions" } = useSearch({ from: "/app/p/$slug" });
+  const { tab = "sessions", schedule } = useSearch({ from: "/app/p/$slug" });
   const project = useProject(slug);
   const p = project.data;
   const manage = p?.role === "owner" || p?.role === "maintainer";
@@ -170,6 +180,7 @@ export function ProjectPage() {
           {(
             [
               "sessions",
+              "schedules",
               "reviews",
               "memory",
               "retrospectives",
@@ -201,6 +212,7 @@ export function ProjectPage() {
       </nav>
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
+        {p && tab === "schedules" && <SchedulesTab project={p} open={schedule} />}
         {p && tab === "reviews" && <ReviewsTab project={p} />}
         {p && tab === "memory" && <MemoryTab project={p} />}
         {p && tab === "retrospectives" && <RetrospectivesTab project={p} />}
@@ -279,20 +291,34 @@ function Sessions({ project }: { project: G.Project }) {
               placeholder={`What should an agent do in ${project.name}?`}
               className="block px-5 pt-4 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
             />
-            {/* More room above the pickers where they take a line of their own. */}
-            <TextareaControls textarea={ref} className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 sm:max-lg:pt-3">
+            {/* More room above the pickers where they take a line of their own. On a phone everything
+                keeps one line, down to 360 px with a model named by its ID and the GitHub picker: the
+                gaps are narrower there, and the pickers go to the end without the spacer and its
+                gaps. */}
+            <TextareaControls
+              textarea={ref}
+              className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 max-sm:gap-2 sm:max-lg:pt-3"
+            >
               <AttachButton onFiles={(f) => attach(f)} disabled={starting} />
-              <span className="flex-1" />
-              <StartChoices project={project} choice={choice} onPick={pick} disabled={starting} />
+              <span className="flex-1 max-sm:hidden" />
+              <StartChoices
+                project={project}
+                choice={choice}
+                onPick={pick}
+                disabled={starting}
+                className="max-sm:ml-auto"
+              />
               {/* Set apart from the pickers, as on the home page. On a phone its room goes to the
                   button. */}
               <span className="ml-4 text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
-              {/* On a phone it can take a line of its own, at its end. */}
-              <StartButton
-                starting={starting}
-                disabled={!prompt.trim() && !files.drafts.length}
-                className="max-sm:ml-auto"
-              >
+              <ScheduleButton
+                project={project}
+                prompt={prompt}
+                choice={choice}
+                files={files.drafts.length}
+                disabled={starting}
+              />
+              <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
                 Start a session
               </StartButton>
             </TextareaControls>
@@ -338,6 +364,7 @@ function Sessions({ project }: { project: G.Project }) {
                 <div className="min-w-0 flex-1">
                   <SessionLink s={s} />
                   <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
+                    <ScheduledMark s={s} />
                     {s.branch && <span className="truncate font-mono">{s.branch}</span>}
                     <PullRequestLinks s={s} />
                   </div>
