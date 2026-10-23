@@ -314,8 +314,9 @@ pub enum WorkspacesCmd {
     /// The Claude connection your sessions in a workspace run on.
     Claude {
         /// One of your connections, by its id or name in `fctl claude
-        /// status` (an account or a label), or `default` for your default
-        /// one. Without it, shows the one in use.
+        /// status` (an account or a label), `on-runners` for the token you
+        /// keep on your runners, or `default` for your default one.
+        /// Without it, shows the one in use.
         credential: Option<String>,
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
@@ -1068,10 +1069,25 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                     );
                 }
             } else {
-                println!(
-                    "Your sessions in {} run on any of its runners for everyone's sessions, and on yours",
-                    style::bold(&w.name)
-                );
+                // The Claude token they run on may keep them on yours anyway.
+                let me = super::auth::account(&api).await?;
+                let kept = w
+                    .claude
+                    .as_ref()
+                    .and_then(|id| me.claude.iter().find(|c| &c.id == id))
+                    .or_else(|| me.claude.iter().find(|c| c.is_default))
+                    .is_some_and(|c| c.on_runners);
+                if kept {
+                    println!(
+                        "Your sessions in {} still run only on your runners that keep your Claude token: the connection they run on keeps it there",
+                        style::bold(&w.name)
+                    );
+                } else {
+                    println!(
+                        "Your sessions in {} run on any of its runners for everyone's sessions, and on yours",
+                        style::bold(&w.name)
+                    );
+                }
             }
         }
         WorkspacesCmd::Claude {
@@ -1109,19 +1125,34 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 .and_then(|id| me.claude.iter().find(|c| &c.id == id))
                 .or_else(|| me.claude.iter().find(|c| c.is_default));
             match used {
-                Some(c) => println!(
-                    "Your sessions in {} run on {}{}",
-                    style::bold(&w.name),
-                    c.label
-                        .clone()
-                        .or_else(|| c.account_email.clone())
-                        .unwrap_or_else(|| c.id.to_string()),
-                    if w.claude.is_none() {
-                        style::dim(" (your default)")
-                    } else {
-                        String::new()
+                Some(c) => {
+                    println!(
+                        "Your sessions in {} run on {}{}",
+                        style::bold(&w.name),
+                        if c.on_runners {
+                            "the Claude token you keep on your runners".to_owned()
+                        } else {
+                            c.label
+                                .clone()
+                                .or_else(|| c.account_email.clone())
+                                .unwrap_or_else(|| c.id.to_string())
+                        },
+                        if w.claude.is_none() {
+                            style::dim(" (your default)")
+                        } else {
+                            String::new()
+                        }
+                    );
+                    if c.on_runners {
+                        println!(
+                            "{}",
+                            style::dim(&format!(
+                                "They run only on your runners in {} that keep it.",
+                                w.name
+                            ))
+                        );
                     }
-                ),
+                }
                 None => println!("{}", super::claude::NO_CONNECTION),
             }
         }

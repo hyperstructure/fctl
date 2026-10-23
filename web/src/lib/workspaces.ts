@@ -228,7 +228,8 @@ export function useFactorsWatch() {
 }
 
 /** How a Claude connection reads in lists: its account, else its label. */
-export const claudeName = (c: G.ClaudeCredentialInfo) => c.account_email ?? c.label ?? "Claude";
+export const claudeName = (c: G.ClaudeCredentialInfo) =>
+  c.account_email ?? c.label ?? (c.on_runners ? "Token on your runners" : "Claude");
 
 /**
  * The Claude connections someone's sessions in a workspace can run on:
@@ -255,7 +256,9 @@ export function claudeOptions(
       options.push({
         value: c.id,
         label: `${prefix}${claudeName(c)}`,
-        description: c.subscription_type ?? c.kind,
+        description: c.on_runners
+          ? "Kept on your runners: sessions run only on yours that keep it"
+          : (c.subscription_type ?? c.kind),
       });
     else if (c.id === current)
       options.push({

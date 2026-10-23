@@ -246,18 +246,24 @@ export function CodeBox({ value, className }: { value: string; className?: strin
 }
 
 export function Section({
+  id,
   title,
   description,
   children,
   actions,
 }: {
+  /** What a link to it names after `#`. */
+  id?: string;
   title: ReactNode;
   description?: ReactNode;
   children: ReactNode;
   actions?: ReactNode;
 }) {
   return (
-    <section className="grid gap-x-10 gap-y-4 border-t border-line py-8 first:border-t-0 md:grid-cols-[260px_1fr]">
+    <section
+      id={id}
+      className="grid scroll-mt-6 gap-x-10 gap-y-4 border-t border-line py-8 first:border-t-0 md:grid-cols-[260px_1fr]"
+    >
       <div>
         <h2 className="text-[14px] font-semibold text-ink">{title}</h2>
         {description && <p className="mt-1 text-[13px] leading-relaxed text-ink-3">{description}</p>}

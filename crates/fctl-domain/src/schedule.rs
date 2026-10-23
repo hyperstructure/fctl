@@ -261,7 +261,8 @@ fn too_big(online: &[&Slot], want: Want) -> Wait {
 /// the runner, and `personal` says it runs only their sessions in the
 /// workspace (they added it for their own). `person` owns the Claude
 /// connection the session runs on, and with `own_runners` keeps their
-/// sessions in the workspace on runners they registered.
+/// sessions in the workspace on runners they registered, as they do too
+/// when that connection's token is kept on their runners ([`only_theirs`]).
 pub fn runs_for(
     owner: Option<&str>,
     personal: bool,
@@ -270,6 +271,54 @@ pub fn runs_for(
 ) -> bool {
     let theirs = person.is_some() && owner == person;
     theirs || !(personal || own_runners)
+}
+
+/// Whether a session runs only on its person's runners: they keep their
+/// sessions in its workspace on runners they registered (`own_runners`),
+/// or the Claude connection it runs on keeps its token on their runners
+/// (`on_runners`), which no one else's runner has. Pass it to [`runs_for`]
+/// as `own_runners`.
+pub fn only_theirs(own_runners: bool, on_runners: bool) -> bool {
+    own_runners || on_runners
+}
+
+/// Why a session waits whose Claude token its person keeps on their
+/// runners, when no online runner of its workspace takes it
+/// ([`Wait::Workspace`]): only their runners that keep the token
+/// (`fctl_proto::runner::RunnerClaudeToken`) take it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenWait {
+    /// None of their runners runs the workspace's sessions.
+    NoRunner,
+    /// Theirs run them, but none of those is online.
+    Offline,
+    /// Of theirs online, none keeps the token. `old`: some of them run an
+    /// fctl too old to keep one.
+    NoToken { old: bool },
+}
+
+impl TokenWait {
+    /// What the queued session says, naming its person (`name`).
+    pub fn reason(&self, name: &str) -> String {
+        let name = match name.trim() {
+            "" => "its person",
+            name => name,
+        };
+        match self {
+            Self::NoRunner => format!(
+                "Waiting for one of {name}'s runners: their Claude token is kept on their runners, and none of those runs this workspace's sessions yet. They add one on its Runners tab."
+            ),
+            Self::Offline => format!(
+                "Waiting for one of {name}'s runners: their Claude token is kept on their runners, and none of those is online"
+            ),
+            Self::NoToken { old: false } => format!(
+                "Waiting for one of {name}'s runners that keeps their Claude token: the ones online keep none. `fctl host claude set-token` on one of them keeps it there."
+            ),
+            Self::NoToken { old: true } => format!(
+                "Waiting for one of {name}'s runners that keeps their Claude token: the ones online keep none, and some run an fctl too old to keep one. Update them with `fctl self update`, then run `fctl host claude set-token` on one."
+            ),
+        }
+    }
 }
 
 /// Why a session waits when no online runner of its workspace takes it
@@ -915,6 +964,43 @@ mod tests {
         );
         assert!(
             no_runner_takes(Some(" "), true, true, false)
+                .starts_with("Waiting for one of its person's runners")
+        );
+    }
+
+    #[test]
+    fn sessions_on_a_token_kept_on_runners_run_only_on_their_persons() {
+        let (ada, bo) = (Some("usr_ada"), Some("usr_bo"));
+        // Even where their person runs their sessions on anyone's runners.
+        let only = only_theirs(false, true);
+        assert!(only);
+        assert!(!runs_for(bo, false, ada, only));
+        assert!(runs_for(ada, false, ada, only));
+        assert!(runs_for(ada, true, ada, only));
+        assert!(!runs_for(None, false, ada, only));
+        assert!(!only_theirs(false, false));
+        assert!(only_theirs(true, false));
+    }
+
+    #[test]
+    fn sessions_on_a_token_kept_on_runners_say_what_they_wait_for() {
+        assert_eq!(
+            TokenWait::Offline.reason("Ada Lovelace"),
+            "Waiting for one of Ada Lovelace's runners: their Claude token is kept on their runners, and none of those is online"
+        );
+        assert!(TokenWait::NoRunner.reason("Ada Lovelace").ends_with(
+            "none of those runs this workspace's sessions yet. They add one on its Runners tab."
+        ));
+        assert!(
+            TokenWait::NoToken { old: false }
+                .reason("Ada Lovelace")
+                .contains("`fctl host claude set-token`")
+        );
+        let old = TokenWait::NoToken { old: true }.reason("Ada Lovelace");
+        assert!(old.contains("`fctl self update`"), "{old}");
+        assert!(
+            TokenWait::Offline
+                .reason(" ")
                 .starts_with("Waiting for one of its person's runners")
         );
     }

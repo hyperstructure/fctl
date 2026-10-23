@@ -12,9 +12,25 @@ vi.mock("@/lib/api", () => {
   return { api: pending, workspaces: pending, ApiFailure: class extends Error {} };
 });
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, params, search }: { children: ReactNode; params: { slug: string }; search: object }) => (
-    <a href={`/w/${params.slug}?${new URLSearchParams(search as Record<string, string>)}`}>{children}</a>
-  ),
+  Link: ({
+    children,
+    to,
+    params,
+    search,
+    hash,
+  }: {
+    children: ReactNode;
+    to: string;
+    params?: { slug: string };
+    search: Record<string, string | undefined>;
+    hash?: string;
+  }) => {
+    const query = new URLSearchParams(
+      Object.entries(search).filter((e): e is [string, string] => e[1] !== undefined),
+    ).toString();
+    const path = params ? to.replace("$slug", params.slug) : to;
+    return <a href={`${path}${query ? `?${query}` : ""}${hash ? `#${hash}` : ""}`}>{children}</a>;
+  },
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -24,10 +40,14 @@ afterEach(() => {
   for (const unmount of roots.splice(0)) unmount();
 });
 
-/** The note for `workspace`, with these runners in the cache as the API or the feed put them there. */
-function note(workspace: G.Workspace, runners?: G.Runner[]) {
+/**
+ * The note for `workspace`, with these runners in the cache as the API or the feed put them there,
+ * and these Claude connections of yours.
+ */
+function note(workspace: G.Workspace, runners?: G.Runner[], claude?: G.ClaudeCredentialInfo[]) {
   const client = new QueryClient();
   if (runners) client.setQueryData<G.RunnerList>(keys.runners, { runners });
+  if (claude) client.setQueryData(keys.me, { claude } as G.Me);
   const container = document.createElement("div");
   const root = createRoot(container);
   act(() =>
@@ -142,5 +162,54 @@ describe("the note under a start form", () => {
       note(side, [runner({ id: "mini", status: "offline" }), runner({ id: "studio" })]).textContent,
     ).toBe("");
     expect(note(side).textContent).toBe("");
+  });
+
+  describe("while your sessions run on the Claude token you keep on your runners", () => {
+    const kept: G.ClaudeCredentialInfo = {
+      id: "crd_kept",
+      kind: "setup_token",
+      remote_control: false,
+      status: "active",
+      is_default: true,
+      created_at: 0,
+      on_runners: true,
+    };
+    const office = runner({ id: "office", yours: false, claude_token: { saved_at: 1 } });
+
+    it("sends you to add a runner while none of yours is in the workspace", () => {
+      const text = note(member, [office, elsewhere], [kept]);
+      expect(text.textContent).toBe(
+        "Your Claude token is kept on your runners, and none of yours is in Side project yet: sessions you start here wait until one is. Add a runner",
+      );
+      expect(text.querySelector("a")?.getAttribute("href")).toBe("/w/side-project?tab=runners");
+    });
+
+    it("sends you to keep it on one while none of yours there keeps it", () => {
+      const text = note(member, [office, runner({ id: "mini", claude_token: {} })], [kept]);
+      expect(text.textContent).toBe(
+        "None of your runners in Side project keeps your Claude token yet: sessions you start here wait until one does. Keep it on a runner",
+      );
+      expect(text.querySelector("a")?.getAttribute("href")).toBe("/settings#claude");
+    });
+
+    it("says when the ones that keep it are offline, and nothing once one is online", () => {
+      const away = runner({ id: "mini", status: "offline", claude_token: { saved_at: 5 } });
+      expect(note(member, [office, away], [kept]).textContent).toBe(
+        "None of your runners in Side project that keeps your Claude token is online: sessions you start here wait until one is. See your runner",
+      );
+      const back = runner({ id: "studio", claude_token: { saved_at: 5 } });
+      expect(note(member, [office, away, back], [kept]).textContent).toBe("");
+    });
+
+    it("goes by the connection chosen in the workspace", () => {
+      const login: G.ClaudeCredentialInfo = { ...kept, id: "crd_login", kind: "oauth", on_runners: false };
+      // Sessions here run on the login, so anyone's runner for everyone's sessions counts.
+      const chosen = { ...member, claude: "crd_login" };
+      expect(note(chosen, [office], [kept, { ...login, is_default: false }]).textContent).toBe("");
+      expect(
+        note({ ...member, claude: "crd_kept" }, [office], [login, { ...kept, is_default: false }])
+          .textContent,
+      ).toContain("none of yours is in Side project yet");
+    });
   });
 });

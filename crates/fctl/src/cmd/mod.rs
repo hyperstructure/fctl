@@ -5,6 +5,7 @@ pub mod auth;
 pub mod claude;
 pub mod completions;
 pub mod host;
+pub mod host_claude;
 pub mod memory;
 pub mod notifications;
 pub mod passkeys;

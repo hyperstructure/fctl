@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useId, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
+import { SET_TOKEN, SETUP_TOKEN } from "@/components/claude/on-runners";
 import { GithubAvatar } from "@/components/github-avatar";
 import { SessionRow } from "@/components/session/row";
 import {
@@ -46,6 +47,7 @@ import { WORKSPACE_COLORS, WorkspaceAvatar } from "@/components/workspace/avatar
 import { avatarImage } from "@/components/workspace/avatar-image";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
+import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { ago, agoShort } from "@/lib/format";
 import { BREW_INSTALL, installCommand } from "@/lib/install";
@@ -749,6 +751,10 @@ function Runners({ w }: { w: G.Workspace }) {
   const admin = w.role === "owner" || w.role === "admin";
   const list = useQuery({ queryKey: keys.workspaceRunners(w.id), queryFn: () => workspaces.runners(w.id) });
   const all = useRunners();
+  const { data: me } = useMe();
+  // What the feed says of your runners' Claude tokens is fresher than this list.
+  const live = new Map(all.data?.runners.map((r) => [r.id, r]));
+  const onRunners = tokenOnRunnersIn(me, w);
   const [name, setName] = useState("");
   const [reg, setReg] = useState<G.RunnerRegistration | null>(null);
   const [adding, setAdding] = useState<string>();
@@ -789,20 +795,37 @@ function Runners({ w }: { w: G.Workspace }) {
         Sessions in {w.name} start only on these machines, which see their code, secrets and Claude tokens
         while they work. Each runner belongs to the person who registered it, who can let it work for several
         workspaces. The ones its admins add run everyone's sessions; one a member adds runs only theirs.
-        {w.own_runners && (
+        {onRunners ? (
           <>
             {" "}
-            You run your sessions here only on your own runners (
+            Your sessions here run on the Claude token you keep on your runners, so only on yours that keep it
+            (
             <Link
-              to="/w/$slug"
-              params={{ slug: w.slug }}
-              search={{ tab: "settings" }}
+              to="/settings"
+              search={{ linked: undefined, error: undefined }}
+              hash="claude"
               className="underline underline-offset-2"
             >
-              Settings
+              Settings → Claude
             </Link>
             ).
           </>
+        ) : (
+          w.own_runners && (
+            <>
+              {" "}
+              You run your sessions here only on your own runners (
+              <Link
+                to="/w/$slug"
+                params={{ slug: w.slug }}
+                search={{ tab: "settings" }}
+                className="underline underline-offset-2"
+              >
+                Settings
+              </Link>
+              ).
+            </>
+          )
         )}
       </p>
       {/* The two line up by their labels, so an error under the name moves nothing. */}
@@ -902,6 +925,12 @@ function Runners({ w }: { w: G.Workspace }) {
                           : `Only ${r.created_by?.name ?? "its owner"}'s sessions`}
                       </span>
                     )}
+                    {r.yours && (live.get(r.id) ?? r).claude_token?.saved_at && (
+                      <span className="ml-2 inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-accent-soft px-2 py-px align-middle text-[11.5px] text-ink-2">
+                        <ShieldCheck className="size-3 text-accent" />
+                        Keeps your Claude token
+                      </span>
+                    )}
                   </div>
                   <div className="mt-0.5 truncate text-[12px] text-ink-4">
                     {r.created_by ? `${r.created_by.name}'s` : "A"}{" "}
@@ -930,7 +959,13 @@ function Runners({ w }: { w: G.Workspace }) {
         </ul>
       )}
       {list.data && (
-        <AddRunner w={w} first={list.data.runners.length === 0} yours={yours.length > 0} admin={admin} />
+        <AddRunner
+          w={w}
+          first={list.data.runners.length === 0}
+          yours={yours.length > 0}
+          admin={admin}
+          token={onRunners}
+        />
       )}
       <Dialog
         open={!!takingOut}
@@ -982,18 +1017,21 @@ function Runners({ w }: { w: G.Workspace }) {
 /**
  * What bringing a machine online takes, under its runners, or under the form while it has none
  * (`first`). `yours`: the form offers runners of theirs to add instead. One a member (not `admin`)
- * brings online runs only their sessions.
+ * brings online runs only their sessions. `token`: your sessions here run on the Claude token you
+ * keep on your runners, which a new one needs too.
  */
 function AddRunner({
   w,
   first,
   yours,
   admin,
+  token,
 }: {
   w: G.Workspace;
   first: boolean;
   yours: boolean;
   admin: boolean;
+  token: boolean;
 }) {
   const steps: { title: string; body: ReactNode }[] = [
     {
@@ -1029,6 +1067,20 @@ function AddRunner({
       ),
     },
   ];
+  if (token)
+    steps.push({
+      title: "Keep your Claude token on it",
+      body: (
+        <>
+          <p>
+            Your sessions here run on the Claude token you keep on your runners, so they run on this one once
+            it keeps it too. Make a token there, or on any machine with Claude Code, and paste it when asked:
+          </p>
+          <CodeBox value={SETUP_TOKEN} />
+          <CodeBox value={SET_TOKEN} />
+        </>
+      ),
+    });
   return (
     <section className="mt-10 animate-rise">
       <h3 className="font-display text-xl text-ink">
@@ -1684,6 +1736,8 @@ function Leave({ w }: { w: G.Workspace }) {
 /** Your own place in the workspace: the address, the Claude connection, where your sessions run, leaving. */
 function You({ w }: { w: G.Workspace }) {
   const { data: me } = useMe();
+  // On the token you keep on your runners, your sessions run only on them anyway.
+  const onRunners = tokenOnRunnersIn(me, w);
   const membership = useMutation({
     mutationFn: (claude: string) => workspaces.updateMembership(w.id, { claude }),
     onSuccess: (x) => {
@@ -1741,25 +1795,33 @@ function You({ w }: { w: G.Workspace }) {
         <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
           <span>
             Only on my runners
-            <span className="block text-[12.5px] leading-relaxed text-ink-4">
-              Your sessions here run only on runners you registered, not on other people's, which see their
-              code, secrets and your Claude token while they work. Turning it on stops the ones running on
-              other people's runners; they resume on yours.{" "}
-              <Link
-                to="/w/$slug"
-                params={{ slug: w.slug }}
-                search={{ tab: "runners" }}
-                className="underline underline-offset-2"
-              >
-                Runners
-              </Link>{" "}
-              shows whose each is.
-            </span>
+            {onRunners ? (
+              <span className="block text-[12.5px] leading-relaxed text-ink-4">
+                Your sessions here run on the Claude token you keep on your runners, so they run only on yours
+                that keep it. To run them on other people's runners too, choose another Claude connection
+                above.
+              </span>
+            ) : (
+              <span className="block text-[12.5px] leading-relaxed text-ink-4">
+                Your sessions here run only on runners you registered, not on other people's, which see their
+                code, secrets and your Claude token while they work. Turning it on stops the ones running on
+                other people's runners; they resume on yours.{" "}
+                <Link
+                  to="/w/$slug"
+                  params={{ slug: w.slug }}
+                  search={{ tab: "runners" }}
+                  className="underline underline-offset-2"
+                >
+                  Runners
+                </Link>{" "}
+                shows whose each is.
+              </span>
+            )}
           </span>
           <Switch
-            checked={w.own_runners}
+            checked={w.own_runners || onRunners}
             onChange={(v) => ownRunners.mutate(v)}
-            disabled={ownRunners.isPending}
+            disabled={ownRunners.isPending || onRunners}
             label="Only on my runners"
           />
         </div>

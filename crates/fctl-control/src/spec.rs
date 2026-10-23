@@ -57,9 +57,10 @@ pub async fn project_row(db: &D1Database, id: &str) -> AppResult<Option<ProjectR
 /// active member there (`serves!`), and it runs the sessions of the person
 /// the session runs as (`fctl_domain::schedule::runs_for`: a runner added
 /// for its owner's sessions runs only theirs, and someone who keeps their
-/// sessions on their own runners has them run nowhere else). A runner that
-/// no longer does gets nothing more for the sessions it still has there:
-/// no credentials, uplinks, files or screenshots.
+/// sessions on their own runners, or the Claude token of the session's
+/// connection on them, has them run nowhere else). A runner that no longer
+/// does gets nothing more for the sessions it still has there: no
+/// credentials, uplinks, files or screenshots.
 pub async fn runner_serves(db: &D1Database, runner_id: &str, session_id: &str) -> AppResult<bool> {
     #[derive(serde::Deserialize)]
     struct Row {
@@ -69,12 +70,15 @@ pub async fn runner_serves(db: &D1Database, runner_id: &str, session_id: &str) -
         person: Option<String>,
         #[serde(deserialize_with = "crate::db::int_bool", default)]
         own_runners: bool,
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        on_runners: bool,
     }
     let row: Option<Row> = q(
         db,
         concat!(
             "SELECT r.created_by AS owner, rw.personal AS personal, c.user_id AS person, \
-             om.own_runners AS own_runners FROM sessions s JOIN projects p ON p.id = s.project_id \
+             om.own_runners AS own_runners, c.on_runners AS on_runners \
+             FROM sessions s JOIN projects p ON p.id = s.project_id \
              JOIN runner_workspaces rw ON rw.workspace_id = p.workspace_id AND rw.runner_id = ?1 \
              JOIN runners r ON r.id = rw.runner_id \
              LEFT JOIN claude_credentials c ON c.id = s.credential_id \
@@ -91,7 +95,7 @@ pub async fn runner_serves(db: &D1Database, runner_id: &str, session_id: &str) -
             r.owner.as_deref(),
             r.personal,
             r.person.as_deref(),
-            r.own_runners,
+            fctl_domain::schedule::only_theirs(r.own_runners, r.on_runners),
         )
     }))
 }
@@ -166,6 +170,9 @@ pub struct SessionWants {
     pub person_name: String,
     /// They keep their sessions in its workspace on their own runners.
     pub own_runners: bool,
+    /// Its Claude connection's token is kept on their runners: only those
+    /// of their runners that keep one take it.
+    pub on_runners: bool,
     /// It is a review agent's session: only runners that run them take it.
     pub review: bool,
 }
@@ -188,13 +195,15 @@ pub async fn session_wants(
         #[serde(deserialize_with = "crate::db::int_bool", default)]
         own_runners: bool,
         #[serde(deserialize_with = "crate::db::int_bool", default)]
+        on_runners: bool,
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
         review: bool,
     }
     let rows: Vec<Row> = q(
         db,
         "SELECT s.id AS id, p.settings AS settings, p.repo_owner AS repo_owner, p.repo_name AS repo_name, \
          p.workspace_id AS workspace_id, c.user_id AS person, u.name AS person_name, \
-         om.own_runners AS own_runners, rv.session_id IS NOT NULL AS review \
+         om.own_runners AS own_runners, c.on_runners AS on_runners, rv.session_id IS NOT NULL AS review \
          FROM sessions s JOIN projects p ON p.id = s.project_id \
          LEFT JOIN claude_credentials c ON c.id = s.credential_id LEFT JOIN users u ON u.id = c.user_id \
          LEFT JOIN workspace_members om ON om.workspace_id = p.workspace_id AND om.user_id = c.user_id \
@@ -219,6 +228,7 @@ pub async fn session_wants(
                 person: r.person,
                 person_name: r.person_name.unwrap_or_default(),
                 own_runners: r.own_runners,
+                on_runners: r.on_runners,
                 review: r.review,
             };
             (r.id, wants)
@@ -702,7 +712,9 @@ fn unreachable_notice(cfg: &Config, g: &RepoGrant) -> String {
 }
 
 /// The credential with a valid access token, refreshing an OAuth login when
-/// it is about to expire. Callers serialize refreshes per credential.
+/// it is about to expire. Callers serialize refreshes per credential. For a
+/// connection whose token its owner keeps on their runners, one without a
+/// token (`on_runners`), which the host of the runner fills in.
 pub async fn claude_credential(
     db: &D1Database,
     keys: &Keys,
@@ -727,6 +739,27 @@ pub async fn claude_credential(
             ErrorCode::NotConfigured,
             "The Claude credential is no longer valid. Connect Claude again in Settings.",
         )));
+    }
+    if row.on_runners {
+        // Its owner keeps the token on their runners: the runner the
+        // session runs on, one of theirs, puts its own in.
+        q(
+            db,
+            "UPDATE claude_credentials SET last_used_at = ? WHERE id = ?",
+            &[n(now), s(&row.id)],
+        )?
+        .run()
+        .await?;
+        return Ok(ClaudeCredential {
+            id: CredentialId(row.id.clone()),
+            kind: ClaudeCredentialKind::SetupToken,
+            access_token: String::new(),
+            scopes: row.scopes(),
+            expires_at: None,
+            subscription_type: row.subscription_type.clone(),
+            account: None,
+            on_runners: true,
+        });
     }
     let aad = CredentialRow::aad(&row.id, &row.user_id);
     let mut secret: CredentialSecret = keys.open_json(&aad, &row.secret_enc)?;
@@ -753,6 +786,7 @@ pub async fn claude_credential(
         expires_at: secret.expires_at,
         subscription_type: row.subscription_type.clone(),
         account: row.account(),
+        on_runners: false,
     })
 }
 

@@ -788,6 +788,7 @@ mod tests {
                     expires_at: None,
                     subscription_type: None,
                     account: None,
+                    on_runners: false,
                 },
                 github: None,
                 github_read: None,
