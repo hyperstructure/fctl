@@ -18,6 +18,8 @@
 //! max_build_mb = 20480     # the largest image a build may make
 //! keep_stopped_hours = 72  # then remove a stopped session's sandbox (0 keeps them)
 //! min_free_disk_gb = 20    # below it, remove stopped sandboxes early (0: never)
+//! max_cache_gb = 10        # past it, empty a project's package caches (0: keep none)
+//! keep_caches_days = 14    # then remove the caches of a project with no session here (0 keeps them)
 //! ```
 //!
 //! The runner token lives next to it in `host-token` (mode 0600).
@@ -81,10 +83,18 @@ pub struct HostConfig {
     /// Keep a stopped session's sandbox (to resume it) for this many hours.
     pub keep_stopped_hours: u32,
     /// The free disk (GiB) to keep where sandboxes are. Below it, the host
-    /// removes stopped sandboxes before `keep_stopped_hours`, those stopped
-    /// longest first, and takes no new sessions until it is above it
+    /// empties package caches and removes stopped sandboxes before
+    /// `keep_stopped_hours`, and takes no new sessions until it is above it
     /// again. 0 keeps none.
     pub min_free_disk_gb: u32,
+    /// The most disk (GiB) the package caches of one project may take, for
+    /// projects that share them between their sessions: past it, the host
+    /// empties them once none of the project's sessions runs here. 0 keeps
+    /// no caches.
+    pub max_cache_gb: u32,
+    /// Days a project's package caches stay after its last session here
+    /// started. 0 keeps them.
+    pub keep_caches_days: u32,
     /// The images this host runs for projects that choose their own,
     /// besides its own `image`: references (`ghcr.io/acme/agent:1`, pinned
     /// with `@sha256:…` or not, or without a tag for any), or prefixes that
@@ -122,6 +132,8 @@ impl Default for HostConfig {
             push_on_commit: true,
             keep_stopped_hours: 72,
             min_free_disk_gb: 20,
+            max_cache_gb: 10,
+            keep_caches_days: 14,
             allowed_images: None,
             allowed_builds: None,
             build_timeout_minutes: 60,
@@ -248,6 +260,18 @@ impl HostConfig {
     /// `min_free_disk_gb` in MiB, or `None` when the host keeps none.
     pub fn min_free_disk_mb(&self) -> Option<u64> {
         (self.min_free_disk_gb > 0).then(|| u64::from(self.min_free_disk_gb) * 1024)
+    }
+
+    /// `max_cache_gb` in MiB, or `None` when the host keeps no package
+    /// caches.
+    pub fn max_cache_mb(&self) -> Option<u64> {
+        (self.max_cache_gb > 0).then(|| u64::from(self.max_cache_gb) * 1024)
+    }
+
+    /// `keep_caches_days` in milliseconds, or `None` when the host keeps
+    /// caches however long they go unused.
+    pub fn keep_caches_ms(&self) -> Option<i64> {
+        (self.keep_caches_days > 0).then(|| i64::from(self.keep_caches_days) * 86_400_000)
     }
 
     /// The sandbox image for sessions whose project sets none.
@@ -466,6 +490,18 @@ mod tests {
         assert_eq!(cfg.min_free_disk_mb(), Some(50 * 1024));
         let cfg = HostConfig::from_toml("min_free_disk_gb = 0")?;
         assert_eq!(cfg.min_free_disk_mb(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn hosts_keep_10_gib_of_caches_per_project_for_two_weeks_unless_told_otherwise() -> Result<()> {
+        // A host.toml from before the settings.
+        let cfg = HostConfig::from_toml("server = \"https://app.fctl.sh\"")?;
+        assert_eq!(cfg.max_cache_mb(), Some(10 * 1024));
+        assert_eq!(cfg.keep_caches_ms(), Some(14 * 86_400_000));
+        let cfg = HostConfig::from_toml("max_cache_gb = 0\nkeep_caches_days = 0")?;
+        assert_eq!(cfg.max_cache_mb(), None);
+        assert_eq!(cfg.keep_caches_ms(), None);
         Ok(())
     }
 

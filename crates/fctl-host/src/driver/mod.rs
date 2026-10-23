@@ -16,6 +16,7 @@ pub mod process;
 
 pub use container::ImageInfo;
 
+use crate::caches::{self, Spot};
 use anyhow::Result;
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use std::path::{Path, PathBuf};
@@ -41,6 +42,10 @@ pub struct SandboxSpec {
     pub fallback_image: Option<String>,
     pub cpus: u32,
     pub memory_mb: u32,
+    /// The project's package caches, which a new sandbox mounts at
+    /// [`caches::MOUNT`] (the process driver's agents use them where they
+    /// are).
+    pub cache: Option<Spot>,
 }
 
 /// An image to build from a Dockerfile.
@@ -341,6 +346,72 @@ impl Driver {
     /// does not).
     pub fn enforces_size(&self) -> bool {
         !matches!(self, Self::Process(_))
+    }
+
+    /// Where `project`'s package caches are with this driver: a Docker
+    /// volume, or a directory in `data_dir`, which Apple's `container`
+    /// mounts and the process driver's agents use. `None` with Lima, and
+    /// for a directory that Apple's `container` can't mount, whose path has
+    /// a comma.
+    pub fn cache_spot(&self, project: &str, data_dir: &Path) -> Option<Spot> {
+        let dir = caches::dir(data_dir, project);
+        match self {
+            Self::Container(d) if d.flavor_name() == "docker" => {
+                Some(Spot::Volume(caches::volume(project)))
+            }
+            Self::Container(_) => (!dir.to_string_lossy().contains(',')).then_some(Spot::Dir(dir)),
+            Self::Process(_) => Some(Spot::Dir(dir)),
+            Self::Lima(_) => None,
+        }
+    }
+
+    /// Where a sandbox finds the caches at `spot`.
+    pub fn cache_in_sandbox(&self, spot: &Spot) -> String {
+        match (self, spot) {
+            (Self::Process(_), Spot::Dir(dir)) => dir.display().to_string(),
+            _ => caches::MOUNT.to_owned(),
+        }
+    }
+
+    /// The projects whose package caches are on this host.
+    pub async fn caches(&self, data_dir: &Path) -> Result<Vec<String>> {
+        match self {
+            Self::Container(d) if d.flavor_name() == "docker" => d.cache_volumes().await,
+            Self::Container(_) | Self::Process(_) => Ok(caches::dirs(data_dir)),
+            Self::Lima(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// What the caches at `spot` take, in MiB. A Docker volume is measured
+    /// in a short-lived container of the first of `images` that is here.
+    pub async fn cache_size_mb(&self, spot: &Spot, images: &[String]) -> Result<u64> {
+        match (spot, self) {
+            (Spot::Volume(volume), Self::Container(d)) => d.volume_size_mb(volume, images).await,
+            (Spot::Volume(_), _) => anyhow::bail!("the {} driver keeps no volumes", self.name()),
+            (Spot::Dir(dir), _) => {
+                let dir = dir.clone();
+                Ok(tokio::task::spawn_blocking(move || caches::dir_size_mb(&dir)).await??)
+            }
+        }
+    }
+
+    /// Removes the caches at `spot`, or with `keep` only what they hold: a
+    /// sandbox here may mount them again. Docker keeps a volume that a
+    /// container mounts, stopped ones too, and empties it in a short-lived
+    /// container of the first of `images` that is here. Whether they are
+    /// gone.
+    pub async fn clear_cache(&self, spot: &Spot, keep: bool, images: &[String]) -> Result<bool> {
+        match (spot, self) {
+            (Spot::Volume(volume), Self::Container(d)) => {
+                d.clear_volume(volume, keep, images).await
+            }
+            (Spot::Volume(_), _) => anyhow::bail!("the {} driver keeps no volumes", self.name()),
+            (Spot::Dir(dir), _) => {
+                let dir = dir.clone();
+                tokio::task::spawn_blocking(move || caches::clear_dir(&dir, keep)).await??;
+                Ok(!keep)
+            }
+        }
     }
 
     /// Creates the sandbox, or starts an existing one with the same name.

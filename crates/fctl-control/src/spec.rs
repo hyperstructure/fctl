@@ -446,6 +446,9 @@ async fn review_spec(
         image: p.image.clone(),
         image_build: p.image_build.clone(),
         setup_script: None,
+        // What a pull request steers its agent to download must not reach
+        // the project's other sessions.
+        package_caches: false,
         model: p.model.clone(),
         effort: p.effort.clone(),
         instructions: None,

@@ -18,7 +18,13 @@ use std::sync::{Mutex, PoisonError};
 /// `dockerfile` and makes a build without labels, and with `fail_build` it
 /// fails; `size` holds the size images have (1000 bytes without it).
 /// `network create` makes `network`, which holds whether its containers
-/// reach each other, unless `no_networks` is there.
+/// reach each other, unless `no_networks` is there. Each volume is a file in
+/// `volumes` holding the KiB it takes, which `run` makes when a container
+/// mounts one that isn't there, and `mounts` holds the volume each
+/// container mounts. Like Docker, `volume rm` refuses while a container
+/// mounts the volume. Short-lived containers (`run --rm`) measure a volume
+/// with `du` and empty it with `find`. `exec` prints `uid` (`1000:1000`
+/// without it), as `id` would, unless it runs as root.
 const SCRIPT: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -95,12 +101,43 @@ case "$1 $2" in
   "inspect "*) exit 1 ;;
   "run "*)
     [ ! -e "$d/fail_run" ] || { echo "no room for it" >&2; exit 1; }
-    while [ $# -gt 0 ] && [ "$1" != tail ]; do
-      [ "$1" != --name ] || name=$2
+    name=; rm=; vol=
+    while [ $# -gt 0 ] && [ "$1" != --entrypoint ]; do
+      case "$1" in
+        --name) name=$2 ;;
+        --rm) rm=1 ;;
+        --mount) case "$2" in type=volume,source=*) vol=${2#type=volume,source=}; vol=${vol%%,*} ;; esac ;;
+      esac
       shift
     done
-    [ -e "$(file "$2")" ] || { echo "Unable to find image '$2' locally" >&2; exit 125; }
-    id_of "$2" > "$d/containers/$name" ;;
+    entry=$2; image=$3
+    [ -e "$(file "$image")" ] || { echo "Unable to find image '$image' locally" >&2; exit 125; }
+    [ -z "$vol" ] || [ -e "$d/volumes/$vol" ] || echo 0 > "$d/volumes/$vol"
+    if [ -z "$rm" ]; then
+      id_of "$image" > "$d/containers/$name"
+      [ -z "$vol" ] || echo "$vol" > "$d/mounts/$name"
+    else
+      case "$entry" in
+        du) printf '%s\t/cache\n' "$(cat "$d/volumes/$vol")" ;;
+        find) echo 0 > "$d/volumes/$vol" ;;
+      esac
+    fi ;;
+  "volume ls") for v in "$d"/volumes/*; do [ -e "$v" ] && basename "$v"; done ;;
+  "volume inspect")
+    [ -e "$d/volumes/$3" ] || { echo "Error: no such volume: $3" >&2; exit 1; }
+    echo "[{\"Name\": \"$3\"}]" ;;
+  "volume rm")
+    [ -e "$d/volumes/$3" ] || { echo "Error: No such volume: $3" >&2; exit 1; }
+    for m in "$d"/mounts/*; do
+      if [ -e "$m" ] && [ "$(cat "$m")" = "$3" ]; then
+        echo "Error response from daemon: remove $3: volume is in use - [$(basename "$m")]" >&2
+        exit 1
+      fi
+    done
+    rm "$d/volumes/$3"
+    echo "$3" ;;
+  "exec -u") ;;
+  "exec "*) cat "$d/uid" 2>/dev/null || echo 1000:1000 ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "##;
@@ -130,7 +167,7 @@ impl FakeCli {
     /// A host with no images, and nothing it can pull.
     pub fn empty() -> Result<Self> {
         let dir = tempfile::tempdir()?;
-        for sub in ["have", "registry", "containers"] {
+        for sub in ["have", "registry", "containers", "volumes", "mounts"] {
             std::fs::create_dir(dir.path().join(sub))?;
         }
         write_script(&dir.path().join("cli"), SCRIPT)?;
@@ -165,6 +202,34 @@ impl FakeCli {
     /// Removes the container `name`.
     pub fn drop_container(&self, name: &str) -> Result<()> {
         std::fs::remove_file(self.dir.path().join("containers").join(name))?;
+        let _ = std::fs::remove_file(self.dir.path().join("mounts").join(name));
+        Ok(())
+    }
+
+    /// Makes the volume `name`, taking `kib`.
+    pub fn volume(&self, name: &str, kib: u64) -> Result<()> {
+        std::fs::write(
+            self.dir.path().join("volumes").join(name),
+            format!("{kib}\n"),
+        )?;
+        Ok(())
+    }
+
+    /// The volumes here, with the KiB each takes.
+    pub fn volumes(&self) -> Result<Vec<(String, u64)>> {
+        let mut volumes = Vec::new();
+        for entry in std::fs::read_dir(self.dir.path().join("volumes"))? {
+            let entry = entry?;
+            let kib = std::fs::read_to_string(entry.path())?.trim().parse()?;
+            volumes.push((entry.file_name().to_string_lossy().into_owned(), kib));
+        }
+        volumes.sort();
+        Ok(volumes)
+    }
+
+    /// Makes the sandbox's user `uid:gid`, as `id` prints them.
+    pub fn user(&self, ids: &str) -> Result<()> {
+        std::fs::write(self.dir.path().join("uid"), format!("{ids}\n"))?;
         Ok(())
     }
 

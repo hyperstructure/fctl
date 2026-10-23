@@ -5,6 +5,7 @@
 
 pub mod agentbin;
 pub mod build;
+pub mod caches;
 pub mod config;
 pub mod daemon;
 pub mod driver;

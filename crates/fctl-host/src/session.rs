@@ -1,6 +1,7 @@
 //! One task per session: sandbox, fctl-agent, and the bridge between the
 //! agent and the session's uplink.
 
+use crate::caches::{self, Spot};
 use crate::config::{HostConfig, Images};
 use crate::driver::{AgentIo, DiskSpot, Driver, Sandbox, SandboxSpec, sandbox_name};
 use crate::files;
@@ -11,7 +12,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use fctl_domain::image::ImageWant;
 use fctl_domain::size::Want;
-use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES};
+use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES, SandboxCache};
 use fctl_proto::api::{AgentAnswer, AgentCall};
 use fctl_proto::event::{LogLevel, LogLine, LogSource, PublishedFile};
 use fctl_proto::runner::{
@@ -149,6 +150,38 @@ impl HostCtx {
     /// The CPUs and memory a session's sandbox gets on this host.
     pub fn sandbox_size(&self, spec: &SessionSpec) -> SandboxSize {
         Want::of(&spec.project.settings).on(&self.sandbox_limits())
+    }
+
+    /// Where a session's sandbox finds its project's package caches here:
+    /// none when the project doesn't share them, or for a review session,
+    /// whose pull request could steer its agent to leave things there for
+    /// the project's other sessions; why not, when the project shares them
+    /// and this host keeps none.
+    pub fn cache_of(&self, spec: &SessionSpec) -> std::result::Result<Option<Spot>, String> {
+        if !spec.project.settings.package_caches || spec.review.is_some() {
+            return Ok(None);
+        }
+        let without = "so this session's package managers download what they need";
+        if self.cfg.max_cache_mb().is_none() {
+            return Err(format!(
+                "{} keeps no package caches (max_cache_gb = 0 in its host.toml), {without}",
+                self.cfg.name
+            ));
+        }
+        let project = spec.project.id.as_str();
+        if !caches::valid(project) {
+            return Err(format!(
+                "The project's id, {project}, can't name its package caches, {without}"
+            ));
+        }
+        match self.driver.cache_spot(project, &self.cfg.data_dir()) {
+            Some(spot) => Ok(Some(spot)),
+            None => Err(format!(
+                "{} keeps no package caches with the {} driver, {without}",
+                self.cfg.name,
+                self.driver.name()
+            )),
+        }
     }
 
     pub fn uplink_url(&self, session: &SessionId) -> String {
@@ -620,12 +653,35 @@ async fn prepare(ctx: &HostCtx, spec: &SessionSpec, uplink: &Uplink) -> Result<S
         _ => (ctx.cfg.image(), ctx.cfg.fallback_image()),
     };
     let size = ctx.sandbox_size(spec);
+    let cache = match ctx.cache_of(spec) {
+        Ok(cache) => cache,
+        Err(why) => {
+            log_uplink(why);
+            None
+        }
+    };
+    // Apple's `container` mounts a directory that must be there, also for
+    // a sandbox made with the caches of a project that no longer shares
+    // them, and the process driver's agents use it directly.
+    let data = ctx.cfg.data_dir();
+    let mounted = caches::load(&caches::path(&data))
+        .sandboxes
+        .get(&name)
+        .and_then(|project| ctx.driver.cache_spot(project, &data));
+    for spot in cache.iter().chain(mounted.as_ref()) {
+        if let Spot::Dir(dir) = spot {
+            std::fs::create_dir_all(dir).with_context(|| {
+                format!("making the package caches' directory {}", dir.display())
+            })?;
+        }
+    }
     let sspec = SandboxSpec {
         name,
         image,
         fallback_image,
         cpus: size.cpus,
         memory_mb: size.memory_mb,
+        cache,
     };
     let sb = ctx.driver.ensure(&sspec, &log_uplink).await?;
     if ctx.driver.needs_linux_agent() {
@@ -1079,5 +1135,9 @@ fn agent_config(
         push_on_commit: ctx.cfg.push_on_commit,
         first_agent_seq: (first_agent_seq > 0).then_some(first_agent_seq),
         sandbox: ctx.driver.enforces_size().then(|| ctx.sandbox_size(spec)),
+        cache: ctx.cache_of(spec).ok().flatten().map(|spot| SandboxCache {
+            dir: ctx.driver.cache_in_sandbox(&spot),
+            max_mb: ctx.cfg.max_cache_mb(),
+        }),
     }
 }

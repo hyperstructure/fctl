@@ -40,11 +40,12 @@ pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
 /// opened before a deploy, an older CLI) would reset it to its default
 /// without having shown it: for `claude_ai_connectors`, `credit_people`,
 /// `credit_claude`, `project_memory` and `retrospectives`, on; for
-/// `publish_screenshots`, off; for `screenshot_days`, 30 days (send `null`
-/// to choose the default); for `github_access`, push, which would let
-/// agents push again; for each of `follow_ups`, off. An `image_build` it
-/// leaves out stays unless it chooses an image instead (send `null` for
-/// none). `sent` is the update's `settings` object as it arrived.
+/// `publish_screenshots` and `package_caches`, off; for `screenshot_days`,
+/// 30 days (send `null` to choose the default); for `github_access`, push,
+/// which would let agents push again; for each of `follow_ups`, off. An
+/// `image_build` it leaves out stays unless it chooses an image instead
+/// (send `null` for none). `sent` is the update's `settings` object as it
+/// arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
     let follow_ups = sent.get("follow_ups");
     let unsent = |key: &str| follow_ups.and_then(|f| f.get(key)).is_none();
@@ -71,6 +72,9 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("publish_screenshots").is_none() {
         settings.publish_screenshots = stored.publish_screenshots;
+    }
+    if sent.get("package_caches").is_none() {
+        settings.package_caches = stored.package_caches;
     }
     if sent.get("screenshot_days").is_none() {
         settings.screenshot_days = stored.screenshot_days;
@@ -276,6 +280,21 @@ mod tests {
         let mut s = ProjectSettings::default();
         keep_unsent(&mut s, &stored, &json!({ "project_memory": true }));
         assert!(s.project_memory && !s.retrospectives);
+    }
+
+    #[test]
+    fn updates_without_package_caches_keep_them_on() {
+        let stored = ProjectSettings {
+            package_caches: true,
+            ..Default::default()
+        };
+        // An older client sends settings without the field: its default, off.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
+        assert!(s.package_caches);
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "package_caches": false }));
+        assert!(!s.package_caches);
     }
 
     #[test]

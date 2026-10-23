@@ -67,6 +67,7 @@ async fn login(
         fallback_image: ctx.cfg.fallback_image(),
         cpus: 1,
         memory_mb: 1024,
+        cache: None,
     };
     let sb = ctx
         .driver
