@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useId, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
+import { SET_TOKEN, SETUP_TOKEN } from "@/components/claude/on-runners";
 import { GithubAvatar } from "@/components/github-avatar";
 import { SessionRow } from "@/components/session/row";
 import {
@@ -958,7 +959,13 @@ function Runners({ w }: { w: G.Workspace }) {
         </ul>
       )}
       {list.data && (
-        <AddRunner w={w} first={list.data.runners.length === 0} yours={yours.length > 0} admin={admin} />
+        <AddRunner
+          w={w}
+          first={list.data.runners.length === 0}
+          yours={yours.length > 0}
+          admin={admin}
+          token={onRunners}
+        />
       )}
       <Dialog
         open={!!takingOut}
@@ -1010,18 +1017,21 @@ function Runners({ w }: { w: G.Workspace }) {
 /**
  * What bringing a machine online takes, under its runners, or under the form while it has none
  * (`first`). `yours`: the form offers runners of theirs to add instead. One a member (not `admin`)
- * brings online runs only their sessions.
+ * brings online runs only their sessions. `token`: your sessions here run on the Claude token you
+ * keep on your runners, which a new one needs too.
  */
 function AddRunner({
   w,
   first,
   yours,
   admin,
+  token,
 }: {
   w: G.Workspace;
   first: boolean;
   yours: boolean;
   admin: boolean;
+  token: boolean;
 }) {
   const steps: { title: string; body: ReactNode }[] = [
     {
@@ -1057,6 +1067,20 @@ function AddRunner({
       ),
     },
   ];
+  if (token)
+    steps.push({
+      title: "Keep your Claude token on it",
+      body: (
+        <>
+          <p>
+            Your sessions here run on the Claude token you keep on your runners, so they run on this one once
+            it keeps it too. Make a token there, or on any machine with Claude Code, and paste it when asked:
+          </p>
+          <CodeBox value={SETUP_TOKEN} />
+          <CodeBox value={SET_TOKEN} />
+        </>
+      ),
+    });
   return (
     <section className="mt-10 animate-rise">
       <h3 className="font-display text-xl text-ink">

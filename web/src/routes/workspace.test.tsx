@@ -92,9 +92,15 @@ const runner = (r: Partial<G.Runner> & { id: string }): G.Runner => ({
  * The workspace's Runners tab as `workspace` sees it, with these runners (`null`: they haven't loaded),
  * and these in the list of every runner they see.
  */
-function runnersTab(workspace: G.Workspace, runners: G.Runner[] | null = [], all = runners ?? []) {
+function runnersTab(
+  workspace: G.Workspace,
+  runners: G.Runner[] | null = [],
+  all = runners ?? [],
+  claude?: G.ClaudeCredentialInfo[],
+) {
   const client = new QueryClient();
   client.setQueryData(keys.workspace(workspace.slug), workspace);
+  if (claude) client.setQueryData(keys.me, { claude } as unknown as G.Me);
   if (runners) client.setQueryData<G.RunnerList>(keys.workspaceRunners(workspace.id), { runners });
   client.setQueryData<G.RunnerList>(keys.runners, { runners: all });
   const container = document.createElement("div");
@@ -188,6 +194,34 @@ describe("a workspace with runners", () => {
     expect(runnersTab({ ...member, primary: undefined }, [adas]).textContent).toContain(
       "Its admins add runners for everyone's sessions; one you add runs only yours",
     );
+  });
+
+  it("marks your runners that keep your Claude token, and adds keeping it to the steps when it is kept there", () => {
+    const studio = runner({ id: "studio", claude_token: { saved_at: 1 } });
+    const spare = runner({ id: "spare", claude_token: {} });
+    const kept: G.ClaudeCredentialInfo = {
+      id: "crd_kept",
+      kind: "setup_token",
+      remote_control: false,
+      status: "active",
+      is_default: true,
+      created_at: 0,
+      on_runners: true,
+    };
+    const page = runnersTab(side, [studio, spare], [studio, spare], [kept]);
+    const rows = [...page.querySelectorAll("ul > li")].map((li) => li.textContent ?? "");
+    expect(rows.find((r) => r.startsWith("studio"))).toContain("Keeps your Claude token");
+    expect(rows.find((r) => r.startsWith("spare"))).not.toContain("Keeps your Claude token");
+    expect(page.textContent).toContain(
+      "Your sessions here run on the Claude token you keep on your runners, so only on yours that keep it",
+    );
+    const steps = page.querySelector("ol")?.textContent;
+    expect(steps).toContain("Keep your Claude token on it");
+    expect(steps).toContain("fctl host claude set-token");
+    // On a connection fctl keeps, neither shows.
+    const stored = { ...kept, on_runners: false };
+    const plain = runnersTab(side, [studio, spare], [studio, spare], [stored]);
+    expect(plain.querySelector("ol")?.textContent).not.toContain("Keep your Claude token on it");
   });
 
   it("marks the runners that run only their owners' sessions", () => {
@@ -635,5 +669,54 @@ describe("two-factor sign-in in a workspace's settings", () => {
       "admin",
     );
     expect(page.textContent).toContain("only instance admins can turn it off (Admin → Settings).");
+  });
+});
+
+describe("where your sessions run, in a workspace's settings", () => {
+  function settingsTab(workspace: G.Workspace, claude: G.ClaudeCredentialInfo[]) {
+    route.tab = "settings";
+    queryClient.setQueryData(keys.workspace(workspace.slug), workspace);
+    queryClient.setQueryData(keys.me, { user: { role: "member" }, claude } as unknown as G.Me);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspacePage />
+        </QueryClientProvider>,
+      ),
+    );
+    roots.push(() => act(() => root.unmount()));
+    return container;
+  }
+
+  const connection = (c: Partial<G.ClaudeCredentialInfo> & { id: string }): G.ClaudeCredentialInfo => ({
+    kind: "setup_token",
+    remote_control: false,
+    status: "active",
+    is_default: false,
+    created_at: 0,
+    ...c,
+  });
+  const kept = connection({ id: "crd_kept", on_runners: true, is_default: true });
+  const seat = connection({ id: "crd_seat", kind: "oauth", remote_control: true });
+  const ownRunners = (page: HTMLElement) =>
+    page.querySelector<HTMLButtonElement>("button[role=switch][aria-label='Only on my runners']");
+
+  it("holds Only on my runners on while they run on the token you keep on your runners", () => {
+    const page = settingsTab(side, [kept, seat]);
+    const toggle = ownRunners(page);
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(toggle?.disabled).toBe(true);
+    expect(page.textContent).toContain(
+      "Your sessions here run on the Claude token you keep on your runners, so they run only on yours that keep it.",
+    );
+  });
+
+  it("leaves it to you on another connection", () => {
+    const page = settingsTab({ ...side, claude: "crd_seat" }, [kept, seat]);
+    const toggle = ownRunners(page);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(toggle?.disabled).toBe(false);
   });
 });
