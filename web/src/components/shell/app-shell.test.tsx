@@ -231,6 +231,24 @@ describe("a session's page", () => {
   });
 });
 
+describe("a project's page", () => {
+  it("lists the project's sessions that haven't ended under it, by its slug or its id", async () => {
+    const web = reload("/p/web");
+    await web.come({ workspaces, projects });
+    await web.come({
+      sessions: [
+        live("prj_web"),
+        [session(3, "Fix the build", "running"), session(1, "Retry uploads", "failed")],
+      ],
+    });
+    expect(web.sessions()).toEqual({ "web's active sessions": [["/s/ses_3", "Fix the build: Working"]] });
+    const api = reload("/p/prj_api");
+    await api.come({ workspaces, projects });
+    await api.come({ sessions: [live("prj_api"), [session(9, "Write the docs", "idle", "prj_api")]] });
+    expect(api.sessions()).toEqual({ "api's active sessions": [["/s/ses_9", "Write the docs: Waiting"]] });
+  });
+});
+
 /** The shell at a phone's width, where the sidebar is a drawer. */
 function phone() {
   const client = new QueryClient();

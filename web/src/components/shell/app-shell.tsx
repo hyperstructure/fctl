@@ -213,10 +213,13 @@ export function Sidebar({
   const { workspaces, projects, kept } = useSidebarLists(me?.user.id, workspaceList, projectList);
   const [folded, toggleFold] = useFolded();
   const groups = groupProjects(workspaces?.workspaces ?? [], projects ?? []);
-  // On a session's page, its project's sessions that haven't ended show under the project, to
-  // switch between.
+  // On a project's page, and on its sessions' pages, the project's sessions that haven't ended
+  // show under it, to switch between.
   const viewed = useSessionSummary(SESSION_PATH.exec(path)?.[1]).data;
-  const liveProject = projects?.find((p) => p.id === viewed?.project_id)?.id;
+  const opened = PROJECT_PATH.exec(path)?.[1];
+  const liveProject = projects?.find((p) =>
+    viewed ? p.id === viewed.project_id : p.slug === opened || p.id === opened,
+  )?.id;
   const live = useLiveSessions(liveProject).data;
   // Each session at work lights a thread on the Agent Floor's row.
   const working = (projects ?? []).reduce((n, p) => n + p.active_sessions, 0);
@@ -411,8 +414,9 @@ export function Sidebar({
 // The text that says how to move workspaces and projects, for screen readers.
 const ORDER_HELP = "sidebar-order-help";
 
-// A session's page, and the session's id.
+// A session's page, and the session's id; a project's page, and the project's slug (or id).
 const SESSION_PATH = /^\/s\/([^/]+)$/;
+const PROJECT_PATH = /^\/p\/([^/]+)$/;
 
 /** The sessions the sidebar shows under a project. */
 interface LiveSessions {
