@@ -226,7 +226,7 @@ fctl projects list -w side-project
 fctl projects show my-app
 fctl projects create "My app" --repo my-org/my-app -w acme   # a workspace's admins create its projects
 fctl projects create "New thing" --new-repo new-thing --owner my-org --public
-fctl projects create "Site" --repo my-org/site --no-connectors   # no claude.ai connectors in its sessions
+fctl projects create "Site" --repo my-org/site --connectors   # claude.ai connectors in its sessions (off by default)
 fctl projects set -p my-app --credit-claude off   # no Claude trailer in its commits
 fctl projects set -p my-app --credit-people off   # no trailers for the people who start sessions
 fctl projects set -p my-app --idle-timeout 30     # idle sessions keep their sandbox 30 minutes (default 10)

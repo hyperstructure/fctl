@@ -80,21 +80,18 @@ export function NewProject() {
                 owner: into,
               }
             : undefined,
-        settings:
-          setup.trim() || !connectors
-            ? {
-                setup_script: setup,
-                auto_pull_request: true,
-                remote_control: true,
-                claude_ai_connectors: connectors,
-                credit_people: true,
-                credit_claude: true,
-                publish_screenshots: false,
-                project_memory: true,
-                retrospectives: true,
-                env: {},
-              }
-            : undefined,
+        settings: {
+          setup_script: setup,
+          auto_pull_request: true,
+          remote_control: true,
+          claude_ai_connectors: connectors,
+          credit_people: true,
+          credit_claude: true,
+          publish_screenshots: false,
+          project_memory: true,
+          retrospectives: true,
+          env: {},
+        },
       }),
     onSuccess: (p) => {
       void queryClient.invalidateQueries({ queryKey: keys.projects });
