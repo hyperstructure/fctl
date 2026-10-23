@@ -969,25 +969,25 @@ function Settings({ project }: { project: G.Project }) {
           )}
           <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
             <span>
-              Comments that mention it
-              <span className="block text-[12.5px] leading-relaxed text-ink-4">
-                People who can write to the repository bring the agent back with <Address>@fctl</Address> or{" "}
-                <Address>@agent</Address> in a comment, a review or a comment on a line, or a comment that
-                starts with <Address>fctl:</Address> or <Address>agent:</Address>. Apps, and everyone else,
-                aren't heard.
+              Comments that mention the agent
+              <span className="block text-[12.5px] text-ink-4">
+                People who can write to the repository write <Address>@fctl</Address> or{" "}
+                <Address>@agent</Address> in a comment, a review or a comment on a line, or start a comment
+                with <Address>fctl:</Address> or <Address>agent:</Address>. Apps and everyone else are
+                ignored.
               </span>
             </span>
             <Switch
               checked={followUps.comments}
               onChange={(v) => set("follow_ups", { ...followUps, comments: v })}
-              label="Comments that mention it"
+              label="Comments that mention the agent"
             />
           </div>
           <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
             <span>
               Failed checks
-              <span className="block text-[12.5px] leading-relaxed text-ink-4">
-                When a check of its newest commit fails, the agent looks into it, fixes what its changes broke
+              <span className="block text-[12.5px] text-ink-4">
+                When a check of the pull request's newest commit fails, the agent fixes what its changes broke
                 and pushes: up to three times in a row while nobody messages it.
               </span>
             </span>
@@ -1000,8 +1000,8 @@ function Settings({ project }: { project: G.Project }) {
           <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
             <span>
               Merged or closed
-              <span className="block text-[12.5px] leading-relaxed text-ink-4">
-                The agent does what's left once it merges, such as noting the merge in the issue it fixed.
+              <span className="block text-[12.5px] text-ink-4">
+                The agent does what's left, such as noting the merge in the issue it fixed.
               </span>
             </span>
             <Switch

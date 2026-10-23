@@ -66,12 +66,15 @@ function PullLink({ f, href }: { f: G.FollowUp; href: string }) {
   );
 }
 
-/** When it happened, which shows as the pointer rests on the message. */
+/**
+ * When it happened, which shows as the pointer rests on the message: not on phones, where nothing
+ * rests on it, and where it would take a line of its own.
+ */
 function When({ at }: { at: number }) {
   return (
     <time
       dateTime={new Date(at).toISOString()}
-      className="text-ink-4 opacity-0 transition-opacity group-hover/msg:opacity-100"
+      className="text-ink-4 opacity-0 transition-opacity group-hover/msg:opacity-100 max-sm:hidden"
     >
       {clock(at)}
     </time>
@@ -163,15 +166,45 @@ function Comment({ f, w, ts }: { f: G.FollowUp; w: Wrote; ts: number }) {
   );
 }
 
+/**
+ * What fctl didn't pass on to the agent: failed checks it heard of three times in a row while nobody
+ * messaged it. What happened shows muted, with why the agent didn't hear of it.
+ */
+export const HeldFollowUp = memo(function HeldFollowUp({
+  followUp,
+  ts,
+}: {
+  followUp: G.FollowUp;
+  ts: number;
+}) {
+  const { happened } = parts(followUp);
+  return (
+    <div className="group/msg animate-rise py-3">
+      <div className="flex flex-col gap-3">
+        {happened.map((e, i) => (
+          <HappenedLine key={`${e.kind}-${i}`} f={followUp} e={e} ts={ts} muted />
+        ))}
+      </div>
+      <p className="mt-1 ml-[34px] text-[12.5px] leading-relaxed text-ink-4">
+        Not passed on: the agent heard of failed checks three times in a row, with no message from a person in
+        between. Message it to have it look.
+      </p>
+    </div>
+  );
+});
+
 const PR_COLORS = { merged: "text-pr-merged", closed: "text-pr-closed" } as const;
 
-/** Failed checks, a merge or a close: a line of the transcript's own, with its pull request. */
-function HappenedLine({ f, e, ts }: { f: G.FollowUp; e: Happened; ts: number }) {
+/**
+ * Failed checks, a merge or a close: a line of the transcript's own, with its pull request; `muted`
+ * for what the agent didn't hear of.
+ */
+function HappenedLine({ f, e, ts, muted }: { f: G.FollowUp; e: Happened; ts: number; muted?: boolean }) {
   const icon =
     e.kind === "checks_failed" ? (
-      <ChecksIcon state="failed" className="text-checks-failed" />
+      <ChecksIcon state="failed" className={muted ? "text-ink-4" : "text-checks-failed"} />
     ) : (
-      <PullRequestIcon state={e.kind} className={PR_COLORS[e.kind]} />
+      <PullRequestIcon state={e.kind} className={muted ? "text-ink-4" : PR_COLORS[e.kind]} />
     );
   const href = e.kind === "checks_failed" ? `${f.url}/checks` : f.url;
   return (
@@ -179,7 +212,7 @@ function HappenedLine({ f, e, ts }: { f: G.FollowUp; e: Happened; ts: number }) 
       <RailIcon>{icon}</RailIcon>
       <div className="min-w-0 flex-1">
         <div className="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-0.5">
-          <span className="font-medium text-ink-2">{happenedText(f, e)}</span>
+          <span className={cn("font-medium", muted ? "text-ink-3" : "text-ink-2")}>{happenedText(f, e)}</span>
           <span className="inline-flex items-center gap-1.5 text-ink-4">
             {e.kind === "checks_failed" ? "on" : "·"} <PullLink f={f} href={href} />
             {e.kind === "checks_failed" && (
@@ -203,7 +236,12 @@ function HappenedLine({ f, e, ts }: { f: G.FollowUp; e: Happened; ts: number }) 
             {e.names.map((name) => (
               <span
                 key={name}
-                className="max-w-full truncate rounded-md border border-checks-failed/25 bg-checks-failed/8 px-1.5 py-px font-mono text-[11px] text-checks-failed"
+                className={cn(
+                  "max-w-full truncate rounded-md border px-1.5 py-px font-mono text-[11px]",
+                  muted
+                    ? "border-line bg-raised/50 text-ink-3"
+                    : "border-checks-failed/25 bg-checks-failed/8 text-checks-failed",
+                )}
               >
                 {name}
               </span>

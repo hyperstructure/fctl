@@ -412,7 +412,7 @@ pub struct Notice {
     /// Stable identifier, for example `usage_limit`, `overage_blocked`,
     /// `api_key_refused`, `credential_expired`, `runner_lost`,
     /// `screenshot_published`, `memory_added`, `memory_stale`,
-    /// `retrospective`, `review_posted`, `review_held`.
+    /// `retrospective`, `review_posted`, `review_held`, `follow_up_held`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).
@@ -429,6 +429,10 @@ pub struct Notice {
     /// What fctl posted for a review agent, in a `review_posted` notice.
     /// Clients from before it show the message.
     pub review: Option<crate::api::PostedReview>,
+    /// What happened to a pull request that fctl didn't pass on to the
+    /// agent, in a `follow_up_held` notice. Clients from before it show the
+    /// message.
+    pub follow_up: Option<FollowUp>,
 }
 
 /// A screenshot an agent published on the control plane (`fctl publish`):
@@ -553,6 +557,7 @@ mod tests {
             memory: None,
             retrospective: None,
             review: None,
+            follow_up: None,
         };
         let json = serde_json::to_value(EventBody::Notice(shot.clone()))?;
         assert_eq!(json["kind"], "notice");

@@ -1000,6 +1000,7 @@ impl FleetObject {
             memory: None,
             retrospective: None,
             review: None,
+            follow_up: None,
         };
         if let Ok(stub) = internal::session_stub(&self.env, id) {
             let done: std::result::Result<serde_json::Value, _> = internal::post(

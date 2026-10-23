@@ -849,6 +849,7 @@ impl SessionObject {
                 memory: None,
                 retrospective: None,
                 review: None,
+                follow_up: None,
             };
             if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                 self.broadcast_events(&[json]);
@@ -1094,6 +1095,10 @@ impl SessionObject {
                     memory: None,
                     retrospective: None,
                     review: None,
+                    follow_up: Some(FollowUp {
+                        events: f.events.iter().filter(|e| checks(e)).cloned().collect(),
+                        ..f.clone()
+                    }),
                 };
                 if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                     self.broadcast_events(&[json]);
@@ -1293,6 +1298,7 @@ impl SessionObject {
             memory: None,
             retrospective: None,
             review: None,
+            follow_up: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -1998,6 +2004,7 @@ impl SessionObject {
                         memory: None,
                         retrospective: None,
                         review: None,
+                        follow_up: None,
                     };
                     if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                         self.broadcast_events(&[json]);

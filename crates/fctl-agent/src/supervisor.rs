@@ -447,6 +447,7 @@ impl Supervisor {
             memory: None,
             retrospective: None,
             review: None,
+            follow_up: None,
         }));
     }
 
@@ -2085,6 +2086,7 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
         memory: None,
         retrospective: None,
         review: None,
+        follow_up: None,
     }
 }
 
@@ -2104,6 +2106,7 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
         memory: None,
         retrospective: None,
         review: None,
+        follow_up: None,
     };
     match answer {
         AgentAnswer::Memories { .. } | AgentAnswer::Retrospectives { .. } => vec![],

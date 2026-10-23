@@ -50,7 +50,7 @@ import { callsIn, lastRun, parts } from "@/lib/runs";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
-import { FollowUpMessage } from "./follow-up";
+import { FollowUpMessage, HeldFollowUp } from "./follow-up";
 import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { thinkingNow } from "./thinking";
 import { Run, ToolRow, WorkDir } from "./tool";
@@ -483,6 +483,7 @@ const ItemView = memo(function ItemView({
         return <PublishedShot file={item.notice.published} canManage={canManage} />;
       if (item.notice.retrospective) return <RetrospectiveNotice r={item.notice.retrospective} />;
       if (item.notice.review) return <ReviewPostedNotice posted={item.notice.review} />;
+      if (item.notice.follow_up) return <HeldFollowUp followUp={item.notice.follow_up} ts={item.ts} />;
       if (item.notice.memory)
         return (
           <MemoryNotice
