@@ -103,6 +103,8 @@ pub async fn connections(db: &D1Database, workspace_id: &str) -> AppResult<Vec<L
         url_key: String,
         logo_url: Option<String>,
         app_user_id: Option<String>,
+        app_user_name: Option<String>,
+        app_user_handle: Option<String>,
         status: String,
         linear_user: Option<String>,
         connected_by: Option<String>,
@@ -113,7 +115,8 @@ pub async fn connections(db: &D1Database, workspace_id: &str) -> AppResult<Vec<L
     }
     let rows: Vec<Row> = q(
         db,
-        "SELECT i.organization_id, i.name, i.url_key, i.logo_url, i.app_user_id, i.status, wl.linear_user, \
+        "SELECT i.organization_id, i.name, i.url_key, i.logo_url, i.app_user_id, i.app_user_name, i.app_user_handle, \
+         i.status, wl.linear_user, \
          wl.connected_by, u.name AS by_name, u.avatar_url AS by_avatar, wl.created_at \
          FROM workspace_linear wl JOIN linear_installations i ON i.organization_id = wl.organization_id \
          LEFT JOIN users u ON u.id = wl.connected_by WHERE wl.workspace_id = ? ORDER BY wl.created_at",
@@ -160,6 +163,8 @@ pub async fn connections(db: &D1Database, workspace_id: &str) -> AppResult<Vec<L
                 url_key: r.url_key,
                 logo_url: r.logo_url,
                 app_user: r.app_user_id,
+                app_name: r.app_user_name,
+                app_handle: r.app_user_handle,
                 status: if r.status == "active" {
                     LinearStatus::Active
                 } else {

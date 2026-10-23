@@ -481,6 +481,11 @@ pub struct LinearConnection {
     pub logo_url: Option<String>,
     /// fctl's app user there, which people delegate issues to.
     pub app_user: Option<String>,
+    /// Its name and handle there, as people find it to assign issues to
+    /// and mention it (`fctl`, `@fctl`): those of the instance's Linear
+    /// app. Absent for installations from before fctl kept them.
+    pub app_name: Option<String>,
+    pub app_handle: Option<String>,
     /// Working, or what went wrong: its access was revoked in Linear, or
     /// fctl can't renew it.
     pub status: LinearStatus,

@@ -22,6 +22,12 @@ url_key: string, logo_url?: string,
  */
 app_user?: string, 
 /**
+ * Its name and handle there, as people find it to assign issues to
+ * and mention it (`fctl`, `@fctl`): those of the instance's Linear
+ * app. Absent for installations from before fctl kept them.
+ */
+app_name?: string, app_handle?: string, 
+/**
  * Working, or what went wrong: its access was revoked in Linear, or
  * fctl can't renew it.
  */

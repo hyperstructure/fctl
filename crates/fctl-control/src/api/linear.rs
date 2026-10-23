@@ -503,6 +503,8 @@ async fn install(
             url_key: viewer.url_key.clone(),
             logo_url: viewer.logo_url.clone(),
             app_user: Some(viewer.id.clone()),
+            app_name: Some(viewer.name.clone()),
+            app_handle: viewer.handle.clone(),
         },
         &tokens,
         &user.id,

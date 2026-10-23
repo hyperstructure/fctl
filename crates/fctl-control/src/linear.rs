@@ -232,8 +232,10 @@ pub struct Installed {
     pub name: String,
     pub url_key: String,
     pub logo_url: Option<String>,
-    /// fctl's app user there.
+    /// fctl's app user there, with its name and handle.
     pub app_user: Option<String>,
+    pub app_name: Option<String>,
+    pub app_handle: Option<String>,
 }
 
 /// Keeps the tokens of fctl's app in a Linear workspace, in place of any it
@@ -255,9 +257,10 @@ pub async fn store(
     )?;
     q(
         db,
-        "INSERT INTO linear_installations (organization_id, name, url_key, logo_url, app_user_id, secret_enc, expires_at, scopes, status, installed_by, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?) ON CONFLICT (organization_id) DO UPDATE SET name = excluded.name, \
-         url_key = excluded.url_key, logo_url = excluded.logo_url, app_user_id = excluded.app_user_id, secret_enc = excluded.secret_enc, \
+        "INSERT INTO linear_installations (organization_id, name, url_key, logo_url, app_user_id, app_user_name, app_user_handle, secret_enc, expires_at, scopes, status, installed_by, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?) ON CONFLICT (organization_id) DO UPDATE SET name = excluded.name, \
+         url_key = excluded.url_key, logo_url = excluded.logo_url, app_user_id = excluded.app_user_id, app_user_name = excluded.app_user_name, \
+         app_user_handle = excluded.app_user_handle, secret_enc = excluded.secret_enc, \
          expires_at = excluded.expires_at, scopes = excluded.scopes, status = 'active', installed_by = excluded.installed_by, updated_at = excluded.updated_at",
         &[
             s(&i.organization),
@@ -265,6 +268,8 @@ pub async fn store(
             s(&i.url_key),
             os(i.logo_url.as_deref()),
             os(i.app_user.as_deref()),
+            os(i.app_name.as_deref()),
+            os(i.app_handle.as_deref()),
             s(&sealed),
             on(tokens.expires_at(now)),
             s(&tokens.scopes().join(" ")),
@@ -438,6 +443,8 @@ async fn renew(
 pub struct Viewer {
     pub id: String,
     pub name: String,
+    /// The handle people mention them by (`displayName`).
+    pub handle: Option<String>,
     pub email: Option<String>,
     pub avatar_url: Option<String>,
     pub app: bool,
@@ -462,6 +469,7 @@ impl Linear<'_> {
             name: st(v, "name")
                 .or_else(|| st(v, "displayName"))
                 .unwrap_or_else(|| "Someone".into()),
+            handle: st(v, "displayName"),
             email: st(v, "email"),
             avatar_url: st(v, "avatarUrl"),
             app: v.get("app").and_then(Value::as_bool).unwrap_or(false),

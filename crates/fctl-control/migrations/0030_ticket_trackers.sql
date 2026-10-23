@@ -13,8 +13,11 @@ CREATE TABLE IF NOT EXISTS linear_installations (
   name TEXT NOT NULL,
   url_key TEXT NOT NULL,
   logo_url TEXT,
-  -- fctl's app user there, whom people delegate issues to.
+  -- fctl's app user there, whom people delegate issues to, with its name
+  -- and handle (which people mention), as Linear named them.
   app_user_id TEXT,
+  app_user_name TEXT,
+  app_user_handle TEXT,
   secret_enc TEXT NOT NULL,
   expires_at INTEGER,
   scopes TEXT,

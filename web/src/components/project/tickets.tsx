@@ -792,13 +792,16 @@ function SaveBar({
 function Delegating({ project, status }: { project: G.Project; status?: G.ProjectTickets }) {
   const l = project.settings.tickets?.linear;
   const team = l?.team_key ?? l?.team_name ?? "the team";
+  // As people find fctl's app in Linear: the instance's Linear app may go by another name.
+  const app = status?.linear?.app_name ?? "fctl";
+  const handle = status?.linear?.app_handle ?? "fctl";
   const steps: { icon: ReactNode; text: ReactNode }[] = [
     {
       icon: <AtSign />,
       text: (
         <>
-          In Linear, assign one of {team}'s issues to <span className="font-medium text-ink">fctl</span>, or
-          mention <span className="font-mono text-[12.5px] text-ink">@fctl</span> in a comment on one.
+          In Linear, assign one of {team}'s issues to <span className="font-medium text-ink">{app}</span>, or
+          mention <span className="font-mono text-[12.5px] text-ink">@{handle}</span> in a comment on one.
         </>
       ),
     },
@@ -842,7 +845,7 @@ function Delegating({ project, status }: { project: G.Project; status?: G.Projec
           </ol>
           <YourAccount project={project} status={status} />
         </div>
-        <Preview team={team} project={project.slug} />
+        <Preview team={team} project={project.slug} app={app} />
       </div>
     </section>
   );
@@ -883,7 +886,7 @@ function YourAccount({ project, status }: { project: G.Project; status?: G.Proje
 }
 
 /** What a delegated ticket looks like in Linear: fctl's session on it, a step, a pull request, a reply. */
-function Preview({ team, project }: { team: string; project: string }) {
+function Preview({ team, project, app }: { team: string; project: string; app: string }) {
   const key = `${team === "the team" ? "ENG" : team}-142`;
   return (
     <div aria-hidden="true" className="relative select-none max-md:max-w-sm">
@@ -897,7 +900,7 @@ function Preview({ team, project }: { team: string; project: string }) {
           </span>
           <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-line px-1.5 py-px">
             <Logo withWord={false} className="[&_svg]:size-3" />
-            fctl
+            <span className="max-w-24 truncate">{app}</span>
           </span>
         </div>
         <div className="px-3.5 pt-3 pb-1">

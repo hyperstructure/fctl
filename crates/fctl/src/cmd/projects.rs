@@ -1088,16 +1088,19 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 println!("{}", style::amber(problem));
             }
             if let (Some(l), Some(linked)) = (&t.linear, t.linked) {
+                // As people find fctl's app there.
+                let app = l.app_name.as_deref().unwrap_or("fctl");
+                let handle = l.app_handle.as_deref().unwrap_or("fctl");
                 println!(
                     "{}",
                     style::dim(&format!(
-                        "Linear workspace {} (linear.app/{}). {}",
+                        "Linear workspace {} (linear.app/{}): assign issues to {app} there, or mention @{handle}. {}",
                         l.name,
                         l.url_key,
                         if linked {
-                            "Your Linear account is linked: what you delegate to fctl there starts sessions."
+                            "Your Linear account is linked, so they start sessions as you."
                         } else {
-                            "Link your Linear account (`fctl account linear connect`) to delegate tickets to fctl there."
+                            "Link your Linear account first: `fctl account linear connect`."
                         }
                     ))
                 );

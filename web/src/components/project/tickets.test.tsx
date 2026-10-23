@@ -228,6 +228,19 @@ describe("the Tickets tab", () => {
     expect(c.querySelector('a[href^="/api/v1/linear/link"]')).toBeNull();
   });
 
+  it("names fctl's app as people find it in Linear", () => {
+    const c = tab(project({ settings: { ...settings, tickets: { tracker: "linear", linear } } }), {
+      status: {
+        tracker: "linear",
+        scope: "Linear team ENG (Acme)",
+        via: "fctl",
+        linear: { ...connection, app_name: "fctl-sh", app_handle: "fctl-sh" },
+        linked: true,
+      },
+    });
+    expect(c.textContent).toContain("assign one of ENG's issues to fctl-sh, or mention @fctl-sh");
+  });
+
   it("lists the sessions tickets started lately", () => {
     const c = tab(project({ settings: { ...settings, tickets: { tracker: "linear", linear } } }), {
       status: {
