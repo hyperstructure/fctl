@@ -2,12 +2,13 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { ArrowRight, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Building2, CalendarClock, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { MemoryTab } from "@/components/project/memory";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
 import { ReviewsTab } from "@/components/project/reviews";
+import { handOver, SchedulesTab } from "@/components/project/schedules";
 import {
   AttachButton,
   DraftTray,
@@ -15,7 +16,7 @@ import {
   useAttachments,
   useFileDrop,
 } from "@/components/session/attachments";
-import { PullRequestLinks, SessionLink } from "@/components/session/row";
+import { PullRequestLinks, ScheduledMark, SessionLink } from "@/components/session/row";
 import { StartButton, StartChoices, useStartChoice, useStartSession } from "@/components/session/start";
 import {
   Avatar,
@@ -72,6 +73,7 @@ import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 type Tab =
   | "sessions"
+  | "schedules"
   | "reviews"
   | "memory"
   | "retrospectives"
@@ -81,11 +83,19 @@ type Tab =
   | "secrets";
 
 /** Everyone in the project sees these; owners and maintainers the rest. */
-const OPEN_TABS: Tab[] = ["sessions", "reviews", "memory", "retrospectives", "repositories", "members"];
+const OPEN_TABS: Tab[] = [
+  "sessions",
+  "schedules",
+  "reviews",
+  "memory",
+  "retrospectives",
+  "repositories",
+  "members",
+];
 
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
-  const { tab = "sessions" } = useSearch({ from: "/app/p/$slug" });
+  const { tab = "sessions", schedule } = useSearch({ from: "/app/p/$slug" });
   const project = useProject(slug);
   const p = project.data;
   const manage = p?.role === "owner" || p?.role === "maintainer";
@@ -170,6 +180,7 @@ export function ProjectPage() {
           {(
             [
               "sessions",
+              "schedules",
               "reviews",
               "memory",
               "retrospectives",
@@ -201,6 +212,7 @@ export function ProjectPage() {
       </nav>
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
+        {p && tab === "schedules" && <SchedulesTab project={p} open={schedule} />}
         {p && tab === "reviews" && <ReviewsTab project={p} />}
         {p && tab === "memory" && <MemoryTab project={p} />}
         {p && tab === "retrospectives" && <RetrospectivesTab project={p} />}
@@ -215,6 +227,7 @@ export function ProjectPage() {
 }
 
 function Sessions({ project }: { project: G.Project }) {
+  const navigate = useNavigate();
   const [filter, setFilter] = useState<"active" | "all" | "mine">("all");
   const list = useSessions({
     project: project.slug,
@@ -286,12 +299,36 @@ function Sessions({ project }: { project: G.Project }) {
               {/* Set apart from the pickers, as on the home page. On a phone its room goes to the
                   button. */}
               <span className="ml-4 text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
-              {/* On a phone it can take a line of its own, at its end. */}
-              <StartButton
-                starting={starting}
-                disabled={!prompt.trim() && !files.drafts.length}
-                className="max-sm:ml-auto"
+              {/* The task, set up to run later or again and again, in the Schedules tab's form. */}
+              <button
+                type="button"
+                title={
+                  files.drafts.length
+                    ? "Schedules take no files: start it now, or remove them to schedule it"
+                    : "Run this task later, or again and again"
+                }
+                disabled={!prompt.trim() || files.drafts.length > 0 || starting}
+                onClick={() => {
+                  handOver(project.id, {
+                    prompt,
+                    model: choice.model,
+                    effort: choice.effort,
+                    github: choice.github,
+                  });
+                  void navigate({
+                    to: "/p/$slug",
+                    params: { slug: project.slug },
+                    search: { tab: "schedules" },
+                  });
+                }}
+                // On a phone it goes with the button, to the end of their line, as its symbol.
+                className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink disabled:text-ink-4 disabled:hover:bg-transparent max-sm:ml-auto max-sm:px-2.5"
               >
+                <CalendarClock className="size-4" aria-hidden="true" />
+                <span className="max-sm:sr-only">Schedule</span>
+              </button>
+              {/* On a phone it can take a line of its own, at its end, with the one before it. */}
+              <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
                 Start a session
               </StartButton>
             </TextareaControls>
@@ -337,6 +374,7 @@ function Sessions({ project }: { project: G.Project }) {
                 <div className="min-w-0 flex-1">
                   <SessionLink s={s} />
                   <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
+                    <ScheduledMark s={s} />
                     {s.branch && <span className="truncate font-mono">{s.branch}</span>}
                     <PullRequestLinks s={s} />
                   </div>

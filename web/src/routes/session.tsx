@@ -32,6 +32,7 @@ import {
 } from "@/components/session/kept";
 import { AgentOrb } from "@/components/session/orb";
 import { PullRequestChecksIcon, PullRequestStateIcon } from "@/components/session/pull-request";
+import { ScheduleLink } from "@/components/session/row";
 import { Transcript } from "@/components/session/transcript";
 import { HeaderMenuButton } from "@/components/shell/menu-button";
 import {
@@ -221,6 +222,7 @@ export function SessionPage() {
                           </Link>
                         </span>
                         <StatusPill status={session.status} label={reviewLabel(session)} />
+                        <ScheduleLink session={session} />
                         {/* A review agent only reads, and its footer says what fctl posts for it. */}
                         {!session.review && <SessionGithub session={session} />}
                         {statusReason(session) && (
@@ -898,6 +900,9 @@ function Details({
           }
         />
         <Row k="Created" v={ago(session.created_at)} />
+        {session.schedule && (
+          <Row k="Schedule" v={<ScheduleLink session={session} className="justify-end" />} />
+        )}
         {session.base_branch && <Row k="From" v={<span className="font-mono">{session.base_branch}</span>} />}
         {(model ?? session.model) && <Row k="Model" v={model ?? session.model} />}
         {session.effort && <Row k="Effort" v={session.effort} />}

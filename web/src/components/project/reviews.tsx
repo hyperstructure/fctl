@@ -15,7 +15,7 @@ import {
   Crosshair,
   Settings2,
 } from "lucide-react";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ReviewStateIcon } from "@/components/review";
 import {
   Avatar,
@@ -27,6 +27,7 @@ import {
   Field,
   Input,
   Logo,
+  Meta,
   ReviewIcon,
   Select,
   type SelectOption,
@@ -803,35 +804,5 @@ function ReviewRow({ r }: { r: G.Review }) {
       </time>
       <ArrowRight className="mt-[5px] size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100 max-sm:hidden" />
     </li>
-  );
-}
-
-/**
- * A line of facts, a dot between each. Each fact carries its dot before it, in a margin the line
- * hides: where the facts wrap, the next line starts with a fact, not a dot. One that hides on a
- * phone takes its dot along.
- */
-function Meta({
-  parts,
-}: {
-  parts: (false | null | undefined | "" | { key: string; node: ReactNode; className?: string })[];
-}) {
-  const shown = parts.filter((p): p is { key: string; node: ReactNode; className?: string } => !!p);
-  return (
-    <div className="mt-1 overflow-hidden">
-      <div className="-ml-4 flex min-w-0 flex-wrap items-center gap-y-1 text-[12.5px] text-ink-4">
-        {shown.map((p) => (
-          <span
-            key={p.key}
-            className={cn(
-              "relative inline-flex items-center pl-4 before:absolute before:left-[6px] before:content-['·']",
-              p.className,
-            )}
-          >
-            {p.node}
-          </span>
-        ))}
-      </div>
-    </div>
   );
 }

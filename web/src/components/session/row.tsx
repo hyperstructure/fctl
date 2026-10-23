@@ -3,7 +3,7 @@
 // last moved.
 
 import { Link } from "@tanstack/react-router";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Repeat } from "lucide-react";
 import { Fragment } from "react";
 import { Avatar, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
@@ -33,6 +33,7 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
           <span className="shrink-0 font-mono">
             {s.project_slug}#{s.number}
           </span>
+          <ScheduledMark s={s} />
           {statusReason(s) && <span className="truncate">· {statusReason(s)}</span>}
           {s.stats.files_changed > 0 && (
             <span className="shrink-0 max-sm:hidden">
@@ -70,6 +71,60 @@ export function SessionLink({ s }: { s: G.Session }) {
       className="block truncate text-[14.5px] text-ink outline-none after:absolute after:inset-0 after:z-[1] after:rounded focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-accent"
     >
       {s.title}
+    </Link>
+  );
+}
+
+/** That a schedule started the session: its symbol, with the schedule's name on hover. */
+export function ScheduledMark({ s }: { s: Pick<G.Session, "schedule"> }) {
+  if (!s.schedule) return null;
+  const name = s.schedule.name;
+  return (
+    <span
+      title={name ? `Started by the schedule ${name}` : "Started by a schedule, since deleted"}
+      className="inline-flex shrink-0 items-center text-ink-4"
+    >
+      <Repeat className="size-3" aria-hidden="true" />
+      <span className="sr-only">{name ? `From the schedule ${name}` : "From a schedule"}</span>
+    </span>
+  );
+}
+
+/**
+ * The schedule a session started from, as a link to it in its project's Schedules tab; its name
+ * alone once it is deleted.
+ */
+export function ScheduleLink({
+  session,
+  className,
+}: {
+  session: Pick<G.Session, "schedule" | "project_slug">;
+  className?: string;
+}) {
+  const schedule = session.schedule;
+  if (!schedule) return null;
+  const content = (
+    <>
+      <Repeat className="size-3 shrink-0" aria-hidden="true" />
+      <span className="truncate">{schedule.name ?? "A deleted schedule"}</span>
+    </>
+  );
+  if (!schedule.name)
+    return (
+      <span className={cn("inline-flex min-w-0 items-center gap-1 text-ink-4", className)}>{content}</span>
+    );
+  return (
+    <Link
+      to="/p/$slug"
+      params={{ slug: session.project_slug }}
+      search={{ tab: "schedules", schedule: schedule.id }}
+      title={`Started by the schedule ${schedule.name}`}
+      className={cn(
+        "inline-flex min-w-0 items-center gap-1 text-ink-3 transition-colors hover:text-ink",
+        className,
+      )}
+    >
+      {content}
     </Link>
   );
 }
