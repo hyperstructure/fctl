@@ -208,7 +208,7 @@ fn runners_line(runners: &[Runner]) -> String {
         .collect();
     if keeping.is_empty() {
         return style::amber(
-            "None of your runners keeps it yet, so sessions on it wait: on a runner, run `claude setup-token`, then `fctl host claude set-token`.",
+            "None of your runners keeps it yet, so sessions on it wait. On a runner, run `claude setup-token`, then `fctl host claude set-token`: the runner tells fctl within 15 seconds.",
         );
     }
     let mut line = format!("kept on {}", keeping.join(", "));
