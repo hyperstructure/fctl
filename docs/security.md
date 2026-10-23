@@ -13,7 +13,7 @@ trusts.
 | Recovery codes | SHA-256 hashes in D1 | nobody can read them back |
 | Passkeys | public keys in D1; the private key never leaves the person's device or password manager | the person, with their fingerprint, face or screen lock |
 | Sessions and tokens | SHA-256 hashes in D1; the secret only with its holder | the holder |
-| Claude credentials | encrypted (AES-256-GCM) in D1 | sessions their owner starts |
+| Claude credentials | encrypted (AES-256-GCM) in D1, or, for tokens people keep on their runners, only in a file on those runners (mode 0600) | sessions their owner starts |
 | Project secrets | encrypted in D1 | that project's sessions, as environment variables |
 | Workspace avatars | images in D1 | the workspace's members, people it invited, instance admins |
 | Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
@@ -265,7 +265,11 @@ outside it except through these channels:
   person the session runs as, as they can the session's GitHub tokens and
   the project's secrets: a full Claude login's token lasts hours, one from
   `claude setup-token` a year. Run sessions on a token from `claude
-  setup-token` only where you would trust those people with it.
+  setup-token` only where you would trust those people with it. Hosts
+  replace every Claude token they know of with `[Claude token, redacted by
+  fctl]` in what agents send to the control plane, so a token an agent
+  prints by mistake (`printenv`) stays out of the transcript; one it is
+  asked to send elsewhere, or to write down in pieces, doesn't.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),
   and the agent can use them with that person's access without asking, also
@@ -392,7 +396,29 @@ gets no runner token. Registering a runner for a workspace and replacing a
 runner's token take confirming it's you, where the instance asks for
 that, as adding one to a workspace does. Hosts receive a
 session's credentials only while it runs, and keep nothing secret on disk
-but their runner token (`~/.config/fctl/host-token`, mode 0600).
+but their runner token (`~/.config/fctl/host-token`, mode 0600) and, when
+their owner keeps it there, their owner's Claude token
+(`~/.config/fctl/claude-token`, mode 0600).
+
+**Claude tokens on runners.** Someone who would rather not give fctl their
+Claude token keeps it on their runners (`fctl host claude set-token`) and
+connects "On your runners"
+([ADR 0049](adr/0049-claude-tokens-can-stay-on-their-owners-runners.md)).
+The control plane then stores no token for them, and its sessions' events
+hold none: a breach of D1 and the master key, or an operator of the
+instance, gets nothing to use. Hosts tell the control plane only whether
+they keep one and when it was saved. The control plane sends that
+connection's sessions only to those of its owner's runners that keep a
+token, in every workspace, whatever **Only on my runners** says, and each
+of those hosts puts in the token it keeps, so no one else's machine ever
+has it. Without one of those runners online, the sessions wait. What it
+doesn't change: the agent has the token in its environment, as above, so
+the people who may direct it can still have it handed over; and the
+control plane decides what runs on a runner, so one taken over could start
+a session there to the same end. The token is safe at rest and from other
+people's machines, not from the sessions that run on it. Removing it from
+a runner applies to the runs that start after, and doesn't revoke it: it
+works until it expires, a year after `claude setup-token` made it.
 
 A runner takes only the sessions of the workspaces it is added to, and so
 sees their code, secrets and the tokens of the people who start them: the

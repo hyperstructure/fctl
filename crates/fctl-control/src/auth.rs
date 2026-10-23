@@ -388,9 +388,12 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
     )?
     .all()
     .await?;
+    // Without one chosen, sessions run on the newest working one
+    // (`api::sessions::credential_for`).
     let default_id = user.default_credential_id.clone().or_else(|| {
         creds
             .iter()
+            .rev()
             .find(|c| c.status == "active")
             .map(|c| c.id.clone())
     });

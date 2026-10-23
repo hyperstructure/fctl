@@ -44,6 +44,17 @@ export FCTL_SERVER=http://127.0.0.1:8787 FCTL_TOKEN=$(cat .fctl-dev/token)
 cargo run -p fctl -- run -p playground "write notes.md"
 ```
 
+To try a Claude token kept on the runner, keep a made-up one on the dev
+host and connect it; the dev host's next heartbeat, within 15 seconds,
+tells the control plane, and sessions on it then run there with that
+token:
+
+```sh
+echo sk-ant-oat01-fctl-dev-kept-on-the-runner-0000000000 \
+  | FCTL_CONFIG_DIR=.fctl-dev/host cargo run -p fctl -- host claude set-token
+cargo run -p fctl -- claude connect --on-runners
+```
+
 More workspaces, and people in them, take a few commands: `cargo run -p
 fctl -- workspaces create "Side project"`, then `workspaces add-runner
 dev-host -w side-project` so that the dev runner takes its sessions too,
@@ -72,7 +83,9 @@ PATH), `screenshot` draws a small PNG and publishes it with `fctl publish`
 (allow that first: `cargo run -p fctl -- admin set --publish-screenshots
 on`, then `cargo run -p fctl -- projects set --publish-screenshots on`),
 `remember <text>` adds the rest of its line to the project's memory with
-`fctl memory add`, `recall` lists the memory with `fctl memory`, `retro`
+`fctl memory add`, `recall` lists the memory with `fctl memory`,
+`printenv` shows the `CLAUDE_CODE_…` variables it got (the host redacts
+the Claude token in the transcript), `retro`
 records a retrospective with `fctl retro` (completed, or `partial` or
 `blocked` when the message says so; the project's Memory and
 Retrospectives tabs, and the session page, show them), `revise` updates

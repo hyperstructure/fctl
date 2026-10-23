@@ -663,7 +663,10 @@ mod tests {
         });
         let spec: SessionSpec = serde_json::from_value(json)?;
         assert!(spec.credentials.claude.on_runners);
-        assert_eq!(spec.credentials.claude.kind, ClaudeCredentialKind::SetupToken);
+        assert_eq!(
+            spec.credentials.claude.kind,
+            ClaudeCredentialKind::SetupToken
+        );
 
         // Hellos and heartbeats of older hosts have none; newer ones say
         // whether they keep one, and since when, never what it is.
@@ -679,7 +682,10 @@ mod tests {
             claude_token: Some(RunnerClaudeToken::default()),
             ..beat
         };
-        assert_eq!(serde_json::to_value(&beat)?["claude_token"], serde_json::json!({}));
+        assert_eq!(
+            serde_json::to_value(&beat)?["claude_token"],
+            serde_json::json!({})
+        );
         let kept = RunnerClaudeToken {
             saved_at: Some(1_800_000_000_000),
         };

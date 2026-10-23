@@ -927,7 +927,10 @@ impl RunnerRow {
             yours,
             personal,
             // Whether its host keeps its owner's Claude token is theirs to see.
-            claude_token: hello.as_ref().and_then(|h| h.claude_token).filter(|_| yours),
+            claude_token: hello
+                .as_ref()
+                .and_then(|h| h.claude_token)
+                .filter(|_| yours),
         }
     }
 }

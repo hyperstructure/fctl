@@ -72,7 +72,8 @@ function TokenSteps({ done, start = 1 }: { done: boolean; start?: number }) {
       <Step n={start + 1} done={done} title="Keep it on the runner">
         <p>
           On the runner, paste the token when asked. fctl keeps it in <Mono>{TOKEN_FILE}</Mono>, which only
-          you can read, and puts it only into your sessions' sandboxes on that machine.
+          you can read. It goes only into your sessions' sandboxes on that machine, and the runner keeps it
+          out of what they send to fctl.
         </p>
         <CodeBox value={SET_TOKEN} />
         <p className="text-[12.5px] text-ink-4">
@@ -84,9 +85,10 @@ function TokenSteps({ done, start = 1 }: { done: boolean; start?: number }) {
   );
 }
 
+/** A command or path in a sentence, kept on one line: they are short, and a hyphen mustn't break them. */
 function Mono({ children }: { children: ReactNode }) {
   return (
-    <code className="rounded bg-raised px-1 py-px font-mono text-[11.5px] break-all text-ink-2">
+    <code className="rounded bg-raised px-1 py-px font-mono text-[11.5px] whitespace-nowrap text-ink-2">
       {children}
     </code>
   );

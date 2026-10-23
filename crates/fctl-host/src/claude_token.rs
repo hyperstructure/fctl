@@ -86,6 +86,21 @@ pub fn remove(path: &Path) -> Result<bool> {
     }
 }
 
+/// Whether only its owner may read the file at `path`, as `save` makes it.
+/// A file put there otherwise (a copy, a secrets manager's mount) may not
+/// be; the host still uses it, and `fctl host doctor` says so.
+pub fn private(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o077 == 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.exists()
+    }
+}
+
 /// What hellos and heartbeats say of the token kept at `path`: when it was
 /// saved, or nothing saved without one. A file that can't be read, or
 /// holds no token, counts as none, and says why in the log.
@@ -201,6 +216,16 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
+        }
+        assert!(private(&path));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+            assert!(!private(&path));
+            // Saving again makes it private again.
+            save(&path, TOKEN)?;
+            assert!(private(&path));
         }
         assert!(remove(&path)?);
         assert!(!remove(&path)?);

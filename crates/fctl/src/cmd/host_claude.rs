@@ -108,15 +108,13 @@ fn set_token(cfg: &HostConfig, path: &Path, name: &str, json: bool) -> Result<()
     if replaced {
         println!(
             "  {}",
-            style::dim(
-                "Sessions running here keep the token they started with until they stop."
-            )
+            style::dim("Sessions running here keep the token they started with until they stop.")
         );
     }
     println!(
         "  {}",
         style::dim(
-            "Next, if you haven't: in Settings → Claude, choose On your runners, or run `fctl claude connect --on-runners`."
+            "Next, if you haven't: choose Keep the token on your runners in Settings → Claude, or run `fctl claude connect --on-runners`."
         )
     );
     Ok(())
@@ -137,16 +135,16 @@ async fn status(path: &Path, name: &str, json: bool) -> Result<()> {
     if json {
         let kept = kept.as_ref().ok().and_then(Option::as_ref);
         let known = runner.as_ref().and_then(|r| r.as_ref().ok());
-        return style::print_json(&report(
-            path,
-            kept,
-            known.map(|d| d.runner.claude_token),
-        ));
+        return style::print_json(&report(path, kept, known.map(|d| d.runner.claude_token)));
     }
     let kept = match kept {
         Ok(kept) => kept,
         Err(e) => {
-            println!("{} {}", style::red("✗"), style::terminal_safe(&format!("{e:#}")));
+            println!(
+                "{} {}",
+                style::red("✗"),
+                style::terminal_safe(&format!("{e:#}"))
+            );
             println!(
                 "  {}",
                 style::dim("`fctl host claude set-token` keeps a token there in its place.")
@@ -167,6 +165,15 @@ async fn status(path: &Path, name: &str, json: bool) -> Result<()> {
         ),
     }
     println!("  file:  {}", path.display());
+    if kept.is_some() && !claude_token::private(path) {
+        println!(
+            "  {}",
+            style::amber(&format!(
+                "Others on this machine can read it: chmod 600 {}",
+                path.display()
+            ))
+        );
+    }
     let Some(runner) = runner else {
         println!(
             "  fctl:  {}",
@@ -192,11 +199,13 @@ fn known_line(runner: &str, known: Option<RunnerClaudeToken>, kept: Option<&Kept
         (Some(Some(at)), Some(k)) if at == k.saved_at => {
             format!("knows {runner} keeps one, and never what it is")
         }
-        (Some(Some(_)), Some(_)) => style::dim(&format!(
-            "knows {runner} keeps an earlier one; {soon}"
-        )),
+        (Some(Some(_)), Some(_)) => {
+            style::dim(&format!("knows {runner} keeps an earlier one; {soon}"))
+        }
         (Some(Some(_)), None) => style::dim(&format!("still thinks {runner} keeps one; {soon}")),
-        (Some(None), Some(_)) => style::dim(&format!("doesn't know {runner} keeps one yet; {soon}")),
+        (Some(None), Some(_)) => {
+            style::dim(&format!("doesn't know {runner} keeps one yet; {soon}"))
+        }
         (Some(None), None) => format!("knows {runner} keeps none"),
     }
 }
@@ -226,7 +235,10 @@ fn remove_token(path: &Path, name: &str, json: bool) -> Result<()> {
         println!("{name} keeps no Claude token.");
         return Ok(());
     }
-    println!("{} Removed your Claude token from {name}.", style::accent("✓"));
+    println!(
+        "{} Removed your Claude token from {name}.",
+        style::accent("✓")
+    );
     println!(
         "  {}",
         style::dim(
@@ -270,7 +282,11 @@ mod tests {
         for (k, here, says) in [
             (known(Some(4)), Some(kept(5)), "keeps an earlier one"),
             (known(Some(4)), None, "still thinks studio-mac keeps one"),
-            (known(None), Some(kept(5)), "doesn't know studio-mac keeps one yet"),
+            (
+                known(None),
+                Some(kept(5)),
+                "doesn't know studio-mac keeps one yet",
+            ),
             (None, Some(kept(5)), "`fctl host restart`"),
         ] {
             let l = line(k, here);
@@ -281,7 +297,11 @@ mod tests {
     #[test]
     fn reports_never_hold_the_token() -> Result<()> {
         let k = kept(5);
-        let json = report(Path::new("/tmp/claude-token"), Some(&k), Some(known(Some(5))));
+        let json = report(
+            Path::new("/tmp/claude-token"),
+            Some(&k),
+            Some(known(Some(5))),
+        );
         let text = serde_json::to_string(&json)?;
         assert!(!text.contains(&k.token));
         assert_eq!(json["masked"], "sk-ant-oat01-…Xy3Q");

@@ -988,11 +988,9 @@ mod tests {
             TokenWait::Offline.reason("Ada Lovelace"),
             "Waiting for one of Ada Lovelace's runners: their Claude token is kept on their runners, and none of those is online"
         );
-        assert!(
-            TokenWait::NoRunner
-                .reason("Ada Lovelace")
-                .ends_with("none of those runs this workspace's sessions yet. They add one on its Runners tab.")
-        );
+        assert!(TokenWait::NoRunner.reason("Ada Lovelace").ends_with(
+            "none of those runs this workspace's sessions yet. They add one on its Runners tab."
+        ));
         assert!(
             TokenWait::NoToken { old: false }
                 .reason("Ada Lovelace")

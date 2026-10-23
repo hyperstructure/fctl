@@ -283,7 +283,10 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
             );
             match api.runners().await {
                 Ok(list) => println!("  {}", runners_line(&list.runners)),
-                Err(e) => println!("  {}", style::dim(&format!("Could not list your runners: {e}"))),
+                Err(e) => println!(
+                    "  {}",
+                    style::dim(&format!("Could not list your runners: {e}"))
+                ),
             }
             println!(
                 "  {}",

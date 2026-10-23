@@ -1401,7 +1401,8 @@ mod tests {
         let tokens = tempfile::tempdir()?;
         let file = tokens.path().join("claude-token");
         let kept = file.clone();
-        let (_dir, mut d) = daemon_where(&[], move |cfg| cfg.claude_token_file = Some(kept)).await?;
+        let (_dir, mut d) =
+            daemon_where(&[], move |cfg| cfg.claude_token_file = Some(kept)).await?;
         let sid = SessionId("ses_01KEPT".into());
         let (tx, mut rx) = mpsc::unbounded_channel();
         d.sessions.insert(
@@ -1432,7 +1433,10 @@ mod tests {
         let Some(SessionCmd::Credentials { claude, error, .. }) = answer(&mut d, "h1") else {
             anyhow::bail!("no credentials for the agent");
         };
-        assert_eq!(claude.map(|c| c.access_token).as_deref(), Some(CLAUDE_TOKEN));
+        assert_eq!(
+            claude.map(|c| c.access_token).as_deref(),
+            Some(CLAUDE_TOKEN)
+        );
         assert_eq!(error, None);
         // Removed: the agent hears why, and gets no empty token.
         claude_token::remove(&file)?;

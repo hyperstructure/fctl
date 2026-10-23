@@ -8,7 +8,7 @@ use clap::Subcommand;
 use fctl_domain::{disk, image, size};
 use fctl_host::config::means_default_image;
 use fctl_host::driver::{DiskSpot, Driver};
-use fctl_host::{HostConfig, caches, refresh, service};
+use fctl_host::{HostConfig, caches, claude_token, refresh, service};
 use fctl_proto::api::{Runner, RunnerDetail, RunnerStatus};
 use std::io::IsTerminal;
 
@@ -316,6 +316,14 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     style::dim(&format!("Logs: {}", service::log_path().display()))
                 );
             }
+            if matches!(claude_token::load(&cfg.claude_token()), Ok(None)) {
+                println!(
+                    "{}",
+                    style::dim(
+                        "To keep your Claude token here rather than in fctl: `claude setup-token`, then `fctl host claude set-token`."
+                    )
+                );
+            }
             if cfg!(target_os = "macos") {
                 println!();
                 println!("{}", style::bold("Keep the Mac working 24/7:"));
@@ -356,8 +364,15 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     "keep_days": (cfg.keep_caches_days > 0).then_some(cfg.keep_caches_days),
                     "projects": cached.projects,
                 });
+                // Whether it keeps a Claude token, never the token.
+                let kept = claude_token::load(&cfg.claude_token()).ok().flatten();
+                let claude = serde_json::json!({
+                    "file": cfg.claude_token().display().to_string(),
+                    "kept": kept.is_some(),
+                    "saved_at": kept.map(|k| k.saved_at),
+                });
                 return style::print_json(
-                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "disk": disk, "caches": caches, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
+                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "disk": disk, "caches": caches, "claude_token": claude, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
@@ -376,6 +391,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 println!("caches:   {}", caches_line(&cfg, d, &cached));
             }
             println!("image:    {}", cfg.image());
+            println!("claude:   {}", claude_line(&cfg));
             if let Some(d) = &driver {
                 let images = cfg.images(d.uses_images());
                 println!(
@@ -752,6 +768,19 @@ async fn stop_sandboxes_here(json: bool) {
     }
 }
 
+/// `fctl host status`'s line about the Claude token the host keeps.
+fn claude_line(cfg: &HostConfig) -> String {
+    match claude_token::load(&cfg.claude_token()) {
+        Ok(Some(k)) => format!(
+            "keeps your token ({}), saved {}",
+            fctl_domain::claude::masked(&k.token),
+            style::ago(k.saved_at)
+        ),
+        Ok(None) => style::dim("keeps no token (`fctl host claude set-token`)"),
+        Err(e) => style::red(&format!("{e:#}")),
+    }
+}
+
 /// The control plane, as this machine's runner (its token).
 fn runner_api() -> Result<fctl_client::Api> {
     const NOT_A_RUNNER: &str = "This machine is not a runner yet: run `fctl host install`";
@@ -923,6 +952,35 @@ async fn doctor() -> Result<()> {
         "runner token",
         "run `fctl host install` again",
     );
+    // The Claude token it keeps for its owner, if any: one from `claude
+    // setup-token`, in a file only they read.
+    let claude = cfg.claude_token();
+    match claude_token::load(&claude) {
+        Ok(None) => println!(
+            "{} {}",
+            style::dim("·"),
+            style::dim(
+                "Claude token: none kept here (`fctl host claude set-token` keeps yours, so that fctl never has it)"
+            )
+        ),
+        Ok(Some(k)) => check(
+            claude_token::private(&claude),
+            &format!(
+                "Claude token: {} kept in {}",
+                fctl_domain::claude::masked(&k.token),
+                claude.display()
+            ),
+            &format!(
+                "others on this machine can read it: chmod 600 {}",
+                claude.display()
+            ),
+        ),
+        Err(e) => check(
+            false,
+            "Claude token",
+            &format!("{e:#}; `fctl host claude set-token` keeps a token there in its place"),
+        ),
+    }
     let api = fctl_client::Api::new(&cfg.server, None);
     match api.instance().await {
         Ok(i) => check(
