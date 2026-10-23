@@ -258,7 +258,7 @@ async fn remember_choice(
     Ok(())
 }
 
-fn source_of(ctx: &Ctx) -> MessageSource {
+pub fn source_of(ctx: &Ctx) -> MessageSource {
     match ctx.auth.as_ref().map(|a| a.kind) {
         Some(TokenKind::Web) => MessageSource::Web,
         Some(TokenKind::Cli) => MessageSource::Cli,

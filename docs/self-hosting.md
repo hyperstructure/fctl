@@ -225,7 +225,9 @@ This creates the D1 database (recording its id in the instance file), builds
 the web app and the Worker (Rust compiled to WebAssembly), renders
 `crates/fctl-control/wrangler.deploy.toml`, applies the database migrations,
 and deploys to your domain. Run it again, without `--create`, for every
-upgrade.
+upgrade. When Cloudflare's API throttles a step (it answers 429 for a while
+once a token or an address has made too many requests), the step runs again
+once the wait the API asks for is over, up to four times.
 
 ### 3. Set the secrets
 

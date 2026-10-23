@@ -753,7 +753,7 @@ describe("messages from fctl", () => {
     expect(c.textContent).toContain("Why.");
   });
 
-  it("show their first lines when long, with the rest a click away", () => {
+  it("show findings passed on before they carried the review in their first lines, the rest a click away", () => {
     const text = `fctl's review agent reviewed commit 3f2a1c9 …:\n\n${"1. A finding\n   Why.\n\n".repeat(10)}`;
     const c = transcript([fromFctl(text)], "idle");
     const all = told(c, "Show all");
@@ -765,11 +765,13 @@ describe("messages from fctl", () => {
     expect(shown?.className).not.toContain("line-clamp");
   });
 
-  it("show short ones, and people's messages, whole", () => {
+  it("show the others whole: a review agent's task, a schedule's long task, people's messages", () => {
     const long = "Please look at this. ".repeat(60);
+    const run = `${long}\n\n---\nfctl started this session on Monday on the project's schedule "Nightly", which runs daily, for Ada.`;
     const c = transcript(
       [
         fromFctl("Review acme/web#12, “Fix the login redirect”, at commit 3f2a1c9."),
+        fromFctl(run),
         { kind: "user", key: "u-ada", seq: 1000, ts: 0, author: ada, text: long, source: "web" },
       ],
       "idle",
@@ -777,6 +779,7 @@ describe("messages from fctl", () => {
     expect(told(c, "Show all")).toBeUndefined();
     expect(c.querySelector(".line-clamp-5")).toBeNull();
     expect(c.textContent).toContain("Review acme/web#12");
-    expect(c.textContent).toContain(long.trim());
+    expect(c.textContent?.split(long.trim())).toHaveLength(3);
+    expect(c.textContent).toContain("fctl started this session on Monday");
   });
 });

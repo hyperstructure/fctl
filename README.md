@@ -58,6 +58,10 @@ release.
   starts with the notes earlier agents left and adds what the next one
   should know. As they finish work, agents record what they did, how, and
   what got in the way, for the people who follow along.
+- **Work that starts itself.** Schedules start sessions on their own, once
+  or again and again: dependency updates every Monday, triage every
+  morning. Other tools, such as an issue tracker, start one when they have
+  something for it.
 - **Follow along anywhere.** With a full Claude login, sessions join Remote
   Control and show up in the Claude apps.
 - **Yours.** Deploy your own instance to your Cloudflare account with

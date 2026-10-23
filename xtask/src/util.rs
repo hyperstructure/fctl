@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::time::Duration;
 
 thread_local! {
     /// The name `run` puts before each line of a command's output, on a
@@ -154,6 +155,91 @@ pub fn run_with_stdin(cmd: &mut Command, input: &str) -> Result<()> {
     Ok(())
 }
 
+/// How many times `retry_throttled` runs a command that Cloudflare's API
+/// keeps throttling.
+const THROTTLED_ATTEMPTS: u32 = 4;
+
+/// The longest wait `retry_throttled` takes: Cloudflare blocks a token that
+/// went over its limit for five minutes.
+const THROTTLED_MAX_WAIT: Duration = Duration::from_secs(5 * 60);
+
+/// Runs a wrangler command that calls Cloudflare's API with `f` (`run`,
+/// `output`, …), and runs it again when the API throttled it. Once a token,
+/// an account or an address has made too many requests, Cloudflare answers
+/// 429 (code 971) with a Retry-After for a while, even to a first request,
+/// as app.fctl.sh's deploy found in CI. Wrangler waits that out in only some
+/// of `wrangler deploy`'s requests, and gives up at once in its D1, KV and
+/// secret commands. A throttled request never ran, and running one of
+/// xtask's wrangler commands again ends where one run would have (migrations
+/// apply those not applied yet), so the command runs again from the start
+/// once the wait the API asked for is over: up to four times, and only for
+/// waits of up to five minutes.
+pub fn retry_throttled<T>(cmd: &mut Command, f: impl Fn(&mut Command) -> Result<T>) -> Result<T> {
+    let mut attempt = 1;
+    loop {
+        // Where wrangler writes what it did, how it failed included.
+        let written = std::env::temp_dir().join(format!(
+            "xtask-wrangler-{}-{}.json",
+            std::process::id(),
+            hex::encode(random_bytes::<8>()?)
+        ));
+        let result = f(cmd.env("WRANGLER_OUTPUT_FILE_PATH", &written));
+        let entries = std::fs::read_to_string(&written).unwrap_or_default();
+        let _ = std::fs::remove_file(&written);
+        let err = match result {
+            Ok(out) => return Ok(out),
+            Err(err) => err,
+        };
+        let Some(wait) = throttled(&entries) else {
+            return Err(err);
+        };
+        if wait > THROTTLED_MAX_WAIT {
+            return Err(err.context(format!(
+                "Cloudflare's API asked wrangler to wait {} s, longer than xtask waits",
+                wait.as_secs()
+            )));
+        }
+        if attempt == THROTTLED_ATTEMPTS {
+            return Err(err.context(format!(
+                "Cloudflare's API throttled wrangler {attempt} times in a row"
+            )));
+        }
+        attempt += 1;
+        // Retry-After is rounded up already; a second more for the clocks.
+        let wait = wait + Duration::from_secs(1);
+        eprintln!(
+            "{}Cloudflare's API throttled wrangler: running it again in {} s (attempt {attempt} of {THROTTLED_ATTEMPTS})",
+            tag(),
+            wait.as_secs()
+        );
+        std::thread::sleep(wait);
+    }
+}
+
+/// How long Cloudflare's API asked a wrangler command to wait before it
+/// runs again, when it failed because the API throttled it, from what the
+/// command wrote to WRANGLER_OUTPUT_FILE_PATH: its Retry-After, or a minute
+/// for a 971 that came without one.
+fn throttled(entries: &str) -> Option<Duration> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        #[serde(rename = "type")]
+        kind: String,
+        code: Option<serde_json::Value>,
+        retry_after_ms: Option<f64>,
+    }
+    let failed = entries
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<Entry>(line).ok())
+        .find(|entry| entry.kind == "command-failed")?;
+    let asked = failed
+        .retry_after_ms
+        .and_then(|ms| Duration::try_from_secs_f64(ms / 1000.0).ok());
+    let code = failed.code.and_then(|code| code.as_u64());
+    asked.or((code == Some(971)).then_some(Duration::from_secs(60)))
+}
+
 /// Whether a program is on PATH.
 pub fn has(program: &str) -> bool {
     Command::new(program)
@@ -249,4 +335,102 @@ pub fn target_dir(root: &Path) -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("target"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What wrangler 4.151.1 writes when the API throttles it, as it did
+    /// app.fctl.sh's deploy.
+    const THROTTLED: &str = r#"{"type":"wrangler-session","version":1,"wrangler_version":"4.151.1","command_line_args":["d1","migrations","apply","DB","--remote","--config","wrangler.deploy.toml"],"log_file_path":"/tmp/wrangler.log","timestamp":"2026-10-23T12:38:07.127Z"}
+{"type":"command-failed","version":1,"code":971,"message":"A request to the Cloudflare API (/accounts/0123/d1/database/e84e35ee-6755-4bff-a1ff-ba2539406ba0/query) failed.","retry_after_ms":40000,"timestamp":"2026-10-23T12:38:07.465Z"}
+"#;
+
+    #[test]
+    fn waits_as_long_as_the_api_asks() {
+        assert_eq!(throttled(THROTTLED), Some(Duration::from_secs(40)));
+        let no_retry_after = r#"{"type":"command-failed","version":1,"code":971,"message":"…"}"#;
+        assert_eq!(throttled(no_retry_after), Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn other_failures_are_not_throttling() {
+        let denied = r#"{"type":"command-failed","version":1,"code":10000,"message":"…"}"#;
+        assert_eq!(throttled(denied), None);
+        let local = r#"{"type":"command-failed","version":1,"code":"ENOENT","message":"…"}"#;
+        assert_eq!(throttled(local), None);
+        let session = THROTTLED.lines().next().unwrap();
+        assert_eq!(throttled(session), None);
+        assert_eq!(throttled(""), None);
+        assert_eq!(throttled("not json\n"), None);
+    }
+
+    /// A stand-in for wrangler that fails with `entry` (written where
+    /// wrangler writes it) on its first `failures` runs, then prints how
+    /// many times it ran.
+    fn wrangler(name: &str, failures: u32, entry: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("xtask-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("wrangler");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\necho . >> \"$0.runs\"\nruns=$(wc -l < \"$0.runs\")\n\
+                 if [ \"$runs\" -le {failures} ]; then\n  \
+                 echo '{entry}' >> \"$WRANGLER_OUTPUT_FILE_PATH\"\n  exit 1\nfi\n\
+                 echo $runs\n"
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        bin
+    }
+
+    fn runs(bin: &Path) -> usize {
+        std::fs::read_to_string(bin.with_extension("runs"))
+            .unwrap()
+            .lines()
+            .count()
+    }
+
+    const NOW: &str = r#"{"type":"command-failed","version":1,"code":971,"retry_after_ms":0}"#;
+
+    #[test]
+    fn runs_a_throttled_command_again() {
+        let bin = wrangler("throttled-once", 1, NOW);
+        let out = retry_throttled(&mut Command::new(&bin), output).unwrap();
+        assert_eq!(out.trim(), "2");
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn gives_up_on_a_command_the_api_keeps_throttling() {
+        let bin = wrangler("throttled-always", u32::MAX, NOW);
+        let err = retry_throttled(&mut Command::new(&bin), run).unwrap_err();
+        assert_eq!(runs(&bin), THROTTLED_ATTEMPTS as usize);
+        assert!(err.to_string().contains("4 times in a row"), "{err:#}");
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn runs_other_failures_once() {
+        let denied = r#"{"type":"command-failed","version":1,"code":10000}"#;
+        let later = r#"{"type":"command-failed","version":1,"code":971,"retry_after_ms":600000}"#;
+        for (name, entry, says) in [
+            ("denied", denied, "failed"),
+            ("throttled-for-long", later, "wait 600 s"),
+        ] {
+            let bin = wrangler(name, 1, entry);
+            let err = retry_throttled(&mut Command::new(&bin), run).unwrap_err();
+            assert_eq!(runs(&bin), 1);
+            assert!(err.to_string().contains(says), "{err:#}");
+            std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+        }
+    }
 }

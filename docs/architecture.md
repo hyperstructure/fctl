@@ -14,6 +14,7 @@ before changing anything that crosses a component boundary.
                 │        │   ├─ FilesDO (per project): attachments,   │
                 │        │   │  published screenshots                 │
                 │        │   ├─ NotifyDO (per person): notifications  │
+                │        │   ├─ ScheduleDO: schedules' alarm          │
                 │        │   └─ SessionDO (one per session): events,  │
                 │        │      viewers, message delivery             │
                 │        └──────────────▲─────────────▲───────────────┘
@@ -637,8 +638,8 @@ which session,
 notification settings and browsers (push subscriptions), runners, encrypted
 credentials and project secrets, the latest plan usage of each Claude
 credential, the links of published screenshots, projects' memories and
-sessions' retrospectives, the instance's settings and sealed Web Push key,
-and the audit log.
+sessions' retrospectives, projects' schedules and their runs, the
+instance's settings and sealed Web Push key, and the audit log.
 
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
@@ -657,8 +658,12 @@ they expire (see [Published screenshots](#published-screenshots)).
 while they wait to go out, and forgets them once sent (see
 [Notifications](#notifications)).
 
+**ScheduleDO** (one per instance) holds nothing but an alarm, for the
+earliest schedule that is due, when it starts its session (see
+[Schedules](#schedules)).
+
 **Deletion.** Deleting a project deletes its rows (sessions, members, secrets,
-shares, its memory and its sessions' retrospectives cascade) and, in the
+shares, its memory, its schedules and its sessions' retrospectives cascade) and, in the
 same batch, queues its sessions in
 `session_purges` and the project in `file_purges`; their Durable Object
 storage, the event logs and the attached files and published screenshots,
@@ -1131,10 +1136,9 @@ posts what it found on GitHub
    `passed_on_review`), which the session's transcript shows in a few
    lines: a line for each finding, with its severity and lines, that
    opens its comment on GitHub, and the message itself a click away.
-   Messages from before it, like other long messages from fctl, show
-   their first lines, with the rest a click away. Pull requests that
-   merged or closed, archived and failed sessions, and sessions whose
-   agent only reads on GitHub get nothing.
+   Messages from before it show their first lines, with the rest a
+   click away. Pull requests that merged or closed, archived and failed
+   sessions, and sessions whose agent only reads on GitHub get nothing.
    So that the agent and the review agent can't go back and forth for
    good, a session gets the findings of at most five reviews in a row
    (`MAX_PASSED_ON`) while no person messages its agent; the next ones
@@ -1235,6 +1239,100 @@ its pull requests what brings its agent back. Follow-ups need the webhook,
 and for comments the app subscribed to **Issue comment**, **Pull request
 review** and **Pull request review comment**
 ([Self-hosting](self-hosting.md#follow-ups)).
+
+### Schedules
+
+A project's schedules start sessions on their own: once at a set time,
+again and again on a cron expression in a time zone, or only when
+someone, or another tool, runs one
+([ADR 0044](adr/0044-schedules-start-sessions-on-their-owners-subscription.md)):
+
+1. **What a schedule is** (`schedules`, the project's **Schedules** tab,
+   `fctl schedules`, `GET`/`POST /api/v1/projects/{id}/schedules`,
+   `GET`/`PATCH`/`DELETE /api/v1/schedules/{id}`): a name, the task its
+   runs' agents get, when it runs, and the model, effort level, base
+   branch and GitHub access its sessions start with, else the project's,
+   and never more on GitHub than the project allows now
+   (`limits::effective`). People who start sessions in the project set
+   them up, on their own Claude subscription: the schedule's owner. The
+   owner, and the project's maintainers and owners, change it; a change by
+   anyone else, a resume or **Run it on my subscription** runs it on
+   theirs from then on (`fctl_domain::schedules::rights`), so that nobody
+   puts work on someone else's subscription. The owner, whatever their
+   role now, and the project's maintainers and owners pause and delete it.
+   Limited access tokens read schedules, and run them with `run`; setting
+   one up or changing it takes `full`, since its sessions start after the
+   token is gone (`limits::allows`). A token's cap on GitHub stays with
+   what it sets up, changes, resumes or takes over
+   (`fctl_domain::schedules::github_within`). A project keeps at most 50.
+2. **When.** Cron expressions have Vixie cron's five fields
+   (`fctl_domain::cron`) and run at most every 15 minutes; their times are
+   wall-clock times in the schedule's IANA time zone. The control plane
+   reads zones with JavaScript's `Intl` (`schedules::IntlZone`), as the
+   web app's browsers do, so neither carries a zone database of its own: a
+   time the clock skips, as it moves to summer time, runs as far past the
+   change as it was meant to be, and one it goes through twice runs once,
+   the first time. D1 keeps each schedule's next run (`next_run_at`).
+3. **The alarm.** ScheduleDO keeps nothing but its alarm, which it sets for
+   the earliest next run when schedules change (`/wake`, from the API, and
+   from the hourly job in case one went missing) and after each time it
+   rings. Alarms ring wherever the Worker runs: on Cloudflare, in the
+   standalone server and under `wrangler dev`, which runs no cron
+   triggers by itself. It takes up the schedules that are due, 20 at a
+   time and the longest due first, and claims each in D1 by moving it to
+   its next time (`next_run_at`, compared and set in one statement), so
+   that a retried alarm starts nothing twice; one whose runs were missed,
+   while the instance was down, runs once.
+4. **A run at its time** (`crate::schedules::take_up`) starts a session as
+   the owner, on their Claude connection for the workspace, named after
+   the schedule, which the session records (`sessions.schedule_id`, and
+   `Session.schedule`, with the schedule's name while it exists): session
+   lists mark it, and its page links to the schedule. Its first message is
+   the task, then a note from fctl (`fctl_domain::schedules::prompt`):
+   which schedule started it, when and for whom, its previous run, and
+   that nobody watches it start, so that its agent works without waiting
+   for answers and says plainly what only a person can decide. The
+   transcript shows the note apart from the task. The owner follows the
+   session, as starting one does. A run starts none, and says why
+   (`schedule_runs`, the newest 100 of each schedule):
+   - while the schedule's last session still works on its task (queued,
+     starting, running, or paused on a usage limit): runs don't pile up;
+   - while the owner's plan is at its limit (`claude_usage`,
+     `schedules::at_limit`): the runs until it resets are skipped, and a
+     schedule that runs once waits for the reset instead;
+   - once the owner can no longer start sessions in the project, their
+     account is gone or disabled, or they have no Claude connection, and
+     while the project is archived: fctl pauses the schedule and keeps why
+     (`paused_reason`), which the tab and `fctl schedules` show, with the
+     same reasons for the next run beforehand (`Schedule.problem`).
+   A failure after the claim is recorded as a failed run, so that a
+   schedule that runs once never looks done without having run.
+5. **A run asked for** (`POST /api/v1/schedules/{id}/runs`: **Run now**,
+   `fctl schedules run`) starts the task now, on the caller's
+   subscription and within their token's GitHub limit, for people who
+   start sessions in the project and tokens that run sessions there, at
+   most 20 times an hour, unless the schedule is paused: pausing it stops
+   what tools ask for too. A schedule without a time runs only this way,
+   each run on the subscription of whoever runs it. What comes with a run
+   (`context`, at most 20,000 characters) follows the task in the first
+   message: a person's as theirs; from an access token, which an issue
+   tracker or another tool holds, inside `<context>`, marked as
+   information from outside fctl and not instructions, since anyone may
+   have written it. Each run records what started it (`trigger`: its time,
+   a person or a token) and for whom, and the audit log each session it
+   started.
+
+The Schedules tab lists a project's schedules with when each runs next
+and what its last run did, and offers ideas to start from. Its form says
+when one runs in words and shows its next runs as you choose, found as
+the control plane finds them (`web/src/lib/schedules.ts`), and the task
+boxes hand it the task you wrote (**Schedule**: the Sessions tab's, and
+the Agent Floor's from `xl`, where its row has room for it). Each schedule's
+details show the request another tool sends to run it. Other tools start
+agents this way today ([Automation](automation.md#start-agents-from-other-tools));
+an integration that fctl offers itself, with an issue tracker say, would
+be a trigger of its own that runs a schedule with what it received,
+through the same path (`schedules::start_session`, a run's `trigger`).
 
 ### Commits
 
