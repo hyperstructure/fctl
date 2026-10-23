@@ -11,6 +11,7 @@ mod db;
 mod do_files;
 mod do_fleet;
 mod do_notify;
+mod do_schedule;
 mod do_session;
 mod email;
 mod error;
@@ -24,6 +25,7 @@ mod notify;
 mod pull_requests;
 mod push;
 mod reviews;
+mod schedules;
 mod spec;
 mod usage;
 mod workspaces;
@@ -32,6 +34,7 @@ use ctx::Ctx;
 pub use do_files::FilesObject;
 pub use do_fleet::FleetObject;
 pub use do_notify::NotifyObject;
+pub use do_schedule::ScheduleObject;
 pub use do_session::SessionObject;
 use error::{AppError, AppResult};
 use fctl_proto::ApiError;
@@ -290,6 +293,13 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::retrospectives::project_list(ctx, req, id).await
         }
         (Delete, ["retrospectives", id]) => api::retrospectives::delete(ctx, id).await,
+        (Get, ["projects", id, "schedules"]) => api::schedules::list(ctx, id).await,
+        (Post, ["projects", id, "schedules"]) => api::schedules::create(ctx, req, id).await,
+        (Get, ["schedules", id]) => api::schedules::get(ctx, id).await,
+        (Patch, ["schedules", id]) => api::schedules::update(ctx, req, id).await,
+        (Delete, ["schedules", id]) => api::schedules::delete(ctx, id).await,
+        (Get, ["schedules", id, "runs"]) => api::schedules::runs(ctx, req, id).await,
+        (Post, ["schedules", id, "runs"]) => api::schedules::run(ctx, req, id).await,
         (Post, ["projects", id, "attachments"]) => api::attachments::upload(ctx, req, id).await,
         (Get, ["github"]) => api::projects::github_info(ctx).await,
         (Get, ["github", "repos"]) => api::projects::github_repos(ctx, req).await,

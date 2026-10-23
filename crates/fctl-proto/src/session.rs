@@ -2,7 +2,8 @@
 //! they appear in API responses and live updates.
 
 use crate::{
-    MemoryId, Millis, ProjectId, RetrospectiveId, RunnerId, SessionId, UserId, WorkspaceId,
+    MemoryId, Millis, ProjectId, RetrospectiveId, RunnerId, ScheduleId, SessionId, UserId,
+    WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -864,6 +865,20 @@ pub struct Session {
     /// what it found on GitHub through fctl. Absent for other sessions, and
     /// from control planes before review agents.
     pub review: Option<SessionReview>,
+    /// The schedule it started from (`api::Schedule`): at its time, or when
+    /// someone ran it. Absent for other sessions, and from control planes
+    /// before schedules.
+    pub schedule: Option<SessionSchedule>,
+}
+
+/// The schedule a session started from.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SessionSchedule {
+    pub id: ScheduleId,
+    /// Absent once the schedule is deleted.
+    pub name: Option<String>,
 }
 
 /// What a review agent's session reviews: a pull request, at the commit
