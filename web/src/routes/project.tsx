@@ -2,13 +2,13 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { ArrowRight, Building2, CalendarClock, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { MemoryTab } from "@/components/project/memory";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
 import { ReviewsTab } from "@/components/project/reviews";
-import { handOver, SchedulesTab } from "@/components/project/schedules";
+import { ScheduleButton, SchedulesTab } from "@/components/project/schedules";
 import {
   AttachButton,
   DraftTray,
@@ -227,7 +227,6 @@ export function ProjectPage() {
 }
 
 function Sessions({ project }: { project: G.Project }) {
-  const navigate = useNavigate();
   const [filter, setFilter] = useState<"active" | "all" | "mine">("all");
   const list = useSessions({
     project: project.slug,
@@ -311,34 +310,13 @@ function Sessions({ project }: { project: G.Project }) {
               {/* Set apart from the pickers, as on the home page. On a phone its room goes to the
                   button. */}
               <span className="ml-4 text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
-              {/* The task, set up to run later or again and again, in the Schedules tab's form. */}
-              <button
-                type="button"
-                title={
-                  files.drafts.length
-                    ? "Schedules take no files: start it now, or remove them to schedule it"
-                    : "Run this task later, or again and again"
-                }
-                disabled={!prompt.trim() || files.drafts.length > 0 || starting}
-                onClick={() => {
-                  handOver(project.id, {
-                    prompt,
-                    model: choice.model,
-                    effort: choice.effort,
-                    github: choice.github,
-                  });
-                  void navigate({
-                    to: "/p/$slug",
-                    params: { slug: project.slug },
-                    search: { tab: "schedules" },
-                  });
-                }}
-                // On a phone it is its symbol alone.
-                className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink disabled:text-ink-4 disabled:hover:bg-transparent max-sm:px-2"
-              >
-                <CalendarClock className="size-4" aria-hidden="true" />
-                <span className="max-sm:sr-only">Schedule</span>
-              </button>
+              <ScheduleButton
+                project={project}
+                prompt={prompt}
+                choice={choice}
+                files={files.drafts.length}
+                disabled={starting}
+              />
               <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
                 Start a session
               </StartButton>

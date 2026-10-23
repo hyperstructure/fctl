@@ -1318,8 +1318,9 @@ someone, or another tool, runs one
 The Schedules tab lists a project's schedules with when each runs next
 and what its last run did, and offers ideas to start from. Its form says
 when one runs in words and shows its next runs as you choose, found as
-the control plane finds them (`web/src/lib/schedules.ts`), and the Sessions
-tab's task box hands it the task you wrote (**Schedule**). Each schedule's
+the control plane finds them (`web/src/lib/schedules.ts`), and the task
+boxes hand it the task you wrote (**Schedule**: the Sessions tab's, and
+the Agent Floor's from `xl`, where its row has room for it). Each schedule's
 details show the request another tool sends to run it. Other tools start
 agents this way today ([Automation](automation.md#start-agents-from-other-tools));
 an integration that fctl offers itself, with an issue tracker say, would

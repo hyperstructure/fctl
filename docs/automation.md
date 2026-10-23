@@ -17,7 +17,8 @@ you or another tool ([below](#start-agents-from-other-tools)). Set one up
 under the project's **Schedules** tab, which offers ideas to start from
 (dependency updates, triaging new issues, tidying the project's memory,
 learning from the week's reviews), or with `fctl schedules add`;
-**Schedule** in the project's task box turns what you wrote there into one.
+**Schedule**, beside Start in the project's task box, and in the Agent
+Floor's in a wide window, turns what you wrote there into one.
 
 - **Each run is a session.** It is named after the schedule, works on a
   branch of its own and shows in the project's sessions with the

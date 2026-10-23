@@ -161,14 +161,75 @@ export interface Draft {
   model?: string;
   effort?: string;
   github?: G.GithubAccess;
+  /** Once a schedule is set up with it: the Agent Floor forgets the draft it kept. */
+  onSaved?: () => void;
 }
 
-/** Tasks handed over from the Sessions tab's task box, by project id, for the form to start with. */
+/** Tasks handed over from a task box, by project id, for the form to start with. */
 const handed = new Map<string, Draft>();
 
 /** Hands a task to the project's Schedules tab, which opens its form with it. */
 export function handOver(project: string, draft: Draft) {
   handed.set(project, draft);
+}
+
+/**
+ * Schedule, beside a task box's Start: the task, with the model, effort level and GitHub access
+ * picked for it, goes to the project's Schedules tab, to run later or again and again. Schedules
+ * take no files. On a phone it is its symbol alone, and at every width when `bare`.
+ */
+export function ScheduleButton({
+  project,
+  prompt,
+  choice,
+  files,
+  disabled,
+  bare,
+  onSaved,
+  className,
+}: {
+  project: Pick<G.Project, "id" | "slug">;
+  prompt: string;
+  choice: Choice;
+  /** How many files the task has. */
+  files: number;
+  disabled?: boolean;
+  bare?: boolean;
+  onSaved?: () => void;
+  className?: string;
+}) {
+  const navigate = useNavigate();
+  return (
+    <button
+      type="button"
+      title={
+        files
+          ? "Schedules take no files: start it now, or remove them to schedule it"
+          : bare
+            ? "Schedule: run this task later, or again and again"
+            : "Run this task later, or again and again"
+      }
+      disabled={!prompt.trim() || files > 0 || disabled}
+      onClick={() => {
+        handOver(project.id, {
+          prompt,
+          model: choice.model,
+          effort: choice.effort,
+          github: choice.github,
+          onSaved,
+        });
+        void navigate({ to: "/p/$slug", params: { slug: project.slug }, search: { tab: "schedules" } });
+      }}
+      className={cn(
+        "flex h-9 shrink-0 items-center gap-1.5 rounded-full text-[13px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink disabled:text-ink-4 disabled:hover:bg-transparent",
+        bare ? "w-9 justify-center" : "px-3 max-sm:px-2",
+        className,
+      )}
+    >
+      <CalendarClock className="size-4" aria-hidden="true" />
+      <span className={bare ? "sr-only" : "max-sm:sr-only"}>Schedule</span>
+    </button>
+  );
 }
 
 const fromIdea = (i: Idea): Draft => ({ name: i.name, prompt: i.prompt, repeat: i.repeat, github: i.github });
@@ -1320,6 +1381,7 @@ function Editor({
     },
     onSuccess: (s) => {
       saved(project, s);
+      if (!schedule) draft?.onSaved?.();
       toast(
         schedule
           ? "Saved: its next run goes by it"

@@ -132,7 +132,8 @@ const joined =
  * Start keeps its place at the end of the row. Where the row is narrow (from `sm` to `lg`, with the
  * sidebar beside it from `md`), they take a line of their own above it, which needs the row to
  * wrap. On a phone they show just the model's name and the symbols of the effort level and the
- * GitHub access, in one control, so that they fit in the row with the others.
+ * GitHub access, in one control, so that they fit in the row with the others; where it has too
+ * little room, the model's name gives way, never the symbols.
  */
 export function StartChoices({
   project,
@@ -177,7 +178,11 @@ export function StartChoices({
       <Select
         size="sm"
         narrow="bare"
-        className={cn("max-sm:-ml-px max-sm:rounded-l-none", github && "max-sm:rounded-r-none", joined)}
+        className={cn(
+          "max-sm:-ml-px max-sm:shrink-0 max-sm:rounded-l-none",
+          github && "max-sm:rounded-r-none",
+          joined,
+        )}
         aria-label="Effort"
         value={choice.effort}
         disabled={disabled}
@@ -197,7 +202,7 @@ export function StartChoices({
           size="sm"
           narrow="bare"
           compact
-          className={cn("max-sm:-ml-px max-sm:rounded-l-none", joined)}
+          className={cn("max-sm:-ml-px max-sm:shrink-0 max-sm:rounded-l-none", joined)}
           aria-label="On GitHub"
           value={choice.github}
           disabled={disabled}
