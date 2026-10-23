@@ -3059,7 +3059,7 @@ pub struct ClaudeCredentialInfo {
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<PlanLimit>>", optional))]
     pub usage: Vec<PlanLimit>,
     /// Its token, from `claude setup-token`, is kept on its owner's runners
-    /// (`fctl host claude set-token`), never in fctl: sessions on it run
+    /// (`fctl host claude set-token`), never given to fctl: sessions on it run
     /// only on those of their runners that keep it ([`Runner::claude_token`]).
     /// `kind` is `setup_token`, which older clients show it as. One per
     /// person.
@@ -3133,7 +3133,7 @@ pub struct AddClaudeTokenRequest {
 
 /// `POST /api/v1/me/claude/on-runners`: connects the Claude token the
 /// caller keeps on their runners ([`ClaudeCredentialInfo::on_runners`]),
-/// which fctl never receives, and makes it their default. Connecting it
+/// which they never give to fctl, and makes it their default. Connecting it
 /// again makes it the default again (and renames it, with a label).
 #[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

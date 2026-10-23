@@ -994,7 +994,7 @@ impl Api {
     }
 
     /// Connects the Claude token you keep on your runners (`fctl host
-    /// claude set-token`), which fctl never receives, and makes it your
+    /// claude set-token`), which you never give to fctl, and makes it your
     /// default.
     pub async fn add_claude_on_runners(&self, label: Option<String>) -> Result<Me> {
         self.post(

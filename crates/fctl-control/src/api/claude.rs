@@ -70,7 +70,7 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
 }
 
 /// Connects the Claude token the caller keeps on their runners (`fctl
-/// host claude set-token`), which fctl never receives: a connection
+/// host claude set-token`), which they never give to fctl: a connection
 /// without a secret whose sessions run only on those of their runners that
 /// keep one (`spec::claude_credential`, FleetDO's scheduling). One per
 /// person: connecting it again makes it their default again, and names it

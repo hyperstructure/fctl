@@ -524,7 +524,7 @@ function Claude({ me }: { me: G.Me }) {
         <>
           Sessions you start run on your own Claude subscription. fctl refuses API keys and stops a session
           before it would draw on paid extra usage. Each connection shows how much of its plan's limits is
-          used, as sessions last reported it. Keep the token on your runners, and fctl never receives it.
+          used, as sessions last reported it. Keep the token on your runners, and you never give it to fctl.
         </>
       }
     >
@@ -567,7 +567,7 @@ function Claude({ me }: { me: G.Me }) {
                     </div>
                     <div className="text-[12px] text-ink-4">
                       {c.on_runners
-                        ? "Kept on your runners · fctl never receives it · no Remote Control"
+                        ? "Kept on your runners · never given to fctl · no Remote Control"
                         : c.kind === "oauth"
                           ? "Full login · Remote Control"
                           : "Inference only · no Remote Control"}

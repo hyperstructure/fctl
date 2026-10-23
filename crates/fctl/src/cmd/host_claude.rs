@@ -1,5 +1,5 @@
-//! `fctl host claude …`: keep your Claude token on this runner, so that
-//! fctl never has it (docs/architecture.md#claude-credentials).
+//! `fctl host claude …`: keep your Claude token on this runner rather than
+//! in fctl (docs/architecture.md#claude-credentials).
 
 use crate::style;
 use anyhow::{Context, Result, bail};
@@ -52,7 +52,7 @@ fn set_token(cfg: &HostConfig, path: &Path, name: &str, json: bool) -> Result<()
             "Your sessions on the Claude connection you keep on your runners run with the token"
         );
         println!(
-            "this runner keeps. fctl never receives it: it stays on this machine and goes only"
+            "this runner keeps. You never give it to fctl: it stays on this machine and goes only"
         );
         println!("into your sessions' sandboxes here.");
         println!();

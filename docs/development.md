@@ -84,8 +84,9 @@ PATH), `screenshot` draws a small PNG and publishes it with `fctl publish`
 on`, then `cargo run -p fctl -- projects set --publish-screenshots on`),
 `remember <text>` adds the rest of its line to the project's memory with
 `fctl memory add`, `recall` lists the memory with `fctl memory`,
-`printenv` shows the `CLAUDE_CODE_…` variables it got (the host redacts
-the Claude token in the transcript), `retro`
+`printenv` shows the `CLAUDE_CODE_…` variables it got and says the token
+back, streamed in pieces (the host redacts the Claude token in both),
+`retro`
 records a retrospective with `fctl retro` (completed, or `partial` or
 `blocked` when the message says so; the project's Memory and
 Retrospectives tabs, and the session page, show them), `revise` updates

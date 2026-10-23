@@ -23,7 +23,7 @@ pub enum ClaudeCmd {
         #[arg(long, conflicts_with = "on_runners")]
         login: bool,
         /// Run your sessions on the token you keep on your runners (`fctl
-        /// host claude set-token` there), which fctl never receives. Your
+        /// host claude set-token` there), which you never give to fctl. Your
         /// sessions then run only on those runners.
         #[arg(long)]
         on_runners: bool,
@@ -278,7 +278,7 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                 return style::print_json(&me);
             }
             println!(
-                "{} New sessions run on the Claude token you keep on your runners: fctl never receives it.",
+                "{} New sessions run on the Claude token you keep on your runners: you never give it to fctl.",
                 style::accent("✓")
             );
             match api.runners().await {

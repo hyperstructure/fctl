@@ -98,7 +98,7 @@ There are three ways to connect, all under **Settings → Claude** in the app:
 - **A long-lived token.** Run `claude setup-token` on any machine with Claude
   Code and paste the `sk-ant-oat01-…` token. It is valid for a year, but it
   cannot use Remote Control.
-- **A token on your runners**, which fctl never receives. On each of your
+- **A token on your runners**, which you never give to fctl. On each of your
   runners ([step 5](#5-bring-a-machine-online)), make a token and keep it
   there:
 

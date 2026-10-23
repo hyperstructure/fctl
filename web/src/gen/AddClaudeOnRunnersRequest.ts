@@ -3,7 +3,7 @@
 /**
  * `POST /api/v1/me/claude/on-runners`: connects the Claude token the
  * caller keeps on their runners ([`ClaudeCredentialInfo::on_runners`]),
- * which fctl never receives, and makes it their default. Connecting it
+ * which they never give to fctl, and makes it their default. Connecting it
  * again makes it the default again (and renames it, with a label).
  */
 export type AddClaudeOnRunnersRequest = { label?: string, };

@@ -268,8 +268,9 @@ outside it except through these channels:
   setup-token` only where you would trust those people with it. Hosts
   replace every Claude token they know of with `[Claude token, redacted by
   fctl]` in what agents send to the control plane, so a token an agent
-  prints by mistake (`printenv`) stays out of the transcript; one it is
-  asked to send elsewhere, or to write down in pieces, doesn't.
+  prints by mistake (`printenv`), or repeats in its reply, stays out of the
+  transcript and of what viewers see live; one it is asked to send
+  elsewhere, or to write in another form (spaced out, encoded), doesn't.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),
   and the agent can use them with that person's access without asking, also
@@ -404,10 +405,11 @@ their owner keeps it there, their owner's Claude token
 Claude token keeps it on their runners (`fctl host claude set-token`) and
 connects "On your runners"
 ([ADR 0049](adr/0049-claude-tokens-can-stay-on-their-owners-runners.md)).
-The control plane then stores no token for them, and its sessions' events
-hold none: a breach of D1 and the master key, or an operator of the
-instance, gets nothing to use. Hosts tell the control plane only whether
-they keep one and when it was saved. The control plane sends that
+The control plane is never given the token and stores none for them, hosts
+tell it only whether they keep one and when it was saved, and they take
+the token out of what sessions send wherever it appears whole: a breach of
+D1 and the master key, or an operator of the instance, doesn't get it,
+short of an agent that was made to pass it on (below). The control plane sends that
 connection's sessions only to those of its owner's runners that keep a
 token, in every workspace, whatever **Only on my runners** says, and each
 of those hosts puts in the token it keeps, so no one else's machine ever

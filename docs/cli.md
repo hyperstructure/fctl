@@ -460,7 +460,7 @@ or with `fctl attach`) aren't notified about it.
 fctl claude connect --login      # full sign-in through a host (Remote Control)
 fctl claude connect              # paste a token from `claude setup-token`
 fctl claude connect --token sk-ant-oat01-…
-fctl claude connect --on-runners # run on the token your runners keep, which fctl never receives
+fctl claude connect --on-runners # run on the token your runners keep, which you never give to fctl
 fctl claude status               # your connections, their ids, how much of each plan is used, and which runners keep your token
 ```
 

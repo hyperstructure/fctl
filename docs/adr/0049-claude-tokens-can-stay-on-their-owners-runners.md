@@ -47,21 +47,24 @@ alone, and never hand it to app.fctl.sh.
   run. Fresh credentials still go through FleetDO, which checks that the
   session is the runner's and its person may still run it.
 - **Hosts redact Claude tokens** from everything an agent sends to the
-  control plane (events, logs, state, calls), for every session: the token
-  the session started with, any it got since, and the one the host keeps.
-  An agent that prints its environment leaves `[Claude token, redacted by
+  control plane (events, logs, state, calls, and what Claude streams live,
+  whose deltas may split a token), for every session: the token the
+  session started with, any it got since, and the one the host keeps. An
+  agent that prints its environment leaves `[Claude token, redacted by
   fctl]` in the transcript.
 
 ## Consequences
 
-- The control plane never has these tokens: neither D1 nor a session's
-  events hold them, and only the person's own machines do. Without a runner
-  of theirs that keeps one online, their sessions wait; the app says so
-  under the task box and on the session.
+- The control plane is never given these tokens: D1 holds no secret for
+  these connections, hosts tell it only whether they keep one, and they
+  take the token out of what sessions send wherever it appears whole. Only
+  the person's own machines keep it. Without a runner of theirs that keeps
+  one online, their sessions wait; the app says so under the task box and
+  on the session.
 - The agent still has the token in its environment, so whoever directs it
   (the person, people they share the session with to message, the
   project's editors, text in a repository) can have it send the token
-  elsewhere, past the redaction, as before. Hosts trust the control plane
+  elsewhere, or write it in a form the redaction doesn't know, as before. Hosts trust the control plane
   to send them only their owner's sessions on such a connection, as they
   trust it with whatever else they run, so a control plane taken over
   could do the same by starting sessions there: keeping the token on the

@@ -72,8 +72,8 @@ function TokenSteps({ done, start = 1 }: { done: boolean; start?: number }) {
       <Step n={start + 1} done={done} title="Keep it on the runner">
         <p>
           On the runner, paste the token when asked. fctl keeps it in <Mono>{TOKEN_FILE}</Mono>, which only
-          you can read. It goes only into your sessions' sandboxes on that machine, and the runner keeps it
-          out of what they send to fctl.
+          you can read. It goes only into your sessions' sandboxes on that machine, and the runner takes it
+          out of what they send to fctl wherever it shows up whole.
         </p>
         <CodeBox value={SET_TOKEN} />
         <p className="text-[12.5px] text-ink-4">
@@ -222,9 +222,8 @@ export function OnRunnersSetup() {
             <ShieldCheck className="size-3.5 text-accent" /> Or keep the token on your runners
           </h3>
           <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
-            A token from <Mono>{SETUP_TOKEN}</Mono> that stays on machines you run: fctl never receives it,
-            and your sessions on it run only on your runners that keep it. Valid for a year; no Remote
-            Control.
+            A token from <Mono>{SETUP_TOKEN}</Mono> that stays on machines you run, never given to fctl: your
+            sessions on it run only on your runners that keep it. Valid for a year; no Remote Control.
           </p>
         </div>
         {!open && (

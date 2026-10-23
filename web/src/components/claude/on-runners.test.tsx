@@ -78,7 +78,7 @@ const rows = (container: HTMLElement) =>
 describe("keeping the token on your runners", () => {
   it("says what it is, and shows the steps once asked", () => {
     const view = render(<OnRunnersSetup />, [runner({ id: "studio", claude_token: {} })]);
-    expect(view.textContent).toContain("fctl never receives it");
+    expect(view.textContent).toContain("never given to fctl");
     expect(view.textContent).not.toContain("fctl host claude set-token");
     act(() => button(view, "Set up")?.click());
     const text = view.textContent ?? "";

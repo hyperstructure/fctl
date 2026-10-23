@@ -86,7 +86,7 @@ pub enum HostCmd {
     /// Pull the sandbox image, or build it with this host's driver.
     #[command(subcommand)]
     Image(ImageCmd),
-    /// Keep your Claude token on this runner, so that fctl never has it.
+    /// Keep your Claude token on this runner rather than in fctl.
     #[command(subcommand)]
     Claude(super::host_claude::HostClaudeCmd),
     /// Restart the service (sessions keep running).
@@ -960,7 +960,7 @@ async fn doctor() -> Result<()> {
             "{} {}",
             style::dim("·"),
             style::dim(
-                "Claude token: none kept here (`fctl host claude set-token` keeps yours, so that fctl never has it)"
+                "Claude token: none kept here (`fctl host claude set-token` keeps yours here rather than in fctl)"
             )
         ),
         Ok(Some(k)) => check(

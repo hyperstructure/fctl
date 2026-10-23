@@ -74,7 +74,7 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
    de-duplicated by id.
 4. **One owner per secret.** The control plane owns credentials and mints
    short-lived, narrowly scoped tokens for each session, but for the Claude
-   tokens people keep on their own runners, which it never sees. Sandboxes
+   tokens people keep on their own runners, which it is never given. Sandboxes
    never see refresh tokens or the GitHub App key.
 5. **Agent first.** Every capability is reachable from the CLI with `--json`,
    every component runs locally with one command, and the repository explains
@@ -1904,13 +1904,18 @@ on their runners
    ones when Claude asks for a fresh token; one removed stays with the
    sessions running there until they stop.
 
-Hosts keep Claude tokens out of what agents send to the control plane, for
+Hosts take Claude tokens out of what agents send to the control plane, for
 every session: the token a session started with, those it got since and
 the one the host keeps become `[Claude token, redacted by fctl]` in every
-frame from the agent (`claude_token::Secrets`), so that a transcript never
-shows one an agent printed. The agent has the token in its environment
-all the same, so whoever directs it can still have it send the token
-elsewhere ([Security](security.md#sandboxes)).
+frame from the agent (`claude_token::Secrets`), so that neither a
+transcript nor what viewers see live shows one an agent printed or
+repeated. Claude's streamed deltas split what it writes anywhere, so of
+each content block the end that could start a token waits for the next
+delta, and goes out before the block ends if it doesn't
+(`claude_token::StreamRedactor`). The agent has the token in its
+environment all the same, so whoever directs it can still have it send
+the token elsewhere, or write it in a form the redaction doesn't know
+([Security](security.md#sandboxes)).
 
 Guards against API billing: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 `ANTHROPIC_BASE_URL`, Bedrock/Vertex/Foundry switches and `apiKeyHelper` never

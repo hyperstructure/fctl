@@ -745,6 +745,8 @@ async fn run(
     if let Ok(Some(kept)) = claude_token::load(&ctx.cfg.claude_token()) {
         secrets.add(&kept.token);
     }
+    // Claude streams what it writes in pieces, which may split a token.
+    let mut streaming = claude_token::StreamRedactor::default();
     let (uplink, mut down) = Uplink::start(
         ctx.uplink_url(&session_id),
         ctx.token.clone(),
@@ -962,7 +964,11 @@ async fn run(
                         set_report(report.lock().map(|r| r.status).unwrap_or(SessionStatus::Running), evs.last().map(|e| e.agent_seq));
                         uplink.events(evs);
                     }
-                    AgentToHost::Stream { event } => uplink.send(UplinkUp::Stream { event }),
+                    AgentToHost::Stream { event } => {
+                        for event in streaming.apply(&secrets, event) {
+                            uplink.send(UplinkUp::Stream { event });
+                        }
+                    }
                     AgentToHost::State { state: st } => {
                         set_report(st.status, None);
                         uplink.state(st);
