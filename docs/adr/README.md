@@ -47,4 +47,5 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0039](0039-sensitive-actions-take-a-passkey-or-a-code.md) | Sensitive actions take a passkey or a code, where the primary instance owner asks for it |
 | [0040](0040-review-agents-review-pull-requests-on-an-owners-subscription.md) | Review agents review pull requests on an owner's subscription, and fctl posts for them |
 | [0041](0041-review-agents-findings-go-to-the-agent-that-opened-the-pull-request.md) | Review agents' findings go to the agent that opened the pull request |
-| [0042](0042-schedules-start-sessions-on-their-owners-subscription.md) | Schedules start sessions on their owner's subscription, and other tools run them when asked |
+| [0042](0042-lookups-github-gives-up-on-ask-about-fewer-pull-requests.md) | Lookups GitHub gives up on ask about fewer pull requests at once |
+| [0043](0043-schedules-start-sessions-on-their-owners-subscription.md) | Schedules start sessions on their owner's subscription, and other tools run them when asked |
