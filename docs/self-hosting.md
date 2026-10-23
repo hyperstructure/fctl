@@ -383,9 +383,12 @@ finds, and once an hour about up to 500 open ones it hasn't heard of for six
 hours, which brings sessions from before the webhook up to date at the
 first run after you set the secret. It asks about 50 at a time, for one
 point of the installation's GraphQL rate limit (5,000 an hour, which your
-agents share), and leaves the rest for the next hour while the
-installation has fewer than 1,000 points left. Without the secret,
-sessions show what their agents last looked up, without checks.
+agents share). In repositories whose pull requests have so many checks
+that GitHub gives up on 50 at once, it asks about 10 at a time, or one at
+a time, for a point each. It leaves the rest for the next hour while the
+installation has fewer than 1,000 points left, and after five minutes of
+lookups. Without the secret, sessions show what their agents last looked
+up, without checks.
 
 The webhook also starts the reviews of projects whose review agents are
 on ([Architecture](architecture.md#review-agents)): a pull request opened,

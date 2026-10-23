@@ -1,4 +1,4 @@
-# 0042: Agents come back to their pull requests for comments, failed checks and merges
+# 0043: Agents come back to their pull requests for comments, failed checks and merges
 
 2026-10-23 · accepted
 

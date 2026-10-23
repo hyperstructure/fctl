@@ -10,11 +10,13 @@
 //!
 //! One query asks GitHub about up to 50 pull requests of an account
 //! (`webhooks::MAX_LOOKUP`), for one point of the rate limit of the app's
-//! installation there, which the agents of its sessions share.
+//! installation there, which the agents of its sessions share, and fewer
+//! when GitHub gives up on so many with so many checks (`webhooks::fewer`).
 
 use crate::config::Config;
+use crate::ctx::now_ms;
 use crate::db::{int, n, os, q, s};
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, unavailable};
 use crate::github;
 use crate::{follow_ups, internal};
 use fctl_domain::pulls;
@@ -30,9 +32,14 @@ const MAX_LOOKUPS: usize = 10;
 /// Most pull request numbers of a delivery that D1 is asked about (it takes
 /// 100 parameters a query).
 const MAX_NUMBERS: usize = 50;
-/// Most pull requests the hourly sweep looks up, in queries of 50: enough
-/// for those of all of an instance's sessions from before the webhook.
+/// Most pull requests the hourly sweep looks up, in queries of 50 or fewer
+/// ([`refresh`]): enough for those of all of an instance's sessions from
+/// before the webhook.
 const SWEEP_LOOKUPS: i64 = 500;
+/// How long [`refresh`] goes on looking pull requests up, well within the
+/// 15 minutes the Worker's cron trigger may run: GitHub takes up to ten
+/// seconds a query, and some accounts' pull requests take one each.
+const LOOKUP_TIME_MS: i64 = 5 * 60 * 1000;
 /// How long what GitHub said of a pull request that isn't merged or closed
 /// stands before the sweep asks again, in case a delivery went missing.
 const SWEEP_AFTER_MS: i64 = 6 * 60 * 60 * 1000;
@@ -215,7 +222,11 @@ pub async fn hook(
         return Ok(0);
     }
     let answer = match github::from_config(cfg, now) {
-        Ok(gh) => gh.pull_requests(hook.installation, &prs).await.ok(),
+        Ok(gh) => gh
+            .pull_requests(hook.installation, &prs)
+            .await
+            .ok()
+            .flatten(),
         Err(_) => None,
     };
     let mut seen = Vec::new();
@@ -317,10 +328,14 @@ fn news(hook: &Hook, x: &Seen) -> Option<follow_ups::News> {
 
 /// Looks up pull requests sessions list and tells those sessions what
 /// GitHub says: those a session just found, and those the sweep picks.
-/// Asks about those of each account 50 at a time, and leaves the rest of
-/// an account's to the next sweep when GitHub doesn't answer or its
-/// installation has less than [`RESERVE`] of its rate limit left. Returns
-/// how many times sessions heard.
+/// Asks about those of each account 50 at a time; when GitHub gives up on
+/// so many at once, asks again about fewer (`webhooks::fewer`), and as few
+/// at a time about the rest of the account's. Leaves the rest of an
+/// account's to the next sweep when GitHub doesn't answer, gives up on one
+/// pull request alone, or its installation has less than [`RESERVE`] of
+/// its rate limit left, and all that are left once it has looked pull
+/// requests up for [`LOOKUP_TIME_MS`]. Returns how many times sessions
+/// heard.
 pub async fn refresh(
     env: &Env,
     cfg: &Config,
@@ -329,6 +344,7 @@ pub async fn refresh(
     now: i64,
 ) -> AppResult<usize> {
     let gh = github::from_config(cfg, now)?;
+    let started = now_ms();
     let mut accounts: BTreeMap<String, Vec<(RepoRef, u64)>> = BTreeMap::new();
     for (repo, number) in prs {
         accounts
@@ -345,12 +361,37 @@ pub async fn refresh(
             .as_ref()
             .ok()
             .and_then(|f| Some((f.account_id?, f.id)));
-        let mut batches = prs.chunks(webhooks::MAX_LOOKUP).peekable();
-        while let Some(batch) = batches.next() {
+        let mut at_once = webhooks::MAX_LOOKUP;
+        let mut rest = prs.as_slice();
+        while !rest.is_empty() {
+            if now_ms() - started > LOOKUP_TIME_MS {
+                worker::console_log!(
+                    "leaving {account}'s and later accounts' pull requests for later: looking up took {} s",
+                    (now_ms() - started) / 1000
+                );
+                return Ok(told);
+            }
+            let (batch, after) = rest.split_at(at_once.min(rest.len()));
             let answer = match &found {
                 Ok(f) => gh.pull_requests(Some(f.id), batch).await,
                 Err(e) => Err(AppError(e.0.clone())),
             };
+            // GitHub gave up on so many at once: ask again about fewer, and
+            // about as few at a time from now on, since the account's other
+            // pull requests are likely to have as many checks.
+            if matches!(answer, Ok(None))
+                && let Some(fewer) = webhooks::fewer(batch.len())
+            {
+                worker::console_log!(
+                    "looking up {account}'s pull requests {fewer} at a time: GitHub gave up on {} at once",
+                    batch.len()
+                );
+                at_once = fewer;
+                continue;
+            }
+            let answer = answer.and_then(|a| {
+                a.ok_or_else(|| unavailable("GitHub gave up on looking one up alone"))
+            });
             let seen: Vec<Seen> = batch
                 .iter()
                 .enumerate()
@@ -373,7 +414,8 @@ pub async fn refresh(
                     break;
                 }
             };
-            if batches.peek().is_some()
+            rest = after;
+            if !rest.is_empty()
                 && let Some(left) = left.filter(|left| *left < RESERVE)
             {
                 worker::console_log!(

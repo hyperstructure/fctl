@@ -1011,9 +1011,15 @@ sessions from before the webhook up to date, all in its first run. One
 query asks about up to 50 pull requests of an account, for one point of
 the rate limit of the app's installation there (5,000 an hour), which the
 agents of its sessions share
-([ADR 0033](adr/0033-the-control-plane-looks-pull-requests-up-50-at-a-time.md)):
-the job leaves an account's other pull requests to its next run when
-GitHub doesn't answer or the installation has fewer than 1,000 points left.
+([ADR 0033](adr/0033-the-control-plane-looks-pull-requests-up-50-at-a-time.md)).
+GitHub gives up on a query that takes more than ten seconds, as one of 50
+pull requests with a hundred checks each does. The job then asks about
+them again 10 at a time, and one at a time if GitHub gives up on 10, and
+keeps to that for the rest of the account's
+([ADR 0042](adr/0042-lookups-github-gives-up-on-ask-about-fewer-pull-requests.md)).
+It leaves an account's other pull requests to its next run when GitHub
+doesn't answer, gives up on one alone, or the installation has fewer than
+1,000 points left, and all that are left after five minutes of lookups.
 Each session hears of all of its pull requests at once, and
 `pull_request_sessions` keeps a pull request's old state until every
 session that lists it heard, so that the job asks again for one that
@@ -1150,7 +1156,7 @@ GitHub to a pull request one of the instance's own agents opened (its
 author is the GitHub App) brings that agent back to it, in a message from
 fctl delivered as a person's message is: it resumes a stopped session on
 the subscription it ran on
-([ADR 0042](adr/0042-agents-come-back-to-their-pull-requests-for-comments-failed-checks-and-merges.md)).
+([ADR 0043](adr/0043-agents-come-back-to-their-pull-requests-for-comments-failed-checks-and-merges.md)).
 Three kinds, each on or off on its own, all off by default:
 
 1. **Comments that address the agent** (`issue_comment`,

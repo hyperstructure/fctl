@@ -761,13 +761,16 @@ impl<'a> Github<'a> {
     /// Looks pull requests up, one to `fctl_domain::webhooks::MAX_LOOKUP`
     /// of one account, with one query (`fctl_domain::webhooks::query`)
     /// through installation `inst`, or else the one on that account, and
-    /// returns GitHub's answer. Fails when GitHub gives none: it refused or
-    /// failed, or the installation's rate limit ran out.
+    /// returns GitHub's answer, or `None` when GitHub gave up on it, as it
+    /// does on a query that takes more than ten seconds (502 or 504): asking
+    /// about fewer at once may get an answer (`fctl_domain::webhooks::fewer`).
+    /// Fails when GitHub gives no answer otherwise: it refused or failed, or
+    /// the installation's rate limit ran out.
     pub async fn pull_requests(
         &self,
         inst: Option<u64>,
         prs: &[(RepoRef, u64)],
-    ) -> AppResult<Value> {
+    ) -> AppResult<Option<Value>> {
         let Some((repo, number)) = prs.first() else {
             return Err(internal("no pull requests to look up"));
         };
@@ -793,6 +796,9 @@ impl<'a> Github<'a> {
         }
         if status != 200 {
             worker::console_error!("looking up {which}: GitHub answered {status}");
+            if matches!(status, 502 | 504) {
+                return Ok(None);
+            }
             return Err(unavailable("GitHub did not answer"));
         }
         // NOT_FOUND names a pull request or repository GitHub doesn't have.
@@ -802,7 +808,7 @@ impl<'a> Github<'a> {
         if answer.get("data").is_none_or(Value::is_null) {
             return Err(unavailable("GitHub did not answer"));
         }
-        Ok(answer)
+        Ok(Some(answer))
     }
 
     /// A GraphQL query through installation `inst`, with the token the
