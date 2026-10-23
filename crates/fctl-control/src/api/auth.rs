@@ -382,6 +382,10 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     };
     let avatar = match body.avatar_url.as_deref().map(str::trim) {
         Some("") => None,
+        // The settings form sends it with every save: one kept from before
+        // avatars had to come from another host stays as it is (the web app
+        // doesn't load those), rather than refuse the rest of the change.
+        Some(url) if user.avatar_url.as_deref() == Some(url) => Some(url.to_owned()),
         Some(url) => Some(validate::avatar_url(url, ctx.cfg.host())?),
         None => user.avatar_url.clone(),
     };
