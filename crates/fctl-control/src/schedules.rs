@@ -1013,6 +1013,7 @@ pub async fn start_session(
                 text: st.prompt,
                 source: st.source,
                 attachments: Vec::new(),
+                follow_up: None,
             },
         },
     )
