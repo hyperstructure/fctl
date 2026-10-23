@@ -301,6 +301,16 @@ outside it except through these channels:
   for that text to steer it. Give such a schedule the least GitHub access
   its task needs and a token that runs sessions in its project alone, and
   pause it to stop what tools start at once.
+- **Review agents** run on their operator's Claude subscription, with
+  their Claude access token in the sandbox like any session's, and read
+  what pull requests say, which can steer them as any text can. Their
+  GitHub token only reads, fctl posts what they find, and they get no
+  secrets, setup script, memory or connectors. A pull request starts a
+  review by itself only when its author may write to the repository, or
+  one of fctl's agents opened it; anyone else's waits until someone in the
+  project looks at it and asks for its review, since its text could
+  otherwise have the agent hand the operator's token over
+  ([ADR 0046](adr/0046-review-agents-review-outsiders-pull-requests-when-asked.md)).
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 - **The image and the setup script.** Whoever sets a project's image or

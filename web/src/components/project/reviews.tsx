@@ -172,7 +172,8 @@ function Intro({ project, agents }: { project: G.Project; agents: G.ReviewAgents
         </h2>
         <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-ink-3">
           When a pull request in {repos} opens or gets a new commit, a review agent reads it and posts what it
-          finds there, in one review, with a check on the commit.
+          finds there, in one review, with a check on the commit. Pull requests from people who can't write to
+          the repository wait until someone here asks for their review.
         </p>
         <ul className="mt-6 flex max-w-xl flex-col gap-3">
           {POINTS.map((p) => (
@@ -346,7 +347,8 @@ function Status({
                       )}
                     </>
                   ) : null}
-                  .
+                  . Pull requests from people who can't write to the repository wait until someone asks for
+                  their review.
                 </>
               ) : (
                 "Pull requests get no new reviews. The reviews they had stay below."

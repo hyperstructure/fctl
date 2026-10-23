@@ -369,6 +369,21 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
     if !rv::starts_review(&action, &pr) {
         return Ok(0);
     }
+    // A review runs on its operator's Claude subscription, whose token is in
+    // its sandbox, where Claude acts on what the pull request says: text in
+    // anyone's pull request could make it hand that token over, with nobody
+    // in the project having looked. Only pull requests of people who may
+    // write to the repository, and fctl's own agents', start one by
+    // themselves; anyone else's waits for someone in the project to ask for
+    // it (`POST /api/v1/projects/{id}/reviews`).
+    if !rv::trusted(&pr, app_login(&ctx.cfg).as_deref()) {
+        worker::console_log!(
+            "not reviewing {}#{} by itself: its author can't write to the repository",
+            pr.repo.full_name(),
+            pr.number
+        );
+        return Ok(0);
+    }
     let sent_by = payload.pointer("/installation/id").and_then(Value::as_u64);
     #[derive(Deserialize)]
     struct Id {

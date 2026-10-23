@@ -1062,12 +1062,19 @@ posts what it found on GitHub
    open pull request starts a review of its head in each project whose
    review agents are on and that may write to its repository, through the
    installation its workspace connected (`crate::reviews::on_delivery`,
-   `fctl_domain::reviews::starts_review`). A commit that has its review
+   `fctl_domain::reviews::starts_review`), when its author may write to
+   the repository or it is fctl's own app (`trusted`, below): a review
+   runs on the operator's subscription, with their Claude token in its
+   sandbox, and Claude acts on what the pull request says, so a pull
+   request from anyone else starts nothing by itself
+   ([ADR 0046](adr/0046-review-agents-review-outsiders-pull-requests-when-asked.md)).
+   A commit that has its review
    gets no other from a delivery, so marking a draft ready reviews it only
    when its head is new; merged, closed and queued pull requests get none.
    People who start sessions in the project ask for one of a pull
    request's head (the Reviews tab, `fctl review start`, `POST
-   /api/v1/projects/{id}/reviews`). The review of the pull request still
+   /api/v1/projects/{id}/reviews`), outsiders' too, once they have looked
+   at it. The review of the pull request still
    under way stops (`superseded`), once the new one is in: a newer commit
    takes its place, and a review that runs finishes even when its pull
    request merges meanwhile.

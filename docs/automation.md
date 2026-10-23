@@ -162,7 +162,8 @@ says so.
 
 Projects have review agents built in: turn them on under the project's
 **Reviews** tab, or with `fctl review settings --on`, and each new commit
-of a pull request gets a review, with a check on the commit; when an fctl
+of a pull request gets a review, with a check on the commit (outsiders'
+pull requests when someone asks for it); when an fctl
 agent opened the pull request, its session gets the findings to act on
 ([Architecture](architecture.md#review-agents)). Follow-ups bring an fctl
 agent back to its pull request without a workflow too, when someone
