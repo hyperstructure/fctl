@@ -1093,6 +1093,80 @@ impl<'a> Github<'a> {
         Ok(files)
     }
 
+    /// Comments on a pull request (a review's summary): the comment's id
+    /// and page, or GitHub's status and why it refused.
+    pub async fn comment(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        number: u64,
+        body: &str,
+    ) -> AppResult<Result<(u64, String), (u16, String)>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Post,
+                &format!(
+                    "/repos/{}/{}/issues/{number}/comments",
+                    repo.owner, repo.name
+                ),
+                Some(json!({ "body": body })),
+            )
+            .await?;
+        let id = v.get("id").and_then(Value::as_u64);
+        let url = v.get("html_url").and_then(Value::as_str);
+        Ok(match (id, url) {
+            (Some(id), Some(url)) if status == 201 => Ok((id, url.to_owned())),
+            _ => Err((status, github_message(status, &v))),
+        })
+    }
+
+    /// Changes the text of a comment on a pull request. Says why GitHub
+    /// refused.
+    pub async fn edit_comment(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        id: u64,
+        body: &str,
+    ) -> AppResult<Result<(), String>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Patch,
+                &format!("/repos/{}/{}/issues/comments/{id}", repo.owner, repo.name),
+                Some(json!({ "body": body })),
+            )
+            .await?;
+        Ok(if status == 200 {
+            Ok(())
+        } else {
+            Err(github_message(status, &v))
+        })
+    }
+
+    /// Deletes a comment on a pull request. Says why GitHub refused.
+    pub async fn delete_comment(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        id: u64,
+    ) -> AppResult<Result<(), String>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Delete,
+                &format!("/repos/{}/{}/issues/comments/{id}", repo.owner, repo.name),
+                None,
+            )
+            .await?;
+        Ok(if status == 204 || status == 404 {
+            Ok(())
+        } else {
+            Err(github_message(status, &v))
+        })
+    }
+
     /// Posts a review (`fctl_domain::reviews::review_request`): its page
     /// and its id, or GitHub's status and why it refused.
     pub async fn post_review(

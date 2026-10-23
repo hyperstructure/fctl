@@ -51,6 +51,7 @@ const session: G.Session = {
     additions: 1,
     deletions: 1,
     busy_ms: 0,
+    compactions: 0,
   },
   archived: false,
 };

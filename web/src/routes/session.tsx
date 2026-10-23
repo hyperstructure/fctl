@@ -77,7 +77,7 @@ import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
 import { type StatusNote, statusNotes, statusReason } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
 import type { Item } from "@/lib/transcript";
-import { agentTime, turnsTaken } from "@/lib/work";
+import { agentTime, type ContextUse, contextNote, contextUse, turnsTaken } from "@/lib/work";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 export function SessionPage() {
@@ -595,6 +595,68 @@ function AgentTime({ stats, until }: { stats: G.SessionStats; until?: number }) 
   return <span className="tabular-nums">{duration(agentTime(stats, now, until))}</span>;
 }
 
+/**
+ * How full Claude's context is: the tokens in it and the window, a meter
+ * split where Claude compacts the conversation, amber nine tenths of the way
+ * there, and how often it compacted. The text says what the meter shows for
+ * screen readers.
+ */
+function ContextMeter({ stats }: { stats: G.SessionStats }) {
+  const use = contextUse(stats);
+  if (!use) return null;
+  const note = contextNote(use);
+  const exact = (n: number) => n.toLocaleString();
+  const [before, after] = use.parts;
+  return (
+    <>
+      <Row
+        k="Context"
+        v={
+          <span
+            className="tabular-nums"
+            title={`${exact(use.tokens)}${use.window ? ` of ${exact(use.window)}` : ""} tokens`}
+          >
+            {use.window ? `${num(use.tokens)} / ${num(use.window)}` : num(use.tokens)}
+          </span>
+        }
+      />
+      {before && (
+        <div aria-hidden className="mt-1.5 flex h-1 gap-0.5">
+          <ContextPart {...before} close={use.close} />
+          {after && <ContextPart {...after} close={use.close} />}
+        </div>
+      )}
+      {note && (
+        <p
+          className={cn("mt-1.5 text-[11.5px]", use.close ? "text-amber" : "text-ink-4")}
+          title={
+            use.compactAt != null
+              ? `Claude summarizes the conversation to make room once its context holds ${exact(use.compactAt)} tokens`
+              : undefined
+          }
+        >
+          {note}
+        </p>
+      )}
+    </>
+  );
+}
+
+/** One part of the context meter, as wide as the share of the window it spans. */
+function ContextPart({ span, used, close }: ContextUse["parts"][number] & { close: boolean }) {
+  return (
+    <div className="overflow-hidden rounded-full bg-line" style={{ flex: `${span} 1 0` }}>
+      <div
+        className={cn(
+          "h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none",
+          close ? "bg-amber" : "bg-ink-3",
+        )}
+        style={{ width: `${used * 100}%` }}
+      />
+    </div>
+  );
+}
+
 /** Every pull request of the session, with the repository of each, its state and its checks. */
 function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
   return (
@@ -820,6 +882,7 @@ function Details({
         <Row k="Agent time" v={<AgentTime stats={st} until={stall?.since} />} />
         <Row k="Tokens in / out" v={`${num(st.input_tokens)} / ${num(st.output_tokens)}`} />
         <Row k="Cache reads" v={num(st.cache_read_tokens)} />
+        <ContextMeter stats={st} />
       </RailSection>
       <RailSection title="Session">
         <Row

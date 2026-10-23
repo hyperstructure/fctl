@@ -2,7 +2,8 @@
 //!
 //! It speaks the same protocol as `claude -p --input-format stream-json
 //! --output-format stream-json --include-partial-messages`: control requests
-//! (`initialize`, `interrupt`, `remote_control`, `get_settings`), user turns
+//! (`initialize`, `interrupt`, `remote_control`, `get_settings`,
+//! `get_context_usage`), user turns
 //! on stdin, and `system`, `stream_event`, `assistant`, `user`, `result` and
 //! `rate_limit_event` messages on stdout. A user turn that arrives during
 //! another waits for it, and each `result` says how many turns still wait
@@ -39,6 +40,8 @@
 //! | `refresh` | asks its host for a fresh OAuth token |
 //! | `crash` | exits with status 3 |
 //! | `effort <level>` | works at that effort level from then on (`low` … `max`, or `none` as a model that takes none), as Claude Code does after `/effort <level>`, which it takes too; `get_settings` says so |
+//! | `context <tokens>` | fills its context to that many tokens (`150000` or `150k`, at most its window) before it answers, as reading large files does |
+//! | `compact` | compacts the conversation before it answers, as Claude Code does after `/compact`, which it takes too |
 //! | a review session's task (`Review acme/web#12, … at commit …`) | reviews the pull request checked out as a review agent does: reads its commits and diff and fctl's earlier findings (`fctl review threads`), then posts with `fctl review submit`: earlier findings still open as fixed, and without any, an issue on the first line the pull request adds |
 //! | fctl's message about a review of the agent's pull request (`fctl's review agent reviewed commit …`) | looks at the pull request's commits and says what it decided about each finding: it leaves them as they are, and says how it would answer them in their threads without calling GitHub; no other word in the message counts |
 //! | (attached files) | says how many images the message holds and checks that each listed file is on disk |
@@ -50,6 +53,14 @@
 //! response starts (`message_start`, when it streams) and with each of its
 //! assistant messages, its output in the `message_delta` that ends it, and
 //! the process's totals with each `result` (`modelUsage`).
+//!
+//! Its context grows with each call, from the 18K tokens of its system
+//! prompt and tools, by what the call before it wrote and the tool results
+//! that came. Like Claude Code with a 200K window, it compacts the
+//! conversation on its own before a call once its context reaches 167K
+//! tokens (`system/compact_boundary`, with what the context held and what
+//! the summary left), and `get_context_usage` says so: the window, where it
+//! compacts, and the latest call's usage.
 //!
 //! Environment: `FAKE_CLAUDE_API_KEY_SOURCE` overrides the reported
 //! `apiKeySource` (default `none`); `FAKE_CLAUDE_DELAY_MS` sets the delay
@@ -66,6 +77,20 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+/// What its context holds before the first call: the system prompt and
+/// tools.
+const CONTEXT_START: u64 = 18_000;
+/// What each call adds to the context: what the call before it wrote, and
+/// the tool results that came.
+const CONTEXT_STEP: u64 = 1_500;
+/// The window it works in, as `modelUsage` says (`contextWindow`).
+const CONTEXT_WINDOW: u64 = 200_000;
+/// Where it compacts the conversation: what Claude Code's 200K window
+/// leaves after the output it keeps room for (20K) and its buffer (13K).
+const COMPACT_AT: u64 = 167_000;
+/// What a compaction leaves besides the system prompt and tools: the
+/// summary.
+const COMPACT_SUMMARY: u64 = 6_000;
 /// User turns read from stdin that haven't started yet: each `result`
 /// reports them as `queued_turn_count`, and fctl-agent keeps the session
 /// running while there are any.
@@ -116,6 +141,13 @@ struct Session {
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
+    cache_written_tokens: u64,
+    /// The tokens its next call reads, and how many of them earlier calls
+    /// cached.
+    context: u64,
+    cached: u64,
+    /// The usage of its latest call, for `get_context_usage`.
+    last_usage: Value,
     delay: Duration,
     /// Shell commands and subagents working in the background, in the
     /// order they end.
@@ -309,12 +341,62 @@ impl Session {
 
     /// An API call's usage as its response starts: Claude Code repeats it
     /// in each of the call's assistant messages, with the output only
-    /// begun.
+    /// begun. It reads the whole context, most of it from the cache, and
+    /// compacts the conversation first once the context reaches
+    /// [`COMPACT_AT`].
     fn call_started(&mut self) -> Value {
-        self.input_tokens += 12;
-        self.cache_read_tokens += 1000;
+        if self.context >= COMPACT_AT {
+            self.compact("auto");
+        }
+        let usage = self.call_usage(self.context, self.cached);
+        self.cached = self.context;
+        self.context = (self.context + CONTEXT_STEP).min(CONTEXT_WINDOW);
+        self.last_usage = usage.clone();
+        usage
+    }
+
+    /// A call that reads `context` tokens, `cached` of them from the
+    /// cache, counted in the totals.
+    fn call_usage(&mut self, context: u64, cached: u64) -> Value {
+        let fresh = 3;
+        let written = context.saturating_sub(cached + fresh);
+        self.input_tokens += fresh;
+        self.cache_read_tokens += cached;
+        self.cache_written_tokens += written;
         self.output_tokens += 1;
-        json!({"input_tokens": 12, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0, "output_tokens": 1})
+        json!({"input_tokens": fresh, "cache_read_input_tokens": cached, "cache_creation_input_tokens": written, "output_tokens": 1})
+    }
+
+    /// A subagent's call: its context is its own, about the same each time.
+    fn subagent_call(&mut self) -> Value {
+        self.call_usage(12_000, 11_000)
+    }
+
+    /// Compacts the conversation, as Claude Code does on its own (`auto`)
+    /// and after `/compact` (`manual`): what the context held, and what the
+    /// summary left (`post_tokens`, without the system prompt and tools,
+    /// which the next call reads too).
+    fn compact(&mut self, trigger: &str) {
+        out(
+            &json!({"type": "system", "subtype": "status", "status": "compacting", "session_id": self.id, "uuid": uuid()}),
+        );
+        self.sleep();
+        out(
+            &json!({"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": trigger, "pre_tokens": self.context, "post_tokens": COMPACT_SUMMARY}, "session_id": self.id, "uuid": uuid()}),
+        );
+        out(
+            &json!({"type": "system", "subtype": "status", "status": null, "session_id": self.id, "uuid": uuid()}),
+        );
+        self.context = CONTEXT_START + COMPACT_SUMMARY;
+        self.cached = CONTEXT_START;
+    }
+
+    /// Its answer to `get_context_usage`, as Claude Code 2.1.308 sums its
+    /// context up (`detail: "summary"`), without the categories.
+    fn context_usage(&self) -> Value {
+        json!({"categories": [], "totalTokens": self.context, "maxTokens": CONTEXT_WINDOW, "rawMaxTokens": CONTEXT_WINDOW,
+               "percentage": self.context * 100 / CONTEXT_WINDOW, "model": self.model, "autoCompactThreshold": COMPACT_AT,
+               "isAutoCompactEnabled": true, "autocompactSource": "model-default", "apiUsage": self.last_usage})
     }
 
     /// The end of an API call's response: its output tokens in all
@@ -322,8 +404,10 @@ impl Session {
     fn call_ended(&mut self, msg_id: &str, stop_reason: &str, output: u64) {
         let output = output.max(1);
         self.output_tokens += output - 1;
+        let mut usage = self.last_usage.clone();
+        usage["output_tokens"] = json!(output);
         out(
-            &json!({"type": "stream_event", "event": {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": null}, "usage": {"input_tokens": 12, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0, "output_tokens": output}}, "api_message_id": msg_id, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
+            &json!({"type": "stream_event", "event": {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": null}, "usage": usage}, "api_message_id": msg_id, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
         out(
             &json!({"type": "stream_event", "event": {"type": "message_stop"}, "api_message_id": msg_id, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
@@ -743,7 +827,7 @@ impl Session {
     /// One of a subagent's assistant messages.
     fn subagent_says(&mut self, agent: &Subagent, content: Value) {
         let msg_id = format!("msg_{}", short_id(8));
-        let usage = self.call_started();
+        let usage = self.subagent_call();
         out(
             &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": content, "stop_reason": null, "usage": usage}, "parent_tool_use_id": agent.tool_use_id, "session_id": self.id, "uuid": uuid()}),
         );
@@ -871,7 +955,7 @@ impl Session {
             "type": "result", "subtype": subtype, "is_error": subtype != "success", "duration_ms": ms, "duration_api_ms": ms,
             "num_turns": 3, "result": text, "stop_reason": "end_turn", "total_cost_usd": 0.0, "session_id": self.id, "uuid": uuid(),
             "usage": {"input_tokens": 120, "output_tokens": 80, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0},
-            "modelUsage": {self.model.clone(): {"inputTokens": self.input_tokens, "outputTokens": self.output_tokens, "cacheReadInputTokens": self.cache_read_tokens, "cacheCreationInputTokens": 0, "webSearchRequests": 0, "costUSD": 0.0, "contextWindow": 200000, "maxOutputTokens": 32000}},
+            "modelUsage": {self.model.clone(): {"inputTokens": self.input_tokens, "outputTokens": self.output_tokens, "cacheReadInputTokens": self.cache_read_tokens, "cacheCreationInputTokens": self.cache_written_tokens, "webSearchRequests": 0, "costUSD": 0.0, "contextWindow": CONTEXT_WINDOW, "maxOutputTokens": 32000}},
             "permission_denials": [], "queued_turn_count": QUEUED_TURNS.load(Ordering::SeqCst)
         }));
     }
@@ -921,6 +1005,12 @@ impl Session {
         }
         if let Some(effort) = effort_in(&lower) {
             self.effort = effort;
+        }
+        if let Some(tokens) = context_for(text) {
+            self.context = tokens;
+        }
+        if says(&lower, "compact") {
+            self.compact("manual");
         }
         if asks_for_limit(text) {
             let resets = SystemTime::now()
@@ -1186,6 +1276,24 @@ fn background_for(text: &str) -> Option<u64> {
 /// most ten minutes.
 fn watch_for(text: &str) -> Option<u64> {
     number_after(text, "watch").map(|s| s.min(600))
+}
+
+/// How many tokens a turn fills the context to: the number after `context`
+/// (any case), in thousands when `k` follows it, from what the context
+/// holds at the start to the window.
+fn context_for(text: &str) -> Option<u64> {
+    let lower = text.to_lowercase();
+    let n = number_after(&lower, "context")?;
+    let thousands = lower
+        .split("context ")
+        .skip(1)
+        .find_map(|rest| {
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            (digits > 0).then(|| rest[digits..].starts_with('k'))
+        })
+        .unwrap_or(false);
+    let tokens = if thousands { n.saturating_mul(1000) } else { n };
+    Some(tokens.clamp(CONTEXT_START, CONTEXT_WINDOW))
 }
 
 /// How many times a turn looks around: the number after `explore` (any
@@ -1463,6 +1571,10 @@ fn main() {
         input_tokens: 0,
         output_tokens: 0,
         cache_read_tokens: 0,
+        cache_written_tokens: 0,
+        context: CONTEXT_START,
+        cached: 0,
+        last_usage: Value::Null,
         delay: Duration::from_millis(
             std::env::var("FAKE_CLAUDE_DELAY_MS")
                 .ok()
@@ -1541,6 +1653,9 @@ fn main() {
                     "get_settings" => {
                         json!({"subtype": "success", "request_id": id, "response": {"effective": {}, "sources": [], "applied": {"model": session.model, "effort": session.effort}}})
                     }
+                    "get_context_usage" => {
+                        json!({"subtype": "success", "request_id": id, "response": session.context_usage()})
+                    }
                     "remote_control" => {
                         let scopes = std::env::var("CLAUDE_CODE_OAUTH_SCOPES").unwrap_or_default();
                         if scopes.contains("user:profile") {
@@ -1591,9 +1706,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        adler32, asks_for_limit, background_for, crc32, effort_in, explorations, finding_titles,
-        first_added_line, is_findings, is_review, rename_to, says, screenshot_png, short_id,
-        watch_for,
+        CONTEXT_START, CONTEXT_WINDOW, adler32, asks_for_limit, background_for, context_for, crc32,
+        effort_in, explorations, finding_titles, first_added_line, is_findings, is_review,
+        rename_to, says, screenshot_png, short_id, watch_for,
     };
 
     #[test]
@@ -1685,6 +1800,19 @@ mod tests {
         // Other words after it change nothing.
         assert_eq!(effort_in("put some effort into it"), None);
         assert_eq!(effort_in("write notes.md"), None);
+    }
+
+    #[test]
+    fn context_takes_the_tokens_after_it() {
+        assert_eq!(
+            context_for("Fill the context 150k, then answer"),
+            Some(150_000)
+        );
+        assert_eq!(context_for("context 120000"), Some(120_000));
+        // From what the context holds at the start to the window.
+        assert_eq!(context_for("context 999k"), Some(CONTEXT_WINDOW));
+        assert_eq!(context_for("context 5"), Some(CONTEXT_START));
+        assert_eq!(context_for("keep the context small"), None);
     }
 
     #[test]

@@ -1084,18 +1084,25 @@ posts what it found on GitHub
    findings (file, line, severity, title, a few sentences, an optional
    suggested change) and the earlier ones the new commits fixed to the
    control plane, which checks them (`fctl_domain::reviews::check`) and,
-   with a token of the repository's that never leaves it: posts one
-   review of the commit (`COMMENT`) with each finding on its lines where
-   the diff shows them and in the review's text where it doesn't
-   (`place`); marks each earlier finding it names fixed in this commit,
-   its title struck through, and resolves its thread, for fctl's own
-   threads alone (the token's app wrote them, and they carry fctl's mark);
-   and completes the check: success with nothing to look at, neutral with
-   findings or earlier ones still open, since acting on them is up to the
-   pull request's people. It posts once: a second submission gets what
-   the first posted. `fctl review threads` lists fctl's earlier findings,
-   with what people answered. fctl-agent reminds an agent that ends its
-   turn without posting, once.
+   with a token of the repository's that never leaves it: posts the
+   review's summary, a comment on the pull request (how many issues it
+   found, the agent's summary, and the findings whose lines the diff
+   doesn't show, `summary_text`), then one review of the commit
+   (`COMMENT`) without text of its own, with each other finding on its
+   lines (`place`), so that GitHub shows the summary above them, on the
+   web and in its apps alike; marks each earlier finding it names fixed
+   in this commit, its title struck through, and resolves its thread, for
+   fctl's own threads alone (the token's app wrote them, and they carry
+   fctl's mark); puts atop each earlier review's summary how the issues
+   it found stand (`restated`: fixed, or resolved by someone, going by
+   the threads its session started, which fctl notes out of sight in
+   every comment it posts), and hides the summary as outdated once all of
+   them are; and completes the check: success with nothing to look at,
+   neutral with findings or earlier ones still open, since acting on them
+   is up to the pull request's people. It posts once: a second submission
+   gets what the first posted. `fctl review threads` lists fctl's earlier
+   findings, with what people answered. fctl-agent reminds an agent that
+   ends its turn without posting, once.
 6. **Back to the agent that opened it.** Where one of the instance's own
    agents opened the pull request (its author is the GitHub App,
    `fctl_domain::reviews::by_app`), the control plane sends the new
@@ -1104,16 +1111,17 @@ posts what it found on GitHub
    lists the pull request (`pull_request_sessions`, review sessions left
    out): the one whose branch it comes from, else the one that started
    first (`opener`). After posting, the control plane asks GitHub for the
-   review's comments (`spots`), and SessionObject's `/review-findings`
-   delivers a message from fctl, as a person's message is delivered,
-   resuming a stopped session on the subscription it ran on. The message
-   (`passed_on`) lists the findings, most severe first, each with its
+   comments of the review that holds the findings on their lines
+   (`spots`), and SessionObject's `/review-findings` delivers a message
+   from fctl, as a person's message is delivered, resuming a stopped
+   session on the subscription it ran on. The message (`passed_on`)
+   lists the findings, most severe first, each with its
    comment's id, and says that they are another agent's reading, not
    instructions: the agent checks each, fixes the real problems and
    pushes, and answers each in its thread (`gh api …/comments/{id}/replies`)
    with what it decided and why, or in a comment on the pull request for
-   those in the review's text, leaving the threads for the next review to
-   resolve. Pull requests that merged or closed, archived and failed
+   those in the review's summary, leaving the threads for the next review
+   to resolve. Pull requests that merged or closed, archived and failed
    sessions, and sessions whose agent only reads on GitHub get nothing.
    So that the agent and the review agent can't go back and forth for
    good, a session gets the findings of at most five reviews in a row
@@ -1222,6 +1230,29 @@ resumed session still follows its project's setting. Claude Code before
 `get_settings`, and agents before this, report none, and the session shows
 no effort level.
 
+The Work section of the session page and `fctl show` show how full
+Claude's context is, against the window and where Claude compacts the
+conversation on its own, and how often it did. SessionDO counts the
+context with the other counters: the input of the conversation's latest
+API call (subagents' calls have contexts of their own), cached or not, as
+Claude Code's status line counts it, and what a compaction left
+(`compact_boundary`'s `post_tokens`) until the next call says. The window
+and the threshold depend on the model, Claude's settings and environment
+and its experiments (Claude Code 2.1.308 gives Opus 5.5 a window of 1M
+tokens and compacts at 967K), so fctl-agent asks Claude for them with the
+`get_context_usage` control request once Claude has started, and again
+after each turn, since `/model` changes them. It asks for a `summary`,
+which Claude answers from the last call's usage and its own estimates,
+without asking the API to count each part of the context. fctl-agent
+reports the answer's `maxTokens` and `autoCompactThreshold` in the session
+state (`ContextWindow`), and SessionDO keeps them in the session's stats.
+Claude doesn't compact before the window is full when auto-compact is off
+or when it leaves that to the API (`autocompactSource` `auto`: it compacts
+once the API says the prompt is too long, and its `/context` shows no
+buffer for it), so fctl-agent reports no threshold then. Claude Code
+before `get_context_usage`, and agents before this, report no window, and
+the session shows the context alone.
+
 ### Event flow and reliability
 
 - fctl-agent assigns `agent_seq` to every event and appends it to a journal in
@@ -1248,7 +1279,9 @@ no effort level.
 - The session's counters (`SessionStats`) move as the agent works. Each
   API call's input and cache reads count as its response starts
   (`message_start`), or with its stored messages if that stream event went
-  missing, and its output with the `message_delta` that ends it. Claude
+  missing, and its output with the `message_delta` that ends it. The
+  input of a call of the conversation's own, cached or not, is what
+  Claude's context holds. Claude
   reports each several times, so SessionDO remembers the calls it counted.
   A turn is under way while the session runs (`turn_started_at`), so
   viewers count its time up. Each turn's `result` adds its duration and

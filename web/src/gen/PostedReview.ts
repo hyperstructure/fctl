@@ -7,7 +7,8 @@ import type { SessionId } from "./SessionId";
  */
 export type PostedReview = { state: ReviewState, 
 /**
- * The review on GitHub; absent when it had nothing to post.
+ * Its summary on GitHub, above the review of its findings; absent
+ * when it had nothing to post.
  */
 url?: string, 
 /**
@@ -15,8 +16,8 @@ url?: string,
  */
 comments: number, 
 /**
- * Findings whose lines the pull request doesn't change, posted in the
- * review's text instead.
+ * Findings whose lines the pull request doesn't change, posted in its
+ * summary instead.
  */
 in_text: number, 
 /**

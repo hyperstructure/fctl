@@ -1984,6 +1984,10 @@ impl SessionObject {
         if let Some(st) = state.stats {
             s.stats = st;
         }
+        if let Some(c) = state.context {
+            s.stats.context_window = Some(c.tokens);
+            s.stats.compact_at = c.compact_at;
+        }
         if matches!(
             state.status,
             SessionStatus::Idle | SessionStatus::Stopped | SessionStatus::Failed

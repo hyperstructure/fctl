@@ -81,7 +81,7 @@ impl Live {
     /// Takes a live message `v`, serialized as `text`.
     pub fn push(&mut self, v: &Value, text: &str) {
         // The agent's own, not a subagent's, which viewers don't show.
-        let own = v.get("parent_tool_use_id").is_none_or(Value::is_null);
+        let own = own(v);
         if classify(v) == ClaudeKind::ThinkingProgress {
             if own {
                 self.thought = Some(text.to_owned());
@@ -115,6 +115,12 @@ impl Live {
             .collect();
         all.join(",")
     }
+}
+
+/// Whether a Claude message is the conversation's own, not one of a
+/// subagent's (which name the tool call that runs them).
+fn own(v: &Value) -> bool {
+    v.get("parent_tool_use_id").is_none_or(Value::is_null)
 }
 
 /// A reason the session must not continue as is.
@@ -232,13 +238,16 @@ impl Counted {
 
 /// Counts what Claude reports of an API call's `usage`: its input and
 /// cache reads once (`input`), its output as the running total it is. A
-/// call without an id counts each time.
+/// call without an id counts each time. The input of a call of the
+/// conversation's own (`own`) is what its context holds, as the call
+/// starts.
 fn count_call(
     stats: &mut SessionStats,
     counted: &mut Counted,
     id: Option<&str>,
     usage: &Value,
     input: bool,
+    own: bool,
 ) {
     let n = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
     let mut call = id.map(|id| counted.call(id));
@@ -247,6 +256,13 @@ fn count_call(
         stats.cache_read_tokens = stats
             .cache_read_tokens
             .saturating_add(n("cache_read_input_tokens"));
+        let context = n("input_tokens")
+            .saturating_add(n("cache_creation_input_tokens"))
+            .saturating_add(n("cache_read_input_tokens"));
+        // Claude Code's messages for failed calls report none.
+        if own && context > 0 {
+            stats.context_tokens = Some(context);
+        }
         if let Some(c) = call.as_mut() {
             c.input = true;
         }
@@ -262,8 +278,9 @@ fn count_call(
 }
 
 /// Updates session counters from a stored Claude message sent at `ts`:
-/// tool calls and each API call's tokens as they come, and a turn's time
-/// and Claude's own token totals when it ends. While the session runs
+/// tool calls, each API call's tokens and the context as they come,
+/// compactions, and a turn's time and Claude's own token totals when it
+/// ends. While the session runs
 /// (`running`) a turn is under way: one that no status change started
 /// starts at `ts`, as does the next when Claude goes on with a message that
 /// came during the last.
@@ -289,7 +306,7 @@ pub fn apply_stats(
             stats.tool_calls = stats.tool_calls.saturating_add(tools as u32);
             if let Some(usage) = v.pointer("/message/usage") {
                 let id = v.pointer("/message/id").and_then(Value::as_str);
-                count_call(stats, counted, id, usage, true);
+                count_call(stats, counted, id, usage, true, own(v));
             }
             if running && stats.turn_started_at.is_none() {
                 stats.turn_started_at = Some(ts);
@@ -322,6 +339,20 @@ pub fn apply_stats(
                 > 0;
             stats.turn_started_at = (running && queued).then_some(ts);
         }
+        // Claude compacted the conversation: its context holds what the
+        // compaction left (absent from Claude Code before `post_tokens`)
+        // until the next call says.
+        ClaudeKind::System
+            if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") && own(v) =>
+        {
+            stats.compactions = stats.compactions.saturating_add(1);
+            if let Some(left) = v
+                .pointer("/compact_metadata/post_tokens")
+                .and_then(Value::as_u64)
+            {
+                stats.context_tokens = Some(left);
+            }
+        }
         _ => {}
     }
 }
@@ -337,8 +368,9 @@ pub fn reports_usage(v: &Value) -> bool {
 }
 
 /// Updates session counters from a stream event ([`reports_usage`]): an API
-/// call's input as its response starts, before any of it is stored, and its
-/// output, which only the end has. Returns whether they changed.
+/// call's input, and the context, as its response starts, before any of it
+/// is stored, and its output, which only the end has. Returns whether they
+/// changed.
 pub fn apply_stream_stats(stats: &mut SessionStats, counted: &mut Counted, v: &Value) -> bool {
     let before = stats.clone();
     match v.pointer("/event/type").and_then(Value::as_str) {
@@ -346,7 +378,7 @@ pub fn apply_stream_stats(stats: &mut SessionStats, counted: &mut Counted, v: &V
             let id = v.pointer("/event/message/id").and_then(Value::as_str);
             counted.streaming = id.map(str::to_owned);
             if let Some(usage) = v.pointer("/event/message/usage") {
-                count_call(stats, counted, id, usage, true);
+                count_call(stats, counted, id, usage, true, own(v));
             }
         }
         // It repeats the input, which the call's start or its stored blocks
@@ -358,7 +390,7 @@ pub fn apply_stream_stats(stats: &mut SessionStats, counted: &mut Counted, v: &V
                 .map(str::to_owned)
                 .or_else(|| counted.streaming.clone());
             if let (Some(id), Some(usage)) = (id, v.pointer("/event/usage")) {
-                count_call(stats, counted, Some(&id), usage, false);
+                count_call(stats, counted, Some(&id), usage, false, own(v));
             }
         }
         _ => {}
@@ -722,6 +754,78 @@ mod tests {
             (s.input_tokens, s.output_tokens, s.cache_read_tokens),
             (9, 428, 35_000)
         );
+    }
+
+    #[test]
+    fn the_context_is_the_input_of_the_conversations_latest_call() {
+        let mut s = SessionStats::default();
+        let mut c = Counted::default();
+        // Its input, cache reads and cache writes.
+        apply_stats(&mut s, &mut c, &block("a", None, 2, 10_000), 1, true);
+        assert_eq!(s.context_tokens, Some(10_502));
+        // Subagents' calls have contexts of their own.
+        apply_stats(&mut s, &mut c, &block("x", Some("t1"), 1, 90_000), 2, true);
+        let start = |id: &str, parent: Option<&str>, cache_read: u64| {
+            json!({"type": "stream_event", "parent_tool_use_id": parent, "event": {"type": "message_start", "message": {"id": id,
+                "usage": {"input_tokens": 1, "cache_read_input_tokens": cache_read, "cache_creation_input_tokens": 300, "output_tokens": 1}}}})
+        };
+        assert!(apply_stream_stats(
+            &mut s,
+            &mut c,
+            &start("y", Some("t1"), 95_000)
+        ));
+        assert_eq!(s.context_tokens, Some(10_502));
+        // The next call's, as its response starts...
+        assert!(apply_stream_stats(
+            &mut s,
+            &mut c,
+            &start("b", None, 12_000)
+        ));
+        assert_eq!(s.context_tokens, Some(12_301));
+        // ...which its output and stored blocks don't change, nor an
+        // earlier call's block that comes late.
+        assert!(apply_stream_stats(&mut s, &mut c, &delta(Some("b"), 900)));
+        apply_stats(&mut s, &mut c, &block("b", None, 1, 12_000), 3, true);
+        apply_stats(&mut s, &mut c, &block("a", None, 2, 10_000), 4, true);
+        assert_eq!(s.context_tokens, Some(12_301));
+        // A call that failed reports no usage.
+        let failed = json!({"type": "assistant", "parent_tool_use_id": null, "message": {"id": "e", "content": [{"type": "text", "text": "API Error"}],
+            "usage": {"input_tokens": 0, "output_tokens": 0}}});
+        apply_stats(&mut s, &mut c, &failed, 5, true);
+        assert_eq!(s.context_tokens, Some(12_301));
+    }
+
+    #[test]
+    fn compactions_leave_a_smaller_context() {
+        let mut s = SessionStats::default();
+        let mut c = Counted::default();
+        apply_stats(&mut s, &mut c, &block("a", None, 2, 160_000), 1, true);
+        let boundary = |metadata: Value| json!({"type": "system", "subtype": "compact_boundary", "compact_metadata": metadata});
+        apply_stats(
+            &mut s,
+            &mut c,
+            &boundary(json!({"trigger": "auto", "pre_tokens": 160_502, "post_tokens": 9_000})),
+            2,
+            true,
+        );
+        assert_eq!((s.compactions, s.context_tokens), (1, Some(9_000)));
+        // The next call says what the context holds.
+        apply_stats(&mut s, &mut c, &block("b", None, 3, 20_000), 3, true);
+        assert_eq!(s.context_tokens, Some(20_503));
+        // Claude Code before `post_tokens` doesn't say what was left.
+        apply_stats(
+            &mut s,
+            &mut c,
+            &boundary(json!({"trigger": "manual", "pre_tokens": 20_503})),
+            4,
+            true,
+        );
+        assert_eq!((s.compactions, s.context_tokens), (2, Some(20_503)));
+        // Only the conversation's own count.
+        let mut theirs = boundary(json!({"trigger": "auto", "pre_tokens": 100, "post_tokens": 10}));
+        theirs["parent_tool_use_id"] = json!("t1");
+        apply_stats(&mut s, &mut c, &theirs, 5, true);
+        assert_eq!((s.compactions, s.context_tokens), (2, Some(20_503)));
     }
 
     #[test]

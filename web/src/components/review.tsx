@@ -56,7 +56,7 @@ export function ReviewPostedNotice({ posted }: { posted: G.PostedReview }) {
   const resolved = posted.resolved?.length ?? 0;
   const facts = [
     resolved > 0 && `${resolved === 1 ? "1 earlier finding" : `${resolved} earlier findings`} marked fixed`,
-    posted.in_text > 0 && `${posted.in_text} in the review's text, on lines the diff doesn't show`,
+    posted.in_text > 0 && `${posted.in_text} in the review's summary, on lines the diff doesn't show`,
     posted.still_open > 0 &&
       `${posted.still_open === 1 ? "1 earlier finding is" : `${posted.still_open} earlier findings are`} still open`,
   ].filter(Boolean);

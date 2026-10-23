@@ -2405,7 +2405,8 @@ pub struct Review {
     pub resolved: u32,
     /// Findings of earlier reviews still open after it.
     pub still_open: u32,
-    /// The review it posted on GitHub; absent while it posted none.
+    /// What it posted on GitHub: its summary, above the review of its
+    /// findings; absent while it posted none.
     pub review_url: Option<String>,
     /// Why GitHub shows no check for it (the app can't write checks).
     pub check_error: Option<String>,
@@ -2535,12 +2536,13 @@ pub struct ThreadReply {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct PostedReview {
     pub state: ReviewState,
-    /// The review on GitHub; absent when it had nothing to post.
+    /// Its summary on GitHub, above the review of its findings; absent
+    /// when it had nothing to post.
     pub url: Option<String>,
     /// Findings posted on their lines.
     pub comments: u32,
-    /// Findings whose lines the pull request doesn't change, posted in the
-    /// review's text instead.
+    /// Findings whose lines the pull request doesn't change, posted in its
+    /// summary instead.
     pub in_text: u32,
     /// The earlier findings marked fixed, by thread.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2652,14 +2654,15 @@ pub enum AgentCall {
     /// sessions; fctl-agents and control planes from before review agents
     /// refuse it.
     ReviewThreads,
-    /// Posts a review session's review, once (`fctl review submit`): its
-    /// findings as comments on their lines, in one review, and the earlier
-    /// findings the new commits fixed, which fctl marks fixed and resolves.
+    /// Posts a review session's review, once (`fctl review submit`): a
+    /// summary, then its findings as comments on their lines, in one
+    /// review, and the earlier findings the new commits fixed, which fctl
+    /// marks fixed and resolves.
     /// Without findings it posts nothing new and passes the check. Only
     /// for review sessions.
     SubmitReview {
         /// A sentence or two on the pull request as a whole, for the
-        /// review's text.
+        /// review's summary.
         #[cfg_attr(feature = "ts", ts(optional))]
         summary: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

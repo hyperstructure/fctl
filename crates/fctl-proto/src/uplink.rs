@@ -89,6 +89,25 @@ pub struct SessionState {
     /// What the agent says the session is about, applied the same way; an
     /// empty string clears it.
     pub description: Option<String>,
+    /// The context window Claude works in, as it says
+    /// (`get_context_usage`). Absent until Claude has said, and from older
+    /// agents.
+    pub context: Option<ContextWindow>,
+}
+
+/// The context window Claude works in, from its answer to
+/// `get_context_usage`.
+#[skip_serializing_none]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ContextWindow {
+    /// How many tokens the context holds at most: the model's window, or
+    /// the smaller one Claude's settings or environment set for it.
+    pub tokens: u64,
+    /// The context size at which Claude compacts the conversation on its
+    /// own. Absent when it doesn't before the window is full: auto-compact
+    /// is off, or Claude compacts once the API says the prompt is too long.
+    pub compact_at: Option<u64>,
 }
 
 /// The host has no working link to fctl-agent in the session's sandbox: the
