@@ -1,7 +1,8 @@
 //! The cookies the web app signs in with: the session, a Google sign-in on
 //! its way and a sign-in that waits for its second factor; and a GitHub
 //! sign-in on its way, which connects a GitHub account to a workspace, and
-//! the workspace the GitHub App is being installed from.
+//! the workspace the GitHub App is being installed from; and a Linear
+//! sign-in on its way.
 //!
 //! Their names carry the `__Host-` prefix, which binds a cookie to the app's
 //! own host and path. Browsers take such a cookie only with `Secure`, from a
@@ -26,6 +27,9 @@ pub enum Cookie {
     /// workspace: its signed state, which GitHub sends back after an
     /// installation but not after a change to one.
     GithubInstall,
+    /// A Linear sign-in on its way, to install fctl's app in a Linear
+    /// workspace or to link someone's Linear account: its signed state.
+    LinearConnect,
 }
 
 impl Cookie {
@@ -42,6 +46,8 @@ impl Cookie {
             (Self::GithubConnect, false) => "fctl-github",
             (Self::GithubInstall, true) => "__Host-fctl-github-install",
             (Self::GithubInstall, false) => "fctl-github-install",
+            (Self::LinearConnect, true) => "__Host-fctl-linear",
+            (Self::LinearConnect, false) => "fctl-linear",
         }
     }
 }
@@ -113,6 +119,7 @@ mod tests {
             Cookie::SecondFactor,
             Cookie::GithubConnect,
             Cookie::GithubInstall,
+            Cookie::LinearConnect,
         ] {
             let secure = cookie.name(true);
             let plain = cookie.name(false);

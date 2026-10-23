@@ -24,7 +24,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { OnRunnersDetails, OnRunnersSetup } from "@/components/claude/on-runners";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
@@ -40,6 +40,7 @@ import {
   Dialog,
   Field,
   Input,
+  LinearIcon,
   NameFields,
   nameParts,
   SecretInput,
@@ -52,7 +53,7 @@ import {
 } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
-import { api, confirmFirst, emails, workspaces as wsApi } from "@/lib/api";
+import { api, confirmFirst, emails, linearLinkUrl, workspaces as wsApi } from "@/lib/api";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
@@ -61,6 +62,7 @@ import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/
 import { keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
 import { forgetSidebar } from "@/lib/sidebar";
 import { useTheme } from "@/lib/theme";
+import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
 import { claudeOptions, roleLabel } from "@/lib/workspaces";
 
@@ -95,6 +97,7 @@ export function SettingsPage() {
         <Addresses me={me} />
         <Workspaces me={me} />
         <Claude me={me} />
+        <LinearAccounts returned={search.linear} />
         <Notifications me={me} />
         <SignIn me={me} />
         <PasskeySettings me={me} />
@@ -933,6 +936,114 @@ function SwitchRow({
       </div>
       <Switch checked={checked} onChange={onChange} label={label} disabled={disabled} />
     </li>
+  );
+}
+
+/**
+ * Who fctl knows you as in Linear workspaces: what you delegate to fctl there runs as you, and your
+ * replies there reach its agents. Linking takes a Linear sign-in, which fctl forgets at once.
+ */
+function LinearAccounts({ returned }: { returned?: LinearOutcome }) {
+  const { data: instance } = useInstance();
+  const mine = useQuery({
+    queryKey: keys.myLinear,
+    queryFn: api.myLinear,
+    enabled: !!instance?.features.linear,
+  });
+  const [dropping, setDropping] = useState<G.LinearAccount | null>(null);
+  const unlink = useMutation({
+    mutationFn: (organization: string) => api.unlinkLinear(organization),
+    onSuccess: (m) => {
+      queryClient.setQueryData(keys.myLinear, m);
+      void queryClient.invalidateQueries({ queryKey: ["project-tickets"] });
+      setDropping(null);
+      toast("Unlinked");
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  // Back from linking, or sent here for it: the browser's own jump to #linear came before this did.
+  const ref = useRef<HTMLElement>(null);
+  const loaded = !mine.isPending;
+  useEffect(() => {
+    if (loaded && (returned || location.hash === "#linear"))
+      ref.current?.scrollIntoView({ block: "start", behavior: "instant" });
+  }, [loaded, returned]);
+  if (!instance?.features.linear) return null;
+  const accounts = mine.data?.accounts ?? [];
+  const outcome = returned && linearOutcome(returned);
+  return (
+    <section id="linear" ref={ref} className="scroll-mt-6">
+      <Section
+        title="Linear"
+        description="Who fctl knows you as in Linear: issues you delegate to fctl there start sessions as you, on your Claude subscription, and your replies there reach its agents."
+      >
+        <div className="flex flex-col gap-4">
+          {outcome && <Banner tone={outcome.tone}>{outcome.text}</Banner>}
+          {mine.isPending ? (
+            <Skeleton className="h-14" />
+          ) : (
+            <ul className="border-y border-line">
+              {accounts.map((a) => (
+                <li
+                  key={a.organization}
+                  className="flex items-center gap-3 border-b border-line py-3 last:border-b-0"
+                >
+                  <Avatar user={{ id: a.linear_user, name: a.name, avatar_url: a.avatar_url }} size={28} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13.5px] text-ink">
+                      {a.name}
+                      <span className="text-ink-4"> in {a.organization_name}</span>
+                    </div>
+                    <div className="truncate text-[12px] text-ink-4">
+                      {[a.email, a.url_key && `linear.app/${a.url_key}`].filter(Boolean).join(" · ")} · linked{" "}
+                      {ago(a.linked_at)}
+                    </div>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => setDropping(a)}>
+                    Unlink
+                  </Button>
+                </li>
+              ))}
+              {accounts.length === 0 && (
+                <li className="flex items-center gap-3 py-3">
+                  <LinearIcon className="size-5 text-ink-3" />
+                  <span className="text-[13.5px] text-ink-3">
+                    fctl doesn't know your Linear account yet, so what you delegate to fctl there starts
+                    nothing.
+                  </span>
+                </li>
+              )}
+            </ul>
+          )}
+          <div>
+            <a href={linearLinkUrl()} className="inline-block">
+              <Button icon={<LinearIcon className="size-3.5" />}>
+                {accounts.length > 0 ? "Link another Linear account" : "Link your Linear account"}
+              </Button>
+            </a>
+          </div>
+        </div>
+      </Section>
+      <Dialog
+        open={!!dropping}
+        onClose={() => setDropping(null)}
+        title={`Unlink your account in ${dropping?.organization_name ?? ""}?`}
+        description="What you delegate to fctl there starts nothing, and your replies there don't reach its agents, until you link it again. Sessions already running carry on."
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setDropping(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            loading={unlink.isPending}
+            onClick={() => dropping && unlink.mutate(dropping.organization)}
+          >
+            Unlink
+          </Button>
+        </div>
+      </Dialog>
+    </section>
   );
 }
 

@@ -13,15 +13,14 @@
 
 use crate::access;
 use crate::db::{int, int_bool, n, on, opt_int, os, q, s};
-use crate::error::{AppError, AppResult, internal};
-use crate::internal::{InitSession, Schedule as Dispatch};
+use crate::error::{AppError, AppResult};
 use crate::model::{
     CredentialRow, PROJECT_SELECT, ProjectRow, USAGE_JSON, UserRow, plan_usage, user_columns,
 };
 use fctl_domain::cron::{self, Zone};
 use fctl_domain::schedules::{self as sch, RunNote, StartedBy, When};
 use fctl_proto::api::{PlanLimit, Schedule, ScheduleRun, ScheduleRunOutcome, ScheduleTrigger};
-use fctl_proto::event::{MessageSource, UserMessage};
+use fctl_proto::event::MessageSource;
 use fctl_proto::session::{GithubAccess, SessionRef, SessionStatus, UserRef};
 use fctl_proto::{ApiError, ProjectId, ScheduleId, ScheduleRunId, SessionId, UserId};
 use serde::Deserialize;
@@ -943,12 +942,6 @@ pub async fn start_session(
     db: &D1Database,
     st: Start<'_>,
 ) -> AppResult<(SessionId, u32)> {
-    #[derive(Deserialize)]
-    struct Counter {
-        #[serde(deserialize_with = "int")]
-        session_counter: i64,
-    }
-    let id = fctl_domain::ids::session_id(st.now);
     let title = fctl_domain::validate::session_title(&st.schedule.name)
         .unwrap_or_else(|_| fctl_domain::naming::title_from_prompt(&st.schedule.prompt));
     let base_branch = st
@@ -957,75 +950,28 @@ pub async fn start_session(
         .clone()
         .filter(|b| !b.trim().is_empty())
         .unwrap_or_else(|| st.project.default_branch.clone());
-    let counter: Option<Counter> = q(
+    crate::starts::start(
+        env,
         db,
-        "UPDATE projects SET session_counter = session_counter + 1 WHERE id = ? RETURNING session_counter",
-        &[s(&st.project.id)],
-    )?
-    .first()
-    .await?;
-    let number = u32::try_from(counter.map_or(1, |c| c.session_counter)).unwrap_or(1);
-    let branch = fctl_domain::naming::session_branch(number, &title);
-    q(
-        db,
-        "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, credential_id, branch, base_branch, \
-         model, effort, claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, schedule_id) \
-         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)",
-        &[
-            s(id.as_str()),
-            s(&st.project.id),
-            n(i64::from(number)),
-            s(&title),
-            s(&st.prompt),
-            s(&st.user.id),
-            s(&st.credential.id),
-            s(&branch),
-            s(&base_branch),
-            os(st.schedule.model.as_deref()),
-            os(st.schedule.effort.as_deref()),
-            s(&fctl_domain::ids::uuid_v4()),
-            n(st.now),
-            n(st.now),
-            n(st.now),
-            s(st.github_access.as_str()),
-            s(&st.schedule.id),
-        ],
-    )?
-    .run()
-    .await?;
-    if st.follow
-        && let Err(e) = crate::notify::follow_own(db, id.as_str(), &st.user.id, st.now).await
-    {
-        worker::console_error!("following a schedule's session: {}", e.0.message);
-    }
-    let session = crate::spec::session_row(db, id.as_str())
-        .await?
-        .ok_or_else(|| internal("the schedule's session vanished"))?
-        .to_session(None);
-    let _: Value = crate::internal::post(
-        &crate::internal::session_stub(env, id.as_str())?,
-        "/init",
-        &InitSession {
-            session,
-            prompt: UserMessage {
-                id: fctl_domain::ids::delivery_id(st.now),
-                author: st.author,
-                text: st.prompt,
-                source: st.source,
-                attachments: Vec::new(),
-                follow_up: None,
-                review: None,
-            },
+        crate::starts::NewSession {
+            project: st.project,
+            title,
+            branch: crate::starts::Branch::Titled,
+            base_branch,
+            model: st.schedule.model.clone(),
+            effort: st.schedule.effort.clone(),
+            user: st.user,
+            credential: st.credential,
+            github_access: st.github_access,
+            prompt: st.prompt,
+            author: st.author,
+            source: st.source,
+            ticket_message: None,
+            schedule_id: Some(&st.schedule.id),
+            ticket: None,
+            follow: st.follow,
+            now: st.now,
         },
     )
-    .await?;
-    let _: Value = crate::internal::post(
-        &crate::internal::fleet_stub(env)?,
-        "/schedule",
-        &Dispatch {
-            session_id: id.clone(),
-        },
-    )
-    .await?;
-    Ok((id, number))
+    .await
 }

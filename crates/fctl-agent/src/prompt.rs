@@ -8,6 +8,7 @@ use fctl_domain::{files, memory, size};
 use fctl_proto::event::Attachment;
 use fctl_proto::runner::{MemorySpec, ReviewSpec, SandboxSize, SessionRepo, SessionSpec};
 use fctl_proto::session::{GithubAccess, RepoAccess, Verbosity};
+use fctl_proto::tickets::TicketsVia;
 use std::path::PathBuf;
 
 /// What `~/AGENTS.md` says besides how to name the session: what the
@@ -280,13 +281,15 @@ screenshot shows.
 "#;
 
 /// `paths` say where the other repositories go; `sandbox` what the sandbox
-/// is limited to, when its driver limits it.
+/// is limited to, when its driver limits it; `tickets_cli` whether the
+/// sandbox's fctl has `fctl ticket`, for a project whose tracker it reaches.
 pub fn system_prompt(
     spec: &SessionSpec,
     workdir: &str,
     paths: &Paths,
     sandbox: Option<SandboxSize>,
     cache: Option<&Ready>,
+    tickets_cli: bool,
 ) -> String {
     let mut s = String::new();
     s.push_str("You are running as an autonomous agent in fctl, a software factory. ");
@@ -418,6 +421,13 @@ pub fn system_prompt(
             spec.project.settings.pull_request_descriptions,
             &spec.web_url,
         ));
+    }
+    if let Some(t) = &spec.tickets {
+        // The control plane says what the project's tracker comes to.
+        s.push_str(&t.instructions);
+        if t.via == TicketsVia::Fctl && !tickets_cli {
+            s.push_str(NO_FCTL_TICKET);
+        }
     }
     if let Some(extra) = spec
         .project
@@ -573,6 +583,10 @@ pub fn review_system_prompt(
 fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
+
+/// What an agent whose sandbox's fctl has no `fctl ticket` is told, in a
+/// project whose tracker it reaches only with it.
+const NO_FCTL_TICKET: &str = "- This sandbox's fctl has no `fctl ticket`, so you can't reach the tracker in this session: say in your reply what you would do there.\n";
 
 /// What an agent that may comment, not push, is told.
 const COMMENT_ONLY: &str = "- In this session you read the repositories and review and comment on GitHub, but you can't push: gh reviews and comments on pull requests (`gh pr review`, `gh pr comment`, line comments through `gh api`), and comments on and labels issues, while git can't push, nor does fctl push for you. Change files only to check something, as when you run a pull request's tests on its branch (`gh pr checkout <number>`): what you find goes in your review and comments, with fixes as suggested changes, and in your reply. Approve a pull request only when you are asked to.\n";
@@ -807,6 +821,7 @@ mod tests {
             retrospectives: false,
             github_access: None,
             review: None,
+            tickets: None,
         }
     }
 
@@ -817,12 +832,15 @@ mod tests {
             max_mb: Some(10 * 1024),
             env: Vec::new(),
         };
-        let text = system_prompt(&spec(), "/work", &paths(), None, Some(&cache));
+        let text = system_prompt(&spec(), "/work", &paths(), None, Some(&cache), false);
         assert!(
             text.contains("- Package managers keep their downloads in /var/cache/fctl ($FCTL_CACHE_DIR), which this project's sessions on this runner share: npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright find there what earlier sessions fetched. Leave it in place; the runner empties it once it takes more than 10 GiB.\n"),
             "{text}"
         );
-        assert!(!system_prompt(&spec(), "/work", &paths(), None, None).contains("$FCTL_CACHE_DIR"));
+        assert!(
+            !system_prompt(&spec(), "/work", &paths(), None, None, false)
+                .contains("$FCTL_CACHE_DIR")
+        );
     }
 
     #[test]
@@ -831,11 +849,12 @@ mod tests {
             cpus: 4,
             memory_mb: 8192,
         };
-        let text = system_prompt(&spec(), "/work", &paths(), Some(size), None);
+        let text = system_prompt(&spec(), "/work", &paths(), Some(size), None, false);
         assert!(text.contains("This sandbox has 4 CPUs and 8 GiB of memory"));
         assert!(text.contains("`make -j4`"));
         assert!(
-            !system_prompt(&spec(), "/work", &paths(), None, None).contains("This sandbox has")
+            !system_prompt(&spec(), "/work", &paths(), None, None, false)
+                .contains("This sandbox has")
         );
         assert_eq!(
             sandbox_env(Some(size)),
@@ -855,13 +874,14 @@ mod tests {
             &paths(),
             None,
             None,
+            false,
         );
         assert!(text.contains("after 10 minutes without one it stops"));
         assert!(text.contains(
             "for up to an hour after your turn ends: you can end your turn to wait for it"
         ));
         // A project that waits longer for messages waits as long for background work.
-        let text = system_prompt(&spec(), "/work", &paths(), None, None);
+        let text = system_prompt(&spec(), "/work", &paths(), None, None, false);
         assert!(text.contains("after 2 hours without one it stops"));
         assert!(text.contains("for up to 2 hours after your turn ends"));
     }
@@ -950,6 +970,7 @@ mod tests {
             &paths(),
             None,
             None,
+            false,
         );
         assert!(text.contains("The repository acme/app is cloned at /home/agent/workspace"));
         assert!(text.contains(
@@ -977,6 +998,7 @@ mod tests {
             &paths(),
             None,
             None,
+            false,
         );
         assert!(text.contains("into /home/agent/repos/<owner>/<name> (for example `git clone https://github.com/acme/lib /home/agent/repos/acme/lib`)"));
         assert!(text.contains("  - acme/lib (read and write)\n"));
@@ -997,6 +1019,7 @@ mod tests {
             &paths(),
             None,
             None,
+            false,
         );
         assert!(text.contains("  - any repository of acme (read only)\n"));
         assert!(
@@ -1013,7 +1036,7 @@ mod tests {
         let mut spec =
             spec_with(serde_json::json!([{ "owner": "acme", "name": "lib", "access": "write" }]));
         spec.project.repo = None;
-        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None, None);
+        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None, None, false);
         assert!(text.contains(
             "- Your working directory is /home/agent/workspace, an empty git repository.\n"
         ));
@@ -1024,7 +1047,7 @@ mod tests {
         assert!(text.contains("For another pull request, make its branch"));
         // Nowhere to open one.
         spec.project.repos = None;
-        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None, None);
+        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None, None, false);
         assert!(!text.contains("For another pull request"));
     }
 
@@ -1047,6 +1070,7 @@ mod tests {
             &paths(),
             None,
             None,
+            false,
         );
         assert!(text.contains("  - acme/lib (read and comment)\n"));
         assert!(text.contains("  - acme/docs (read only)\n"));
@@ -1065,7 +1089,7 @@ mod tests {
         let mut spec = spec_with(serde_json::Value::Null);
         spec.project.settings.pull_request_descriptions = level;
         spec.project.settings.instructions = Some("Run `npm test` before you commit.".into());
-        system_prompt(&spec, "/home/agent/workspace", &paths(), None, None)
+        system_prompt(&spec, "/home/agent/workspace", &paths(), None, None, false)
     }
 
     #[test]
@@ -1124,7 +1148,7 @@ mod tests {
         // People can still ask for one where the project doesn't.
         let mut asked = spec_with(serde_json::Value::Null);
         asked.project.settings.auto_pull_request = false;
-        let text = system_prompt(&asked, "/home/agent/workspace", &paths(), None, None);
+        let text = system_prompt(&asked, "/home/agent/workspace", &paths(), None, None, false);
         assert!(!text.contains("When the task is complete"));
         assert!(text.contains("## Pull request descriptions"));
         // Without a repository to push to, or the right to push, there are none.
@@ -1133,7 +1157,7 @@ mod tests {
             with_access(GithubAccess::Comment),
             with_access(GithubAccess::Read),
         ] {
-            let text = system_prompt(&none, "/work", &paths(), None, None);
+            let text = system_prompt(&none, "/work", &paths(), None, None, false);
             assert!(!text.contains("Pull request descriptions"));
             assert!(!text.contains("[fctl session]"));
         }
@@ -1147,6 +1171,7 @@ mod tests {
             &paths(),
             None,
             None,
+            false,
         );
         assert!(text.contains("  - acme/lib (read only)\n"));
         assert!(text.contains("In this session you only read on GitHub"));
@@ -1161,7 +1186,8 @@ mod tests {
             ..spec()
         };
         assert!(
-            !system_prompt(&none, "/work", &paths(), None, None).contains("only read on GitHub")
+            !system_prompt(&none, "/work", &paths(), None, None, false)
+                .contains("only read on GitHub")
         );
     }
 

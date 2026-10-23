@@ -565,8 +565,9 @@ fn call(
 }
 
 /// Retries what may pass, where asking twice changes nothing: reading the
-/// memory, the session's retrospectives or a review's threads, marking a
-/// note stale, updating a retrospective and resolving a review thread. A
+/// memory, the session's retrospectives, a review's threads or the
+/// project's tickets, marking a note stale, updating a retrospective and
+/// resolving a review thread. A
 /// new note, retrospective or review that may have reached the control
 /// plane isn't sent again, so that none is kept or posted twice; the agent
 /// hears what went wrong and can ask again.
@@ -575,15 +576,20 @@ async fn ask(
     session: &SessionId,
     call: &AgentCall,
 ) -> std::result::Result<AgentAnswer, ApiError> {
-    let again = matches!(
-        call,
+    let again = match call {
         AgentCall::Memories { .. }
-            | AgentCall::MarkStale { .. }
-            | AgentCall::Retrospectives
-            | AgentCall::UpdateRetrospective { .. }
-            | AgentCall::ResolveThread { .. }
-            | AgentCall::ReviewThreads
-    );
+        | AgentCall::MarkStale { .. }
+        | AgentCall::Retrospectives
+        | AgentCall::UpdateRetrospective { .. }
+        | AgentCall::ResolveThread { .. }
+        | AgentCall::ReviewThreads => true,
+        // What reads the tracker; a request this host doesn't know may write.
+        AgentCall::Ticket { request } => {
+            serde_json::from_value::<fctl_proto::tickets::TicketRequest>(request.clone())
+                .is_ok_and(|r| r.reads())
+        }
+        _ => false,
+    };
     let mut delay = Duration::from_secs(1);
     let mut attempt = 1;
     loop {

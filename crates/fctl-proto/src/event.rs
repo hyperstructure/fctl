@@ -117,6 +117,11 @@ pub struct UserMessage {
     /// agent that opened the pull request: the review, which the message
     /// tells the agent. Clients from before it show the message's text.
     pub review: Option<PassedOnReview>,
+    /// For a message that came from a ticket tracker (a ticket delegated to
+    /// fctl in Linear, a reply there): the ticket and who wrote what, which
+    /// the message tells the agent. Clients from before it show the
+    /// message's text.
+    pub ticket: Option<crate::tickets::TicketMessage>,
 }
 
 /// A review of a pull request a session's agent opened, whose findings
@@ -469,7 +474,9 @@ pub struct Notice {
     /// Stable identifier, for example `usage_limit`, `overage_blocked`,
     /// `api_key_refused`, `credential_expired`, `runner_lost`,
     /// `screenshot_published`, `memory_added`, `memory_stale`,
-    /// `retrospective`, `review_posted`, `review_held`, `follow_up_held`.
+    /// `retrospective`, `review_posted`, `review_held`, `follow_up_held`,
+    /// `ticket_created`, `ticket_commented`, `ticket_updated`,
+    /// `ticket_replied`, `ticket_moved`, `ticket_failed`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).
@@ -490,6 +497,9 @@ pub struct Notice {
     /// agent, in a `follow_up_held` notice. Clients from before it show the
     /// message.
     pub follow_up: Option<FollowUp>,
+    /// What the agent, or fctl for it, did in the project's ticket tracker,
+    /// in a `ticket_*` notice. Clients from before it show the message.
+    pub ticket: Option<crate::tickets::TicketNotice>,
 }
 
 /// A screenshot an agent published on the control plane (`fctl publish`):
@@ -532,6 +542,7 @@ mod tests {
             seq: 7,
             ts: 1_700_000_000_000,
             body: EventBody::UserMessage(UserMessage {
+                ticket: None,
                 id: DeliveryId("dlv_1".into()),
                 author: Some(UserRef {
                     id: UserId("usr_1".into()),
@@ -599,6 +610,7 @@ mod tests {
         assert_eq!(old.published, None);
         assert!(serde_json::to_value(&old)?.get("published").is_none());
         let shot = Notice {
+            ticket: None,
             level: NoticeLevel::Info,
             code: "screenshot_published".into(),
             message: "Published after.png".into(),
@@ -774,6 +786,7 @@ mod tests {
             ],
         };
         let m = UserMessage {
+            ticket: None,
             id: DeliveryId("dlv_1".into()),
             author: None,
             text: "fctl's review agent reviewed commit 3f2a1c9 …".into(),

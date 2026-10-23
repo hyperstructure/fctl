@@ -24,6 +24,12 @@ client_id = "Iv23liRKQScqi5ySeiBr"
 # Where "New repository" creates repositories.
 default_owner = "hyperstructure"
 
+# fctl's Linear app, which workspaces install in their Linear workspaces
+# (LINEAR_CLIENT_SECRET and LINEAR_WEBHOOK_SECRET are Worker secrets). Until
+# its client ID is here, LINEAR_CLIENT_ID can be a secret too.
+# [linear]
+# client_id = ""
+
 # "Sign in with Google": the OAuth client in the fctl-sh Google Cloud project
 # (GOOGLE_CLIENT_SECRET is a Worker secret).
 [google]

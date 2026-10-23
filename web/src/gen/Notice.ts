@@ -5,13 +5,16 @@ import type { NoticeLevel } from "./NoticeLevel";
 import type { PostedReview } from "./PostedReview";
 import type { PublishedFile } from "./PublishedFile";
 import type { Retrospective } from "./Retrospective";
+import type { TicketNotice } from "./TicketNotice";
 
 export type Notice = { level: NoticeLevel, 
 /**
  * Stable identifier, for example `usage_limit`, `overage_blocked`,
  * `api_key_refused`, `credential_expired`, `runner_lost`,
  * `screenshot_published`, `memory_added`, `memory_stale`,
- * `retrospective`, `review_posted`, `review_held`, `follow_up_held`.
+ * `retrospective`, `review_posted`, `review_held`, `follow_up_held`,
+ * `ticket_created`, `ticket_commented`, `ticket_updated`,
+ * `ticket_replied`, `ticket_moved`, `ticket_failed`.
  */
 code: string, message: string, 
 /**
@@ -43,4 +46,9 @@ review?: PostedReview,
  * agent, in a `follow_up_held` notice. Clients from before it show the
  * message.
  */
-follow_up?: FollowUp, };
+follow_up?: FollowUp, 
+/**
+ * What the agent, or fctl for it, did in the project's ticket tracker,
+ * in a `ticket_*` notice. Clients from before it show the message.
+ */
+ticket?: TicketNotice, };

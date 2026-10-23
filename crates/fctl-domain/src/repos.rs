@@ -194,9 +194,12 @@ pub fn token_plan(primary: Option<&RepoRef>, grants: &[RepoGrant]) -> Option<Tok
 /// to, when its agent may do `access` on GitHub
 /// (`crate::limits::session_github`). An agent that comments reviews,
 /// comments and labels (`pull_requests` and `issues`), and can't push,
-/// merge (both `contents`) or change workflows.
-pub fn permissions(access: GithubAccess) -> Value {
-    match access {
+/// merge (both `contents`) or change workflows. Without `issues`, as the
+/// project's ticket tracker decides (`crate::tickets::issue_tokens`), it
+/// reaches no issues: pull requests' comments and labels are theirs to
+/// write with `pull_requests` alone.
+pub fn permissions(access: GithubAccess, issues: bool) -> Value {
+    let mut p = match access {
         GithubAccess::Push => json!({
             "contents": "write",
             "pull_requests": "write",
@@ -216,19 +219,39 @@ pub fn permissions(access: GithubAccess) -> Value {
             "statuses": "read",
             "metadata": "read"
         }),
-        GithubAccess::Read => read_permissions(),
+        GithubAccess::Read => read_permissions(issues),
+    };
+    if !issues && let Some(m) = p.as_object_mut() {
+        m.remove("issues");
     }
+    p
 }
 
-/// The permissions of a session's token for the repositories it only reads.
-pub fn read_permissions() -> Value {
-    json!({
+/// The permissions of a session's token for the repositories it only
+/// reads; with `issues`, their issues too.
+pub fn read_permissions(issues: bool) -> Value {
+    let mut p = json!({
         "contents": "read",
         "pull_requests": "read",
         "issues": "read",
         "checks": "read",
         "actions": "read",
         "statuses": "read",
+        "metadata": "read"
+    });
+    if !issues && let Some(m) = p.as_object_mut() {
+        m.remove("issues");
+    }
+    p
+}
+
+/// The permissions of the token the control plane reads and writes a
+/// repository's issues with, for `fctl ticket` (`crate::issues`): issues
+/// alone, to write where the agent may, else to read. It never leaves the
+/// control plane.
+pub fn issue_permissions(write: bool) -> Value {
+    json!({
+        "issues": if write { "write" } else { "read" },
         "metadata": "read"
     })
 }
@@ -574,7 +597,7 @@ mod tests {
     #[test]
     fn agents_that_comment_or_read_get_tokens_that_cannot_push() {
         let write = |access| {
-            let p = permissions(access);
+            let p = permissions(access, true);
             ["contents", "workflows"]
                 .iter()
                 .any(|k| p.get(k).and_then(Value::as_str) == Some("write"))
@@ -582,16 +605,32 @@ mod tests {
         assert!(write(GithubAccess::Push));
         assert!(!write(GithubAccess::Comment));
         assert!(!write(GithubAccess::Read));
-        let comment = permissions(GithubAccess::Comment);
+        let comment = permissions(GithubAccess::Comment, true);
         for k in ["pull_requests", "issues"] {
             assert_eq!(comment[k], "write", "{k}");
         }
-        let read = permissions(GithubAccess::Read);
+        let read = permissions(GithubAccess::Read, true);
         assert!(
             read.as_object()
                 .is_some_and(|o| o.values().all(|v| v == "read"))
         );
         assert_eq!(resolve_permissions()["contents"], "write");
+    }
+
+    #[test]
+    fn tokens_reach_issues_only_where_the_tracker_says() {
+        for access in GithubAccess::ALL {
+            assert!(permissions(access, true).get("issues").is_some());
+            let p = permissions(access, false);
+            assert!(p.get("issues").is_none(), "{access:?}");
+            // Pull requests stay theirs to comment on and label.
+            assert!(p.get("pull_requests").is_some());
+        }
+        assert!(read_permissions(false).get("issues").is_none());
+        assert_eq!(read_permissions(true)["issues"], "read");
+        assert_eq!(issue_permissions(true)["issues"], "write");
+        assert_eq!(issue_permissions(false)["issues"], "read");
+        assert!(issue_permissions(true).get("contents").is_none());
     }
 
     #[test]

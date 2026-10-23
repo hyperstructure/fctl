@@ -72,7 +72,9 @@ pub fn for_new_project(settings: &mut ProjectSettings, sent: &Value) {
 /// `publish_screenshots` and `package_caches`, off; for `screenshot_days`,
 /// 30 days (send `null` to choose the default); for `github_access`, push,
 /// which would let agents push again; for `pull_request_descriptions`,
-/// balanced; for each of `follow_ups`, off. An
+/// balanced; for each of `follow_ups`, off; for `tickets`, GitHub Issues of
+/// the repositories agents write to, which would reach issues the project
+/// keeps its agents away from. An
 /// `image_build` it leaves out stays unless it chooses an image instead
 /// (send `null` for none). `sent` is the update's `settings` object as it
 /// arrived.
@@ -123,6 +125,9 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("pull_request_descriptions").is_none() {
         settings.pull_request_descriptions = stored.pull_request_descriptions;
+    }
+    if sent.get("tickets").is_none() {
+        settings.tickets = stored.tickets.clone();
     }
 }
 
@@ -247,6 +252,28 @@ mod tests {
         };
         keep_unsent(&mut s, &stored, &json!({ "github_access": "push" }));
         assert_eq!(s.github_access, Some(GithubAccess::Push));
+    }
+
+    #[test]
+    fn updates_without_the_tracker_keep_agents_away_from_issues() {
+        use fctl_proto::session::{Tickets, Tracker};
+        let stored = ProjectSettings {
+            tickets: Tickets {
+                tracker: Tracker::None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
+        assert_eq!(s.tickets.tracker, Tracker::None);
+        let mut s = ProjectSettings::default();
+        keep_unsent(
+            &mut s,
+            &stored,
+            &json!({ "tickets": { "tracker": "github" } }),
+        );
+        assert_eq!(s.tickets.tracker, Tracker::Github);
     }
 
     #[test]

@@ -4,6 +4,7 @@ import type { DeliveryId } from "./DeliveryId";
 import type { FollowUp } from "./FollowUp";
 import type { MessageSource } from "./MessageSource";
 import type { PassedOnReview } from "./PassedOnReview";
+import type { TicketMessage } from "./TicketMessage";
 import type { UserRef } from "./UserRef";
 
 export type UserMessage = { id: DeliveryId, 
@@ -30,4 +31,11 @@ follow_up?: FollowUp,
  * agent that opened the pull request: the review, which the message
  * tells the agent. Clients from before it show the message's text.
  */
-review?: PassedOnReview, };
+review?: PassedOnReview, 
+/**
+ * For a message that came from a ticket tracker (a ticket delegated to
+ * fctl in Linear, a reply there): the ticket and who wrote what, which
+ * the message tells the agent. Clients from before it show the
+ * message's text.
+ */
+ticket?: TicketMessage, };

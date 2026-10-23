@@ -8,6 +8,7 @@ import type { PullRequestRef } from "./PullRequestRef";
 import type { ReviewSpec } from "./ReviewSpec";
 import type { SessionCredentials } from "./SessionCredentials";
 import type { SessionId } from "./SessionId";
+import type { TicketsSpec } from "./TicketsSpec";
 import type { UserRef } from "./UserRef";
 
 /**
@@ -116,4 +117,12 @@ github_access?: GithubAccess,
  * sessions. FleetDO gives review sessions only to hosts that announce
  * [`FEATURE_REVIEWS`].
  */
-review?: ReviewSpec, };
+review?: ReviewSpec, 
+/**
+ * The project's ticket tracker, as its agent is told of it, and the
+ * ticket the session started from (`fctl_domain::tickets`). Absent for
+ * review agents and from older control planes; older hosts leave it
+ * out of the agent's configuration, and their agents hear nothing of
+ * it, while their GitHub tokens still follow the tracker.
+ */
+tickets?: TicketsSpec, };

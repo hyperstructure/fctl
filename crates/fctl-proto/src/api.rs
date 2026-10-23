@@ -58,6 +58,17 @@ pub struct Features {
     /// (`FCTL_EARLY_ACCESS`), as app.fctl.sh's does.
     #[serde(default)]
     pub early_access: bool,
+    /// The instance has a Linear app (`LINEAR_CLIENT_ID` and its secret):
+    /// workspaces connect Linear workspaces, and projects choose Linear as
+    /// their ticket tracker. Absent from control planes before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub linear: bool,
+    /// It takes Linear's webhook (`LINEAR_WEBHOOK_SECRET`): what people
+    /// delegate to fctl in Linear starts sessions.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub linear_webhook: bool,
 }
 
 /// `POST /api/v1/setup`: create the owner account with the setup token.
@@ -2940,6 +2951,15 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(as = "Option<Vec<ResolvedFinding>>", optional))]
         resolved: Vec<ResolvedFinding>,
     },
+    /// Reads or writes the project's ticket tracker (`fctl ticket`): a
+    /// [`crate::tickets::TicketRequest`], which hosts and fctl-agent pass
+    /// on as it is, so that what `fctl ticket` does grows with the control
+    /// plane and the sandbox's fctl. Hosts and control planes from before
+    /// ticket trackers refuse it.
+    Ticket {
+        #[cfg_attr(feature = "ts", ts(type = "TicketRequest"))]
+        request: serde_json::Value,
+    },
 }
 
 /// The control plane's answer to an [`AgentCall`].
@@ -2981,6 +3001,12 @@ pub enum AgentAnswer {
     /// What fctl posted.
     ReviewPosted {
         review: PostedReview,
+    },
+    /// The tracker's answer to a [`AgentCall::Ticket`]: a
+    /// [`crate::tickets::TicketAnswer`], passed on as it is.
+    Ticket {
+        #[cfg_attr(feature = "ts", ts(type = "TicketAnswer"))]
+        answer: serde_json::Value,
     },
 }
 

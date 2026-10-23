@@ -13,6 +13,10 @@
 //! | `GITHUB_CLIENT_SECRET` | secret | Its client secret: signing in to GitHub to connect accounts |
 //! | `GITHUB_WEBHOOK_SECRET` | secret | Its webhook's secret: GitHub tells the control plane when pull requests and their checks change |
 //! | `GITHUB_DEFAULT_OWNER` | var | Organization new repositories are created in |
+//! | `LINEAR_CLIENT_ID` | var | fctl's Linear app (optional): its OAuth client |
+//! | `LINEAR_CLIENT_SECRET` | secret | Its client secret |
+//! | `LINEAR_WEBHOOK_SECRET` | secret | Its webhook's signing secret: Linear tells the control plane when people delegate issues to fctl |
+//! | `LINEAR_API_URL`, `LINEAR_AUTHORIZE_URL` | var | Linear's API and sign-in page, for a stand-in in development |
 //! | `GOOGLE_CLIENT_ID` | var | Google OAuth client (optional) |
 //! | `GOOGLE_CLIENT_SECRET` | secret | Its secret |
 //! | `RESEND_API_KEY` | secret | Transactional email (optional) |
@@ -45,6 +49,24 @@ impl GithubConfig {
     }
 }
 
+/// fctl's Linear app (docs/architecture.md#linear): an OAuth client that
+/// workspaces install in their Linear workspaces, as an agent people there
+/// delegate issues to, and that people sign in with to link their Linear
+/// accounts.
+#[derive(Clone)]
+pub struct LinearConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    /// The secret Linear signs the app's webhook deliveries with: without
+    /// it, the control plane takes none, and nothing delegated in Linear
+    /// reaches fctl.
+    pub webhook_secret: Option<String>,
+    /// `https://api.linear.app`, or a stand-in's.
+    pub api_url: String,
+    /// `https://linear.app/oauth/authorize`, or a stand-in's.
+    pub authorize_url: String,
+}
+
 #[derive(Clone)]
 pub struct GoogleConfig {
     pub client_id: String,
@@ -69,6 +91,7 @@ pub struct Config {
     pub master_key: Option<[u8; 32]>,
     pub setup_token: Option<String>,
     pub github: Option<GithubConfig>,
+    pub linear: Option<LinearConfig>,
     pub google: Option<GoogleConfig>,
     pub email: Option<EmailConfig>,
 }
@@ -109,6 +132,23 @@ impl Config {
             }),
             _ => None,
         };
+        let linear = match (
+            var(env, "LINEAR_CLIENT_ID"),
+            var(env, "LINEAR_CLIENT_SECRET"),
+        ) {
+            (Some(client_id), Some(client_secret)) => Some(LinearConfig {
+                client_id,
+                client_secret,
+                webhook_secret: var(env, "LINEAR_WEBHOOK_SECRET"),
+                api_url: var(env, "LINEAR_API_URL")
+                    .unwrap_or_else(|| fctl_domain::linear::API_URL.to_owned())
+                    .trim_end_matches('/')
+                    .to_owned(),
+                authorize_url: var(env, "LINEAR_AUTHORIZE_URL")
+                    .unwrap_or_else(|| fctl_domain::linear::AUTHORIZE_URL.to_owned()),
+            }),
+            _ => None,
+        };
         let google = match (
             var(env, "GOOGLE_CLIENT_ID"),
             var(env, "GOOGLE_CLIENT_SECRET"),
@@ -132,6 +172,7 @@ impl Config {
             master_key,
             setup_token: var(env, "FCTL_SETUP_TOKEN"),
             github,
+            linear,
             google,
             email,
         }

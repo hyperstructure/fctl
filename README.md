@@ -60,8 +60,10 @@ release.
   what got in the way, for the people who follow along.
 - **Work that starts itself.** Schedules start sessions on their own, once
   or again and again: dependency updates every Monday, triage every
-  morning. Other tools, such as an issue tracker, start one when they have
-  something for it.
+  morning. Teams that use Linear delegate tickets to fctl there, and other
+  tools start a session when they have something for it.
+- **Your tracker.** Each project chooses where its agents read and write
+  tickets: GitHub Issues, Linear, or none at all.
 - **Follow along anywhere.** With a full Claude login, sessions join Remote
   Control and show up in the Claude apps.
 - **Yours.** Deploy your own instance to your Cloudflare account with

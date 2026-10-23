@@ -5,6 +5,7 @@
 import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@tanstack/react-router";
 import { api } from "@/lib/api";
 import { fetchMe, keys, queryClient } from "@/lib/queries";
+import { LINEAR_OUTCOMES, type LinearOutcome } from "@/lib/tickets";
 import { Admin } from "@/routes/admin";
 import { InvitePage, LoginPage, ResetPage, SetupPage, TwoFactorPage } from "@/routes/auth";
 import { DevicePage } from "@/routes/device";
@@ -109,16 +110,25 @@ const workspace = createRoute({
   component: WorkspacePage,
   validateSearch: (
     s: Record<string, unknown>,
-  ): { tab?: WorkspaceTab; github?: GithubOutcome; account?: string; reason?: GithubRefusal } => ({
-    tab: oneOf(s.tab, ["projects", "people", "runners", "github", "settings", "audit"] as const),
+  ): {
+    tab?: WorkspaceTab;
+    github?: GithubOutcome;
+    account?: string;
+    reason?: GithubRefusal;
+    linear?: LinearOutcome;
+  } => ({
+    tab: oneOf(s.tab, ["projects", "people", "runners", "github", "linear", "settings", "audit"] as const),
     // Back from GitHub: installing the app, or the sign-in that connects an account (api::github).
     github: oneOf(s.github, GITHUB_OUTCOMES),
     account: str(s.account),
     reason: oneOf(s.reason, GITHUB_REFUSALS),
+    // Back from Linear: installing fctl's app there (api::linear).
+    linear: oneOf(s.linear, LINEAR_OUTCOMES),
   }),
 });
 type ProjectTab =
   | "sessions"
+  | "tickets"
   | "schedules"
   | "reviews"
   | "memory"
@@ -132,10 +142,14 @@ const project = createRoute({
   getParentRoute: () => app,
   path: "/p/$slug",
   component: ProjectPage,
-  validateSearch: (s: Record<string, unknown>): { tab?: ProjectTab; schedule?: string } => ({
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { tab?: ProjectTab; schedule?: string; linear?: LinearOutcome } => ({
     tab: str(s.tab) as ProjectTab | undefined,
     // The schedule the Schedules tab opens, from a session it started.
     schedule: str(s.schedule),
+    // Back from Linear: installing fctl's app, or linking someone's account (api::linear).
+    linear: oneOf(s.linear, LINEAR_OUTCOMES),
   }),
 });
 const session = createRoute({ getParentRoute: () => app, path: "/s/$id", component: SessionPage });
@@ -143,7 +157,14 @@ const settings = createRoute({
   getParentRoute: () => app,
   path: "/settings",
   component: SettingsPage,
-  validateSearch: (s: Record<string, unknown>) => ({ linked: str(s.linked), error: str(s.error) }),
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { linked: string | undefined; error: string | undefined; linear?: LinearOutcome } => ({
+    linked: str(s.linked),
+    error: str(s.error),
+    // Back from Linear: linking your account (api::linear).
+    linear: oneOf(s.linear, LINEAR_OUTCOMES),
+  }),
 });
 const admin = createRoute({
   getParentRoute: () => app,

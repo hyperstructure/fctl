@@ -1,4 +1,4 @@
-# 0052: Hosts update themselves to the control plane's version
+# 0053: Hosts update themselves to the control plane's version
 
 2026-10-23 · accepted
 

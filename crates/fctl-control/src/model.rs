@@ -617,6 +617,9 @@ pub struct SessionRow {
     pub schedule_id: Option<String>,
     #[serde(default)]
     pub schedule_name: Option<String>,
+    /// The ticket it started from (JSON: `crate::delegations::TicketColumn`).
+    #[serde(default)]
+    pub ticket: Option<String>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
@@ -746,6 +749,10 @@ impl SessionRow {
             following: Some(self.following),
             review: self.review(),
             schedule: self.schedule(),
+            ticket: self
+                .ticket
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<fctl_proto::session::SessionTicket>(j).ok()),
         };
         fctl_domain::pulls::backfill(&mut s);
         s
@@ -764,7 +771,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \
-    rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, \
+    rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, s.ticket, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
     w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \

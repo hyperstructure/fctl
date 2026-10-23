@@ -13,6 +13,7 @@
 //! | [`runner`] | FleetDO ⇄ hosts (control connection) |
 //! | [`uplink`] | SessionDO ⇄ hosts (one connection per session) |
 //! | [`agent`] | hosts ⇄ fctl-agent inside a sandbox, and `fctl` ⇄ fctl-agent within it |
+//! | [`tickets`] | tickets in a project's tracker, whatever the tracker, and Linear's connections |
 
 pub mod agent;
 pub mod api;
@@ -21,6 +22,7 @@ pub mod event;
 pub mod ids;
 pub mod runner;
 pub mod session;
+pub mod tickets;
 pub mod uplink;
 pub mod viewer;
 

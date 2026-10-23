@@ -11,6 +11,28 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 #[derive(Subcommand)]
+pub enum LinearAccountCmd {
+    /// Your Linear accounts (the default).
+    #[command(visible_alias = "ls")]
+    List,
+    /// Link your Linear account: opens Linear's sign-in in your browser,
+    /// where you're signed in to fctl. fctl reads who you are there and
+    /// forgets the sign-in.
+    Connect {
+        /// Print the link without opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Forget your Linear account in a Linear workspace: what you delegate
+    /// there starts nothing until you link it again.
+    Disconnect {
+        /// The Linear workspace: its name, its address (linear.app/<key>)
+        /// or its id.
+        organization: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AccountCmd {
     /// Change your profile: the address commits credit you with.
     #[command(
@@ -41,6 +63,16 @@ pub enum AccountCmd {
     Disconnect {
         /// One of your addresses, not the primary one.
         address: String,
+    },
+    /// Your Linear accounts: who fctl knows you as in Linear workspaces, so
+    /// that the issues you delegate to fctl there run as you, and your
+    /// replies to its agents there reach them.
+    #[command(
+        after_help = "Examples:\n  fctl account linear\n  fctl account linear connect\n  fctl account linear disconnect acme"
+    )]
+    Linear {
+        #[command(subcommand)]
+        cmd: Option<LinearAccountCmd>,
     },
     /// Two-factor sign-in: codes from an authenticator app after your
     /// password, and recovery codes.
@@ -87,6 +119,9 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
     let api = config::api(server)?;
     match cmd {
         AccountCmd::TwoFactor(cmd) => super::two_factor::run(&api, cmd, json).await,
+        AccountCmd::Linear { cmd } => {
+            linear(&api, cmd.unwrap_or(LinearAccountCmd::List), json).await
+        }
         AccountCmd::Passkeys(cmd) => super::passkeys::run(&api, cmd, json).await,
         AccountCmd::Set {
             commit_email,
@@ -350,4 +385,78 @@ fn print_emails(emails: &[EmailAddress]) {
             })
         );
     }
+}
+
+async fn linear(api: &fctl_client::Api, cmd: LinearAccountCmd, json: bool) -> Result<()> {
+    match cmd {
+        LinearAccountCmd::List => {
+            let mine = api.my_linear().await?;
+            if json {
+                return style::print_json(&mine);
+            }
+            if !mine.configured {
+                println!("This instance has no Linear app.");
+                return Ok(());
+            }
+            if mine.accounts.is_empty() {
+                println!(
+                    "fctl doesn't know your Linear account yet. Link it with `fctl account linear connect`, so that what you delegate to fctl in Linear runs as you."
+                );
+            }
+            for a in &mine.accounts {
+                println!(
+                    "{:<24} {:<28} {}",
+                    style::bold(&style::terminal_safe(&a.organization_name)),
+                    style::dim(&style::terminal_safe(
+                        &a.url_key
+                            .as_deref()
+                            .map(|k| format!("linear.app/{k}"))
+                            .unwrap_or_default()
+                    )),
+                    style::terminal_safe(&match &a.email {
+                        Some(e) => format!("{} ({e})", a.name),
+                        None => a.name.clone(),
+                    })
+                );
+            }
+        }
+        LinearAccountCmd::Connect { no_browser } => {
+            let url = api.link_linear_url();
+            if json {
+                return style::print_json(&serde_json::json!({ "url": url }));
+            }
+            println!(
+                "Link your Linear account by signing in to Linear, in a browser where you're signed in to fctl:"
+            );
+            println!();
+            println!("  {}", style::terminal_safe(&url));
+            println!();
+            if !no_browser && crate::cmd::auth::open_browser(&url) {
+                println!("{}", style::dim("Opened it in your browser."));
+            }
+        }
+        LinearAccountCmd::Disconnect { organization } => {
+            let mine = api.my_linear().await?;
+            let n = organization.trim();
+            let Some(a) = mine.accounts.iter().find(|a| {
+                a.organization == n
+                    || a.organization_name.eq_ignore_ascii_case(n)
+                    || a.url_key
+                        .as_deref()
+                        .is_some_and(|k| k.eq_ignore_ascii_case(n))
+            }) else {
+                anyhow::bail!("You have no Linear account linked in {n}");
+            };
+            let mine = api.unlink_linear(&a.organization).await?;
+            if json {
+                return style::print_json(&mine);
+            }
+            println!(
+                "{} fctl forgot your Linear account in {}",
+                style::accent("✓"),
+                a.organization_name
+            );
+        }
+    }
+    Ok(())
 }

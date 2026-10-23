@@ -10,6 +10,7 @@ import type { SessionRole } from "./SessionRole";
 import type { SessionSchedule } from "./SessionSchedule";
 import type { SessionStats } from "./SessionStats";
 import type { SessionStatus } from "./SessionStatus";
+import type { SessionTicket } from "./SessionTicket";
 import type { UserRef } from "./UserRef";
 import type { WorkspaceRef } from "./WorkspaceRef";
 
@@ -84,4 +85,10 @@ review?: SessionReview,
  * someone ran it. Absent for other sessions, and from control planes
  * before schedules.
  */
-schedule?: SessionSchedule, };
+schedule?: SessionSchedule, 
+/**
+ * The ticket it started from: one delegated to fctl in Linear, say.
+ * Absent for other sessions, and from control planes before ticket
+ * trackers.
+ */
+ticket?: SessionTicket, };

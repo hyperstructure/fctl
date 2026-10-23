@@ -261,6 +261,11 @@ export const api = {
   /** Runs a schedule's task now, in a session on your Claude subscription. */
   runSchedule: (id: string, b: G.RunScheduleRequest = {}) =>
     request<G.ScheduleRun>("POST", `/schedules/${enc(id)}/runs`, b),
+  /** A project's ticket tracker as it works now. */
+  projectTickets: (project: string) => request<G.ProjectTickets>("GET", `/projects/${enc(project)}/tickets`),
+  /** Your Linear accounts. */
+  myLinear: () => request<G.MyLinear>("GET", "/me/linear"),
+  unlinkLinear: (organization: string) => request<G.MyLinear>("DELETE", `/me/linear/${enc(organization)}`),
   github: () => request<G.GithubInfo>("GET", "/github"),
   /** The repositories a workspace's projects may use. */
   githubRepos: (workspace: string) =>
@@ -439,6 +444,14 @@ export const workspaces = {
     request<G.WorkspaceGithub>("POST", `/workspaces/${enc(id)}/github/offers/${enc(account)}`, b),
   dismissGithubOffer: (id: string, account: string) =>
     request<G.WorkspaceGithub>("DELETE", `/workspaces/${enc(id)}/github/offers/${enc(account)}`),
+  linear: (id: string) => request<G.WorkspaceLinear>("GET", `/workspaces/${enc(id)}/linear`),
+  // The link to the Linear sign-in that installs fctl's app in a Linear workspace and connects it.
+  connectLinear: (id: string, b: G.ConnectLinearRequest = {}) =>
+    request<G.LinearLink>("POST", `/workspaces/${enc(id)}/linear/connect`, b),
+  disconnectLinear: (id: string, organization: string) =>
+    request<G.WorkspaceLinear>("DELETE", `/workspaces/${enc(id)}/linear/${enc(organization)}`),
+  linearTeams: (id: string, organization: string) =>
+    request<G.LinearTeamList>("GET", `/workspaces/${enc(id)}/linear/${enc(organization)}/teams`),
   accept: (invitation: string) => request<G.Workspace>("POST", `/invitations/${enc(invitation)}/accept`, {}),
   decline: (invitation: string) => request<G.Ok>("POST", `/invitations/${enc(invitation)}/decline`, {}),
 };
@@ -450,6 +463,14 @@ export const emails = {
   /** Accepts an instance invitation by connecting its address to the signed-in account. */
   connectInvite: (token: string) => request<G.Me>("POST", `/invites/${enc(token)}/connect`, {}),
 };
+
+/**
+ * Where the browser links your Linear account, by signing in to Linear, and comes back to: the
+ * project's Tickets tab, else Settings.
+ */
+export function linearLinkUrl(project?: string): string {
+  return `/api/v1/linear/link${project ? `?project=${enc(project)}` : ""}`;
+}
 
 export function wsUrl(path: string): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";

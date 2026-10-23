@@ -5,13 +5,14 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, Repeat } from "lucide-react";
 import { Fragment } from "react";
-import { Avatar, StatusDot } from "@/components/ui";
+import { Avatar, GithubIcon, LinearIcon, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { agoShort, stamp } from "@/lib/format";
 import { prLabel, prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { statusReason } from "@/lib/status";
+import { ticketLabel } from "@/lib/tickets";
 import { PullRequestChecksIcon, PullRequestStateIcon } from "./pull-request";
 
 export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.WorkspaceRef }) {
@@ -34,6 +35,7 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
             {s.project_slug}#{s.number}
           </span>
           <ScheduledMark s={s} />
+          <TicketMark s={s} />
           {statusReason(s) && <span className="truncate">· {statusReason(s)}</span>}
           {s.stats.files_changed > 0 && (
             <span className="shrink-0 max-sm:hidden">
@@ -160,4 +162,41 @@ export function PullRequestLinks({ s, className }: { s: G.Session; className?: s
       ))}
     </span>
   );
+}
+
+/** The ticket a session started from, as a link to it in its tracker: Linear's mark and its key. */
+export function TicketLink({
+  session,
+  className,
+}: {
+  session: Pick<G.Session, "ticket">;
+  className?: string;
+}) {
+  const t = session.ticket;
+  if (!t) return null;
+  return (
+    <a
+      href={t.url}
+      target="_blank"
+      rel="noreferrer"
+      title={ticketLabel(t)}
+      className={cn(
+        "inline-flex min-w-0 items-center gap-1 font-mono text-[12px] text-ink-3 transition-colors hover:text-ink",
+        className,
+      )}
+    >
+      {t.tracker === "linear" ? (
+        <LinearIcon className="size-3 shrink-0" />
+      ) : (
+        <GithubIcon className="size-3 shrink-0" />
+      )}
+      <span className="truncate">{t.key}</span>
+    </a>
+  );
+}
+
+/** That a ticket started the session, in a list: its key, a link over the session's own. */
+export function TicketMark({ s }: { s: Pick<G.Session, "ticket"> }) {
+  if (!s.ticket) return null;
+  return <TicketLink session={s} className="relative z-[2] shrink-0" />;
 }
