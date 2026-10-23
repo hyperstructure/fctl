@@ -1,4 +1,4 @@
-# 0051: Projects choose a ticket tracker, and Linear delegates tickets to fctl
+# 0052: Projects choose a ticket tracker, and Linear delegates tickets to fctl
 
 2026-10-23 · accepted
 

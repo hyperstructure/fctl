@@ -230,7 +230,8 @@ async fn check_repo(
 
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     // Read as JSON first: a new project's settings start with connectors off
-    // unless the request sets them (see `settings::for_new_project`).
+    // and follow-ups on unless the request sets them (see
+    // `settings::for_new_project`).
     let raw: serde_json::Value = http::body(req).await?;
     let body = CreateProjectRequest::deserialize(&raw)
         .map_err(|e| AppError(ApiError::bad_request(format!("Invalid request body: {e}"))))?;

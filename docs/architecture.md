@@ -1192,7 +1192,7 @@ run and post, and say why their commit shows no check
 
 ### Follow-ups
 
-Where a project turns them on (`ProjectSettings::follow_ups`, the
+Where a project has them on (`ProjectSettings::follow_ups`, the
 project's Settings, `fctl projects set --follow-ups`), what happens on
 GitHub to a pull request one of the instance's own agents opened (its
 author is the GitHub App) brings that agent back to it, in a message from
@@ -1200,7 +1200,12 @@ fctl delivered as a person's message is: it resumes a stopped session on
 the subscription it ran on
 ([ADR 0043](adr/0043-agents-come-back-to-their-pull-requests-for-comments-failed-checks-and-merges.md),
 [ADR 0045](adr/0045-merge-conflicts-bring-agents-back-too.md)). Four
-kinds, each on or off on its own, all off by default:
+kinds, each on or off on its own. New projects start with all four on,
+except those their create request turns off
+(`fctl_domain::settings::for_new_project`,
+[ADR 0051](adr/0051-new-projects-start-with-follow-ups-on.md)), and store
+each one; a project stored without one, from before it existed, has it
+off:
 
 1. **Comments that address the agent** (`issue_comment`,
    `pull_request_review` and `pull_request_review_comment` deliveries,
@@ -1399,7 +1404,7 @@ Linear's tickets start them through fctl's own integration
 
 A project chooses where its agents read and write tickets
 (`ProjectSettings::tickets`, the project's **Tickets** tab, `fctl projects
-set --tickets`, [ADR 0051](adr/0051-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md)):
+set --tickets`, [ADR 0052](adr/0052-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md)):
 none, GitHub Issues, or a team in Linear. Projects from before it, and new
 ones, use GitHub Issues of the repositories their agents write to, as
 agents always did. Agents reach the one chosen alone, and fctl keeps them
@@ -1460,7 +1465,7 @@ project's tracker lets agents, and never reach Linear.
 ### Linear
 
 People who track their work in Linear delegate issues to fctl there
-([ADR 0051](adr/0051-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md)).
+([ADR 0052](adr/0052-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md)).
 The instance has one Linear OAuth app (`LINEAR_CLIENT_ID`,
 `LINEAR_CLIENT_SECRET`, [Self-hosting](self-hosting.md#connect-linear-optional)),
 which workspaces install in their Linear workspaces as an agent: Linear

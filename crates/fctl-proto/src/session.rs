@@ -609,8 +609,11 @@ pub struct ProjectSettings {
     #[serde(deserialize_with = "least_if_unknown")]
     pub github_access: Option<GithubAccess>,
     /// What brings an agent back to a pull request its session opened:
-    /// comments that mention it, failed checks, a merge. All off by
-    /// default. An update that leaves it, or one of its fields, out keeps
+    /// comments that mention it, failed checks, conflicts, a merge. New
+    /// projects start with all of them on unless their create request
+    /// turns some off (`fctl_domain::settings::for_new_project`); read
+    /// without it, or without one of its fields, they are off, as projects
+    /// from before them stored. An update that leaves it, or one of its fields, out keeps
     /// what was stored. Control planes from before it leave it out.
     #[cfg_attr(feature = "ts", ts(as = "Option<FollowUps>", optional))]
     pub follow_ups: FollowUps,
@@ -647,6 +650,14 @@ pub struct FollowUps {
 }
 
 impl FollowUps {
+    /// Every kind on: what new projects start with.
+    pub const ALL: Self = Self {
+        comments: true,
+        checks: true,
+        closed: true,
+        conflicts: true,
+    };
+
     /// Whether anything brings agents back.
     pub fn any(&self) -> bool {
         self.comments || self.checks || self.closed || self.conflicts

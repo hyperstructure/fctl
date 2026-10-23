@@ -439,8 +439,9 @@ Projects can bring their agents back to the pull requests they opened
 ([Architecture](architecture.md#follow-ups)): when someone who can write
 to the repository mentions `@fctl` or `@agent` in a comment, when a check
 fails, when a pull request conflicts with its base branch, when it merges
-or closes. Each project turns them on in its Settings, or with `fctl
-projects set --follow-ups`; they need the webhook's secret, and for
+or closes. New projects start with all of them on, and each project turns
+them on or off in its Settings, or with `fctl projects set --follow-ups`
+(projects made before they did keep what they stored); they need the webhook's secret, and for
 comments the app subscribed to **Issue comment**, **Pull request review**
 and **Pull request review comment**. For an app made before, subscribe to
 them under **Permissions & events**: installations accept nothing new,

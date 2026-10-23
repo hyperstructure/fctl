@@ -39,10 +39,28 @@ pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
 /// in: a create request that leaves `claude_ai_connectors` out (or sends no
 /// settings at all) gets `false`, though a `ProjectSettings` read without
 /// the field is `true` (projects from before it keep their connectors).
-/// `sent` is the request's `settings` as it arrived.
+/// Its follow-ups start on, each one the request leaves out, though a
+/// `FollowUps` read without one is off (projects from before it, which
+/// `crate::pull_requests::moved_onto`'s SQL reads the same way); the
+/// project then stores each of them. `sent` is the request's `settings` as
+/// it arrived.
 pub fn for_new_project(settings: &mut ProjectSettings, sent: &Value) {
     if sent.get("claude_ai_connectors").is_none() {
         settings.claude_ai_connectors = false;
+    }
+    let follow_ups = sent.get("follow_ups");
+    let unsent = |key: &str| follow_ups.and_then(|f| f.get(key)).is_none();
+    if unsent("comments") {
+        settings.follow_ups.comments = true;
+    }
+    if unsent("checks") {
+        settings.follow_ups.checks = true;
+    }
+    if unsent("closed") {
+        settings.follow_ups.closed = true;
+    }
+    if unsent("conflicts") {
+        settings.follow_ups.conflicts = true;
     }
 }
 
@@ -149,6 +167,41 @@ mod tests {
         let mut s = ProjectSettings::default();
         for_new_project(&mut s, &json!({ "claude_ai_connectors": true }));
         assert!(s.claude_ai_connectors);
+    }
+
+    #[test]
+    fn new_projects_start_with_follow_ups_on_unless_asked() {
+        use fctl_proto::session::FollowUps;
+        let mut s = ProjectSettings::default();
+        for_new_project(&mut s, &Value::Null);
+        assert_eq!(s.follow_ups, FollowUps::ALL);
+        let mut s = ProjectSettings::default();
+        for_new_project(&mut s, &json!({ "setup_script": "npm ci" }));
+        assert_eq!(s.follow_ups, FollowUps::ALL);
+        // What a request sends stays; the rest are on.
+        let sent = json!({ "follow_ups": { "checks": false, "closed": false } });
+        let mut s: ProjectSettings = serde_json::from_value(sent.clone()).unwrap_or_default();
+        for_new_project(&mut s, &sent);
+        assert_eq!(
+            s.follow_ups,
+            FollowUps {
+                comments: true,
+                checks: false,
+                closed: false,
+                conflicts: true,
+            }
+        );
+        let sent = serde_json::to_value(ProjectSettings::default()).unwrap_or_default();
+        let mut s = ProjectSettings::default();
+        for_new_project(&mut s, &sent);
+        assert_eq!(s.follow_ups, FollowUps::default());
+        // Stored, each one is there, so a project reads them back as on.
+        let stored = serde_json::to_value(&ProjectSettings {
+            follow_ups: FollowUps::ALL,
+            ..Default::default()
+        })
+        .unwrap_or_default();
+        assert_eq!(stored["follow_ups"]["conflicts"], json!(true));
     }
 
     #[test]

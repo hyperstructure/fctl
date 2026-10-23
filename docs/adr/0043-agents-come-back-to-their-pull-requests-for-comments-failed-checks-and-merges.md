@@ -1,6 +1,6 @@
 # 0043: Agents come back to their pull requests for comments, failed checks and merges
 
-2026-10-23 · accepted
+2026-10-23 · accepted · new projects start with them on since [0051](0051-new-projects-start-with-follow-ups-on.md)
 
 ## Context
 
