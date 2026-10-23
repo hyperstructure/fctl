@@ -194,8 +194,13 @@ impl ScheduleRow {
         match (&self.cron, self.at) {
             (Some(c), _) => cron::Cron::parse(c).ok().map(When::Cron),
             (None, Some(at)) => Some(When::At(at)),
-            (None, None) => None,
+            (None, None) => Some(When::Asked),
         }
+    }
+
+    /// Whether it runs at a time of its own, rather than when asked.
+    pub fn timed(&self) -> bool {
+        self.cron.is_some() || self.at.is_some()
     }
 
     /// The person it runs for, as sentences name them.
@@ -226,7 +231,7 @@ impl ScheduleRow {
             base_branch: self.base_branch.clone(),
             github_access: self.github(),
             enabled: self.enabled,
-            state: sch::state(self.enabled, self.next_run_at),
+            state: sch::state(self.enabled, self.timed(), self.next_run_at),
             paused_reason: self.paused_reason.clone().filter(|_| !self.enabled),
             problem,
             next_run_at: self.next_run_at.filter(|_| self.enabled),
@@ -713,8 +718,9 @@ async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Out
                     return Ok(None);
                 }
                 // Again and again: the runs until it resets are skipped.
-                When::Cron(c) => {
-                    if let Some(resets) = resets {
+                // (One that runs when asked has no time to come to this.)
+                When::Cron(_) | When::Asked => {
+                    if let (When::Cron(c), Some(resets)) = (when, resets) {
                         q(
                             db,
                             "UPDATE schedules SET next_run_at = ? WHERE id = ? AND enabled = 1 AND next_run_at IS ?",

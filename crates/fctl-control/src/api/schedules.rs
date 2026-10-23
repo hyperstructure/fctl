@@ -397,6 +397,12 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     if p.row.archived_at.is_some() {
         return Err(conflict("This project is archived"));
     }
+    // Pausing it stops what other tools start too.
+    if !row.enabled {
+        return Err(conflict(
+            "It's paused, so it starts nothing: resume it to run it",
+        ));
+    }
     let context = sch::context(body.context.as_deref())?;
     let asked: Option<Count> = q(
         &ctx.db,

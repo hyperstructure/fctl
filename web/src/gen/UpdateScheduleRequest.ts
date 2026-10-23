@@ -8,7 +8,8 @@
  */
 export type UpdateScheduleRequest = { name?: string, prompt?: string, 
 /**
- * A cron expression: it runs again and again from now on.
+ * A cron expression: it runs again and again from now on; `""`, and no
+ * `at`, for only when asked.
  */
 cron?: string, 
 /**

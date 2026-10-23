@@ -455,14 +455,17 @@ export function cronProblem(text: string): string | undefined {
 
 // ───────────────────────────── schedules ─────────────────────────────
 
-/** When a schedule runs, at the start of a sentence: "Every Monday at 9:00 AM", "Once, on Fri 30 Oct, 14:00". */
+/**
+ * When a schedule runs, at the start of a sentence: "Every Monday at 09:00", "Once, on Fri 30 Oct, 14:00",
+ * "When asked" for one that runs when someone, or another tool, runs it.
+ */
 export function scheduleWhen(s: Pick<G.Schedule, "cron" | "at" | "timezone">, clock = clockOf): string {
   if (s.cron) {
     const parsed = parseCron(s.cron);
     return sentence("error" in parsed ? `on the cron schedule ${s.cron}` : describeCron(parsed.cron, clock));
   }
   if (s.at !== undefined) return `Once, on ${moment(s.at, s.timezone)}`;
-  return "When someone runs it";
+  return "When asked";
 }
 
 /** A time in a zone for lists: "Mon 26 Oct, 09:00", with the year when it isn't this year's. */

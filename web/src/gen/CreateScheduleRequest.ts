@@ -11,7 +11,8 @@ export type CreateScheduleRequest = {
  */
 name?: string, prompt: string, 
 /**
- * When it runs again and again: give this or `at`.
+ * When it runs again and again: give this or `at`, or neither for a
+ * schedule that runs only when asked.
  */
 cron?: string, 
 /**

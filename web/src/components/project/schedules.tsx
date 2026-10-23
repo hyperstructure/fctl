@@ -8,6 +8,7 @@ import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowRight,
+  ArrowUpRight,
   BookMarked,
   CalendarClock,
   ChevronDown,
@@ -34,6 +35,7 @@ import {
   Avatar,
   Banner,
   Button,
+  CopyButton,
   Dialog,
   IconButton,
   Input,
@@ -54,6 +56,7 @@ import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, stamp } from "@/lib/format";
 import { githubLevel, lowerAccess, onGithub } from "@/lib/github-access";
+import { siteUrl } from "@/lib/install";
 import { asked, type Choice, effortLabel, modelLabel, projectChoice } from "@/lib/models";
 import { keys, queryClient, useMe } from "@/lib/queries";
 import {
@@ -297,7 +300,7 @@ const POINTS = [
   {
     key: "when",
     icon: <Repeat />,
-    text: "Every hour, day, weekday, week or month in your time zone, once at a set time, or on any cron schedule.",
+    text: "Every hour, day, weekday, week or month in your time zone, once at a set time, on any cron schedule, or only when asked.",
   },
   {
     key: "skips",
@@ -461,8 +464,10 @@ function Glyph({ schedule }: { schedule: G.Schedule }) {
       <TriangleAlert />
     ) : schedule.cron ? (
       <Repeat />
-    ) : (
+    ) : schedule.at !== undefined ? (
       <CalendarClock />
+    ) : (
+      <Webhook />
     );
   return (
     <span
@@ -488,7 +493,12 @@ function Facts({ schedule: s }: { schedule: G.Schedule }) {
     <Meta
       parts={[
         { key: "when", node: <span className="text-ink-3">{scheduleWhen(s)}</span> },
-        s.timezone !== here && { key: "zone", node: zoneCity(s.timezone), className: "max-sm:hidden" },
+        s.timezone !== here &&
+          (!!s.cron || s.at !== undefined) && {
+            key: "zone",
+            node: zoneCity(s.timezone),
+            className: "max-sm:hidden",
+          },
         s.state === "paused"
           ? { key: "state", node: <span className="text-ink-3">Paused</span> }
           : s.state === "done"
@@ -606,12 +616,16 @@ function Item({
         {s.owner && (
           <span
             className="relative mt-1 max-sm:hidden"
-            title={`Runs on ${s.owner.name}'s Claude subscription`}
+            title={
+              s.cron || s.at !== undefined
+                ? `Runs on ${s.owner.name}'s Claude subscription`
+                : `Set up by ${s.owner.name}`
+            }
           >
             <Avatar user={s.owner} size={20} />
           </span>
         )}
-        {rights.run && (
+        {rights.run && s.enabled && (
           <Button
             size="sm"
             variant="ghost"
@@ -801,16 +815,21 @@ function Details({
   }, [s]);
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid gap-x-8 gap-y-5 md:grid-cols-[minmax(0,1fr)_260px]">
+      <div className="grid gap-x-8 gap-y-5 md:grid-cols-[minmax(0,1fr)_320px]">
         <div className="min-w-0">
           <h4 className="mb-1.5 text-[12.5px] font-medium text-ink-3">Task</h4>
           <Task text={s.prompt} />
         </div>
         <dl className="grid grid-cols-[88px_minmax(0,1fr)] content-start gap-x-3 gap-y-2 text-[12.5px] max-md:row-start-1">
           <Fact k="Runs">{scheduleWhen(s)}</Fact>
-          <Fact k="Time zone">
-            {zoneCity(s.timezone)} <span className="text-ink-4">{zoneOffset(s.timezone)}</span>
-          </Fact>
+          {(s.cron || s.at !== undefined) && (
+            <Fact k="Time zone">
+              {zoneCity(s.timezone)}
+              {zoneCity(s.timezone) !== zoneOffset(s.timezone) && (
+                <span className="text-ink-4"> {zoneOffset(s.timezone)}</span>
+              )}
+            </Fact>
+          )}
           {coming.length > 0 && (
             <Fact k={coming.length > 1 ? "Next runs" : "Next run"}>
               <span className="flex flex-col">
@@ -836,17 +855,22 @@ function Details({
               <span className="font-mono">{s.base_branch}</span>
             </Fact>
           )}
-          {s.owner && (
-            <Fact k="Runs on">
-              <span className="inline-flex items-center gap-1.5">
-                <Avatar user={s.owner} size={16} />
-                {mine ? "Your subscription" : `${s.owner.name}'s subscription`}
-              </span>
-            </Fact>
+          {!s.cron && s.at === undefined ? (
+            <Fact k="Runs on">The subscription of whoever runs it</Fact>
+          ) : (
+            s.owner && (
+              <Fact k="Runs on">
+                <span className="inline-flex items-center gap-1.5">
+                  <Avatar user={s.owner} size={16} />
+                  {mine ? "Your subscription" : `${s.owner.name}'s subscription`}
+                </span>
+              </Fact>
+            )
           )}
         </dl>
       </div>
       <Runs schedule={s} />
+      {rights.run && <ToolsDisclosure schedule={s} />}
       <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
         {rights.edit && (
           <Button size="sm" icon={<Pencil className="size-3.5" />} onClick={onEdit}>
@@ -882,6 +906,68 @@ function Details({
             : `Set up ${ago(s.created_at)}`}
         </span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Running it from another tool, a click away: open from the start for a schedule that runs when asked,
+ * which is what it's for.
+ */
+function ToolsDisclosure({ schedule: s }: { schedule: G.Schedule }) {
+  const timed = !!s.cron || s.at !== undefined;
+  const [open, setOpen] = useState(!timed);
+  const id = `tools-${s.id}`;
+  return (
+    <section>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 text-[12.5px] font-medium text-ink-3 transition-colors hover:text-ink"
+      >
+        <Webhook className="size-3.5" aria-hidden="true" />
+        Run it from another tool
+        <ChevronDown className={cn("size-3.5 transition-transform duration-200", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div id={id} className="mt-2 animate-rise">
+          <FromTools schedule={s} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** How another tool runs a schedule: the request, ready to copy, and where the guide says more. */
+function FromTools({ schedule: s }: { schedule: G.Schedule }) {
+  const request = [
+    `curl -X POST ${location.origin}/api/v1/schedules/${s.id}/runs \\`,
+    '  -H "Authorization: Bearer $FCTL_TOKEN" -H "Content-Type: application/json" \\',
+    `  -d '{"context": "What the tool knows of why it runs"}'`,
+  ].join("\n");
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="relative rounded-lg border border-line bg-sunken/70">
+        <pre className="overflow-x-auto py-2.5 pr-24 pl-3.5 font-mono text-[11.5px] leading-[1.7] text-ink-2">
+          {request}
+        </pre>
+        <CopyButton text={request} label="Copy" className="absolute top-1.5 right-1.5 bg-sunken" />
+      </div>
+      <p className="text-[12.5px] leading-relaxed text-ink-4">
+        With an access token that runs sessions in this project (Settings → Access tokens). Each request
+        starts a session on the token's person's subscription, and its agent takes what <code>context</code>{" "}
+        says as information, not instructions.{" "}
+        <a
+          href={`${siteUrl()}/docs/automation/#start-agents-from-other-tools`}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-0.5 text-ink-3 underline-offset-2 hover:text-ink hover:underline"
+        >
+          How <ArrowUpRight className="size-3" />
+        </a>
+      </p>
     </div>
   );
 }
@@ -1048,12 +1134,13 @@ function DeleteSchedule({
 
 // ───────────────────────────── the form ─────────────────────────────
 
-type Mode = "repeat" | "once" | "cron";
+type Mode = "repeat" | "once" | "cron" | "asked";
 
 const MODES: { value: Mode; label: string }[] = [
   { value: "repeat", label: "Repeats" },
   { value: "once", label: "Once" },
   { value: "cron", label: "Cron" },
+  { value: "asked", label: "When asked" },
 ];
 
 const EVERY: SelectOption<Every>[] = [
@@ -1134,9 +1221,11 @@ function Editor({
   const [zone, setZone] = useState(schedule?.timezone ?? here);
   const [pickZone, setPickZone] = useState(false);
   const initialRepeat = (schedule?.cron && cronRepeat(schedule.cron)) || draft?.repeat || DEFAULT_REPEAT;
-  const [mode, setMode] = useState<Mode>(
-    schedule ? (schedule.cron ? (cronRepeat(schedule.cron) ? "repeat" : "cron") : "once") : "repeat",
-  );
+  const [mode, setMode] = useState<Mode>(() => {
+    if (!schedule) return "repeat";
+    if (schedule.cron) return cronRepeat(schedule.cron) ? "repeat" : "cron";
+    return schedule.at !== undefined ? "once" : "asked";
+  });
   const [repeat, setRepeat] = useState<RepeatChoice>(initialRepeat);
   const [cron, setCron] = useState(schedule?.cron ?? repeatCron(initialRepeat));
   const [once, setOnce] = useState(() => {
@@ -1156,15 +1245,17 @@ function Editor({
   const expression = mode === "repeat" ? repeatCron(repeat) : cron;
   const atTime = mode === "once" ? fromWall(zone, once.date, once.time) : Number.NaN;
   const whenProblem =
-    mode === "once"
-      ? Number.isNaN(atTime)
-        ? "Choose a day and a time"
-        : atTime < Date.now() - 60_000
-          ? "That time has passed: choose one ahead"
-          : undefined
-      : cronProblem(expression);
+    mode === "asked"
+      ? undefined
+      : mode === "once"
+        ? Number.isNaN(atTime)
+          ? "Choose a day and a time"
+          : atTime < Date.now() - 60_000
+            ? "That time has passed: choose one ahead"
+            : undefined
+        : cronProblem(expression);
   const upcoming = useMemo(() => {
-    if (whenProblem) return [];
+    if (whenProblem || mode === "asked") return [];
     if (mode === "once") return [atTime];
     const parsed = parseCron(expression);
     return "error" in parsed ? [] : nextRuns(parsed.cron, zone, Date.now(), 3);
@@ -1173,7 +1264,15 @@ function Editor({
   const save = useMutation({
     mutationFn: async () => {
       const asks = asked(project, choice);
-      const timing = mode === "once" ? { at: atTime } : { cron: expression };
+      // Without a time, it runs when asked: a new one gets neither, a change clears the cron.
+      const timing =
+        mode === "once"
+          ? { at: atTime }
+          : mode === "asked"
+            ? schedule
+              ? { cron: "" }
+              : {}
+            : { cron: expression };
       if (!schedule) {
         const body: G.CreateScheduleRequest = {
           name: name.trim() || undefined,
@@ -1202,7 +1301,7 @@ function Editor({
           ? "Saved: its next run goes by it"
           : s.next_run_at
             ? `Set up: it runs ${soon(s.next_run_at, s.timezone)}`
-            : "Set up",
+            : "Set up: it runs when asked",
       );
       onDone(s);
     },
@@ -1342,8 +1441,28 @@ function Editor({
         {mode === "repeat" && <RepeatFields repeat={repeat} onChange={setRepeat} />}
         {mode === "once" && <OnceFields zone={zone} value={once} onChange={setOnce} />}
         {mode === "cron" && <CronField value={cron} onChange={setCron} />}
+        {mode === "asked" && (
+          <div className="flex flex-col gap-3">
+            <p className="max-w-xl text-[13.5px] leading-relaxed text-ink-3">
+              It has no time of its own: it runs when someone runs it, here or with{" "}
+              <code className="font-mono text-[12.5px]">fctl schedules run</code>, or when another tool does
+              with an access token, such as an issue tracker sending what it knows of the case.
+            </p>
+            {schedule ? (
+              <FromTools schedule={schedule} />
+            ) : (
+              <p className="text-[12.5px] text-ink-4">Once it's set up, it shows how other tools run it.</p>
+            )}
+          </div>
+        )}
 
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[12.5px] text-ink-3">
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-x-2 gap-y-2 text-[12.5px] text-ink-3",
+            // Its times are only in the note its runs' agents get.
+            mode === "asked" && "hidden",
+          )}
+        >
           {pickZone ? (
             <div className="w-full max-w-sm">
               {/* A time to run once stays the same on the clock, in the new zone. */}
@@ -1402,9 +1521,11 @@ function Editor({
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-t border-line pt-4">
         <p className="flex min-w-0 items-center gap-2 text-[12.5px] leading-snug text-ink-3">
           {me && <Avatar user={me.user} size={18} />}
-          {takesOver
-            ? `Saving runs it on your Claude subscription, instead of ${schedule?.owner?.name ?? "its owner"}'s.`
-            : "Its runs start on your Claude subscription."}
+          {mode === "asked"
+            ? "Each run starts on the Claude subscription of whoever runs it."
+            : takesOver
+              ? `Saving runs it on your Claude subscription, instead of ${schedule?.owner?.name ?? "its owner"}'s.`
+              : "Its runs start on your Claude subscription."}
         </p>
         <div className="flex gap-2 max-sm:ml-auto">
           <Button variant="ghost" onClick={() => onDone()}>

@@ -2579,9 +2579,11 @@ pub struct Schedule {
     pub prompt: String,
     /// When it runs again and again: a cron expression (minute, hour, day
     /// of the month, month and day of the week) in `timezone`. Absent for a
-    /// schedule that runs once.
+    /// schedule that runs once, or when asked.
     pub cron: Option<String>,
-    /// When it runs once. Absent for one that runs again and again.
+    /// When it runs once. Absent for one that runs again and again, or when
+    /// asked. Without either, it runs only when someone runs it, or another
+    /// tool does with an access token.
     pub at: Option<Millis>,
     /// The IANA time zone its times are in, such as `Europe/Stockholm`.
     pub timezone: String,
@@ -2592,7 +2594,8 @@ pub struct Schedule {
     /// What its sessions' agents may do on GitHub; absent: as much as the
     /// project allows.
     pub github_access: Option<GithubAccess>,
-    /// `false` while it is paused: it starts nothing until it is resumed.
+    /// `false` while it is paused: it starts nothing until it is resumed,
+    /// not even when asked.
     pub enabled: bool,
     pub state: ScheduleState,
     /// Why fctl paused it: its owner can no longer run it.
@@ -2600,8 +2603,8 @@ pub struct Schedule {
     /// Why its next run wouldn't start now, while it is on: its owner's
     /// plan is at its limit, or they can't start sessions here any more.
     pub problem: Option<String>,
-    /// When it starts its next session; absent while it is paused, and
-    /// once a schedule that runs once has run.
+    /// When it starts its next session; absent while it is paused, for one
+    /// that runs when asked, and once one that runs once has run.
     pub next_run_at: Option<Millis>,
     /// Its latest run.
     pub last_run: Option<ScheduleRun>,
@@ -2619,7 +2622,7 @@ pub struct Schedule {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduleState {
-    /// It starts a session at its next time.
+    /// It starts a session at its next time, or when asked.
     Active,
     /// It starts nothing until someone resumes it.
     Paused,
@@ -2745,7 +2748,8 @@ pub struct CreateScheduleRequest {
     /// Absent: the task's first line.
     pub name: Option<String>,
     pub prompt: String,
-    /// When it runs again and again: give this or `at`.
+    /// When it runs again and again: give this or `at`, or neither for a
+    /// schedule that runs only when asked.
     pub cron: Option<String>,
     /// When it runs once.
     pub at: Option<Millis>,
@@ -2770,7 +2774,8 @@ pub struct CreateScheduleRequest {
 pub struct UpdateScheduleRequest {
     pub name: Option<String>,
     pub prompt: Option<String>,
-    /// A cron expression: it runs again and again from now on.
+    /// A cron expression: it runs again and again from now on; `""`, and no
+    /// `at`, for only when asked.
     pub cron: Option<String>,
     /// A time: it runs once, then.
     pub at: Option<Millis>,
@@ -2791,7 +2796,7 @@ pub struct UpdateScheduleRequest {
 
 /// `POST /api/v1/schedules/{id}/runs`: starts its task now, in a session on
 /// the caller's Claude subscription, for people who start sessions in its
-/// project and access tokens that run sessions there.
+/// project and access tokens that run sessions there, unless it is paused.
 #[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]

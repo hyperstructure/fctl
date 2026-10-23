@@ -27,18 +27,23 @@ pub struct SchedulesArgs {
     pub cmd: Option<SchedulesCmd>,
 }
 
-/// When a schedule runs: a cron expression, or a time to run once.
+/// When a schedule runs: a cron expression, a time to run once, or only
+/// when asked.
 #[derive(Args, Default)]
 pub struct WhenArgs {
     /// Run again and again: a cron expression (minute, hour, day of the
     /// month, month, day of the week), like "0 9 * * 1-5", or @daily,
     /// @weekly…
-    #[arg(long, conflicts_with = "at")]
+    #[arg(long, conflicts_with_all = ["at", "when_asked"])]
     pub cron: Option<String>,
     /// Run once: in 2h, 30m, 1d, or a time with its UTC offset, like
     /// 2026-10-30T14:00+01:00.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "when_asked")]
     pub at: Option<String>,
+    /// Run only when someone runs it, or another tool does with an access
+    /// token (fctl schedules run).
+    #[arg(long)]
+    pub when_asked: bool,
     /// The time zone of the cron expression's times (an IANA name, like
     /// Europe/Stockholm). Default: this machine's, else UTC.
     #[arg(long, visible_alias = "timezone")]
@@ -76,7 +81,8 @@ pub enum SchedulesCmd {
     -m \"Update the dependencies that have new patch or minor releases, run the tests and open a pull request.\"
   fctl schedules add --cron \"0 8 * * 1-5\" --task-file triage.md
   fctl schedules add \"Release notes\" --at 2026-10-30T16:00+01:00 -m \"Draft the release notes for v1.0.\"
-  fctl schedules add --at 2h -m \"Check whether the deploy went out, and tell me.\"")]
+  fctl schedules add --at 2h -m \"Check whether the deploy went out, and tell me.\"
+  fctl schedules add \"Triage an issue\" --when-asked --github comment -m \"Triage the issue below.\"")]
     Add {
         /// Its name; default: the task's first line.
         name: Option<String>,
@@ -216,9 +222,9 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                 }
             };
             let (cron, at) = timing(&when)?;
-            if cron.is_none() && at.is_none() {
+            if cron.is_none() && at.is_none() && !when.when_asked {
                 bail!(
-                    "When does it run? Pass --cron \"0 9 * * 1\" to run again and again, or --at 2h to run once."
+                    "When does it run? Pass --cron \"0 9 * * 1\" to run again and again, --at 2h to run once, or --when-asked."
                 );
             }
             let req = CreateScheduleRequest {
@@ -246,12 +252,14 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                 style::bold(&style::terminal_safe(&s.name))
             );
             println!("  {}", style::dim(&when_line(&s)));
+            let on = if s.cron.is_none() && s.at.is_none() {
+                "Each run starts on the Claude subscription of whoever runs it"
+            } else {
+                "Its runs start on your Claude subscription"
+            };
             println!(
                 "  {}",
-                style::dim(&format!(
-                    "Its runs start on your Claude subscription. Run it now: fctl schedules run {}",
-                    s.id
-                ))
+                style::dim(&format!("{on}. Run it now: fctl schedules run {}", s.id))
             );
             Ok(())
         }
@@ -319,7 +327,12 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
             let req = UpdateScheduleRequest {
                 name,
                 prompt,
-                cron,
+                // No time: only when asked.
+                cron: if when.when_asked {
+                    Some(String::new())
+                } else {
+                    cron
+                },
                 at,
                 timezone: when.tz,
                 model: blank(session.model),
@@ -611,7 +624,7 @@ fn when_line(s: &Schedule) -> String {
         }
         // It may wait for its owner's plan, past its time.
         (None, Some(at)) => format!("Runs once, {}", style::until(s.next_run_at.unwrap_or(at))),
-        (None, None) => "Runs when someone runs it".into(),
+        (None, None) => "Runs when asked: fctl schedules run, or another tool with a token".into(),
     };
     let next = match s.state {
         ScheduleState::Paused if s.paused_reason.is_some() => "paused by fctl".into(),
@@ -642,8 +655,13 @@ fn print_schedule(s: &Schedule) {
         style::dim(s.id.as_str())
     );
     let mut facts = vec![when_line(s)];
-    if let Some(owner) = &s.owner {
-        facts.push(format!("on {}'s Claude subscription", owner.name));
+    match &s.owner {
+        // Each run is on the subscription of whoever runs it.
+        Some(owner) if s.cron.is_none() && s.at.is_none() => {
+            facts.push(format!("set up by {}", owner.name))
+        }
+        Some(owner) => facts.push(format!("on {}'s Claude subscription", owner.name)),
+        None => {}
     }
     println!(
         "  {}",

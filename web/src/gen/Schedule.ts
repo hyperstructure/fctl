@@ -22,11 +22,13 @@ prompt: string,
 /**
  * When it runs again and again: a cron expression (minute, hour, day
  * of the month, month and day of the week) in `timezone`. Absent for a
- * schedule that runs once.
+ * schedule that runs once, or when asked.
  */
 cron?: string, 
 /**
- * When it runs once. Absent for one that runs again and again.
+ * When it runs once. Absent for one that runs again and again, or when
+ * asked. Without either, it runs only when someone runs it, or another
+ * tool does with an access token.
  */
 at?: number, 
 /**
@@ -43,7 +45,8 @@ model?: string, effort?: string, base_branch?: string,
  */
 github_access?: GithubAccess, 
 /**
- * `false` while it is paused: it starts nothing until it is resumed.
+ * `false` while it is paused: it starts nothing until it is resumed,
+ * not even when asked.
  */
 enabled: boolean, state: ScheduleState, 
 /**
@@ -56,8 +59,8 @@ paused_reason?: string,
  */
 problem?: string, 
 /**
- * When it starts its next session; absent while it is paused, and
- * once a schedule that runs once has run.
+ * When it starts its next session; absent while it is paused, for one
+ * that runs when asked, and once one that runs once has run.
  */
 next_run_at?: number, 
 /**

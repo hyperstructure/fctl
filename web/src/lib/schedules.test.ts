@@ -204,7 +204,7 @@ describe("schedules", () => {
   it("say when they run", () => {
     const clock = (h: number, m: number) => `${h}:${String(m).padStart(2, "0")}`;
     expect(scheduleWhen(schedule({ cron: "0 9 * * 1-5" }), clock)).toBe("Every weekday at 9:00");
-    expect(scheduleWhen(schedule({}))).toBe("When someone runs it");
+    expect(scheduleWhen(schedule({}))).toBe("When asked");
     expect(scheduleWhen(schedule({ at: utc(2026, 10, 30, 13, 0), timezone: STOCKHOLM }))).toMatch(
       /^Once, on /,
     );

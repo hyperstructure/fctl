@@ -41,12 +41,16 @@ pub enum When {
     Cron(Cron),
     /// Once.
     At(Millis),
+    /// Only when someone runs it, or another tool does with an access
+    /// token: a task saved for the case it's for.
+    Asked,
 }
 
 impl When {
-    /// Reads exactly one of `cron` and `at`: a cron expression that runs at
-    /// most every [`MIN_GAP_MINUTES`] and at all within five years, or a
-    /// time from [`LATE_MS`] before `now` to [`MAX_AHEAD_MS`] after it.
+    /// Reads at most one of `cron` and `at` (neither, or an empty
+    /// expression: it runs when asked): a cron expression that runs at most
+    /// every [`MIN_GAP_MINUTES`] and at all within five years, or a time
+    /// from [`LATE_MS`] before `now` to [`MAX_AHEAD_MS`] after it.
     pub fn parse(cron: Option<&str>, at: Option<Millis>, now: Millis) -> Result<When, ApiError> {
         let cron = cron.map(str::trim).filter(|c| !c.is_empty());
         match (cron, at) {
@@ -54,10 +58,7 @@ impl When {
                 "cron",
                 "Give either a cron expression or a time, not both",
             )),
-            (None, None) => Err(ApiError::validation(
-                "cron",
-                "Say when it runs: a cron expression, or a time to run once",
-            )),
+            (None, None) => Ok(When::Asked),
             (Some(text), None) => {
                 let c = Cron::parse(text).map_err(|e| ApiError::validation("cron", e))?;
                 if c.shortest_gap_minutes() < MIN_GAP_MINUTES {
@@ -103,48 +104,53 @@ impl When {
             When::Cron(c) => c.next_after(zone, now),
             When::At(_) if ran => None,
             When::At(at) => Some((*at).max(now)),
+            When::Asked => None,
         }
     }
 
     /// When it runs, in words, after "Runs": "every weekday at 09:00",
-    /// "once, on Friday 30 October 2026 at 14:00".
+    /// "once, on Friday 30 October 2026 at 14:00", "when asked".
     pub fn describe(&self, zone: &dyn Zone) -> String {
         match self {
             When::Cron(c) => c.describe(),
             When::At(at) => format!("once, on {}", stamp(zone, *at)),
+            When::Asked => "when asked".into(),
         }
     }
 
-    /// How often it runs, after "runs": "every weekday at 09:00", "once".
+    /// How often it runs, after "runs": "every weekday at 09:00", "once",
+    /// "when asked".
     pub fn rhythm(&self) -> String {
         match self {
             When::Cron(c) => c.describe(),
             When::At(_) => "once".into(),
+            When::Asked => "when asked".into(),
         }
     }
 
     pub fn cron(&self) -> Option<&str> {
         match self {
             When::Cron(c) => Some(c.as_str()),
-            When::At(_) => None,
+            When::At(_) | When::Asked => None,
         }
     }
 
     pub fn at(&self) -> Option<Millis> {
         match self {
-            When::Cron(_) => None,
             When::At(at) => Some(*at),
+            When::Cron(_) | When::Asked => None,
         }
     }
 }
 
-/// Where a schedule stands: on, `enabled`, it runs at its next time, or has
-/// run, once, when it has none.
-pub fn state(enabled: bool, next_run_at: Option<Millis>) -> ScheduleState {
-    match (enabled, next_run_at) {
-        (false, _) => ScheduleState::Paused,
-        (true, Some(_)) => ScheduleState::Active,
-        (true, None) => ScheduleState::Done,
+/// Where a schedule stands: on, `enabled`, one that runs at its time
+/// (`timed`) is active while it has a next run, and done once it has none;
+/// one that runs when asked is active while it is on.
+pub fn state(enabled: bool, timed: bool, next_run_at: Option<Millis>) -> ScheduleState {
+    match (enabled, timed, next_run_at) {
+        (false, _, _) => ScheduleState::Paused,
+        (true, false, _) | (true, true, Some(_)) => ScheduleState::Active,
+        (true, true, None) => ScheduleState::Done,
     }
 }
 
@@ -434,7 +440,6 @@ mod tests {
     fn refuses_what_wont_run() {
         let field = |r: Result<When, ApiError>| r.err().and_then(|e| e.field).unwrap_or_default();
         let message = |r: Result<When, ApiError>| r.err().map(|e| e.message).unwrap_or_default();
-        assert_eq!(field(When::parse(None, None, NOW)), "cron");
         assert_eq!(
             field(When::parse(Some("0 9 * * *"), Some(NOW), NOW)),
             "cron"
@@ -454,10 +459,25 @@ mod tests {
 
     #[test]
     fn where_it_stands() {
-        assert_eq!(state(true, Some(NOW)), ScheduleState::Active);
-        assert_eq!(state(false, Some(NOW)), ScheduleState::Paused);
-        assert_eq!(state(false, None), ScheduleState::Paused);
-        assert_eq!(state(true, None), ScheduleState::Done);
+        assert_eq!(state(true, true, Some(NOW)), ScheduleState::Active);
+        assert_eq!(state(false, true, Some(NOW)), ScheduleState::Paused);
+        assert_eq!(state(false, true, None), ScheduleState::Paused);
+        assert_eq!(state(true, true, None), ScheduleState::Done);
+        // One that runs when asked is never done.
+        assert_eq!(state(true, false, None), ScheduleState::Active);
+        assert_eq!(state(false, false, None), ScheduleState::Paused);
+    }
+
+    #[test]
+    fn one_without_a_time_runs_when_asked() {
+        for (cron, at) in [(None, None), (Some(""), None), (Some("  "), None)] {
+            let w = when(When::parse(cron, at, NOW));
+            assert_eq!(w, When::Asked);
+            assert_eq!((w.cron(), w.at()), (None, None));
+            assert_eq!(w.next(&Stockholm, NOW, false), None);
+            assert_eq!(w.rhythm(), "when asked");
+            assert_eq!(w.describe(&Stockholm), "when asked");
+        }
     }
 
     #[test]

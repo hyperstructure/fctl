@@ -3,7 +3,7 @@
 /**
  * `POST /api/v1/schedules/{id}/runs`: starts its task now, in a session on
  * the caller's Claude subscription, for people who start sessions in its
- * project and access tokens that run sessions there.
+ * project and access tokens that run sessions there, unless it is paused.
  */
 export type RunScheduleRequest = { 
 /**
