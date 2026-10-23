@@ -21,8 +21,8 @@ and the runners, that want it.
 - **Projects opt in.** `package_caches` in a project's settings, off by
   default. A session on a runner with caches shares them with the
   project's other sessions there; projects never share caches with each
-  other. Review sessions never get them: the control plane leaves the
-  setting out of their spec and the host checks again, since a pull
+  other. Review sessions never get them: the control plane turns the
+  setting off in their spec and the host checks again, since a pull
   request's text could steer their agent into leaving something for the
   project's other sessions.
 - **Runners bound them.** `max_cache_gb` (10 GiB by default) and
@@ -74,9 +74,9 @@ and the runners, that want it.
   limit until they don't; the disk floor still empties its caches when
   none runs. Docker keeps an emptied volume while a stopped sandbox mounts
   it, until the sandbox goes.
-- Hosts and agents need the release with this change; the control plane
-  needs it to keep review sessions out, and to keep the setting on updates
-  that leave it out. Older hosts ignore the setting, and older control
-  planes don't send it.
+- Projects get caches once their control plane and their runners' hosts
+  run the release with this change, which brings its own fctl-agent into
+  each sandbox. Older hosts ignore the setting, and older control planes
+  don't keep it.
 - A sandbox made before its project turned caches on has no mount, so
   that session gets them only in its next sandbox.

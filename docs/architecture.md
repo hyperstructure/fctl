@@ -2018,7 +2018,7 @@ caches for the project, which its sandboxes there mount, so that a setup
 script fetches only what is new
 ([ADR 0045](adr/0045-hosts-keep-package-caches-for-projects-that-share-them.md),
 `crates/fctl-host/src/caches.rs`). Review sessions never get them, whatever
-the project says: the control plane leaves the setting out of their spec,
+the project says: the control plane turns the setting off in their spec,
 and the host checks.
 
 - **Where.** With Docker, a named volume per project,
