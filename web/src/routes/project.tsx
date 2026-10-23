@@ -17,7 +17,7 @@ import {
   useAttachments,
   useFileDrop,
 } from "@/components/session/attachments";
-import { PullRequestLinks, ScheduledMark, SessionLink } from "@/components/session/row";
+import { PullRequestLinks, ScheduledMark, SessionLink, TicketMark } from "@/components/session/row";
 import {
   StartButton,
   StartChoices,
@@ -344,6 +344,7 @@ function SessionList({ sessions }: { sessions: G.Session[] }) {
             <SessionLink s={s} />
             <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
               <ScheduledMark s={s} />
+              <TicketMark s={s} />
               {s.branch && <span className="truncate font-mono">{s.branch}</span>}
               <PullRequestLinks s={s} />
             </div>
