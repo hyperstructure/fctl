@@ -2,6 +2,14 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.20.1 (2026-10-23)
+
+### Features
+
+- Show how full Claude's context is on the session page ([#224](https://github.com/hyperstructure/fctl/pull/224))
+- **control:** Put review summaries first, and hide them once addressed ([#226](https://github.com/hyperstructure/fctl/pull/226))
+- Send review findings to the agent that opened the pull request ([#225](https://github.com/hyperstructure/fctl/pull/225))
+
 ## 0.20.0 (2026-10-22)
 
 ### Features
