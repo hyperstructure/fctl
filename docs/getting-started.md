@@ -89,7 +89,7 @@ Sessions you start run on your own Claude Pro or Max plan. fctl never uses API
 keys: it refuses them, checks that every session reports a subscription
 credential, and pauses a session before it would draw on paid extra usage.
 
-There are two ways to connect, both under **Settings → Claude** in the app:
+There are three ways to connect, all under **Settings → Claude** in the app:
 
 - **Sign in with Claude** (recommended). The official Claude Code sign-in runs
   in a sandbox on one of your hosts; fctl shows you the link and relays the
@@ -98,12 +98,28 @@ There are two ways to connect, both under **Settings → Claude** in the app:
 - **A long-lived token.** Run `claude setup-token` on any machine with Claude
   Code and paste the `sk-ant-oat01-…` token. It is valid for a year, but it
   cannot use Remote Control.
+- **A token on your runners**, which you never give to fctl. On each of your
+  runners ([step 5](#5-bring-a-machine-online)), make a token and keep it
+  there:
+
+  ```sh
+  claude setup-token             # there, or on any machine with Claude Code
+  fctl host claude set-token     # paste it; kept in ~/.config/fctl/claude-token, mode 0600
+  fctl host claude status        # whether this runner keeps one, and whether fctl knows
+  ```
+
+  Then choose **Keep the token on your runners** in Settings → Claude, which
+  shows each of your runners as it reports whether it keeps the token. Your
+  sessions on it run only on your runners that keep it, in every workspace,
+  and wait while none of them is online. Like any token from `claude
+  setup-token`, it lasts a year and can't use Remote Control.
 
 From the terminal:
 
 ```sh
 fctl claude connect --login      # sign in with Claude through a host
 fctl claude connect              # or paste a long-lived token
+fctl claude connect --on-runners # or use the token your runners keep
 fctl claude status
 ```
 
@@ -182,7 +198,10 @@ To keep yours on machines you control, turn on **Only on my runners** in
 the workspace's **Settings** (`fctl workspaces own-runners on -w acme`):
 your sessions there then run only on runners you registered, and wait
 while none of those is online. A Claude sign-in through a host runs on one
-of your runners when one is online.
+of your runners when one is online. To keep your Claude token away from
+fctl too, keep it on your runners ([step 4](#4-connect-your-claude-subscription)):
+your sessions on it then run only on your runners that keep it, in every
+workspace.
 
 Keep it on the version of fctl the app runs. While a runner of yours is
 online with an older one, your Agent Floor says so, and **How to update**
@@ -251,7 +270,8 @@ them in its sandbox and gets screenshots in the message itself.
 
 A task you write on the Agent Floor stays in your browser, with its project,
 model, effort level and files, until a session starts with it: leave the
-page, and it is there when you come back.
+page, and it is there when you come back. So does one you write on a
+project's page: each project keeps its own, apart from the Agent Floor's.
 
 `fctl run` follows the session live in your terminal; Ctrl-C detaches and the
 agent keeps working. The agent works on a branch named
@@ -277,6 +297,13 @@ commits** and **Credit Claude in commits** are both on until a maintainer
 turns them off.
 
 ## 8. Follow along and steer
+
+The Agent Floor lists the sessions at work under **Working now**, and the
+latest that ended under **Recently**. A project's page lists its sessions
+the same way, with **Recently** for the ended ones that last moved in the
+past day and **Older** for the rest, the most recent first. There
+**Active** shows only the sessions at work, and **Mine** only the ones you
+started.
 
 - **Web app** — the session page streams the transcript as the agent writes
   it: tool calls, diffs, and the files changed, commits and pull requests

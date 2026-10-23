@@ -170,6 +170,7 @@ fctl workspaces join side-project          # an invitation (or decline it)
 fctl workspaces leave side-project         # your sessions there stop
 fctl workspaces claude crd_01… -w acme     # your sessions there run on this Claude connection
 fctl workspaces claude ada@acme.example -w acme   # …named by its account or label
+fctl workspaces claude on-runners -w acme  # …on the token you keep on your runners
 fctl workspaces claude default -w acme     # …or on your default one
 fctl workspaces own-runners on -w acme     # your sessions there run only on runners you registered
 fctl workspaces own-runners off -w acme    # …or on any of its runners for everyone's sessions too
@@ -245,6 +246,7 @@ fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
 fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
+fctl projects set -p my-app --pr-descriptions brief   # pull requests described in a few sentences (balanced by default, or full)
 fctl projects set -p my-app --follow-ups comments,checks,conflicts   # agents come back for @fctl comments, failed checks and conflicts
 fctl projects set -p my-app --tickets linear --linear-team ENG   # its tickets are a Linear team's
 fctl projects use my-app
@@ -530,8 +532,24 @@ or with `fctl attach`) aren't notified about it.
 fctl claude connect --login      # full sign-in through a host (Remote Control)
 fctl claude connect              # paste a token from `claude setup-token`
 fctl claude connect --token sk-ant-oat01-…
-fctl claude status               # your connections, their ids, and how much of each plan is used
+fctl claude connect --on-runners # run on the token your runners keep, which you never give to fctl
+fctl claude status               # your connections, their ids, how much of each plan is used, and which runners keep your token
 ```
+
+To keep your token on your runners instead of in fctl, run these on each
+runner, then `fctl claude connect --on-runners` anywhere. Your sessions on
+that connection run only on your runners that keep the token, in every
+workspace, and wait while none of them is online:
+
+```sh
+claude setup-token               # makes a token that lasts a year (here, or on any machine with Claude Code)
+fctl host claude set-token       # keeps it in ~/.config/fctl/claude-token, mode 0600 (asked for, or read from stdin)
+fctl host claude status          # whether this runner keeps one, and whether fctl knows
+fctl host claude remove-token    # sessions running here keep it until they stop
+```
+
+`claude_token_file` in `host.toml` keeps it somewhere else, such as a file
+your secrets manager writes.
 
 ## Hosts
 
@@ -551,6 +569,7 @@ fctl host logs -n 200
 fctl host image pull             # pull the sandbox image again now (the host does every 6 hours)
 fctl host image build            # build it here instead (with Lima: the base VM)
 fctl host image build --source ~/src/sandbox   # from a checkout of hyperstructure/sandbox
+fctl host claude set-token       # keep your Claude token here, not in fctl (see Claude above)
 fctl host restart                # sessions keep running
 fctl host drain                  # take no new sessions; the ones here carry on
 fctl host drain --wait           # …and wait until none runs here

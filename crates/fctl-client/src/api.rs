@@ -996,6 +996,17 @@ impl Api {
         .await
     }
 
+    /// Connects the Claude token you keep on your runners (`fctl host
+    /// claude set-token`), which you never give to fctl, and makes it your
+    /// default.
+    pub async fn add_claude_on_runners(&self, label: Option<String>) -> Result<Me> {
+        self.post(
+            "/me/claude/on-runners",
+            &AddClaudeOnRunnersRequest { label },
+        )
+        .await
+    }
+
     pub async fn start_claude_login(&self) -> Result<ClaudeLoginJob> {
         self.post("/me/claude/login", &serde_json::json!({})).await
     }

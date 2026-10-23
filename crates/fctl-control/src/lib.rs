@@ -356,6 +356,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         // Claude credentials
         (Get, ["me", "claude"]) => api::claude::list(ctx).await,
         (Post, ["me", "claude", "token"]) => api::claude::add_token(ctx, req).await,
+        (Post, ["me", "claude", "on-runners"]) => api::claude::add_on_runners(ctx, req).await,
         (Post, ["me", "claude", "login"]) => api::claude::start_login(ctx).await,
         (Get, ["me", "claude", "login", id]) => api::claude::job(ctx, id).await,
         (Post, ["me", "claude", "login", id, "code"]) => {

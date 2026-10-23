@@ -661,7 +661,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "claude_connections".into(),
         rows(
             ctx,
-            "SELECT kind, label, account_email, subscription_type, status, created_at, last_used_at, expires_at FROM claude_credentials WHERE user_id = ? ORDER BY created_at",
+            "SELECT kind, label, account_email, subscription_type, status, on_runners, created_at, last_used_at, expires_at FROM claude_credentials WHERE user_id = ? ORDER BY created_at",
             &me(),
         )
         .await?,

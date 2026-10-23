@@ -1,15 +1,25 @@
 // Starting a session from a prompt, on the home page and on a project's page, with the model
-// and effort level it asks for, and what its agent may do on GitHub.
+// and effort level it asks for, and what its agent may do on GitHub. What is written in either
+// stays in this browser until a session starts with it.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowUp } from "lucide-react";
-import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { EffortIcon, Select, Spinner, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { type DraftText, forgetDraft, saveText } from "@/lib/draft";
 import { githubOffers, onGithub } from "@/lib/github-access";
 import { type Choice, effortOffers, modelOffers, type Offer, startChoice } from "@/lib/models";
 import { keys } from "@/lib/queries";
@@ -82,6 +92,56 @@ export function useStartSession(onStarted?: (s: G.Session) => unknown) {
       inFlight.current = true;
       create.mutate({ project, prompt, files, asks });
     },
+  };
+}
+
+/**
+ * Keeps a start form's draft in this browser under `keep` (`@/lib/draft`): as it changes, as the
+ * box loses the focus (`save`, which keeps the caret too) and as the form goes. A draft without
+ * words or files is forgotten. `kept` is the draft the form opened with, whose caret comes back.
+ * `forget` forgets the draft once a session starts with it, and nothing keeps it again. A form
+ * for another draft is another form: give it a `key`.
+ */
+export function useKeepDraft(
+  keep: string,
+  {
+    kept,
+    textarea,
+    text,
+    files,
+  }: {
+    kept: DraftText | undefined;
+    textarea: RefObject<HTMLTextAreaElement | null>;
+    /** What the form has now. */
+    text: Omit<DraftText, "selection">;
+    /** How many files it has. */
+    files: number;
+  },
+) {
+  const sent = useRef(false);
+  const caret = useRef(kept?.selection);
+  const save = useRef(() => {});
+  save.current = () => {
+    if (sent.current) return;
+    const box = textarea.current;
+    if (box) caret.current = [box.selectionStart, box.selectionEnd];
+    const empty = !text.prompt.trim() && !files;
+    saveText(keep, empty ? undefined : { ...text, selection: caret.current });
+  };
+  const { prompt, project, model, effort, github } = text;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: saves when the draft changes
+  useEffect(() => save.current(), [prompt, project, model, effort, github, files]);
+  useEffect(() => () => save.current(), []);
+  useLayoutEffect(() => {
+    const s = kept?.selection;
+    if (s) textarea.current?.setSelectionRange(s[0], s[1]);
+  }, [kept, textarea]);
+  return {
+    save: useCallback(() => save.current(), []),
+    forget: useCallback(() => {
+      sent.current = true;
+      return forgetDraft(keep);
+    }, [keep]),
   };
 }
 

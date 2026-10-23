@@ -364,11 +364,11 @@ async fn detail(ctx: &Ctx, id: &str) -> AppResult<RunnerDetail> {
     .all()
     .await?;
     let live = live(ctx).await;
-    // Its host sees every workspace it serves.
-    let runner = rows
-        .first()
-        .ok_or_else(|| not_found("Runner"))?
-        .to_runner(&live, &RunnerView::default());
+    // Its host sees every workspace it serves, and what fctl knows of the
+    // Claude token it keeps.
+    let row = rows.first().ok_or_else(|| not_found("Runner"))?;
+    let mut runner = row.to_runner(&live, &RunnerView::default());
+    runner.claude_token = row.hello().and_then(|h| h.claude_token);
     let sessions: Vec<Row> = q(
         &ctx.db,
         "SELECT s.id, p.slug AS project_slug, s.number, s.title, s.status, s.resume_at FROM sessions s \

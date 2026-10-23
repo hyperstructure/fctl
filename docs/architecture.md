@@ -73,8 +73,9 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
    acknowledges them. Messages to agents are delivered at least once and
    de-duplicated by id.
 4. **One owner per secret.** The control plane owns credentials and mints
-   short-lived, narrowly scoped tokens for each session. Sandboxes never see
-   refresh tokens or the GitHub App key.
+   short-lived, narrowly scoped tokens for each session, but for the Claude
+   tokens people keep on their own runners, which it is never given. Sandboxes
+   never see refresh tokens or the GitHub App key.
 5. **Agent first.** Every capability is reachable from the CLI with `--json`,
    every component runs locally with one command, and the repository explains
    itself (AGENTS.md, this file, ADRs).
@@ -600,7 +601,9 @@ A session runs as the owner of its Claude connection. A member may keep
 their sessions in a workspace on runners they registered
 (`workspace_members.own_runners`, **Only on my runners** in its Settings,
 `fctl workspaces own-runners`): no one else's machine then sees their
-Claude token or their sessions' work. FleetDO reads which workspaces each
+Claude token or their sessions' work. A connection whose token they keep
+on their runners keeps their sessions there in every workspace, on those
+of their runners that keep it ([Tokens on your runners](#tokens-on-your-runners)). FleetDO reads which workspaces each
 runner serves, and for whom, before it dispatches, and starts a session
 only on a runner of its workspace that runs the sessions of its person
 (`Slot.serves`, `fctl_domain::schedule::runs_for`). A session that no
@@ -1628,6 +1631,39 @@ in `~/AGENTS.md`, which Claude's user memory (`~/.claude/CLAUDE.md`)
 imports so it loads in every repository
 ([ADR 0007](adr/0007-agents-name-their-sessions-through-fctl-agent.md)).
 
+### Pull request descriptions
+
+A project's settings say how much its agents write in the descriptions of
+the pull requests they open (`pull_request_descriptions`; Settings →
+Agents, `fctl projects set --pr-descriptions`):
+
+- **Balanced**, the default: a summary of what changed and why in one or
+  two short paragraphs, with how it was verified and anything a reviewer
+  must know (breaking changes, migrations, deploy steps, follow-up work) in
+  a sentence each, then a "Worth confirming" section, when there is
+  anything to confirm, with the decisions about behavior and the
+  assumptions that the task didn't settle.
+- **Brief**: a few sentences without headings, and a sentence for anything
+  a reviewer must know before merging.
+- **Full**: the whole story, as agents told it before the setting: how it
+  works, the choices and the alternatives, how it was verified in detail.
+
+fctl-agent gives Claude the level's guidance in a section of its system
+prompt, after the rest of what fctl says and before the project's
+instructions, in sessions whose agents may push: whether or not the
+project asks them to open a pull request when they finish, since people
+ask for them too. The section takes the place of Claude Code's own format
+for pull requests, and says what goes at every level: each paragraph and
+list item on one line, since GitHub shows a line break inside a paragraph;
+readable link text, and related pull requests as their URLs alone in list
+items, which GitHub shows with their titles and states; the repository's
+pull request template where it has one; and a link to the session at the
+end. When later commits change what a pull request does, how it was
+verified or what is worth confirming, the agent rewrites its description
+(`gh pr edit --body-file`), so that it describes the pull request as it
+stands. Agents from before the setting describe pull requests as before
+([ADR 0049](adr/0049-agents-write-balanced-pull-request-descriptions.md)).
+
 ### Model and effort
 
 A project's settings name the model its sessions run on (Claude's
@@ -2006,13 +2042,14 @@ again with the new one.
 
 Each user connects their own Claude subscription; a session always runs on
 the subscription of the person who started it: the connection they chose
-for the session's workspace, else their default one. Two kinds are
+for the session's workspace, else their default one. Three kinds are
 supported:
 
-| Kind | How it is created | Remote Control |
-|---|---|---|
-| Long-lived token | `claude setup-token` on any machine, pasted into fctl | no (inference-only scope) |
-| Full login | `claude auth login` run by the official CLI in a sandbox; fctl shows the sign-in link and relays the code | yes |
+| Kind | How it is created | Where the token is | Remote Control |
+|---|---|---|---|
+| Long-lived token | `claude setup-token` on any machine, pasted into fctl | the control plane | no (inference-only scope) |
+| Full login | `claude auth login` run by the official CLI in a sandbox; fctl shows the sign-in link and relays the code | the control plane | yes |
+| Token on your runners | `claude setup-token`, then `fctl host claude set-token` on each of your runners | your runners only | no (inference-only scope) |
 
 Sandboxes receive only an access token (`CLAUDE_CODE_OAUTH_TOKEN`, plus the
 granted scopes in `CLAUDE_CODE_OAUTH_SCOPES`). When it expires, Claude asks its
@@ -2052,6 +2089,56 @@ Control sessions (fctl sessions on a full login, and those on their own
 machines) with their titles and status, and message them. The `process`
 driver isolates nothing: there an agent can reach whatever the host's user
 can.
+
+### Tokens on your runners
+
+People who would rather not hand their token to the control plane keep it
+on their runners
+([ADR 0050](adr/0050-claude-tokens-can-stay-on-their-owners-runners.md)):
+
+1. **On each runner**, `claude setup-token` makes a token (there, or on any
+   machine with Claude Code), and `fctl host claude set-token` keeps it in
+   `claude-token` next to `host.toml` (mode 0600; `claude_token_file` in
+   `host.toml` puts it elsewhere). `fctl host claude status` says whether
+   the runner keeps one and whether the control plane knows, and `fctl host
+   claude remove-token` removes it. The host says in its hello and each
+   heartbeat whether it keeps one and when it was saved
+   (`HostHello.claude_token`, `RunnerClaudeToken`), never what it is;
+   FleetDO keeps that in the runner's hello, and the runner's owner sees it
+   (`Runner.claude_token`). Hosts too old to keep one say nothing.
+2. **In fctl**, they connect "On your runners" (Settings → Claude, `fctl
+   claude connect --on-runners`, `POST /api/v1/me/claude/on-runners`): a
+   row in `claude_credentials` with `on_runners` set and no secret, of kind
+   `setup_token`, one per person, which becomes their default.
+3. **Its sessions run only on their runners that keep a token.** It keeps
+   them on their person's runners as **Only on my runners** does, in every
+   workspace (`fctl_domain::schedule::only_theirs`, for `runs_for`, and so
+   for `spec::runner_serves` too), and FleetDO gives them only to those of
+   the person's runners whose host keeps a token (`Candidate::slot`). One
+   that waits says why (`fctl_domain::schedule::TokenWait`): none of their
+   runners is in the workspace, none of those is online, or the ones online
+   keep none, or run an fctl too old to keep one.
+4. **The host fills it in.** The spec carries the connection without a
+   token (`ClaudeCredential.on_runners`, `access_token` empty), and so do
+   the fresh credentials FleetDO answers with; the host puts the token it
+   keeps in before the agent gets either (`claude_token::fill`), and
+   refuses a session when it keeps none, saying what to run. A token
+   replaced on the runner reaches the runs that start after, and running
+   ones when Claude asks for a fresh token; one removed stays with the
+   sessions running there until they stop.
+
+Hosts take Claude tokens out of what agents send to the control plane, for
+every session: the token a session started with, those it got since and
+the one the host keeps become `[Claude token, redacted by fctl]` in every
+frame from the agent (`claude_token::Secrets`), so that neither a
+transcript nor what viewers see live shows one an agent printed or
+repeated. Claude's streamed deltas split what it writes anywhere, so of
+each content block the end that could start a token waits for the next
+delta, and goes out before the block ends if it doesn't
+(`claude_token::StreamRedactor`). The agent has the token in its
+environment all the same, so whoever directs it can still have it send
+the token elsewhere, or write it in a form the redaction doesn't know
+([Security](security.md#sandboxes)).
 
 Guards against API billing: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 `ANTHROPIC_BASE_URL`, Bedrock/Vertex/Foundry switches and `apiKeyHelper` never

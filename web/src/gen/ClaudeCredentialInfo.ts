@@ -18,4 +18,12 @@ is_default: boolean, created_at: number, last_used_at?: number, expires_at?: num
  * credential last reported it: one entry per limit, the five-hour
  * window first. Empty until a session reports one.
  */
-usage?: Array<PlanLimit>, };
+usage?: Array<PlanLimit>, 
+/**
+ * Its token, from `claude setup-token`, is kept on its owner's runners
+ * (`fctl host claude set-token`), never given to fctl: sessions on it run
+ * only on those of their runners that keep it ([`Runner::claude_token`]).
+ * `kind` is `setup_token`, which older clients show it as. One per
+ * person.
+ */
+on_runners?: boolean, };

@@ -5,7 +5,7 @@
 //! list endpoints return objects (`{"sessions": [...]}`) so they can grow.
 
 use crate::event::SessionEvent;
-use crate::runner::{ClaudeCredentialKind, DriverInfo, SandboxLimits};
+use crate::runner::{ClaudeCredentialKind, DriverInfo, RunnerClaudeToken, SandboxLimits};
 use crate::session::{
     GithubAccess, InstanceRole, Memory, Project, ProjectRole, ProjectSettings, RepoAccess, RepoRef,
     Retrospective, RetrospectiveOutcome, Session, SessionRef, SessionRole, SessionStatus, UserRef,
@@ -1875,6 +1875,11 @@ pub struct Runner {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<WorkspaceId>>", optional))]
     pub personal: Vec<WorkspaceId>,
+    /// The Claude token its host keeps for its owner (`fctl host claude
+    /// set-token`), shown to them alone: when it was saved, or no time
+    /// while it keeps none. Absent for other people, from hosts too old to
+    /// keep one, and from control planes before it.
+    pub claude_token: Option<RunnerClaudeToken>,
 }
 
 /// A runner that drains.
@@ -3079,6 +3084,14 @@ pub struct ClaudeCredentialInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<PlanLimit>>", optional))]
     pub usage: Vec<PlanLimit>,
+    /// Its token, from `claude setup-token`, is kept on its owner's runners
+    /// (`fctl host claude set-token`), never given to fctl: sessions on it run
+    /// only on those of their runners that keep it ([`Runner::claude_token`]).
+    /// `kind` is `setup_token`, which older clients show it as. One per
+    /// person.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub on_runners: bool,
 }
 
 /// Where a Claude plan limit stands, as Claude reported it for the limit
@@ -3141,6 +3154,17 @@ pub struct PlanLimit {
 pub struct AddClaudeTokenRequest {
     /// The output of `claude setup-token` (`sk-ant-oat01-…`).
     pub token: String,
+    pub label: Option<String>,
+}
+
+/// `POST /api/v1/me/claude/on-runners`: connects the Claude token the
+/// caller keeps on their runners ([`ClaudeCredentialInfo::on_runners`]),
+/// which they never give to fctl, and makes it their default. Connecting it
+/// again makes it the default again (and renames it, with a label).
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AddClaudeOnRunnersRequest {
     pub label: Option<String>,
 }
 

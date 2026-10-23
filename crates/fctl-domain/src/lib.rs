@@ -7,6 +7,7 @@ pub mod account;
 pub mod allowlist;
 pub mod branches;
 pub mod cbor;
+pub mod claude;
 pub mod cookies;
 pub mod cron;
 pub mod disk;

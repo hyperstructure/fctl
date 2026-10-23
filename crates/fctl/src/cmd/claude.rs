@@ -5,24 +5,36 @@ use crate::style;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use fctl_domain::usage::{self as plan, Standing};
-use fctl_proto::api::{ClaudeCredentialInfo, ClaudeLoginState, CredentialStatus, PlanLimit};
+use fctl_proto::api::{
+    ClaudeCredentialInfo, ClaudeLoginState, CredentialStatus, PlanLimit, Runner, RunnerStatus,
+};
 
 use std::time::Duration;
 
 #[derive(Subcommand)]
 pub enum ClaudeCmd {
-    /// Connect your subscription: a long-lived token, or a full login (Remote Control).
+    /// Connect your subscription: a long-lived token, a full login (Remote
+    /// Control), or the token you keep on your runners.
     Connect {
         /// A token from `claude setup-token` (otherwise you are asked for one).
-        #[arg(long, conflicts_with = "login")]
+        #[arg(long, conflicts_with_all = ["login", "on_runners"])]
         token: Option<String>,
         /// Sign in with claude.ai through a host instead (enables Remote Control).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "on_runners")]
         login: bool,
+        /// Run your sessions on the token you keep on your runners (`fctl
+        /// host claude set-token` there), which you never give to fctl. Your
+        /// sessions then run only on those runners.
+        #[arg(long)]
+        on_runners: bool,
     },
     /// Show connected subscriptions and how much of each plan's limits is used.
     Status,
 }
+
+/// What names the connection you keep on your runners, wherever a
+/// connection is asked for.
+pub(crate) const ON_RUNNERS: &str = "on-runners";
 
 /// What to say to someone with no Claude connection.
 pub(crate) const NO_CONNECTION: &str =
@@ -33,14 +45,25 @@ fn name(c: &ClaudeCredentialInfo) -> String {
     c.account_email
         .clone()
         .or_else(|| c.label.clone())
-        .unwrap_or_else(|| c.kind.as_str().into())
+        .unwrap_or_else(|| {
+            if c.on_runners {
+                "On your runners".into()
+            } else {
+                c.kind.as_str().into()
+            }
+        })
 }
 
-/// What sort of connection it is: `oauth · Remote Control · max`.
+/// What sort of connection it is: `oauth · Remote Control · max`, or
+/// `kept on your runners · inference only`.
 fn about(c: &ClaudeCredentialInfo) -> String {
     let mut about = format!(
         "{} · {}",
-        c.kind.as_str(),
+        if c.on_runners {
+            "kept on your runners"
+        } else {
+            c.kind.as_str()
+        },
         if c.remote_control {
             "Remote Control"
         } else {
@@ -54,13 +77,24 @@ fn about(c: &ClaudeCredentialInfo) -> String {
 }
 
 /// One of your connections that sessions can run on: the one whose id is
-/// `which`, else the working one whose account or label it is.
+/// `which`, the one you keep on your runners for `on-runners`, else the
+/// working one whose account or label it is.
 pub(crate) fn pick_connection<'a>(
     mine: &'a [ClaudeCredentialInfo],
     which: &str,
     now: i64,
 ) -> Result<&'a ClaudeCredentialInfo> {
-    let c = match mine.iter().find(|c| c.id.as_str() == which) {
+    let found = mine.iter().find(|c| c.id.as_str() == which).or_else(|| {
+        (which == ON_RUNNERS)
+            .then(|| mine.iter().find(|c| c.on_runners))
+            .flatten()
+    });
+    if which == ON_RUNNERS && found.is_none() {
+        bail!(
+            "You keep no Claude token on your runners yet: run `fctl claude connect --on-runners`, and `fctl host claude set-token` on your runners"
+        );
+    }
+    let c = match found {
         Some(c) => c,
         None => {
             let named: Vec<&ClaudeCredentialInfo> = mine
@@ -147,6 +181,43 @@ fn print_usage(usage: &[PlanLimit]) {
     );
 }
 
+/// Your runners and whether each keeps your Claude token, for a connection
+/// whose token is kept on them: `kept on studio-mac (online); none on
+/// build-box`.
+fn runners_line(runners: &[Runner]) -> String {
+    let mine: Vec<&Runner> = runners.iter().filter(|r| r.yours).collect();
+    if mine.is_empty() {
+        return style::amber(
+            "You have no runners yet, so sessions on it wait: `fctl host install` makes this machine one.",
+        );
+    }
+    let state = |r: &Runner| match r.status {
+        RunnerStatus::Online => "online",
+        RunnerStatus::Offline => "offline",
+        RunnerStatus::Disabled => "disabled",
+    };
+    let keeping: Vec<String> = mine
+        .iter()
+        .filter(|r| r.claude_token.is_some_and(|t| t.kept()))
+        .map(|r| format!("{} ({})", r.name, state(r)))
+        .collect();
+    let without: Vec<String> = mine
+        .iter()
+        .filter(|r| !r.claude_token.is_some_and(|t| t.kept()))
+        .map(|r| r.name.clone())
+        .collect();
+    if keeping.is_empty() {
+        return style::amber(
+            "None of your runners keeps it yet, so sessions on it wait. On a runner, run `claude setup-token`, then `fctl host claude set-token`: the runner tells fctl within 15 seconds.",
+        );
+    }
+    let mut line = format!("kept on {}", keeping.join(", "));
+    if !without.is_empty() {
+        line.push_str(&format!("; not on {}", without.join(", ")));
+    }
+    line
+}
+
 fn join(parts: &[String]) -> String {
     parts
         .iter()
@@ -167,6 +238,12 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
             if me.claude.is_empty() {
                 println!("No Claude subscription connected. Run `fctl claude connect`.");
             }
+            // Which runners keep the token of a connection kept on them.
+            let runners = if me.claude.iter().any(|c| c.on_runners) {
+                api.runners().await.map(|l| l.runners).ok()
+            } else {
+                None
+            };
             for c in &me.claude {
                 println!(
                     "{} {} · {}{}{}",
@@ -184,13 +261,45 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                     },
                     style::dim(&format!(" · {}", c.id))
                 );
+                if c.on_runners
+                    && let Some(runners) = &runners
+                {
+                    println!("    {}", runners_line(runners));
+                }
                 print_usage(&c.usage);
             }
             Ok(())
         }
         ClaudeCmd::Connect {
+            on_runners: true, ..
+        } => {
+            let me = api.add_claude_on_runners(None).await?;
+            if json {
+                return style::print_json(&me);
+            }
+            println!(
+                "{} New sessions run on the Claude token you keep on your runners: you never give it to fctl.",
+                style::accent("✓")
+            );
+            match api.runners().await {
+                Ok(list) => println!("  {}", runners_line(&list.runners)),
+                Err(e) => println!(
+                    "  {}",
+                    style::dim(&format!("Could not list your runners: {e}"))
+                ),
+            }
+            println!(
+                "  {}",
+                style::dim(
+                    "Your sessions on it run only on your runners that keep it, and wait while none of them is online."
+                )
+            );
+            Ok(())
+        }
+        ClaudeCmd::Connect {
             token,
             login: false,
+            ..
         } => {
             let token = match token {
                 Some(t) => t,
@@ -314,6 +423,45 @@ mod tests {
             Err("None of your Claude connections is grace@example.com. `fctl claude status` lists them, with their ids.".into())
         );
         assert_eq!(picked(&[], "ada@example.com"), Err(NO_CONNECTION.into()));
+        Ok(())
+    }
+
+    #[test]
+    fn the_connection_kept_on_runners_is_named_on_runners() -> Result<()> {
+        let mut kept = connection("crd_01KEPT", "setup_token", None, "active", 0)?;
+        kept.on_runners = true;
+        let token = connection("crd_01TOKEN", "setup_token", None, "active", 0)?;
+        assert_eq!(name(&kept), "On your runners");
+        assert_eq!(about(&kept), "kept on your runners · inference only");
+        let mine = [token.clone(), kept];
+        assert_eq!(picked(&mine, "on-runners"), Ok("crd_01KEPT".into()));
+        assert!(
+            picked(&[token], "on-runners")
+                .is_err_and(|e| e.contains("`fctl claude connect --on-runners`"))
+        );
+        Ok(())
+    }
+
+    fn runner(name: &str, yours: bool, status: &str, saved_at: Option<i64>) -> Result<Runner> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "id": format!("rnr_{name}"), "name": name, "status": status, "drivers": [],
+            "capacity": 4, "active_sessions": 0, "labels": [], "created_at": 0,
+            "yours": yours,
+            "claude_token": saved_at.map(|t| serde_json::json!({ "saved_at": t })),
+        }))?)
+    }
+
+    #[test]
+    fn says_which_of_your_runners_keep_your_token() -> Result<()> {
+        let mini = runner("mini", true, "online", Some(1))?;
+        let boxed = runner("box", true, "offline", None)?;
+        let theirs = runner("theirs", false, "online", None)?;
+        assert_eq!(
+            runners_line(&[mini.clone(), boxed.clone(), theirs.clone()]),
+            "kept on mini (online); not on box"
+        );
+        assert!(runners_line(&[boxed]).contains("None of your runners keeps it yet"));
+        assert!(runners_line(&[theirs]).contains("You have no runners yet"));
         Ok(())
     }
 

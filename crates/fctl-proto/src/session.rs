@@ -558,6 +558,16 @@ pub struct ProjectSettings {
     pub idle_timeout_minutes: Option<u32>,
     /// Ask agents to open a pull request when they finish.
     pub auto_pull_request: bool,
+    /// How much agents write in the descriptions of the pull requests they
+    /// open, whether or not they are asked to open one when they finish:
+    /// balanced unless the project chooses otherwise. Agents keep them up
+    /// to date as later commits change their pull requests. An update that
+    /// leaves it out keeps the stored value, and a value this version
+    /// doesn't know reads as balanced. Agents from before it describe pull
+    /// requests as before.
+    #[serde(deserialize_with = "default_if_unknown")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Verbosity>", optional))]
+    pub pull_request_descriptions: Verbosity,
     /// Enable Remote Control (follow in the Claude apps) when the credential allows it.
     pub remote_control: bool,
     /// Let agents use the claude.ai connectors of the person who starts a
@@ -785,6 +795,49 @@ pub struct SessionTicket {
     pub url: String,
 }
 
+/// How much agents write in the descriptions of the pull requests they
+/// open: what fctl-agent tells Claude about them (`prompt.rs` in
+/// fctl-agent).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Verbosity {
+    /// A few sentences: what changed and why, and how it was verified.
+    Brief,
+    /// A short summary of what changed and why, and the decisions and
+    /// assumptions a reviewer should confirm.
+    #[default]
+    Balanced,
+    /// The whole story: how it works, the choices and the alternatives,
+    /// how it was verified in detail. What agents wrote before there was
+    /// a choice.
+    Full,
+}
+
+impl Verbosity {
+    pub const ALL: [Self; 3] = [Self::Brief, Self::Balanced, Self::Full];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Brief => "brief",
+            Self::Balanced => "balanced",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == s)
+    }
+}
+
+/// A [`Verbosity`] that a newer version may have stored, which reads as the
+/// default when this version doesn't know it, rather than failing the whole
+/// of the settings it is in.
+fn default_if_unknown<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Verbosity, D::Error> {
+    let v: Option<String> = Option::deserialize(d)?;
+    Ok(v.and_then(|v| Verbosity::parse(&v)).unwrap_or_default())
+}
+
 /// A [`GithubAccess`] that a newer version may have stored, which reads as
 /// the least an agent may do when this version doesn't know it, rather than
 /// failing the whole of the settings it is in.
@@ -809,6 +862,7 @@ impl Default for ProjectSettings {
             memory_mb: None,
             idle_timeout_minutes: None,
             auto_pull_request: true,
+            pull_request_descriptions: Verbosity::Balanced,
             remote_control: true,
             claude_ai_connectors: true,
             credit_people: true,
@@ -1213,6 +1267,30 @@ mod tests {
             serde_json::to_value(&known)?["github_access"],
             serde_json::json!("comment")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn pull_request_descriptions_are_balanced_unless_chosen() -> Result<(), serde_json::Error> {
+        // Projects from before the setting, and values from a newer version.
+        let old: ProjectSettings = serde_json::from_str(r#"{"auto_pull_request":false}"#)?;
+        assert_eq!(old.pull_request_descriptions, Verbosity::Balanced);
+        let newer: ProjectSettings = serde_json::from_str(
+            r#"{"pull_request_descriptions":"terse","auto_pull_request":false}"#,
+        )?;
+        assert_eq!(newer.pull_request_descriptions, Verbosity::Balanced);
+        assert!(!newer.auto_pull_request);
+        let null: ProjectSettings = serde_json::from_str(r#"{"pull_request_descriptions":null}"#)?;
+        assert_eq!(null.pull_request_descriptions, Verbosity::Balanced);
+        for v in Verbosity::ALL {
+            let s = ProjectSettings {
+                pull_request_descriptions: v,
+                ..Default::default()
+            };
+            let sent = serde_json::to_value(&s)?;
+            assert_eq!(sent["pull_request_descriptions"], v.as_str());
+            assert_eq!(serde_json::from_value::<ProjectSettings>(sent)?, s);
+        }
         Ok(())
     }
 
