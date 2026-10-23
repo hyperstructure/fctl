@@ -45,12 +45,24 @@ to pay for the reviews: the person who turns them on.
 - **The agent reads; fctl posts.** The review agent's GitHub token only
   reads, and it gets none of the project's secrets, setup script, memory
   or claude.ai connectors. It hands what it found to the control plane
-  (`fctl review submit`), which posts one review, marks the earlier
-  findings it says the new commits fixed (fctl's own threads alone),
-  resolves their threads and completes the check, with a token that never
-  leaves the control plane. So a pull request that steers the agent gets
-  at most comments on itself: no approvals, no closed pull requests, no
-  secrets, no notes for later agents.
+  (`fctl review submit`), which posts it, marks the earlier findings it
+  says the new commits fixed (fctl's own threads alone), resolves their
+  threads and completes the check, with a token that never leaves the
+  control plane. So a pull request that steers the agent gets at most
+  comments on itself: no approvals, no closed pull requests, no secrets,
+  no notes for later agents.
+- **A summary, then the findings.** What a review found goes up as a
+  summary, a comment on the pull request (how many issues, the agent's
+  sentence or two, findings on lines the diff doesn't show), then one
+  review of the commit with the other findings on their lines and no
+  text of its own. GitHub's mobile apps show a review's own text below its
+  comments, so a summary in the review would come after the findings it
+  sums up; as a comment of its own, posted first, it comes above them
+  everywhere. Each later review says atop the earlier summaries how
+  their issues stand, fixed or resolved, and hides those whose issues
+  are all addressed as outdated. It tells a summary's findings by the
+  review session that posted both, which fctl notes out of sight in
+  each comment.
 - **The control plane writes the review prompt.** It goes to the agent in
   the session's spec (`ReviewSpec::instructions`), after the sandbox's
   facts that fctl-agent adds, so it improves with each deploy, without
@@ -73,6 +85,10 @@ to pay for the reviews: the person who turns them on.
 - Pull requests from people who can't write to the repository get reviews
   too; their agent runs none of their code and has nothing worth taking,
   but their text reaches the operator's subscription.
+- A review with findings is two items on the pull request, a comment
+  and a review, so people who watch it hear of both. Reviews posted
+  before summaries were comments of their own keep theirs in the review,
+  and later reviews leave it as it is.
 - Review sessions take numbers from their project's sequence, so the
   sessions list skips the numbers reviews took.
 - Hosts from before review agents get no review sessions: a project whose

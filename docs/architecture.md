@@ -1084,18 +1084,25 @@ posts what it found on GitHub
    findings (file, line, severity, title, a few sentences, an optional
    suggested change) and the earlier ones the new commits fixed to the
    control plane, which checks them (`fctl_domain::reviews::check`) and,
-   with a token of the repository's that never leaves it: posts one
-   review of the commit (`COMMENT`) with each finding on its lines where
-   the diff shows them and in the review's text where it doesn't
-   (`place`); marks each earlier finding it names fixed in this commit,
-   its title struck through, and resolves its thread, for fctl's own
-   threads alone (the token's app wrote them, and they carry fctl's mark);
-   and completes the check: success with nothing to look at, neutral with
-   findings or earlier ones still open, since acting on them is up to the
-   pull request's people. It posts once: a second submission gets what
-   the first posted. `fctl review threads` lists fctl's earlier findings,
-   with what people answered. fctl-agent reminds an agent that ends its
-   turn without posting, once.
+   with a token of the repository's that never leaves it: posts the
+   review's summary, a comment on the pull request (how many issues it
+   found, the agent's summary, and the findings whose lines the diff
+   doesn't show, `summary_text`), then one review of the commit
+   (`COMMENT`) without text of its own, with each other finding on its
+   lines (`place`), so that GitHub shows the summary above them, on the
+   web and in its apps alike; marks each earlier finding it names fixed
+   in this commit, its title struck through, and resolves its thread, for
+   fctl's own threads alone (the token's app wrote them, and they carry
+   fctl's mark); puts atop each earlier review's summary how the issues
+   it found stand (`restated`: fixed, or resolved by someone, going by
+   the threads its session started, which fctl notes out of sight in
+   every comment it posts), and hides the summary as outdated once all of
+   them are; and completes the check: success with nothing to look at,
+   neutral with findings or earlier ones still open, since acting on them
+   is up to the pull request's people. It posts once: a second submission
+   gets what the first posted. `fctl review threads` lists fctl's earlier
+   findings, with what people answered. fctl-agent reminds an agent that
+   ends its turn without posting, once.
 6. **A review that ends otherwise** (superseded, stopped, failed) ends
    its check as cancelled, saying why (`crate::reviews::ended`, from
    SessionObject; the hourly job catches what it missed).
