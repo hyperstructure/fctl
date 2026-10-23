@@ -5,7 +5,7 @@ import { type FoundryHandle, type FoundryLane, foundry, LANES } from "@hyperstru
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, Cpu, FolderPlus, KeyRound, Plus, ShieldCheck, Users } from "lucide-react";
-import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { PlanUsageStrip } from "@/components/plan-usage";
 import { ScheduleButton } from "@/components/project/schedules";
 import { RunnerUpdate } from "@/components/runner-update";
@@ -17,7 +17,13 @@ import {
   useFileDrop,
 } from "@/components/session/attachments";
 import { SessionRow } from "@/components/session/row";
-import { StartButton, StartChoices, useStartChoice, useStartSession } from "@/components/session/start";
+import {
+  StartButton,
+  StartChoices,
+  useKeepDraft,
+  useStartChoice,
+  useStartSession,
+} from "@/components/session/start";
 import {
   Button,
   firstNames,
@@ -34,7 +40,7 @@ import type * as G from "@/gen";
 import { workspaces as wsApi } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
-import { forgetDraft, loadText, saveText } from "@/lib/draft";
+import { draftId, forgetDraft, loadText } from "@/lib/draft";
 import { feed, useFeed } from "@/lib/feed";
 import { ago, lowOnDisk } from "@/lib/format";
 import { asked } from "@/lib/models";
@@ -162,7 +168,8 @@ function QuickStart({
     [projects, index],
   );
   // What was being written here before, kept in this browser until a session starts with it.
-  const [kept] = useState(() => loadText(user));
+  const keep = draftId(user);
+  const [kept] = useState(() => loadText(keep));
   const remembered = (() => {
     try {
       return localStorage.getItem(LAST_TARGET) ?? undefined;
@@ -187,33 +194,19 @@ function QuickStart({
       localStorage.setItem(LAST_TARGET, slug);
     } catch {}
   };
-  const sent = useRef(false);
-  const { start, starting } = useStartSession(() => {
-    // The draft went out with the session.
-    sent.current = true;
-    return forgetDraft(user);
+  const files = useAttachments(editable.length && project ? { project } : undefined, { keep });
+  const draft = useKeepDraft(keep, {
+    kept,
+    textarea: ref,
+    text: { prompt, project, ...picked },
+    files: files.drafts.length,
   });
-  const files = useAttachments(editable.length && project ? { project } : undefined, { keep: user });
+  // Once a session starts with the draft, it is forgotten.
+  const { start, starting } = useStartSession(draft.forget);
   const attach = (f: File[], pasted?: boolean) => {
     files.add(f, { pasted });
     ref.current?.focus();
   };
-  // The draft is kept as it changes, and on the way out with the caret where it is then.
-  const caret = useRef(kept?.selection);
-  const save = useRef(() => {});
-  save.current = () => {
-    if (sent.current) return;
-    if (ref.current) caret.current = [ref.current.selectionStart, ref.current.selectionEnd];
-    const empty = !prompt.trim() && !files.drafts.length;
-    saveText(user, empty ? undefined : { prompt, project, selection: caret.current, ...picked });
-  };
-  // biome-ignore lint/correctness/useExhaustiveDependencies: saves when the draft changes
-  useEffect(() => save.current(), [prompt, project, files.drafts.length, picked]);
-  useEffect(() => () => save.current(), []);
-  useLayoutEffect(() => {
-    const s = kept?.selection;
-    if (s) ref.current?.setSelectionRange(s[0], s[1]);
-  }, [kept]);
   const dragging = useFileDrop(attach, editable.length > 0 && !starting);
   if (!editable.length) return null;
   const go = () => start(project, prompt, files, target && asked(target, choice));
@@ -245,7 +238,7 @@ function QuickStart({
           value={prompt}
           readOnly={starting}
           onChange={(e) => setPrompt(e.target.value)}
-          onBlur={() => save.current()}
+          onBlur={draft.save}
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
@@ -326,7 +319,7 @@ function QuickStart({
               bare
               className="max-xl:hidden"
               // The draft stays here until a schedule is set up with it.
-              onSaved={() => void forgetDraft(user)}
+              onSaved={() => void forgetDraft(keep)}
             />
           )}
           <StartButton

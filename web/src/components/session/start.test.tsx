@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
-import { StartButton, StartChoices, useStartChoice, useStartSession } from "./start";
+import { draftId, loadText, saveText } from "@/lib/draft";
+import { StartButton, StartChoices, useKeepDraft, useStartChoice, useStartSession } from "./start";
 
 const { createSession, navigate, toast } = vi.hoisted(() => ({
   createSession: vi.fn(),
@@ -33,8 +34,9 @@ function render(node: ReactNode) {
   const rerender = (n: ReactNode) =>
     act(() => root.render(<QueryClientProvider client={client}>{n}</QueryClientProvider>));
   rerender(node);
-  roots.push(() => act(() => root.unmount()));
-  return { container, rerender, client };
+  const unmount = () => act(() => root.unmount());
+  roots.push(unmount);
+  return { container, rerender, client, unmount };
 }
 
 function mountWithClient(onStarted?: Parameters<typeof useStartSession>[0]) {
@@ -315,5 +317,63 @@ describe("StartChoices", () => {
     expect(github?.querySelector(":scope > .grid")?.classList.contains("sr-only")).toBe(true);
     expect(github?.querySelector(":scope > span:not(.grid) > svg")).not.toBeNull();
     expect(github?.getAttribute("title")).toBe("On GitHub: Comments only");
+  });
+});
+
+describe("keeping a draft", () => {
+  afterEach(() => localStorage.clear());
+
+  const keep = draftId("usr_a", "prj_web");
+  let draft: ReturnType<typeof useKeepDraft> | undefined;
+  /** A start form's box, with what it has now. */
+  function Form({ prompt, files = 0, model }: { prompt: string; files?: number; model?: string }) {
+    const [kept] = useState(() => loadText(keep));
+    const ref = useRef<HTMLTextAreaElement>(null);
+    draft = useKeepDraft(keep, { kept, textarea: ref, text: { prompt, model }, files });
+    return <textarea ref={ref} value={prompt} readOnly />;
+  }
+  const box = (container: HTMLElement) => container.querySelector("textarea") as HTMLTextAreaElement;
+
+  it("keeps it as it changes, and forgets it once it has neither words nor files", () => {
+    const { rerender } = render(<Form prompt="Fix the" />);
+    expect(loadText(keep)?.prompt).toBe("Fix the");
+    rerender(<Form prompt="Fix the flaky test" model="haiku" />);
+    expect(loadText(keep)).toMatchObject({ prompt: "Fix the flaky test", model: "haiku" });
+    // Files alone are a draft too: they are kept with what was picked for them.
+    rerender(<Form prompt=" " files={1} model="haiku" />);
+    expect(loadText(keep)).toMatchObject({ prompt: " ", model: "haiku" });
+    rerender(<Form prompt=" " model="haiku" />);
+    expect(loadText(keep)).toBeUndefined();
+  });
+
+  it("keeps the caret as the box loses the focus, and puts it back as the form opens again", () => {
+    const first = render(<Form prompt="Fix the flaky test" />);
+    act(() => box(first.container).setSelectionRange(8, 13));
+    act(() => draft?.save());
+    first.unmount();
+    expect(loadText(keep)?.selection).toEqual([8, 13]);
+    const again = render(<Form prompt="Fix the flaky test" />);
+    expect([box(again.container).selectionStart, box(again.container).selectionEnd]).toEqual([8, 13]);
+  });
+
+  it("keeps none of it once a session starts with it", async () => {
+    const { rerender, unmount } = render(<Form prompt="Fix the flaky test" />);
+    await act(() => draft?.forget());
+    expect(loadText(keep)).toBeUndefined();
+    // The form shows the task until the session's page replaces it.
+    rerender(<Form prompt="Fix the flaky test" model="haiku" />);
+    act(() => draft?.save());
+    unmount();
+    expect(loadText(keep)).toBeUndefined();
+  });
+
+  it("leaves the other drafts alone", () => {
+    saveText("usr_a", { prompt: "On the home page" });
+    saveText(draftId("usr_a", "prj_api"), { prompt: "In api" });
+    const { rerender } = render(<Form prompt="In web" />);
+    rerender(<Form prompt="" />);
+    expect(loadText(keep)).toBeUndefined();
+    expect(loadText("usr_a")?.prompt).toBe("On the home page");
+    expect(loadText(draftId("usr_a", "prj_api"))?.prompt).toBe("In api");
   });
 });
