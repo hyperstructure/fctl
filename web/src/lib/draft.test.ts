@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { forgetDraft, loadFiles, loadText, pageFiles, saveFile, saveText, setPageFiles } from "./draft";
+import {
+  draftId,
+  forgetDraft,
+  loadFiles,
+  loadText,
+  pageFiles,
+  saveFile,
+  saveText,
+  setPageFiles,
+} from "./draft";
 
 const shot = () => ({
   key: "k1",
@@ -9,7 +18,7 @@ const shot = () => ({
 
 afterEach(() => localStorage.clear());
 
-describe("the home page's draft", () => {
+describe("drafts", () => {
   it("keeps each person's text", () => {
     saveText("usr_a", { prompt: "Fix the flaky test", project: "web", selection: [3, 8] });
     saveText("usr_b", { prompt: "Write the docs" });
@@ -72,6 +81,36 @@ describe("the home page's draft", () => {
     expect(pageFiles("usr_b")).toBeUndefined();
     // Not a draft.
     expect(localStorage.getItem("fctl:last-target")).toBe("web");
+  });
+
+  it("keeps each project's apart from the home page's and the others'", async () => {
+    const home = draftId("usr_a");
+    const web = draftId("usr_a", "prj_web");
+    const api = draftId("usr_a", "prj_api");
+    expect(home).toBe("usr_a");
+    saveText(home, { prompt: "On the home page", project: "web" });
+    saveText(web, { prompt: "In web", model: "haiku" });
+    saveText(api, { prompt: "In api" });
+    saveText(draftId("usr_b", "prj_web"), { prompt: "Someone else's, in web" });
+    setPageFiles(home, [shot()]);
+    setPageFiles(web, [shot(), shot()]);
+    expect(loadText(home)?.prompt).toBe("On the home page");
+    expect(loadText(web)).toEqual({ prompt: "In web", model: "haiku" });
+    expect(pageFiles(web)).toHaveLength(2);
+    // A session started in web forgets web's alone.
+    await forgetDraft(web);
+    expect(loadText(web)).toBeUndefined();
+    expect(pageFiles(web)).toBeUndefined();
+    expect(loadText(home)?.prompt).toBe("On the home page");
+    expect(pageFiles(home)).toHaveLength(1);
+    expect(loadText(api)?.prompt).toBe("In api");
+    // And one started on the home page, the home page's alone.
+    await forgetDraft(home);
+    expect(loadText(api)?.prompt).toBe("In api");
+    // Signing out forgets them all.
+    await forgetDraft();
+    expect(loadText(api)).toBeUndefined();
+    expect(loadText(draftId("usr_b", "prj_web"))).toBeUndefined();
   });
 
   it("keeps files only for the page where the browser stores none", async () => {

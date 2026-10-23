@@ -251,7 +251,8 @@ them in its sandbox and gets screenshots in the message itself.
 
 A task you write on the Agent Floor stays in your browser, with its project,
 model, effort level and files, until a session starts with it: leave the
-page, and it is there when you come back.
+page, and it is there when you come back. So does one you write on a
+project's page: each project keeps its own, apart from the Agent Floor's.
 
 `fctl run` follows the session live in your terminal; Ctrl-C detaches and the
 agent keeps working. The agent works on a branch named

@@ -161,7 +161,7 @@ export interface Draft {
   model?: string;
   effort?: string;
   github?: G.GithubAccess;
-  /** Once a schedule is set up with it: the Agent Floor forgets the draft it kept. */
+  /** Once a schedule is set up with it: the task box it came from forgets the draft it kept. */
   onSaved?: () => void;
 }
 

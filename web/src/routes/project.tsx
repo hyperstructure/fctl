@@ -17,7 +17,13 @@ import {
   useFileDrop,
 } from "@/components/session/attachments";
 import { PullRequestLinks, ScheduledMark, SessionLink } from "@/components/session/row";
-import { StartButton, StartChoices, useStartChoice, useStartSession } from "@/components/session/start";
+import {
+  StartButton,
+  StartChoices,
+  useKeepDraft,
+  useStartChoice,
+  useStartSession,
+} from "@/components/session/start";
 import {
   Avatar,
   Banner,
@@ -46,6 +52,7 @@ import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
+import { draftId, forgetDraft, loadText } from "@/lib/draft";
 import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
 import { GITHUB_ACCESS } from "@/lib/github-access";
 import {
@@ -234,99 +241,11 @@ function Sessions({ project }: { project: G.Project }) {
     mine: filter === "mine",
     limit: 100,
   });
-  const [prompt, setPrompt] = useState("");
-  const canStart = project.role !== "viewer";
-  const { start, starting } = useStartSession();
-  const { choice, pick } = useStartChoice(project);
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const files = useAttachments(canStart ? { project: project.slug } : undefined);
-  const go = () => start(project.slug, prompt, files, asked(project, choice));
-  const attach = (f: File[], pasted?: boolean) => {
-    files.add(f, { pasted });
-    ref.current?.focus();
-  };
-  const dragging = useFileDrop(attach, canStart && !starting);
-  const workspace = useWorkspaceIndex().get(project.workspace?.id ?? "");
+  const { data: me } = useMe();
   return (
     <div className="flex flex-col gap-10">
-      {canStart && (
-        <div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              go();
-            }}
-            className={cn(
-              "relative rounded-2xl border border-line-strong bg-surface/80 transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-[0_0_0_4px_var(--c-accent-soft)]",
-              dragging && "border-accent/50",
-            )}
-          >
-            <DraftTray
-              drafts={files.drafts}
-              onRemove={files.remove}
-              onRetry={files.retry}
-              readOnly={starting}
-              className="px-4 pt-4"
-            />
-            <Textarea
-              ref={ref}
-              bare
-              minRows={2}
-              maxRows={12}
-              value={prompt}
-              readOnly={starting}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  go();
-                }
-              }}
-              onPaste={(e) => {
-                const pasted = filesFromPaste(e.clipboardData);
-                if (!pasted.length || starting) return;
-                e.preventDefault();
-                attach(pasted, true);
-              }}
-              placeholder={`What should an agent do in ${project.name}?`}
-              className="block px-5 pt-4 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
-            />
-            {/* More room above the pickers where they take a line of their own. On a phone everything
-                keeps one line, down to 360 px with a model named by its ID and the GitHub picker: the
-                gaps are narrower there, and the pickers go to the end without the spacer and its
-                gaps. */}
-            <TextareaControls
-              textarea={ref}
-              className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 max-sm:gap-2 sm:max-lg:pt-3"
-            >
-              <AttachButton onFiles={(f) => attach(f)} disabled={starting} />
-              <span className="flex-1 max-sm:hidden" />
-              <StartChoices
-                project={project}
-                choice={choice}
-                onPick={pick}
-                disabled={starting}
-                className="max-sm:ml-auto"
-              />
-              {/* Set apart from the pickers, as on the home page. On a phone its room goes to the
-                  button. */}
-              <span className="ml-4 text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
-              <ScheduleButton
-                project={project}
-                prompt={prompt}
-                choice={choice}
-                files={files.drafts.length}
-                disabled={starting}
-              />
-              <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
-                Start a session
-              </StartButton>
-            </TextareaControls>
-            <DropHint show={dragging} />
-          </form>
-          <NoRunnerNote workspace={workspace} className="mt-3" />
-        </div>
-      )}
+      {/* Another project's page opens its own draft. */}
+      {project.role !== "viewer" && me && <StartForm key={project.id} project={project} user={me.user.id} />}
       <section>
         <div className="mb-2 flex items-center gap-1">
           {(["all", "active", "mine"] as const).map((f) => (
@@ -383,6 +302,114 @@ function Sessions({ project }: { project: G.Project }) {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * The Sessions tab's task box. What is written in it stays in this browser until a session starts
+ * with it, apart from the home page's draft and other projects'.
+ */
+function StartForm({ project, user }: { project: G.Project; user: string }) {
+  const keep = draftId(user, project.id);
+  const [kept] = useState(() => loadText(keep));
+  const [prompt, setPrompt] = useState(kept?.prompt ?? "");
+  const { choice, picked, pick } = useStartChoice(project, kept);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const files = useAttachments({ project: project.slug }, { keep });
+  const draft = useKeepDraft(keep, {
+    kept,
+    textarea: ref,
+    draft: { prompt, ...picked },
+    files: files.drafts.length,
+  });
+  const { start, starting } = useStartSession(draft.forget);
+  const go = () => start(project.slug, prompt, files, asked(project, choice));
+  const attach = (f: File[], pasted?: boolean) => {
+    files.add(f, { pasted });
+    ref.current?.focus();
+  };
+  const dragging = useFileDrop(attach, !starting);
+  const workspace = useWorkspaceIndex().get(project.workspace?.id ?? "");
+  return (
+    <div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          go();
+        }}
+        className={cn(
+          "relative rounded-2xl border border-line-strong bg-surface/80 transition-[border-color,box-shadow] focus-within:border-accent/45 focus-within:shadow-[0_0_0_4px_var(--c-accent-soft)]",
+          dragging && "border-accent/50",
+        )}
+      >
+        <DraftTray
+          drafts={files.drafts}
+          onRemove={files.remove}
+          onRetry={files.retry}
+          readOnly={starting}
+          className="px-4 pt-4"
+        />
+        <Textarea
+          ref={ref}
+          bare
+          minRows={2}
+          maxRows={12}
+          value={prompt}
+          readOnly={starting}
+          onChange={(e) => setPrompt(e.target.value)}
+          onBlur={draft.save}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              go();
+            }
+          }}
+          onPaste={(e) => {
+            const pasted = filesFromPaste(e.clipboardData);
+            if (!pasted.length || starting) return;
+            e.preventDefault();
+            attach(pasted, true);
+          }}
+          placeholder={`What should an agent do in ${project.name}?`}
+          className="block px-5 pt-4 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
+        />
+        {/* More room above the pickers where they take a line of their own. On a phone everything
+            keeps one line, down to 360 px with a model named by its ID and the GitHub picker: the
+            gaps are narrower there, and the pickers go to the end without the spacer and its
+            gaps. */}
+        <TextareaControls
+          textarea={ref}
+          className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 max-sm:gap-2 sm:max-lg:pt-3"
+        >
+          <AttachButton onFiles={(f) => attach(f)} disabled={starting} />
+          <span className="flex-1 max-sm:hidden" />
+          <StartChoices
+            project={project}
+            choice={choice}
+            onPick={pick}
+            disabled={starting}
+            className="max-sm:ml-auto"
+          />
+          {/* Set apart from the pickers, as on the home page. On a phone its room goes to the
+              button. */}
+          <span className="ml-4 text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
+          <ScheduleButton
+            project={project}
+            prompt={prompt}
+            choice={choice}
+            files={files.drafts.length}
+            disabled={starting}
+            // The draft stays here until a schedule is set up with it.
+            onSaved={() => void forgetDraft(keep)}
+          />
+          <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
+            Start a session
+          </StartButton>
+        </TextareaControls>
+        <DropHint show={dragging} />
+      </form>
+      <NoRunnerNote workspace={workspace} className="mt-3" />
     </div>
   );
 }
