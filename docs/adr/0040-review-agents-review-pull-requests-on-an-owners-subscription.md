@@ -1,6 +1,6 @@
 # 0040: Review agents review pull requests on an owner's subscription, and fctl posts for them
 
-2026-10-22 · accepted · outsiders' pull requests wait to be asked for since [0046](0046-review-agents-review-outsiders-pull-requests-when-asked.md)
+2026-10-22 · accepted · outsiders' pull requests wait to be asked for since [0047](0047-review-agents-review-outsiders-pull-requests-when-asked.md)
 
 ## Context
 

@@ -1,4 +1,4 @@
-# 0045: Registering a runner, or replacing its token, takes confirming it's you
+# 0046: Registering a runner, or replacing its token, takes confirming it's you
 
 2026-10-23 · accepted
 

@@ -24,4 +24,12 @@ by?: string,
 /**
  * The branch it went into.
  */
-base?: string, } | { "kind": "closed", by?: string, } | { "kind": "other" };
+base?: string, } | { "kind": "closed", by?: string, } | { "kind": "conflicts", 
+/**
+ * Its head commit then, in full.
+ */
+sha: string, 
+/**
+ * The branch it goes into.
+ */
+base?: string, } | { "kind": "other" };

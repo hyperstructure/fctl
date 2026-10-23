@@ -50,5 +50,6 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0042](0042-lookups-github-gives-up-on-ask-about-fewer-pull-requests.md) | Lookups GitHub gives up on ask about fewer pull requests at once |
 | [0043](0043-agents-come-back-to-their-pull-requests-for-comments-failed-checks-and-merges.md) | Agents come back to their pull requests for comments, failed checks and merges |
 | [0044](0044-schedules-start-sessions-on-their-owners-subscription.md) | Schedules start sessions on their owner's subscription, and other tools run them when asked |
-| [0045](0045-registering-a-runner-takes-confirming-its-you.md) | Registering a runner, or replacing its token, takes confirming it's you |
-| [0046](0046-review-agents-review-outsiders-pull-requests-when-asked.md) | Review agents review outsiders' pull requests when someone asks |
+| [0045](0045-merge-conflicts-bring-agents-back-too.md) | Merge conflicts bring agents back too |
+| [0046](0046-registering-a-runner-takes-confirming-its-you.md) | Registering a runner, or replacing its token, takes confirming it's you |
+| [0047](0047-review-agents-review-outsiders-pull-requests-when-asked.md) | Review agents review outsiders' pull requests when someone asks |

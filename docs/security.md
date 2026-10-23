@@ -319,7 +319,7 @@ outside it except through these channels:
   one of fctl's agents opened it; anyone else's waits until someone in the
   project looks at it and asks for its review, since its text could
   otherwise have the agent hand the operator's token over
-  ([ADR 0046](adr/0046-review-agents-review-outsiders-pull-requests-when-asked.md)).
+  ([ADR 0047](adr/0047-review-agents-review-outsiders-pull-requests-when-asked.md)).
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 - **The image and the setup script.** Whoever sets a project's image or

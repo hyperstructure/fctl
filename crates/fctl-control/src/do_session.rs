@@ -19,7 +19,7 @@ use fctl_domain::notify;
 use fctl_domain::usage as plan;
 use fctl_proto::api::{EventPage, PlanLimit};
 use fctl_proto::event::{EventBody, FollowUp, FollowUpEvent, GitState, StatusChange, UserMessage};
-use fctl_proto::session::{PullRequestRef, Session, SessionRole, SessionStatus, UserRef};
+use fctl_proto::session::{PullRequestRef, RepoRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{
     AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown,
     UplinkUp,
@@ -177,6 +177,18 @@ const REVIEWS_PASSED_ON: &str = "reviews_passed_on";
 /// which a person's message, or their comment on GitHub, ends
 /// (`fctl_domain::follow_ups::MAX_CHECKS_IN_A_ROW`).
 const CHECKS_IN_A_ROW: &str = "checks_in_a_row";
+/// The meta key that counts the conflicts the agent heard of in a row, as
+/// [`CHECKS_IN_A_ROW`] does failed checks
+/// (`fctl_domain::follow_ups::MAX_CONFLICTS_IN_A_ROW`).
+const CONFLICTS_IN_A_ROW: &str = "conflicts_in_a_row";
+
+/// The meta key that counts what of `kind` the agent heard of in a row.
+fn in_a_row_key(kind: follow_ups::Repeats) -> &'static str {
+    match kind {
+        follow_ups::Repeats::Checks => CHECKS_IN_A_ROW,
+        follow_ups::Repeats::Conflicts => CONFLICTS_IN_A_ROW,
+    }
+}
 
 fn api_err(code: ErrorCode, message: &str) -> ApiError {
     ApiError::new(code, message)
@@ -197,6 +209,10 @@ fn create_schema(sql: &SqlStorage) {
         // the agent hears of it (`fctl_domain::follow_ups`): in the order
         // it came, until `due`.
         "CREATE TABLE IF NOT EXISTS follow_ups (key TEXT PRIMARY KEY, n INTEGER NOT NULL, due INTEGER NOT NULL, data TEXT NOT NULL)",
+        // Pull requests its agent opened that GitHub didn't know yet
+        // whether they conflict with their base branch: asked `asked` times,
+        // asked again at `due` (`fctl_domain::follow_ups::Ask`).
+        "CREATE TABLE IF NOT EXISTS asks (url TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, asked INTEGER NOT NULL, due INTEGER NOT NULL)",
     ] {
         if let Err(e) = sql.exec(stmt, None) {
             worker::console_error!("session schema: {e}");
@@ -323,6 +339,7 @@ impl DurableObject for SessionObject {
             self.write_through().await;
         }
         self.flush_follow_ups(now_ms()).await;
+        self.ask_again(now_ms()).await;
         Response::ok("ok")
     }
 }
@@ -733,13 +750,14 @@ impl SessionObject {
             self.set_meta("interrupted_by", by.id.as_str());
         }
         // A person's message: the agent gets reviews' findings, and hears
-        // of failed checks, again.
+        // of failed checks and conflicts, again.
         if let DeliveryKind::Message {
             author: Some(_), ..
         } = &b.delivery.kind
         {
             self.delete_meta(REVIEWS_PASSED_ON);
             self.delete_meta(CHECKS_IN_A_ROW);
+            self.delete_meta(CONFLICTS_IN_A_ROW);
         }
         if let Some(json) = self.append(now, &b.event, None) {
             self.broadcast_events(&[json]);
@@ -959,14 +977,14 @@ impl SessionObject {
     /// Passes on what happened to the agent's pull requests once the first
     /// of it has waited [`follow_ups::GATHER_MS`]: one message from fctl for
     /// each pull request, delivered as a person's message is, which resumes
-    /// the session if it stopped. Failed checks wait while a turn runs,
-    /// since the agent may be at them, and then wait a little longer for
-    /// what it pushed as its turn ended; they are dropped once they are old
-    /// news: the pull request merged or closed, its checks passed after a
-    /// re-run, or a newer commit came. After
-    /// [`follow_ups::MAX_CHECKS_IN_A_ROW`] of them in a row while no person
-    /// messaged the agent, nor wrote to it on GitHub, the transcript says
-    /// what failed instead.
+    /// the session if it stopped. Failed checks and conflicts wait while a
+    /// turn runs, since the agent may be at them, and then wait a little
+    /// longer for what it pushed as its turn ended; they are dropped once
+    /// they are old news: the pull request merged or closed, its checks
+    /// passed after a re-run, or a newer commit came. After
+    /// [`follow_ups::MAX_CHECKS_IN_A_ROW`] failed checks in a row while no
+    /// person messaged the agent, nor wrote to it on GitHub, the transcript
+    /// says what failed instead, and likewise for conflicts.
     async fn flush_follow_ups(&self, now: i64) {
         #[derive(Deserialize)]
         struct Waiting {
@@ -992,10 +1010,16 @@ impl SessionObject {
             let _ = self.sql.exec("DELETE FROM follow_ups", None);
             return;
         }
-        // Failed checks wait for the turn to end, which brings them back
-        // (`apply_state`); the rest go once the first has waited its time.
+        // Failed checks and conflicts wait for the turn to end, which brings
+        // them back (`apply_state`); the rest go once the first has waited
+        // its time.
         let running = s.status == SessionStatus::Running;
-        let held = |w: &Waiting| running && w.key.starts_with(follow_ups::CHECKS_KEY);
+        let held = |w: &Waiting| {
+            running
+                && follow_ups::Repeats::ALL
+                    .iter()
+                    .any(|kind| w.key.starts_with(kind.key()))
+        };
         let Some(first) = waiting
             .iter()
             .filter(|w| !held(w))
@@ -1019,13 +1043,26 @@ impl SessionObject {
                 done(&w.key);
                 continue;
             };
-            if let FollowUpEvent::ChecksFailed { sha, .. } = &item.event {
-                if !Self::still_failing(&s, &item, sha) {
+            let still = match &item.event {
+                FollowUpEvent::ChecksFailed { sha, .. } => {
+                    Some(Self::still_failing(&s, &item, sha))
+                }
+                FollowUpEvent::Conflicts { sha, .. } => Some(follow_ups::conflicts_still(
+                    s.pull_requests
+                        .iter()
+                        .find(|p| p.url.eq_ignore_ascii_case(&item.pull.url)),
+                    sha,
+                    item.seen,
+                )),
+                _ => None,
+            };
+            if let Some(still) = still {
+                if !still {
                     done(&w.key);
                     continue;
                 }
                 // The agent may be at them: they wait for its turn to end.
-                if s.status == SessionStatus::Running {
+                if running {
                     continue;
                 }
             }
@@ -1058,50 +1095,49 @@ impl SessionObject {
     }
 
     /// Hands what happened to one pull request (`keys`: its items) to the
-    /// agent in a message from fctl, or, for failed checks the agent heard
-    /// of too often in a row, says in the transcript what failed.
+    /// agent in a message from fctl, or, for failed checks or conflicts the
+    /// agent heard of too often in a row, says in the transcript what
+    /// happened.
     async fn pass_on(&self, mut f: FollowUp, keys: Vec<String>, now: i64) {
-        let checks = |e: &FollowUpEvent| matches!(e, FollowUpEvent::ChecksFailed { .. });
         // People wrote to the agent: as a person's message, that ends the
         // automatic ones in a row.
         if follow_ups::from_people(&f) {
             self.delete_meta(REVIEWS_PASSED_ON);
         }
-        let before = self
-            .meta(CHECKS_IN_A_ROW)
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
-        let (in_a_row, held) = follow_ups::checks_in_a_row(&f, before);
-        if held {
-            if let Some(message) = follow_ups::held_back(&f) {
-                let notice = fctl_proto::event::Notice {
-                    level: fctl_proto::event::NoticeLevel::Info,
-                    code: "follow_up_held".into(),
-                    message,
-                    until: None,
-                    published: None,
-                    memory: None,
-                    retrospective: None,
-                    review: None,
-                    follow_up: Some(FollowUp {
-                        events: f.events.iter().filter(|e| checks(e)).cloned().collect(),
-                        ..f.clone()
-                    }),
-                };
-                if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
-                    self.broadcast_events(&[json]);
+        for kind in follow_ups::Repeats::ALL {
+            let before = self
+                .meta(in_a_row_key(kind))
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(0);
+            let (in_a_row, held) = follow_ups::in_a_row(&f, kind, before);
+            if held {
+                if let Some(message) = follow_ups::held_back(&f, kind) {
+                    let notice = fctl_proto::event::Notice {
+                        level: fctl_proto::event::NoticeLevel::Info,
+                        code: "follow_up_held".into(),
+                        message,
+                        until: None,
+                        published: None,
+                        memory: None,
+                        retrospective: None,
+                        review: None,
+                        follow_up: Some(FollowUp {
+                            events: f.events.iter().filter(|e| kind.of(e)).cloned().collect(),
+                            ..f.clone()
+                        }),
+                    };
+                    if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+                        self.broadcast_events(&[json]);
+                    }
                 }
+                for key in keys.iter().filter(|k| k.starts_with(kind.key())) {
+                    self.key(key, "", now);
+                }
+                f.events.retain(|e| !kind.of(e));
             }
-            for key in keys
-                .iter()
-                .filter(|k| k.starts_with(follow_ups::CHECKS_KEY))
-            {
-                self.key(key, "", now);
+            if in_a_row != before {
+                self.set_meta(in_a_row_key(kind), &in_a_row.to_string());
             }
-            f.events.retain(|e| !checks(e));
-        }
-        if in_a_row != before {
-            self.set_meta(CHECKS_IN_A_ROW, &in_a_row.to_string());
         }
         if f.events.is_empty() {
             return;
@@ -2215,7 +2251,7 @@ impl SessionObject {
             let cfg = crate::config::Config::from_env(&env);
             if crate::pull_requests::enabled(&cfg)
                 && let Err(e) =
-                    crate::pull_requests::refresh(&env, &cfg, &db, &tracked, now_ms()).await
+                    crate::pull_requests::refresh(&env, &cfg, &db, &tracked, now_ms(), true).await
             {
                 worker::console_error!("looking up the pull requests of {id}: {}", e.0.message);
             }
@@ -2243,7 +2279,105 @@ impl SessionObject {
                 worker::console_log!("no follow-ups for this session: {why}");
             }
         }
+        if !b.asks.is_empty() {
+            self.take_asks(b.asks, now).await;
+        }
         Ok(serde_json::json!({ "ok": true, "changed": changed }))
+    }
+
+    /// Pull requests its agent opened that GitHub didn't know yet whether
+    /// they conflict with their base branch: the session asks again when
+    /// [`follow_ups::ask_again_in`] says, sooner for one asked about fewer
+    /// times, and its alarm does ([`Self::ask_again`]). None for sessions
+    /// that hear of nothing.
+    async fn take_asks(&self, asks: Vec<follow_ups::Ask>, now: i64) {
+        let Some(s) = self.summary() else { return };
+        if Self::no_follow_ups(&s).is_some() {
+            return;
+        }
+        let mut first: Option<i64> = None;
+        for a in asks {
+            let Some(after) = follow_ups::ask_again_in(a.asked) else {
+                continue;
+            };
+            let due = now + after;
+            let stored = self.sql.exec(
+                "INSERT INTO asks (url, repo, number, asked, due) VALUES (?, ?, ?, ?, ?) \
+                 ON CONFLICT (url) DO UPDATE SET asked = MIN(asked, excluded.asked), due = MIN(due, excluded.due)",
+                Some(vec![
+                    sv(&a.url.to_ascii_lowercase()),
+                    sv(&a.repo.full_name()),
+                    iv(i64::try_from(a.number).unwrap_or(i64::MAX)),
+                    iv(i64::from(a.asked)),
+                    iv(due),
+                ]),
+            );
+            match stored {
+                Ok(_) => first = Some(first.map_or(due, |f| f.min(due))),
+                Err(e) => worker::console_error!("keeping an ask: {e}"),
+            }
+        }
+        if let Some(due) = first {
+            self.arm(due).await;
+        }
+    }
+
+    /// Asks GitHub again about the pull requests whose time came
+    /// ([`Self::take_asks`]), through the control plane, which tells the
+    /// sessions that list them what it says, this one's agent of their
+    /// conflicts, and this one again of those GitHub still doesn't know
+    /// about (`crate::pull_requests::ask_again`). Sets the alarm for the
+    /// next.
+    async fn ask_again(&self, now: i64) {
+        #[derive(Deserialize)]
+        struct Asked {
+            url: String,
+            repo: String,
+            number: f64,
+            asked: f64,
+            due: f64,
+        }
+        let asked: Vec<Asked> = self
+            .sql
+            .exec("SELECT url, repo, number, asked, due FROM asks", None)
+            .and_then(|c| c.to_array())
+            .unwrap_or_default();
+        if asked.is_empty() {
+            return;
+        }
+        let (due, later): (Vec<Asked>, Vec<Asked>) =
+            asked.into_iter().partition(|a| a.due as i64 <= now);
+        if let Some(next) = later.iter().map(|a| a.due as i64).min() {
+            self.arm(next).await;
+        }
+        if due.is_empty() {
+            return;
+        }
+        for a in &due {
+            let _ = self
+                .sql
+                .exec("DELETE FROM asks WHERE url = ?", Some(vec![sv(&a.url)]));
+        }
+        let asks: Vec<follow_ups::Ask> = due
+            .into_iter()
+            .filter_map(|a| {
+                Some(follow_ups::Ask {
+                    repo: RepoRef::parse(&a.repo)?,
+                    number: a.number as u64,
+                    url: a.url,
+                    asked: a.asked as u32,
+                })
+            })
+            .collect();
+        let env = self.env.clone();
+        self.state.wait_until(async move {
+            let Ok(db) = env.d1("DB") else { return };
+            let cfg = crate::config::Config::from_env(&env);
+            if let Err(e) = crate::pull_requests::ask_again(&env, &cfg, &db, &asks, now_ms()).await
+            {
+                worker::console_error!("asking whether pull requests conflict: {}", e.0.message);
+            }
+        });
     }
 
     /// Keeps the session's pull requests as GitHub said they are now, and
@@ -2329,17 +2463,20 @@ impl SessionObject {
         }
         self.notify_fleet(&s);
         self.notify_followers(&s, before, now);
-        // Failed checks waited for the turn to end: they reach the agent
-        // once what it pushed as the turn ended had time to say so.
+        // Failed checks and conflicts waited for the turn to end: they
+        // reach the agent once what it pushed as the turn ended had time to
+        // say so.
         if before == SessionStatus::Running
             && s.status != SessionStatus::Running
             && self.follow_ups_waiting(None)
         {
             let due = now + follow_ups::GATHER_MS;
-            let _ = self.sql.exec(
-                "UPDATE follow_ups SET due = MAX(due, ?) WHERE key LIKE ? || '%'",
-                Some(vec![iv(due), sv(follow_ups::CHECKS_KEY)]),
-            );
+            for kind in follow_ups::Repeats::ALL {
+                let _ = self.sql.exec(
+                    "UPDATE follow_ups SET due = MAX(due, ?) WHERE key LIKE ? || '%'",
+                    Some(vec![iv(due), sv(kind.key())]),
+                );
+            }
             self.arm(due).await;
         }
         // The agent stopped on its own (its idle timeout) as a message came,

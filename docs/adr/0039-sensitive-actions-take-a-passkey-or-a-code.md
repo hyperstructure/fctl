@@ -1,6 +1,6 @@
 # 0039: Sensitive actions take a passkey or a code, where the primary instance owner asks for it
 
-2026-10-22 · accepted · new runners ask too since [0045](0045-registering-a-runner-takes-confirming-its-you.md)
+2026-10-22 · accepted · new runners ask too since [0046](0046-registering-a-runner-takes-confirming-its-you.md)
 
 ## Context
 

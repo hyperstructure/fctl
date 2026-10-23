@@ -1,4 +1,4 @@
-# 0046: Review agents review outsiders' pull requests when someone asks
+# 0047: Review agents review outsiders' pull requests when someone asks
 
 2026-10-23 · accepted
 

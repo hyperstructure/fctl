@@ -5,6 +5,7 @@ import {
   checksRest,
   followUpHint,
   followUpsSummary,
+  happenedAt,
   happenedText,
   lines,
   parts,
@@ -82,11 +83,21 @@ describe("follow-ups", () => {
     expect(happenedText(f, { kind: "merged", by: "ada" })).toBe("Merged into main by ada");
     expect(happenedText({ ...f, base: undefined }, { kind: "merged" })).toBe("Merged");
     expect(happenedText(f, { kind: "closed", by: "bob" })).toBe("Closed without merging by bob");
+    expect(happenedText(f, { kind: "conflicts", sha: "def", base: "release" })).toBe(
+      "Conflicts with release",
+    );
+    expect(happenedText(f, { kind: "conflicts", sha: "def" })).toBe("Conflicts with main");
+    expect(happenedText({ ...f, base: undefined }, { kind: "conflicts", sha: "def" })).toBe(
+      "Conflicts with its base branch",
+    );
+    expect(happenedAt(checks(["Lint"], 0, 0))).toBe("abc");
+    expect(happenedAt({ kind: "conflicts", sha: "def" })).toBe("def");
+    expect(happenedAt({ kind: "merged" })).toBeUndefined();
   });
 
   it("say on a session's page what brings its agent back", () => {
-    const on = (comments: boolean, checks: boolean, closed: boolean) =>
-      followUpHint({ comments, checks, closed });
+    const on = (comments: boolean, checks: boolean, closed: boolean, conflicts = false) =>
+      followUpHint({ comments, checks, closed, conflicts });
     expect(followUpHint(undefined)).toBeUndefined();
     expect(on(false, false, false)).toBeUndefined();
     expect(on(true, false, false)).toBe("Mention @fctl or @agent on GitHub to bring the agent back.");
@@ -96,16 +107,27 @@ describe("follow-ups", () => {
     expect(on(false, true, false)).toBe("Failed checks bring the agent back.");
     expect(on(false, true, true)).toBe("Failed checks and merges bring the agent back.");
     expect(on(false, false, true)).toBe("A merge brings the agent back.");
+    expect(on(true, true, true, true)).toBe(
+      "Mention @fctl or @agent on GitHub to bring the agent back; failed checks, merge conflicts and merges do too.",
+    );
+    expect(on(false, false, false, true)).toBe("Merge conflicts bring the agent back.");
+    expect(on(false, false, true, true)).toBe("Merge conflicts and merges bring the agent back.");
+    expect(on(true, false, false, true)).toBe(
+      "Mention @fctl or @agent on GitHub to bring the agent back; merge conflicts do too.",
+    );
   });
 
   it("sum up what brings agents back", () => {
-    expect(followUpsSummary({ comments: false, checks: false, closed: false })).toBe("Off");
-    expect(followUpsSummary({ comments: true, checks: false, closed: false })).toBe("Comments");
-    expect(followUpsSummary({ comments: false, checks: true, closed: true })).toBe(
-      "Failed checks and merges",
-    );
-    expect(followUpsSummary({ comments: true, checks: true, closed: true })).toBe(
+    const off = { comments: false, checks: false, closed: false, conflicts: false };
+    expect(followUpsSummary(off)).toBe("Off");
+    expect(followUpsSummary({ ...off, comments: true })).toBe("Comments");
+    expect(followUpsSummary({ ...off, checks: true, closed: true })).toBe("Failed checks and merges");
+    expect(followUpsSummary({ ...off, comments: true, checks: true, closed: true })).toBe(
       "Comments, failed checks and merges",
     );
+    expect(followUpsSummary({ comments: true, checks: true, closed: true, conflicts: true })).toBe(
+      "Comments, failed checks, merge conflicts and merges",
+    );
+    expect(followUpsSummary({ ...off, conflicts: true })).toBe("Merge conflicts");
   });
 });

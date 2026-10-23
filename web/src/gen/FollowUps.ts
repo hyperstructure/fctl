@@ -21,4 +21,9 @@ checks: boolean,
 /**
  * It was merged, or closed without being merged.
  */
-closed: boolean, };
+closed: boolean, 
+/**
+ * It conflicts with its base branch: it can't merge until its branch
+ * takes in what the base branch got since.
+ */
+conflicts: boolean, };
