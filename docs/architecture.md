@@ -1520,7 +1520,7 @@ interrupt (`recheck_viewer`). A viewer whose person can no longer see the
 session (they left the workspace or were removed, their role or share went,
 they signed out or were disabled) closes with 4403, after which the apps
 stop reconnecting; one whose role changed gets it in its next `session`
-frame. A viewer that stopped pinging closes after five minutes at the next
+frame. A viewer that stopped pinging closes after two minutes at the next
 broadcast and reconnects through the Worker.
 
 The snapshot and `runner_connected` frames say whether the agent's work can
