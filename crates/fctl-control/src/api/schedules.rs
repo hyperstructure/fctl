@@ -287,17 +287,19 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     } else {
         row.owner_id.clone()
     };
-    // Why fctl paused it lasts while it stays paused.
-    let paused_reason = if enabled || pauses {
-        None
-    } else {
-        row.paused_reason.clone()
-    };
+    // What the alarm changes too (it pauses schedules, and moves them on as
+    // they run) is written only when this asks for it, so that a rename
+    // never takes back what the alarm did meanwhile.
+    let state = pauses || resumes;
+    let retimed = timing || state;
     q(
         &ctx.db,
-        "UPDATE schedules SET name = ?, prompt = ?, cron = ?, at = ?, timezone = ?, model = ?, effort = ?, base_branch = ?, \
-         github_access = ?, owner_id = ?, enabled = ?, paused_reason = ?, next_run_at = ?, updated_by = ?, updated_at = ? \
-         WHERE id = ?",
+        "UPDATE schedules SET name = ?1, prompt = ?2, cron = ?3, at = ?4, timezone = ?5, model = ?6, effort = ?7, \
+         base_branch = ?8, github_access = ?9, owner_id = ?10, \
+         enabled = CASE WHEN ?11 THEN ?12 ELSE enabled END, \
+         paused_reason = CASE WHEN ?11 THEN NULL ELSE paused_reason END, \
+         next_run_at = CASE WHEN ?13 THEN ?14 ELSE next_run_at END, \
+         updated_by = ?15, updated_at = ?16 WHERE id = ?17",
         &[
             s(&name),
             s(&prompt),
@@ -309,8 +311,9 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             os(base_branch.as_deref()),
             os(github_access.map(GithubAccess::as_str)),
             os(owner.as_deref()),
+            b(state),
             b(enabled),
-            os(paused_reason.as_deref()),
+            b(retimed),
             on(next),
             s(&user.id),
             n(ctx.now),

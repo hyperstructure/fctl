@@ -29,7 +29,7 @@ impl DurableObject for ScheduleObject {
     async fn fetch(&self, req: Request) -> Result<Response> {
         match (req.method(), req.path().as_str()) {
             (worker::Method::Post, "/wake") => {
-                let next = self.arm().await;
+                let next = self.arm(false).await;
                 internal::do_json(&serde_json::json!({ "next": next }))
             }
             _ => internal::do_error(&ApiError::not_found("Schedule endpoint")),
@@ -44,15 +44,18 @@ impl DurableObject for ScheduleObject {
             Ok(n) => worker::console_log!("schedules: took up {n}"),
             Err(e) => worker::console_error!("schedules: {}", e.0.message),
         }
-        self.arm().await;
+        self.arm(true).await;
         Response::ok("ok")
     }
 }
 
 impl ScheduleObject {
-    /// Sets the alarm for the earliest schedule that is on, or clears it
-    /// when there is none; returns when it rings.
-    async fn arm(&self) -> Option<i64> {
+    /// Sets the alarm for the earliest schedule that is on; returns when it
+    /// rings. A wake only moves it earlier, since another wake that read the
+    /// schedules first may come after it: an alarm that rings too soon finds
+    /// nothing due and sets the next. After it rang (`spent`), it is set
+    /// outright, and cleared once no schedule is on.
+    async fn arm(&self, spent: bool) -> Option<i64> {
         let storage = self.state.storage();
         let now = now_ms();
         let earliest = match self.env.d1("DB") {
@@ -61,6 +64,7 @@ impl ScheduleObject {
         };
         let at = match earliest {
             Ok(Some(at)) => at.max(now),
+            Ok(None) if !spent => return None,
             Ok(None) => {
                 if let Err(e) = storage.delete_alarm().await {
                     worker::console_error!("schedules alarm: {e}");
@@ -72,6 +76,12 @@ impl ScheduleObject {
                 now + RETRY_MS
             }
         };
+        if !spent
+            && let Ok(Some(set)) = storage.get_alarm().await
+            && set <= at
+        {
+            return Some(set);
+        }
         if let Err(e) = storage.set_alarm(at - now).await {
             worker::console_error!("schedules alarm: {e}");
         }

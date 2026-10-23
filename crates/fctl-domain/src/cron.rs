@@ -63,7 +63,7 @@ impl Zone for Utc {
 /// The wall-clock time in `zone` at `utc_ms`, as milliseconds since a
 /// local epoch (1970-01-01 00:00 on its clocks).
 pub fn local(zone: &dyn Zone, utc_ms: i64) -> i64 {
-    utc_ms + zone.offset_ms(utc_ms)
+    utc_ms.saturating_add(zone.offset_ms(utc_ms))
 }
 
 /// The instant a wall-clock time in `zone` names (`local_ms`, as from
@@ -73,16 +73,16 @@ pub fn local(zone: &dyn Zone, utc_ms: i64) -> i64 {
 pub fn instant(zone: &dyn Zone, local_ms: i64) -> i64 {
     // The offsets a day either side: a zone's clocks change at most once
     // in between.
-    let before = zone.offset_ms(local_ms - DAY_MS);
-    let after = zone.offset_ms(local_ms + DAY_MS);
+    let before = zone.offset_ms(local_ms.saturating_sub(DAY_MS));
+    let after = zone.offset_ms(local_ms.saturating_add(DAY_MS));
     let mut first: Option<i64> = None;
     for offset in [before, after] {
-        let utc = local_ms - offset;
+        let utc = local_ms.saturating_sub(offset);
         if zone.offset_ms(utc) == offset {
             first = Some(first.map_or(utc, |f: i64| f.min(utc)));
         }
     }
-    first.unwrap_or(local_ms - before)
+    first.unwrap_or(local_ms.saturating_sub(before))
 }
 
 /// A cron expression, parsed.
@@ -192,12 +192,15 @@ impl Cron {
         let start = from.div_euclid(MINUTE_MS) + i64::from(from.rem_euclid(MINUTE_MS) != 0);
         let first = start.div_euclid(24 * 60);
         let mut minute = u32::try_from(start.rem_euclid(24 * 60)).unwrap_or(0);
-        for day in first..first + HORIZON_DAYS {
+        for day in first..first.saturating_add(HORIZON_DAYS) {
             let (_, month, dom) = civil_from_days(day);
             if self.runs_on(dom, month, weekday(day))
                 && let Some(t) = self.first_time(minute)
             {
-                return Some(day * DAY_MS + i64::from(t) * MINUTE_MS);
+                // Past what milliseconds can say, there is no next time.
+                return day
+                    .checked_mul(DAY_MS)?
+                    .checked_add(i64::from(t) * MINUTE_MS);
             }
             minute = 0;
         }
@@ -212,20 +215,20 @@ impl Cron {
         // just after the change, and the clock goes through others twice. So
         // the search starts before `after` on the clock, and goes on past
         // the first run it finds, by as far as clocks move.
-        let mut from = local(zone, after) - MAX_SHIFT_MS;
+        let mut from = local(zone, after).saturating_sub(MAX_SHIFT_MS);
         let mut best: Option<(i64, i64)> = None;
         for _ in 0..10_000 {
             let Some(at) = self.next_local(from) else {
                 break;
             };
-            if best.is_some_and(|(_, found)| at > found + MAX_SHIFT_MS) {
+            if best.is_some_and(|(_, found)| at > found.saturating_add(MAX_SHIFT_MS)) {
                 break;
             }
             let utc = instant(zone, at);
             if utc > after && best.is_none_or(|(b, _)| utc < b) {
                 best = Some((utc, at));
             }
-            from = at + MINUTE_MS;
+            from = at.saturating_add(MINUTE_MS);
         }
         best.map(|(utc, _)| utc)
     }
@@ -252,7 +255,8 @@ impl Cron {
     /// schedule 0 9 1-7 * 1").
     pub fn describe(&self) -> String {
         let fallback = || format!("on the cron schedule {}", self.text);
-        let every_day = self.any_day && self.any_weekday && self.months == ALL_MONTHS;
+        let days = self.days();
+        let every_day = days == DayRule::Every;
         let minutes = set(self.minutes, 0, 59);
         let hours = set(self.hours, 0, 23);
         // Evenly through the day.
@@ -292,15 +296,9 @@ impl Cron {
                 .map(|h| format!("{h:02}:{minute:02}"))
                 .collect::<Vec<_>>(),
         );
-        if every_day {
-            return format!("every day at {times}");
-        }
-        if self.months != ALL_MONTHS {
-            return fallback();
-        }
-        if self.any_day && !self.any_weekday {
-            let weekdays = set(self.weekdays, 0, 6);
-            return match weekdays.as_slice() {
+        match days {
+            DayRule::Every => format!("every day at {times}"),
+            DayRule::Weekdays(weekdays) => match weekdays.as_slice() {
                 [1, 2, 3, 4, 5] => format!("every weekday at {times}"),
                 [0, 6] => format!("every Saturday and Sunday at {times}"),
                 days => {
@@ -317,20 +315,51 @@ impl Cron {
                     }
                     format!("every {} at {times}", list(&names))
                 }
-            };
-        }
-        if !self.any_day && self.any_weekday {
-            let days: Vec<String> = set(self.days, 1, 31).into_iter().map(ordinal).collect();
-            if days.len() > 4 {
-                return fallback();
+            },
+            DayRule::MonthDays(days) if days.len() <= 4 => {
+                let days: Vec<String> = days.into_iter().map(ordinal).collect();
+                format!("on the {} of every month at {times}", list(&days))
             }
-            return format!("on the {} of every month at {times}", list(&days));
+            DayRule::MonthDays(_) | DayRule::Other => fallback(),
         }
-        fallback()
+    }
+
+    /// The days it runs on, as words say them: by Vixie cron's rule, a
+    /// field that starts with `*` restricts the days too unless it names
+    /// all of them (`*/2` names every other one).
+    fn days(&self) -> DayRule {
+        if self.months != ALL_MONTHS {
+            return DayRule::Other;
+        }
+        let all_days = self.days == ALL_DAYS;
+        let all_weekdays = self.weekdays == ALL_WEEKDAYS;
+        match (self.any_day || self.any_weekday, all_days, all_weekdays) {
+            // A day must match both fields.
+            (true, true, true) => DayRule::Every,
+            (true, true, false) => DayRule::Weekdays(set(self.weekdays, 0, 6)),
+            (true, false, true) => DayRule::MonthDays(set(self.days, 1, 31)),
+            // Either field will do, and one names every day.
+            (false, true, _) | (false, _, true) => DayRule::Every,
+            _ => DayRule::Other,
+        }
     }
 }
 
+/// The days a cron expression runs on, as far as words go.
+#[derive(Debug, PartialEq, Eq)]
+enum DayRule {
+    Every,
+    /// These days of the week (0 is Sunday), whatever the day of the month.
+    Weekdays(Vec<u32>),
+    /// These days of the month, whatever the day of the week.
+    MonthDays(Vec<u32>),
+    /// A rule only the expression says.
+    Other,
+}
+
 const ALL_MONTHS: u64 = 0b1_1111_1111_1110;
+const ALL_DAYS: u64 = 0xffff_fffe;
+const ALL_WEEKDAYS: u64 = 0x7f;
 
 fn bit(n: u32) -> u64 {
     1u64.checked_shl(n).unwrap_or(0)
@@ -433,7 +462,7 @@ pub fn weekday(days: i64) -> u32 {
 /// Year, month (1-12) and day (1-31) of a day number (days since
 /// 1970-01-01), after Howard Hinnant's `civil_from_days`.
 pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
+    let z = z.saturating_add(719_468);
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -453,13 +482,15 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// `days_from_civil`.
 pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let (m, d) = (i64::from(m), i64::from(d));
-    let y = if m <= 2 { y - 1 } else { y };
+    let y = if m <= 2 { y.saturating_sub(1) } else { y };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
     let mp = if m > 2 { m - 3 } else { m + 9 };
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    era.saturating_mul(146_097)
+        .saturating_add(doe)
+        .saturating_sub(719_468)
 }
 
 #[cfg(test)]
@@ -475,10 +506,10 @@ pub(crate) mod tests {
             let (year, _, _) = civil_from_days(utc_ms.div_euclid(DAY_MS));
             let last_sunday = |month: u32| {
                 let end = days_from_civil(year, month, 31);
-                end - i64::from(weekday(end))
+                end.saturating_sub(i64::from(weekday(end)))
             };
-            let starts = last_sunday(3) * DAY_MS + HOUR_MS;
-            let ends = last_sunday(10) * DAY_MS + HOUR_MS;
+            let at = |day: i64| day.saturating_mul(DAY_MS).saturating_add(HOUR_MS);
+            let (starts, ends) = (at(last_sunday(3)), at(last_sunday(10)));
             if (starts..ends).contains(&utc_ms) {
                 2 * HOUR_MS
             } else {
@@ -716,6 +747,18 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn no_time_is_too_far_for_it() {
+        // Times from outside (a usage limit's reset, say) may be anything.
+        for t in [i64::MAX, i64::MAX - 1, i64::MIN, i64::MIN + 1] {
+            assert_eq!(cron("0 9 * * *").next_after(&Utc, t).is_some(), t < 0);
+            let _ = cron("*/15 * * * *").next_after(&Stockholm, t);
+            let _ = instant(&Stockholm, t);
+            let _ = local(&Fixed(14 * HOUR_MS), t);
+            let _ = civil_from_days(t);
+        }
+    }
+
+    #[test]
     fn the_shortest_gap_between_runs() {
         assert_eq!(cron("*/15 * * * *").shortest_gap_minutes(), 15);
         assert_eq!(cron("0,10 9 * * *").shortest_gap_minutes(), 10);
@@ -767,6 +810,19 @@ pub(crate) mod tests {
             ("0 9 1-7 * 1", "on the cron schedule 0 9 1-7 * 1"),
             ("0 9 * 1 *", "on the cron schedule 0 9 * 1 *"),
             ("15 * * * 1", "on the cron schedule 15 * * * 1"),
+            // A star-led field with a step restricts the days.
+            ("0 9 */2 * *", "on the cron schedule 0 9 */2 * *"),
+            ("0 9 */2 * 1", "on the cron schedule 0 9 */2 * 1"),
+            ("0 9 1 * */2", "on the cron schedule 0 9 1 * */2"),
+            ("*/15 * */2 * *", "on the cron schedule */15 * */2 * *"),
+            ("0 9 */1 * 1", "every Monday at 09:00"),
+            (
+                "0 9 1-31 * */2",
+                "every Tuesday, Thursday, Saturday and Sunday at 09:00",
+            ),
+            // Neither starts with a star: either will do, and 0-6 is every day.
+            ("0 8 1 * 0-6", "every day at 08:00"),
+            ("0 8 1 * 1", "on the cron schedule 0 8 1 * 1"),
         ] {
             assert_eq!(cron(expr).describe(), says, "{expr}");
         }

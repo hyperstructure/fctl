@@ -624,10 +624,13 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
         return Ok(false);
     };
     let next = when.next(&*zone, now, true);
+    // Only as it was read: a change meanwhile (a take-over, say) waits for
+    // the next alarm, which reads it again.
     let took = q(
         db,
-        "UPDATE schedules SET next_run_at = ?, last_run_at = ? WHERE id = ? AND enabled = 1 AND next_run_at = ?",
-        &[on(next), n(now), s(&row.id), n(due)],
+        "UPDATE schedules SET next_run_at = ?, last_run_at = ? WHERE id = ? AND enabled = 1 AND next_run_at = ? \
+         AND updated_at = ?",
+        &[on(next), n(now), s(&row.id), n(due), n(row.updated_at)],
     )?
     .run()
     .await?;
@@ -703,11 +706,18 @@ async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Out
         };
         let limits = usage_of(db, &owner.credential.id).await?;
         if let Some(limit) = sch::at_limit(&limits, now) {
-            let resets = limit.resets_at.filter(|r| *r > now);
+            // Readings come from sandboxes: a reset more than a week ahead
+            // is not one a plan has.
+            let resets = limit
+                .resets_at
+                .filter(|r| *r > now)
+                .map(|r| r.min(now.saturating_add(8 * cron::DAY_MS)));
             match &when {
                 // It runs once: it waits for the limit to reset.
                 When::At(_) => {
-                    let at = resets.unwrap_or(now + cron::HOUR_MS) + cron::MINUTE_MS;
+                    let at = resets
+                        .unwrap_or(now + cron::HOUR_MS)
+                        .saturating_add(cron::MINUTE_MS);
                     q(
                         db,
                         "UPDATE schedules SET next_run_at = ? WHERE id = ? AND enabled = 1 AND next_run_at IS NULL",
@@ -737,7 +747,11 @@ async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Out
             }
         }
         let previous = previous(db, &row.id).await?;
-        if let Some(p) = previous.as_ref().filter(|p| sch::still_working(p.status)) {
+        // Runs again and again don't pile up; one that runs once has no other
+        // time, so it runs beside the last.
+        if let When::Cron(_) = when
+            && let Some(p) = previous.as_ref().filter(|p| sch::still_working(p.status))
+        {
             break 'run skip(format!(
                 "Its last run, session #{}, was still working on it.",
                 p.number
