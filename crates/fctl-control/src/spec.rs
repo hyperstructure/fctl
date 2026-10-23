@@ -377,8 +377,9 @@ pub async fn build(
 /// its working directory, checked out at the pull request's commit, and
 /// the project's others, its primary one too, it reads. It reads alone on
 /// GitHub, gets none of the project's secrets, setup script, memory or
-/// claude.ai connectors, stops a minute after its last turn, and is told
-/// how to review.
+/// claude.ai connectors, and is told how to review. Its session stops once
+/// the review is posted and the agent's turn has ended, and a minute after
+/// its last turn without one (`idle_timeout_secs`).
 async fn review_spec(
     db: &D1Database,
     cfg: &Config,
