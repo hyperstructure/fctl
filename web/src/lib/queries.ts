@@ -116,13 +116,16 @@ export const useMemories = (project?: string) =>
     queryFn: () => api.memories(project ?? ""),
     enabled: !!project,
   });
-export const useSessions = (q: {
-  project?: string;
-  workspace?: string;
-  status?: string;
-  limit?: number;
-  mine?: boolean;
-}) => useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q) });
+export const useSessions = (
+  q: {
+    project?: string;
+    workspace?: string;
+    status?: string;
+    limit?: number;
+    mine?: boolean;
+  },
+  { enabled = true }: { enabled?: boolean } = {},
+) => useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q), enabled });
 /**
  * A project's sessions that haven't ended (not review agents'), newest
  * first, by project id: the sidebar lists them under it on its page and

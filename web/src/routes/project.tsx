@@ -3,7 +3,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ArrowRight, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { MemoryTab } from "@/components/project/memory";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
@@ -69,6 +69,7 @@ import {
   useSessions,
 } from "@/lib/queries";
 import { repoLabel, repoSummary } from "@/lib/repos";
+import { lastMoved, sections } from "@/lib/sessions";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 type Tab =
@@ -228,12 +229,16 @@ export function ProjectPage() {
 
 function Sessions({ project }: { project: G.Project }) {
   const [filter, setFilter] = useState<"active" | "all" | "mine">("all");
-  const list = useSessions({
-    project: project.slug,
-    status: filter === "active" ? "active" : undefined,
-    mine: filter === "mine",
-    limit: 100,
-  });
+  const mine = filter === "mine" || undefined;
+  // Every session at work, however long ago it started. By the project's id, as the sidebar asks for
+  // them under it: without `mine`, one request serves both.
+  const active = useSessions({ project: project.id, status: "active", limit: 50, mine });
+  const history = filter !== "active";
+  const ended = useSessions({ project: project.id, status: "ended", limit: 100, mine }, { enabled: history });
+  const { working, recent, older } = sections(
+    history ? [active.data?.sessions, ended.data?.sessions] : [active.data?.sessions],
+    Date.now(),
+  );
   const [prompt, setPrompt] = useState("");
   const canStart = project.role !== "viewer";
   const { start, starting } = useStartSession();
@@ -327,8 +332,8 @@ function Sessions({ project }: { project: G.Project }) {
           <NoRunnerNote workspace={workspace} className="mt-3" />
         </div>
       )}
-      <section>
-        <div className="mb-2 flex items-center gap-1">
+      <div>
+        <div className="mb-8 flex items-center gap-1">
           {(["all", "active", "mine"] as const).map((f) => (
             <button
               key={f}
@@ -343,46 +348,92 @@ function Sessions({ project }: { project: G.Project }) {
             </button>
           ))}
         </div>
-        {list.isPending ? (
+        {active.isPending || (history && ended.isPending) ? (
           <div className="space-y-3 py-3">
             <Skeleton className="h-11" />
             <Skeleton className="h-11" />
           </div>
-        ) : list.data?.sessions.length === 0 ? (
+        ) : history && !working.length && !recent.length && !older.length ? (
           <Empty title="No sessions yet">
             Describe a task above and an agent starts on it in a fresh sandbox.
           </Empty>
         ) : (
-          <div className="border-t border-line">
-            {list.data?.sessions.map((s) => (
-              <div
-                key={s.id}
-                className="group relative isolate flex items-center gap-3.5 border-b border-line p-3 transition-colors hover:bg-hover/30"
-              >
-                <span className="w-9 shrink-0 text-right font-mono text-[12px] text-ink-4">#{s.number}</span>
-                <StatusDot status={s.status} />
-                <div className="min-w-0 flex-1">
-                  <SessionLink s={s} />
-                  <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
-                    <ScheduledMark s={s} />
-                    {s.branch && <span className="truncate font-mono">{s.branch}</span>}
-                    <PullRequestLinks s={s} />
-                  </div>
-                </div>
-                <Avatar user={s.created_by} size={20} />
-                <time
-                  dateTime={new Date(s.last_activity_at ?? s.created_at).toISOString()}
-                  title={stamp(s.last_activity_at ?? s.created_at)}
-                  className="w-10 shrink-0 text-right text-[12px] whitespace-nowrap text-ink-4 tabular-nums"
-                >
-                  {agoShort(s.last_activity_at ?? s.created_at)}
-                </time>
-                <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all group-hover:opacity-100 max-sm:hidden" />
-              </div>
-            ))}
+          // In sections, as on the Agent Floor: the sessions at work, then the ended ones that moved in
+          // the last day, whose times read in minutes and hours, then the rest.
+          <div className="flex flex-col gap-12">
+            <SessionSection title="Working now" note={`${working.length} active`}>
+              {working.length ? (
+                <SessionList sessions={working} />
+              ) : (
+                <p className="border-y border-line py-6 text-[13.5px] text-ink-4">
+                  {mine ? "No agents are working for you." : "No agents are working."}
+                  {canStart && " Give one a task above."}
+                </p>
+              )}
+            </SessionSection>
+            {history && recent.length > 0 && (
+              <SessionSection title="Recently">
+                <SessionList sessions={recent} />
+              </SessionSection>
+            )}
+            {history && older.length > 0 && (
+              <SessionSection title="Older">
+                <SessionList sessions={older} />
+              </SessionSection>
+            )}
           </div>
         )}
-      </section>
+      </div>
+    </div>
+  );
+}
+
+/** A section of a project's sessions, as the Agent Floor has them. */
+function SessionSection({ title, note, children }: { title: string; note?: string; children: ReactNode }) {
+  return (
+    <section>
+      <div className="mb-2 flex items-baseline justify-between">
+        <h2 className="text-[13px] font-semibold text-ink">{title}</h2>
+        {note && <span className="text-[12px] text-ink-4">{note}</span>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * Sessions in their project's list: each one's number, branch and pull requests, who started it and
+ * when it last moved.
+ */
+function SessionList({ sessions }: { sessions: G.Session[] }) {
+  return (
+    <div className="border-t border-line">
+      {sessions.map((s) => (
+        <div
+          key={s.id}
+          className="group relative isolate flex items-center gap-3.5 border-b border-line p-3 transition-colors last:border-b-0 hover:bg-hover/30"
+        >
+          <span className="w-9 shrink-0 text-right font-mono text-[12px] text-ink-4">#{s.number}</span>
+          <StatusDot status={s.status} />
+          <div className="min-w-0 flex-1">
+            <SessionLink s={s} />
+            <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
+              <ScheduledMark s={s} />
+              {s.branch && <span className="truncate font-mono">{s.branch}</span>}
+              <PullRequestLinks s={s} />
+            </div>
+          </div>
+          <Avatar user={s.created_by} size={20} />
+          <time
+            dateTime={new Date(lastMoved(s)).toISOString()}
+            title={stamp(lastMoved(s))}
+            className="w-10 shrink-0 text-right text-[12px] whitespace-nowrap text-ink-4 tabular-nums"
+          >
+            {agoShort(lastMoved(s))}
+          </time>
+          <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all group-hover:opacity-100 max-sm:hidden" />
+        </div>
+      ))}
     </div>
   );
 }
