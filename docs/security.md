@@ -258,7 +258,13 @@ outside it except through these channels:
   that run on their subscription stop, get no more Claude or GitHub tokens,
   and a message to one doesn't start it on their subscription again (nor
   on their runners, with the project's secrets); resuming it runs it on the
-  resumer's.
+  resumer's. The token is in the sandbox, where the agent can read it, so
+  whoever can message a session's agent (the project's editors, and people
+  it is shared with to message) can have it hand over the token of the
+  person the session runs as, as they can the session's GitHub tokens and
+  the project's secrets: a full Claude login's token lasts hours, one from
+  `claude setup-token` a year. Run sessions on a token from `claude
+  setup-token` only where you would trust those people with it.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),
   and the agent can use them with that person's access without asking, also

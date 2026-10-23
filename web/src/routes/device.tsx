@@ -93,6 +93,11 @@ export function DevicePage() {
                       {info.data.location ? ` from ${info.data.location}` : ""}
                       {info.data.ip ? ` (${info.data.ip})` : ""}
                     </div>
+                    {info.data.user_agent && (
+                      <div className="mt-0.5 truncate font-mono text-[12px] text-ink-4">
+                        {info.data.user_agent}
+                      </div>
+                    )}
                     <div className="mt-2 text-ink-3">
                       {verify ? (
                         <>
@@ -103,7 +108,8 @@ export function DevicePage() {
                       ) : (
                         <>
                           It will act as <b className="text-ink-2">{me?.user.email}</b> until you revoke it in
-                          Settings.
+                          Settings. Approve only a sign-in you started yourself, just now: if someone sent you
+                          this link or code, deny it, or they get into your account.
                         </>
                       )}
                     </div>
