@@ -7,7 +7,8 @@
 //! and travel separately (see `viewer::ViewerServer::Stream`).
 
 use crate::session::{
-    Memory, PullRequestRef, RemoteControlState, RepoAccess, Retrospective, SessionStatus, UserRef,
+    Memory, PullRequestRef, RemoteControlState, RepoAccess, RepoRef, Retrospective, SessionStatus,
+    UserRef,
 };
 use crate::{AttachmentId, DeliveryId, Millis};
 use serde::{Deserialize, Serialize};
@@ -107,6 +108,103 @@ pub struct UserMessage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Attachment>>", optional))]
     pub attachments: Vec<Attachment>,
+    /// For a message from fctl that brought the agent back to a pull
+    /// request its session opened: what happened there, which the message
+    /// tells the agent. Clients from before it show the message's text.
+    pub follow_up: Option<FollowUp>,
+}
+
+/// What happened on GitHub to a pull request a session's agent opened,
+/// which fctl passed on to the agent (`fctl_domain::follow_ups`), for the
+/// apps to show as GitHub has it: the message's text says the same to the
+/// agent, with how to act on it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct FollowUp {
+    pub repo: RepoRef,
+    pub number: u64,
+    /// The pull request on GitHub.
+    pub url: String,
+    pub title: Option<String>,
+    /// Its state as fctl passed this on: `open`, `draft`, `queued`,
+    /// `merged` or `closed`.
+    pub state: Option<String>,
+    /// The branch it goes into.
+    pub base: Option<String>,
+    /// What happened, in the order GitHub said it.
+    pub events: Vec<FollowUpEvent>,
+}
+
+/// One thing that happened to a pull request ([`FollowUp`]).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FollowUpEvent {
+    /// A person who can write to the repository wrote to the agent there.
+    Comment(FollowUpComment),
+    /// Checks of the pull request's newest commit failed.
+    ChecksFailed {
+        /// The commit, in full.
+        sha: String,
+        /// The checks that failed, by name.
+        names: Vec<String>,
+        /// Its checks then, counted as the pull request shows them.
+        passed: u32,
+        failed: u32,
+        pending: u32,
+    },
+    /// It was merged.
+    Merged {
+        /// Who merged it: their GitHub login.
+        #[cfg_attr(feature = "ts", ts(optional))]
+        by: Option<String>,
+        /// The branch it went into.
+        #[cfg_attr(feature = "ts", ts(optional))]
+        base: Option<String>,
+    },
+    /// It was closed without being merged.
+    Closed {
+        #[cfg_attr(feature = "ts", ts(optional))]
+        by: Option<String>,
+    },
+    /// Something a newer control plane passes on, which this version
+    /// doesn't know.
+    #[serde(other)]
+    Other,
+}
+
+/// What a person wrote to the agent on a pull request: a comment on it, a
+/// review's text, or a comment on its lines (one with `path`), which may
+/// have come with a review (`review_id`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct FollowUpComment {
+    /// GitHub's id of the comment, or of the review.
+    pub id: u64,
+    /// Their GitHub login, and avatar.
+    pub login: String,
+    pub avatar_url: Option<String>,
+    /// The comment on GitHub.
+    pub url: String,
+    /// What they wrote, cut short past a few thousand characters.
+    pub body: String,
+    /// For a review: `approved`, `changes_requested` or `commented`.
+    pub review: Option<String>,
+    /// For a comment on lines: the file, and its lines in the new version
+    /// (`start_line` to `line`), or the old one (`deleted`).
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    pub start_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub deleted: bool,
+    /// The review it came with, and the comment it answers in its thread.
+    pub review_id: Option<u64>,
+    pub in_reply_to: Option<u64>,
+    pub at: Option<Millis>,
 }
 
 /// A file someone attached to a message. The control plane keeps its bytes
@@ -382,6 +480,7 @@ mod tests {
                 text: "hi".into(),
                 source: MessageSource::Web,
                 attachments: vec![],
+                follow_up: None,
             }),
         };
         let json = serde_json::to_value(&ev)?;
@@ -493,6 +592,79 @@ mod tests {
             retro.retrospective.map(|r| r.worked_on).as_deref(),
             Some("Built it.")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn follow_ups_say_what_happened_as_github_has_it() -> Result<(), serde_json::Error> {
+        let fu = FollowUp {
+            repo: RepoRef {
+                owner: "acme".into(),
+                name: "web".into(),
+            },
+            number: 12,
+            url: "https://github.com/acme/web/pull/12".into(),
+            title: Some("Fix the login redirect".into()),
+            state: Some("open".into()),
+            base: Some("main".into()),
+            events: vec![
+                FollowUpEvent::Comment(FollowUpComment {
+                    id: 456,
+                    login: "ada".into(),
+                    avatar_url: None,
+                    url: "https://github.com/acme/web/pull/12#discussion_r456".into(),
+                    body: "@fctl keep the query string".into(),
+                    review: None,
+                    path: Some("src/login.rs".into()),
+                    line: Some(42),
+                    start_line: None,
+                    deleted: false,
+                    review_id: Some(789),
+                    in_reply_to: None,
+                    at: Some(5),
+                }),
+                FollowUpEvent::ChecksFailed {
+                    sha: "3f2a1c9".into(),
+                    names: vec!["Rust tests".into()],
+                    passed: 7,
+                    failed: 1,
+                    pending: 1,
+                },
+                FollowUpEvent::Merged {
+                    by: Some("ada".into()),
+                    base: None,
+                },
+            ],
+        };
+        let json = serde_json::to_value(&fu)?;
+        assert_eq!(json["events"][0]["kind"], "comment");
+        assert_eq!(json["events"][0]["path"], "src/login.rs");
+        assert!(json["events"][0].get("deleted").is_none());
+        assert!(json["events"][0].get("review").is_none());
+        assert_eq!(json["events"][1]["kind"], "checks_failed");
+        assert_eq!(json["events"][1]["names"][0], "Rust tests");
+        assert_eq!(
+            json["events"][2],
+            serde_json::json!({ "kind": "merged", "by": "ada" })
+        );
+        let back: FollowUp = serde_json::from_value(json)?;
+        assert_eq!(back, fu);
+        // What a newer control plane passes on, which this version reads
+        // as something else rather than failing the whole event.
+        let newer: FollowUp = serde_json::from_value(serde_json::json!({
+            "repo": { "owner": "acme", "name": "web" }, "number": 12,
+            "url": "https://github.com/acme/web/pull/12",
+            "events": [{ "kind": "conflicts", "base": "main" }, { "kind": "closed" }]
+        }))?;
+        assert_eq!(
+            newer.events,
+            [FollowUpEvent::Other, FollowUpEvent::Closed { by: None }]
+        );
+        // Messages without one, as before.
+        let m: UserMessage = serde_json::from_value(serde_json::json!({
+            "id": "dlv_1", "text": "hi", "source": "system"
+        }))?;
+        assert_eq!(m.follow_up, None);
         Ok(())
     }
 

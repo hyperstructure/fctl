@@ -14,6 +14,14 @@ email: boolean,
  */
 github: boolean, 
 /**
+ * The GitHub App's webhook is on (`GITHUB_WEBHOOK_SECRET`): GitHub
+ * keeps sessions' pull requests current, and what happens to them can
+ * start review agents and bring agents back to them
+ * ([`crate::session::FollowUps`]). Absent from control planes before
+ * it.
+ */
+github_webhook: boolean, 
+/**
  * Admins let projects publish screenshots ([`InstanceSettings`]).
  */
 publish_screenshots: boolean, 

@@ -591,8 +591,39 @@ pub struct ProjectSettings {
     /// as `read`.
     #[serde(deserialize_with = "least_if_unknown")]
     pub github_access: Option<GithubAccess>,
+    /// What brings an agent back to a pull request its session opened:
+    /// comments that mention it, failed checks, a merge. All off by
+    /// default. An update that leaves it, or one of its fields, out keeps
+    /// what was stored. Control planes from before it leave it out.
+    pub follow_ups: FollowUps,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,
+}
+
+/// What brings a project's agents back to the pull requests their
+/// sessions opened (`fctl_domain::follow_ups`): fctl passes it on to the
+/// session in a message, which resumes the session if it stopped, on the
+/// Claude subscription it ran on. Only for pull requests the instance's
+/// GitHub App opened, in instances that take GitHub's webhook.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct FollowUps {
+    /// A comment, a review or a comment on its lines that mentions the
+    /// agent (`@fctl` or `@agent`), or starts with `fctl:` or `agent:`
+    /// (or a comma), by a person who can write to the repository.
+    pub comments: bool,
+    /// A check of its newest commit failed.
+    pub checks: bool,
+    /// It was merged, or closed without being merged.
+    pub closed: bool,
+}
+
+impl FollowUps {
+    /// Whether anything brings agents back.
+    pub fn any(&self) -> bool {
+        self.comments || self.checks || self.closed
+    }
 }
 
 /// A [`GithubAccess`] that a newer version may have stored, which reads as
@@ -627,6 +658,7 @@ impl Default for ProjectSettings {
             project_memory: true,
             retrospectives: true,
             github_access: None,
+            follow_ups: FollowUps::default(),
             env: Default::default(),
         }
     }

@@ -42,10 +42,21 @@ pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
 /// `credit_claude`, `project_memory` and `retrospectives`, on; for
 /// `publish_screenshots`, off; for `screenshot_days`, 30 days (send `null`
 /// to choose the default); for `github_access`, push, which would let
-/// agents push again. An `image_build` it leaves out stays unless it
-/// chooses an image instead (send `null` for none). `sent` is the update's
-/// `settings` object as it arrived.
+/// agents push again; for each of `follow_ups`, off. An `image_build` it
+/// leaves out stays unless it chooses an image instead (send `null` for
+/// none). `sent` is the update's `settings` object as it arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
+    let follow_ups = sent.get("follow_ups");
+    let unsent = |key: &str| follow_ups.and_then(|f| f.get(key)).is_none();
+    if unsent("comments") {
+        settings.follow_ups.comments = stored.follow_ups.comments;
+    }
+    if unsent("checks") {
+        settings.follow_ups.checks = stored.follow_ups.checks;
+    }
+    if unsent("closed") {
+        settings.follow_ups.closed = stored.follow_ups.closed;
+    }
     if sent.get("image_build").is_none() && settings.image.is_none() {
         settings.image_build = stored.image_build.clone();
     }
@@ -148,6 +159,35 @@ mod tests {
         };
         keep_unsent(&mut s, &stored, &json!({ "github_access": "push" }));
         assert_eq!(s.github_access, Some(GithubAccess::Push));
+    }
+
+    #[test]
+    fn updates_keep_the_follow_ups_they_leave_out() {
+        use fctl_proto::session::FollowUps;
+        let stored = ProjectSettings {
+            follow_ups: FollowUps {
+                comments: true,
+                checks: true,
+                closed: false,
+            },
+            ..Default::default()
+        };
+        // An older client knows none of them.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
+        assert_eq!(s.follow_ups, stored.follow_ups);
+        // Each one sent counts on its own; one a newer version adds stays.
+        let sent = json!({ "follow_ups": { "checks": false, "closed": true } });
+        let mut s: ProjectSettings = serde_json::from_value(sent.clone()).unwrap_or_default();
+        keep_unsent(&mut s, &stored, &sent);
+        assert_eq!(
+            s.follow_ups,
+            FollowUps {
+                comments: true,
+                checks: false,
+                closed: true,
+            }
+        );
     }
 
     #[test]

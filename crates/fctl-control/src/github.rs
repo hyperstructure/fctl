@@ -1249,6 +1249,112 @@ impl<'a> Github<'a> {
         Ok(results)
     }
 
+    // ───────────────────────────── follow-ups ─────────────────────────────
+
+    /// What GitHub says of `login`'s permission on `repo`
+    /// (`fctl_domain::follow_ups::can_write` reads it), through
+    /// installation `inst`, or why it says nothing.
+    pub async fn permission(
+        &self,
+        inst: u64,
+        repo: &RepoRef,
+        login: &str,
+    ) -> AppResult<Result<Value, String>> {
+        if login.is_empty() || !login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Ok(Err(format!("{login:?} isn't a person's GitHub login")));
+        }
+        self.looked_up(
+            inst,
+            &format!(
+                "/repos/{}/{}/collaborators/{login}/permission",
+                repo.owner, repo.name
+            ),
+        )
+        .await
+    }
+
+    /// The comments on lines of review `id` of `repo`'s pull request
+    /// `number` (`fctl_domain::follow_ups::review_comments` reads them),
+    /// through installation `inst`, or why GitHub listed none.
+    pub async fn review_comments_of(
+        &self,
+        inst: u64,
+        repo: &RepoRef,
+        number: u64,
+        id: u64,
+    ) -> AppResult<Result<Value, String>> {
+        self.looked_up(
+            inst,
+            &format!(
+                "/repos/{}/{}/pulls/{number}/reviews/{id}/comments?per_page=100",
+                repo.owner, repo.name
+            ),
+        )
+        .await
+    }
+
+    /// A REST read through installation `inst`, with the token the control
+    /// plane looks things up with: GitHub's answer, or why it refused.
+    async fn looked_up(&self, inst: u64, path: &str) -> AppResult<Result<Value, String>> {
+        let token = self.lookup_token(inst).await?;
+        let (status, v) = self
+            .call(Method::Get, path, &format!("token {token}"), None)
+            .await?;
+        if status == 401 {
+            LOOKUP_TOKENS.with(|m| m.borrow_mut().remove(&inst));
+        }
+        Ok(if status == 200 {
+            Ok(v)
+        } else {
+            Err(github_message(status, &v))
+        })
+    }
+
+    /// Reacts to a comment or review (`node`, its node id) with `content`
+    /// (`EYES`: fctl passed it on), with a token for `repo` alone that may
+    /// write its issues and pull requests, revoked after, which never
+    /// leaves the control plane. GitHub keeps one reaction of each kind per
+    /// account, so doing it again changes nothing. Says why GitHub refused.
+    pub async fn react_to(
+        &self,
+        inst: u64,
+        repo: &RepoRef,
+        node: &str,
+        content: &str,
+    ) -> AppResult<Result<(), String>> {
+        let token = self
+            .installation_token(
+                inst,
+                Some(&[repo.name.as_str()]),
+                Some(repos::reaction_permissions()),
+            )
+            .await?;
+        let answer = self
+            .graphql(
+                &token,
+                json!({
+                    "query": "mutation($id: ID!, $content: ReactionContent!) { addReaction(input: { subjectId: $id, content: $content }) { reaction { content } } }",
+                    "variables": { "id": node, "content": content },
+                }),
+            )
+            .await;
+        self.revoke_installation_token(&token).await;
+        let answer = answer?;
+        Ok(
+            match answer
+                .pointer("/data/addReaction/reaction")
+                .filter(|r| !r.is_null())
+            {
+                Some(_) => Ok(()),
+                None => Err(answer
+                    .pointer("/errors/0/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("GitHub added no reaction")
+                    .to_owned()),
+            },
+        )
+    }
+
     async fn installation_call(
         &self,
         owner: &str,

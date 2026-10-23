@@ -41,6 +41,13 @@ pub struct Features {
     pub email: bool,
     /// A GitHub App is configured.
     pub github: bool,
+    /// The GitHub App's webhook is on (`GITHUB_WEBHOOK_SECRET`): GitHub
+    /// keeps sessions' pull requests current, and what happens to them can
+    /// start review agents and bring agents back to them
+    /// ([`crate::session::FollowUps`]). Absent from control planes before
+    /// it.
+    #[serde(default)]
+    pub github_webhook: bool,
     /// Admins let projects publish screenshots ([`InstanceSettings`]).
     #[serde(default)]
     pub publish_screenshots: bool,

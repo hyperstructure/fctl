@@ -462,6 +462,7 @@ async fn review_spec(
         project_memory: false,
         retrospectives: false,
         github_access: Some(GithubAccess::Read),
+        follow_ups: Default::default(),
         env: p.env.clone(),
     };
     settings.env = fctl_domain::settings::session_env(&settings);

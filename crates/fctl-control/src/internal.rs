@@ -99,6 +99,29 @@ pub struct FindingsTold {
 #[derive(Serialize, Deserialize)]
 pub struct PullRequestsSeen {
     pub prs: Vec<fctl_proto::session::PullRequestRef>,
+    /// What happened to those its agent opened, for the agent to hear of
+    /// where its project's follow-ups say so (`crate::follow_ups`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub follow_ups: Vec<fctl_domain::follow_ups::Item>,
+}
+
+/// What happened to pull requests the session's agent opened, to pass on
+/// to it (`/follow-up`, from `crate::follow_ups`): the session gathers
+/// them for `fctl_domain::follow_ups::GATHER_MS`, then sends its agent a
+/// message from fctl, which resumes it if it stopped.
+#[derive(Serialize, Deserialize)]
+pub struct FollowUps {
+    pub items: Vec<fctl_domain::follow_ups::Item>,
+}
+
+/// What came of [`FollowUps`].
+#[derive(Serialize, Deserialize)]
+pub struct FollowUpsTaken {
+    /// How many it will pass on: none it passed on before.
+    pub taken: usize,
+    /// Why it passes none on.
+    #[serde(default)]
+    pub not_sent: Option<String>,
 }
 
 /// FleetObject asks a session on a draining runner whether it stops now: it

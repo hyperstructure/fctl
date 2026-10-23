@@ -61,6 +61,9 @@ pub struct Hook {
     pub sha: Option<String>,
     /// The `pull_request` event's own pull request.
     pub payload: Option<Payload>,
+    /// It says that checks changed (`check_run`, `check_suite`, `status`):
+    /// failed ones are news to pass on (`crate::follow_ups`).
+    pub checks: bool,
 }
 
 /// What a `pull_request` event says of its pull request.
@@ -76,6 +79,15 @@ pub struct Payload {
     /// GitHub's `mergeable_state` in the payload, which lookups take when
     /// GitHub gives no `mergeStateStatus` (`pulls::queued`).
     pub mergeable_state: Option<String>,
+    /// Its author's GitHub login, and the branches it comes from and goes
+    /// into.
+    pub author: Option<String>,
+    pub head_ref: Option<String>,
+    pub base_ref: Option<String>,
+    /// Who merged it, and the person whose action the event is: their
+    /// GitHub logins. An app's bot (a merge queue's) counts as nobody.
+    pub merged_by: Option<String>,
+    pub sender: Option<String>,
 }
 
 impl Payload {
@@ -115,7 +127,14 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
             numbers,
             sha,
             payload,
+            checks: matches!(event, "check_run" | "check_suite" | "status"),
         })
+    };
+    let at = |v: &Value, path: &str| v.pointer(path).and_then(Value::as_str).map(str::to_owned);
+    // A person's login: an app's bot, such as a merge queue's, is nobody's.
+    let person = |v: Option<&Value>| {
+        v.filter(|u| crate::follow_ups::is_person(u))
+            .and_then(|u| at(u, "/login"))
     };
     match event {
         "ping" => Delivery::Ping,
@@ -127,16 +146,18 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
             let Some(seen) = seen_in(pr, &action) else {
                 return Delivery::Other;
             };
-            let head = pr
-                .pointer("/head/sha")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let head = at(pr, "/head/sha");
             let numbers = vec![seen.number];
             let payload = Payload {
                 action,
                 seen,
                 head: head.clone(),
                 mergeable_state: text(pr, "mergeable_state"),
+                author: at(pr, "/user/login"),
+                head_ref: at(pr, "/head/ref"),
+                base_ref: at(pr, "/base/ref"),
+                merged_by: person(pr.get("merged_by")),
+                sender: person(payload.get("sender")),
             };
             hook(repo, numbers, head, Some(payload))
         }
@@ -208,12 +229,13 @@ fn seen_in(pr: &Value, action: &str) -> Option<PullRequestRef> {
 pub const MAX_LOOKUP: usize = 50;
 
 /// What a lookup asks of each pull request: its title, state and times,
-/// whether it is in a merge queue, and the checks of its head commit
-/// counted by their state, with the first 100 check runs among them, in
-/// which [`replaced`] finds the runs that a later run of the same check
-/// replaced.
+/// its author and branches, whether it is in a merge queue, and the checks
+/// of its head commit counted by their state, with the first 100 checks
+/// among them, in which [`replaced`] finds the runs that a later run of the
+/// same check replaced, and [`failing`] the checks that failed.
 const FIELDS: &str = "fragment pr on PullRequest {
   number url title state isDraft createdAt updatedAt mergedAt closedAt headRefOid
+  headRefName baseRefName author { login }
   mergeStateStatus
   mergeQueueEntry { enqueuedAt }
   commits(last: 1) {
@@ -229,6 +251,7 @@ const FIELDS: &str = "fragment pr on PullRequest {
                 name status conclusion databaseId
                 checkSuite { app { databaseId } workflowRun { event workflow { databaseId } } }
               }
+              ... on StatusContext { context state }
             }
           }
         }
@@ -274,12 +297,19 @@ pub fn remaining(answer: &Value) -> Option<u64> {
 }
 
 /// A pull request as a lookup found it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Looked {
     /// Its title, state, times and checks.
     pub pr: PullRequestRef,
     /// Its head commit.
     pub head: Option<String>,
+    /// Its author's GitHub login (`fctl[bot]`), and the branches it comes
+    /// from and goes into.
+    pub author: Option<String>,
+    pub head_ref: Option<String>,
+    pub base_ref: Option<String>,
+    /// The checks of its head commit that failed, by name ([`failing`]).
+    pub failing: Vec<String>,
 }
 
 /// What GitHub's answer to [`query`], asked at `at`, says of the `i`th pull
@@ -312,6 +342,7 @@ pub fn looked_up(answer: &Value, i: usize, at: Millis, hints: Hints<'_>) -> Opti
     let head = text("headRefOid")
         .or_else(|| commit?.get("oid")?.as_str())
         .map(str::to_owned);
+    let failing = failing(commit.and_then(|c| c.pointer("/statusCheckRollup/contexts")));
     let checks = commit.map(|c| {
         let contexts = c.pointer("/statusCheckRollup/contexts");
         let counts = |key: &str| {
@@ -356,7 +387,63 @@ pub fn looked_up(answer: &Value, i: usize, at: Millis, hints: Hints<'_>) -> Opti
             checks,
         },
         head,
+        author: pr
+            .pointer("/author/login")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        head_ref: text("headRefName").map(str::to_owned),
+        base_ref: text("baseRefName").map(str::to_owned),
+        failing,
     })
+}
+
+/// The checks among `contexts`' nodes that failed, by name, as the pull
+/// request lists them: check runs whose latest run failed, timed out or
+/// couldn't start, and commit statuses that failed or errored. A cancelled
+/// run, or one that waits for someone to approve it, is no failure of the
+/// code.
+fn failing(contexts: Option<&Value>) -> Vec<String> {
+    let nodes: Vec<&Value> = contexts
+        .and_then(|c| c.get("nodes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    let id = |run: &Value| run.get("databaseId").and_then(Value::as_u64);
+    let mut names: Vec<String> = Vec::new();
+    for node in &nodes {
+        let (name, failed) = match (node.get("name"), node.get("context")) {
+            (Some(name), _) => {
+                let Some(check) = check_of(node) else {
+                    continue;
+                };
+                // A later run of the same check replaced this one.
+                let later = nodes.iter().any(|other| {
+                    check_of(other) == Some(check)
+                        && id(other).zip(id(node)).is_some_and(|(o, n)| o > n)
+                });
+                let failed = matches!(
+                    node.get("conclusion").and_then(Value::as_str),
+                    Some("FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE")
+                );
+                (name.as_str(), failed && !later)
+            }
+            (None, Some(context)) => (
+                context.as_str(),
+                matches!(
+                    node.get("state").and_then(Value::as_str),
+                    Some("FAILURE" | "ERROR")
+                ),
+            ),
+            (None, None) => continue,
+        };
+        if let Some(name) = name.filter(|_| failed)
+            && !names.iter().any(|n| n == name)
+        {
+            names.push(name.to_owned());
+        }
+    }
+    names
 }
 
 enum Check {
@@ -852,6 +939,82 @@ mod tests {
                 } }
             } }] }
         } } } })
+    }
+
+    #[test]
+    fn lookups_say_who_opened_it_and_which_checks_failed() {
+        let mut a = answer_216();
+        let pr = &mut a["data"]["pr0"]["pullRequest"];
+        pr["state"] = json!("OPEN");
+        pr["headRefName"] = json!("fctl/119-agent-floor");
+        pr["baseRefName"] = json!("main");
+        pr["author"] = json!({ "login": "fctl-sh" });
+        let nodes = pr
+            .pointer_mut("/commits/nodes/0/commit/statusCheckRollup/contexts/nodes")
+            .and_then(Value::as_array_mut)
+            .unwrap_or_else(|| panic!("no nodes"));
+        let run = |name: &str, id: u64, conclusion: &str| {
+            json!({ "name": name, "status": "COMPLETED", "conclusion": conclusion, "databaseId": id,
+                "checkSuite": { "app": { "databaseId": 15368 }, "workflowRun": { "event": "pull_request", "workflow": { "databaseId": 1 } } } })
+        };
+        nodes.extend([
+            run("Rust tests", 7, "FAILURE"),
+            // Failed, then passed when someone ran it again.
+            run("Flaky", 8, "FAILURE"),
+            run("Flaky", 9, "SUCCESS"),
+            run("Timed out", 10, "TIMED_OUT"),
+            run("Cancelled", 11, "CANCELLED"),
+            run("Needs approval", 12, "ACTION_REQUIRED"),
+            run("Rust tests", 13, "FAILURE"),
+            json!({ "context": "ci/deploy", "state": "ERROR" }),
+            json!({ "context": "ci/lint", "state": "SUCCESS" }),
+            json!({}),
+        ]);
+        let looked = looked_up(&a, 0, 1, Hints::default()).unwrap_or_else(|| panic!("no found"));
+        assert_eq!(looked.author.as_deref(), Some("fctl-sh"));
+        assert_eq!(looked.head_ref.as_deref(), Some("fctl/119-agent-floor"));
+        assert_eq!(looked.base_ref.as_deref(), Some("main"));
+        // In the order of their latest runs.
+        assert_eq!(looked.failing, ["Timed out", "Rust tests", "ci/deploy"]);
+        // A lookup from before the fields: none of them.
+        let looked =
+            looked_up(&answer(), 0, 1, Hints::default()).unwrap_or_else(|| panic!("no found"));
+        assert_eq!(
+            (looked.author, looked.head_ref, looked.failing.len()),
+            (None, None, 0)
+        );
+        assert!(FIELDS.contains("headRefName baseRefName author { login }"));
+        assert!(FIELDS.contains("... on StatusContext { context state }"));
+    }
+
+    #[test]
+    fn deliveries_say_whether_checks_changed_and_who_acted() {
+        let mut pr = open_pr();
+        pr["user"] = json!({ "login": "fctl[bot]", "type": "Bot" });
+        pr["base"] = json!({ "ref": "main" });
+        pr["merged_by"] = json!({ "login": "ada", "type": "User" });
+        let mut event = pull_request_event("closed", pr);
+        event["sender"] = json!({ "login": "ada", "type": "User" });
+        let h = hook(delivery("pull_request", &event));
+        assert!(!h.checks);
+        let p = h.payload.unwrap_or_else(|| panic!("no payload"));
+        assert_eq!(p.author.as_deref(), Some("fctl[bot]"));
+        assert_eq!(p.head_ref.as_deref(), Some("fctl/1-fix"));
+        assert_eq!(p.base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            (p.merged_by.as_deref(), p.sender.as_deref()),
+            (Some("ada"), Some("ada"))
+        );
+        // An app's bot is nobody.
+        event["sender"] = json!({ "login": "github-merge-queue[bot]", "type": "Bot" });
+        let p = hook(delivery("pull_request", &event))
+            .payload
+            .unwrap_or_else(|| panic!("no payload"));
+        assert_eq!(p.sender, None);
+        let status = json!({ "sha": "abc123", "state": "failure", "repository": { "full_name": "acme/app" } });
+        assert!(hook(delivery("status", &status)).checks);
+        let suite = json!({ "check_suite": { "head_sha": "abc" }, "repository": { "full_name": "acme/app" } });
+        assert!(hook(delivery("check_suite", &suite)).checks);
     }
 
     #[test]
