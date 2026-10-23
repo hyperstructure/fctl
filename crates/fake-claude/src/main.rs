@@ -44,6 +44,7 @@
 //! | `compact` | compacts the conversation before it answers, as Claude Code does after `/compact`, which it takes too |
 //! | a review session's task (`Review acme/web#12, … at commit …`) | reviews the pull request checked out as a review agent does: reads its commits and diff and fctl's earlier findings (`fctl review threads`), then posts with `fctl review submit`: earlier findings still open as fixed, and without any, an issue on the first line the pull request adds |
 //! | fctl's message about a review of the agent's pull request (`fctl's review agent reviewed commit …`) | looks at the pull request's commits and says what it decided about each finding: it leaves them as they are, and says how it would answer them in their threads without calling GitHub; no other word in the message counts |
+//! | fctl's message about what happened to the agent's pull request on GitHub (`On GitHub, …`: a comment, failed checks, a merge) | looks at the branch's commits and says what it would do about each part, without calling GitHub; no other word in the message counts |
 //! | (attached files) | says how many images the message holds and checks that each listed file is on disk |
 //!
 //! Plan usage comes as Claude Code reports it after a response
@@ -736,6 +737,27 @@ impl Session {
         answer
     }
 
+    /// Answers fctl's message about what happened to its pull request on
+    /// GitHub (`fctl_domain::follow_ups::message`), as an agent does: looks
+    /// at the branch's commits, then says what it would do about each part
+    /// of the message, without calling GitHub. Returns its answer.
+    fn answer_follow_up(&mut self, text: &str) -> String {
+        self.stream_text(
+            "Something happened to my pull request on GitHub. Let me look at the branch first.",
+        );
+        self.bash(
+            "git log --oneline -3",
+            "List the pull request's latest commits",
+        );
+        let mut answer = String::new();
+        for part in follow_up_parts(text) {
+            answer.push_str(&format!("- {part}\n"));
+        }
+        answer.push_str("\nfake-claude doesn't call GitHub, so it changes nothing there.");
+        self.stream_text(&answer);
+        answer
+    }
+
     /// Pushes the branch, as agents do before they open a pull request:
     /// without an `origin`, a bare repository in `~/.fake-github` stands in
     /// for GitHub.
@@ -996,6 +1018,13 @@ impl Session {
         if is_findings(&lower) {
             self.usage(false);
             let done = self.answer_findings(text);
+            self.result(started, &done, "success");
+            return;
+        }
+        // What happened to its pull request on GitHub, likewise.
+        if is_follow_up(&lower) {
+            self.usage(false);
+            let done = self.answer_follow_up(text);
             self.result(started, &done, "success");
             return;
         }
@@ -1328,6 +1357,34 @@ fn is_review(lower: &str) -> bool {
 /// request (`fctl_domain::reviews::passed_on`).
 fn is_findings(lower: &str) -> bool {
     lower.starts_with("fctl's review agent reviewed commit ")
+}
+
+/// Whether a turn is fctl's message about what happened to the agent's
+/// pull request on GitHub (`fctl_domain::follow_ups::message`).
+fn is_follow_up(lower: &str) -> bool {
+    lower.starts_with("on github, ")
+}
+
+/// What fake-claude would do about each part of fctl's message about its
+/// pull request: each part starts with `On GitHub, `.
+fn follow_up_parts(text: &str) -> Vec<String> {
+    text.split("On GitHub, ")
+        .filter_map(|part| part.lines().next())
+        .filter(|first| !first.trim().is_empty())
+        .map(|first| {
+            let first = first.trim_end_matches(':');
+            if first.contains(" was merged") {
+                "It was merged: nothing is left to do in fake-claude's sandbox.".to_owned()
+            } else if first.contains(" was closed without being merged") {
+                "It was closed: nothing is left to do.".to_owned()
+            } else if first.contains(" failed at commit ") {
+                let what = first.split_once(": ").map_or("", |(_, w)| w);
+                format!("Checks failed ({what}): I'd look with `gh pr checks`, fix them and push.")
+            } else {
+                format!("{first}: I'd do what they ask and answer them there.")
+            }
+        })
+        .collect()
 }
 
 /// The titles of the findings in fctl's message about a review: its
@@ -1707,8 +1764,8 @@ fn main() {
 mod tests {
     use super::{
         CONTEXT_START, CONTEXT_WINDOW, adler32, asks_for_limit, background_for, context_for, crc32,
-        effort_in, explorations, finding_titles, first_added_line, is_findings, is_review,
-        rename_to, says, screenshot_png, short_id, watch_for,
+        effort_in, explorations, finding_titles, first_added_line, follow_up_parts, is_findings,
+        is_follow_up, is_review, rename_to, says, screenshot_png, short_id, watch_for,
     };
 
     #[test]
@@ -1827,6 +1884,21 @@ mod tests {
             "you haven't posted your review yet, and the session ends soon."
         ));
         assert!(!is_review("review the login code"));
+    }
+
+    #[test]
+    fn fctls_follow_ups_are_its_own_messages() {
+        let message = "On GitHub, @ada commented on your pull request acme/web#12, \u{201c}Fix it\u{201d} (https://github.com/acme/web/pull/12#issuecomment-1):\n\n> @fctl push the docs too\n\nThen answer where they wrote.\n\nOn GitHub, a check of your pull request acme/web#12, \u{201c}Fix it\u{201d}, failed at commit 3f2a1c9: Lint.\n\nSee what failed.\n\nOn GitHub, your pull request acme/web#12, \u{201c}Fix it\u{201d}, was merged into main by @ada.\n";
+        assert!(is_follow_up(&message.to_lowercase()));
+        assert!(!is_follow_up("push the docs"));
+        let parts = follow_up_parts(message);
+        assert_eq!(parts.len(), 3);
+        assert!(parts[0].starts_with("@ada commented on your pull request acme/web#12"));
+        assert_eq!(
+            parts[1],
+            "Checks failed (Lint.): I'd look with `gh pr checks`, fix them and push."
+        );
+        assert!(parts[2].starts_with("It was merged"));
     }
 
     #[test]
