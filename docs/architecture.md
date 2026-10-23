@@ -1142,6 +1142,87 @@ the GitHub App's Checks permission (read and write): without it, reviews
 run and post, and say why their commit shows no check
 ([Self-hosting](self-hosting.md#connect-github-optional-recommended)).
 
+### Follow-ups
+
+Where a project turns them on (`ProjectSettings::follow_ups`, the
+project's Settings, `fctl projects set --follow-ups`), what happens on
+GitHub to a pull request one of the instance's own agents opened (its
+author is the GitHub App) brings that agent back to it, in a message from
+fctl delivered as a person's message is: it resumes a stopped session on
+the subscription it ran on
+([ADR 0042](adr/0042-agents-come-back-to-their-pull-requests-for-comments-failed-checks-and-merges.md)).
+Three kinds, each on or off on its own, all off by default:
+
+1. **Comments that address the agent** (`issue_comment`,
+   `pull_request_review` and `pull_request_review_comment` deliveries,
+   `crate::follow_ups::on_comment`): a new comment on the pull request's
+   conversation, a review, or a comment on its lines, that mentions
+   `@fctl` or `@agent`, or starts with `fctl:`, `agent:`, `fctl,` or
+   `agent,`, in any case (`fctl_domain::follow_ups::addressed`; what it
+   quotes, shows as code or hides in an HTML comment doesn't count, nor do
+   edits). Only a person's (GitHub's `User`, not an app's bot, so not
+   fctl's own review agents, whose findings come back on their own),
+   whose `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR`, and
+   whom GitHub then says may write to the repository (`GET
+   /repos/{owner}/{name}/collaborators/{login}/permission`: admin,
+   maintain or write), so that nobody else steers the agent through a
+   public repository, nor a member of its organization who may only read
+   it. A comment on the conversation names no branch, so the control plane
+   looks its pull request up. A review brings its comments on lines (`GET
+   …/reviews/{id}/comments`), which also come as deliveries of their own.
+   Once the session has a comment, fctl adds an `eyes` reaction to it with
+   a token for the repository alone, which it revokes at once, and the
+   workspace's audit log records it (`follow_up.comment`).
+2. **Failed checks** (`check_run`, `check_suite` and `status`
+   deliveries): the lookup after one (`crate::pull_requests::hook`) names
+   the checks of the pull request's newest commit that failed
+   (`fctl_domain::webhooks::failing`: check runs whose latest run failed,
+   timed out or couldn't start, and commit statuses that failed or
+   errored; a cancelled run, or one waiting for approval, is no failure of
+   the code), for pull requests neither merged nor closed, drafts too. The
+   lookup asks for the author as REST names it: GraphQL calls the app's
+   bot `fctl` where REST says `fctl[bot]`.
+3. **Merged or closed** (`pull_request` deliveries of `closed`): who
+   merged or closed it, an app's bot (a merge queue's) counting as nobody,
+   and the branch it went into.
+
+The session is the one that opened the pull request
+(`fctl_domain::reviews::opener`), among those it may be looked up for
+([Pull request state and checks](#pull-request-state-and-checks)), and
+nothing reaches it when it is archived or failed, its project is archived,
+or its agent only reads on GitHub. SessionObject takes them at
+`/follow-up`, and with a lookup's `/pull-requests`, and keeps them for ten
+seconds (`follow_ups`, in its storage, `GATHER_MS`), so that a review and
+its comments, or checks that fail together, reach the agent in one
+message, and what reached it once (a comment by its id, failed checks by
+their commit, a merge) never comes again. Then, for each pull request, a
+message from fctl (`fctl_domain::follow_ups::message`) says what
+happened: who wrote what and where, quoted, a review's comments on lines
+under it, and how to answer each where it was made (`gh pr comment`, `gh
+api …/comments/{id}/replies`); which checks failed and how to look into
+them (`gh pr checks`, `gh run view --log-failed`), waiting for those still
+running before a push; after a merge, what may be left to do. It says
+that only people who can write to the repository reach the agent this
+way. Failed checks wait while a turn runs, since the agent may be at
+them, and ten seconds more once it ends, for what it pushed then, and go
+only while GitHub still says that they are the pull request's newest
+commit's and failed: a newer commit, the agent's or anyone's, or a re-run
+that passed, makes them old news. After three in a row
+(`MAX_CHECKS_IN_A_ROW`) while nobody messaged the agent, nor wrote to it
+on GitHub, the transcript says what failed instead (`follow_up_held`,
+with `Notice.follow_up`), until someone does. Only deliveries bring
+agents back: the hourly sweep keeps pull requests' state current without
+waking anyone.
+
+The message carries what it is about (`UserMessage.follow_up`), which the
+transcript shows as GitHub has it: people's comments with their avatars,
+a review's comments on lines under it, failed checks by name, a merge,
+with what fctl told the agent a click away. A session's page says under
+its pull requests what brings its agent back. Follow-ups need the webhook,
+and for comments the app subscribed to **Issue comment**, **Pull request
+review** and **Pull request review comment**
+([Self-hosting](self-hosting.md#follow-ups)).
+
 ### Commits
 
 Commits are authored by the GitHub App's bot (`git_author` in the spec).
