@@ -627,6 +627,7 @@ pub async fn start(
                 text: task,
                 source: MessageSource::System,
                 attachments: Vec::new(),
+                follow_up: None,
             },
         },
     )

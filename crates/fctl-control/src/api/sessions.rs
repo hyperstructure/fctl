@@ -201,6 +201,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         text: prompt,
         source: source_of(ctx),
         attachments,
+        follow_up: None,
     };
     let _: serde_json::Value = internal::post(
         &stub,
@@ -489,6 +490,7 @@ pub async fn deliver_message(
                 text,
                 source,
                 attachments,
+                follow_up: None,
             }),
         },
     )

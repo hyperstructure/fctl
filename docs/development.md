@@ -109,7 +109,10 @@ instance has no GitHub App, so no review starts there by itself),
 fctl's message about a review of the agent's own pull request (`fctl's
 review agent reviewed commit …`) gets a look at the branch's commits and
 an answer that leaves each finding as it is, without calling GitHub (no
-other word in it counts),
+other word in it counts), so does fctl's message about what happened to
+its pull request on GitHub (`On GitHub, …`: a comment, failed checks, a
+merge), with a line for each part (the dev instance has no GitHub App, so
+none comes there by itself),
 and `crash` exits mid-turn. Anything
 else gets a short answer with a tool call. It answers `get_settings` with
 its model and effort level (`--effort`, else `medium`), which the session

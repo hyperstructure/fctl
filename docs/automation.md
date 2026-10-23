@@ -163,7 +163,10 @@ Projects have review agents built in: turn them on under the project's
 **Reviews** tab, or with `fctl review settings --on`, and each new commit
 of a pull request gets a review, with a check on the commit; when an fctl
 agent opened the pull request, its session gets the findings to act on
-([Architecture](architecture.md#review-agents)). A workflow of your own
+([Architecture](architecture.md#review-agents)). Follow-ups bring an fctl
+agent back to its pull request without a workflow too, when someone
+mentions `@fctl` in a comment, a check fails or it merges
+([Architecture](architecture.md#follow-ups)). A workflow of your own
 suits reviews those don't make: ones that run the tests, or that start on
 a label. Here one reads each new pull request, runs its tests if that
 helps, and posts a review, for the project `web`, on app.fctl.sh:

@@ -12,6 +12,7 @@ pub mod cron;
 pub mod disk;
 pub mod events;
 pub mod files;
+pub mod follow_ups;
 pub mod github;
 pub mod ids;
 pub mod image;

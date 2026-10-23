@@ -321,7 +321,10 @@ installed on that are connected to the workspace.
    | Metadata | Read | required |
 
    Under **Subscribe to events**, tick **Pull request**, **Check run**,
-   **Check suite** and **Status**: the webhook's deliveries.
+   **Check suite** and **Status**: the webhook's deliveries. Tick **Issue
+   comment**, **Pull request review** and **Pull request review comment**
+   too, for [follow-ups](#follow-ups) that bring agents back when people
+   mention them.
 
 2. Install it on the organization (all repositories, or the ones agents may
    touch, including those they only read, such as private dependencies).
@@ -426,6 +429,21 @@ npx wrangler d1 execute fctl --remote --command \
   "UPDATE pull_request_sessions SET checked_at = NULL
    WHERE state IS NULL OR state NOT IN ('merged', 'closed')"
 ```
+
+### Follow-ups
+
+Projects can bring their agents back to the pull requests they opened
+([Architecture](architecture.md#follow-ups)): when someone who can write
+to the repository mentions `@fctl` or `@agent` in a comment, when a check
+fails, when a pull request merges or closes. Each project turns them on in
+its Settings, or with `fctl projects set --follow-ups`; they need the
+webhook's secret, and for comments the app subscribed to **Issue
+comment**, **Pull request review** and **Pull request review comment**.
+For an app made before, subscribe to them under **Permissions & events**:
+installations accept nothing new, since the app reads and writes issues
+and pull requests already. Failed checks and merges come with the events
+above. **Advanced → Recent Deliveries** answers `{"ok":true,"follow_ups":1}`
+for a comment that reached an agent, and fctl puts an 👀 reaction on it.
 
 ### Which workspace uses which account
 

@@ -15,6 +15,7 @@ mod do_schedule;
 mod do_session;
 mod email;
 mod error;
+mod follow_ups;
 mod github;
 mod housekeeping;
 mod http;

@@ -18,7 +18,7 @@ use crate::ctx::now_ms;
 use crate::db::{int, n, os, q, s};
 use crate::error::{AppError, AppResult, unavailable};
 use crate::github;
-use crate::internal;
+use crate::{follow_ups, internal};
 use fctl_domain::pulls;
 use fctl_domain::webhooks::{self, Hints, Hook, Looked};
 use fctl_proto::session::{PullRequestRef, RepoRef};
@@ -57,7 +57,7 @@ pub fn enabled(cfg: &Config) -> bool {
 }
 
 /// How `pull_request_sessions` names a repository.
-fn key(repo: &RepoRef) -> String {
+pub(crate) fn key(repo: &RepoRef) -> String {
     repo.full_name().to_ascii_lowercase()
 }
 
@@ -73,7 +73,7 @@ fn key(repo: &RepoRef) -> String {
 /// answered and of the installation it answered through, only where the
 /// connection is to that account, or, from before ids were kept, recorded
 /// that installation, since a login can change hands.
-fn in_reach(answered: Option<(&str, &str)>) -> String {
+pub(crate) fn in_reach(answered: Option<(&str, &str)>) -> String {
     let account = answered
         .map(|(account, installation)| {
             format!(
@@ -242,6 +242,10 @@ pub async fn hook(
                 payload.map(|p| Looked {
                     pr: p.seen.clone(),
                     head: p.head.clone(),
+                    author: p.author.clone(),
+                    head_ref: p.head_ref.clone(),
+                    base_ref: p.base_ref.clone(),
+                    failing: Vec::new(),
                 })
             });
         if looked.is_some() {
@@ -252,7 +256,74 @@ pub async fn hook(
             });
         }
     }
-    settle(env, db, &seen, now, hook.owner_id.zip(hook.installation)).await
+    let answered = hook.owner_id.zip(hook.installation);
+    // What the agents that opened them hear of: failed checks after a
+    // delivery about checks, a merge or a close after the one that says it.
+    // Without GitHub's word of who answered, nobody hears of anything.
+    let news: Vec<follow_ups::News> = match answered {
+        Some(_) => seen.iter().filter_map(|x| news(hook, x)).collect(),
+        None => Vec::new(),
+    };
+    let told = if news.is_empty() {
+        BTreeMap::new()
+    } else {
+        match follow_ups::route(cfg, db, &news, answered).await {
+            Ok(told) => told,
+            Err(e) => {
+                worker::console_error!("following up on pull requests: {}", e.0.message);
+                BTreeMap::new()
+            }
+        }
+    };
+    settle(env, db, &seen, now, answered, told).await
+}
+
+/// What happened to a pull request a delivery is about that the agent that
+/// opened it may hear of ([`follow_ups::route`]): failed checks of its
+/// newest commit, when the delivery is about checks, or that it merged or
+/// closed, when the delivery says so.
+fn news(hook: &Hook, x: &Seen) -> Option<follow_ups::News> {
+    let looked = x.looked.as_ref()?;
+    let payload = hook.payload.as_ref().filter(|p| p.seen.number == x.number);
+    let mut events = Vec::new();
+    if hook.checks
+        && let Some(e) = fctl_domain::follow_ups::checks_failed(looked)
+    {
+        events.push((e, None));
+    }
+    if let Some(p) = payload
+        && let Some(e) = fctl_domain::follow_ups::closed(p)
+    {
+        events.push((e, p.seen.state_changed_at));
+    }
+    if events.is_empty() {
+        return None;
+    }
+    let base = looked
+        .base_ref
+        .clone()
+        .or_else(|| payload.and_then(|p| p.base_ref.clone()));
+    Some(follow_ups::News {
+        pull: fctl_domain::follow_ups::Pull {
+            repo: x.repo.clone(),
+            number: x.number,
+            url: looked.pr.url.clone(),
+            title: looked.pr.title.clone(),
+            state: payload
+                .and_then(|p| p.seen.state.clone())
+                .or_else(|| looked.pr.state.clone()),
+            base,
+        },
+        author: looked
+            .author
+            .clone()
+            .or_else(|| payload.and_then(|p| p.author.clone())),
+        head_ref: looked
+            .head_ref
+            .clone()
+            .or_else(|| payload.and_then(|p| p.head_ref.clone())),
+        events,
+    })
 }
 
 /// Looks up pull requests sessions list and tells those sessions what
@@ -335,7 +406,7 @@ pub async fn refresh(
                 .collect();
             // Those GitHub didn't answer for wait their six hours too, so
             // that one that always fails can't hold up the others.
-            told += settle(env, db, &seen, now, answered).await?;
+            told += settle(env, db, &seen, now, answered, BTreeMap::new()).await?;
             let left = match &answer {
                 Ok(a) => webhooks::remaining(a),
                 Err(e) => {
@@ -417,13 +488,15 @@ struct Listing {
 /// `answered`: GitHub's ids of the account that answered and of the
 /// installation it answered through. What it said reaches the sessions
 /// whose workspaces connected that account ([`in_reach`]), and nobody when
-/// GitHub didn't say who answered.
+/// GitHub didn't say who answered. `follow_ups`: what the sessions whose
+/// agents opened them hear of, by session ([`follow_ups::route`]).
 async fn settle(
     env: &Env,
     db: &D1Database,
     seen: &[Seen],
     now: i64,
     answered: Option<(u64, u64)>,
+    mut follow_ups: BTreeMap<String, Vec<fctl_domain::follow_ups::Item>>,
 ) -> AppResult<usize> {
     if seen.is_empty() {
         return Ok(0);
@@ -469,10 +542,18 @@ async fn settle(
     let mut told = 0;
     let mut unheard = Vec::new();
     for (id, prs) in sessions {
-        if tell(env, id, prs).await {
+        let items = follow_ups.remove(id).unwrap_or_default();
+        if tell(env, id, prs, items.clone()).await {
             told += 1;
         } else {
             unheard.push(id);
+            // The sweep asks GitHub again for its pull requests, but brings
+            // no follow-ups: they go once more on their own.
+            if !items.is_empty()
+                && let Err(e) = follow_ups::hand(env, id, items).await
+            {
+                worker::console_error!("following up in session {id}: {}", e.0.message);
+            }
         }
     }
     let mut statements = Vec::new();
@@ -519,12 +600,23 @@ async fn settle(
     Ok(told)
 }
 
-/// Tells a session what GitHub says of pull requests it lists. Returns
-/// whether it heard.
-async fn tell(env: &Env, id: &str, prs: Vec<PullRequestRef>) -> bool {
+/// Tells a session what GitHub says of pull requests it lists, with what
+/// its agent hears of those it opened (`follow_ups`). Returns whether it
+/// heard.
+async fn tell(
+    env: &Env,
+    id: &str,
+    prs: Vec<PullRequestRef>,
+    follow_ups: Vec<fctl_domain::follow_ups::Item>,
+) -> bool {
     let result: AppResult<serde_json::Value> = async {
         let stub = internal::session_stub(env, id)?;
-        internal::post(&stub, "/pull-requests", &internal::PullRequestsSeen { prs }).await
+        internal::post(
+            &stub,
+            "/pull-requests",
+            &internal::PullRequestsSeen { prs, follow_ups },
+        )
+        .await
     }
     .await;
     if let Err(e) = &result {

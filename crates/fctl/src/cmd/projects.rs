@@ -9,7 +9,9 @@ use fctl_proto::api::{
     AddProjectRepoRequest, CreateProjectRequest, CreateRepoRequest, ProjectRepoList,
     UpdateMembershipRequest, UpdateProjectRequest,
 };
-use fctl_proto::session::{GithubAccess, ImageBuild, Project, ProjectSettings, RepoAccess};
+use fctl_proto::session::{
+    FollowUps, GithubAccess, ImageBuild, Project, ProjectSettings, RepoAccess,
+};
 use std::io::{BufRead, IsTerminal, Write};
 
 #[derive(Subcommand)]
@@ -60,8 +62,8 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "image", "build", "build_context", "setup_script", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "follow_ups", "image", "build", "build_context", "setup_script", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --follow-ups comments,checks   # agents come back for @fctl and failed checks\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -108,6 +110,14 @@ pub enum ProjectsCmd {
         /// Running sessions get no more from their next GitHub token on.
         #[arg(long, value_enum)]
         github: Option<super::tokens::Github>,
+        /// What brings agents back to the pull requests they opened, on
+        /// the Claude subscription each session ran on: comments (people
+        /// who can write to the repository mention @fctl or @agent, or
+        /// start with "fctl:" or "agent:"), checks (a check of the newest
+        /// commit fails) and closed (merged or closed). A comma-separated
+        /// list of them, all, or none.
+        #[arg(long, value_name = "LIST", value_parser = follow_ups_arg)]
+        follow_ups: Option<FollowUps>,
         /// The image sessions start from, like ghcr.io/acme/agent:1, on
         /// runners whose owners allow it ("" for each runner's own). Only
         /// the Apple container and Docker drivers use images.
@@ -264,6 +274,53 @@ fn on_github(s: &ProjectSettings) -> &'static str {
         GithubAccess::Push => "push, or less when a session asks",
         GithubAccess::Comment => "review and comment at most, and push nothing",
         GithubAccess::Read => "only read",
+    }
+}
+
+/// `--follow-ups`: what brings agents back, as a list, `all` or `none`.
+fn follow_ups_arg(s: &str) -> std::result::Result<FollowUps, String> {
+    let mut f = FollowUps::default();
+    for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.to_ascii_lowercase().as_str() {
+            "all" => {
+                f = FollowUps {
+                    comments: true,
+                    checks: true,
+                    closed: true,
+                }
+            }
+            "none" => f = FollowUps::default(),
+            "comments" => f.comments = true,
+            "checks" => f.checks = true,
+            "closed" => f.closed = true,
+            other => {
+                return Err(format!(
+                    "{other:?} isn't one: use comments, checks and closed, all or none"
+                ));
+            }
+        }
+    }
+    Ok(f)
+}
+
+/// What brings a project's agents back to their pull requests, in words.
+fn follow_ups(s: &ProjectSettings) -> String {
+    let f = s.follow_ups;
+    let reasons: Vec<&str> = [
+        (f.comments, "comments that mention them"),
+        (f.checks, "failed checks"),
+        (f.closed, "being merged or closed"),
+    ]
+    .into_iter()
+    .filter_map(|(on, what)| on.then_some(what))
+    .collect();
+    match reasons.as_slice() {
+        [] => "don't come back to their pull requests on their own".to_owned(),
+        [one] => format!("come back to their pull requests for {one}"),
+        [rest @ .., last] => format!(
+            "come back to their pull requests for {} and {last}",
+            rest.join(", ")
+        ),
     }
 }
 
@@ -574,6 +631,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             println!("idle:    sessions {}", idle(&p.settings));
             println!("agents:  {}", learning(&p.settings));
             println!("github:  agents {}", on_github(&p.settings));
+            println!("follow:  agents {}", follow_ups(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
             println!("{}", style::dim(&format!("{}/p/{}", api.base(), p.slug)));
         }
@@ -628,6 +686,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             project_memory,
             retrospectives,
             github,
+            follow_ups: new_follow_ups,
             image: new_image,
             build,
             build_context,
@@ -710,6 +769,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(g) = github {
                 settings.github_access = Some(g.into());
+            }
+            if let Some(f) = new_follow_ups {
+                settings.follow_ups = f;
             }
             let p = api
                 .update_project(
@@ -811,6 +873,30 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     on_github(&p.settings)
                 );
             }
+            if new_follow_ups.is_some() {
+                println!(
+                    "{} Agents in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    follow_ups(&p.settings)
+                );
+                if p.settings.follow_ups.any() {
+                    println!(
+                        "{}",
+                        style::dim(
+                            "Only for pull requests fctl's agents opened, on the Claude subscription each session ran on."
+                        )
+                    );
+                    if !api.instance().await?.features.github_webhook {
+                        println!(
+                            "{}",
+                            style::amber(
+                                "This instance takes no GitHub webhooks, so nothing brings them back yet: its admins set GITHUB_WEBHOOK_SECRET."
+                            )
+                        );
+                    }
+                }
+            }
             println!(
                 "{}",
                 style::dim("Sessions take the change when they next start or resume.")
@@ -872,4 +958,43 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn follow_ups_take_a_list_all_or_none() {
+        let on = |comments, checks, closed| FollowUps {
+            comments,
+            checks,
+            closed,
+        };
+        assert_eq!(follow_ups_arg("comments"), Ok(on(true, false, false)));
+        assert_eq!(follow_ups_arg("Checks, closed"), Ok(on(false, true, true)));
+        assert_eq!(follow_ups_arg("all"), Ok(on(true, true, true)));
+        assert_eq!(follow_ups_arg("none"), Ok(on(false, false, false)));
+        assert_eq!(follow_ups_arg(""), Ok(on(false, false, false)));
+        assert!(follow_ups_arg("reviews").is_err());
+
+        let said = |f: FollowUps| {
+            follow_ups(&ProjectSettings {
+                follow_ups: f,
+                ..Default::default()
+            })
+        };
+        assert_eq!(
+            said(on(false, false, false)),
+            "don't come back to their pull requests on their own"
+        );
+        assert_eq!(
+            said(on(false, true, false)),
+            "come back to their pull requests for failed checks"
+        );
+        assert_eq!(
+            said(on(true, true, true)),
+            "come back to their pull requests for comments that mention them, failed checks and being merged or closed"
+        );
+    }
 }

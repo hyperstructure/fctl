@@ -1,4 +1,4 @@
-# 0043: Schedules start sessions on their owner's subscription, and other tools run them when asked
+# 0044: Schedules start sessions on their owner's subscription, and other tools run them when asked
 
 2026-10-23 · accepted
 
