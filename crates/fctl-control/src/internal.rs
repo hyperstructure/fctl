@@ -81,6 +81,9 @@ pub struct ReviewFindings {
     pub text: String,
     /// What the transcript says when fctl keeps them from the agent.
     pub held: String,
+    /// What the transcript shows of the message.
+    #[serde(default)]
+    pub shown: Option<fctl_proto::event::PassedOnReview>,
 }
 
 /// What came of [`ReviewFindings`].

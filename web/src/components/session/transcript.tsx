@@ -52,6 +52,7 @@ import { splitRunNote } from "@/lib/schedules";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
+import { FindingsMessage } from "./findings";
 import { FollowUpMessage, HeldFollowUp } from "./follow-up";
 import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { thinkingNow } from "./thinking";
@@ -69,6 +70,7 @@ const UserMessage = memo(function UserMessage({
   // A schedule's run: its task, then what fctl told the agent about the run.
   const { task, note } = useMemo(() => splitRunNote(item.text), [item.text]);
   if (item.followUp) return <FollowUpMessage followUp={item.followUp} text={item.text} ts={item.ts} />;
+  if (item.review) return <FindingsMessage review={item.review} text={item.text} ts={item.ts} />;
   return (
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
       <div className="mb-1.5 flex items-center gap-2.5 text-[12.5px]">
@@ -84,12 +86,18 @@ const UserMessage = memo(function UserMessage({
       </div>
       {item.text && (
         <div className="ml-[34px] rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap wrap-anywhere text-ink">
-          {task}
-          {note && (
-            <p className="mt-2.5 flex gap-2 border-t border-line pt-2.5 text-[12.5px] leading-relaxed text-ink-3">
-              <Repeat aria-hidden="true" className="mt-[3px] size-3.5 shrink-0 text-ink-4" />
-              <span className="min-w-0">{note}</span>
-            </p>
+          {findingsBefore(item) ? (
+            <LongText text={item.text} />
+          ) : (
+            <>
+              {task}
+              {note && (
+                <p className="mt-2.5 flex gap-2 border-t border-line pt-2.5 text-[12.5px] leading-relaxed text-ink-3">
+                  <Repeat aria-hidden="true" className="mt-[3px] size-3.5 shrink-0 text-ink-4" />
+                  <span className="min-w-0">{note}</span>
+                </p>
+              )}
+            </>
           )}
         </div>
       )}
@@ -101,6 +109,35 @@ const UserMessage = memo(function UserMessage({
     </div>
   );
 });
+
+/**
+ * Whether a message is one from fctl that passed a review's findings on before such messages
+ * carried the review (`UserMessage.review`): it starts as fctl_domain::reviews::passed_on writes it.
+ */
+const findingsBefore = (item: Extract<Item, { kind: "user" }>) =>
+  item.source === "system" && item.text.startsWith("fctl's review agent reviewed commit ");
+
+/** A long message from fctl: its first lines, with the rest a click away. */
+function LongText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <>
+      <div id={id} className={cn(!open && "line-clamp-5")}>
+        {text}
+      </div>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls={id}
+        className="mt-1 text-[12.5px] text-ink-3 transition-colors hover:text-ink"
+      >
+        {open ? "Show less" : "Show all"}
+      </button>
+    </>
+  );
+}
 
 /**
  * A note the agent kept in the project's memory, or marked stale (a

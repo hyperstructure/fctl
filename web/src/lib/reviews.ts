@@ -22,6 +22,12 @@ export function reviewLook(r: Pick<G.Review, "state" | "status">): ReviewLook {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/** "1 issue", "3 issues". */
+export const issues = (n: number) => plural(n, "issue", "issues");
+
+/** A finding's severity, as fctl says it on GitHub: "High", "Medium", "Low". */
+export const severityLabel = (s: G.Severity) => `${s.charAt(0).toUpperCase()}${s.slice(1)}`;
+
 /** What came of a review, in a few words: "No issues", "2 issues", "Reviewing"… */
 export function reviewOutcome(r: Pick<G.Review, "state" | "status" | "findings" | "still_open">): string {
   switch (reviewLook(r)) {
@@ -33,7 +39,7 @@ export function reviewOutcome(r: Pick<G.Review, "state" | "status" | "findings" 
       return "No issues";
     case "commented":
       return r.findings > 0
-        ? plural(r.findings, "issue", "issues")
+        ? issues(r.findings)
         : plural(r.still_open, "earlier issue open", "earlier issues open");
     case "superseded":
       return "Superseded";

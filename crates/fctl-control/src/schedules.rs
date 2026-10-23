@@ -1014,6 +1014,7 @@ pub async fn start_session(
                 source: st.source,
                 attachments: Vec::new(),
                 follow_up: None,
+                review: None,
             },
         },
     )

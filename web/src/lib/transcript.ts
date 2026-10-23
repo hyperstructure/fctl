@@ -38,6 +38,8 @@ export type Item =
       pending?: boolean;
       /** For a message from fctl about a pull request the agent opened: what happened there. */
       followUp?: G.FollowUp;
+      /** For a message from fctl that passed a review's findings on: the review. */
+      review?: G.PassedOnReview;
     })
   | (Base & { kind: "prose"; text: string })
   | (Base & { kind: "thinking"; text: string })
@@ -273,6 +275,7 @@ export class TranscriptBuilder {
           source: ev.data.source,
           attachments: ev.data.attachments,
           followUp: ev.data.follow_up,
+          review: ev.data.review,
         });
         return;
       case "status": {
