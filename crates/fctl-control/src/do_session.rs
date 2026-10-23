@@ -836,6 +836,10 @@ impl SessionObject {
             }
             return Ok(held(in_a_row));
         }
+        // Counted before the message waits for a resume, so that another
+        // review's findings, which may come meanwhile, count it. A resume
+        // that fails leaves the message in the outbox, for the next run.
+        self.set_meta(REVIEWS_PASSED_ON, &(in_a_row + 1).to_string());
         let id = fctl_domain::ids::delivery_id(now);
         let delivered = self
             .deliver(Deliver {
@@ -857,7 +861,6 @@ impl SessionObject {
                 }),
             })
             .await?;
-        self.set_meta(REVIEWS_PASSED_ON, &(in_a_row + 1).to_string());
         Ok(internal::FindingsTold {
             delivery_id: Some(delivered.delivery_id),
             not_sent: None,
