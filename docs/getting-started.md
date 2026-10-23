@@ -278,6 +278,13 @@ turns them off.
 
 ## 8. Follow along and steer
 
+The Agent Floor lists the sessions at work under **Working now**, and the
+latest that ended under **Recently**. A project's page lists its sessions
+the same way, with **Recently** for the ended ones that last moved in the
+past day and **Older** for the rest, the most recent first. There
+**Active** shows only the sessions at work, and **Mine** only the ones you
+started.
+
 - **Web app** — the session page streams the transcript as the agent writes
   it: tool calls, diffs, and the files changed, commits and pull requests
   so far, seconds after the agent makes them. The tool calls and thoughts
