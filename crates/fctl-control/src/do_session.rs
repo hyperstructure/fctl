@@ -57,8 +57,11 @@ const DRAIN_IDLE_MS: i64 = 60_000;
 const VIEWER_CHECK_MS: i64 = 60_000;
 /// A viewer whose access hasn't been checked for this long (it stopped
 /// pinging, which the apps do every 25 seconds) is closed at the next
-/// broadcast, and reconnects through the Worker, which checks it.
-const VIEWER_STALE_MS: i64 = 5 * 60_000;
+/// broadcast, and reconnects through the Worker, which checks it: twice
+/// [`VIEWER_CHECK_MS`], so that a check D1 didn't answer leaves the apps
+/// another, and a client that stops pinging once its person lost access
+/// hears little more.
+const VIEWER_STALE_MS: i64 = 2 * VIEWER_CHECK_MS;
 /// Close codes for viewers: their person can't see the session any more
 /// (the apps stop reconnecting), and their access changed or wasn't
 /// checked for a while (they reconnect).
@@ -1938,6 +1941,20 @@ impl SessionObject {
                         })
                     {
                         n.published = None;
+                    }
+                    // What became of pull requests, with people's comments
+                    // on them, is the control plane's to tell, never an
+                    // uplink's; and a posted review's link goes only to
+                    // GitHub's pull request.
+                    if let EventBody::Notice(n) = &mut body {
+                        n.follow_up = None;
+                        if let Some(r) = n.review.as_mut() {
+                            r.url = r.url.as_deref().and_then(fctl_domain::reviews::posted_link);
+                            r.sent_to = r
+                                .sent_to
+                                .take()
+                                .filter(|s| fctl_proto::SessionId::is_valid(s.as_str()));
+                        }
                     }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
                         let (changed, new) = Self::apply_git(s, g, now);

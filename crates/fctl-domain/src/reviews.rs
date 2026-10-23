@@ -146,6 +146,33 @@ pub fn trusted(pr: &PullRequest, app_login: Option<&str>) -> bool {
         || by_app(pr.author.as_deref(), app_login)
 }
 
+/// A posted review's link as the apps show it (`PostedReview::url`): a
+/// pull request on GitHub, or a comment or review on it
+/// (`https://github.com/<owner>/<name>/pull/12#issuecomment-345`), rebuilt
+/// from it; anything else is `None`. The review agent's notice carries it,
+/// what runs in its sandbox can pose as the agent, and the apps show the
+/// link as fctl's own.
+pub fn posted_link(url: &str) -> Option<String> {
+    let url = url.trim();
+    let (page, anchor) = match url.split_once('#') {
+        Some((page, anchor)) => (page, Some(anchor)),
+        None => (url, None),
+    };
+    let pr = crate::pulls::named_by(page)?;
+    if pr.url != page {
+        return None;
+    }
+    let Some(anchor) = anchor else {
+        return Some(pr.url);
+    };
+    let id = anchor.trim_start_matches(|c: char| c.is_ascii_lowercase() || c == '-' || c == '_');
+    let ok = anchor.len() <= 64
+        && !id.is_empty()
+        && id.len() < anchor.len()
+        && id.bytes().all(|b| b.is_ascii_digit());
+    ok.then(|| format!("{}#{anchor}", pr.url))
+}
+
 /// Whether a pull request's author (`author`, as GitHub names it) is
 /// fctl's own GitHub App (`app_login`, `fctl[bot]`): one of the agents of
 /// the instance's sessions opened it.
@@ -1692,6 +1719,35 @@ mod tests {
             session: "ses_1",
             session_url: "https://app.fctl.sh/s/ses_1",
             settings_url: "https://app.fctl.sh/p/web?tab=reviews",
+        }
+    }
+
+    #[test]
+    fn posted_links_are_github_pull_requests_and_their_comments() {
+        for ok in [
+            "https://github.com/acme/web/pull/12",
+            "https://github.com/acme/web/pull/12#issuecomment-2410000123",
+            "https://github.com/acme/web/pull/12#pullrequestreview-301",
+            " https://github.com/acme/web/pull/12#discussion_r1844 ",
+        ] {
+            assert_eq!(posted_link(ok).as_deref(), Some(ok.trim()), "{ok}");
+        }
+        for bad in [
+            "https://evil.example/login",
+            "https://github.com.evil.example/acme/web/pull/12",
+            "https://github.com/acme/web/pull/12/files",
+            "https://github.com/acme/web/issues/12",
+            "https://github.com/acme/web/pull/0",
+            "https://github.com/acme/web/pull/12#",
+            "https://github.com/acme/web/pull/12#issuecomment-",
+            "https://github.com/acme/web/pull/12#123",
+            "https://github.com/acme/web/pull/12#issuecomment-1\"><b>",
+            "https://github.com/acme/web/pull/12#x#issuecomment-1",
+            "javascript:alert(1)//https://github.com/acme/web/pull/12",
+            "vscode://file/etc/passwd",
+            "",
+        ] {
+            assert_eq!(posted_link(bad), None, "{bad}");
         }
     }
 

@@ -235,9 +235,10 @@ pub async fn remove(ctx: &mut Ctx, email: &str) -> AppResult<Response> {
 /// Disconnects `email` from someone's account because no allowlist entry
 /// admits it any more: as when they disconnect it, they leave the
 /// workspaces they are in as it, but a primary admin's role there passes
-/// to the workspace's longest-standing admin, or member, and a workspace
-/// only they are in keeps them, as `instead`. Returns whose workspaces
-/// changed.
+/// to the workspace's longest-standing admin, or member, but not to the
+/// instance admin who removed the entry unless they are one of its admins
+/// already (`successor!`), and a workspace with nobody else to take it
+/// keeps them, as `instead`. Returns whose workspaces changed.
 pub async fn disallow(
     ctx: &Ctx,
     user_id: &str,
@@ -250,14 +251,15 @@ pub async fn disallow(
         role: String,
         successor: Option<String>,
     }
+    let actor = ctx.user()?.id.clone();
     let memberships: Vec<M> = q(
         &ctx.db,
         &format!(
             "SELECT w.id AS workspace_id, m.role, {} AS successor FROM workspace_members m \
              JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ?1 AND m.email = ?2",
-            crate::workspaces::SUCCESSOR
+            crate::successor!("?3")
         ),
-        &[s(user_id), s(email)],
+        &[s(user_id), s(email), s(&actor)],
     )?
     .all()
     .await?;

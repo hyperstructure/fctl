@@ -96,9 +96,11 @@ owner and purpose), so a value copied between rows does not decrypt.
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin
   roles, turning two-factor sign-in or this off, resetting someone's
-  two-factor sign-in, removing a passkey, adding a runner to a workspace,
-  new access tokens and CLI sign-ins, exporting your data, and deleting
-  accounts, projects and workspaces. So a stolen browser session, CLI or
+  two-factor sign-in, removing a passkey, adding or registering a runner
+  for a workspace and replacing its token, new access tokens and CLI
+  sign-ins, exporting your data, deleting accounts, projects and
+  workspaces, and, without email, making someone a password reset link.
+  So a stolen browser session, CLI or
   access token can't do them alone. A passkey (which must verify the
   person), a code from the authenticator app or a recovery code confirms
   it, for 15 minutes, for the browser, CLI or token that confirmed; a
@@ -250,9 +252,20 @@ outside it except through these channels:
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host. A session gets the
   token only while the person it runs for is an active member of its
-  workspace: once they leave it, are removed or disabled, the sessions that
-  run on their subscription stop, and a message to one doesn't start it on
-  their subscription again; resuming it runs it on the resumer's.
+  workspace and may still run it: start sessions in its project, or message
+  it through a share. Once they leave the workspace, are removed or
+  disabled, lose their role in the project or the share, or the
+  workspace's two-factor requirement closes it to them, the sessions
+  that run on their subscription stop, get no more Claude or GitHub tokens,
+  and a message to one doesn't start it on their subscription again (nor
+  on their runners, with the project's secrets); resuming it runs it on the
+  resumer's. The token is in the sandbox, where the agent can read it, so
+  whoever can message a session's agent (the project's editors, and people
+  it is shared with to message) can have it hand over the token of the
+  person the session runs as, as they can the session's GitHub tokens and
+  the project's secrets: a full Claude login's token lasts hours, one from
+  `claude setup-token` a year. Run sessions on a token from `claude
+  setup-token` only where you would trust those people with it.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),
   and the agent can use them with that person's access without asking, also
@@ -297,6 +310,16 @@ outside it except through these channels:
   for that text to steer it. Give such a schedule the least GitHub access
   its task needs and a token that runs sessions in its project alone, and
   pause it to stop what tools start at once.
+- **Review agents** run on their operator's Claude subscription, with
+  their Claude access token in the sandbox like any session's, and read
+  what pull requests say, which can steer them as any text can. Their
+  GitHub token only reads, fctl posts what they find, and they get no
+  secrets, setup script, memory or connectors. A pull request starts a
+  review by itself only when its author may write to the repository, or
+  one of fctl's agents opened it; anyone else's waits until someone in the
+  project looks at it and asks for its review, since its text could
+  otherwise have the agent hand the operator's token over
+  ([ADR 0047](adr/0047-review-agents-review-outsiders-pull-requests-when-asked.md)).
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 - **The image and the setup script.** Whoever sets a project's image or
@@ -352,7 +375,11 @@ root store); they open no ports. A host authenticates with a runner token
 that its owner can replace, and that its owner and instance admins revoke by
 disabling or removing the runner: whoever holds a runner's token runs the
 sessions of the workspaces it serves, so only its owner gets a new one, not
-an instance admin outside those workspaces. Hosts receive a
+an instance admin outside those workspaces, and only while none of those
+workspaces' two-factor requirement closes it to them: a password alone
+gets no runner token. Registering a runner for a workspace and replacing a
+runner's token take confirming it's you, where the instance asks for
+that, as adding one to a workspace does. Hosts receive a
 session's credentials only while it runs, and keep nothing secret on disk
 but their runner token (`~/.config/fctl/host-token`, mode 0600).
 
@@ -450,7 +477,9 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   before they can delete their account.
 - Settings → Your data (or `fctl account export`) downloads everything the
   instance keeps about you, as JSON, with the sessions you started in the
-  workspaces open to you: not those of workspaces you left. Files you
+  workspaces open to you: not those of workspaces you left. The notes and
+  schedules you wrote, and the sessions you follow, come from the projects
+  and sessions you still see, since others keep them up to date. Files you
   attached are listed in the transcripts there; each downloads from its
   session.
 - Hosts keep a stopped session's sandbox so it can resume, and remove it

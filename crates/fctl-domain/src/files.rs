@@ -26,7 +26,7 @@ const MAX_NAME_BYTES: usize = 200;
 
 /// Characters that change the direction text shows in: in a file name,
 /// `invoice\u{202E}gnp.exe` shows as `invoiceexe.png`.
-fn bidi_control(c: char) -> bool {
+pub(crate) fn bidi_control(c: char) -> bool {
     matches!(
         c,
         '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'

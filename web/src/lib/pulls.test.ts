@@ -3,6 +3,7 @@ import type * as G from "@/gen";
 import {
   checksState,
   checksText,
+  githubLink,
   prFullRef,
   prLabel,
   prRef,
@@ -126,5 +127,29 @@ describe("a pull request's checks", () => {
     expect(prTitle(merged)).toMatch(/^hyperstructure\/fctl#171: Show pull requests' state\nMerged .+2026/);
     expect(prLabel(merged, NOW)).toBe("fctl#171, merged 2 hours ago");
     expect(prLabel(pr("acme/app", 7))).toBe("app#7");
+  });
+});
+
+describe("githubLink", () => {
+  it("keeps GitHub's pages and refuses links anywhere else", () => {
+    for (const ok of [
+      "https://github.com/acme/web/pull/12",
+      "https://github.com/acme/web/pull/12#issuecomment-345",
+      "https://github.com/acme/web/pull/12/commits/3f2a1c9",
+    ])
+      expect(githubLink(ok)).toBe(ok);
+    for (const bad of [
+      undefined,
+      "",
+      "https://evil.example/login",
+      "https://github.com.evil.example/acme",
+      "https://github.com",
+      "https://github.com\\@evil.example/",
+      "http://github.com/acme/web/pull/12",
+      "javascript:alert(1)//https://github.com/",
+      "vscode://file/etc/passwd",
+      "https://github.com/acme web",
+    ])
+      expect(githubLink(bad)).toBeUndefined();
   });
 });

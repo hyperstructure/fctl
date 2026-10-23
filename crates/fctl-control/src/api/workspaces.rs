@@ -1279,6 +1279,12 @@ pub async fn register_runner(
 ) -> AppResult<RunnerRegistration> {
     let actor = ctx.user()?;
     let name = validate::name("name", name)?;
+    // A new runner gets the workspace's sessions, with their code, secrets
+    // and tokens, as adding one does: the same confirmation, so that a
+    // stolen session or token can't register one instead.
+    if workspace_id.is_some() {
+        ctx.verified(Sensitive::AddRunner)?;
+    }
     let token = new_secret(SecretKind::Runner);
     let id = fctl_domain::ids::runner_id(ctx.now);
     let mut statements = vec![q(

@@ -101,7 +101,9 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
 - Instance roles: `owner` (the primary instance owner, one per instance),
   `admin`, `member`. Instance admins run the instance (people, invitations,
   runners, GitHub, settings), not what is inside
-  [workspaces](#workspaces) they aren't members of. Workspace roles: `owner`
+  [workspaces](#workspaces) they aren't members of; only the primary
+  instance owner makes someone an admin, or invites or allows an address
+  as one, and demotes admins. Workspace roles: `owner`
   (the primary admin, one per workspace), `admin`, `member`. Project roles:
   `owner`, `maintainer`, `editor` (can start sessions and message agents),
   `viewer`. Sessions can also be shared with people in their workspace.
@@ -299,13 +301,16 @@ token can't do them alone
   sign-in, and this confirmation itself; resetting someone's two-factor
   sign-in, and removing a passkey;
 - adding one of your runners to a workspace, or letting it run
-  everyone's sessions there (registering a new one, as `fctl host install`
-  does, doesn't ask);
+  everyone's sessions there, registering a new one for a workspace (as
+  `fctl host install` does, which asks in the terminal), and replacing the
+  token of one that serves a workspace;
 - making someone a workspace's admin, or inviting them as one, and
   handing over or giving a workspace's primary admin role;
 - making an access token, and approving a CLI's sign-in;
 - exporting your data, and deleting your account, someone else's, a
-  project or a workspace.
+  project or a workspace;
+- making someone a password reset link on an instance that sends no
+  email, where the link comes back to the admin.
 
 Only the primary instance owner turns it on or off, and turning it off is
 one of those actions (`verify::check_verify_setting`). Turning off your
@@ -760,11 +765,15 @@ A message to a stopped session resumes it: from the web app, `fctl send`,
 queues the session again and keeps the message in its outbox for the new
 run, which runs on the Claude subscription the session ran on, as a
 message to an idle session does. That subscription's owner must still be
-an active member of the session's workspace, as a runner's owner must
-(`spec::credential_serves`): once they left it, were removed or disabled,
-the session's runs and token refreshes get no credential, and it fails
-with a reason instead; leaving, or being disabled, stops the sessions
-that run on their subscription. A resume (**Resume** for the session's
+an active member of the session's workspace, as a runner's owner must, and
+still able to run the session: to start sessions in its project, or to
+message it through a share (`spec::credential_serves`). Once they left the
+workspace, were removed or disabled, lost their role in the project or
+the share, or the workspace's two-factor requirement closed it to them,
+the session's runs and token refreshes, GitHub's as well as
+Claude's, get no credential, and it fails with a reason instead; leaving,
+being disabled, or losing that role stops the sessions that run on their
+subscription (FleetDO, on `/workspaces-changed`). A resume (**Resume** for the session's
 owners, `fctl resume`) runs it on the resumer's subscription instead, and
 also starts a failed session, which a message doesn't. A message that comes
 while the session stops queues it too: FleetDO starts the new run once the
@@ -1059,12 +1068,19 @@ posts what it found on GitHub
    open pull request starts a review of its head in each project whose
    review agents are on and that may write to its repository, through the
    installation its workspace connected (`crate::reviews::on_delivery`,
-   `fctl_domain::reviews::starts_review`). A commit that has its review
+   `fctl_domain::reviews::starts_review`), when its author may write to
+   the repository or it is fctl's own app (`trusted`, below): a review
+   runs on the operator's subscription, with their Claude token in its
+   sandbox, and Claude acts on what the pull request says, so a pull
+   request from anyone else starts nothing by itself
+   ([ADR 0047](adr/0047-review-agents-review-outsiders-pull-requests-when-asked.md)).
+   A commit that has its review
    gets no other from a delivery, so marking a draft ready reviews it only
    when its head is new; merged, closed and queued pull requests get none.
    People who start sessions in the project ask for one of a pull
    request's head (the Reviews tab, `fctl review start`, `POST
-   /api/v1/projects/{id}/reviews`). The review of the pull request still
+   /api/v1/projects/{id}/reviews`), outsiders' too, once they have looked
+   at it. The review of the pull request still
    under way stops (`superseded`), once the new one is in: a newer commit
    takes its place, and a review that runs finishes even when its pull
    request merges meanwhile.
@@ -1540,7 +1556,7 @@ interrupt (`recheck_viewer`). A viewer whose person can no longer see the
 session (they left the workspace or were removed, their role or share went,
 they signed out or were disabled) closes with 4403, after which the apps
 stop reconnecting; one whose role changed gets it in its next `session`
-frame. A viewer that stopped pinging closes after five minutes at the next
+frame. A viewer that stopped pinging closes after two minutes at the next
 broadcast and reconnects through the Worker.
 
 The snapshot and `runner_connected` frames say whether the agent's work can

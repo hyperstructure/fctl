@@ -1983,6 +1983,19 @@ impl FleetObject {
         {
             return Err(spec::not_served().0);
         }
+        // Nor once the person it runs as can no longer run it (they left
+        // its workspace, lost their role in its project, or were
+        // disabled): neither their Claude token nor new GitHub tokens.
+        let cred_id = row
+            .credential_id
+            .clone()
+            .ok_or_else(|| ApiError::new(ErrorCode::NotConfigured, "No Claude credential"))?;
+        if !spec::credential_serves(&db, &cred_id, session_id.as_str())
+            .await
+            .map_err(|e| e.0)?
+        {
+            return Err(spec::credential_not_lent().0);
+        }
         match kind {
             CredentialKind::Github => {
                 let project = spec::project_row(&db, &row.project_id)
@@ -2016,16 +2029,6 @@ impl FleetObject {
             }
             CredentialKind::Claude => {
                 let keys = crypto::keys(&cfg).map_err(|e| e.0)?;
-                let cred_id = row.credential_id.clone().ok_or_else(|| {
-                    ApiError::new(ErrorCode::NotConfigured, "No Claude credential")
-                })?;
-                // Nor once its owner left the session's workspace.
-                if !spec::credential_serves(&db, &cred_id, session_id.as_str())
-                    .await
-                    .map_err(|e| e.0)?
-                {
-                    return Err(spec::credential_not_lent().0);
-                }
                 // One refresh per credential at a time; others wait for it.
                 for _ in 0..80 {
                     if !self.refreshing.borrow().contains(&cred_id) {
@@ -2429,11 +2432,13 @@ impl FleetObject {
         *self.runner_workspaces.borrow_mut() = map;
     }
 
-    /// People's workspaces changed: their feeds show what they now may,
-    /// with the runners of their workspaces, and they fetch their
-    /// workspaces again.
+    /// People's workspaces changed: the sessions that run on their Claude
+    /// subscription where they may no longer run them stop, their feeds
+    /// show what they now may, with the runners of their workspaces, and
+    /// they fetch their workspaces again.
     async fn workspaces_changed(&self, user_ids: &[String]) {
         let Ok(db) = self.env.d1("DB") else { return };
+        self.stop_unlent(&db, user_ids).await;
         let settings = match crate::instance::settings(&db).await {
             Ok(s) => s,
             Err(e) => {
@@ -2467,6 +2472,54 @@ impl FleetObject {
                 for text in &messages {
                     let _ = ws.send_with_str(text);
                 }
+            }
+        }
+    }
+
+    /// Stops the active sessions that run on the Claude subscription of
+    /// `user_ids` where its person may no longer run them
+    /// (`spec::credential_serves`): they lost their role in its project,
+    /// its share, or its workspace's two-factor requirement closed it to
+    /// them. Their tokens get no refresh there anyway; this stops the
+    /// agents at once, and a resume runs them on the resumer's.
+    async fn stop_unlent(&self, db: &worker::D1Database, user_ids: &[String]) {
+        #[derive(Deserialize)]
+        struct Lent {
+            id: String,
+            credential_id: String,
+        }
+        let Ok(users) = serde_json::to_string(user_ids) else {
+            return;
+        };
+        let lent: Vec<Lent> = match crate::db::q(
+            db,
+            "SELECT s.id AS id, s.credential_id AS credential_id FROM sessions s \
+             JOIN claude_credentials c ON c.id = s.credential_id \
+             WHERE c.user_id IN (SELECT value FROM json_each(?)) \
+             AND s.status IN ('queued','provisioning','preparing','running','idle','paused')",
+            &[crate::db::s(&users)],
+        ) {
+            Ok(stmt) => stmt.all().await.unwrap_or_default(),
+            Err(_) => return,
+        };
+        for l in lent {
+            match spec::credential_serves(db, &l.credential_id, &l.id).await {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => {
+                    worker::console_error!("checking whose session {} runs: {}", l.id, e.0.message);
+                    continue;
+                }
+            }
+            let stopped = self
+                .stop(Stop {
+                    session_id: SessionId(l.id.clone()),
+                    reason: StopReason::User,
+                    destroy: false,
+                })
+                .await;
+            if let Err(e) = stopped {
+                worker::console_error!("stopping session {}: {}", l.id, e.message);
             }
         }
     }

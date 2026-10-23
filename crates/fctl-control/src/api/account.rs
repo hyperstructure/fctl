@@ -16,7 +16,7 @@ use crate::db::{Count, Val, batch, n, q, s};
 use crate::error::{AppResult, conflict, internal, validation};
 use crate::http;
 use crate::internal as dobj;
-use crate::model::{UserRow, WORKSPACE_ORDER, workspace_ref};
+use crate::model::{PROJECT_SELECT, PROJECT_VISIBLE, UserRow, WORKSPACE_ORDER, workspace_ref};
 use fctl_domain::account::{self as acct, iso8601};
 use fctl_domain::verify::Sensitive;
 use fctl_proto::api::{
@@ -177,6 +177,9 @@ pub async fn plan(ctx: &Ctx, user: &UserRow) -> AppResult<Plan> {
     )?
     .all()
     .await?;
+    // Deleted by an instance admin, the role doesn't pass to them unless
+    // they are one of its admins already (`successor!`).
+    let actor = ctx.user()?.id.clone();
     let successors: Vec<Successor> = q(
         &ctx.db,
         &format!(
@@ -184,9 +187,9 @@ pub async fn plan(ctx: &Ctx, user: &UserRow) -> AppResult<Plan> {
              su.name AS successor_name, su.avatar_url AS successor_avatar FROM workspaces w \
              JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = ?1 AND m.role = 'owner' \
              JOIN users su ON su.id = {} ORDER BY w.name",
-            crate::workspaces::SUCCESSOR
+            crate::successor!("?2")
         ),
-        &[s(&user.id)],
+        &[s(&user.id), s(&actor)],
     )?
     .all()
     .await?;
@@ -531,6 +534,36 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         .collect();
     let mine_open =
         || -> AppResult<[Val; 2]> { Ok([s(&user.id), s(&serde_json::to_string(&open)?)]) };
+    // What others keep up to date there, the notes and schedules they
+    // wrote, the sessions they follow, only from the projects and sessions
+    // they still see: not those they were taken out of since.
+    let seen: Vec<String> = q(
+        &ctx.db,
+        &format!("{PROJECT_SELECT} WHERE {PROJECT_VISIBLE}"),
+        &me(),
+    )?
+    .all::<crate::model::ProjectRow>()
+    .await?
+    .into_iter()
+    .filter(|r| crate::access::project_role(&user, &settings, None, r).is_some())
+    .map(|r| r.id)
+    .collect();
+    let mine_seen =
+        || -> AppResult<[Val; 2]> { Ok([s(&user.id), s(&serde_json::to_string(&seen)?)]) };
+    let followed: Vec<String> = q(
+        &ctx.db,
+        &format!(
+            "{} WHERE s.id IN (SELECT session_id FROM session_followers WHERE user_id = ?1)",
+            crate::model::SESSION_SELECT
+        ),
+        &me(),
+    )?
+    .all::<crate::model::SessionRow>()
+    .await?
+    .into_iter()
+    .filter(|r| crate::access::session_role(&user, &settings, None, r).is_some())
+    .map(|r| r.id)
+    .collect();
     let mut doc = Map::new();
     doc.insert("format".into(), json!("fctl-export/1"));
     doc.insert("exported_at".into(), json!(iso8601(ctx.now)));
@@ -650,12 +683,11 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "followed_sessions".into(),
         rows(
             ctx,
-            // Only the ones in their workspaces.
+            // Only the ones they still see.
             "SELECT p.slug AS project, s.number, s.title, f.created_at AS followed_at FROM session_followers f \
              JOIN sessions s ON s.id = f.session_id JOIN projects p ON p.id = s.project_id \
-             JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
-             WHERE f.user_id = ?1 ORDER BY f.created_at",
-            &[s(&user.id)],
+             WHERE f.user_id = ?1 AND s.id IN (SELECT value FROM json_each(?2)) ORDER BY f.created_at",
+            &[s(&user.id), s(&serde_json::to_string(&followed)?)],
         )
         .await?,
     );
@@ -731,8 +763,8 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             // retrospectives are in their transcripts.
             "SELECT p.slug AS project, s.number AS session, m.text, m.created_at, m.edited_at, m.stale_at, m.stale_reason \
              FROM memories m JOIN projects p ON p.id = m.project_id LEFT JOIN sessions s ON s.id = m.session_id \
-             WHERE m.created_by = ?1 AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY m.created_at",
-            &mine_open()?,
+             WHERE m.created_by = ?1 AND p.id IN (SELECT value FROM json_each(?2)) ORDER BY m.created_at",
+            &mine_seen()?,
         )
         .await?,
     );
@@ -745,8 +777,8 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             "SELECT p.slug AS project, sc.name, sc.prompt, sc.cron, sc.at, sc.timezone, sc.model, sc.effort, \
              sc.base_branch, sc.github_access, sc.enabled, sc.owner_id = ?1 AS runs_on_mine, sc.created_at, sc.updated_at \
              FROM schedules sc JOIN projects p ON p.id = sc.project_id WHERE (sc.created_by = ?1 OR sc.owner_id = ?1) \
-             AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY sc.created_at",
-            &mine_open()?,
+             AND p.id IN (SELECT value FROM json_each(?2)) ORDER BY sc.created_at",
+            &mine_seen()?,
         )
         .await?,
     );

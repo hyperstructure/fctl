@@ -1234,6 +1234,8 @@ pub struct AuditEntry {
     pub target: Option<String>,
     #[cfg_attr(feature = "ts", ts(type = "unknown"))]
     pub data: Option<serde_json::Value>,
+    /// The address it came from: in a workspace's log, only for what the
+    /// caller did.
     pub ip: Option<String>,
 }
 

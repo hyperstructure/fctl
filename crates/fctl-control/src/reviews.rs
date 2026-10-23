@@ -369,6 +369,21 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
     if !rv::starts_review(&action, &pr) {
         return Ok(0);
     }
+    // A review runs on its operator's Claude subscription, whose token is in
+    // its sandbox, where Claude acts on what the pull request says: text in
+    // anyone's pull request could make it hand that token over, with nobody
+    // in the project having looked. Only pull requests of people who may
+    // write to the repository, and fctl's own agents', start one by
+    // themselves; anyone else's waits for someone in the project to ask for
+    // it (`POST /api/v1/projects/{id}/reviews`).
+    if !rv::trusted(&pr, app_login(&ctx.cfg).as_deref()) {
+        worker::console_log!(
+            "not reviewing {}#{} by itself: its author can't write to the repository",
+            pr.repo.full_name(),
+            pr.number
+        );
+        return Ok(0);
+    }
     let sent_by = payload.pointer("/installation/id").and_then(Value::as_u64);
     #[derive(Deserialize)]
     struct Id {
@@ -1218,7 +1233,11 @@ async fn pass_on(
         return Ok(None);
     }
     let pr = format!("{}#{}", repo.full_name(), row.number);
-    let listing = crate::pull_requests::listed_by(&ctx.db, repo, row.number()).await?;
+    // Only to sessions of workspaces connected to the account the review's
+    // workspace connected, by GitHub's id: not to one whose connection is
+    // to a login that has changed hands since.
+    let answered = answered_for(&ctx.db, row, repo).await?;
+    let listing = crate::pull_requests::listed_by(&ctx.db, repo, row.number(), answered).await?;
     let branches: Vec<Option<&str>> = listing.iter().map(|l| l.branch.as_deref()).collect();
     let Some(opener) = rv::opener(&branches, row.head_ref.as_deref()).and_then(|i| listing.get(i))
     else {
@@ -1282,6 +1301,29 @@ async fn pass_on(
         })),
     );
     Ok(Some(SessionId(id.to_owned())))
+}
+
+/// GitHub's ids of the account a review's pull request is in, as the
+/// review's workspace connected it, and of the installation the review
+/// went through; `None` for a connection from before ids were kept.
+async fn answered_for(
+    db: &D1Database,
+    row: &ReviewRow,
+    repo: &RepoRef,
+) -> AppResult<Option<(u64, u64)>> {
+    let Some(installation) = row.installation_id.and_then(|i| u64::try_from(i).ok()) else {
+        return Ok(None);
+    };
+    let Some(project) = crate::spec::project_row(db, &row.project_id).await? else {
+        return Ok(None);
+    };
+    let connections = crate::workspaces::connections(db, project.workspace_id()).await?;
+    Ok(connections
+        .iter()
+        .find(|c| c.account.eq_ignore_ascii_case(&repo.owner))
+        .and_then(|c| c.account_id)
+        .and_then(|a| u64::try_from(a).ok())
+        .map(|account| (account, installation)))
 }
 
 /// [`submit`]'s work on GitHub, with a token of the review's repository.
