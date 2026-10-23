@@ -139,20 +139,28 @@ export function StartChoices({
   choice,
   onPick,
   disabled,
+  className,
 }: {
   project: ChoiceProject;
   choice: Choice;
   onPick: (c: Partial<Choice>) => void;
   disabled?: boolean;
+  className?: string;
 }) {
   const github = onGithub(project);
   return (
-    <div className="flex min-w-0 items-center gap-2 max-sm:gap-0 sm:max-lg:order-first sm:max-lg:w-full">
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-2 max-sm:gap-0 sm:max-lg:order-first sm:max-lg:w-full",
+        className,
+      )}
+    >
       <Select
         size="sm"
         narrow="bare"
-        // On a phone a model named by its ID shows the start of it.
-        className={cn("max-sm:max-w-32 max-sm:rounded-r-none", joined)}
+        // On a phone a model named by its ID shows the start of it, so that the row keeps one line
+        // with the GitHub picker and the buttons beside it, down to 360 px.
+        className={cn("max-sm:max-w-24 max-sm:rounded-r-none", joined)}
         aria-label="Model"
         value={choice.model}
         disabled={disabled}

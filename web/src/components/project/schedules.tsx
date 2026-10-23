@@ -340,7 +340,8 @@ function Intro({ project, onStart }: { project: G.Project; onStart: (d: Draft) =
                 <span aria-hidden="true" className="mt-[3px] shrink-0 text-ink-3 [&_svg]:size-4">
                   {p.icon}
                 </span>
-                {p.text}
+                {/* One item of the row, however many parts its text has (code among them). */}
+                <span className="min-w-0">{p.text}</span>
               </li>
             ))}
           </ul>
@@ -618,128 +619,130 @@ function Item({
             </span>
           )}
         </button>
-        {s.owner && (
-          <span
-            className="relative mt-1 max-sm:hidden"
-            title={
-              s.cron || s.at !== undefined
-                ? `Runs on ${s.owner.name}'s Claude subscription`
-                : `Set up by ${s.owner.name}`
-            }
-          >
-            <Avatar user={s.owner} size={20} />
-          </span>
-        )}
-        {rights.run && s.enabled && (
-          <Button
-            size="sm"
-            variant="ghost"
-            icon={<Play className="size-3.5" />}
-            loading={run.isPending}
-            onClick={() => run.mutate()}
-            aria-label={`Run ${s.name} now, on your Claude subscription`}
-            title="Run now, on your Claude subscription"
-            className="relative max-sm:px-2 [&>span]:max-sm:sr-only"
-          >
-            <span>Run now</span>
-          </Button>
-        )}
-        {/* Paused, it starts nothing: what it needs is to be resumed. */}
-        {!s.enabled && rights.edit && (
-          <Button
-            size="sm"
-            variant="ghost"
-            icon={<Play className="size-3.5" />}
-            loading={update.isPending}
-            onClick={resume}
-            aria-label={mine ? `Resume ${s.name}` : `Resume ${s.name} on your Claude subscription`}
-            title={mine ? "Resume it" : "Resume it on your Claude subscription"}
-            className="relative max-sm:px-2 [&>span]:max-sm:sr-only"
-          >
-            <span>Resume</span>
-          </Button>
-        )}
-        {(rights.edit || rights.manage) && (
-          <Menu
-            className="relative"
-            trigger={(toggle, menuOpen) => (
-              <IconButton
-                label="Schedule actions"
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                onClick={toggle}
-                className="-my-0.5"
-              >
-                <Ellipsis className="size-4" />
-              </IconButton>
-            )}
-          >
-            {(close) => (
-              <>
-                {rights.edit && (
-                  <MenuItem
-                    icon={<Pencil />}
-                    onClick={() => {
-                      close();
-                      setEditing(true);
-                      if (!open) onToggle();
-                    }}
-                  >
-                    Edit
-                  </MenuItem>
-                )}
-                {s.enabled && rights.manage && (
-                  <MenuItem
-                    icon={<Pause />}
-                    onClick={() => {
-                      close();
-                      update.mutate({ enabled: false });
-                    }}
-                  >
-                    Pause
-                  </MenuItem>
-                )}
-                {!s.enabled && rights.edit && (
-                  <MenuItem
-                    icon={<Play />}
-                    onClick={() => {
-                      close();
-                      resume();
-                    }}
-                  >
-                    {mine ? "Resume" : "Resume on my subscription"}
-                  </MenuItem>
-                )}
-                {!mine && s.enabled && rights.edit && (
-                  <MenuItem
-                    icon={<UserRoundCheck />}
-                    onClick={() => {
-                      close();
-                      setDialog("take");
-                    }}
-                  >
-                    Run it on my subscription
-                  </MenuItem>
-                )}
-                {rights.manage && (
-                  <>
-                    <MenuSeparator />
+        {/* Its person, Run now and its menu: one group, each centered on the others, and the
+            group on the name's line. Over the row's button, which covers the row. */}
+        <div className="relative -mt-[5px] flex shrink-0 items-center gap-1.5">
+          {s.owner && (
+            <span
+              className="flex max-sm:hidden"
+              title={
+                s.cron || s.at !== undefined
+                  ? `Runs on ${s.owner.name}'s Claude subscription`
+                  : `Set up by ${s.owner.name}`
+              }
+            >
+              <Avatar user={s.owner} size={20} />
+            </span>
+          )}
+          {rights.run && s.enabled && (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Play className="size-3.5" />}
+              loading={run.isPending}
+              onClick={() => run.mutate()}
+              aria-label={`Run ${s.name} now, on your Claude subscription`}
+              title="Run now, on your Claude subscription"
+              className="max-sm:px-2 sm:min-w-24 [&>span]:max-sm:sr-only"
+            >
+              <span>Run now</span>
+            </Button>
+          )}
+          {/* Paused, it starts nothing: what it needs is to be resumed. */}
+          {!s.enabled && rights.edit && (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Play className="size-3.5" />}
+              loading={update.isPending}
+              onClick={resume}
+              aria-label={mine ? `Resume ${s.name}` : `Resume ${s.name} on your Claude subscription`}
+              title={mine ? "Resume it" : "Resume it on your Claude subscription"}
+              className="max-sm:px-2 sm:min-w-24 [&>span]:max-sm:sr-only"
+            >
+              <span>Resume</span>
+            </Button>
+          )}
+          {(rights.edit || rights.manage) && (
+            <Menu
+              trigger={(toggle, menuOpen) => (
+                <IconButton
+                  label="Schedule actions"
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  onClick={toggle}
+                >
+                  <Ellipsis className="size-4" />
+                </IconButton>
+              )}
+            >
+              {(close) => (
+                <>
+                  {rights.edit && (
                     <MenuItem
-                      danger
-                      icon={<Trash2 />}
+                      icon={<Pencil />}
                       onClick={() => {
                         close();
-                        setDialog("delete");
+                        setEditing(true);
+                        if (!open) onToggle();
                       }}
                     >
-                      Delete…
+                      Edit
                     </MenuItem>
-                  </>
-                )}
-              </>
-            )}
-          </Menu>
-        )}
+                  )}
+                  {s.enabled && rights.manage && (
+                    <MenuItem
+                      icon={<Pause />}
+                      onClick={() => {
+                        close();
+                        update.mutate({ enabled: false });
+                      }}
+                    >
+                      Pause
+                    </MenuItem>
+                  )}
+                  {!s.enabled && rights.edit && (
+                    <MenuItem
+                      icon={<Play />}
+                      onClick={() => {
+                        close();
+                        resume();
+                      }}
+                    >
+                      {mine ? "Resume" : "Resume on my subscription"}
+                    </MenuItem>
+                  )}
+                  {!mine && s.enabled && rights.edit && (
+                    <MenuItem
+                      icon={<UserRoundCheck />}
+                      onClick={() => {
+                        close();
+                        setDialog("take");
+                      }}
+                    >
+                      Run it on my subscription
+                    </MenuItem>
+                  )}
+                  {rights.manage && (
+                    <>
+                      <MenuSeparator />
+                      <MenuItem
+                        danger
+                        icon={<Trash2 />}
+                        onClick={() => {
+                          close();
+                          setDialog("delete");
+                        }}
+                      >
+                        Delete…
+                      </MenuItem>
+                    </>
+                  )}
+                </>
+              )}
+            </Menu>
+          )}
+        </div>
       </div>
       {open && (
         <div id={panel} className="animate-rise px-3 pt-1 pb-6 sm:pl-[57px]">

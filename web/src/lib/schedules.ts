@@ -348,7 +348,8 @@ const ALL_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].join();
  */
 export function describeCron(c: Cron, clock: ClockText = clock24): string {
   const fallback = `on the cron schedule ${c.text}`;
-  const everyDay = c.anyDay && c.anyWeekday && c.months.join() === ALL_MONTHS;
+  const days = dayRule(c);
+  const everyDay = days.kind === "every";
   const { minutes, hours } = c;
   if (everyDay && hours.length === 24 && minutes.length > 1) {
     const n = step(minutes, 60);
@@ -364,20 +365,46 @@ export function describeCron(c: Cron, clock: ClockText = clock24): string {
   if (hours.length === 24) return everyDay ? `every hour at :${String(minute).padStart(2, "0")}` : fallback;
   if (hours.length > 4) return fallback;
   const times = list(hours.map((h) => clock(h, minute)));
-  if (everyDay) return `every day at ${times}`;
-  if (c.months.join() !== ALL_MONTHS) return fallback;
-  if (c.anyDay && !c.anyWeekday) {
-    const w = c.weekdays.join();
+  if (days.kind === "every") return `every day at ${times}`;
+  if (days.kind === "weekdays") {
+    const w = days.days.join();
     if (w === "1,2,3,4,5") return `every weekday at ${times}`;
     if (w === "0,6") return `every Saturday and Sunday at ${times}`;
-    const names = [...c.weekdays]
+    const names = [...days.days]
       .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7))
       .map((d) => WEEKDAY_NAMES[d] ?? "");
     return `every ${list(names)} at ${times}`;
   }
-  if (!c.anyDay && c.anyWeekday && c.days.length <= 4)
-    return `on the ${list(c.days.map(ordinal))} of every month at ${times}`;
+  if (days.kind === "monthdays" && days.days.length <= 4)
+    return `on the ${list(days.days.map(ordinal))} of every month at ${times}`;
   return fallback;
+}
+
+/** The days a cron expression runs on, as far as words (and the form) go. */
+type DayRule =
+  | { kind: "every" }
+  /** These days of the week (0 is Sunday), whatever the day of the month. */
+  | { kind: "weekdays"; days: number[] }
+  /** These days of the month, whatever the day of the week. */
+  | { kind: "monthdays"; days: number[] }
+  | { kind: "other" };
+
+// By Vixie cron's rule: a field that starts with a star makes a day match both fields, and restricts
+// the days too unless it names all of them (a star with a step of 2 names every other one), as
+// fctl_domain::cron's `days` reads them.
+
+function dayRule(c: Cron): DayRule {
+  if (c.months.join() !== ALL_MONTHS) return { kind: "other" };
+  const allDays = c.days.length === 31;
+  const allWeekdays = c.weekdays.length === 7;
+  if (c.anyDay || c.anyWeekday) {
+    if (allDays && allWeekdays) return { kind: "every" };
+    if (allDays) return { kind: "weekdays", days: c.weekdays };
+    if (allWeekdays) return { kind: "monthdays", days: c.days };
+    return { kind: "other" };
+  }
+  // Either field will do, and one names every day.
+  return allDays || allWeekdays ? { kind: "every" } : { kind: "other" };
 }
 
 /** "Every weekday at 9:00 AM": `describeCron` at the start of a sentence. */
@@ -424,20 +451,20 @@ export function cronRepeat(text: string): Repeat | undefined {
   if ("error" in parsed) return undefined;
   const c = parsed.cron;
   const [minute] = c.minutes;
-  if (c.minutes.length !== 1 || minute === undefined || c.months.join() !== ALL_MONTHS) return undefined;
+  if (c.minutes.length !== 1 || minute === undefined) return undefined;
+  const days = dayRule(c);
   const base = { ...DEFAULT_REPEAT, minute };
-  if (c.hours.length === 24)
-    return c.anyDay && c.anyWeekday ? { ...base, every: "hour", hour: 9 } : undefined;
+  if (c.hours.length === 24) return days.kind === "every" ? { ...base, every: "hour", hour: 9 } : undefined;
   const [hour] = c.hours;
   if (c.hours.length !== 1 || hour === undefined) return undefined;
-  if (c.anyDay && c.anyWeekday) return { ...base, every: "day", hour };
-  if (c.anyDay && !c.anyWeekday) {
-    if (c.weekdays.join() === "1,2,3,4,5")
+  if (days.kind === "every") return { ...base, every: "day", hour };
+  if (days.kind === "weekdays") {
+    if (days.days.join() === "1,2,3,4,5")
       return { ...base, every: "weekday", hour, weekdays: [1, 2, 3, 4, 5] };
-    return { ...base, every: "week", hour, weekdays: c.weekdays };
+    return { ...base, every: "week", hour, weekdays: days.days };
   }
-  const [day] = c.days;
-  if (!c.anyDay && c.anyWeekday && c.days.length === 1 && day !== undefined)
+  const [day] = days.kind === "monthdays" ? days.days : [];
+  if (days.kind === "monthdays" && days.days.length === 1 && day !== undefined)
     return { ...base, every: "month", hour, day };
   return undefined;
 }

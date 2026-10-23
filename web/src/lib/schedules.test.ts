@@ -105,6 +105,16 @@ describe("cron expressions", () => {
       ["0 9 1-7 * 1", "on the cron schedule 0 9 1-7 * 1"],
       ["0 9 * 1 *", "on the cron schedule 0 9 * 1 *"],
       ["15 * * * 1", "on the cron schedule 15 * * * 1"],
+      // A star-led field with a step restricts the days.
+      ["0 9 */2 * *", "on the cron schedule 0 9 */2 * *"],
+      ["0 9 */2 * 1", "on the cron schedule 0 9 */2 * 1"],
+      ["0 9 1 * */2", "on the cron schedule 0 9 1 * */2"],
+      ["*/15 * */2 * *", "on the cron schedule */15 * */2 * *"],
+      ["0 9 */1 * 1", "every Monday at 09:00"],
+      ["0 9 1-31 * */2", "every Tuesday, Thursday, Saturday and Sunday at 09:00"],
+      // Neither starts with a star: either will do, and 0-6 is every day.
+      ["0 8 1 * 0-6", "every day at 08:00"],
+      ["0 8 1 * 1", "on the cron schedule 0 8 1 * 1"],
     ] as const) {
       expect(describeCron(cron(expr)), expr).toBe(says);
     }
@@ -191,7 +201,18 @@ describe("the form's choices", () => {
     expect(cronRepeat("0 9 * * mon-fri")?.every).toBe("weekday");
     expect(cronRepeat("@weekly")).toMatchObject({ every: "week", weekdays: [0], hour: 0, minute: 0 });
     // What the form can't say shows as cron.
-    for (const expr of ["*/15 * * * *", "0 9,17 * * *", "0 9 1-7 * 1", "0 9 * 1 *", "0 9 1 * 1", "nonsense"])
+    // Never these, which saving the form would rewrite.
+    for (const expr of [
+      "*/15 * * * *",
+      "0 9,17 * * *",
+      "0 9 1-7 * 1",
+      "0 9 * 1 *",
+      "0 9 1 * 1",
+      "0 9 */2 * *",
+      "0 9 */2 * 1",
+      "0 9 1 * */2",
+      "nonsense",
+    ])
       expect(cronRepeat(expr), expr).toBeUndefined();
   });
 });

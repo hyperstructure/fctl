@@ -13,11 +13,11 @@ nightly maintenance, planning, dashboards.
 A schedule is a task that fctl starts a session for on its own: once at a
 set time, or again and again, every hour, day, weekday, week or month, or
 on any cron expression, in a time zone you choose; or only when asked, by
-you or another tool ([below](#start-agents-from-other-tools)). Set one up under the
-project's **Schedules** tab, which offers ideas to start from (dependency
-updates, triaging new issues, tidying the project's memory, learning from
-the week's reviews), or with `fctl schedules add`; **Schedule** in the
-project's task box turns what you wrote there into one.
+you or another tool ([below](#start-agents-from-other-tools)). Set one up
+under the project's **Schedules** tab, which offers ideas to start from
+(dependency updates, triaging new issues, tidying the project's memory,
+learning from the week's reviews), or with `fctl schedules add`;
+**Schedule** in the project's task box turns what you wrote there into one.
 
 - **Each run is a session.** It is named after the schedule, works on a
   branch of its own and shows in the project's sessions with the
@@ -90,10 +90,10 @@ it after the task, marked as information for the task and not as
 instructions. Its token can't do more than run sessions in the projects
 it names, and its sessions' agents can't do more on GitHub than it allows.
 People and tools may run one schedule 20 times an hour, and pausing it
-stops them all. Tools that send
-webhooks without a way to add a header, as some issue trackers do, need a
-small relay (a serverless function, or a no-code tool such as Zapier, Make
-or n8n) that adds it and picks out the fields to send.
+stops them all. Tools that send webhooks without a way to add a header, as
+some issue trackers do, need a small relay (a serverless function, or a
+no-code tool such as Zapier, Make or n8n) that adds it and picks out the
+fields to send.
 
 ## Access tokens
 

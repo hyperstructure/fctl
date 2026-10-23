@@ -291,11 +291,23 @@ function Sessions({ project }: { project: G.Project }) {
               placeholder={`What should an agent do in ${project.name}?`}
               className="block px-5 pt-4 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
             />
-            {/* More room above the pickers where they take a line of their own. */}
-            <TextareaControls textarea={ref} className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 sm:max-lg:pt-3">
+            {/* More room above the pickers where they take a line of their own. On a phone everything
+                keeps one line, down to 360 px with a model named by its ID and the GitHub picker: the
+                gaps are narrower there, and the pickers go to the end without the spacer and its
+                gaps. */}
+            <TextareaControls
+              textarea={ref}
+              className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 max-sm:gap-2 sm:max-lg:pt-3"
+            >
               <AttachButton onFiles={(f) => attach(f)} />
-              <span className="flex-1" />
-              <StartChoices project={project} choice={choice} onPick={pick} disabled={starting} />
+              <span className="flex-1 max-sm:hidden" />
+              <StartChoices
+                project={project}
+                choice={choice}
+                onPick={pick}
+                disabled={starting}
+                className="max-sm:ml-auto"
+              />
               {/* Set apart from the pickers, as on the home page. On a phone its room goes to the
                   button. */}
               <span className="ml-4 text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
@@ -321,13 +333,12 @@ function Sessions({ project }: { project: G.Project }) {
                     search: { tab: "schedules" },
                   });
                 }}
-                // On a phone it goes with the button, to the end of their line, as its symbol.
-                className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink disabled:text-ink-4 disabled:hover:bg-transparent max-sm:ml-auto max-sm:px-2.5"
+                // On a phone it is its symbol alone.
+                className="flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink disabled:text-ink-4 disabled:hover:bg-transparent max-sm:px-2"
               >
                 <CalendarClock className="size-4" aria-hidden="true" />
                 <span className="max-sm:sr-only">Schedule</span>
               </button>
-              {/* On a phone it can take a line of its own, at its end, with the one before it. */}
               <StartButton starting={starting} disabled={!prompt.trim() && !files.drafts.length}>
                 Start a session
               </StartButton>
