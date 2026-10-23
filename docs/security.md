@@ -287,6 +287,15 @@ outside it except through these channels:
   the workspace's audit log records. Turn it off (`fctl projects set
   --project-memory off`) in projects whose agents read text from people
   you don't trust.
+- **Schedules** start sessions that nobody watches start, on their
+  owner's subscription: whoever may set one up may start sessions anyway,
+  and a change by anyone else runs it on theirs. Runs that other tools ask
+  for carry the tool's text (`context`), which anyone may have written,
+  such as an issue's author: the agent gets it after the task, marked as
+  information and not instructions, which makes it harder, not impossible,
+  for that text to steer it. Give such a schedule the least GitHub access
+  its task needs and a token that runs sessions in its project alone, and
+  pause it to stop what tools start at once.
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 - **The image and the setup script.** Whoever sets a project's image or
