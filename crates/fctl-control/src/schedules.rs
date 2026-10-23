@@ -619,27 +619,77 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
         return Ok(false);
     };
     let next = when.next(&*zone, now, true);
-    let claimed = q(
+    let took = q(
         db,
         "UPDATE schedules SET next_run_at = ?, last_run_at = ? WHERE id = ? AND enabled = 1 AND next_run_at = ?",
         &[on(next), n(now), s(&row.id), n(due)],
     )?
     .run()
     .await?;
-    if claimed == 0 {
+    if took == 0 {
         return Ok(false);
     }
     let Some(project) = crate::spec::project_row(db, &row.project_id).await? else {
         return Ok(false);
     };
-    let skip = |reason: String| Outcome::Skipped(reason);
-    let outcome = 'run: {
+    // Once claimed, the run is recorded whatever happens: a schedule that
+    // runs once has no other time.
+    let claimed = Claimed {
+        row,
+        project: &project,
+        when: &when,
+        zone: &*zone,
+        next,
+        now,
+    };
+    let outcome = match run(env, db, claimed).await {
+        Ok(Some(outcome)) => outcome,
+        Ok(None) => return Ok(true),
+        Err(e) => Outcome::Failed(e.0.message),
+    };
+    outcome
+        .record(
+            db,
+            row,
+            due,
+            now,
+            ScheduleTrigger::Time,
+            row.owner_id.as_deref(),
+        )
+        .await?;
+    Ok(true)
+}
+
+/// A run a schedule's time came for, which moved the schedule to `next`.
+struct Claimed<'a> {
+    row: &'a ScheduleRow,
+    project: &'a ProjectRow,
+    when: &'a When,
+    zone: &'a dyn Zone,
+    next: Option<i64>,
+    now: i64,
+}
+
+/// A claimed run: the session it starts, or why it starts none; `None` for
+/// a schedule that runs once and waits for its owner's plan to reset, which
+/// records no run.
+async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Outcome>> {
+    let Claimed {
+        row,
+        project,
+        when,
+        zone,
+        next,
+        now,
+    } = c;
+    let skip = |reason: String| Some(Outcome::Skipped(reason));
+    Ok('run: {
         if project.archived_at.is_some() {
             let why = "Its project is archived.".to_owned();
             pause(db, &row.id, &why, now).await?;
             break 'run skip(why);
         }
-        let owner = match owner(db, &project, row).await? {
+        let owner = match owner(db, project, row).await? {
             Ok(o) => o,
             Err(why) => {
                 pause(db, &row.id, &why, now).await?;
@@ -660,7 +710,7 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
                     )?
                     .run()
                     .await?;
-                    return Ok(true);
+                    return Ok(None);
                 }
                 // Again and again: the runs until it resets are skipped.
                 When::Cron(c) => {
@@ -668,14 +718,14 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
                         q(
                             db,
                             "UPDATE schedules SET next_run_at = ? WHERE id = ? AND enabled = 1 AND next_run_at IS ?",
-                            &[on(c.next_after(&*zone, resets)), s(&row.id), on(next)],
+                            &[on(c.next_after(zone, resets)), s(&row.id), on(next)],
                         )?
                         .run()
                         .await?;
                     }
                     break 'run skip(format!(
                         "{} Its runs until then are skipped.",
-                        sch::limit_reason(&owner.user.name, limit, &*zone, false)
+                        sch::limit_reason(&owner.user.name, limit, zone, false)
                     ));
                 }
             }
@@ -688,7 +738,7 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
             ));
         }
         let github = fctl_domain::limits::effective(row.github(), project.settings().github_access);
-        let previous_at = previous.as_ref().map(|p| sch::stamp(&*zone, p.at));
+        let previous_at = previous.as_ref().map(|p| sch::stamp(zone, p.at));
         let text = sch::prompt(
             &row.prompt,
             &RunNote {
@@ -697,7 +747,7 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
                 timezone: &row.timezone,
                 owner: &owner.user.name,
                 by: StartedBy::Time,
-                now: &sch::stamp(&*zone, now),
+                now: &sch::stamp(zone, now),
                 previous: previous
                     .as_ref()
                     .zip(previous_at.as_deref())
@@ -709,7 +759,7 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
             env,
             db,
             Start {
-                project: &project,
+                project,
                 schedule: row,
                 user: &owner.user,
                 credential: &owner.credential,
@@ -739,22 +789,11 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
                     now,
                 )
                 .await;
-                Outcome::Started(session)
+                Some(Outcome::Started(session))
             }
-            Err(e) => Outcome::Failed(e.0.message),
+            Err(e) => Some(Outcome::Failed(e.0.message)),
         }
-    };
-    outcome
-        .record(
-            db,
-            row,
-            due,
-            now,
-            ScheduleTrigger::Time,
-            row.owner_id.as_deref(),
-        )
-        .await?;
-    Ok(true)
+    })
 }
 
 /// What came of a run.
