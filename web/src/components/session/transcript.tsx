@@ -50,6 +50,7 @@ import { callsIn, lastRun, parts } from "@/lib/runs";
 import { type Stall, stallText } from "@/lib/stall";
 import type { Item, LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
+import { FollowUpMessage } from "./follow-up";
 import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { thinkingNow } from "./thinking";
 import { Run, ToolRow, WorkDir } from "./tool";
@@ -63,6 +64,7 @@ const UserMessage = memo(function UserMessage({
 }) {
   const author = item.author;
   const files = item.attachments ?? [];
+  if (item.followUp) return <FollowUpMessage followUp={item.followUp} text={item.text} ts={item.ts} />;
   return (
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
       <div className="mb-1.5 flex items-center gap-2.5 text-[12.5px]">

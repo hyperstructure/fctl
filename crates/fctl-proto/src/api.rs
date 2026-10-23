@@ -47,6 +47,7 @@ pub struct Features {
     /// ([`crate::session::FollowUps`]). Absent from control planes before
     /// it.
     #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub github_webhook: bool,
     /// Admins let projects publish screenshots ([`InstanceSettings`]).
     #[serde(default)]

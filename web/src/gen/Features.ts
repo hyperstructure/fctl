@@ -20,7 +20,7 @@ github: boolean,
  * ([`crate::session::FollowUps`]). Absent from control planes before
  * it.
  */
-github_webhook: boolean, 
+github_webhook?: boolean, 
 /**
  * Admins let projects publish screenshots ([`InstanceSettings`]).
  */

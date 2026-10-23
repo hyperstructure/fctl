@@ -595,6 +595,7 @@ pub struct ProjectSettings {
     /// comments that mention it, failed checks, a merge. All off by
     /// default. An update that leaves it, or one of its fields, out keeps
     /// what was stored. Control planes from before it leave it out.
+    #[cfg_attr(feature = "ts", ts(as = "Option<FollowUps>", optional))]
     pub follow_ups: FollowUps,
     /// Non-secret environment variables for sandboxes.
     pub env: std::collections::BTreeMap<String, String>,

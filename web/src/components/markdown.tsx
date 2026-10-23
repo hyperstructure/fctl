@@ -26,6 +26,22 @@ function Picture({ src, alt }: { src: string; alt: string }) {
   return <img src={src} alt={alt} {...room} decoding="async" className="max-w-full rounded-md" />;
 }
 
+/**
+ * Whether images show as pictures. Text from elsewhere (GitHub's comments) shows them as links:
+ * the app loads pictures only from where it trusts, and one from anywhere else could tell who
+ * reads the page.
+ */
+export const Pictures = createContext(true);
+
+/** An image as a link to it, where pictures don't show. */
+function ImageLink({ src, alt }: { src: string; alt: string }) {
+  return (
+    <a href={src} target="_blank" rel="noreferrer noopener">
+      {alt || "Image"}
+    </a>
+  );
+}
+
 /** An image in the agent's answer, which a click shows at full size. */
 function ZoomImage({ src, alt }: { src: string; alt: string }) {
   const { ref, open, lightbox } = useLightbox<HTMLButtonElement>({ file: { name: alt || "Image" }, src });
@@ -43,6 +59,13 @@ function ZoomImage({ src, alt }: { src: string; alt: string }) {
       {lightbox}
     </>
   );
+}
+
+/** An image: a picture, which a click shows at full size unless it is in a link, or a link to it. */
+function Image({ src, alt, linked }: { src: string; alt: string; linked: boolean }) {
+  if (!useContext(Pictures))
+    return linked ? <span>{alt || "Image"}</span> : <ImageLink src={src} alt={alt} />;
+  return linked ? <Picture src={src} alt={alt} /> : <ZoomImage src={src} alt={alt} />;
 }
 
 /** `linked`: inside a link, which a click follows. */
@@ -80,11 +103,7 @@ function inline(tokens: Token[] | undefined, key = "i", linked = false): ReactNo
       case "image": {
         const im = t as Tokens.Image;
         if (!/^https:/i.test(im.href)) return <span key={k}>{im.text}</span>;
-        return linked ? (
-          <Picture key={k} src={im.href} alt={im.text} />
-        ) : (
-          <ZoomImage key={k} src={im.href} alt={im.text} />
-        );
+        return <Image key={k} src={im.href} alt={im.text} linked={linked} />;
       }
       case "text": {
         const tx = t as Tokens.Text;

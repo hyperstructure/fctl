@@ -116,7 +116,7 @@ github_access?: GithubAccess,
  * default. An update that leaves it, or one of its fields, out keeps
  * what was stored. Control planes from before it leave it out.
  */
-follow_ups: FollowUps, 
+follow_ups?: FollowUps, 
 /**
  * Non-secret environment variables for sandboxes.
  */

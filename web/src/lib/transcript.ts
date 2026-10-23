@@ -36,6 +36,8 @@ export type Item =
       /** Local previews of a message not stored yet, by attachment id. */
       previews?: Record<string, string>;
       pending?: boolean;
+      /** For a message from fctl about a pull request the agent opened: what happened there. */
+      followUp?: G.FollowUp;
     })
   | (Base & { kind: "prose"; text: string })
   | (Base & { kind: "thinking"; text: string })
@@ -270,6 +272,7 @@ export class TranscriptBuilder {
           text: ev.data.text,
           source: ev.data.source,
           attachments: ev.data.attachments,
+          followUp: ev.data.follow_up,
         });
         return;
       case "status": {
