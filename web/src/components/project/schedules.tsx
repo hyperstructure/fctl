@@ -600,14 +600,15 @@ function Item({
           onClick={onToggle}
           className="min-w-0 flex-1 text-left outline-none after:absolute after:inset-0 after:rounded focus-visible:after:outline-2 focus-visible:after:outline-offset-[-2px] focus-visible:after:outline-accent"
         >
-          <span className="flex items-center gap-2">
+          <span className="flex items-start gap-2">
             {/* On a phone a long name wraps: beside the buttons, little of it would show. */}
             <span className="min-w-0 text-[14.5px] text-ink [overflow-wrap:anywhere] sm:truncate">
               {s.name}
             </span>
+            {/* On the name's first line, where it wraps. */}
             <ChevronDown
               className={cn(
-                "size-3.5 shrink-0 text-ink-4 transition-transform duration-200",
+                "mt-1 size-3.5 shrink-0 text-ink-4 transition-transform duration-200",
                 open && "rotate-180",
               )}
             />
