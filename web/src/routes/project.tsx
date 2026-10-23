@@ -685,6 +685,27 @@ const EFFORT_LEVELS: SelectOption[] = [
   ...EFFORTS.map((e) => ({ ...e, icon: <EffortIcon level={e.value} /> })),
 ];
 
+/** How much agents write in the descriptions of their pull requests; balanced unless chosen. */
+const DESCRIPTIONS: SelectOption<G.Verbosity>[] = [
+  {
+    value: "brief",
+    label: "Brief",
+    description: "A few sentences: what changed and why, and how it was verified.",
+  },
+  {
+    value: "balanced",
+    label: "Balanced",
+    description:
+      "A short summary of what changed and why, and the decisions and assumptions worth confirming.",
+  },
+  {
+    value: "full",
+    label: "Full",
+    description:
+      "Everything: how it works, the choices made and the alternatives, how it was verified in detail.",
+  },
+];
+
 /** What brings agents back to their pull requests where a project says nothing of it. */
 const NO_FOLLOW_UPS: G.FollowUps = { comments: false, checks: false, closed: false, conflicts: false };
 
@@ -879,6 +900,20 @@ function Settings({ project }: { project: G.Project }) {
               label="Open pull requests"
             />
           </div>
+          <Field
+            label="Pull request descriptions"
+            hint="How much agents write when they open a pull request. They keep the description up to date as they commit more."
+          >
+            {(id) => (
+              <Select
+                id={id}
+                value={s.pull_request_descriptions ?? "balanced"}
+                onChange={(v) => set("pull_request_descriptions", v)}
+                options={DESCRIPTIONS}
+                className="w-full"
+              />
+            )}
+          </Field>
           <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
             <span>
               Remote Control

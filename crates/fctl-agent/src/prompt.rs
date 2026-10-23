@@ -7,7 +7,7 @@ use crate::workspace::Paths;
 use fctl_domain::{files, memory, size};
 use fctl_proto::event::Attachment;
 use fctl_proto::runner::{MemorySpec, ReviewSpec, SandboxSize, SessionRepo, SessionSpec};
-use fctl_proto::session::{GithubAccess, RepoAccess};
+use fctl_proto::session::{GithubAccess, RepoAccess, Verbosity};
 use std::path::PathBuf;
 
 /// What `~/AGENTS.md` says besides how to name the session: what the
@@ -382,26 +382,25 @@ pub fn system_prompt(
     if github.pushes() {
         s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn, until its pull request is merged; never force-push and never rewrite published history.\n");
     }
-    if github.pushes() && (spec.project.repo.is_some() || writable) {
+    // Agents that push open pull requests when the task is done or when
+    // someone asks for one, and describe them as their project chose.
+    let opens_pull_requests = github.pushes() && (spec.project.repo.is_some() || writable);
+    if opens_pull_requests {
         s.push_str("- For another pull request, make its branch where the repository is checked out, with `git switch -c <branch> origin/<base>`, not in a worktree or another clone: the session shows the changes of the branch checked out there.\n");
     }
     if spec.project.settings.auto_pull_request && github.pushes() {
-        let describe = format!(
-            "Describe what changed and why, how you verified it, and link the session: {}",
-            spec.web_url
-        );
         match (spec.project.repo.is_some(), writable) {
             (true, false) => s.push_str(&format!(
-                "- When the task is complete, open a pull request against `{}` with `gh pr create` (gh is signed in). {describe}\n",
+                "- When the task is complete, open a pull request against `{}` with `gh pr create` (gh is signed in), and describe it as below.\n",
                 spec.base_branch
             )),
             (true, true) => s.push_str(&format!(
-                "- When the task is complete, open a pull request against `{}` with `gh pr create` (gh is signed in), and one in each other repository you changed, against its default branch; link them to each other. {describe}\n",
+                "- When the task is complete, open a pull request against `{}` with `gh pr create` (gh is signed in), and one in each other repository you changed, against its default branch; link them to each other, and describe each as below.\n",
                 spec.base_branch
             )),
-            (false, true) => s.push_str(&format!(
-                "- When the task is complete, open a pull request in each repository you changed, against its default branch, with `gh pr create` (gh is signed in); link them to each other. {describe}\n"
-            )),
+            (false, true) => s.push_str(
+                "- When the task is complete, open a pull request in each repository you changed, against its default branch, with `gh pr create` (gh is signed in); link them to each other, and describe each as below.\n"
+            ),
             (false, false) => {}
         }
     }
@@ -414,6 +413,12 @@ pub fn system_prompt(
         tasks::duration(idle),
         tasks::duration(tasks::limit(idle))
     ));
+    if opens_pull_requests {
+        s.push_str(&pull_request_descriptions(
+            spec.project.settings.pull_request_descriptions,
+            &spec.web_url,
+        ));
+    }
     if let Some(extra) = spec
         .project
         .settings
@@ -421,12 +426,70 @@ pub fn system_prompt(
         .as_deref()
         .filter(|t| !t.trim().is_empty())
     {
-        s.push_str("\nProject instructions:\n");
+        s.push_str("\n## The project's instructions\n\n");
         s.push_str(extra.trim());
         s.push('\n');
     }
     s
 }
+
+/// How an agent that may push describes the pull requests it opens: as much
+/// as its project chose (`level`), and what goes for every description,
+/// from how GitHub shows Markdown to keeping it up to date.
+fn pull_request_descriptions(level: Verbosity, session_url: &str) -> String {
+    let mut s = String::from(DESCRIPTIONS_MD);
+    s.push_str(match level {
+        Verbosity::Brief => BRIEF_DESCRIPTIONS_MD,
+        Verbosity::Balanced => BALANCED_DESCRIPTIONS_MD,
+        Verbosity::Full => FULL_DESCRIPTIONS_MD,
+    });
+    s.push_str(&EVERY_DESCRIPTION_MD.replace("{session}", session_url));
+    s
+}
+
+const DESCRIPTIONS_MD: &str = r#"
+## Pull request descriptions
+
+Describe the pull requests you open as follows, rather than in a format you would use by default.
+"#;
+
+const BRIEF_DESCRIPTIONS_MD: &str = r#"
+Keep descriptions brief, for a reviewer who reads the diff anyway: a few sentences, without headings, on what changed and why, and how you verified it. Add a sentence only for what the reviewer must know before merging: a breaking change, a migration, a configuration or deploy step, or a choice about behavior that you made and the task didn't settle. Leave out everything else, such as a restatement of the task, your process, lists of files or changes, test plans and sections of any kind.
+"#;
+
+const BALANCED_DESCRIPTIONS_MD: &str = r#"
+Write for the person who reviews a pull request and wants to understand the change quickly. Be informative but concise: they should get what changed and why in under a minute. Use this outline:
+
+```markdown
+## Summary
+
+What changed and why, in one or two short paragraphs.
+
+## Worth confirming
+
+- **Decision:** …
+- **Assumption:** …
+```
+
+- **Summary:** one or two short paragraphs, and a short bullet list only when the change has several distinct parts. Describe behavior and intent, not a file-by-file changelog, and leave out what the diff makes obvious. Say in a sentence how you verified the change, and give a sentence each to anything else a reviewer must know: breaking changes, migrations, configuration or deploy steps, follow-up work.
+- **Other sections**, between the two, only for important information a reviewer must have that doesn't fit in the summary.
+- **Worth confirming:** only when there is at least one item; otherwise leave out the heading too. List only what matters for functionality or product design and that the task, or what people told you, didn't settle, never implementation details such as where code lives, which helper you used or how the tests are structured. A decision is a product or behavior choice you made that the reviewer wouldn't otherwise know about; an assumption is an unverified belief about intended behavior that would change the work if it turned out wrong.
+- Leave out a restatement of the task, the story of your process or tool calls, filler sections ("Overview", "Changes", "Files changed", "Impact", "Test plan", "Conclusion"), long tables, emoji in headings, marketing tone, and empty or "N/A" sections.
+"#;
+
+const FULL_DESCRIPTIONS_MD: &str = r#"
+Be thorough, for a reviewer who wants the whole picture: what was wrong or missing, what changed and why this way, how it works where the diff doesn't make that plain, the choices you made and the alternatives you set aside, what you assumed, how you verified it (the tests and commands you ran, what you checked by hand, what you couldn't check), and what is left for later. Use headings, lists, tables and code blocks where they make it easier to follow, and leave out filler: a restatement of the task, the story of your tool calls, empty sections.
+"#;
+
+const EVERY_DESCRIPTION_MD: &str = r#"
+For every pull request you open:
+
+- Write each paragraph and each list item on a single line, however long. GitHub shows a line break inside a paragraph as a break, so text wrapped at 80 columns, or any width, reads broken mid-sentence. Break lines only between paragraphs, list items, headings, code blocks and tables.
+- Put commands and code in fenced code blocks. Give links readable text, such as a title or a name, rather than a bare URL or an ID. To list related pull requests, though, put each one's URL alone on a line that starts with `- `, like `- https://github.com/acme/web/pull/123`: GitHub shows it with its title and state.
+- If the repository has a pull request template (such as `.github/pull_request_template.md`), fill it in, at this level of detail.
+- End the description with a link to this session: `[fctl session]({session})`.
+- Keep the description up to date: when later commits change what the pull request does, how you verified it or what is worth confirming, rewrite the description to match. `gh pr view N --json body --jq .body` prints it, and `gh pr edit N --body-file FILE` replaces it. Describe the pull request as it now stands, rather than adding notes on what changed since.
+"#;
 
 /// `~/AGENTS.md` for a review agent: fctl names its session, and its
 /// review goes through `fctl review`.
@@ -889,7 +952,7 @@ mod tests {
         );
         assert!(text.contains("The repository acme/app is cloned at /home/agent/workspace"));
         assert!(text.contains(
-            "open a pull request against `main` with `gh pr create` (gh is signed in). Describe"
+            "open a pull request against `main` with `gh pr create` (gh is signed in), and describe it as below.\n"
         ));
         assert!(!text.contains("/home/agent/repos"));
         assert!(!text.contains("GH_TOKEN"));
@@ -921,7 +984,7 @@ mod tests {
         assert!(text.contains("  - acme/gone: not available in this session"));
         assert!(text.contains("work on a branch named `fctl/12-test` too"));
         assert!(text.contains("GH_TOKEN=\"$(cat /home/agent/.fctl/state/github-token-read)\" gh"));
-        assert!(text.contains("and one in each other repository you changed, against its default branch; link them to each other."));
+        assert!(text.contains("and one in each other repository you changed, against its default branch; link them to each other, and describe each as below.\n"));
     }
 
     #[test]
@@ -940,7 +1003,7 @@ mod tests {
         );
         assert!(!text.contains("work on a branch named"));
         assert!(text.contains(
-            "open a pull request against `main` with `gh pr create` (gh is signed in). Describe"
+            "open a pull request against `main` with `gh pr create` (gh is signed in), and describe it as below.\n"
         ));
     }
 
@@ -993,7 +1056,86 @@ mod tests {
         assert!(!text.contains("Commit as you go"));
         assert!(!text.contains("gh pr create"));
         assert!(!text.contains("For another pull request"));
+        assert!(!text.contains("## Pull request descriptions"));
         assert!(github_line(GithubAccess::Comment).is_some_and(|l| l.contains("can't push")));
+    }
+
+    fn describing(level: Verbosity) -> String {
+        let mut spec = spec_with(serde_json::Value::Null);
+        spec.project.settings.pull_request_descriptions = level;
+        spec.project.settings.instructions = Some("Run `npm test` before you commit.".into());
+        system_prompt(&spec, "/home/agent/workspace", &paths(), None, None)
+    }
+
+    #[test]
+    fn describes_pull_requests_as_the_project_chose() {
+        let every = [
+            "\n## Pull request descriptions\n\nDescribe the pull requests you open as follows, rather than in a format you would use by default.\n",
+            "- Write each paragraph and each list item on a single line, however long.",
+            "put each one's URL alone on a line that starts with `- `",
+            "If the repository has a pull request template",
+            "- End the description with a link to this session: `[fctl session](https://fctl.test/s/ses_test)`.\n",
+            "- Keep the description up to date: when later commits change what the pull request does, how you verified it or what is worth confirming, rewrite the description to match.",
+            "`gh pr edit N --body-file FILE` replaces it",
+        ];
+        let balanced = describing(Verbosity::Balanced);
+        assert_eq!(describing(Verbosity::default()), balanced);
+        for text in every {
+            assert!(balanced.contains(text), "{text}");
+        }
+        assert!(balanced.contains("they should get what changed and why in under a minute"));
+        assert!(balanced.contains(
+            "```markdown\n## Summary\n\nWhat changed and why, in one or two short paragraphs.\n\n## Worth confirming\n\n- **Decision:** …\n- **Assumption:** …\n```\n"
+        ));
+        assert!(balanced.contains("- **Worth confirming:** only when there is at least one item; otherwise leave out the heading too."));
+        assert!(balanced.contains("\"Test plan\""));
+        assert!(!balanced.contains("Keep descriptions brief"));
+        assert!(!balanced.contains("Be thorough"));
+
+        let brief = describing(Verbosity::Brief);
+        assert!(brief.contains("Keep descriptions brief, for a reviewer who reads the diff anyway: a few sentences, without headings, on what changed and why, and how you verified it."));
+        assert!(!brief.contains("## Summary"));
+        let full = describing(Verbosity::Full);
+        assert!(full.contains(
+            "Be thorough, for a reviewer who wants the whole picture: what was wrong or missing,"
+        ));
+        assert!(!full.contains("## Summary"));
+        for text in [&brief, &full] {
+            for every in every {
+                assert!(text.contains(every), "{every}");
+            }
+        }
+        // After the rest of what fctl says, and before the project's own words.
+        for text in [&balanced, &brief, &full] {
+            let section = text.find("## Pull request descriptions");
+            assert!(text.find("- When your turn ends") < section);
+            assert!(
+                section
+                    < text.find(
+                        "\n## The project's instructions\n\nRun `npm test` before you commit.\n"
+                    )
+            );
+        }
+    }
+
+    #[test]
+    fn agents_that_open_no_pull_requests_hear_nothing_of_descriptions() {
+        // People can still ask for one where the project doesn't.
+        let mut asked = spec_with(serde_json::Value::Null);
+        asked.project.settings.auto_pull_request = false;
+        let text = system_prompt(&asked, "/home/agent/workspace", &paths(), None, None);
+        assert!(!text.contains("When the task is complete"));
+        assert!(text.contains("## Pull request descriptions"));
+        // Without a repository to push to, or the right to push, there are none.
+        for none in [
+            spec(),
+            with_access(GithubAccess::Comment),
+            with_access(GithubAccess::Read),
+        ] {
+            let text = system_prompt(&none, "/work", &paths(), None, None);
+            assert!(!text.contains("Pull request descriptions"));
+            assert!(!text.contains("[fctl session]"));
+        }
     }
 
     #[test]

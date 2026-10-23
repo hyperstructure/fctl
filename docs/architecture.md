@@ -1438,6 +1438,39 @@ in `~/AGENTS.md`, which Claude's user memory (`~/.claude/CLAUDE.md`)
 imports so it loads in every repository
 ([ADR 0007](adr/0007-agents-name-their-sessions-through-fctl-agent.md)).
 
+### Pull request descriptions
+
+A project's settings say how much its agents write in the descriptions of
+the pull requests they open (`pull_request_descriptions`; Settings →
+Agents, `fctl projects set --pr-descriptions`):
+
+- **Balanced**, the default: a summary of what changed and why in one or
+  two short paragraphs, with how it was verified and anything a reviewer
+  must know (breaking changes, migrations, deploy steps, follow-up work) in
+  a sentence each, then a "Worth confirming" section, when there is
+  anything to confirm, with the decisions about behavior and the
+  assumptions that the task didn't settle.
+- **Brief**: a few sentences without headings, and a sentence for anything
+  a reviewer must know before merging.
+- **Full**: the whole story, as agents told it before the setting: how it
+  works, the choices and the alternatives, how it was verified in detail.
+
+fctl-agent gives Claude the level's guidance in a section of its system
+prompt, after the rest of what fctl says and before the project's
+instructions, in sessions whose agents may push: whether or not the
+project asks them to open a pull request when they finish, since people
+ask for them too. The section takes the place of Claude Code's own format
+for pull requests, and says what goes at every level: each paragraph and
+list item on one line, since GitHub shows a line break inside a paragraph;
+readable link text, and related pull requests as their URLs alone in list
+items, which GitHub shows with their titles and states; the repository's
+pull request template where it has one; and a link to the session at the
+end. When later commits change what a pull request does, how it was
+verified or what is worth confirming, the agent rewrites its description
+(`gh pr edit --body-file`), so that it describes the pull request as it
+stands. Agents from before the setting describe pull requests as before
+([ADR 0049](adr/0049-agents-write-balanced-pull-request-descriptions.md)).
+
 ### Model and effort
 
 A project's settings name the model its sessions run on (Claude's
