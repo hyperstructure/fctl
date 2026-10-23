@@ -209,12 +209,12 @@ fn seen_in(pr: &Value, action: &str) -> Option<PullRequestRef> {
 pub const MAX_LOOKUP: usize = 50;
 
 /// How many pull requests to ask about at once after GitHub gave up on a
-/// lookup of `n`: 10, as a webhook delivery's lookups do, then one at a
-/// time; none after one alone. GitHub gives up on a query that takes more
-/// than ten seconds, and the more checks a pull request's head commit has,
-/// the longer it takes: of vercel/next.js's, with 100 to 240 checks each,
-/// it answered one alone in 1.4 seconds, 10 in 4 to 7 and 25 in 10.7, and
-/// gave up on 50.
+/// lookup of `n`: 10, the most a webhook delivery's lookup asks about, then
+/// one at a time; none after one alone. GitHub gives up on a query that
+/// takes more than ten seconds, and the more checks a pull request's head
+/// commit has, the longer it takes: of vercel/next.js's, most with 100 to
+/// 240 checks, it answered one alone in 1.4 seconds, 10 in 4 to 7 and 25
+/// in 10.7, and gave up on 50.
 pub fn fewer(n: usize) -> Option<usize> {
     [10, 1].into_iter().find(|&fewer| fewer < n)
 }

@@ -761,9 +761,9 @@ impl<'a> Github<'a> {
     /// Looks pull requests up, one to `fctl_domain::webhooks::MAX_LOOKUP`
     /// of one account, with one query (`fctl_domain::webhooks::query`)
     /// through installation `inst`, or else the one on that account, and
-    /// returns GitHub's answer, or `None` when GitHub gave up on it: it
-    /// answers 502 or 504 to a query that takes more than ten seconds, which
-    /// one about fewer pull requests may not (`fctl_domain::webhooks::fewer`).
+    /// returns GitHub's answer, or `None` when GitHub gave up on it, as it
+    /// does on a query that takes more than ten seconds (502 or 504): asking
+    /// about fewer at once may get an answer (`fctl_domain::webhooks::fewer`).
     /// Fails when GitHub gives no answer otherwise: it refused or failed, or
     /// the installation's rate limit ran out.
     pub async fn pull_requests(

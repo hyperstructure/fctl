@@ -11,7 +11,7 @@ answer. GitHub gives up on a query that takes more than ten seconds and
 answers 502 or 504. The more checks the pull requests' head commits have,
 the longer it takes. This repository's pull requests have about 10 checks
 each, and GitHub answers a query of 50 of them in two to three seconds.
-vercel/next.js's have 100 to 240 each
+Most of vercel/next.js's have 100 to 240
 ([#219](https://github.com/hyperstructure/fctl/issues/219)). Measured from
 an fctl session on 2026-10-23, GitHub answered a query of one of them in
 1.4 seconds, 5 in 2.3, 10 in 4.2 to 7.2 and 25 in 10.7, and gave up on 50
