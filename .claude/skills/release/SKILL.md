@@ -103,8 +103,10 @@ a session before it publishes.
   `fctl X.Y.Z` (`gh pr list -R hyperstructure/homebrew-tap`). Select
   **Approve workflows to run** on it to start its checks; once a code owner
   merges it, `brew upgrade fctl` installs the release.
-- Hosts update with `fctl self update` (it restarts the host service;
-  running sessions keep going).
+- Hosts update themselves within minutes of the archives' publication,
+  unless their `host.toml` turns that off: those, and Homebrew's, update
+  with `fctl self update` (or `brew upgrade fctl`); either restarts the
+  host service, and running sessions keep going.
 
 ## When something fails
 

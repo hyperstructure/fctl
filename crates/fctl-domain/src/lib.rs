@@ -44,6 +44,7 @@ pub mod tickets;
 pub mod tokens;
 pub mod totp;
 pub mod two_factor;
+pub mod updates;
 pub mod usage;
 pub mod validate;
 pub mod verify;

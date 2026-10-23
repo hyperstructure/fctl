@@ -938,6 +938,7 @@ impl RunnerRow {
                 .as_ref()
                 .and_then(|h| h.claude_token)
                 .filter(|_| yours),
+            auto_update: hello.as_ref().and_then(|h| h.auto_update),
         }
     }
 }

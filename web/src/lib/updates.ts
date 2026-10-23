@@ -1,6 +1,6 @@
-// Runners that run an older fctl than the control plane: the home page tells
-// the people who registered them, with the command that updates them, until
-// they skip that version in this browser.
+// Runners that run an older fctl than the control plane and don't update
+// themselves: the home page tells the people who registered them, with the
+// command that updates them, until they skip that version in this browser.
 
 import { useCallback, useSyncExternalStore } from "react";
 import type * as G from "@/gen";
@@ -23,10 +23,13 @@ export function older(a: string | undefined, b: string | undefined): boolean {
 
 /**
  * Your runners online now with an older fctl than `version`, the control
- * plane's: the ones you registered, whose machines you can update.
+ * plane's: the ones you registered, whose machines you can update. Those
+ * whose hosts update themselves are left out: they update within minutes.
  */
 export function outdated(runners: readonly G.Runner[], version: string | undefined): G.Runner[] {
-  return runners.filter((r) => r.yours && r.status === "online" && older(r.version, version));
+  return runners.filter(
+    (r) => r.yours && r.status === "online" && !r.auto_update && older(r.version, version),
+  );
 }
 
 // localStorage, after the person's id: the version of fctl they skipped the

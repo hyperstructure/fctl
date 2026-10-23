@@ -57,6 +57,15 @@ describe("the runners to update", () => {
     expect(outdated(list, "0.16.0").map((r) => r.id)).toEqual(["studio", "draining"]);
   });
 
+  it("leave out the ones whose hosts update themselves", () => {
+    const list = [
+      runner({ id: "updating", auto_update: true }),
+      runner({ id: "manual", auto_update: false }),
+      runner({ id: "before" }),
+    ];
+    expect(outdated(list, "0.16.0").map((r) => r.id)).toEqual(["manual", "before"]);
+  });
+
   it("are none while the control plane's version is unknown", () => {
     expect(outdated([runner({ id: "studio" })], undefined)).toEqual([]);
   });

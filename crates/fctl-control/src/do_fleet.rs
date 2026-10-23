@@ -851,6 +851,8 @@ impl FleetObject {
             },
             heartbeat_secs: 15,
             server_time: now,
+            // Hosts that update themselves update to it.
+            version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         };
         if let Ok(text) = serde_json::to_string(&welcome) {
             let _ = ws.send_with_str(&text);

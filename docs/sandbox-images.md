@@ -47,8 +47,8 @@ docker image inspect ghcr.io/hyperstructure/sandbox:0.5.0 \
 ## How hosts get it
 
 A host whose `host.toml` sets no `image` uses the default image of its own
-version, so upgrading the host (`fctl self update`) moves its new sessions
-to the new version's image. The host pulls the image in the background when
+version, so a host that updates, by itself or with `fctl self update`,
+moves its new sessions to the new version's image. The host pulls the image in the background when
 it starts, and a session that starts before it has the image pulls it
 itself. When the image can't be pulled, as in the hour after a release
 before its image is published, the host pulls `latest` instead, and

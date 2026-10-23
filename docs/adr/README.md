@@ -58,3 +58,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0050](0050-claude-tokens-can-stay-on-their-owners-runners.md) | Claude tokens can stay on their owner's runners |
 | [0051](0051-new-projects-start-with-follow-ups-on.md) | New projects start with follow-ups on |
 | [0052](0052-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md) | Projects choose a ticket tracker, and Linear delegates tickets to fctl |
+| [0053](0053-hosts-update-themselves-to-the-control-planes-version.md) | Hosts update themselves to the control plane's version |

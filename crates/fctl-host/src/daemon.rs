@@ -8,6 +8,10 @@
 //! the drivers said when last probed, and sweeping or cleaning up sandboxes
 //! and measuring the disk run in tasks of their own (`Chore`), so
 //! heartbeats and pongs keep flowing while a runtime hangs.
+//!
+//! A host that updates itself follows the version the control plane says
+//! it runs in its welcome (`crate::update`), and restarts on the new fctl
+//! once no session is being started or stopped here.
 
 use crate::caches;
 use crate::claude_token;
@@ -18,11 +22,13 @@ use crate::login::{self, LoginCmd};
 use crate::refresh;
 use crate::session::{self, HostCtx, SessionCmd, SessionEvent, SessionHandle, Start};
 use crate::sysinfo;
+use crate::update;
 use anyhow::Result;
 use fctl_client::ws;
 use fctl_domain::disk;
 use fctl_domain::image::ImageWant;
 use fctl_domain::size::{self, Want};
+use fctl_domain::updates::Version;
 use fctl_proto::runner::{
     FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet, SessionSpec, StopReason,
 };
@@ -30,9 +36,10 @@ use fctl_proto::session::SessionStatus;
 use fctl_proto::{LoginJobId, PROTOCOL_VERSION, SessionId};
 use futures::StreamExt;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -75,6 +82,37 @@ pub struct Daemon {
     /// Sandboxes that chores stop or remove, with how many hold each.
     /// Sessions that start in one wait for it.
     busy: HashMap<String, u32>,
+    /// How this host updates itself, when it does (`auto_update`).
+    updates: Option<Updates>,
+    /// A release downloaded to update to, which the host installs once no
+    /// session is being started or stopped here.
+    ready: Option<Ready>,
+    /// What the update waits for, as the log last said.
+    update_waits_for: Option<String>,
+    /// How often an update that waits looks again.
+    update_check: tokio::time::Interval,
+    /// Why this host doesn't update itself, when it doesn't.
+    manual: Option<String>,
+    /// The newer version the control plane runs, as the log last said, for
+    /// a host that doesn't update itself.
+    said_behind: Option<Version>,
+    /// What keeps a Mac from sleeping while the host runs (`caffeinate`).
+    awake: Option<std::process::Child>,
+}
+
+/// A host that updates itself: where its fctl is, and the newer version
+/// the control plane runs, which `update::follow` follows.
+struct Updates {
+    install: update::Install,
+    to: watch::Sender<Option<Version>>,
+    /// Whether `update::follow` runs.
+    following: bool,
+}
+
+/// A release downloaded to update to.
+struct Ready {
+    release: update::Release,
+    restart: update::Restart,
 }
 
 /// What the sweep removes, measures or empties.
@@ -119,6 +157,9 @@ enum Chore {
     Stopped { name: String, ended: HostToFleet },
     /// The free disk (MiB) where sandboxes are, as measured now.
     Disk(Option<u64>),
+    /// The release of the newer version the control plane runs is here,
+    /// checked.
+    Downloaded(Box<Ready>),
 }
 
 const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
@@ -128,6 +169,8 @@ const FACTS_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often the host measures its free disk elsewhere.
 const DISK_EVERY: Duration = Duration::from_secs(30);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
+/// How often an update that waits for a quiet moment looks again.
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(5);
 
 impl Daemon {
     pub async fn new(cfg: HostConfig, token: String) -> Result<Self> {
@@ -165,9 +208,30 @@ impl Daemon {
                 size::memory(max)
             );
         }
+        let (updates, manual) = match updates_itself(&ctx.cfg) {
+            Ok(install) => {
+                tracing::info!(
+                    "updating fctl in {} to the version the control plane runs, from {} (auto_update in host.toml)",
+                    install.dir().display(),
+                    update::base(&ctx.cfg.download_base)
+                );
+                let updates = Updates {
+                    install,
+                    to: watch::channel(None).0,
+                    following: false,
+                };
+                (Some(updates), None)
+            }
+            Err(why) => {
+                tracing::info!("not updating fctl by itself: {why}");
+                (None, Some(why))
+            }
+        };
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (login_tx, login_rx) = mpsc::unbounded_channel();
         let (chores_tx, chores_rx) = mpsc::unbounded_channel();
+        let mut update_check = tokio::time::interval(UPDATE_CHECK_EVERY);
+        update_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         Ok(Self {
             ctx,
             sessions: HashMap::new(),
@@ -190,6 +254,13 @@ impl Daemon {
             clearing: HashSet::new(),
             disk_free_mb: None,
             busy: HashMap::new(),
+            updates,
+            ready: None,
+            update_waits_for: None,
+            update_check,
+            manual,
+            said_behind: None,
+            awake: None,
         })
     }
 
@@ -611,7 +682,185 @@ impl Daemon {
                     self.start_sweep();
                 }
             }
+            Chore::Downloaded(ready) => self.downloaded(*ready),
         }
+    }
+
+    /// The control plane says it runs `version`, as the host connects: a
+    /// host that updates itself follows it once it is newer than its own,
+    /// and leaves a release it downloaded for another version.
+    fn control_plane_runs(&mut self, version: &str) {
+        let newer = fctl_domain::updates::update_to(VERSION, version);
+        let Some(updates) = &mut self.updates else {
+            if let Some(v) = newer
+                && self.said_behind != Some(v)
+            {
+                self.said_behind = Some(v);
+                tracing::info!(
+                    "the control plane runs fctl {v}, this host {VERSION}, which doesn't update itself: {}",
+                    self.manual.as_deref().unwrap_or_default()
+                );
+            }
+            return;
+        };
+        let changed = updates.to.send_if_modified(|to| {
+            let changed = *to != newer;
+            *to = newer;
+            changed
+        });
+        if changed && let Some(v) = newer {
+            tracing::info!(
+                "the control plane runs fctl {v}, this host {VERSION}: updating to it from {}",
+                update::base(&self.ctx.cfg.download_base)
+            );
+        }
+        if let Some(ready) = &self.ready
+            && newer != Some(ready.release.version)
+        {
+            tracing::info!(
+                "not updating to fctl {}: the control plane runs {version} now",
+                ready.release.version
+            );
+            self.ready = None;
+            self.update_waits_for = None;
+        }
+        if newer.is_some() && self.ready.is_none() {
+            self.follow_updates(Duration::ZERO);
+        }
+    }
+
+    /// Starts following the version the control plane runs, unless the
+    /// host does already: downloads its release once it is newer, and
+    /// hands it to the daemon. The first try waits for `hold_off`.
+    fn follow_updates(&mut self, hold_off: Duration) {
+        let Some(updates) = &mut self.updates else {
+            return;
+        };
+        if updates.following {
+            return;
+        }
+        updates.following = true;
+        let base = update::base(&self.ctx.cfg.download_base).to_owned();
+        let dir = updates.install.dir().to_owned();
+        let to = updates.to.subscribe();
+        let chores = self.chores_tx.clone();
+        tokio::spawn(async move {
+            let target = match update::this_target() {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!("not updating fctl by itself: {e:#}");
+                    return;
+                }
+            };
+            let release = update::follow(to, hold_off, |version| {
+                let (base, target, dir) = (base.clone(), target.clone(), dir.clone());
+                async move { update::download(&base, version, &target, &dir).await }
+            })
+            .await;
+            let restart = update::Restart::here().await;
+            let _ = chores.send(Chore::Downloaded(Box::new(Ready { release, restart })));
+        });
+    }
+
+    /// A release to update to is here: it goes in once nothing would be
+    /// interrupted, if the control plane still runs its version.
+    fn downloaded(&mut self, ready: Ready) {
+        let Some(updates) = &mut self.updates else {
+            return;
+        };
+        updates.following = false;
+        let wanted = *updates.to.borrow();
+        if wanted != Some(ready.release.version) {
+            self.follow_updates(Duration::ZERO);
+            return;
+        }
+        tracing::info!(
+            "downloaded fctl {}: installing it once no session is being started or stopped here",
+            ready.release.version
+        );
+        self.ready = Some(ready);
+        self.update_if_quiet();
+    }
+
+    /// What restarting now would interrupt, if anything, as what the
+    /// update waits for: sandboxes being made, stopped or removed,
+    /// sessions that wait to start, package caches being measured or
+    /// emptied, Claude sign-ins. Running sessions carry on over it.
+    fn restart_would_interrupt(&mut self) -> Option<String> {
+        let changing = self.sessions.values().any(|h| {
+            h.report.lock().is_ok_and(|r| {
+                matches!(
+                    r.status,
+                    SessionStatus::Provisioning | SessionStatus::Stopping
+                )
+            })
+        });
+        // A sign-in that ended dropped what takes its codes.
+        self.logins.retain(|_, tx| !tx.is_closed());
+        if changing || !self.busy.is_empty() {
+            Some("no sandbox is being made, stopped or removed here".into())
+        } else if !self.pending_starts.is_empty() {
+            Some("no session waits to start here".into())
+        } else if !self.clearing.is_empty() {
+            Some("no package caches are being measured or emptied here".into())
+        } else if !self.logins.is_empty() {
+            Some("no Claude sign-in runs here".into())
+        } else {
+            None
+        }
+    }
+
+    /// Installs the release downloaded to update to, and restarts on it,
+    /// unless that would interrupt something: then it waits, and looks
+    /// again every few seconds. Sessions keep running in their sandboxes,
+    /// as over any restart.
+    fn update_if_quiet(&mut self) {
+        let Some((version, restart, exe)) = self.install_update_if_quiet() else {
+            return;
+        };
+        if restart == update::Restart::InPlace
+            && let Some(mut awake) = self.awake.take()
+        {
+            // The new fctl keeps the Mac awake itself.
+            let _ = awake.kill();
+            let _ = awake.wait();
+        }
+        let e = update::restart(restart, &exe);
+        tracing::error!(
+            "restarting on fctl {version}: {e:#}; this host runs {VERSION} until it restarts"
+        );
+    }
+
+    /// Installs the release downloaded to update to, unless restarting on
+    /// it would interrupt something, and says how to restart on it, and
+    /// where it is. A release that can't be installed is downloaded again
+    /// a while later.
+    fn install_update_if_quiet(&mut self) -> Option<(Version, update::Restart, PathBuf)> {
+        let version = self.ready.as_ref()?.release.version;
+        if let Some(what) = self.restart_would_interrupt() {
+            if self.update_waits_for.as_deref() != Some(&what) {
+                tracing::info!("updating to fctl {version} once {what}");
+                self.update_waits_for = Some(what);
+            }
+            return None;
+        }
+        let ready = self.ready.take()?;
+        let install = self.updates.as_ref()?.install.clone();
+        self.update_waits_for = None;
+        if let Err(e) = ready.release.install(install.dir()) {
+            let hold_off = fctl_domain::updates::UNUSABLE_FIRST;
+            tracing::warn!(
+                "installing fctl {version}: {e:#}; trying again in {}",
+                update::in_words(hold_off)
+            );
+            self.follow_updates(hold_off);
+            return None;
+        }
+        tracing::info!(
+            "updated fctl {VERSION} to {version} in {}: restarting on it; sessions keep running in their sandboxes",
+            install.dir().display()
+        );
+        Some((version, ready.restart, install.exe))
     }
 
     /// Whether the disk has less free space than the host keeps
@@ -749,6 +998,7 @@ impl Daemon {
             // Its agents, of its own version, run review agents' sessions.
             features: vec![fctl_proto::runner::FEATURE_REVIEWS.to_owned()],
             claude_token: Some(claude_token::announce(&self.ctx.cfg.claude_token())),
+            auto_update: Some(self.updates.is_some()),
         }
     }
 
@@ -765,7 +1015,7 @@ impl Daemon {
 
     pub async fn run(mut self) -> Result<()> {
         let mut shutdown = shutdown_signal();
-        keep_awake();
+        self.awake = keep_awake();
         let mut wait = Duration::from_secs(5);
         loop {
             let recovered = tokio::select! {
@@ -822,6 +1072,7 @@ impl Daemon {
                     Some(msg) = self.login_rx.recv() => self.outbox.push_back(msg),
                     Some(chore) = self.chores_rx.recv() => self.on_chore(chore),
                     _ = self.sweep.tick() => self.start_sweep(),
+                    _ = self.update_check.tick(), if self.ready.is_some() => self.update_if_quiet(),
                     _ = &mut shutdown => return Ok(()),
                 }
             }
@@ -863,6 +1114,7 @@ impl Daemon {
                 Some(msg) = self.login_rx.recv() => self.outbox.push_back(msg),
                 Some(chore) = self.chores_rx.recv() => self.on_chore(chore),
                 _ = self.sweep.tick() => self.start_sweep(),
+                _ = self.update_check.tick(), if self.ready.is_some() => self.update_if_quiet(),
                 _ = heartbeat.tick() => {
                     let hb = self.heartbeat();
                     self.outbox.push_back(HostToFleet::Heartbeat(hb));
@@ -930,10 +1182,15 @@ impl Daemon {
     /// Handles a message from the control plane; replies go to the outbox.
     fn on_fleet(&mut self, msg: FleetToHost) {
         match msg {
-            FleetToHost::Welcome { runner, .. } => {
+            FleetToHost::Welcome {
+                runner, version, ..
+            } => {
                 tracing::info!("registered as {} ({})", runner.name, runner.id);
                 if let Ok(mut r) = self.ctx.runner_id.lock() {
                     *r = Some(runner.id);
+                }
+                if let Some(version) = version {
+                    self.control_plane_runs(&version);
                 }
             }
             FleetToHost::Ping => self.outbox.push_back(HostToFleet::Pong),
@@ -1193,16 +1450,37 @@ async fn signalled() {
 }
 
 /// On macOS, keeps the machine from idle-sleeping while the daemon runs.
-fn keep_awake() {
-    if cfg!(target_os = "macos") {
-        let pid = std::process::id().to_string();
-        match std::process::Command::new("caffeinate")
-            .args(["-i", "-s", "-w", &pid])
-            .spawn()
-        {
-            Ok(_) => tracing::info!("holding a no-idle-sleep assertion (caffeinate)"),
-            Err(e) => tracing::warn!("caffeinate unavailable: {e}"),
+fn keep_awake() -> Option<std::process::Child> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let pid = std::process::id().to_string();
+    match std::process::Command::new("caffeinate")
+        .args(["-i", "-s", "-w", &pid])
+        .spawn()
+    {
+        Ok(child) => {
+            tracing::info!("holding a no-idle-sleep assertion (caffeinate)");
+            Some(child)
         }
+        Err(e) => {
+            tracing::warn!("caffeinate unavailable: {e}");
+            None
+        }
+    }
+}
+
+/// Where this host's fctl is, when it updates itself, or why it doesn't:
+/// `host.toml` turns that off, Homebrew installed fctl, or its directory
+/// can't be written to.
+fn updates_itself(cfg: &HostConfig) -> Result<update::Install, String> {
+    if !cfg.auto_update {
+        return Err("auto_update = false in host.toml: `fctl self update` updates it".into());
+    }
+    let install = update::Install::here().map_err(|e| format!("{e:#}"))?;
+    match install.blocked() {
+        Some(why) => Err(why.to_string()),
+        None => Ok(install),
     }
 }
 
@@ -1712,6 +1990,197 @@ mod tests {
         assert_eq!(small.size_mb, Some(1));
         assert!(!small.grown());
         assert_eq!(records.projects["prj_measured"].size_mb, Some(1));
+        Ok(())
+    }
+
+    /// Makes `d` a host that updates itself, whose fctl is in `bin`.
+    fn updating_in(d: &mut Daemon, bin: &std::path::Path) {
+        d.updates = Some(Updates {
+            install: update::Install {
+                exe: bin.join("fctl"),
+            },
+            to: watch::channel(None).0,
+            following: false,
+        });
+    }
+
+    /// The control plane's welcome, from one that runs `version`.
+    fn welcome(version: &str) -> FleetToHost {
+        FleetToHost::Welcome {
+            runner: fctl_proto::session::RunnerRef {
+                id: fctl_proto::RunnerId("rnr_1".into()),
+                name: "mini".into(),
+            },
+            heartbeat_secs: 15,
+            server_time: 0,
+            version: Some(version.into()),
+        }
+    }
+
+    /// What the host follows: whether it does, and the version.
+    fn following(d: &Daemon) -> (bool, Option<Version>) {
+        d.updates
+            .as_ref()
+            .map_or((false, None), |u| (u.following, *u.to.borrow()))
+    }
+
+    /// A session here in `status`, which the test can change.
+    fn session_in(
+        d: &mut Daemon,
+        session_id: &str,
+        status: SessionStatus,
+    ) -> Arc<std::sync::Mutex<session::Report>> {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let report = Arc::new(std::sync::Mutex::new(session::Report {
+            status,
+            agent_seq: 0,
+        }));
+        d.sessions.insert(
+            SessionId(session_id.into()),
+            SessionHandle {
+                tx,
+                report: report.clone(),
+            },
+        );
+        report
+    }
+
+    #[tokio::test]
+    async fn hosts_say_whether_they_update_themselves() -> Result<()> {
+        let (_dir, d) = daemon_where(&[], |_| {}).await?;
+        assert_eq!(d.hello().auto_update, Some(true));
+        let (_dir, d) = daemon_where(&[], |cfg| cfg.auto_update = false).await?;
+        assert_eq!(d.hello().auto_update, Some(false));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hosts_follow_the_control_plane_once_it_runs_a_newer_version() -> Result<()> {
+        let bin = tempfile::tempdir()?;
+        let (_dir, mut d) = daemon_where(&[], |cfg| {
+            cfg.download_base = "http://127.0.0.1:9".into();
+        })
+        .await?;
+        updating_in(&mut d, bin.path());
+        // Its own version, an older one or none it knows: nothing to do.
+        for version in [VERSION, "0.0.1", "next"] {
+            d.on_fleet(welcome(version));
+            assert_eq!(following(&d), (false, None), "{version}");
+        }
+        d.on_fleet(welcome("99.0.0"));
+        assert_eq!(following(&d), (true, Version::parse("99.0.0")));
+        // A control plane that went back to this host's version.
+        d.on_fleet(welcome(VERSION));
+        assert_eq!(following(&d), (true, None));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hosts_that_dont_update_themselves_follow_nothing() -> Result<()> {
+        let (_dir, mut d) = daemon_where(&[], |cfg| cfg.auto_update = false).await?;
+        d.on_fleet(welcome("99.0.0"));
+        assert!(d.updates.is_none());
+        // Its log says the control plane runs a newer one, once, and why it
+        // doesn't update to it.
+        assert_eq!(d.said_behind, Version::parse("99.0.0"));
+        assert_eq!(
+            d.manual.as_deref(),
+            Some("auto_update = false in host.toml: `fctl self update` updates it")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_update_waits_until_no_session_is_being_started_or_stopped() -> Result<()> {
+        let bin = tempfile::tempdir()?;
+        let fctl = bin.path().join("fctl");
+        std::fs::write(&fctl, "old")?;
+        let (_dir, mut d) = daemon_where(&[], |_| {}).await?;
+        updating_in(&mut d, bin.path());
+        let newer = Version::parse("99.0.0").context("a version")?;
+        if let Some(u) = &d.updates {
+            u.to.send_replace(Some(newer));
+        }
+        let provisioning = session_in(&mut d, "ses_01MAKE", SessionStatus::Provisioning);
+        session_in(&mut d, "ses_01WORK", SessionStatus::Running);
+        d.downloaded(Ready {
+            release: update::Release {
+                version: newer,
+                files: vec![("fctl".into(), b"new".to_vec())],
+            },
+            restart: update::Restart::InPlace,
+        });
+        assert!(d.ready.is_some());
+        assert_eq!(
+            d.update_waits_for.as_deref(),
+            Some("no sandbox is being made, stopped or removed here")
+        );
+        // Its agent works now, and another session waits to start.
+        if let Ok(mut r) = provisioning.lock() {
+            r.status = SessionStatus::Running;
+        }
+        d.pending_starts
+            .insert(SessionId("ses_01NEXT".into()), spec("ses_01NEXT")?);
+        assert_eq!(d.install_update_if_quiet(), None);
+        assert_eq!(
+            d.update_waits_for.as_deref(),
+            Some("no session waits to start here")
+        );
+        // A Claude sign-in runs.
+        d.pending_starts.clear();
+        let (tx, codes) = mpsc::unbounded_channel();
+        d.logins.insert(fctl_proto::LoginJobId("lgn_01".into()), tx);
+        assert_eq!(d.install_update_if_quiet(), None);
+        assert_eq!(
+            d.update_waits_for.as_deref(),
+            Some("no Claude sign-in runs here")
+        );
+        assert_eq!(std::fs::read_to_string(&fctl)?, "old");
+        // Once it ends, the release goes in while the other sessions work,
+        // and the host restarts on it in this process's place.
+        drop(codes);
+        assert_eq!(
+            d.install_update_if_quiet(),
+            Some((newer, update::Restart::InPlace, fctl.clone()))
+        );
+        assert_eq!(std::fs::read_to_string(&fctl)?, "new");
+        assert!(d.ready.is_none() && d.logins.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_release_of_a_version_the_control_plane_no_longer_runs_stays_out() -> Result<()> {
+        let bin = tempfile::tempdir()?;
+        let fctl = bin.path().join("fctl");
+        std::fs::write(&fctl, "old")?;
+        let (_dir, mut d) = daemon_where(&[], |cfg| {
+            cfg.download_base = "http://127.0.0.1:9".into();
+        })
+        .await?;
+        updating_in(&mut d, bin.path());
+        d.on_fleet(welcome("99.0.0"));
+        session_in(&mut d, "ses_01MAKE", SessionStatus::Provisioning);
+        let release = |version: &str| -> Result<Ready> {
+            Ok(Ready {
+                release: update::Release {
+                    version: Version::parse(version).context("a version")?,
+                    files: vec![("fctl".into(), version.as_bytes().to_vec())],
+                },
+                restart: update::Restart::Service,
+            })
+        };
+        d.downloaded(release("99.0.0")?);
+        assert!(d.ready.is_some());
+        // The control plane went back to this host's version meanwhile.
+        d.on_fleet(welcome(VERSION));
+        assert!(d.ready.is_none());
+        // One downloaded for a version it ran before is dropped too, and
+        // the host follows the one it runs.
+        d.on_fleet(welcome("99.0.2"));
+        d.downloaded(release("99.0.1")?);
+        assert!(d.ready.is_none());
+        assert_eq!(following(&d), (true, Version::parse("99.0.2")));
+        assert_eq!(std::fs::read_to_string(&fctl)?, "old");
         Ok(())
     }
 }

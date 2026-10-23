@@ -5,10 +5,11 @@ use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
+use clap::builder::BoolishValueParser;
 use fctl_domain::{disk, image, size};
 use fctl_host::config::means_default_image;
 use fctl_host::driver::{DiskSpot, Driver};
-use fctl_host::{HostConfig, caches, claude_token, refresh, service};
+use fctl_host::{HostConfig, caches, claude_token, refresh, service, update};
 use fctl_proto::api::{Runner, RunnerDetail, RunnerStatus};
 use std::io::IsTerminal;
 
@@ -71,6 +72,10 @@ pub enum HostCmd {
         /// that can't pull the published image).
         #[arg(long)]
         build_image: bool,
+        /// on or off: whether the host updates fctl to the version the
+        /// control plane runs, by itself (new hosts: on).
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        auto_update: Option<bool>,
     },
     /// Run the host in the foreground (what the service runs).
     Run,
@@ -91,6 +96,18 @@ pub enum HostCmd {
     Claude(super::host_claude::HostClaudeCmd),
     /// Restart the service (sessions keep running).
     Restart,
+    /// Whether the host updates fctl, and so its agents and sandbox image,
+    /// to the version the control plane runs, by itself: on unless turned
+    /// off.
+    #[command(
+        after_help = "Examples:\n  fctl host auto-update       # whether it does\n  fctl host auto-update off   # update with `fctl self update` instead\n  fctl host auto-update on"
+    )]
+    AutoUpdate {
+        /// on or off. Without it, shows which it is. Changing it restarts
+        /// the host service (sessions keep running).
+        #[arg(value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        on: Option<bool>,
+    },
     /// Take no new sessions; the ones here carry on, and a message resumes
     /// them here.
     Drain {
@@ -156,6 +173,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             token,
             no_service,
             build_image,
+            auto_update,
         } => {
             const SIGN_IN: &str = "Sign in first (`fctl login`), or pass --token";
             let server = config::server(server)?;
@@ -187,6 +205,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     .filter(|r| !r.is_empty())
                     .collect();
                 cfg.allowed_builds = (!list.is_empty()).then_some(list);
+            }
+            if let Some(on) = auto_update {
+                cfg.auto_update = on;
             }
             if let Some(problem) = cfg.image_problems().first() {
                 bail!("{problem}");
@@ -307,6 +328,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     style::dim("Prepare the base VM once with `fctl host image build`.")
                 );
             }
+            println!("{}", style::dim(&updates_sentence(&cfg)));
             if !no_service {
                 let exe = std::env::current_exe()?;
                 let what = service::install(&exe)?;
@@ -371,8 +393,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     "kept": kept.is_some(),
                     "saved_at": kept.map(|k| k.saved_at),
                 });
+                let updates = Updates::of(&cfg).json();
                 return style::print_json(
-                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "disk": disk, "caches": caches, "claude_token": claude, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
+                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "disk": disk, "caches": caches, "updates": updates, "claude_token": claude, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
@@ -391,6 +414,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 println!("caches:   {}", caches_line(&cfg, d, &cached));
             }
             println!("image:    {}", cfg.image());
+            println!("updates:  {}", updates_line(&cfg));
             println!("claude:   {}", claude_line(&cfg));
             if let Some(d) = &driver {
                 let images = cfg.images(d.uses_images());
@@ -519,6 +543,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             println!("Restarted. Sessions keep running in their sandboxes.");
             Ok(())
         }
+        HostCmd::AutoUpdate { on } => auto_update(on, json).await,
         HostCmd::Drain { wait } => {
             let api = runner_api()?;
             let mut d = api.drain_this_runner(true, false).await?;
@@ -768,6 +793,147 @@ async fn stop_sandboxes_here(json: bool) {
     }
 }
 
+/// Whether the host updates itself, and why not when it doesn't.
+struct Updates {
+    /// `auto_update` in host.toml.
+    on: bool,
+    /// Why fctl can't update itself here, when it can't (Homebrew installed
+    /// it, its directory can't be written to).
+    blocked: Option<String>,
+}
+
+impl Updates {
+    fn of(cfg: &HostConfig) -> Self {
+        let blocked = match update::Install::here() {
+            Ok(install) => install.blocked().map(|b| b.to_string()),
+            Err(e) => Some(format!("{e:#}")),
+        };
+        Self {
+            on: cfg.auto_update,
+            blocked,
+        }
+    }
+
+    /// Whether the host updates itself: on, and it can.
+    fn itself(&self) -> bool {
+        self.on && self.blocked.is_none()
+    }
+
+    /// Why it doesn't, when it doesn't.
+    fn why_not(&self) -> Option<String> {
+        match (&self.blocked, self.on) {
+            (_, false) => Some("off (auto_update = false in host.toml)".into()),
+            (Some(why), true) => Some(why.clone()),
+            (None, true) => None,
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "auto_update": self.on,
+            "updates_itself": self.itself(),
+            "blocked": self.blocked,
+        })
+    }
+}
+
+/// `fctl host status`'s line about updates.
+fn updates_line(cfg: &HostConfig) -> String {
+    let u = Updates::of(cfg);
+    match (u.blocked, u.on) {
+        (None, true) => "automatic, to the version the control plane runs (`fctl host auto-update off` turns that off)".into(),
+        (_, false) => style::dim("off (auto_update = false): `fctl self update` updates it"),
+        (Some(why), true) => style::amber(&format!("none by itself: {why}")),
+    }
+}
+
+/// What `fctl host install` says about updates.
+fn updates_sentence(cfg: &HostConfig) -> String {
+    let u = Updates::of(cfg);
+    match (u.blocked, u.on) {
+        (None, true) => "It updates fctl to the version the control plane runs whenever that is newer (`--auto-update off` turns that off).".into(),
+        (_, false) => "It doesn't update fctl by itself: `fctl self update` updates it.".into(),
+        (Some(why), true) => format!("It doesn't update fctl by itself: {why}."),
+    }
+}
+
+/// `fctl host auto-update [on|off]`: shows or sets whether the host
+/// updates itself. Setting it restarts the host service, which reads it
+/// as it starts.
+async fn auto_update(on: Option<bool>, json: bool) -> Result<()> {
+    let cfg = HostConfig::load()?;
+    let changed = on.is_some_and(|on| on != cfg.auto_update);
+    let cfg = match on {
+        Some(on) if changed => {
+            HostConfig::save_auto_update(on)?;
+            HostConfig::load()?
+        }
+        _ => cfg,
+    };
+    let (installed, running) = service::status();
+    let restarted = changed && installed && running && service::restart().is_ok();
+    // What the control plane runs, to say whether this host is behind.
+    let theirs = fctl_client::Api::new(&cfg.server, None)
+        .instance()
+        .await
+        .ok()
+        .map(|i| i.version);
+    let behind = theirs
+        .as_deref()
+        .and_then(|v| fctl_domain::updates::update_to(update::VERSION, v));
+    let u = Updates::of(&cfg);
+    if json {
+        let mut out = u.json();
+        out["version"] = update::VERSION.into();
+        out["control_plane_version"] = theirs.into();
+        out["changed"] = changed.into();
+        out["restarted"] = restarted.into();
+        return style::print_json(&out);
+    }
+    match (&u.blocked, u.on) {
+        (None, true) => println!(
+            "{} The host updates fctl to the version the control plane runs, whenever that is newer.",
+            style::accent("✓")
+        ),
+        (_, false) => {
+            println!("The host doesn't update fctl by itself: `fctl self update` updates it.")
+        }
+        (Some(why), true) => println!(
+            "{}",
+            style::amber(&format!("The host doesn't update fctl by itself: {why}."))
+        ),
+    }
+    if changed {
+        if restarted {
+            println!("Restarted the host service; its sessions keep running.");
+        } else if installed {
+            println!("Restart the host service for it to take effect: fctl host restart");
+        } else {
+            println!("It takes effect when the host next starts.");
+        }
+    }
+    if let Some(v) = behind {
+        if u.itself() {
+            println!(
+                "{}",
+                style::dim(&format!(
+                    "The control plane runs fctl {v}, this host {}: it updates once {v} can be downloaded and no session is being started or stopped here.",
+                    update::VERSION
+                ))
+            );
+        } else {
+            println!(
+                "{}",
+                style::dim(&format!(
+                    "The control plane runs fctl {v}, this host {}.",
+                    update::VERSION
+                ))
+            );
+        }
+    }
+    Ok(())
+}
+
 /// `fctl host status`'s line about the Claude token the host keeps.
 fn claude_line(cfg: &HostConfig) -> String {
     match claude_token::load(&cfg.claude_token()) {
@@ -982,13 +1148,45 @@ async fn doctor() -> Result<()> {
         ),
     }
     let api = fctl_client::Api::new(&cfg.server, None);
-    match api.instance().await {
-        Ok(i) => check(
+    let theirs = match api.instance().await {
+        Ok(i) => {
+            check(
+                true,
+                &format!("reaches {} ({} {})", cfg.server, i.name, i.version),
+                "",
+            );
+            Some(i.version)
+        }
+        Err(e) => {
+            check(false, &format!("reaches {}", cfg.server), &e.to_string());
+            None
+        }
+    };
+    let behind = theirs
+        .as_deref()
+        .and_then(|v| fctl_domain::updates::update_to(update::VERSION, v));
+    let u = Updates::of(&cfg);
+    match (u.why_not(), behind) {
+        (None, None) => check(
             true,
-            &format!("reaches {} ({} {})", cfg.server, i.name, i.version),
+            "updates: fctl updates itself to the version the control plane runs",
             "",
         ),
-        Err(e) => check(false, &format!("reaches {}", cfg.server), &e.to_string()),
+        (None, Some(v)) => check(
+            true,
+            &format!("updates: fctl updates itself to {v}, which the control plane runs"),
+            "",
+        ),
+        (Some(why), behind) => {
+            let behind = behind
+                .map(|v| format!("; the control plane runs fctl {v}: `fctl self update`"))
+                .unwrap_or_default();
+            println!(
+                "{} {}",
+                style::dim("·"),
+                style::dim(&format!("updates: {why}{behind}"))
+            );
+        }
     }
     for d in Driver::probe_all(&cfg.data_dir()).await {
         let line = format!(
