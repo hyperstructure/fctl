@@ -20,6 +20,8 @@ trusts.
 | Published screenshots | the project's Durable Object, found by the SHA-256 of their links' tokens in D1 | anyone with a link, until it expires |
 | GitHub App key | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to mint short-lived tokens |
 | GitHub webhook secret | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to check that deliveries come from GitHub |
+| Linear app's client secret and webhook secret | Worker secrets (outside Cloudflare, the server's environment) | the control plane, to install fctl's app in Linear, renew its tokens and check that deliveries come from Linear |
+| Linear tokens (fctl's app in each Linear workspace) | encrypted (AES-256-GCM) in D1 | the control plane, for the projects of the fctl workspaces connected to that Linear workspace; never sandboxes |
 | Web Push (VAPID) key | encrypted in D1 | the control plane, to sign notifications |
 | Master key | a Worker secret (outside Cloudflare, the server's environment, or a file it made in its data directory) | the control plane |
 
@@ -154,6 +156,20 @@ owner and purpose), so a value copied between rows does not decrypt.
   and none without the secret. It takes from them only which pull requests
   or commits changed, then asks GitHub itself what became of the pull
   requests sessions list, so a replayed delivery changes nothing.
+- Linear's webhook (`POST /api/v1/linear/webhook`) takes only deliveries
+  signed with the webhook's secret (HMAC-SHA256, checked in constant time)
+  whose `webhookTimestamp` is within a minute of the control plane's
+  clock, up to 5 MB, and none without the secret. A delegation or mention
+  there starts a session only as the fctl account that linked the Linear
+  account it came from, in a project that takes the issue's team, of an
+  fctl workspace connected to that Linear workspace, and only while that
+  account may start sessions in the project, so nobody in Linear puts a
+  ticket on someone else's session or subscription. A delivery for a
+  Linear agent session fctl has seen starts nothing new, and replies in
+  one reach its fctl session only from linked accounts that may message
+  it. People link a Linear account with a Linear sign-in of their own,
+  whose token the control plane uses once to read who they are and then
+  revokes, so an address in Linear proves nothing on its own.
 - Screenshots agents publish for pull requests are public to anyone who
   has a link, which is how GitHub's image proxy fetches them. A link holds
   256 random bits, of which D1 keeps only the SHA-256. The control plane
@@ -230,6 +246,28 @@ outside it except through these channels:
   for the runner the session runs on only: a runner serves the workspaces
   its owner added it to, and gets no token for a session in another
   workspace.
+
+  The project's ticket tracker narrows the issues permission
+  ([Architecture](architecture.md#ticket-trackers)): tokens carry it as
+  above where the project tracks its work in the GitHub issues of every
+  repository it writes to, which is the default, and nowhere where it
+  tracks it in Linear or nowhere. Where it is one repository's issues,
+  only a write token for that repository alone carries it, since a token
+  has one set of permissions for all its repositories. Public
+  repositories' issues stay readable to anyone, so there the agent's
+  instructions keep it away from them.
+- **Ticket trackers.** `fctl ticket` reaches the project's tracker through
+  fctl-agent and the control plane, which holds the tracker's access: a
+  Linear token reaches every team of its Linear workspace as fctl's app,
+  so it never enters a sandbox, and for one repository's GitHub issues
+  the control plane mints a token for that repository's issues alone for
+  each call and revokes it after. Each call is kept to the project's
+  choice, a Linear team (and project) or a repository, and a ticket
+  outside it answers as one that doesn't exist; a session's agent comments
+  at most 30 times an hour and files at most 20 tickets. What tickets and
+  their comments say comes from whoever wrote them, inside the team or
+  not: agents are told to take it as what the work is about, not as
+  instructions, and do what the person who delegated it asks.
 
   Which accounts a workspace may use is its own admins' decision, and only
   within what they may touch on GitHub. A workspace's admin connects an
@@ -493,6 +531,15 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   and sessions you still see, since others keep them up to date. Files you
   attached are listed in the transcripts there; each downloads from its
   session.
+- A Linear account people link stays until they unlink it (Settings, or
+  `fctl account linear disconnect`) or delete their fctl account. fctl's
+  tokens in a Linear workspace stay while an fctl workspace is connected
+  to it; once none is, the control plane revokes them at Linear and
+  deletes them (within the hour if Linear doesn't answer), and it forgets
+  them as soon as Linear says the app was uninstalled or refuses to renew
+  them. A delegation waiting for someone to link their account keeps what
+  Linear sent for an hour, and which Linear agent session reached which
+  fctl session goes with the session.
 - Hosts keep a stopped session's sandbox so it can resume, and remove it
   once it has been stopped for `keep_stopped_hours` (72 by default; 0 keeps
   them), or sooner when their disk has less free than `min_free_disk_gb`

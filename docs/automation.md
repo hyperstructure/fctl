@@ -1,12 +1,13 @@
 # Automation
 
-Agents start when you ask, at the times you set, and when your CI, a bot
-or another tool asks: schedules start sessions on their own, and an access
-token lets a workflow start them, limited to what it is for. This page
-shows how to set up schedules, how to start agents from other tools, such
-as an issue tracker, how to make a token, how to run review agents on your
-pull requests from GitHub Actions, and other uses: triaging issues,
-nightly maintenance, planning, dashboards.
+Agents start when you ask, at the times you set, when someone delegates
+a ticket to fctl in Linear, and when your CI, a bot or another tool asks:
+schedules start sessions on their own, and an access token lets a
+workflow start them, limited to what it is for. This page shows how to
+set up schedules, how to delegate Linear tickets, how to start agents from
+other tools, such as another issue tracker, how to make a token, how to
+run review agents on your pull requests from GitHub Actions, and other
+uses: triaging issues, nightly maintenance, planning, dashboards.
 
 ## Schedules
 
@@ -53,6 +54,40 @@ fctl schedules add "Weekly dependencies" -p web --cron "0 9 * * 1" \
 fctl schedules -p web                       # when each runs next, and what its last run did
 fctl schedules run "Weekly dependencies" -p web
 ```
+
+## Delegate tickets in Linear
+
+Teams that track their work in Linear hand tickets to fctl there, and
+fctl starts the sessions itself, without a schedule, a token or a relay:
+
+1. **Connect Linear** on the workspace's **Linear** tab, or with `fctl
+   workspaces linear connect`: an admin of the workspace who is an admin
+   in Linear installs fctl's app there and chooses the teams it sees.
+2. **Choose the team** in the project's **Tickets** tab, or with `fctl
+   projects set -p web --tickets linear --linear-team ENG`, and if you
+   like one Linear project of it. Its agents then read and write that
+   team's tickets with `fctl ticket`, and no other tracker.
+3. **Link your Linear account**, once, in Settings or with `fctl account
+   linear connect`. Until you do, what you delegate waits an hour for you,
+   with a button in Linear that links it.
+
+Then, in Linear, assign an issue to fctl, which makes fctl its delegate
+while you stay its assignee, or mention fctl in a comment. fctl starts a
+session of the project that takes the issue's team, on your Claude
+subscription, and the issue's agent session shows it working: a first
+thought, its steps, its pull requests, and each turn's last message, or
+its question. Reply there to answer it or to ask for more, and stop it
+there to interrupt it. Delegate a ticket with the `explore` label for a
+plan first: the agent finds out what it needs and replies with what it
+found, and changes nothing until someone asks. The ticket moves to In
+Progress as its session starts, and the session's branch carries its key,
+so with Linear's GitHub integration the pull request links to the ticket
+and moves it on as it opens and merges.
+
+Only people who may start sessions in the project start them this way,
+on their own subscription; a ticket from someone else, or for a team no
+project takes, gets an answer in Linear that says why
+([Architecture](architecture.md#linear)).
 
 ## Start agents from other tools
 

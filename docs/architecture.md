@@ -643,8 +643,12 @@ which session,
 notification settings and browsers (push subscriptions), runners, encrypted
 credentials and project secrets, the latest plan usage of each Claude
 credential, the links of published screenshots, projects' memories and
-sessions' retrospectives, projects' schedules and their runs, the
-instance's settings and sealed Web Push key, and the audit log.
+sessions' retrospectives, projects' schedules and their runs, the Linear
+workspaces fctl's app is installed in (with their sealed tokens), the
+fctl workspaces connected to each, people's Linear accounts, Linear's
+agent sessions and the fctl sessions they reach, what agents wrote in
+their trackers in the last hour, the instance's settings and sealed Web
+Push key, and the audit log.
 
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
@@ -942,6 +946,9 @@ may write to; it only reads the others
 | `push`, as every session's before | contents, pull requests, issues and workflows: write | commits, pushes its branch and opens pull requests |
 | `comment` | pull requests and issues: write; contents: read | reviews, comments, labels and resolves review threads; pushes and merges nothing |
 | `read` | none: the read-only token covers them too | reads; writes nothing |
+
+Issues are written or read only where the project's ticket tracker
+lets agents ([Ticket trackers](#ticket-trackers)).
 
 A session asks for one as it starts (`CreateSessionRequest.github_access`,
 `fctl run --github`, the list beside the composer's model and effort), at
@@ -1380,10 +1387,193 @@ the control plane finds them (`web/src/lib/schedules.ts`), and the task
 boxes hand it the task you wrote (**Schedule**: the Sessions tab's, and
 the Agent Floor's from `xl`, where its row has room for it). Each schedule's
 details show the request another tool sends to run it. Other tools start
-agents this way today ([Automation](automation.md#start-agents-from-other-tools));
-an integration that fctl offers itself, with an issue tracker say, would
-be a trigger of its own that runs a schedule with what it received,
-through the same path (`schedules::start_session`, a run's `trigger`).
+agents this way ([Automation](automation.md#start-agents-from-other-tools));
+Linear's tickets start them through fctl's own integration
+([Linear](#linear)), which starts sessions as schedules do
+(`crate::starts`), one for each ticket rather than one at a time.
+
+### Ticket trackers
+
+A project chooses where its agents read and write tickets
+(`ProjectSettings::tickets`, the project's **Tickets** tab, `fctl projects
+set --tickets`, [ADR 0051](adr/0051-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md)):
+none, GitHub Issues, or a team in Linear. Projects from before it, and new
+ones, use GitHub Issues of the repositories their agents write to, as
+agents always did. Agents reach the one chosen alone, and fctl keeps them
+to it twice: what their tokens can reach, and what they are told
+(`fctl_domain::tickets`).
+
+| Tracker | Their GitHub tokens | How they reach it |
+|---|---|---|
+| None | no issues permission | they reach none, and are told to keep away from trackers and leave issue references out of commits and pull requests |
+| GitHub Issues of the repositories they write to | issues as before: written where they push or comment, read where they read | `gh issue` |
+| GitHub Issues of one repository, one they write to | issues only on a write token for that repository alone; none on the read-only token | `gh issue` where that repository is the only one they write to, else `fctl ticket` |
+| Linear, a team (and optionally one of its projects) | no issues permission | `fctl ticket` |
+
+A GitHub token carries one set of permissions for all its repositories,
+so the issues of one repository among several go on no session token;
+the control plane reaches them for the agent instead. A public
+repository's issues are public: GitHub serves them to any token, so there
+the instructions keep agents away. A repository chosen that agents no
+longer write to reaches nothing, and the Tickets tab says so. Running
+sessions get the tracker's permissions with their next token, within the
+hour, as with `github_access`. Review agents read issues only where the
+project's tracker lets agents, and never reach Linear.
+
+1. **`fctl ticket`** in the sandbox goes to the control plane as an agent
+   call (`AgentCall::Ticket`), as `fctl memory` does: a `TicketRequest`
+   (`fctl_proto::tickets`) that hosts and fctl-agent pass on as it is, so
+   that what `fctl ticket` does grows with the control plane and the
+   sandbox's fctl. It lists, searches and shows tickets with their
+   comments, parent and sub-tickets, files them (sub-tickets too), comments
+   (replying in trackers that thread comments) and changes their state,
+   labels, parent and priority, the same commands whatever the tracker
+   (`crate::tickets`). A `Ticket` holds what trackers share (a key such as
+   `ENG-123` or `acme/web#12`, a title, a description, a state of a kind:
+   triage, backlog, unstarted, started, completed or canceled, labels,
+   people, a parent and children) and the rest as named fields (an
+   estimate, a cycle, a milestone), so that a tracker added later fits it.
+   The control plane keeps each call to the project's choice: a Linear
+   issue of another team, or a GitHub issue of another repository, is
+   refused as one that doesn't exist. It writes in the name of fctl's own
+   app: with the Linear workspace's token ([Linear](#linear)), or with a
+   token of the GitHub App's for that repository's issues alone, which
+   never leaves it and which it revokes at once. Agents that only read on
+   GitHub read tickets alone, in any tracker. A session's agent comments,
+   and files tickets, at most 30 and 20 times an hour (`ticket_writes`):
+   an agent that loops would otherwise fill a team's tracker. The
+   transcript shows what it did there (`ticket_commented`,
+   `ticket_created`, `ticket_updated` notices, which only the control
+   plane adds).
+2. **What agents are told** comes from the control plane
+   (`SessionSpec::tickets`, `fctl_domain::tickets::instructions`), so that
+   it grows with the trackers it knows: which tracker, how to reach it,
+   and for a session that started from a ticket, how its replies go back
+   and what moves the ticket on. fctl-agent puts it in the system prompt,
+   with a line of its own where the sandbox's fctl has no `fctl ticket`.
+   Hosts and agents from before trackers tell agents nothing of them, while
+   their GitHub tokens follow the tracker.
+
+### Linear
+
+People who track their work in Linear delegate issues to fctl there
+([ADR 0051](adr/0051-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md)).
+The instance has one Linear OAuth app (`LINEAR_CLIENT_ID`,
+`LINEAR_CLIENT_SECRET`, [Self-hosting](self-hosting.md#connect-linear-optional)),
+which workspaces install in their Linear workspaces as an agent: Linear
+then lists fctl as a user people assign issues to, which makes it the
+issue's delegate (the person stays its assignee), and mention.
+
+1. **Installing it** (the workspace's **Linear** tab, a project's Tickets
+   tab, `fctl workspaces linear connect`). A workspace's admin signs in to
+   Linear from fctl, through the app's OAuth client with `actor=app` and
+   PKCE (`api::linear`), which takes an admin of the Linear workspace too:
+   Linear asks them to install the app and to choose the teams it sees.
+   Linear keeps one token for an app's user, so a Linear workspace has one
+   installation here (`linear_installations`: its access and refresh
+   tokens sealed with the master key, bound to `linear:<organization>`),
+   which every fctl workspace connected to it shares (`workspace_linear`):
+   installing the app again, to connect another fctl workspace, replaces
+   the token for all of them. Access tokens last a day; the control plane
+   renews one that runs out within ten minutes (`crate::linear::client`),
+   and two renewals that race end alike, as Linear answers a refresh it
+   already answered the same for half an hour. One whose renewal Linear
+   refuses, or that Linear says was uninstalled (an `OAuthApp`
+   revocation), is revoked here until an admin connects it again. A
+   workspace that disconnects a Linear workspace hears nothing more from
+   it and reaches none of its tickets, whatever other workspaces do; once
+   no fctl workspace works in it, fctl revokes the app's token there (the
+   hourly job catches deleted workspaces).
+2. **Choosing a team.** A project's maintainers choose a team, and
+   optionally one of its open Linear projects, among those the app sees in
+   a Linear workspace connected to the project's workspace
+   (`GET /api/v1/workspaces/{id}/linear/{organization}/teams`), which the
+   control plane checks with Linear as the choice is saved
+   (`tickets::check_linear`).
+3. **Knowing people.** fctl starts sessions only for people it knows in
+   the Linear workspace, as them: on their Claude subscription, while they
+   may start sessions in the project. People link their Linear account
+   (Settings, a project's Tickets tab, `fctl account linear connect`, or
+   Linear's own button in an agent session that waits for it): a Linear
+   sign-in of theirs, with `read` alone, shows fctl who they are there
+   (`viewer`), which D1 keeps (`linear_accounts`: their Linear id, name,
+   email and avatar), and fctl revokes the sign-in at once. A Linear
+   account is one person's: whoever links it last has it. Matching
+   addresses would let anyone whose Linear address matches someone's run
+   their work on that person's subscription, and an address in Linear says
+   nothing an fctl account has to agree with, so fctl matches none.
+4. **The webhook** (`POST /api/v1/linear/webhook`, with the signing secret
+   in `LINEAR_WEBHOOK_SECRET`): a delivery counts only with that secret's
+   signature (`Linear-Signature`, the HMAC-SHA256 of its body) and a
+   `webhookTimestamp` within a minute of now (`fctl_domain::linear`).
+   Linear wants an answer within five seconds and an activity in the
+   agent session within ten, so the control plane answers at once and
+   works after (`ctx.defer`). Each agent session is a thread here
+   (`linear_threads`, by Linear's id): waiting, started (with the fctl
+   session it reaches) or refused.
+5. **A delegation or a mention** (`AgentSessionEvent` `created`,
+   `crate::delegations::created`). fctl thinks aloud in the agent session
+   at once ("Looking at ENG-123…"), then finds the person who made it among
+   the people it knows; without them, it asks them in Linear to link their
+   account (an elicitation with Linear's `auth` signal, whose link starts
+   their sign-in) and keeps the delivery for an hour: once they link it,
+   the session starts, and their browser goes on to it. The project is the
+   one that takes the issue's team, in a workspace connected to the Linear
+   workspace, whose tracker is Linear: one that takes the issue's Linear
+   project comes before those that take the whole team; among several,
+   Linear's repository suggestions for the issue choose, by the projects'
+   primary repositories, and when they don't, fctl asks which in the agent
+   session (an elicitation with the `select` signal) and waits for the
+   answer. Projects the person can't start sessions in don't count, and
+   fctl says why it started nothing: no project takes the team, they may
+   start sessions in none of those that do, or they have no Claude
+   connection. A session that works on the issue already (not archived or
+   failed) that they may message gets the delegation as their message
+   instead, so that a ticket's work stays in one session. Otherwise a new
+   session starts (`crate::starts`, as a schedule's do), as the person,
+   titled after the issue, on the branch `fctl/<number>-<key>-<title>`
+   (`fctl_domain::tickets::branch`), with the project's GitHub access. Its
+   first message says who asked, and gives the issue as Linear writes it
+   for agents (`promptContext`: the issue, its comments, and the Linear
+   workspace's and team's guidance for agents, cut at 40,000 characters),
+   as information from the people who wrote it rather than instructions
+   from fctl (`fctl_domain::linear::task`); the transcript shows it as the
+   ticket (`UserMessage::ticket`). Where the project says so (on unless
+   its maintainers turn it off), a delegated issue that hasn't started
+   moves to its team's first started state (In Progress) before the
+   session starts, as Linear asks of agents. A label (`explore` unless the
+   project names another) asks for an exploration: the agent finds out
+   what the ticket needs and replies with a plan, without changing code,
+   until someone replies to go ahead. fctl links the agent session to the
+   fctl session (`externalUrls`) and says it works on it.
+6. **What goes back.** The agent's last message of each turn goes to the
+   agent session as Linear's response, which Linear posts in the issue's
+   thread, cut at 3,000 characters with a link to the rest
+   (`fctl_domain::tickets::reply`), or as an elicitation when it ends with
+   a question; the system prompt tells the agent so. A pull request the
+   session finds is linked from the agent session and attached to the
+   issue, with an action that says so; a step of the agent's (one of its
+   tool calls) shows as an ephemeral action at most every two minutes,
+   which keeps Linear from calling the session stale while the agent works
+   (SessionObject, `crate::delegations::step`); and its todo list as the
+   session's plan. A session that pauses on a usage limit, or fails, says so
+   there. The transcript says what fctl posted (`ticket_replied`,
+   `ticket_moved`). Nothing goes back for a session whose workspace no
+   longer works in the Linear workspace.
+7. **Replies and stops** (`prompted`). A reply in a started thread reaches
+   its session's agent as a message of the person who wrote it, as fctl
+   knows them, when they may message the session (`UserMessage::ticket`),
+   resuming a stopped session on the subscription it ran on, as a person's
+   message does; one from someone fctl doesn't know waits for them to link
+   their account. Their stop interrupts the agent's turn.
+
+Branches carry their ticket's key, so where the Linear workspace has
+Linear's GitHub integration, it links the session's pull requests to the
+ticket and moves the ticket on as they open and merge; agents write
+`Fixes ENG-123` (or `Part of ENG-123`) in their pull requests and leave the
+ticket's state alone unless asked. The project's Tickets tab shows the
+sessions tickets started lately (`GET /api/v1/projects/{id}/tickets`), and
+session lists and pages show each session's ticket (`Session::ticket`).
 
 ### Commits
 
@@ -2029,9 +2219,11 @@ A second socket beside
 it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),
 serves programs in the sandbox: `fctl edit` names and describes the session
 there, `fctl publish` publishes screenshots, `fctl memory` and `fctl retro`
-keep the project's memory and record and update retrospectives, and
+keep the project's memory and record and update retrospectives,
 `fctl resolve` resolves review threads ([GitHub access](#github-access)),
-with no fctl credentials in the sandbox.
+and `fctl ticket` reads and writes the project's tickets
+([Ticket trackers](#ticket-trackers)), with no fctl credentials in the
+sandbox.
 
 A stopped session keeps its sandbox, so resuming it on the same host
 continues Claude's conversation ([Idle sessions](#idle-sessions)). The host

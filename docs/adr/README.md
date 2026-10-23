@@ -54,3 +54,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0046](0046-registering-a-runner-takes-confirming-its-you.md) | Registering a runner, or replacing its token, takes confirming it's you |
 | [0047](0047-review-agents-review-outsiders-pull-requests-when-asked.md) | Review agents review outsiders' pull requests when someone asks |
 | [0048](0048-hosts-keep-package-caches-for-projects-that-share-them.md) | Hosts keep package caches for projects that share them |
+| [0051](0051-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md) | Projects choose a ticket tracker, and Linear delegates tickets to fctl |
