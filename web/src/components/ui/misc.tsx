@@ -42,6 +42,19 @@ export function Logo({
   );
 }
 
+/**
+ * Whether an avatar loads from another site than the app's: the browser sends the reader's cookies to the app's own
+ * addresses, so an avatar there would act for everyone who sees it. The control plane takes no such avatars any more;
+ * these are ones it kept from before.
+ */
+function offSite(url: string): boolean {
+  try {
+    return new URL(url, globalThis.location?.href).origin !== globalThis.location?.origin;
+  } catch {
+    return false;
+  }
+}
+
 export function Avatar({
   user,
   size = 24,
@@ -58,7 +71,7 @@ export function Avatar({
     "inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full font-semibold select-none",
     ring && "ring-2 ring-canvas",
   );
-  if (user.avatar_url && !broken) {
+  if (user.avatar_url && !broken && offSite(user.avatar_url)) {
     return (
       <img
         src={user.avatar_url}

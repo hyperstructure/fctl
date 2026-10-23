@@ -7,6 +7,7 @@ import { CopyButton, useLightbox } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { highlight } from "@/lib/highlight";
 import { textLink } from "@/lib/paths";
+import { isPublishedLink } from "@/lib/published";
 
 /**
  * The pixel sizes of images the page knows before they load, by address:
@@ -33,10 +34,25 @@ function Picture({ src, alt }: { src: string; alt: string }) {
  */
 export const Pictures = createContext(true);
 
-/** An image as a link to it, where pictures don't show. */
+/**
+ * Whether a picture may load from `src`: from anywhere the app's Content-Security-Policy lets it, but from the app's
+ * own address only a published screenshot. The browser sends the reader's cookies there, so any other address of the
+ * app's would act for them as they read: a picture can't run their export or use up their sign-in codes.
+ */
+function loads(src: string, origin: string = globalThis.location?.origin ?? "http://localhost"): boolean {
+  try {
+    return new URL(src).origin !== origin || isPublishedLink(src, origin);
+  } catch {
+    return false;
+  }
+}
+
+/** An image as a link to it, where pictures don't show: a link like any other, never to the app's sign-in pages. */
 function ImageLink({ src, alt }: { src: string; alt: string }) {
+  const to = textLink(src);
+  if (to?.kind !== "web") return <span>{alt || "Image"}</span>;
   return (
-    <a href={src} target="_blank" rel="noreferrer noopener">
+    <a href={to.href} target="_blank" rel="noreferrer noopener">
       {alt || "Image"}
     </a>
   );
@@ -65,6 +81,7 @@ function ZoomImage({ src, alt }: { src: string; alt: string }) {
 function Image({ src, alt, linked }: { src: string; alt: string; linked: boolean }) {
   if (!useContext(Pictures))
     return linked ? <span>{alt || "Image"}</span> : <ImageLink src={src} alt={alt} />;
+  if (!loads(src)) return <span>{alt || "Image"}</span>;
   return linked ? <Picture src={src} alt={alt} /> : <ZoomImage src={src} alt={alt} />;
 }
 

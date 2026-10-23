@@ -2,7 +2,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Gallery } from "@/components/ui/gallery";
-import { ImageSizes, Markdown } from "./markdown";
+import { ImageSizes, Markdown, Pictures } from "./markdown";
 
 vi.mock("@/components/ui", async () => ({
   ...(await vi.importActual<typeof import("@/components/ui/gallery")>("@/components/ui/gallery")),
@@ -98,5 +98,40 @@ describe("images in the agent's answers", () => {
     const c = render("![after.png](http://example.com/after.png)");
     expect(c.querySelector("img")).toBeNull();
     expect(c.textContent).toBe("after.png");
+  });
+
+  it("load from the app's own address only as published screenshots", () => {
+    // jsdom's page is on http, where published links of the app's own would be http too.
+    const app = "https://app.fctl.test";
+    vi.stubGlobal("location", new URL(`${app}/s/ses_1`));
+    try {
+      const export_ = render(`![x](${app}/api/v1/me/export)`);
+      expect(export_.querySelector("img")).toBeNull();
+      expect(export_.textContent).toBe("x");
+      const published = `${app}/api/v1/published/${"A".repeat(43)}/after.png`;
+      expect(render(`![after.png](${published})`).querySelector("img")?.getAttribute("src")).toBe(published);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("images in text from elsewhere", () => {
+  const elsewhere = (text: string) =>
+    render(text, undefined, (answer) => <Pictures value={false}>{answer}</Pictures>);
+
+  it("are links to them, like any other link", () => {
+    const a = elsewhere("![diagram](https://example.com/diagram.png)").querySelector("a");
+    expect(a?.getAttribute("href")).toBe("https://example.com/diagram.png");
+    expect(a?.textContent).toBe("diagram");
+  });
+
+  it("never link to the app's sign-in pages or API", () => {
+    const origin = globalThis.location.origin;
+    for (const page of [`${origin}/device?code=ABCD-EFGH`, `${origin}/api/v1/me/export`]) {
+      const c = elsewhere(`![screenshot](${page})`);
+      expect(c.querySelector("a")).toBeNull();
+      expect(c.textContent).toBe("screenshot");
+    }
   });
 });

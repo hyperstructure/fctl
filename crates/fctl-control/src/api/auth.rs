@@ -382,8 +382,7 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     };
     let avatar = match body.avatar_url.as_deref().map(str::trim) {
         Some("") => None,
-        Some(url) if url.starts_with("https://") && url.len() <= 500 => Some(url.to_owned()),
-        Some(_) => return Err(validation("avatar_url", "Use an https:// image URL")),
+        Some(url) => Some(validate::avatar_url(url, ctx.cfg.host())?),
         None => user.avatar_url.clone(),
     };
     // The primary address's commit email (Settings → Email addresses sets

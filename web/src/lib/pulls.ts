@@ -15,6 +15,14 @@ export function isGithubPull(pr: Pick<G.PullRequestRef, "url">): boolean {
   return /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(pr.url);
 }
 
+/**
+ * A link to a page on GitHub, as the app shows the links of reviews and follow-ups as GitHub's own, or undefined for
+ * one anywhere else: what runs in a sandbox can pose as its agent, whose notices carry links too.
+ */
+export function githubLink(url: string | undefined): string | undefined {
+  return url && /^https:\/\/github\.com\/[^\s\\]*$/.test(url) ? url : undefined;
+}
+
 /** Every pull request of a session, in the order its agent found them: those GitHub's own links name. */
 export function pullRequests(s: Pulls): G.PullRequestRef[] {
   return (s.pull_requests ?? (s.pull_request ? [s.pull_request] : [])).filter(isGithubPull);

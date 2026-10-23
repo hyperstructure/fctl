@@ -21,6 +21,7 @@ import {
   type Wrote,
 } from "@/lib/follow-ups";
 import { clock } from "@/lib/format";
+import { githubLink } from "@/lib/pulls";
 import { shortSha } from "@/lib/reviews";
 import { MilestoneButton, RailIcon, Thread } from "./lines";
 
@@ -52,9 +53,11 @@ export const FollowUpMessage = memo(function FollowUpMessage({
 
 /** The pull request, by its repository's name, as a link to `href` on GitHub. */
 export function PullLink({ f, href }: { f: Pick<G.FollowUp, "repo" | "number" | "title">; href: string }) {
+  const to = githubLink(href);
+  if (!to) return <span className="font-mono text-[12px] text-ink-3">{pullRef(f)}</span>;
   return (
     <a
-      href={href}
+      href={to}
       target="_blank"
       rel="noreferrer"
       title={f.title ? `${f.repo.owner}/${f.repo.name}#${f.number}: ${f.title}` : undefined}
@@ -85,7 +88,7 @@ export function When({ at }: { at: number }) {
 function Where({ c }: { c: G.FollowUpComment }) {
   return (
     <a
-      href={c.url}
+      href={githubLink(c.url)}
       target="_blank"
       rel="noreferrer"
       className="flex min-w-0 items-center gap-1.5 border-b border-line bg-sunken/60 px-4 py-1.5 font-mono text-[11.5px] text-ink-3 transition-colors hover:text-ink"
@@ -219,7 +222,7 @@ function HappenedLine({ f, e, ts, muted }: { f: G.FollowUp; e: Happened; ts: num
               <>
                 at
                 <a
-                  href={`${f.url}/commits/${e.sha}`}
+                  href={githubLink(`${f.url}/commits/${e.sha}`)}
                   target="_blank"
                   rel="noreferrer"
                   className="font-mono text-[12px] text-ink-3 underline-offset-2 transition-colors hover:text-ink hover:underline"

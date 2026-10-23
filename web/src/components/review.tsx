@@ -8,6 +8,7 @@ import { ChecksIcon, ReviewIcon } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { githubLink } from "@/lib/pulls";
 import { keys } from "@/lib/queries";
 import { earlierFindings, type ReviewLook, reviewLook, reviewOutcome, shortSha } from "@/lib/reviews";
 
@@ -60,6 +61,7 @@ export function ReviewPostedNotice({ posted }: { posted: G.PostedReview }) {
     posted.still_open > 0 &&
       `${posted.still_open === 1 ? "1 earlier finding is" : `${posted.still_open} earlier findings are`} still open`,
   ].filter(Boolean);
+  const url = githubLink(posted.url);
   return (
     <div className="my-2 flex animate-rise items-start gap-3 rounded-xl border border-line bg-raised/30 px-4 py-3">
       <ReviewStateIcon look={posted.state === "passed" ? "passed" : "commented"} className="mt-0.5 size-4" />
@@ -83,9 +85,9 @@ export function ReviewPostedNotice({ posted }: { posted: G.PostedReview }) {
           </p>
         )}
       </div>
-      {posted.url && (
+      {url && (
         <a
-          href={posted.url}
+          href={url}
           target="_blank"
           rel="noreferrer"
           className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12.5px] text-ink-2 transition-colors hover:bg-hover hover:text-ink"

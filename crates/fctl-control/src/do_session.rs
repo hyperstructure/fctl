@@ -1903,6 +1903,20 @@ impl SessionObject {
                     {
                         n.published = None;
                     }
+                    // What became of pull requests, with people's comments
+                    // on them, is the control plane's to tell, never an
+                    // uplink's; and a posted review's link goes only to
+                    // GitHub's pull request.
+                    if let EventBody::Notice(n) = &mut body {
+                        n.follow_up = None;
+                        if let Some(r) = n.review.as_mut() {
+                            r.url = r.url.as_deref().and_then(fctl_domain::reviews::posted_link);
+                            r.sent_to = r
+                                .sent_to
+                                .take()
+                                .filter(|s| fctl_proto::SessionId::is_valid(s.as_str()));
+                        }
+                    }
                     if let (EventBody::Git(g), Some(s)) = (&body, summary.as_mut()) {
                         let (changed, new) = Self::apply_git(s, g, now);
                         lists_changed |= changed;
