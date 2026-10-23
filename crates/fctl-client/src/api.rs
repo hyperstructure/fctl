@@ -775,6 +775,60 @@ impl Api {
             .await
     }
 
+    // ── schedules ──
+
+    /// A project's schedules, in the order they were made.
+    pub async fn schedules(&self, project: &str) -> Result<ScheduleList> {
+        self.get(&format!("/projects/{}/schedules", enc(project)))
+            .await
+    }
+
+    /// Sets up a schedule in a project, on the caller's Claude subscription.
+    pub async fn create_schedule(
+        &self,
+        project: &str,
+        req: &CreateScheduleRequest,
+    ) -> Result<Schedule> {
+        self.post(&format!("/projects/{}/schedules", enc(project)), req)
+            .await
+    }
+
+    /// A schedule, by id.
+    pub async fn get_schedule(&self, id: &str) -> Result<Schedule> {
+        self.get(&format!("/schedules/{}", enc(id))).await
+    }
+
+    /// Changes, pauses, resumes or takes over a schedule.
+    pub async fn update_schedule(&self, id: &str, req: &UpdateScheduleRequest) -> Result<Schedule> {
+        self.patch(&format!("/schedules/{}", enc(id)), req).await
+    }
+
+    /// Deletes a schedule; the sessions it started stay.
+    pub async fn delete_schedule(&self, id: &str) -> Result<Ok> {
+        self.delete(&format!("/schedules/{}", enc(id))).await
+    }
+
+    /// A schedule's runs, newest first, before `before` for the next page.
+    pub async fn schedule_runs(
+        &self,
+        id: &str,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<ScheduleRunList> {
+        let mut q = format!("/schedules/{}/runs?limit={limit}", enc(id));
+        if let Some(b) = before {
+            q.push_str(&format!("&before={b}"));
+        }
+        self.get(&q).await
+    }
+
+    /// Runs a schedule's task now, in a session on the caller's Claude
+    /// subscription.
+    pub async fn run_schedule(&self, id: &str, req: &RunScheduleRequest) -> Result<ScheduleRun> {
+        self.post(&format!("/schedules/{}/runs", enc(id)), req)
+            .await
+    }
+
     /// What an agent asks about its session's project (with the runner
     /// token): its memory, or a retrospective.
     pub async fn runner_call(&self, session: &str, call: &AgentCall) -> Result<AgentAnswer> {

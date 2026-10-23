@@ -436,7 +436,7 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     let previous_at = previous.as_ref().map(|prev| sch::stamp(&*zone, prev.at));
     let when = row
         .when()
-        .map(|w| w.describe(&*zone))
+        .map(|w| w.rhythm())
         .unwrap_or_else(|| "when someone runs it".into());
     let text = sch::prompt(
         &row.prompt,

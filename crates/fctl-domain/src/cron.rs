@@ -255,9 +255,27 @@ impl Cron {
         let every_day = self.any_day && self.any_weekday && self.months == ALL_MONTHS;
         let minutes = set(self.minutes, 0, 59);
         let hours = set(self.hours, 0, 23);
+        // Evenly through the day.
+        if every_day && hours.len() == 24 && minutes.len() > 1 {
+            return match step(&minutes, 60) {
+                Some(n) => format!("every {n} minutes"),
+                None => fallback(),
+            };
+        }
         let [minute] = minutes.as_slice() else {
             return fallback();
         };
+        if every_day
+            && hours.len() > 4
+            && hours.len() < 24
+            && let Some(n) = step(&hours, 24)
+        {
+            return if *minute == 0 {
+                format!("every {n} hours")
+            } else {
+                format!("every {n} hours at :{minute:02}")
+            };
+        }
         if hours.len() == 24 {
             return if every_day {
                 format!("every hour at :{minute:02}")
@@ -321,6 +339,20 @@ fn bit(n: u32) -> u64 {
 /// The values whose bits are set in `bits`, from `lo` to `hi`.
 fn set(bits: u64, lo: u32, hi: u32) -> Vec<u32> {
     (lo..=hi).filter(|n| bits & bit(*n) != 0).collect()
+}
+
+/// The step between `values` when they start at 0 and go evenly round a
+/// `period` (`0, 15, 30, 45` of 60: 15).
+fn step(values: &[u32], period: u32) -> Option<u32> {
+    let (&first, &second) = (values.first()?, values.get(1)?);
+    let n = second - first;
+    let even = first == 0
+        && period.is_multiple_of(n)
+        && values.len() as u32 == period / n
+        && values
+            .windows(2)
+            .all(|w| w.get(1).zip(w.first()).is_some_and(|(b, a)| b - a == n));
+    even.then_some(n)
 }
 
 /// "a", "a and b", "a, b and c".
@@ -721,6 +753,13 @@ pub(crate) mod tests {
                 "on the 1st and 15th of every month at 08:00",
             ),
             ("0 8 22 * *", "on the 22nd of every month at 08:00"),
+            ("*/15 * * * *", "every 15 minutes"),
+            ("0,30 * * * *", "every 30 minutes"),
+            ("5,35 * * * *", "on the cron schedule 5,35 * * * *"),
+            ("0 */2 * * *", "every 2 hours"),
+            ("15 */3 * * *", "every 3 hours at :15"),
+            ("0 */6 * * *", "every day at 00:00, 06:00, 12:00 and 18:00"),
+            ("0 */5 * * *", "on the cron schedule 0 */5 * * *"),
             (
                 "*/15 9-17 * * 1-5",
                 "on the cron schedule */15 9-17 * * 1-5",

@@ -514,16 +514,25 @@ impl Problems {
             };
             self.owners.insert(key.clone(), found);
         }
+        let zone = zone(&row.timezone);
         Ok(match self.owners.get(&key) {
             Some(Err(why)) => Some(format!("{why} Its next run pauses it.")),
-            Some(Ok((name, limits))) => sch::at_limit(limits, next.max(now)).map(|limit| {
-                let zone = zone(&row.timezone);
-                let why = sch::limit_reason(name, limit, &*zone, true);
-                match row.when() {
-                    Some(When::At(_)) => format!("{why} It starts once the limit resets."),
-                    _ => format!("{why} Its runs until then are skipped."),
-                }
-            }),
+            Some(Ok((name, limits))) => match (sch::at_limit(limits, next.max(now)), row.when()) {
+                (Some(limit), Some(When::At(_))) => Some(format!(
+                    "{} It starts once the limit resets.",
+                    sch::limit_reason(name, limit, &*zone, true)
+                )),
+                (Some(limit), _) => Some(format!(
+                    "{} Its runs until then are skipped.",
+                    sch::limit_reason(name, limit, &*zone, true)
+                )),
+                // It ran once, at a time the plan was at its limit.
+                (None, Some(When::At(at))) if next > at + cron::MINUTE_MS => Some(format!(
+                    "{name}'s Claude plan was at its limit at its time, so it waits for the limit to reset: it starts on {}.",
+                    sch::stamp(&*zone, next)
+                )),
+                (None, _) => None,
+            },
             None => None,
         })
     }
@@ -684,7 +693,7 @@ async fn take_up(env: &Env, db: &D1Database, row: &ScheduleRow, now: i64) -> App
             &row.prompt,
             &RunNote {
                 name: &row.name,
-                when: &when.describe(&*zone),
+                when: &when.rhythm(),
                 timezone: &row.timezone,
                 owner: &owner.user.name,
                 by: StartedBy::Time,
