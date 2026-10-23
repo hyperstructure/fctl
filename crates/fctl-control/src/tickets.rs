@@ -601,9 +601,12 @@ async fn linear_issue(
     key: &str,
 ) -> AppResult<(Value, Ticket)> {
     let elsewhere = || {
-        not_found(&format!(
-            "Ticket {key} (this project works on {}'s tickets)",
-            l.team_key.as_deref().unwrap_or("its team")
+        AppError(ApiError::new(
+            ErrorCode::NotFound,
+            format!(
+                "{} has no ticket {key}: this project works on its tickets alone",
+                l.team_key.as_deref().unwrap_or("The project's team")
+            ),
         ))
     };
     let Some(key) = tk::linear_key(key) else {

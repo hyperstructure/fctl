@@ -7,7 +7,9 @@
 //! also purges its sessions and files right away. It also looks up the
 //! pull requests sessions list that GitHub hasn't told about for a while
 //! (`pull_requests::sweep`), and sets the alarm of schedules again
-//! (`schedules::wake`), in case a change never reached it.
+//! (`schedules::wake`), in case a change never reached it. It forgets the
+//! delegations in Linear that waited an hour for their person, and gives
+//! up fctl's access to Linear workspaces no fctl workspace works in.
 
 use crate::db::{n, q, s};
 use crate::error::AppResult;
@@ -175,6 +177,9 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     // Delegations in Linear that waited an hour for their person.
     if let Err(e) = crate::delegations::expire(&db, now).await {
         worker::console_error!("forgetting delegations that waited: {}", e.0.message);
+    }
+    if let Err(e) = crate::delegations::uninstall_unused(env, &db).await {
+        worker::console_error!("giving up unused Linear workspaces: {}", e.0.message);
     }
     // A failed lookup leaves the rest to do.
     match crate::pull_requests::sweep(env, &db, now).await {

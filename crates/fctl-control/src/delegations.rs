@@ -591,11 +591,18 @@ async fn take(
     });
     let title = fctl_domain::validate::session_title(&ticket.title)
         .unwrap_or_else(|_| fctl_domain::naming::title_from_prompt(&ticket.title));
+    // Linear asks agents to start what is delegated to them: before the
+    // session, so that its agent hears of it.
+    let moved = if delegated && taker.linear.moves_started() {
+        move_started(linear, &ticket, &team).await
+    } else {
+        None
+    };
     let column = TicketColumn {
         ticket: st.clone(),
         organization: Some(e.organization_id.clone()),
         explore,
-        moved_to: None,
+        moved_to: moved.as_ref().map(|m| m.name.clone()),
     };
     let (session_id, number) = crate::starts::start(
         env,
@@ -660,24 +667,7 @@ async fn take(
     {
         worker::console_error!("linking Linear's agent session: {}", err.0.message);
     }
-    // Linear asks agents to start what is delegated to them.
-    let moved = if delegated && taker.linear.moves_started() {
-        move_started(linear, &ticket, &team).await
-    } else {
-        None
-    };
     if let Some(state) = &moved {
-        let column = TicketColumn {
-            moved_to: Some(state.name.clone()),
-            ..column
-        };
-        q(
-            db,
-            "UPDATE sessions SET ticket = ? WHERE id = ?",
-            &[s(&serde_json::to_string(&column)?), s(session_id.as_str())],
-        )?
-        .run()
-        .await?;
         notice(
             env,
             session_id.as_str(),
@@ -1392,6 +1382,31 @@ pub async fn plan(env: &Env, session_id: &str, plan: Value) -> AppResult<()> {
     a.linear
         .update_session(&a.thread.id, json!({ "plan": plan }))
         .await
+}
+
+/// Gives up fctl's access to the Linear workspaces no fctl workspace works
+/// in any more: one whose last workspace was deleted (the hourly job).
+pub async fn uninstall_unused(env: &Env, db: &D1Database) -> AppResult<()> {
+    #[derive(Deserialize)]
+    struct Row {
+        organization_id: String,
+    }
+    let unused: Vec<Row> = q(
+        db,
+        "SELECT organization_id FROM linear_installations i WHERE NOT EXISTS          (SELECT 1 FROM workspace_linear wl WHERE wl.organization_id = i.organization_id) LIMIT 20",
+        &[],
+    )?
+    .all()
+    .await?;
+    if unused.is_empty() {
+        return Ok(());
+    }
+    let cfg = Config::from_env(env);
+    let keys = crypto::keys(&cfg)?;
+    for r in unused {
+        linear::uninstall_if_unused(db, &cfg, &keys, &r.organization_id).await?;
+    }
+    Ok(())
 }
 
 /// Forgets what waited longer than an hour (the hourly job).

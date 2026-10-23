@@ -36,6 +36,12 @@ pub async fn instance(ctx: &Ctx) -> AppResult<Response> {
             github_webhook: crate::pull_requests::enabled(&ctx.cfg),
             publish_screenshots: settings.publish_screenshots,
             early_access: ctx.cfg.early_access,
+            linear: ctx.cfg.linear.is_some(),
+            linear_webhook: ctx
+                .cfg
+                .linear
+                .as_ref()
+                .is_some_and(|l| l.webhook_secret.is_some()),
         },
     })
 }

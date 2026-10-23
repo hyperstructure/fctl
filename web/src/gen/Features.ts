@@ -31,4 +31,15 @@ publish_screenshots: boolean,
  * list ([`AccessRequestList`]): where the deployment turns it on
  * (`FCTL_EARLY_ACCESS`), as app.fctl.sh's does.
  */
-early_access: boolean, };
+early_access: boolean, 
+/**
+ * The instance has a Linear app (`LINEAR_CLIENT_ID` and its secret):
+ * workspaces connect Linear workspaces, and projects choose Linear as
+ * their ticket tracker. Absent from control planes before it.
+ */
+linear?: boolean, 
+/**
+ * It takes Linear's webhook (`LINEAR_WEBHOOK_SECRET`): what people
+ * delegate to fctl in Linear starts sessions.
+ */
+linear_webhook?: boolean, };

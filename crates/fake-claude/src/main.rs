@@ -28,6 +28,7 @@
 //! | `screenshot` | draws a small PNG and publishes it with `fctl publish`, as agents do for pull requests |
 //! | `remember <text>` | adds `<text>` (to the end of its line) to the project's memory with `fctl memory add`, as agents do |
 //! | `recall` | lists the project's memory with `fctl memory` |
+//! | a line that starts with `fctl ticket` | runs it, as agents read and write their project's tickets (`fctl ticket view ENG-1`, `fctl ticket comment ENG-1 "On it"`) |
 //! | `retro` | records a retrospective of the turn's work with `fctl retro`, as agents do when they finish a piece of work: completed, or `partial` or `blocked` when the message says so |
 //! | `revise` | updates the session's newest retrospective (after `retro`, in the same message or an earlier one) with `fctl retro list` and `fctl retro update`: completed, with what the work was and what got in the way said again, as agents do when a later turn carries on with work they recorded |
 //! | `slow` | streams for about ten seconds (try interrupting) |
@@ -1220,6 +1221,21 @@ impl Session {
         }
         if says(&lower, "recall") {
             self.fctl(&["memory"], "Read the project's memory");
+        }
+        // Lines that are `fctl ticket` commands run as they are, as agents
+        // reach their project's tracker.
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("fctl ticket"))
+        {
+            let (output, failed) = sh(line);
+            self.tool(
+                "Bash",
+                json!({"command": line, "description": "Work with the project's tickets"}),
+                &output,
+                failed,
+            );
         }
         if says(&lower, "retro") {
             let outcome = ["blocked", "partial"]

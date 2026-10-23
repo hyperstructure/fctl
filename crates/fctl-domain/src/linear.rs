@@ -385,7 +385,7 @@ pub const TEAM_STATES: &str = "query($id: String!) { team(id: $id) { id key name
 pub const TEAM_LABELS: &str = "query($id: String!) { team(id: $id) { labels(first: 100) { nodes { id name } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } } }";
 
 /// An issue's fields, as [`ticket`] reads them.
-const ISSUE_FIELDS: &str = "id identifier title description url branchName priority priorityLabel estimate dueDate createdAt updatedAt \
+const ISSUE_FIELDS: &str = "id identifier title description url priority priorityLabel estimate dueDate createdAt updatedAt \
     state { id name type } team { id key name } project { id name } cycle { name number } \
     labels(first: 20) { nodes { id name } } assignee { id name displayName avatarUrl } \
     delegate { id name displayName avatarUrl app } parent { id identifier title url state { id name type } }";
@@ -554,7 +554,8 @@ fn link(v: &Value) -> Option<TicketLink> {
 }
 
 /// A Linear issue (as [`issue_query`] and the others ask for it) as a
-/// [`Ticket`]: its estimate, due date, cycle and branch as fields.
+/// [`Ticket`]: its estimate, due date and cycle as fields. Linear's own
+/// branch name stays out: fctl names the session's branch.
 pub fn ticket(v: &Value) -> Option<Ticket> {
     let id = s(v, "id")?;
     let key = s(v, "identifier")?;
@@ -583,12 +584,6 @@ pub fn ticket(v: &Value) -> Option<Ticket> {
                 value: name,
             });
         }
-    }
-    if let Some(b) = s(v, "branchName") {
-        fields.push(TicketField {
-            name: "Branch".into(),
-            value: b,
-        });
     }
     let team = v.get("team");
     let project = v.get("project").and_then(|p| s(p, "name"));
@@ -1196,7 +1191,7 @@ mod tests {
         assert_eq!(field("Estimate"), Some("3"));
         assert_eq!(field("Due"), Some("2026-11-01"));
         assert_eq!(field("Cycle"), Some("Cycle 7"));
-        assert_eq!(field("Branch"), Some("ada/eng-12-fix-login"));
+        assert_eq!(field("Branch"), None);
         assert_eq!(t.created_at, Some(1_792_490_400_000));
         assert_eq!(
             place(&issue_json()),
