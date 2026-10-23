@@ -203,7 +203,11 @@ async fn check_repo(
 }
 
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
-    let body: CreateProjectRequest = http::body(req).await?;
+    // Read as JSON first: a new project's settings start with connectors off
+    // unless the request sets them (see `settings::for_new_project`).
+    let raw: serde_json::Value = http::body(req).await?;
+    let body = CreateProjectRequest::deserialize(&raw)
+        .map_err(|e| AppError(ApiError::bad_request(format!("Invalid request body: {e}"))))?;
     let user = ctx.user()?.clone();
     let workspace = target_workspace(ctx, body.workspace.as_deref(), true).await?;
     fctl_domain::workspace::check_create_project(Some(workspace.require_open()?))?;
@@ -240,7 +244,12 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             candidate
         }
     };
-    let settings = clean_settings(body.settings.clone().unwrap_or_default())?;
+    let mut settings = body.settings.clone().unwrap_or_default();
+    settings::for_new_project(
+        &mut settings,
+        raw.get("settings").unwrap_or(&serde_json::Value::Null),
+    );
+    let settings = clean_settings(settings)?;
     // The repository: an existing one, a new one, or none.
     let mut repo: Option<RepoRef> = None;
     let mut default_branch = body

@@ -35,6 +35,17 @@ pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
     env
 }
 
+/// A new project starts with claude.ai connectors off, so that people opt
+/// in: a create request that leaves `claude_ai_connectors` out (or sends no
+/// settings at all) gets `false`, though a `ProjectSettings` read without
+/// the field is `true` (projects from before it keep their connectors).
+/// `sent` is the request's `settings` as it arrived.
+pub fn for_new_project(settings: &mut ProjectSettings, sent: &Value) {
+    if sent.get("claude_ai_connectors").is_none() {
+        settings.claude_ai_connectors = false;
+    }
+}
+
 /// Keeps the stored value of settings that an update leaves out. An update
 /// replaces all settings, so a client from before a setting existed (a tab
 /// opened before a deploy, an older CLI) would reset it to its default
@@ -113,6 +124,19 @@ mod tests {
         // A project may still turn them off with the variable itself.
         let s = settings(true, &[(CLAUDE_AI_CONNECTORS_ENV, "0")]);
         assert_eq!(session_env(&s), s.env);
+    }
+
+    #[test]
+    fn new_projects_start_without_connectors_unless_asked() {
+        let mut s = ProjectSettings::default();
+        for_new_project(&mut s, &Value::Null);
+        assert!(!s.claude_ai_connectors);
+        let mut s = ProjectSettings::default();
+        for_new_project(&mut s, &json!({ "setup_script": "npm ci" }));
+        assert!(!s.claude_ai_connectors);
+        let mut s = ProjectSettings::default();
+        for_new_project(&mut s, &json!({ "claude_ai_connectors": true }));
+        assert!(s.claude_ai_connectors);
     }
 
     #[test]

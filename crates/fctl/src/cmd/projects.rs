@@ -53,10 +53,13 @@ pub enum ProjectsCmd {
         /// A sentence for people (agents do not see it).
         #[arg(long)]
         description: Option<String>,
-        /// Turn off claude.ai connectors in the project's sessions. With
-        /// them, agents can use the connectors (mail, files, docs) of the
-        /// person who starts a session without asking.
+        /// Turn on claude.ai connectors in the project's sessions: agents
+        /// can then use the connectors (mail, files, docs) of the person
+        /// who starts a session without asking. Off by default.
         #[arg(long)]
+        connectors: bool,
+        /// Connectors are off already; kept so that existing scripts work.
+        #[arg(long, hide = true, conflicts_with = "connectors")]
         no_connectors: bool,
     },
     /// Change a project's settings (maintainers). Sessions take a change
@@ -660,7 +663,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             public,
             slug,
             description,
-            no_connectors,
+            connectors,
+            no_connectors: _,
         } => {
             let req = CreateProjectRequest {
                 workspace: workspace.or_else(|| config::CliConfig::load().workspace),
@@ -675,8 +679,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     owner,
                 }),
                 default_branch: None,
-                settings: no_connectors.then(|| ProjectSettings {
-                    claude_ai_connectors: false,
+                settings: connectors.then(|| ProjectSettings {
+                    claude_ai_connectors: true,
                     ..Default::default()
                 }),
             };

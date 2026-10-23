@@ -125,8 +125,8 @@ export const useSessions = (q: {
 }) => useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q) });
 /**
  * A project's sessions that haven't ended (not review agents'), newest
- * first, by project id: the sidebar lists them under it on a session's
- * page. Until they come, those the lists in the cache have.
+ * first, by project id: the sidebar lists them under it on its page and
+ * its sessions'. Until they come, those the lists in the cache have.
  */
 export const useLiveSessions = (project: string | undefined) => {
   const qc = useQueryClient();

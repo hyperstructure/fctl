@@ -1793,8 +1793,9 @@ shows the links, and the transcript's note, to that person alone; states
 from before it named anyone count as the starter's.
 
 A full login also brings the person's claude.ai connectors (Claude Code
-fetches them with the `user:mcp_servers` scope). A project can turn them off
-(`claude_ai_connectors` in its settings): the control plane then adds
+fetches them with the `user:mcp_servers` scope). New projects start with
+them off, unless the request that creates one sets `claude_ai_connectors` in
+its settings; a project can turn them on or off there. When off, the control plane then adds
 `ENABLE_CLAUDEAI_MCP_SERVERS=false` to the environment in the session's
 spec, which every fctl-agent passes to Claude, and fctl-agent writes
 `disableClaudeAiConnectors` into Claude's user settings, which no
