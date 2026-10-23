@@ -33,7 +33,9 @@ use fctl_proto::runner::{
     StopReason,
 };
 use fctl_proto::session::{GithubAccess, ProjectSettings, RemoteControlState, SessionStatus};
-use fctl_proto::uplink::{AgentEvent, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState};
+use fctl_proto::uplink::{
+    AgentEvent, ContextWindow, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState,
+};
 use fctl_proto::{ApiError, DeliveryId, PROTOCOL_VERSION, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -98,6 +100,8 @@ pub(crate) enum Work {
     Log(LogLevel, String, LogSource),
     /// The effort level Claude works at ([`claude::applied_effort`]).
     Effort(String),
+    /// The context window Claude works in ([`claude::context_window`]).
+    Context(ContextWindow),
 }
 
 /// Why we asked the host for a credential.
@@ -217,6 +221,7 @@ impl Supervisor {
                     stats: None,
                     title: persisted.title.clone(),
                     description: persisted.description.clone(),
+                    context: None,
                 },
                 persisted,
                 claude: None,
@@ -1017,6 +1022,15 @@ impl Supervisor {
                     });
                 }
             }
+            Work::Context(window) => {
+                if self.state.context != Some(window) {
+                    self.state.context = Some(window);
+                    self.flush();
+                    self.send(&AgentToHost::State {
+                        state: self.state.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -1259,6 +1273,7 @@ impl Supervisor {
             anyhow::bail!("Claude did not initialize: {e}");
         }
         read_effort(&mut c, &self.work_tx);
+        read_context(&mut c, &self.work_tx);
         self.persisted.claude_started = true;
         self.persist();
         // Remote Control: follow the session in claude.ai/code and the apps.
@@ -1523,9 +1538,11 @@ impl Supervisor {
         self.emit(EventBody::Claude(v));
         if is_result {
             // `/effort high` in a message changes the effort level, and so
-            // can the Claude apps over Remote Control.
+            // can the Claude apps over Remote Control. `/model` changes the
+            // context window too.
             if let Some(c) = self.claude.as_mut() {
                 read_effort(c, &self.work_tx);
+                read_context(c, &self.work_tx);
             }
             self.turn_active = more_queued;
             self.claude_turn = false;
@@ -2178,6 +2195,28 @@ fn read_effort(claude: &mut Claude, work: &mpsc::UnboundedSender<Work>) {
                 }
             }
             Err(e) => tracing::debug!("get_settings: {e}"),
+        }
+    });
+}
+
+/// Asks Claude which context window it works in; the answer comes back as
+/// [`Work::Context`]. A `summary` comes from the last response's usage and
+/// Claude's own estimates, without asking the API to count each part of the
+/// context. Claude Code before `get_context_usage` says nothing.
+fn read_context(claude: &mut Claude, work: &mpsc::UnboundedSender<Work>) {
+    let answer = claude.ask(
+        json!({ "subtype": "get_context_usage", "detail": "summary" }),
+        Duration::from_secs(30),
+    );
+    let work = work.clone();
+    tokio::spawn(async move {
+        match answer.await {
+            Ok(usage) => {
+                if let Some(window) = claude::context_window(&usage) {
+                    let _ = work.send(Work::Context(window));
+                }
+            }
+            Err(e) => tracing::debug!("get_context_usage: {e}"),
         }
     });
 }
@@ -3265,6 +3304,60 @@ done
     }
 
     #[tokio::test]
+    async fn the_session_says_which_context_window_claude_works_in() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, mut work) = Supervisor::new(dir.path().join("state"), None)?;
+        sup.config = Some(config(dir.path(), false)?);
+        let (host_tx, mut host) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        sup.turn_active = true;
+        sup.set_status(SessionStatus::Running, None);
+        // A Claude Code that answers a summary of its context as 2.1.308
+        // does (categories left out), and nothing else.
+        let script = r##"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in *'"detail":"summary"'*'"get_context_usage"'*)
+    id=$(printf '%s' "$line" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
+    printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"categories":[],"totalTokens":16480,"maxTokens":1000000,"rawMaxTokens":1000000,"percentage":2,"model":"claude-opus-5-5","autoCompactThreshold":967000,"isAutoCompactEnabled":true,"autocompactSource":"model-default","apiUsage":null}}}\n' "$id" ;;
+  esac
+done
+"##;
+        sup.claude = Some(script_claude(dir.path(), &sup, script)?);
+
+        // Claude says at the end of each turn.
+        sup.on_claude_message(result()).await;
+        let window = loop {
+            match tokio::time::timeout(Duration::from_secs(10), work.recv()).await? {
+                Some(Work::Context(window)) => break window,
+                Some(_) => continue,
+                None => panic!("expected Claude's context window"),
+            }
+        };
+        let expected = ContextWindow {
+            tokens: 1_000_000,
+            compact_at: Some(967_000),
+        };
+        assert_eq!(window, expected);
+        states_sent(&mut host);
+        sup.on_work(Work::Context(window)).await;
+        let states = states_sent(&mut host);
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].context, Some(expected));
+        assert_eq!(states[0].status, SessionStatus::Idle);
+        // The same window again changes nothing.
+        sup.on_work(Work::Context(window)).await;
+        assert!(states_sent(&mut host).is_empty());
+        // Another model's.
+        let smaller = ContextWindow {
+            tokens: 200_000,
+            compact_at: Some(167_000),
+        };
+        sup.on_work(Work::Context(smaller)).await;
+        assert_eq!(states_sent(&mut host)[0].context, Some(smaller));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn thinking_progress_goes_out_live_and_is_not_kept() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let (mut sup, mut host) = in_a_turn(dir.path())?;
@@ -3630,10 +3723,12 @@ done
         );
         sup.on_claude_message(turn_state("running")).await;
         assert_eq!(waiting(&sup).0, SessionStatus::Paused);
-        let sent = sent_to_claude(dir.path(), 2).await?;
-        // Each turn's end asks which effort level Claude works at.
+        let sent = sent_to_claude(dir.path(), 3).await?;
+        // Each turn's end asks which effort level Claude works at, and in
+        // which context window.
         assert_eq!(sent[0]["request"]["subtype"], "get_settings");
-        assert_eq!(sent[1]["request"]["subtype"], "interrupt");
+        assert_eq!(sent[1]["request"]["subtype"], "get_context_usage");
+        assert_eq!(sent[2]["request"]["subtype"], "interrupt");
         sup.on_claude_message(result()).await;
         assert_eq!(waiting(&sup).0, SessionStatus::Paused);
 
@@ -3644,9 +3739,9 @@ done
         sup.begin_stop("Stopped".into(), 30_000).await;
         sup.on_claude_message(result()).await;
         sup.on_claude_message(turn_state("running")).await;
-        let sent = sent_to_claude(dir.path(), 6).await?;
-        assert_eq!(sent[3]["request"]["subtype"], "interrupt");
+        let sent = sent_to_claude(dir.path(), 9).await?;
         assert_eq!(sent[5]["request"]["subtype"], "interrupt");
+        assert_eq!(sent[8]["request"]["subtype"], "interrupt");
         assert_eq!(waiting(&sup).0, SessionStatus::Stopping);
         Ok(())
     }

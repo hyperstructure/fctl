@@ -753,8 +753,9 @@ pub struct RemoteControlState {
     pub user: Option<UserRef>,
 }
 
-/// Counters shown on session lists. Tokens count each API call as it comes,
-/// and settle on Claude's own totals at the end of each turn.
+/// Counters shown on session lists and session pages. Tokens count each API
+/// call as it comes, and settle on Claude's own totals at the end of each
+/// turn.
 #[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -774,6 +775,20 @@ pub struct SessionStats {
     /// When the turn under way started (absent between turns). It isn't in
     /// `turns` or `busy_ms` until it ends.
     pub turn_started_at: Option<Millis>,
+    /// Tokens in Claude's context: the input of the conversation's latest
+    /// API call, cached or not, as Claude Code's status line counts it
+    /// (subagents have contexts of their own), or what a compaction left.
+    /// Absent until the first call, and from control planes before it.
+    pub context_tokens: Option<u64>,
+    /// How many tokens the context holds at most, as Claude last said
+    /// (`ContextWindow`). Absent until it has, and from older agents.
+    pub context_window: Option<u64>,
+    /// The context size at which Claude compacts the conversation on its
+    /// own, as it last said. Absent when it doesn't before the window is
+    /// full, or hasn't said.
+    pub compact_at: Option<u64>,
+    /// Times Claude compacted the conversation (`compact_boundary`).
+    pub compactions: u32,
 }
 
 impl SessionStats {

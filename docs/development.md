@@ -96,6 +96,10 @@ faster than the week passes (`allowed_warning`: the apps go by the share
 used instead), `refresh` asks the host for a new OAuth token,
 `effort <level>` (or Claude Code's `/effort <level>`) changes the effort
 level it works at (`low` … `max`, or `none` as a model that takes none),
+`context <tokens>` fills its context to that many tokens before it answers
+(`context 155k`, which the session page shows in amber, nine tenths of the
+way to where it compacts), `compact` (or Claude Code's `/compact`)
+compacts the conversation,
 a review session's task (`Review acme/web#12, … at commit …`) reviews as a
 review agent does: it reads the pull request's commits and diff and fctl's
 earlier findings (`fctl review threads`), then posts with `fctl review
@@ -105,7 +109,12 @@ instance has no GitHub App, so no review starts there by itself),
 and `crash` exits mid-turn. Anything
 else gets a short answer with a tool call. It answers `get_settings` with
 its model and effort level (`--effort`, else `medium`), which the session
-page and `fctl show` show. A message sent during a turn
+page and `fctl show` show. Its context grows with each call, from the 18K
+tokens of its system prompt and tools; like Claude Code with a 200K
+window, it compacts the conversation on its own once its context reaches
+167K tokens, and it answers `get_context_usage` with that window and where
+it compacts, which the Work section of the session page and `fctl show`
+show with the context. A message sent during a turn
 waits for it and gets a turn of its own; each `result` says how many
 messages still wait (`queued_turn_count`), as Claude Code's does, so the
 session stays running until fake-claude has answered the last one. Like
