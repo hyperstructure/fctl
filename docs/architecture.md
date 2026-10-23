@@ -1127,8 +1127,14 @@ posts what it found on GitHub
    pushes, and answers each in its thread (`gh api …/comments/{id}/replies`)
    with what it decided and why, or in a comment on the pull request for
    those in the review's summary, leaving the threads for the next review
-   to resolve. Pull requests that merged or closed, archived and failed
-   sessions, and sessions whose agent only reads on GitHub get nothing.
+   to resolve. The message carries the review (`UserMessage.review`,
+   `passed_on_review`), which the session's transcript shows in a few
+   lines: a line for each finding, with its severity and lines, that
+   opens its comment on GitHub, and the message itself a click away.
+   Messages from before it, like other long messages from fctl, show
+   their first lines, with the rest a click away. Pull requests that
+   merged or closed, archived and failed sessions, and sessions whose
+   agent only reads on GitHub get nothing.
    So that the agent and the review agent can't go back and forth for
    good, a session gets the findings of at most five reviews in a row
    (`MAX_PASSED_ON`) while no person messages its agent; the next ones

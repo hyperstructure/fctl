@@ -341,6 +341,21 @@ describe("TranscriptBuilder", () => {
     expect(items.map((i) => i.kind)).toEqual(["prose"]);
   });
 
+  it("keeps what fctl's messages are about: a pull request's follow-up, a review's findings", () => {
+    const repo = { owner: "acme", name: "web" };
+    const url = "https://github.com/acme/web/pull/12";
+    const followUp: G.FollowUp = { repo, number: 12, url, events: [{ kind: "closed" }] };
+    const review: G.PassedOnReview = { repo, number: 12, url, sha: "3f2a1c9", session: "ses_r", findings: [] };
+    const items = new TranscriptBuilder().add([
+      ev("user_message", { id: "dlv_1", text: "On GitHub, …", source: "system", follow_up: followUp }),
+      ev("user_message", { id: "dlv_2", text: "fctl's review agent …", source: "system", review }),
+    ]);
+    expect(items.map((i) => i.kind === "user" && [i.followUp, i.review])).toEqual([
+      [followUp, undefined],
+      [undefined, review],
+    ]);
+  });
+
   it("ignores events it has already seen", () => {
     const b = new TranscriptBuilder();
     const e = ev("user_message", { id: "dlv_1", text: "hi", source: "web" });

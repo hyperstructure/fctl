@@ -12,7 +12,7 @@ vi.mock("@/components/ui", async () => {
     await vi.importActual<typeof import("@/components/ui/lightbox")>("@/components/ui/lightbox");
   const { Gallery, useLightbox } =
     await vi.importActual<typeof import("@/components/ui/gallery")>("@/components/ui/gallery");
-  const { ThoughtIcon } =
+  const { GithubIcon, ReviewIcon, ThoughtIcon } =
     await vi.importActual<typeof import("@/components/ui/icons")>("@/components/ui/icons");
   return {
     Avatar: () => null,
@@ -20,7 +20,10 @@ vi.mock("@/components/ui", async () => {
     CopyButton: () => null,
     Dialog: () => null,
     Gallery,
+    GithubIcon,
+    Logo: () => null,
     plainClick,
+    ReviewIcon,
     Spinner: () => <svg className="animate-spin" />,
     ThoughtIcon,
     toast: vi.fn(),
@@ -707,5 +710,65 @@ describe("what the agent keeps", () => {
     expect(c.textContent).toContain("Retrospective updated");
     expect(c.textContent).toContain("Completed");
     expect(c.textContent).toContain("Worked onMoved the uploads to the new bucket.");
+  });
+});
+
+describe("messages from fctl", () => {
+  const fromFctl = (text: string, review?: G.PassedOnReview): Item => ({
+    kind: "user",
+    key: `u-${++seq}`,
+    seq,
+    ts: 0,
+    text,
+    source: "system",
+    review,
+  });
+  const told = (c: HTMLElement, name: string) =>
+    [...c.querySelectorAll("button")].find((b) => b.textContent?.includes(name));
+
+  it("show a review's findings in a few lines, with the message a click away", () => {
+    const findings = Array.from({ length: 3 }, (_, i) => `${i + 1}. Finding ${i + 1}\n   ${"Why. ".repeat(80)}`);
+    const text = `fctl's review agent reviewed commit 3f2a1c9 …:\n\n${findings.join("\n\n")}`;
+    const review: G.PassedOnReview = {
+      repo: { owner: "acme", name: "web" },
+      number: 12,
+      url: "https://github.com/acme/web/pull/12",
+      sha: "3f2a1c9d",
+      session: "ses_review",
+      findings: [1, 2, 3].map((n) => ({ severity: "medium", title: `Finding ${n}`, path: "src/a.rs", line: n })),
+    };
+    const c = transcript([fromFctl(text, review)], "idle");
+    expect(c.textContent).toContain("found 3 issues");
+    expect(c.querySelectorAll("li")).toHaveLength(3);
+    expect(c.textContent).not.toContain("Why.");
+    act(() => told(c, "What fctl told the agent")?.click());
+    expect(c.textContent).toContain("Why.");
+  });
+
+  it("show their first lines when long, with the rest a click away", () => {
+    const text = `fctl's review agent reviewed commit 3f2a1c9 …:\n\n${"1. A finding\n   Why.\n\n".repeat(10)}`;
+    const c = transcript([fromFctl(text)], "idle");
+    const all = told(c, "Show all");
+    const shown = c.querySelector(`#${CSS.escape(all?.getAttribute("aria-controls") ?? "")}`);
+    expect(shown?.className).toContain("line-clamp-5");
+    act(() => all?.click());
+    expect(all?.textContent).toBe("Show less");
+    expect(all?.getAttribute("aria-expanded")).toBe("true");
+    expect(shown?.className).not.toContain("line-clamp");
+  });
+
+  it("show short ones, and people's messages, whole", () => {
+    const long = "Please look at this. ".repeat(60);
+    const c = transcript(
+      [
+        fromFctl("Review acme/web#12, “Fix the login redirect”, at commit 3f2a1c9."),
+        { kind: "user", key: "u-ada", seq: 1000, ts: 0, author: ada, text: long, source: "web" },
+      ],
+      "idle",
+    );
+    expect(told(c, "Show all")).toBeUndefined();
+    expect(c.querySelector(".line-clamp-5")).toBeNull();
+    expect(c.textContent).toContain("Review acme/web#12");
+    expect(c.textContent).toContain(long.trim());
   });
 });
