@@ -85,7 +85,7 @@ export function DevicePage() {
             {info.data && (
               <div className="mt-6 animate-rise rounded-xl border border-line-strong bg-surface p-5">
                 <div className="flex items-start gap-3">
-                  <ShieldCheck className="mt-0.5 size-5 text-accent" />
+                  <ShieldCheck className="mt-0.5 size-5 shrink-0 text-accent" />
                   <div className="min-w-0 text-[13.5px]">
                     <div className="font-medium text-ink">{info.data.client_name}</div>
                     <div className="mt-1 text-ink-3">
