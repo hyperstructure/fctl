@@ -5,7 +5,7 @@
 //! the web app and the Worker, applies D1 migrations and deploys. `secrets`
 //! sets what only the Worker may know, once.
 
-use crate::util::{self, output, run, run_with_stdin};
+use crate::util::{self, output, retry_throttled, run, run_with_stdin};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -225,15 +225,21 @@ pub fn deploy(root: &Path, name: &str, opts: DeployOpts) -> Result<()> {
         eprintln!("dry run: config at {}", config.display());
         return Ok(());
     }
-    run(util::wrangler(root)?
-        .args(["d1", "migrations", "apply", "DB", "--remote", "--config"])
-        .arg(&config)
-        .current_dir(&control)
-        .env("CI", "1"))?;
-    run(util::wrangler(root)?
-        .args(["deploy", "--config"])
-        .arg(&config)
-        .current_dir(&control))?;
+    retry_throttled(
+        util::wrangler(root)?
+            .args(["d1", "migrations", "apply", "DB", "--remote", "--config"])
+            .arg(&config)
+            .current_dir(&control)
+            .env("CI", "1"),
+        run,
+    )?;
+    retry_throttled(
+        util::wrangler(root)?
+            .args(["deploy", "--config"])
+            .arg(&config)
+            .current_dir(&control),
+        run,
+    )?;
     eprintln!("\ndeployed {} to {}", inst.worker, inst.public_url);
     let missing = missing_secrets(root, &config)?;
     if !missing.is_empty() {
@@ -252,7 +258,7 @@ fn create_database(root: &Path, name: &str, inst: &Instance) -> Result<String> {
     if let Some(loc) = &inst.d1.location {
         cmd.args(["--location", loc]);
     }
-    let out = output(&mut cmd)?;
+    let out = retry_throttled(&mut cmd, output)?;
     let id = out
         .split('"')
         .skip_while(|s| *s != "database_id")
@@ -280,11 +286,12 @@ fn existing_secrets(root: &Path, config: &Path) -> Result<BTreeSet<String>> {
     struct S {
         name: String,
     }
-    let out = output(
+    let out = retry_throttled(
         util::wrangler(root)?
             .args(["secret", "list", "--format", "json", "--config"])
             .arg(config)
             .current_dir(root.join("crates/fctl-control")),
+        output,
     )?;
     let list: Vec<S> =
         serde_json::from_str(out.trim()).context("parsing `wrangler secret list`")?;
@@ -317,12 +324,12 @@ pub fn secrets(root: &Path, name: &str, opts: SecretOpts) -> Result<()> {
     let control = root.join("crates/fctl-control");
     let have = existing_secrets(root, &config)?;
     let put = |key: &str, value: &str| -> Result<()> {
-        run_with_stdin(
+        retry_throttled(
             util::wrangler(root)?
                 .args(["secret", "put", key, "--config"])
                 .arg(&config)
                 .current_dir(&control),
-            value,
+            |cmd| run_with_stdin(cmd, value),
         )
     };
     if have.contains("FCTL_MASTER_KEY") {

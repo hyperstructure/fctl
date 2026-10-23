@@ -429,3 +429,10 @@ off the `v*` tags
 ```sh
 cargo xtask deploy fctl-sh
 ```
+
+Cloudflare's API throttles a token, an account or an address that has made
+too many requests: it answers 429 with a Retry-After, for up to five
+minutes, even to a deploy's first request. Wrangler gives up at once in its
+D1, KV and secret commands, so `cargo xtask deploy`, `secrets` and
+`publish` run a throttled wrangler command again once the wait is over, up
+to four times (`util::retry_throttled`).
