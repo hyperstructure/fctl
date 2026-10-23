@@ -265,6 +265,7 @@ function Sessions({ project }: { project: G.Project }) {
               drafts={files.drafts}
               onRemove={files.remove}
               onRetry={files.retry}
+              readOnly={starting}
               className="px-4 pt-4"
             />
             <Textarea
@@ -298,7 +299,7 @@ function Sessions({ project }: { project: G.Project }) {
               textarea={ref}
               className="flex-wrap gap-3 pt-2 pr-3 pb-3 pl-2.5 max-sm:gap-2 sm:max-lg:pt-3"
             >
-              <AttachButton onFiles={(f) => attach(f)} />
+              <AttachButton onFiles={(f) => attach(f)} disabled={starting} />
               <span className="flex-1 max-sm:hidden" />
               <StartChoices
                 project={project}
