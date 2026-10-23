@@ -33,6 +33,10 @@ pub enum Sensitive {
     TransferInstance,
     /// Deleting someone else's account (instance admins).
     DeleteUser,
+    /// Making a password reset link for someone that comes back to the
+    /// admin, where the instance sends no email (instance admins): whoever
+    /// has it signs in as them.
+    ResetLink,
     /// Resetting someone's two-factor sign-in (instance admins).
     ResetTwoFactor,
     /// No longer requiring two-factor sign-in of everyone.
@@ -75,6 +79,7 @@ impl Sensitive {
             MakeAdmin => "make someone an admin",
             TransferInstance => "hand over the primary instance owner's role",
             DeleteUser => "delete someone's account",
+            ResetLink => "make a password reset link for someone",
             ResetTwoFactor => "reset someone's two-factor sign-in",
             StopRequiringTwoFactor => "stop requiring two-factor sign-in",
             StopGoogleCodes => "stop asking for codes on Google sign-in",

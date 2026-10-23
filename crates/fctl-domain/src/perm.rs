@@ -120,7 +120,9 @@ pub fn can_assign_project_role(actor: Option<ProjectRole>, target_role: ProjectR
 }
 
 /// Whether `actor` may change `target`'s instance role to `new_role`. The
-/// primary instance owner (`owner`) manages admins; admins manage members.
+/// primary instance owner (`owner`) manages admins: only they make someone
+/// an admin, as only they invite or allow an address as one, and only they
+/// demote one. Admins manage members, whose role stays a member's.
 /// Nobody becomes the primary instance owner this way: they hand the role
 /// over (`POST /api/v1/admin/transfer`), and nobody else changes theirs.
 pub fn can_assign_instance_role(
@@ -133,7 +135,7 @@ pub fn can_assign_instance_role(
     }
     match actor {
         InstanceRole::Owner => true,
-        InstanceRole::Admin => target == InstanceRole::Member,
+        InstanceRole::Admin => target == InstanceRole::Member && new_role == InstanceRole::Member,
         InstanceRole::Member => false,
     }
 }
@@ -334,7 +336,10 @@ mod tests {
     fn instance_roles() {
         use InstanceRole::*;
         assert!(!can_assign_instance_role(Admin, Admin, Member));
-        assert!(can_assign_instance_role(Admin, Member, Admin));
+        // Only the primary instance owner makes admins, as only they invite
+        // or allow addresses as admins: an admin can't make more.
+        assert!(!can_assign_instance_role(Admin, Member, Admin));
+        assert!(can_assign_instance_role(Owner, Member, Admin));
         assert!(can_assign_instance_role(Owner, Admin, Member));
         // Nobody makes or unmakes the primary instance owner by changing roles.
         assert!(!can_assign_instance_role(Admin, Member, Owner));

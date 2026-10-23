@@ -1,18 +1,19 @@
 // A message from fctl that brought the agent back to a pull request its session opened, as the
 // transcript shows it: what happened on GitHub, as GitHub has it (people's comments with their
-// avatars, failed checks, a merge), with what fctl told the agent a click away.
+// avatars, failed checks, conflicts, a merge), with what fctl told the agent a click away.
 
 import { FileCode2 } from "lucide-react";
 import { memo, useId, useState } from "react";
 import { githubAvatarUrl } from "@/components/github-avatar";
 import { Markdown, Pictures } from "@/components/markdown";
-import { Avatar, ChecksIcon, GithubIcon, Logo, PullRequestIcon } from "@/components/ui";
+import { Avatar, ChecksIcon, ConflictsIcon, GithubIcon, Logo, PullRequestIcon } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import {
   action,
   checksRest,
   type Happened,
+  happenedAt,
   happenedText,
   lines,
   parts,
@@ -21,6 +22,7 @@ import {
   type Wrote,
 } from "@/lib/follow-ups";
 import { clock } from "@/lib/format";
+import { githubLink } from "@/lib/pulls";
 import { shortSha } from "@/lib/reviews";
 import { MilestoneButton, RailIcon, Thread } from "./lines";
 
@@ -52,9 +54,11 @@ export const FollowUpMessage = memo(function FollowUpMessage({
 
 /** The pull request, by its repository's name, as a link to `href` on GitHub. */
 export function PullLink({ f, href }: { f: Pick<G.FollowUp, "repo" | "number" | "title">; href: string }) {
+  const to = githubLink(href);
+  if (!to) return <span className="font-mono text-[12px] text-ink-3">{pullRef(f)}</span>;
   return (
     <a
-      href={href}
+      href={to}
       target="_blank"
       rel="noreferrer"
       title={f.title ? `${f.repo.owner}/${f.repo.name}#${f.number}: ${f.title}` : undefined}
@@ -85,7 +89,7 @@ export function When({ at }: { at: number }) {
 function Where({ c }: { c: G.FollowUpComment }) {
   return (
     <a
-      href={c.url}
+      href={githubLink(c.url)}
       target="_blank"
       rel="noreferrer"
       className="flex min-w-0 items-center gap-1.5 border-b border-line bg-sunken/60 px-4 py-1.5 font-mono text-[11.5px] text-ink-3 transition-colors hover:text-ink"
@@ -167,8 +171,8 @@ function Comment({ f, w, ts }: { f: G.FollowUp; w: Wrote; ts: number }) {
 }
 
 /**
- * What fctl didn't pass on to the agent: failed checks it heard of three times in a row while nobody
- * messaged it. What happened shows muted, with why the agent didn't hear of it.
+ * What fctl didn't pass on to the agent: failed checks, or conflicts, it heard of three times in a
+ * row while nobody messaged it. What happened shows muted, with why the agent didn't hear of it.
  */
 export const HeldFollowUp = memo(function HeldFollowUp({
   followUp,
@@ -178,6 +182,7 @@ export const HeldFollowUp = memo(function HeldFollowUp({
   ts: number;
 }) {
   const { happened } = parts(followUp);
+  const conflicts = happened.length > 0 && happened.every((e) => e.kind === "conflicts");
   return (
     <div className="group/msg animate-rise py-3">
       <div className="flex flex-col gap-3">
@@ -186,8 +191,9 @@ export const HeldFollowUp = memo(function HeldFollowUp({
         ))}
       </div>
       <p className="mt-1 ml-[34px] text-[12.5px] leading-relaxed text-ink-4">
-        Not passed on: the agent heard of failed checks three times in a row, with no message from a person in
-        between. Message it to have it look.
+        {conflicts
+          ? "Not passed on: the agent heard of conflicts three times in a row, with no message from a person in between. Message it to have it resolve them."
+          : "Not passed on: the agent heard of failed checks three times in a row, with no message from a person in between. Message it to have it look."}
       </p>
     </div>
   );
@@ -195,36 +201,45 @@ export const HeldFollowUp = memo(function HeldFollowUp({
 
 const PR_COLORS = { merged: "text-pr-merged", closed: "text-pr-closed" } as const;
 
+/** The icon of a line of what happened: GitHub's, in its colors; conflicts in caution's. */
+function HappenedIcon({ e, muted }: { e: Happened; muted?: boolean }) {
+  switch (e.kind) {
+    case "checks_failed":
+      return <ChecksIcon state="failed" className={muted ? "text-ink-4" : "text-checks-failed"} />;
+    case "conflicts":
+      return <ConflictsIcon className={muted ? "text-ink-4" : "text-amber"} />;
+    default:
+      return <PullRequestIcon state={e.kind} className={muted ? "text-ink-4" : PR_COLORS[e.kind]} />;
+  }
+}
+
 /**
- * Failed checks, a merge or a close: a line of the transcript's own, with its pull request; `muted`
- * for what the agent didn't hear of.
+ * Failed checks, conflicts, a merge or a close: a line of the transcript's own, with its pull
+ * request and, for checks and conflicts, the commit; `muted` for what the agent didn't hear of.
  */
 function HappenedLine({ f, e, ts, muted }: { f: G.FollowUp; e: Happened; ts: number; muted?: boolean }) {
-  const icon =
-    e.kind === "checks_failed" ? (
-      <ChecksIcon state="failed" className={muted ? "text-ink-4" : "text-checks-failed"} />
-    ) : (
-      <PullRequestIcon state={e.kind} className={muted ? "text-ink-4" : PR_COLORS[e.kind]} />
-    );
   const href = e.kind === "checks_failed" ? `${f.url}/checks` : f.url;
+  const sha = happenedAt(e);
   return (
     <div className="flex items-start gap-2.5 text-[12.5px]">
-      <RailIcon>{icon}</RailIcon>
+      <RailIcon>
+        <HappenedIcon e={e} muted={muted} />
+      </RailIcon>
       <div className="min-w-0 flex-1">
         <div className="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-0.5">
           <span className={cn("font-medium", muted ? "text-ink-3" : "text-ink-2")}>{happenedText(f, e)}</span>
           <span className="inline-flex items-center gap-1.5 text-ink-4">
             {e.kind === "checks_failed" ? "on" : "·"} <PullLink f={f} href={href} />
-            {e.kind === "checks_failed" && (
+            {sha && (
               <>
                 at
                 <a
-                  href={`${f.url}/commits/${e.sha}`}
+                  href={githubLink(`${f.url}/commits/${sha}`)}
                   target="_blank"
                   rel="noreferrer"
                   className="font-mono text-[12px] text-ink-3 underline-offset-2 transition-colors hover:text-ink hover:underline"
                 >
-                  {shortSha(e.sha)}
+                  {shortSha(sha)}
                 </a>
               </>
             )}

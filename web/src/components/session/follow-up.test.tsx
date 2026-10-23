@@ -132,6 +132,19 @@ describe("follow-ups in the transcript", () => {
     expect(links).toContain(`${url}/commits/1bf46d85abe1`);
   });
 
+  it("show conflicts with the base branch, at their commit", () => {
+    const f = followUp([{ kind: "conflicts", sha: "8e1d2b7c6a90", base: "main" }]);
+    const c = render(<FollowUpMessage followUp={f} text="" ts={1} />);
+    const text = c.textContent ?? "";
+    expect(text).toContain("Conflicts with main");
+    expect(text).toContain("web#13");
+    expect(text).toContain("8e1d2b7");
+    const links = [...c.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    expect(links).toContain(url);
+    expect(links).toContain(`${url}/commits/8e1d2b7c6a90`);
+    expect(c.querySelector("svg.text-amber")).not.toBeNull();
+  });
+
   it("say why the agent didn't hear of failed checks it held back", () => {
     const f = followUp([
       { kind: "checks_failed", sha: "6a51204d", names: ["Rust tests"], passed: 0, failed: 1, pending: 0 },
@@ -139,5 +152,15 @@ describe("follow-ups in the transcript", () => {
     const c = render(<HeldFollowUp followUp={f} ts={1} />);
     expect(c.textContent).toContain("A check failed");
     expect(c.textContent).toContain("Not passed on: the agent heard of failed checks three times in a row");
+  });
+
+  it("say why the agent didn't hear of conflicts it held back", () => {
+    const f = followUp([{ kind: "conflicts", sha: "8e1d2b7c6a90" }]);
+    const c = render(<HeldFollowUp followUp={f} ts={1} />);
+    expect(c.textContent).toContain("Conflicts with main");
+    expect(c.textContent).toContain("Not passed on: the agent heard of conflicts three times in a row");
+    expect(c.textContent).toContain("Message it to have it resolve them.");
+    // Muted, as what the agent didn't hear of.
+    expect(c.querySelector("svg.text-amber")).toBeNull();
   });
 });

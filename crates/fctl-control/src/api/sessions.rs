@@ -777,6 +777,8 @@ pub async fn add_share(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<
         Some(id),
         Some(serde_json::json!({ "user": target.id, "role": body.role.as_str() })),
     );
+    // Sharing it again as a viewer can take back what let them run it.
+    crate::workspaces::changed(ctx, vec![target.id.clone()]);
     shares(ctx, id).await
 }
 
@@ -801,5 +803,8 @@ pub async fn remove_share(ctx: &mut Ctx, id: &str, user_id: &str) -> AppResult<R
         Some(id),
         Some(serde_json::json!({ "user": user_id })),
     );
+    // A session they resumed through the share runs on their subscription
+    // only while they may still run it (`spec::credential_serves`).
+    crate::workspaces::changed(ctx, vec![user_id.to_owned()]);
     shares(ctx, id).await
 }

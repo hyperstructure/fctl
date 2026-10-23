@@ -240,7 +240,7 @@ fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
 fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
-fctl projects set -p my-app --follow-ups comments,checks   # agents come back for @fctl comments and failed checks
+fctl projects set -p my-app --follow-ups comments,checks,conflicts   # agents come back for @fctl comments, failed checks and conflicts
 fctl projects use my-app
 fctl projects order my-app site        # these first in their workspace, the others after them
 fctl projects delete my-app            # with its sessions; asks you to type the slug
@@ -264,12 +264,14 @@ Changes apply to sessions that start afterwards.
 
 Follow-ups bring agents back to the pull requests they opened, in a
 message from fctl that resumes the session on the Claude subscription it
-ran on (`--follow-ups`, a list of `comments`, `checks` and `closed`, or
-`all` or `none`): a comment that mentions `@fctl` or `@agent`, or starts
-with `fctl:` or `agent:`, from someone who can write to the repository; a
-failed check of the newest commit, at most three times in a row while
-nobody messages the agent; a merge or a close. `fctl projects show` says
-which ([Architecture](architecture.md#follow-ups)).
+ran on (`--follow-ups`, a list of `comments`, `checks`, `conflicts` and
+`closed`, or `all` or `none`): a comment that mentions `@fctl` or
+`@agent`, or starts with `fctl:` or `agent:`, from someone who can write
+to the repository; a failed check of the newest commit, at most three
+times in a row while nobody messages the agent; conflicts with the base
+branch, which the agent resolves by merging the base branch in, as often;
+a merge or a close. `fctl projects show` says which
+([Architecture](architecture.md#follow-ups)).
 
 A project's image and its build run only on runners whose owners allow
 them ([Sandbox images](sandbox-images.md#which-images-a-host-runs)); a
@@ -357,6 +359,9 @@ Where a project's review agents are on, each new commit of a pull request
 in the repositories its agents may write to gets a review: an agent reads
 it, on the Claude subscription of the owner who turned them on, and fctl
 posts what it found on the pull request, with a check on the commit.
+A pull request from someone who can't write to the repository gets one
+only when someone asks for it (`fctl review start`), since what it says
+reaches an agent with the owner's Claude token.
 When an fctl agent opened the pull request, its session gets the findings
 in a message from fctl, decides what to do about them and answers in
 their threads. The project's owners turn them on (on their own
@@ -623,7 +628,7 @@ of.
 fctl admin users                           # with their other addresses and how many workspaces
 fctl admin invite ada@private.example      # an invitation link (and an email, when set up)
 fctl admin invite grace@example.com -w side-project -w acme:admin   # and to your workspaces
-fctl admin role grace@example.com admin    # an instance admin (or member again)
+fctl admin role grace@example.com admin    # an instance admin, or member again (the primary instance owner)
 fctl admin transfer grace@example.com      # the primary instance owner hands the role to an admin
 fctl admin disable grace@example.com       # can't sign in; their tokens stop working (or enable)
 fctl admin delete-user grace@example.com   # asks you to type their address
@@ -697,8 +702,9 @@ the setup (the key, the `otpauth://` link and the QR code's rows), and
 `fctl account two-factor confirm --setup … --code …` finishes it.
 
 Where the primary instance owner turns it on, sensitive actions (inviting
-and promoting admins, turning two-factor sign-in off, adding a runner to a
-workspace, new access tokens, exporting your data, and deleting accounts,
+and promoting admins, turning two-factor sign-in off, adding or
+registering a runner for a workspace (`fctl host install` too), new access
+tokens, exporting your data, and deleting accounts,
 projects and workspaces) ask you to confirm it's you first. In a terminal
 fctl asks by itself, and then does what you asked: for a code from your
 authenticator app, or, with a passkey, to approve a code in the browser,

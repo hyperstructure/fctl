@@ -240,17 +240,20 @@ pub fn fewer(n: usize) -> Option<usize> {
     [10, 1].into_iter().find(|&fewer| fewer < n)
 }
 
-/// What a lookup asks of each pull request: its title, state and times,
-/// its author and branches, whether it is in a merge queue, and the checks
-/// of its head commit counted by their state, with the first 100 checks
-/// among them, in which [`replaced`] finds the runs that a later run of the
-/// same check replaced, and [`failing`] the checks that failed.
-const FIELDS: &str = "fragment pr on PullRequest {
-  number url title state isDraft createdAt updatedAt mergedAt closedAt headRefOid
+/// What every lookup asks of each pull request: its title, state and
+/// times, its author and branches, whether it is in a merge queue, and
+/// whether it merges into its base branch without conflicts
+/// ([`Mergeable`]).
+const PULL: &str = "number url title state isDraft createdAt updatedAt mergedAt closedAt headRefOid
   headRefName baseRefName author { login __typename }
-  mergeStateStatus
-  mergeQueueEntry { enqueuedAt }
-  commits(last: 1) {
+  mergeStateStatus mergeable
+  mergeQueueEntry { enqueuedAt }";
+
+/// What a lookup of [`Fields::All`] asks besides: the checks of its head
+/// commit counted by their state, with the first 100 checks among them, in
+/// which [`replaced`] finds the runs that a later run of the same check
+/// replaced, and [`failing`] the checks that failed.
+const CHECKS: &str = "commits(last: 1) {
     nodes {
       commit {
         oid
@@ -269,21 +272,43 @@ const FIELDS: &str = "fragment pr on PullRequest {
         }
       }
     }
-  }
-}";
+  }";
+
+/// What a lookup asks of each pull request ([`query`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fields {
+    /// All that sessions show of it, its checks with the rest.
+    All,
+    /// All but its checks, which take GitHub the longest: what tells
+    /// whether pull requests conflict with their base branch after it
+    /// moved (`crate::follow_ups::conflicts`), however many checks they
+    /// have, and leaves the checks sessions know as they were.
+    WithoutChecks,
+}
+
+impl Fields {
+    /// The fragment, `pr`, that a query asks of each pull request.
+    pub fn fragment(self) -> String {
+        match self {
+            Fields::All => format!("fragment pr on PullRequest {{\n  {PULL}\n  {CHECKS}\n}}"),
+            Fields::WithoutChecks => format!("fragment pr on PullRequest {{\n  {PULL}\n}}"),
+        }
+    }
+}
 
 /// The GraphQL request, its `query` and `variables`, that looks up `prs`
-/// (one to [`MAX_LOOKUP`]) at once: [`looked_up`] reads each by its place
-/// in `prs`, and [`remaining`] what is left of the rate limit.
-pub fn query(prs: &[(RepoRef, u64)]) -> Value {
+/// (one to [`MAX_LOOKUP`]) at once, asking `fields` of each: [`looked_up`]
+/// reads each by its place in `prs`, and [`remaining`] what is left of the
+/// rate limit.
+pub fn query(prs: &[(RepoRef, u64)], fields: Fields) -> Value {
     let mut params = Vec::new();
-    let mut fields = vec!["rateLimit { remaining }".to_owned()];
+    let mut asked = vec!["rateLimit { remaining }".to_owned()];
     let mut variables = Map::new();
     for (i, (repo, number)) in prs.iter().enumerate() {
         params.push(format!(
             "$owner{i}: String!, $name{i}: String!, $number{i}: Int!"
         ));
-        fields.push(format!(
+        asked.push(format!(
             "pr{i}: repository(owner: $owner{i}, name: $name{i}) {{ pullRequest(number: $number{i}) {{ ...pr }} }}"
         ));
         variables.insert(format!("owner{i}"), json!(repo.owner));
@@ -294,9 +319,10 @@ pub fn query(prs: &[(RepoRef, u64)]) -> Value {
     }
     json!({
         "query": format!(
-            "query({}) {{\n  {}\n}}\n{FIELDS}",
+            "query({}) {{\n  {}\n}}\n{}",
             params.join(", "),
-            fields.join("\n  ")
+            asked.join("\n  "),
+            fields.fragment()
         ),
         "variables": variables,
     })
@@ -322,6 +348,39 @@ pub struct Looked {
     pub base_ref: Option<String>,
     /// The checks of its head commit that failed, by name ([`failing`]).
     pub failing: Vec<String>,
+    /// Whether it merges into its base branch without conflicts, as GitHub
+    /// said; `None` when it didn't.
+    pub mergeable: Option<Mergeable>,
+}
+
+/// Whether a pull request merges into its base branch without conflicts,
+/// as GitHub says (`mergeable`). GitHub works it out when someone asks
+/// after either branch moved, in the background: until then it says it
+/// doesn't know, and asked again a few seconds later, it says. Of 30 of a
+/// busy repository's open pull requests, it knew of none at first, and of
+/// all 30 twenty seconds later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mergeable {
+    /// It merges without conflicts (`MERGEABLE`).
+    Yes,
+    /// It conflicts with its base branch (`CONFLICTING`): it can't merge
+    /// until its branch takes in what the base got since.
+    Conflicts,
+    /// GitHub is working it out (`UNKNOWN`). It says so of merged and
+    /// closed pull requests too.
+    Unknown,
+}
+
+impl Mergeable {
+    /// GitHub's `MergeableState`; `None` for one it adds later.
+    pub fn parse(state: &str) -> Option<Self> {
+        Some(match state {
+            "MERGEABLE" => Mergeable::Yes,
+            "CONFLICTING" => Mergeable::Conflicts,
+            "UNKNOWN" => Mergeable::Unknown,
+            _ => return None,
+        })
+    }
 }
 
 /// What GitHub's answer to [`query`], asked at `at`, says of the `i`th pull
@@ -414,6 +473,7 @@ pub fn looked_up(answer: &Value, i: usize, at: Millis, hints: Hints<'_>) -> Opti
         head_ref: text("headRefName").map(str::to_owned),
         base_ref: text("baseRefName").map(str::to_owned),
         failing,
+        mergeable: text("mergeable").and_then(Mergeable::parse),
     })
 }
 
@@ -804,11 +864,14 @@ mod tests {
     #[test]
     fn one_lookup_asks_about_many_pull_requests() {
         let repo = |s| RepoRef::parse(s).unwrap_or_else(|| panic!("{s}"));
-        let body = query(&[
-            (repo("acme/app"), 12),
-            (repo("acme/site"), 3),
-            (repo("acme/app"), 1 << 40),
-        ]);
+        let body = query(
+            &[
+                (repo("acme/app"), 12),
+                (repo("acme/site"), 3),
+                (repo("acme/app"), 1 << 40),
+            ],
+            Fields::All,
+        );
         assert_eq!(
             body["variables"],
             json!({
@@ -828,7 +891,7 @@ mod tests {
                 "\n  pr{i}: repository(owner: $owner{i}, name: $name{i}) {{ pullRequest(number: $number{i}) {{ ...pr }} }}"
             )));
         }
-        assert!(q.ends_with(FIELDS));
+        assert!(q.ends_with(&Fields::All.fragment()));
         // The answer says each by its place, and what is left of the limit.
         let mut a = answer();
         a["data"]["pr1"] = json!({ "pullRequest": null });
@@ -1021,8 +1084,42 @@ mod tests {
             (looked.author, looked.head_ref, looked.failing.len()),
             (None, None, 0)
         );
-        assert!(FIELDS.contains("headRefName baseRefName author { login __typename }"));
-        assert!(FIELDS.contains("... on StatusContext { context state }"));
+        let all = Fields::All.fragment();
+        assert!(all.contains("headRefName baseRefName author { login __typename }"));
+        assert!(all.contains("... on StatusContext { context state }"));
+    }
+
+    #[test]
+    fn lookups_say_whether_it_conflicts_with_its_base() {
+        let with = |state: Value| {
+            let mut a = answer();
+            a["data"]["pr0"]["pullRequest"]["mergeable"] = state;
+            looked_up(&a, 0, 1, Hints::default()).and_then(|l| l.mergeable)
+        };
+        assert_eq!(with(json!("MERGEABLE")), Some(Mergeable::Yes));
+        assert_eq!(with(json!("CONFLICTING")), Some(Mergeable::Conflicts));
+        assert_eq!(with(json!("UNKNOWN")), Some(Mergeable::Unknown));
+        // One GitHub adds later, or none, says nothing.
+        assert_eq!(with(json!("SOMETIMES")), None);
+        assert_eq!(with(Value::Null), None);
+        for fields in [Fields::All, Fields::WithoutChecks] {
+            assert!(fields.fragment().contains("mergeStateStatus mergeable\n"));
+        }
+        // Without checks: everything else, which a lookup reads as before,
+        // and no checks, so that sessions keep those they know.
+        let light = Fields::WithoutChecks.fragment();
+        assert!(light.starts_with("fragment pr on PullRequest {"));
+        assert!(light.contains("headRefOid") && light.contains("headRefName baseRefName"));
+        assert!(!light.contains("commits") && !light.contains("statusCheckRollup"));
+        let mut a = answer();
+        let pr = &mut a["data"]["pr0"]["pullRequest"];
+        pr.as_object_mut().map(|o| o.remove("commits"));
+        pr["mergeable"] = json!("CONFLICTING");
+        let looked = looked_up(&a, 0, 1, Hints::default()).unwrap_or_else(|| panic!("no found"));
+        assert_eq!(looked.head.as_deref(), Some("9f8e7d"));
+        assert_eq!(looked.pr.checks, None);
+        assert_eq!(looked.mergeable, Some(Mergeable::Conflicts));
+        assert_eq!(looked.pr.state.as_deref(), Some("draft"));
     }
 
     #[test]

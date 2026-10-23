@@ -58,7 +58,11 @@ pub async fn update_user(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResul
             ));
         }
         if !perm::can_assign_instance_role(actor.role(), target.role(), role) {
-            return Err(forbidden("You cannot give this role"));
+            return Err(forbidden(if role == InstanceRole::Admin {
+                "Only the primary instance owner makes someone an admin"
+            } else {
+                "You cannot give this role"
+            }));
         }
     }
     if let Some(status) = body.status {
@@ -208,6 +212,11 @@ pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         return Err(forbidden(
             "Only the primary instance owner can reset an admin's password",
         ));
+    }
+    // Without email the link comes back here, and signs in as them: as
+    // much as deleting their account, a stolen session mustn't do it alone.
+    if ctx.cfg.email.is_none() {
+        ctx.verified(Sensitive::ResetLink)?;
     }
     let url = crate::api::auth::create_reset_link(ctx, &target.id, Some(&actor.id)).await?;
     ctx.audit("user.reset_link", Some(&target.id), None);
@@ -639,12 +648,19 @@ pub async fn audit_page(ctx: &Ctx, req: &Request, workspace: Option<&str>) -> Ap
     .all()
     .await?;
     let more = rows.len() > 100;
+    // A workspace's admins see who did what there, not where its other
+    // members were when they did: the instance's admins, who run it, see
+    // the addresses in its own log.
+    let caller = ctx.user()?.id.clone();
     let entries: Vec<AuditEntry> = rows
         .into_iter()
         .take(100)
         .map(|r| AuditEntry {
             id: r.id,
             ts: r.ts,
+            ip: r
+                .ip
+                .filter(|_| workspace.is_none() || r.actor_id.as_deref() == Some(caller.as_str())),
             actor: match (r.actor_id, r.actor_name) {
                 (Some(id), Some(name)) => Some(UserRef {
                     id: UserId(id),
@@ -656,7 +672,6 @@ pub async fn audit_page(ctx: &Ctx, req: &Request, workspace: Option<&str>) -> Ap
             action: r.action,
             target: r.target,
             data: r.data.and_then(|d| serde_json::from_str(&d).ok()),
-            ip: r.ip,
         })
         .collect();
     let next_before = if more {

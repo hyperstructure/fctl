@@ -21,10 +21,24 @@ use worker::D1Database;
 
 /// Who becomes the primary admin of workspace `w` when theirs, `?1`,
 /// goes: its longest-standing admin, else member, people whose accounts
-/// are active first.
-pub const SUCCESSOR: &str = "(SELECT o.user_id FROM workspace_members o JOIN users ou ON ou.id = o.user_id \
-    WHERE o.workspace_id = w.id AND o.user_id != ?1 \
-    ORDER BY ou.status = 'active' DESC, o.role = 'admin' DESC, o.created_at LIMIT 1)";
+/// are active first. Not the person who made them go (`$actor`, the
+/// parameter with their id) unless they are one of its admins already: an
+/// instance admin who deletes or disallows a workspace's primary admin
+/// would otherwise take over a workspace they are only a member of, which
+/// they can't give themselves (`fctl_domain::workspace::check_assign_primary`).
+/// None of them left, it waits for one (`WorkspaceRow::needs_primary`).
+#[macro_export]
+macro_rules! successor {
+    ($actor:literal) => {
+        concat!(
+            "(SELECT o.user_id FROM workspace_members o JOIN users ou ON ou.id = o.user_id \
+             WHERE o.workspace_id = w.id AND o.user_id != ?1 AND (o.user_id != ",
+            $actor,
+            " OR o.role = 'admin') \
+             ORDER BY ou.status = 'active' DESC, o.role = 'admin' DESC, o.created_at LIMIT 1)"
+        )
+    };
+}
 
 /// SELECT for workspaces with the caller's membership (`wm`) and what lists
 /// show of them. Bind: `?1` = caller user id.

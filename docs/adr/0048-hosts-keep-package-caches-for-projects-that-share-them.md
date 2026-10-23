@@ -1,4 +1,4 @@
-# 0045: Hosts keep package caches for projects that share them
+# 0048: Hosts keep package caches for projects that share them
 
 2026-10-23 · accepted
 

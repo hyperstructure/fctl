@@ -1380,6 +1380,13 @@ fn follow_up_parts(text: &str) -> Vec<String> {
             } else if first.contains(" failed at commit ") {
                 let what = first.split_once(": ").map_or("", |(_, w)| w);
                 format!("Checks failed ({what}): I'd look with `gh pr checks`, fix them and push.")
+            } else if first.starts_with("your pull request ")
+                && let Some((_, rest)) = first.split_once(" has conflicts with ")
+            {
+                let base = rest.split(" at commit ").next().unwrap_or(rest);
+                format!(
+                    "It conflicts with {base}: I'd merge {base} into its branch, resolve the conflicts and push."
+                )
             } else {
                 format!("{first}: I'd do what they ask and answer them there.")
             }
@@ -1888,17 +1895,21 @@ mod tests {
 
     #[test]
     fn fctls_follow_ups_are_its_own_messages() {
-        let message = "On GitHub, @ada commented on your pull request acme/web#12, \u{201c}Fix it\u{201d} (https://github.com/acme/web/pull/12#issuecomment-1):\n\n> @fctl push the docs too\n\nThen answer where they wrote.\n\nOn GitHub, a check of your pull request acme/web#12, \u{201c}Fix it\u{201d}, failed at commit 3f2a1c9: Lint.\n\nSee what failed.\n\nOn GitHub, your pull request acme/web#12, \u{201c}Fix it\u{201d}, was merged into main by @ada.\n";
+        let message = "On GitHub, @ada commented on your pull request acme/web#12, \u{201c}Fix it\u{201d} (https://github.com/acme/web/pull/12#issuecomment-1):\n\n> @fctl push the docs too\n\nThen answer where they wrote.\n\nOn GitHub, a check of your pull request acme/web#12, \u{201c}Fix it\u{201d}, failed at commit 3f2a1c9: Lint.\n\nSee what failed.\n\nOn GitHub, your pull request acme/web#12, \u{201c}Fix it\u{201d}, was merged into main by @ada.\n\nOn GitHub, your pull request acme/web#12, \u{201c}Fix it\u{201d}, has conflicts with main at commit 8e1d2b7: it can't merge until they're resolved.\n";
         assert!(is_follow_up(&message.to_lowercase()));
         assert!(!is_follow_up("push the docs"));
         let parts = follow_up_parts(message);
-        assert_eq!(parts.len(), 3);
+        assert_eq!(parts.len(), 4);
         assert!(parts[0].starts_with("@ada commented on your pull request acme/web#12"));
         assert_eq!(
             parts[1],
             "Checks failed (Lint.): I'd look with `gh pr checks`, fix them and push."
         );
         assert!(parts[2].starts_with("It was merged"));
+        assert_eq!(
+            parts[3],
+            "It conflicts with main: I'd merge main into its branch, resolve the conflicts and push."
+        );
     }
 
     #[test]
