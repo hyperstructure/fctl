@@ -14,7 +14,8 @@ function and(items: string[]): string {
   return items.length < 2 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }
 
-const code = "rounded bg-raised px-1 font-mono text-[12px] text-ink-2";
+// A command stays on one line.
+const code = "whitespace-nowrap rounded bg-raised px-1 font-mono text-[12px] text-ink-2";
 
 /** Nothing while your runners online run the control plane's version of fctl, or you skipped it. */
 export function RunnerUpdate({ user }: { user: string }) {
