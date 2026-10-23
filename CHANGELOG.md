@@ -2,6 +2,22 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.22.0 (2026-10-23)
+
+### Features
+
+- Choose how much agents write in pull request descriptions ([#243](https://github.com/hyperstructure/fctl/pull/243))
+- **web:** Group a project's sessions by recency ([#245](https://github.com/hyperstructure/fctl/pull/245))
+- Keep Claude tokens on your own runners instead of in fctl ([#244](https://github.com/hyperstructure/fctl/pull/244))
+- **web:** Keep what's written in a project's task box ([#246](https://github.com/hyperstructure/fctl/pull/246))
+- Start new projects with follow-ups on ([#249](https://github.com/hyperstructure/fctl/pull/249))
+- Let projects choose a ticket tracker, and delegate Linear tickets ([#248](https://github.com/hyperstructure/fctl/pull/248))
+- Update runners to new fctl releases automatically ([#250](https://github.com/hyperstructure/fctl/pull/250))
+
+### Fixes
+
+- **host:** Resume sessions whose Apple sandbox failed to stop ([#242](https://github.com/hyperstructure/fctl/pull/242))
+
 ## 0.21.0 (2026-10-23)
 
 ### Features
