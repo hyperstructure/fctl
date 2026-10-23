@@ -503,14 +503,16 @@ function Facts({ schedule: s }: { schedule: G.Schedule }) {
           ? { key: "state", node: <span className="text-ink-3">Paused</span> }
           : s.state === "done"
             ? { key: "state", node: "Ran once" }
-            : !!s.next_run_at && {
+            : // One that runs once says when only where it waits past its time.
+              !!s.next_run_at &&
+              (s.at === undefined || s.next_run_at > s.at + 60_000) && {
                 key: "next",
                 node: (
                   <time
                     dateTime={new Date(s.next_run_at ?? 0).toISOString()}
                     title={stamp(s.next_run_at ?? 0)}
                   >
-                    Next {soon(s.next_run_at ?? 0, s.timezone)}
+                    {s.at === undefined ? "Next" : "Waits, and runs"} {soon(s.next_run_at ?? 0, s.timezone)}
                   </time>
                 ),
               },
@@ -598,7 +600,10 @@ function Item({
           className="min-w-0 flex-1 text-left outline-none after:absolute after:inset-0 after:rounded focus-visible:after:outline-2 focus-visible:after:outline-offset-[-2px] focus-visible:after:outline-accent"
         >
           <span className="flex items-center gap-2">
-            <span className="truncate text-[14.5px] text-ink">{s.name}</span>
+            {/* On a phone a long name wraps: beside the buttons, little of it would show. */}
+            <span className="min-w-0 text-[14.5px] text-ink [overflow-wrap:anywhere] sm:truncate">
+              {s.name}
+            </span>
             <ChevronDown
               className={cn(
                 "size-3.5 shrink-0 text-ink-4 transition-transform duration-200",
@@ -637,6 +642,21 @@ function Item({
             className="relative max-sm:px-2 [&>span]:max-sm:sr-only"
           >
             <span>Run now</span>
+          </Button>
+        )}
+        {/* Paused, it starts nothing: what it needs is to be resumed. */}
+        {!s.enabled && rights.edit && (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<Play className="size-3.5" />}
+            loading={update.isPending}
+            onClick={resume}
+            aria-label={mine ? `Resume ${s.name}` : `Resume ${s.name} on your Claude subscription`}
+            title={mine ? "Resume it" : "Resume it on your Claude subscription"}
+            className="relative max-sm:px-2 [&>span]:max-sm:sr-only"
+          >
+            <span>Resume</span>
           </Button>
         )}
         {(rights.edit || rights.manage) && (
