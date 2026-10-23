@@ -396,15 +396,17 @@ impl Daemon {
         if self.caches_in_use(&records).contains(&project) {
             return false;
         }
+        // A sandbox here may mount them again: they stay, emptied.
+        let keep = records.mounted(&project);
+        // Emptied since their last use, they have nothing to free, and
+        // stay while a sandbox may mount them.
         let empty = records.projects.get(&project).is_some_and(|r| r.empty());
-        if why == caches::Why::LowDisk && empty {
+        if empty && (why == caches::Why::LowDisk || keep) {
             return false;
         }
         let Some(spot) = self.ctx.driver.cache_spot(&project, &data) else {
             return false;
         };
-        // A sandbox here may mount them again: they stay, emptied.
-        let keep = records.mounted(&project);
         let max_mb = self.ctx.cfg.max_cache_mb();
         self.clearing.insert(project.clone());
         let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
@@ -1524,6 +1526,16 @@ mod tests {
             ["prj_kept", "prj_recent"]
         );
         assert!(records.projects["prj_kept"].empty());
+        // Emptied, it waits for its sandbox to go; then it goes too.
+        d.start_sweep();
+        assert!(finish_sweep(&mut d, |_| 500 * GIB).await?.is_empty());
+        std::fs::remove_dir_all(dir.path().join("sandboxes/fctl-ses-01stop"))?;
+        d.start_sweep();
+        assert_eq!(
+            finish_sweep(&mut d, |_| 500 * GIB).await?,
+            ["caches of prj_kept"]
+        );
+        assert!(!kept.exists());
         Ok(())
     }
 

@@ -2004,6 +2004,57 @@ conversation to resume, so Claude starts a new one with the session's
 original task, and the agent numbers its events after the ones the control
 plane already has (`first_agent_seq`).
 
+### Package caches
+
+A project can share its package managers' downloads between its sessions
+(`ProjectSettings.package_caches`, off by default): each host keeps
+caches for the project, which its sandboxes there mount, so that a setup
+script fetches only what is new
+([ADR 0045](adr/0045-hosts-keep-package-caches-for-projects-that-share-them.md),
+`crates/fctl-host/src/caches.rs`). Review sessions never get them, whatever
+the project says: the control plane leaves the setting out of their spec,
+and the host checks.
+
+- **Where.** With Docker, a named volume per project,
+  `fctl-cache-<project id>`, on the daemon's disk like the sandboxes. With
+  Apple's `container`, a directory in the host's data directory,
+  `caches/<project id>`, that each sandbox bind-mounts: Apple's named
+  volumes are ext4 images, which two running VMs must not mount at once.
+  Both appear at `/var/cache/fctl`. The process driver's agents use the
+  directory where it is, and Lima's VMs get none. The mount is made with
+  the sandbox, so a sandbox made before its project turned caches on gets
+  none until the session's next one. Docker makes a new volume's root
+  root's, so the host gives it to the image's user (`id -u` in the
+  sandbox, then `chown` as root) as it creates the sandbox.
+- **In the sandbox.** The host passes the directory and the limit to
+  fctl-agent (`AgentConfig.cache`). fctl-agent checks it can write there,
+  and if not, logs why and leaves the package managers alone. Otherwise it
+  sets their variables before the project's environment, for the setup
+  script and for Claude (npm, pnpm 11, Corepack, Yarn, Bun, uv, pip, Go,
+  Playwright, and `FCTL_CACHE_DIR`), writes pnpm 9 and 10's store to
+  `~/.config/pnpm/rc`, and links Cargo's registry, git checkouts and lock
+  files there, since `CARGO_HOME` also holds Cargo's tools. What the image
+  sets or keeps there already stays. On another disk than the sandbox's,
+  uv copies from its cache rather than hardlinking (`UV_LINK_MODE=copy`),
+  which it would warn about at each install. The system prompt tells
+  Claude where the caches are and to leave them be.
+- **Bounds.** `<data dir>/caches.json` records when a session last
+  started with each project's caches, what they took when last measured,
+  and which sandboxes were made with them, so that after a restart the
+  host still knows whose caches its sandboxes use. The sweep that removes
+  stopped sandboxes (when the host starts, every hour, and while the disk
+  is low) measures the caches used since their last measurement and
+  empties those past `max_cache_gb` (10 GiB by default), and removes those
+  no session started with for `keep_caches_days` (14), keeping them,
+  emptied, while a sandbox here may mount them again. Below
+  `min_free_disk_gb`, it empties caches, least recently used first,
+  before it removes stopped sandboxes. With Docker, measuring (`du`) and
+  emptying (`find -delete`) run in a short-lived container of the host's
+  image, without a network; Docker keeps a volume a container mounts,
+  stopped ones too. The sweep never touches the caches of a project with
+  a session here, and a session that starts while its project's caches
+  are measured or emptied waits for that.
+
 ## Protocols
 
 All protocols are JSON with a `type` tag and live in `fctl-proto`:
