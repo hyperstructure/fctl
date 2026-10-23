@@ -18,14 +18,34 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Avatar, Kbd, Logo, Menu, MenuItem, MenuSeparator, StatusDot, toast } from "@/components/ui";
+import {
+  Avatar,
+  Kbd,
+  Logo,
+  Menu,
+  MenuItem,
+  MenuSeparator,
+  StatusDot,
+  statusLabel,
+  toast,
+} from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
+import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { useFeed } from "@/lib/feed";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
-import { keys, queryClient, useInstance, useMe, useProjects, useWorkspaces } from "@/lib/queries";
+import {
+  keys,
+  queryClient,
+  useInstance,
+  useLiveSessions,
+  useMe,
+  useProjects,
+  useSessionSummary,
+  useWorkspaces,
+} from "@/lib/queries";
 import { forgetSidebar, type SidebarProject, type SidebarWorkspace, useSidebarLists } from "@/lib/sidebar";
 import { type Sortable, useSortable } from "@/lib/sortable";
 import { useTheme } from "@/lib/theme";
@@ -193,6 +213,11 @@ export function Sidebar({
   const { workspaces, projects, kept } = useSidebarLists(me?.user.id, workspaceList, projectList);
   const [folded, toggleFold] = useFolded();
   const groups = groupProjects(workspaces?.workspaces ?? [], projects ?? []);
+  // On a session's page, its project's sessions that haven't ended show under the project, to
+  // switch between.
+  const viewed = useSessionSummary(SESSION_PATH.exec(path)?.[1]).data;
+  const liveProject = projects?.find((p) => p.id === viewed?.project_id)?.id;
+  const live = useLiveSessions(liveProject).data;
   // Each session at work lights a thread on the Agent Floor's row.
   const working = (projects ?? []).reduce((n, p) => n + p.active_sessions, 0);
   const sort = useSortable({
@@ -274,6 +299,7 @@ export function Sidebar({
             onFold={() => toggleFold(workspace.id)}
             onNavigate={onNavigate}
             sort={sort}
+            live={liveProject && live ? { project: liveProject, sessions: live } : undefined}
           />
         ))}
         <p id={ORDER_HELP} hidden>
@@ -385,6 +411,15 @@ export function Sidebar({
 // The text that says how to move workspaces and projects, for screen readers.
 const ORDER_HELP = "sidebar-order-help";
 
+// A session's page, and the session's id.
+const SESSION_PATH = /^\/s\/([^/]+)$/;
+
+/** The sessions the sidebar shows under a project. */
+interface LiveSessions {
+  project: string;
+  sessions: G.Session[];
+}
+
 const notSaved = (e: unknown) =>
   toast(`The new order wasn't saved: ${e instanceof Error ? e.message : "try again"}`, "error");
 
@@ -406,6 +441,7 @@ function WorkspaceGroup({
   onFold,
   onNavigate,
   sort,
+  live,
 }: {
   workspace: SidebarWorkspace;
   projects: SidebarProject[];
@@ -419,6 +455,8 @@ function WorkspaceGroup({
   onNavigate: () => void;
   /** The sidebar's workspaces, which people drag by their headers. */
   sort: Sortable;
+  /** The sessions to show under a project, which may be one of these. */
+  live?: LiveSessions;
 }) {
   const here = path === `/w/${workspace.slug}`;
   const active = projects.reduce((n, p) => n + p.active_sessions, 0);
@@ -514,36 +552,14 @@ function WorkspaceGroup({
           ) : (
             <>
               {projects.map((p) => (
-                <Link
+                <ProjectRow
                   key={p.id}
-                  ref={sortProjects.itemRef(p.id)}
-                  {...sortProjects.handleProps(p.id)}
-                  to="/p/$slug"
-                  params={{ slug: p.slug }}
-                  search={{ tab: undefined }}
-                  onClick={onNavigate}
-                  className={cn(
-                    "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-[color,background-color,box-shadow,scale] duration-150 ease-[var(--ease-out)]",
-                    DRAGGABLE,
-                    sortProjects.lifted === p.id
-                      ? `${LIFTED} text-ink`
-                      : path === `/p/${p.slug}`
-                        ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
-                        : "text-ink-3 hover:bg-hover/60 hover:text-ink",
-                  )}
-                >
-                  <span className="flex size-4 items-center justify-center">
-                    {p.active_sessions > 0 ? (
-                      <StatusDot status="running" />
-                    ) : (
-                      <span className="size-1.5 rounded-full bg-ink-4/60" />
-                    )}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                  {p.active_sessions > 0 && (
-                    <span className="text-[11.5px] text-ink-4 tabular-nums">{p.active_sessions}</span>
-                  )}
-                </Link>
+                  project={p}
+                  path={path}
+                  sort={sortProjects}
+                  sessions={live?.project === p.id ? live.sessions : undefined}
+                  onNavigate={onNavigate}
+                />
               ))}
               {projects.length === 0 && !loading && createsProjects(workspace) && (
                 <Link
@@ -560,5 +576,123 @@ function WorkspaceGroup({
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * A project in the sidebar, which people drag by its row (the sessions under it move with it): a
+ * dot lit while its sessions are at work, and how many are.
+ */
+function ProjectRow({
+  project: p,
+  path,
+  sort,
+  sessions,
+  onNavigate,
+}: {
+  project: SidebarProject;
+  path: string;
+  /** Its workspace's projects. */
+  sort: Sortable;
+  /** Its sessions to show under it. */
+  sessions?: G.Session[];
+  onNavigate: () => void;
+}) {
+  const lifted = sort.lifted === p.id;
+  return (
+    <div
+      ref={sort.itemRef(p.id)}
+      className={cn(
+        "rounded-md transition-[background-color,box-shadow,scale] duration-150 ease-[var(--ease-out)]",
+        lifted && LIFTED,
+      )}
+    >
+      <Link
+        {...sort.handleProps(p.id)}
+        to="/p/$slug"
+        params={{ slug: p.slug }}
+        search={{ tab: undefined }}
+        onClick={onNavigate}
+        className={cn(
+          "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-[color,background-color,box-shadow] duration-150 ease-[var(--ease-out)]",
+          DRAGGABLE,
+          path === `/p/${p.slug}`
+            ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
+            : lifted
+              ? "text-ink"
+              : "text-ink-3 hover:bg-hover/60 hover:text-ink",
+        )}
+      >
+        <span className="flex size-4 items-center justify-center">
+          {p.active_sessions > 0 ? (
+            <StatusDot status="running" />
+          ) : (
+            <span className="size-1.5 rounded-full bg-ink-4/60" />
+          )}
+        </span>
+        <span className="min-w-0 flex-1 truncate">{p.name}</span>
+        {p.active_sessions > 0 && (
+          <span className="text-[11.5px] text-ink-4 tabular-nums">{p.active_sessions}</span>
+        )}
+      </Link>
+      {sessions && sessions.length > 0 && (
+        <ProjectSessions
+          project={p}
+          sessions={sessions}
+          path={path}
+          lifted={lifted}
+          onNavigate={onNavigate}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * A project's sessions under it in the sidebar, the one whose page shows marked: a line runs down
+ * beside them from the project's dot.
+ */
+function ProjectSessions({
+  project,
+  sessions,
+  path,
+  lifted,
+  onNavigate,
+}: {
+  project: SidebarProject;
+  sessions: G.Session[];
+  path: string;
+  /** The project is being dragged, with them. */
+  lifted: boolean;
+  onNavigate: () => void;
+}) {
+  return (
+    <ul
+      aria-label={`${project.name}'s active sessions`}
+      className="relative mt-0.5 flex flex-col gap-0.5 pl-[26px] before:absolute before:-top-2.5 before:bottom-1 before:left-[17.5px] before:w-px before:bg-line"
+    >
+      {sessions.map((s) => {
+        const here = path === `/s/${s.id}`;
+        return (
+          <li key={s.id}>
+            <Link
+              to="/s/$id"
+              params={{ id: s.id }}
+              onClick={onNavigate}
+              title={`${s.title} · ${statusLabel(s.status)}`}
+              className={cn(
+                "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] transition-colors duration-150",
+                here ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]" : "text-ink-3",
+                !here && !lifted && "hover:bg-hover/60 hover:text-ink",
+              )}
+            >
+              <StatusDot status={s.status} className="scale-75" />
+              <span className="min-w-0 flex-1 truncate">{s.title}</span>
+              <span className="sr-only">: {statusLabel(s.status)}</span>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
