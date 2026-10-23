@@ -434,6 +434,10 @@ pub fn instructions(t: &Told<'_>) -> String {
         }
         Tracker::Linear => match &t.tickets.linear {
             None => s.push_str(NO_TRACKER),
+            Some(l) if t.via == TicketsVia::Nothing => s.push_str(&format!(
+                "- This project tracks its work in Linear, in {}, but fctl can't reach it now: its workspace no longer works in that Linear workspace. Leave tickets alone, GitHub's issues too, and say in your reply what you would do in the tracker.\n",
+                linear_scope(l, t.linear_workspace)
+            )),
             Some(l) => {
                 let scope = linear_scope(l, t.linear_workspace);
                 let how = if writes {
@@ -877,6 +881,18 @@ mod tests {
         let lin = told(&linear(), GithubAccess::Push);
         assert!(lin.contains("Linear team ENG (Acme)"));
         assert!(lin.contains("`fctl ticket comment ENG-123"));
+        // A workspace that disconnected Linear reaches none of its tickets.
+        let gone = instructions(&Told {
+            tickets: &linear(),
+            via: TicketsVia::Nothing,
+            primary: Some(&primary),
+            grants: &[],
+            access: GithubAccess::Push,
+            linear_workspace: Some("Acme"),
+            started_from: None,
+        });
+        assert!(gone.contains("fctl can't reach it now"));
+        assert!(!gone.contains("fctl ticket comment"));
         let ticket = SessionTicket {
             tracker: Tracker::Linear,
             id: "i".into(),

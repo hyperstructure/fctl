@@ -50,11 +50,17 @@ pub async fn spec(
 ) -> AppResult<TicketsSpec> {
     let t = &settings.tickets;
     let primary = project.repo();
-    let via = tk::via(t, primary.as_ref(), grants, access);
+    let mut via = tk::via(t, primary.as_ref(), grants, access);
     let linear_workspace = match (&t.tracker, &t.linear) {
-        (Tracker::Linear, Some(l)) => linear::installation(db, &l.organization)
-            .await?
-            .map(|i| i.name),
+        (Tracker::Linear, Some(l)) => {
+            // A workspace that disconnected it reaches none of its tickets.
+            if !works_in(db, project.workspace_id(), &l.organization).await? {
+                via = fctl_proto::tickets::TicketsVia::Nothing;
+            }
+            linear::installation(db, &l.organization)
+                .await?
+                .map(|i| i.name)
+        }
         _ => None,
     };
     let column = row
@@ -187,16 +193,21 @@ pub async fn status(ctx: &Ctx, project: &ProjectRow) -> AppResult<ProjectTickets
     );
     let workspace_id = project.workspace_id().to_owned();
     let connections = connections(&ctx.db, &workspace_id).await?;
+    // Linear's connection, for a project that takes its tickets.
     let connection = t
         .linear
         .as_ref()
+        .filter(|_| t.tracker == Tracker::Linear)
         .and_then(|l| {
             connections
                 .iter()
                 .find(|c| c.organization == l.organization)
         })
         .cloned();
-    let linked = match (&t.linear, ctx.auth.as_ref()) {
+    let linked = match (
+        t.linear.as_ref().filter(|_| t.tracker == Tracker::Linear),
+        ctx.auth.as_ref(),
+    ) {
         (Some(l), Some(a)) => {
             let c: Option<Count> = q(
                 &ctx.db,
@@ -455,7 +466,14 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
             GithubIssues::One(r) => Backend::Github(vec![r]),
         },
         Tracker::Linear => match &t.linear {
-            Some(l) => Backend::Linear(l.clone()),
+            Some(l) if works_in(&ctx.db, &session.workspace_id, &l.organization).await? => {
+                Backend::Linear(l.clone())
+            }
+            Some(_) => {
+                return Err(forbidden(
+                    "This project's workspace no longer works in its Linear workspace: an admin connects it again under the workspace's Linear tab.",
+                ));
+            }
             None => {
                 return Err(forbidden(
                     "This project hasn't chosen its Linear team yet: its maintainers choose it in the project's Tickets tab.",
@@ -511,6 +529,20 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
         .await?;
     }
     Ok(serde_json::to_value(answer)?)
+}
+
+/// Whether fctl workspace `workspace_id` works in Linear workspace
+/// `organization`: fctl's app may stay installed there for other fctl
+/// workspaces once this one disconnected it.
+pub async fn works_in(db: &D1Database, workspace_id: &str, organization: &str) -> AppResult<bool> {
+    let c: Option<Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM workspace_linear WHERE workspace_id = ? AND organization_id = ?",
+        &[s(workspace_id), s(organization)],
+    )?
+    .first()
+    .await?;
+    Ok(c.is_some_and(|c| c.n > 0))
 }
 
 /// The tickets a session works on: the one it started from.

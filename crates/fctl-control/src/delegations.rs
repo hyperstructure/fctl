@@ -73,15 +73,35 @@ async fn thread(db: &D1Database, id: &str) -> AppResult<Option<ThreadRow>> {
         .await
 }
 
-/// The thread a session answers in now: the one that last reached it.
+/// The thread a session answers in now: the one that last reached it,
+/// while its project's workspace still works in that Linear workspace.
 async fn thread_of(db: &D1Database, session_id: &str) -> AppResult<Option<ThreadRow>> {
     q(
         db,
-        &format!("{THREAD_SELECT} WHERE session_id = ? AND state = 'started' ORDER BY updated_at DESC LIMIT 1"),
+        &format!(
+            "{THREAD_SELECT} t WHERE t.session_id = ?1 AND t.state = 'started' AND EXISTS (SELECT 1 FROM sessions s \
+             JOIN projects p ON p.id = s.project_id JOIN workspace_linear wl ON wl.workspace_id = p.workspace_id \
+             WHERE s.id = ?1 AND wl.organization_id = t.organization_id) ORDER BY t.updated_at DESC LIMIT 1"
+        ),
         &[s(session_id)],
     )?
     .first()
     .await
+}
+
+/// Whether session `session_id`'s project is in an fctl workspace that
+/// works in Linear workspace `organization`: one that disconnected it hears
+/// nothing more from there, though fctl's app may stay installed for others.
+async fn connected(db: &D1Database, session_id: &str, organization: &str) -> AppResult<bool> {
+    let c: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM sessions s JOIN projects p ON p.id = s.project_id \
+         JOIN workspace_linear wl ON wl.workspace_id = p.workspace_id WHERE s.id = ? AND wl.organization_id = ?",
+        &[s(session_id), s(organization)],
+    )?
+    .first()
+    .await?;
+    Ok(c.is_some_and(|c| c.n > 0))
 }
 
 async fn set_state(
@@ -808,6 +828,16 @@ async fn reply(
     raw: &Value,
     now: i64,
 ) -> AppResult<()> {
+    if !connected(db, session_id, &t.organization_id).await? {
+        post(
+            linear,
+            &t.id,
+            &Act::Error("The fctl workspace this session belongs to no longer works in this Linear workspace, so replies here don't reach it."),
+            false,
+        )
+        .await;
+        return Ok(());
+    }
     let author = activity
         .user_id
         .as_deref()

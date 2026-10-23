@@ -243,9 +243,11 @@ pub enum Delivery {
     Other,
 }
 
-/// What a delivery (its JSON body) asks of fctl. Revocations come as
-/// `OAuthApp` (`revoked`), though apps subscribe to them as
-/// `OAuthAuthorization`, which this takes too.
+/// What a delivery (its JSON body) asks of fctl. The app's revocation comes
+/// as `OAuthApp` (`revoked`), though apps subscribe to it as
+/// `OAuthAuthorization`; an `OAuthAuthorization` delivery is about one
+/// person's authorization of the app (fctl revokes those itself, as people
+/// link their accounts), not the workspace's, and asks nothing.
 pub fn delivery(payload: &Value) -> Delivery {
     let kind = payload
         .get("type")
@@ -275,11 +277,9 @@ pub fn delivery(payload: &Value) -> Delivery {
                 _ => Delivery::Other,
             }
         }
-        ("OAuthApp" | "OAuthAuthorization", "revoked") if !organization().is_empty() => {
-            Delivery::Revoked {
-                organization: organization(),
-            }
-        }
+        ("OAuthApp", "revoked") if !organization().is_empty() => Delivery::Revoked {
+            organization: organization(),
+        },
         ("PermissionChange", _) => {
             match serde_json::from_value::<PermissionChange>(payload.clone()) {
                 Ok(p) if !p.organization_id.is_empty() => Delivery::Teams(p),
@@ -816,7 +816,16 @@ pub fn task(a: &Asked<'_>) -> String {
     match a.prompt_context.map(str::trim).filter(|c| !c.is_empty()) {
         Some(context) => {
             s.push_str("\nThe ticket, as Linear gives it to agents:\n\n");
-            s.push_str(context);
+            if context.chars().count() > MAX_CONTEXT {
+                let cut: String = context.chars().take(MAX_CONTEXT).collect();
+                s.push_str(&cut);
+                s.push_str(&format!(
+                    "\n\n[fctl cut the rest: `fctl ticket view {}` shows the ticket and its latest comments.]",
+                    t.key
+                ));
+            } else {
+                s.push_str(context);
+            }
             s.push('\n');
         }
         None => {
@@ -837,6 +846,10 @@ pub fn task(a: &Asked<'_>) -> String {
     }
     s
 }
+
+/// The most of Linear's prompt context a task carries: a ticket with a long
+/// thread could otherwise fill much of the agent's context at once.
+pub const MAX_CONTEXT: usize = 40_000;
 
 /// A reply in a Linear session, for the agent: who wrote it, and where.
 pub fn replied(by: &str, key: &str, body: &str) -> String {
@@ -1086,14 +1099,19 @@ mod tests {
 
     #[test]
     fn reads_revocations_and_team_changes() {
-        for kind in ["OAuthApp", "OAuthAuthorization"] {
-            assert_eq!(
-                delivery(&json!({ "type": kind, "action": "revoked", "organizationId": "org1" })),
-                Delivery::Revoked {
-                    organization: "org1".into()
-                }
-            );
-        }
+        assert_eq!(
+            delivery(&json!({ "type": "OAuthApp", "action": "revoked", "organizationId": "org1" })),
+            Delivery::Revoked {
+                organization: "org1".into()
+            }
+        );
+        // One person's authorization going is not the workspace's.
+        assert_eq!(
+            delivery(
+                &json!({ "type": "OAuthAuthorization", "action": "revoked", "organizationId": "org1", "userId": "u1" })
+            ),
+            Delivery::Other
+        );
         let Delivery::Teams(p) = delivery(&json!({
             "type": "PermissionChange", "action": "teamAccessChanged", "organizationId": "org1",
             "addedTeamIds": ["t1"], "removedTeamIds": ["t2"], "canAccessAllPublicTeams": false
