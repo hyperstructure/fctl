@@ -207,7 +207,7 @@ function QuickStart({
   const draft = useKeepDraft(keep, {
     kept,
     textarea: ref,
-    draft: { prompt, project, ...picked },
+    text: { prompt, project, ...picked },
     files: files.drafts.length,
   });
   // Once a session starts with the draft, it is forgotten.

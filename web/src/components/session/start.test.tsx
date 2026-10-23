@@ -329,7 +329,7 @@ describe("keeping a draft", () => {
   function Form({ prompt, files = 0, model }: { prompt: string; files?: number; model?: string }) {
     const [kept] = useState(() => loadText(keep));
     const ref = useRef<HTMLTextAreaElement>(null);
-    draft = useKeepDraft(keep, { kept, textarea: ref, draft: { prompt, model }, files });
+    draft = useKeepDraft(keep, { kept, textarea: ref, text: { prompt, model }, files });
     return <textarea ref={ref} value={prompt} readOnly />;
   }
   const box = (container: HTMLElement) => container.querySelector("textarea") as HTMLTextAreaElement;

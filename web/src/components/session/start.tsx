@@ -107,13 +107,13 @@ export function useKeepDraft(
   {
     kept,
     textarea,
-    draft,
+    text,
     files,
   }: {
     kept: DraftText | undefined;
     textarea: RefObject<HTMLTextAreaElement | null>;
     /** What the form has now. */
-    draft: Omit<DraftText, "selection">;
+    text: Omit<DraftText, "selection">;
     /** How many files it has. */
     files: number;
   },
@@ -125,10 +125,10 @@ export function useKeepDraft(
     if (sent.current) return;
     const box = textarea.current;
     if (box) caret.current = [box.selectionStart, box.selectionEnd];
-    const empty = !draft.prompt.trim() && !files;
-    saveText(keep, empty ? undefined : { ...draft, selection: caret.current });
+    const empty = !text.prompt.trim() && !files;
+    saveText(keep, empty ? undefined : { ...text, selection: caret.current });
   };
-  const { prompt, project, model, effort, github } = draft;
+  const { prompt, project, model, effort, github } = text;
   // biome-ignore lint/correctness/useExhaustiveDependencies: saves when the draft changes
   useEffect(() => save.current(), [prompt, project, model, effort, github, files]);
   useEffect(() => () => save.current(), []);

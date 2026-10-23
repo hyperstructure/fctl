@@ -320,7 +320,7 @@ function StartForm({ project, user }: { project: G.Project; user: string }) {
   const draft = useKeepDraft(keep, {
     kept,
     textarea: ref,
-    draft: { prompt, ...picked },
+    text: { prompt, ...picked },
     files: files.drafts.length,
   });
   const { start, starting } = useStartSession(draft.forget);
