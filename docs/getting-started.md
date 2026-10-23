@@ -290,8 +290,10 @@ turns them off.
   swipe on a phone, step through the session's others, and on a phone a
   pinch or a double tap zooms in on it. The details beside the transcript
   show how full Claude's context is, with where Claude compacts the
-  conversation to make room. On a phone, tap
-  the session's title for its details: its pull requests, the files
+  conversation to make room. Under the session's project, the sidebar lists
+  the project's sessions that haven't ended (starting, at work, waiting or
+  paused), the one you are on marked, so a click switches to another. On a
+  phone, tap the session's title for its details: its pull requests, the files
   changed, its branch and who else is watching. Type below to message the
   agent, with files attached if you like; it reads your message at its
   next step. **Interrupt** stops the current turn.

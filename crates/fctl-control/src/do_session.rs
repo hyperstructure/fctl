@@ -879,6 +879,7 @@ impl SessionObject {
                     source: fctl_proto::event::MessageSource::System,
                     attachments: Vec::new(),
                     follow_up: None,
+                    review: b.shown,
                 }),
             })
             .await?;
@@ -1127,6 +1128,7 @@ impl SessionObject {
                     source: fctl_proto::event::MessageSource::System,
                     attachments: Vec::new(),
                     follow_up: Some(f),
+                    review: None,
                 }),
             })
             .await;
@@ -1710,6 +1712,7 @@ impl SessionObject {
                 source: fctl_proto::event::MessageSource::Web,
                 attachments,
                 follow_up: None,
+                review: None,
             }),
         })
         .await

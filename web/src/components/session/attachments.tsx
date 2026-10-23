@@ -58,6 +58,8 @@ interface Upload {
   abort: () => void;
   /** Once it is done. */
   attachment?: G.Attachment;
+  /** Once a message took its file, which the composer still shows (`take`'s `stay`). */
+  taken?: boolean;
 }
 
 /**
@@ -168,11 +170,12 @@ export function useAttachments(scope: UploadScope | undefined, { keep }: { keep?
   }, [keep, restored, drafts]);
 
   // Leaving the page cancels uploads under way and frees the previews. Kept
-  // drafts hold on to their finished uploads, for when the page comes back.
+  // drafts hold on to their finished uploads, for when the page comes back,
+  // unless a message took them.
   useEffect(
     () => () => {
       for (const [key, u] of uploads.current) {
-        if (keep && u.attachment) continue;
+        if (keep && u.attachment && !u.taken) continue;
         u.abort();
         uploads.current.delete(key);
       }
@@ -236,36 +239,54 @@ export function useAttachments(scope: UploadScope | undefined, { keep }: { keep?
 
   /**
    * Waits for the uploads and empties the composer, handing over the files
-   * and their previews. `restore` puts them back if sending fails.
+   * and their previews. With `stay`, the files stay in it, as a start form's
+   * do until the session page replaces it, and it frees their previews as it
+   * goes. `restore` puts them back if sending fails.
    */
-  const take = useCallback(async (): Promise<{ files: SentFiles; restore: () => void }> => {
-    const taken = live.current;
-    const sent = taken.map((d) => uploads.current.get(d.key));
-    const results = await Promise.allSettled(
-      sent.map((u) => u?.promise ?? Promise.reject(new Error("not uploaded"))),
-    );
-    if (results.some((r) => r.status === "rejected")) {
-      throw new Error("Some files did not upload. Try them again or remove them.");
-    }
-    const attachments = results.map((r) => (r as PromiseFulfilledResult<G.Attachment>).value);
-    const previews: Record<string, string> = {};
-    taken.forEach((d, i) => {
-      const a = attachments[i];
-      if (d.preview && a) previews[a.id] = d.preview;
-      uploads.current.delete(d.key);
-    });
-    setDrafts((ds) => ds.filter((d) => !taken.includes(d)));
-    return {
-      files: { attachments, previews },
-      restore: () => {
-        taken.forEach((d, i) => {
-          const u = sent[i];
-          if (u) uploads.current.set(d.key, u);
-        });
-        setDrafts((ds) => [...taken, ...ds]);
-      },
-    };
-  }, []);
+  const take = useCallback(
+    async ({ stay = false } = {}): Promise<{ files: SentFiles; restore: () => void }> => {
+      const taken = live.current;
+      const sent = taken.map((d) => uploads.current.get(d.key));
+      const results = await Promise.allSettled(
+        sent.map((u) => u?.promise ?? Promise.reject(new Error("not uploaded"))),
+      );
+      if (results.some((r) => r.status === "rejected")) {
+        throw new Error("Some files did not upload. Try them again or remove them.");
+      }
+      const attachments = results.map((r) => (r as PromiseFulfilledResult<G.Attachment>).value);
+      const previews: Record<string, string> = {};
+      taken.forEach((d, i) => {
+        const a = attachments[i];
+        if (d.preview && a) previews[a.id] = d.preview;
+      });
+      // Files that were still uploading have changed since: they go by their keys, and come back
+      // uploaded.
+      const keys = new Set(taken.map((d) => d.key));
+      const uploaded = taken.map(
+        (d, i): Draft => ({ ...d, status: "ready", progress: 1, attachment: attachments[i] }),
+      );
+      if (stay) {
+        // Their uploads stay too, so that the files don't upload again.
+        for (const u of sent) if (u) u.taken = true;
+      } else {
+        for (const key of keys) uploads.current.delete(key);
+        setDrafts((ds) => ds.filter((d) => !keys.has(d.key)));
+      }
+      return {
+        files: { attachments, previews },
+        restore: () => {
+          taken.forEach((d, i) => {
+            const u = sent[i];
+            if (!u) return;
+            u.taken = false;
+            uploads.current.set(d.key, u);
+          });
+          if (!stay) setDrafts((ds) => [...uploaded, ...ds]);
+        },
+      };
+    },
+    [],
+  );
 
   return {
     drafts,
@@ -332,9 +353,11 @@ export function useFileDrop(onFiles: (files: File[]) => void, enabled = true): b
 /** The paperclip: picks files with the system dialog. */
 export function AttachButton({
   onFiles,
+  disabled,
   className,
 }: {
   onFiles: (files: File[]) => void;
+  disabled?: boolean;
   className?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
@@ -344,6 +367,7 @@ export function AttachButton({
         type="button"
         label="Attach files"
         title="Attach files (or paste, or drop them here)"
+        disabled={disabled}
         onClick={() => input.current?.click()}
         // A row of controls that runs short on a phone squeezes the others first.
         className={cn("shrink-0", className)}
@@ -395,24 +419,32 @@ export function DraftTray({
   drafts,
   onRemove,
   onRetry,
+  readOnly,
   className,
 }: {
   drafts: Draft[];
   onRemove: (key: string) => void;
   onRetry: (key: string) => void;
+  /** A start form's files as it starts: they go with the session, so they can't be removed. */
+  readOnly?: boolean;
   className?: string;
 }) {
   if (!drafts.length) return null;
   return (
     <ul className={cn("flex flex-wrap gap-2", className)} aria-label="Attached files">
       {drafts.map((d) => (
-        <DraftChip key={d.key} d={d} onRemove={() => onRemove(d.key)} onRetry={() => onRetry(d.key)} />
+        <DraftChip
+          key={d.key}
+          d={d}
+          onRemove={readOnly ? undefined : () => onRemove(d.key)}
+          onRetry={() => onRetry(d.key)}
+        />
       ))}
     </ul>
   );
 }
 
-function DraftChip({ d, onRemove, onRetry }: { d: Draft; onRemove: () => void; onRetry: () => void }) {
+function DraftChip({ d, onRemove, onRetry }: { d: Draft; onRemove?: () => void; onRetry: () => void }) {
   const failed = d.status === "failed";
   const status =
     d.status === "uploading"
@@ -464,14 +496,16 @@ function DraftChip({ d, onRemove, onRetry }: { d: Draft; onRemove: () => void; o
           <RotateCw className="size-3.5" />
         </button>
       )}
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label={`Remove ${d.name}`}
-        className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-ink/80 text-canvas opacity-0 transition-opacity duration-150 group-hover/chip:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
-      >
-        <X className="size-3" />
-      </button>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove ${d.name}`}
+          className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-ink/80 text-canvas opacity-0 transition-opacity duration-150 group-hover/chip:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+        >
+          <X className="size-3" />
+        </button>
+      )}
     </li>
   );
 }

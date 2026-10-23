@@ -51,7 +51,7 @@ export const FollowUpMessage = memo(function FollowUpMessage({
 });
 
 /** The pull request, by its repository's name, as a link to `href` on GitHub. */
-function PullLink({ f, href }: { f: G.FollowUp; href: string }) {
+export function PullLink({ f, href }: { f: Pick<G.FollowUp, "repo" | "number" | "title">; href: string }) {
   return (
     <a
       href={href}
@@ -70,7 +70,7 @@ function PullLink({ f, href }: { f: G.FollowUp; href: string }) {
  * When it happened, which shows as the pointer rests on the message: not on phones, where nothing
  * rests on it, and where it would take a line of its own.
  */
-function When({ at }: { at: number }) {
+export function When({ at }: { at: number }) {
   return (
     <time
       dateTime={new Date(at).toISOString()}
@@ -255,7 +255,7 @@ function HappenedLine({ f, e, ts, muted }: { f: G.FollowUp; e: Happened; ts: num
 }
 
 /** What fctl told the agent, word for word, a click away. */
-function Told({ text }: { text: string }) {
+export function Told({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   return (

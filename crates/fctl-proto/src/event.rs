@@ -6,11 +6,12 @@
 //! without a protocol change; streaming deltas (`stream_event`) are ephemeral
 //! and travel separately (see `viewer::ViewerServer::Stream`).
 
+use crate::api::Severity;
 use crate::session::{
     Memory, PullRequestRef, RemoteControlState, RepoAccess, RepoRef, Retrospective, SessionStatus,
     UserRef,
 };
-use crate::{AttachmentId, DeliveryId, Millis};
+use crate::{AttachmentId, DeliveryId, Millis, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -112,6 +113,53 @@ pub struct UserMessage {
     /// request its session opened: what happened there, which the message
     /// tells the agent. Clients from before it show the message's text.
     pub follow_up: Option<FollowUp>,
+    /// For a message from fctl that passed a review's findings on to the
+    /// agent that opened the pull request: the review, which the message
+    /// tells the agent. Clients from before it show the message's text.
+    pub review: Option<PassedOnReview>,
+}
+
+/// A review of a pull request a session's agent opened, whose findings
+/// fctl passed on to that agent (`fctl_domain::reviews::passed_on`), for
+/// the apps to show in a few lines: the message's text says the same to
+/// the agent, with each finding's explanation and how to answer it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PassedOnReview {
+    pub repo: RepoRef,
+    pub number: u64,
+    /// The pull request on GitHub.
+    pub url: String,
+    pub title: Option<String>,
+    /// The commit reviewed, in full.
+    pub sha: String,
+    /// The review's summary on GitHub, above its comments on lines.
+    pub summary_url: Option<String>,
+    /// The review agent's session.
+    pub session: SessionId,
+    /// What it found, most severe first, as the message lists it.
+    pub findings: Vec<PassedOnFinding>,
+}
+
+/// One of a [`PassedOnReview`]'s findings: what is wrong, and where.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PassedOnFinding {
+    pub severity: Severity,
+    pub title: String,
+    /// The file, and its lines in the pull request's version (`start_line`
+    /// to `line`), or in the old one (`deleted`).
+    pub path: String,
+    pub line: u32,
+    pub start_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub deleted: bool,
+    /// Where it is on GitHub: the comment on its lines, which starts its
+    /// thread, or the review's summary, for lines the diff doesn't show.
+    pub url: Option<String>,
 }
 
 /// What happened on GitHub to a pull request a session's agent opened,
@@ -485,6 +533,7 @@ mod tests {
                 source: MessageSource::Web,
                 attachments: vec![],
                 follow_up: None,
+                review: None,
             }),
         };
         let json = serde_json::to_value(&ev)?;
@@ -670,6 +719,67 @@ mod tests {
             "id": "dlv_1", "text": "hi", "source": "system"
         }))?;
         assert_eq!(m.follow_up, None);
+        Ok(())
+    }
+
+    #[test]
+    fn passed_on_reviews_say_what_was_found_where() -> Result<(), serde_json::Error> {
+        let review = PassedOnReview {
+            repo: RepoRef {
+                owner: "acme".into(),
+                name: "web".into(),
+            },
+            number: 12,
+            url: "https://github.com/acme/web/pull/12".into(),
+            title: Some("Fix the login redirect".into()),
+            sha: "3f2a1c9d00000000000000000000000000000000".into(),
+            summary_url: Some("https://github.com/acme/web/pull/12#issuecomment-79".into()),
+            session: SessionId("ses_review".into()),
+            findings: vec![
+                PassedOnFinding {
+                    severity: Severity::High,
+                    title: "Uploads never stop retrying".into(),
+                    path: "src/sync/upload.rs".into(),
+                    line: 42,
+                    start_line: Some(40),
+                    deleted: false,
+                    url: Some("https://github.com/acme/web/pull/12#discussion_r101".into()),
+                },
+                PassedOnFinding {
+                    severity: Severity::Low,
+                    title: "A slow query".into(),
+                    path: "src/db.rs".into(),
+                    line: 3,
+                    start_line: None,
+                    deleted: true,
+                    url: None,
+                },
+            ],
+        };
+        let m = UserMessage {
+            id: DeliveryId("dlv_1".into()),
+            author: None,
+            text: "fctl's review agent reviewed commit 3f2a1c9 …".into(),
+            source: MessageSource::System,
+            attachments: vec![],
+            follow_up: None,
+            review: Some(review.clone()),
+        };
+        let json = serde_json::to_value(&m)?;
+        assert!(json.get("follow_up").is_none());
+        assert_eq!(json["review"]["session"], "ses_review");
+        assert_eq!(json["review"]["findings"][0]["severity"], "high");
+        assert_eq!(json["review"]["findings"][0]["start_line"], 40);
+        assert!(json["review"]["findings"][0].get("deleted").is_none());
+        assert_eq!(json["review"]["findings"][1]["deleted"], true);
+        assert!(json["review"]["findings"][1].get("url").is_none());
+        let back: UserMessage = serde_json::from_value(json)?;
+        assert_eq!(back, m);
+        // Messages without one, as before.
+        let m: UserMessage = serde_json::from_value(serde_json::json!({
+            "id": "dlv_1", "text": "hi", "source": "system"
+        }))?;
+        assert_eq!(m.review, None);
         Ok(())
     }
 

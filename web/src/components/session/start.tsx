@@ -18,7 +18,7 @@ import type { SentFiles } from "./attachments";
 /** The files a start form holds (see `useAttachments`). */
 export interface StartFiles {
   drafts: readonly unknown[];
-  take: () => Promise<{ files: SentFiles; restore: () => void }>;
+  take: (o: { stay: boolean }) => Promise<{ files: SentFiles; restore: () => void }>;
 }
 
 /** The model, effort level and GitHub access a session asks for as it starts (see `asked`). */
@@ -27,9 +27,10 @@ export type StartAsks = Pick<G.CreateSessionRequest, "model" | "effort" | "githu
 /**
  * Starts a session and opens it. While a start is in flight, `start` does nothing, so a double
  * click or a second ⌘↵ cannot create a duplicate. `starting` stays true until the session page
- * replaces the form, and turns false again if the start fails (attached files go back in the
- * form). A start needs a prompt or files; it waits for files still uploading. `onStarted` runs
- * once the session exists, and the session page opens when what it returns is done.
+ * replaces the form, which goes on showing the prompt and the attached files until then, and turns
+ * false again if the start fails. A start needs a prompt or files; it waits for files still
+ * uploading. `onStarted` runs once the session exists, and the session page opens when what it
+ * returns is done.
  */
 export function useStartSession(onStarted?: (s: G.Session) => unknown) {
   const navigate = useNavigate();
@@ -48,7 +49,7 @@ export function useStartSession(onStarted?: (s: G.Session) => unknown) {
       files?: StartFiles;
       asks?: StartAsks;
     }) => {
-      const taken = files?.drafts.length ? await files.take() : undefined;
+      const taken = files?.drafts.length ? await files.take({ stay: true }) : undefined;
       const attachments = taken?.files.attachments.map((a) => a.id) ?? [];
       const body: G.CreateSessionRequest = { prompt };
       if (attachments.length) body.attachments = attachments;
@@ -56,9 +57,7 @@ export function useStartSession(onStarted?: (s: G.Session) => unknown) {
       if (asks?.effort) body.effort = asks.effort;
       if (asks?.github_access) body.github_access = asks.github_access;
       try {
-        const s = await api.createSession(project, body);
-        for (const url of Object.values(taken?.files.previews ?? {})) URL.revokeObjectURL(url);
-        return s;
+        return await api.createSession(project, body);
       } catch (e) {
         taken?.restore();
         throw e;

@@ -628,6 +628,7 @@ pub async fn start(
                 source: MessageSource::System,
                 attachments: Vec::new(),
                 follow_up: None,
+                review: None,
             },
         },
     )
@@ -1244,8 +1245,10 @@ async fn pass_on(
     let found = rv::Found {
         repo,
         number: row.number(),
+        url: &row.url,
         title: row.title.as_deref().unwrap_or_default(),
         sha: &row.head_sha,
+        session: &row.session_id,
         summary_url: posting.review.url.as_deref(),
         review_id: posting.review_id,
         findings: &sub.findings,
@@ -1259,6 +1262,7 @@ async fn pass_on(
             review: SessionId(row.session_id.clone()),
             text: rv::passed_on(&found),
             held: rv::held_back(&found),
+            shown: Some(rv::passed_on_review(&found)),
         },
     )
     .await?;

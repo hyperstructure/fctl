@@ -3,6 +3,7 @@ import type { Attachment } from "./Attachment";
 import type { DeliveryId } from "./DeliveryId";
 import type { FollowUp } from "./FollowUp";
 import type { MessageSource } from "./MessageSource";
+import type { PassedOnReview } from "./PassedOnReview";
 import type { UserRef } from "./UserRef";
 
 export type UserMessage = { id: DeliveryId, 
@@ -23,4 +24,10 @@ attachments?: Array<Attachment>,
  * request its session opened: what happened there, which the message
  * tells the agent. Clients from before it show the message's text.
  */
-follow_up?: FollowUp, };
+follow_up?: FollowUp, 
+/**
+ * For a message from fctl that passed a review's findings on to the
+ * agent that opened the pull request: the review, which the message
+ * tells the agent. Clients from before it show the message's text.
+ */
+review?: PassedOnReview, };

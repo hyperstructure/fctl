@@ -243,6 +243,7 @@ function QuickStart({
           drafts={files.drafts}
           onRemove={files.remove}
           onRetry={files.retry}
+          readOnly={starting}
           className="px-4 pt-4"
         />
         <Textarea
@@ -273,7 +274,7 @@ function QuickStart({
         {/* On a phone it keeps one line: where the controls run out of room, the project's name and
             the model's give way, and their starts show. */}
         <TextareaControls textarea={ref} className="flex-wrap gap-2 pt-4 pr-3 pb-3 pl-2.5 max-sm:flex-nowrap">
-          <AttachButton onFiles={(f) => attach(f)} />
+          <AttachButton onFiles={(f) => attach(f)} disabled={starting} />
           {/* It takes the room left on its line, which puts what follows at the end. On a phone it
               keeps room for the start of the project's name, and gives up some of it with the model's
               name where the row has too little. */}
