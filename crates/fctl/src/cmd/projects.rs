@@ -340,14 +340,7 @@ fn follow_ups_arg(s: &str) -> std::result::Result<FollowUps, String> {
     let mut f = FollowUps::default();
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         match part.to_ascii_lowercase().as_str() {
-            "all" => {
-                f = FollowUps {
-                    comments: true,
-                    checks: true,
-                    closed: true,
-                    conflicts: true,
-                }
-            }
+            "all" => f = FollowUps::ALL,
             "none" => f = FollowUps::default(),
             "comments" => f.comments = true,
             "checks" => f.checks = true,
@@ -723,8 +716,10 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     owner,
                 }),
                 default_branch: None,
+                // Whole settings: follow-ups as new projects start, all on.
                 settings: connectors.then(|| ProjectSettings {
                     claude_ai_connectors: true,
+                    follow_ups: FollowUps::ALL,
                     ..Default::default()
                 }),
             };

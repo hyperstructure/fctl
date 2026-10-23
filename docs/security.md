@@ -443,7 +443,7 @@ runners when one is online, else on a runner that runs their sessions.
 **Updates.** Hosts update fctl by themselves to the version the control
 plane runs, unless `auto_update = false` in `host.toml` (`fctl host
 auto-update off`)
-([ADR 0051](adr/0051-hosts-update-themselves-to-the-control-planes-version.md)).
+([ADR 0052](adr/0052-hosts-update-themselves-to-the-control-planes-version.md)).
 The release comes from the host's own `download_base`, fctl.sh unless it
 says otherwise: the control plane names only a version, which must be newer
 than the host's, and never where to download it, so a control plane taken

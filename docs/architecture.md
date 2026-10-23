@@ -867,7 +867,7 @@ reason that says which (`fctl_domain::reconcile`).
 Hosts update fctl by themselves, and with it the agents they put in
 sandboxes and their default sandbox image, to the version the control
 plane runs
-([ADR 0051](adr/0051-hosts-update-themselves-to-the-control-planes-version.md)).
+([ADR 0052](adr/0052-hosts-update-themselves-to-the-control-planes-version.md)).
 On app.fctl.sh that is the latest release; a control plane of your own
 keeps its hosts at its version, which they must not run ahead of
 ([Protocols](#protocols)).
@@ -1242,7 +1242,7 @@ run and post, and say why their commit shows no check
 
 ### Follow-ups
 
-Where a project turns them on (`ProjectSettings::follow_ups`, the
+Where a project has them on (`ProjectSettings::follow_ups`, the
 project's Settings, `fctl projects set --follow-ups`), what happens on
 GitHub to a pull request one of the instance's own agents opened (its
 author is the GitHub App) brings that agent back to it, in a message from
@@ -1250,7 +1250,12 @@ fctl delivered as a person's message is: it resumes a stopped session on
 the subscription it ran on
 ([ADR 0043](adr/0043-agents-come-back-to-their-pull-requests-for-comments-failed-checks-and-merges.md),
 [ADR 0045](adr/0045-merge-conflicts-bring-agents-back-too.md)). Four
-kinds, each on or off on its own, all off by default:
+kinds, each on or off on its own. New projects start with all four on,
+except those their create request turns off
+(`fctl_domain::settings::for_new_project`,
+[ADR 0051](adr/0051-new-projects-start-with-follow-ups-on.md)), and store
+each one; a project stored without one, from before it existed, has it
+off:
 
 1. **Comments that address the agent** (`issue_comment`,
    `pull_request_review` and `pull_request_review_comment` deliveries,

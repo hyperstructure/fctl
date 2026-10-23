@@ -272,8 +272,8 @@ ran on (`--follow-ups`, a list of `comments`, `checks`, `conflicts` and
 to the repository; a failed check of the newest commit, at most three
 times in a row while nobody messages the agent; conflicts with the base
 branch, which the agent resolves by merging the base branch in, as often;
-a merge or a close. `fctl projects show` says which
-([Architecture](architecture.md#follow-ups)).
+a merge or a close. New projects start with all four on; `fctl projects
+show` says which ([Architecture](architecture.md#follow-ups)).
 
 A project's image and its build run only on runners whose owners allow
 them ([Sandbox images](sandbox-images.md#which-images-a-host-runs)); a

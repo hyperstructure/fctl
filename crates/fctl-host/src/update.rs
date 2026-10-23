@@ -1,5 +1,5 @@
 //! Updating fctl in place: `fctl self update`, and hosts that update
-//! themselves ([ADR 0051](../../../docs/adr/0051-hosts-update-themselves-to-the-control-planes-version.md)).
+//! themselves ([ADR 0052](../../../docs/adr/0052-hosts-update-themselves-to-the-control-planes-version.md)).
 //!
 //! A release has an archive for each target on `download_base`,
 //! `v<version>/fctl-<target>.tar.gz`, checked against its `.sha256`, with
