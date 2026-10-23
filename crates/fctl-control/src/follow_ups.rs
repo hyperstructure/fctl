@@ -23,7 +23,6 @@ use crate::internal;
 use crate::pull_requests::{in_reach, key};
 use fctl_domain::follow_ups::{self as fu, Item, Place, Pull};
 use fctl_domain::reviews as rv;
-use fctl_domain::webhooks::{self, Hints};
 use fctl_proto::Millis;
 use fctl_proto::event::FollowUpEvent;
 use fctl_proto::session::{FollowUps, GithubAccess, ProjectSettings, RepoRef};
@@ -63,20 +62,25 @@ pub struct Opener {
     pub deaf: Option<&'static str>,
 }
 
-/// The session whose agent opened pull request `number` of `repo` (from
-/// branch `head_ref`, when said): of the sessions that list it, review
-/// agents' left out, the one on its branch, else the one that started first
-/// (`fctl_domain::reviews::opener`). Only sessions it may be looked up for,
+impl Lister {
+    fn follow_ups(&self) -> FollowUps {
+        serde_json::from_str::<ProjectSettings>(&self.settings)
+            .unwrap_or_default()
+            .follow_ups
+    }
+}
+
+/// The sessions that list pull request `number` of `repo`, review agents'
+/// left out, in the order they started: those it may be looked up for,
 /// and with `answered` (GitHub's ids of the account and installation that
 /// said what happened), those of workspaces connected to that account
 /// (`crate::pull_requests::in_reach`).
-pub async fn opener(
+async fn listers(
     db: &D1Database,
     repo: &RepoRef,
     number: u64,
-    head_ref: Option<&str>,
     answered: Option<(u64, u64)>,
-) -> AppResult<Option<Opener>> {
+) -> AppResult<Vec<Lister>> {
     let reach = match answered {
         Some(_) => in_reach(Some(("?3", "?4"))),
         None => in_reach(None),
@@ -85,7 +89,7 @@ pub async fn opener(
     if let Some((account, installation)) = answered {
         params.extend([n(account as i64), n(installation as i64)]);
     }
-    let listers: Vec<Lister> = q(
+    q(
         db,
         &format!(
             "SELECT l.session_id AS session_id, s.branch AS branch, s.github_access AS github_access, \
@@ -99,12 +103,15 @@ pub async fn opener(
         &params,
     )?
     .all()
-    .await?;
+    .await
+}
+
+/// Which of `listers` opened the pull request (from branch `head_ref`,
+/// when said): the one on its branch, else the one that started first
+/// (`fctl_domain::reviews::opener`), with what its project follows up on.
+fn pick(listers: &[Lister], head_ref: Option<&str>) -> Option<Opener> {
     let branches: Vec<Option<&str>> = listers.iter().map(|l| l.branch.as_deref()).collect();
-    let Some(l) = rv::opener(&branches, head_ref).and_then(|i| listers.get(i)) else {
-        return Ok(None);
-    };
-    let settings: ProjectSettings = serde_json::from_str(&l.settings).unwrap_or_default();
+    let l = rv::opener(&branches, head_ref).and_then(|i| listers.get(i))?;
     let known = |v: &Option<String>| {
         v.as_deref()
             .map(|v| GithubAccess::parse(v).unwrap_or(GithubAccess::Read))
@@ -118,13 +125,37 @@ pub async fn opener(
     } else {
         None
     };
-    Ok(Some(Opener {
+    Some(Opener {
         session_id: l.session_id.clone(),
-        follow_ups: settings.follow_ups,
+        follow_ups: l.follow_ups(),
         workspace_id: l.workspace_id.clone(),
         project_slug: l.project_slug.clone(),
         deaf,
-    }))
+    })
+}
+
+/// The session whose agent opened pull request `number` of `repo` (from
+/// branch `head_ref`, when said), among those that list it ([`listers`],
+/// [`pick`]).
+pub async fn opener(
+    db: &D1Database,
+    repo: &RepoRef,
+    number: u64,
+    head_ref: Option<&str>,
+    answered: Option<(u64, u64)>,
+) -> AppResult<Option<Opener>> {
+    Ok(pick(&listers(db, repo, number, answered).await?, head_ref))
+}
+
+/// Hands what happened to pull requests its agent opened to a session
+/// (SessionObject's `/follow-up`).
+pub async fn hand(
+    env: &worker::Env,
+    session_id: &str,
+    items: Vec<Item>,
+) -> AppResult<internal::FollowUpsTaken> {
+    let stub = internal::session_stub(env, session_id)?;
+    internal::post(&stub, "/follow-up", &internal::FollowUps { items }).await
 }
 
 /// Whether a project that follows up on `follow_ups` takes `event`.
@@ -162,33 +193,39 @@ pub async fn on_comment(ctx: &Ctx, event: &str, payload: &Value) -> AppResult<us
     let Some(inst) = c.installation else {
         return Ok(0);
     };
+    let answered = c.owner_id.map(|account| (account, inst));
+    let listing = listers(&ctx.db, &c.pull.repo, c.pull.number, answered).await?;
+    if listing.is_empty() {
+        worker::console_log!("not passing on @{who}'s comment on {pr}: no session lists it");
+        return Ok(0);
+    }
+    if !listing.iter().any(|l| l.follow_ups().comments) {
+        worker::console_log!(
+            "not passing on @{who}'s comment on {pr}: its project doesn't follow up on comments"
+        );
+        return Ok(0);
+    }
     let gh = github::from_config(&ctx.cfg, ctx.now)?;
-    // A comment on its conversation doesn't name the pull request's
-    // branches: a lookup does, which finds the session on its branch, and
-    // where changes go once it merged.
-    if c.head_ref.is_none() {
-        let pr = [(c.pull.repo.clone(), c.pull.number)];
-        match gh.pull_requests(Some(inst), &pr).await {
+    // A comment on its conversation names neither of the pull request's
+    // branches: a lookup does, where it tells which of several sessions
+    // is on its branch, or where changes go now that it merged.
+    if c.head_ref.is_none() && (listing.len() > 1 || !fu::is_open(c.pull.state.as_deref())) {
+        match gh
+            .lookup(inst, rv::lookup(&c.pull.repo, c.pull.number))
+            .await
+        {
             Ok(answer) => {
-                if let Some(looked) = webhooks::looked_up(&answer, 0, ctx.now, Hints::default()) {
-                    c.head_ref = looked.head_ref;
-                    c.pull.base = looked.base_ref.or(c.pull.base);
+                if let Some(found) = rv::looked_up(&answer) {
+                    c.head_ref = Some(found.head_ref).filter(|h| !h.is_empty());
+                    c.pull.base = Some(found.base_ref)
+                        .filter(|b| !b.is_empty())
+                        .or(c.pull.base);
                 }
             }
-            Err(e) => worker::console_error!("looking up {pr:?} for a comment: {}", e.0.message),
+            Err(e) => worker::console_error!("looking up {pr} for a comment: {}", e.0.message),
         }
     }
-    let answered = c.owner_id.map(|account| (account, inst));
-    let Some(opener) = opener(
-        &ctx.db,
-        &c.pull.repo,
-        c.pull.number,
-        c.head_ref.as_deref(),
-        answered,
-    )
-    .await?
-    else {
-        worker::console_log!("not passing on @{who}'s comment on {pr}: no session lists it");
+    let Some(opener) = pick(&listing, c.head_ref.as_deref()) else {
         return Ok(0);
     };
     let id = opener.session_id.as_str();
@@ -238,9 +275,7 @@ pub async fn on_comment(ctx: &Ctx, event: &str, payload: &Value) -> AppResult<us
             Err(why) => worker::console_error!("listing review {}'s comments: {why}", c.comment.id),
         }
     }
-    let stub = internal::session_stub(&ctx.env, id)?;
-    let taken: internal::FollowUpsTaken =
-        internal::post(&stub, "/follow-up", &internal::FollowUps { items }).await?;
+    let taken = hand(&ctx.env, id, items).await?;
     if let Some(why) = taken.not_sent {
         worker::console_log!("not passing on @{who}'s comment on {pr} to session {id}: {why}");
         return Ok(0);

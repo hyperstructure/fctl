@@ -537,24 +537,30 @@ pub fn key(pull: &Pull, event: &FollowUpEvent, at: Option<Millis>) -> String {
 }
 
 /// What happened to each pull request among `items`, in the order they
-/// came: one follow-up for each, with what its newest item says of it.
-pub fn group(items: &[Item]) -> Vec<FollowUp> {
-    let mut out: Vec<FollowUp> = Vec::new();
+/// came: one follow-up for each, with what its newest item says of it, and
+/// the keys of its items.
+pub fn group(items: &[Item]) -> Vec<(FollowUp, Vec<String>)> {
+    let mut out: Vec<(FollowUp, Vec<String>)> = Vec::new();
     for item in items {
         let p = &item.pull;
-        let at = out.iter().position(|f| f.url.eq_ignore_ascii_case(&p.url));
-        let f = match at {
+        let (f, keys) = match out
+            .iter()
+            .position(|(f, _)| f.url.eq_ignore_ascii_case(&p.url))
+        {
             Some(i) => &mut out[i],
             None => {
-                out.push(FollowUp {
-                    repo: p.repo.clone(),
-                    number: p.number,
-                    url: p.url.clone(),
-                    title: None,
-                    state: None,
-                    base: None,
-                    events: Vec::new(),
-                });
+                out.push((
+                    FollowUp {
+                        repo: p.repo.clone(),
+                        number: p.number,
+                        url: p.url.clone(),
+                        title: None,
+                        state: None,
+                        base: None,
+                        events: Vec::new(),
+                    },
+                    Vec::new(),
+                ));
                 let last = out.len() - 1;
                 &mut out[last]
             }
@@ -563,6 +569,7 @@ pub fn group(items: &[Item]) -> Vec<FollowUp> {
         f.state = p.state.clone().or(f.state.take());
         f.base = p.base.clone().or(f.base.take());
         f.events.push(item.event.clone());
+        keys.push(item.key.clone());
     }
     out
 }
@@ -1335,16 +1342,20 @@ mod tests {
         ];
         let groups = group(&items);
         assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].events.len(), 2);
+        let (first, keys) = &groups[0];
+        assert_eq!(first.events.len(), 2);
         assert_eq!(
-            groups[0].title.as_deref(),
+            first.title.as_deref(),
             Some("Fix the login redirect for good")
         );
-        assert_eq!(groups[0].state.as_deref(), Some("merged"));
-        assert_eq!(groups[0].base.as_deref(), Some("main"));
-        assert_eq!((groups[1].number, groups[1].events.len()), (3, 1));
-        assert!(from_people(&groups[0]));
-        assert!(!from_people(&groups[1]));
+        assert_eq!(first.state.as_deref(), Some("merged"));
+        assert_eq!(first.base.as_deref(), Some("main"));
+        assert_eq!(keys, &["follow-up:comment:1", "follow-up:comment:2"]);
+        let (second, keys) = &groups[1];
+        assert_eq!((second.number, second.events.len()), (3, 1));
+        assert_eq!(keys, &["follow-up:closed:acme/lib#3@1"]);
+        assert!(from_people(first));
+        assert!(!from_people(second));
     }
 
     #[test]

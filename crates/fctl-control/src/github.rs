@@ -1260,7 +1260,13 @@ impl<'a> Github<'a> {
         repo: &RepoRef,
         login: &str,
     ) -> AppResult<Result<Value, String>> {
-        if login.is_empty() || !login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        // Letters, digits and hyphens, and an underscore before an
+        // enterprise's shortcode (`ada_acme`, an Enterprise Managed User).
+        if login.is_empty()
+            || !login
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Ok(Err(format!("{login:?} isn't a person's GitHub login")));
         }
         self.looked_up(

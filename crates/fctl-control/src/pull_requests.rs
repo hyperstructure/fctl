@@ -248,7 +248,11 @@ pub async fn hook(
     let answered = hook.owner_id.zip(hook.installation);
     // What the agents that opened them hear of: failed checks after a
     // delivery about checks, a merge or a close after the one that says it.
-    let news: Vec<follow_ups::News> = seen.iter().filter_map(|x| news(hook, x)).collect();
+    // Without GitHub's word of who answered, nobody hears of anything.
+    let news: Vec<follow_ups::News> = match answered {
+        Some(_) => seen.iter().filter_map(|x| news(hook, x)).collect(),
+        None => Vec::new(),
+    };
     let told = if news.is_empty() {
         BTreeMap::new()
     } else {
@@ -497,10 +501,17 @@ async fn settle(
     let mut unheard = Vec::new();
     for (id, prs) in sessions {
         let items = follow_ups.remove(id).unwrap_or_default();
-        if tell(env, id, prs, items).await {
+        if tell(env, id, prs, items.clone()).await {
             told += 1;
         } else {
             unheard.push(id);
+            // The sweep asks GitHub again for its pull requests, but brings
+            // no follow-ups: they go once more on their own.
+            if !items.is_empty()
+                && let Err(e) = follow_ups::hand(env, id, items).await
+            {
+                worker::console_error!("following up in session {id}: {}", e.0.message);
+            }
         }
     }
     let mut statements = Vec::new();

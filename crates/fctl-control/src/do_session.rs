@@ -931,7 +931,7 @@ impl SessionObject {
                 continue;
             };
             // Again while it waits (GitHub sent it twice): taken already.
-            let again = self.follow_up_waits(&item.key);
+            let again = self.follow_ups_waiting(Some(&item.key));
             let stored = self.sql.exec(
                 "INSERT INTO follow_ups (key, n, due, data) VALUES (?, (SELECT COALESCE(MAX(n), 0) + 1 FROM follow_ups), ?, ?) \
                  ON CONFLICT (key) DO UPDATE SET data = excluded.data",
@@ -1028,28 +1028,9 @@ impl SessionObject {
             done(&w.key);
             send.push(item);
         }
-        for (f, keys) in follow_ups::group(&send)
-            .into_iter()
-            .zip(Self::keys_of(&send))
-        {
+        for (f, keys) in follow_ups::group(&send) {
             self.pass_on(f, keys, now).await;
         }
-    }
-
-    /// The keys of the items [`follow_ups::group`] puts in each follow-up,
-    /// in its order.
-    fn keys_of(items: &[follow_ups::Item]) -> Vec<Vec<String>> {
-        let mut by_url: Vec<(&str, Vec<String>)> = Vec::new();
-        for item in items {
-            match by_url
-                .iter_mut()
-                .find(|(url, _)| url.eq_ignore_ascii_case(&item.pull.url))
-            {
-                Some((_, keys)) => keys.push(item.key.clone()),
-                None => by_url.push((&item.pull.url, vec![item.key.clone()])),
-            }
-        }
-        by_url.into_iter().map(|(_, keys)| keys).collect()
     }
 
     /// Whether failed checks of `sha` are still news: their pull request,
@@ -1237,31 +1218,20 @@ impl SessionObject {
         self.notify_fleet(s);
     }
 
-    /// Whether the follow-up `key` waits to reach the agent.
-    fn follow_up_waits(&self, key: &str) -> bool {
+    /// Whether follow-ups wait to reach the agent: the one by `key`, or any.
+    fn follow_ups_waiting(&self, key: Option<&str>) -> bool {
         #[derive(Deserialize)]
         struct N {
             n: f64,
         }
-        self.sql
-            .exec(
+        let counted = match key {
+            Some(k) => self.sql.exec(
                 "SELECT COUNT(*) AS n FROM follow_ups WHERE key = ?",
-                Some(vec![sv(key)]),
-            )
-            .and_then(|c| c.to_array::<N>())
-            .ok()
-            .and_then(|r| r.first().map(|x| x.n > 0.0))
-            .unwrap_or(false)
-    }
-
-    /// Whether follow-ups wait to reach the agent.
-    fn follow_ups_waiting(&self) -> bool {
-        #[derive(Deserialize)]
-        struct N {
-            n: f64,
-        }
-        self.sql
-            .exec("SELECT COUNT(*) AS n FROM follow_ups", None)
+                Some(vec![sv(k)]),
+            ),
+            None => self.sql.exec("SELECT COUNT(*) AS n FROM follow_ups", None),
+        };
+        counted
             .and_then(|c| c.to_array::<N>())
             .ok()
             .and_then(|r| r.first().map(|x| x.n > 0.0))
@@ -2343,7 +2313,7 @@ impl SessionObject {
         // once what it pushed as the turn ended had time to say so.
         if before == SessionStatus::Running
             && s.status != SessionStatus::Running
-            && self.follow_ups_waiting()
+            && self.follow_ups_waiting(None)
         {
             let due = now + follow_ups::GATHER_MS;
             let _ = self.sql.exec(
