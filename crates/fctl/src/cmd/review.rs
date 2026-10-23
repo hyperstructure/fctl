@@ -522,7 +522,7 @@ fn print_posted(p: &PostedReview) {
         println!(
             "  {}",
             style::dim(&format!(
-                "{} on lines the diff doesn't show went in the review's text.",
+                "{} on lines the diff doesn't show went in the review's summary.",
                 style::count(p.in_text, "finding", "findings")
             ))
         );

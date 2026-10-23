@@ -642,7 +642,7 @@ fn hunk_starts(header: &str) -> Option<(u32, u32)> {
     Some((old, new))
 }
 
-/// Where a finding goes: on its lines, or in the review's text when the
+/// Where a finding goes: on its lines, or in the review's summary when the
 /// pull request's diff doesn't show them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Placed {
