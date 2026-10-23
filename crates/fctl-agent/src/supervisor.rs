@@ -5,6 +5,7 @@
 //! and ephemeral streams to the host, and stdin for Claude.
 
 use crate::attachments;
+use crate::caches;
 use crate::claude::{self, Claude, ClaudeOut, LaunchSpec};
 use crate::followed::Pulls;
 use crate::journal::Journal;
@@ -183,6 +184,8 @@ pub struct Supervisor {
     /// Said once that the sandbox's fctl cannot keep the project's memory
     /// or record retrospectives.
     told_old_fctl: bool,
+    /// The project's package caches, once readied for the session.
+    cache: Option<caches::Ready>,
 }
 
 impl Supervisor {
@@ -256,6 +259,7 @@ impl Supervisor {
                 calling: HashMap::new(),
                 late_calls: VecDeque::new(),
                 told_old_fctl: false,
+                cache: None,
             },
             claude_rx,
             work_rx,
@@ -890,6 +894,29 @@ impl Supervisor {
             self.persist();
         }
         let sandbox_env = prompt::sandbox_env(config.sandbox);
+        self.cache = None;
+        if let Some(cache) = &config.cache {
+            match caches::prepare(cache, &home, &|key| std::env::var_os(key)) {
+                Ok(ready) => {
+                    self.log(
+                        LogSource::Agent,
+                        LogLevel::Info,
+                        &format!(
+                            "Package managers keep their downloads in {}, which the project's sessions on this runner share",
+                            ready.dir.display()
+                        ),
+                    );
+                    self.cache = Some(ready);
+                }
+                Err(why) => self.log(LogSource::Agent, LogLevel::Info, &why),
+            }
+        }
+        // The project's environment comes after it, and wins.
+        let cache_env = self
+            .cache
+            .as_ref()
+            .map(|c| c.env.clone())
+            .unwrap_or_default();
         self.config = Some(config);
         self.set_status(
             SessionStatus::Preparing,
@@ -939,13 +966,16 @@ impl Supervisor {
                     .as_deref()
                     .filter(|s| !s.trim().is_empty())
                 {
-                    let env: Vec<(String, String)> = spec
-                        .project
-                        .settings
-                        .env
-                        .iter()
-                        .chain(spec.secrets.iter())
-                        .map(|(k, v)| (k.clone(), v.clone()))
+                    let env: Vec<(String, String)> = cache_env
+                        .into_iter()
+                        .chain(
+                            spec.project
+                                .settings
+                                .env
+                                .iter()
+                                .chain(spec.secrets.iter())
+                                .map(|(k, v)| (k.clone(), v.clone())),
+                        )
                         .chain(sandbox_env)
                         .collect();
                     let (setup_tx, mut setup_rx) = mpsc::unbounded_channel::<(LogLevel, String)>();
@@ -1183,8 +1213,12 @@ impl Supervisor {
             .unwrap_or_else(|| spec.credentials.claude.clone());
         let project_env = fctl_domain::settings::session_env(&spec.project.settings);
         let mut env = std::collections::BTreeMap::new();
-        for (k, v) in project_env
+        let cache_env = self
+            .cache
             .iter()
+            .flat_map(|c| c.env.iter().map(|(k, v)| (k, v)));
+        for (k, v) in cache_env
+            .chain(project_env.iter())
             .chain(spec.secrets.iter())
             .chain(config.env.iter())
         {
@@ -1239,7 +1273,9 @@ impl Supervisor {
                     config.sandbox,
                 )
             }
-            None => prompt::system_prompt(spec, &workdir, &paths, config.sandbox),
+            None => {
+                prompt::system_prompt(spec, &workdir, &paths, config.sandbox, self.cache.as_ref())
+            }
         };
         let launch = LaunchSpec {
             bin: &bin,
@@ -2314,6 +2350,7 @@ mod tests {
             push_on_commit: true,
             first_agent_seq: None,
             sandbox: None,
+            cache: None,
         });
         let reply = ask(
             &mut sup,
@@ -2382,6 +2419,7 @@ mod tests {
             push_on_commit: true,
             first_agent_seq: None,
             sandbox: None,
+            cache: None,
         })
     }
 

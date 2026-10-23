@@ -62,8 +62,8 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "follow_ups", "image", "build", "build_context", "setup_script", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --follow-ups comments,checks   # agents come back for @fctl and failed checks\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "follow_ups", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --follow-ups comments,checks   # agents come back for @fctl and failed checks\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -136,6 +136,12 @@ pub enum ProjectsCmd {
         /// itself, @FILE to read it from a file, - from stdin, or "" for none.
         #[arg(long, value_name = "SCRIPT")]
         setup_script: Option<String>,
+        /// Share what package managers download (npm, pnpm, Yarn, Bun,
+        /// Cargo, uv, pip, Go, Playwright) between the project's sessions on
+        /// each runner, in caches the runner keeps for the project, up to
+        /// the size its owner allows (max_cache_gb in host.toml).
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        package_caches: Option<bool>,
         /// Set an environment variable in the sandboxes (repeatable). Not
         /// secret: put credentials in the project's secrets.
         #[arg(long, value_name = "KEY=VALUE")]
@@ -240,6 +246,15 @@ fn idle(s: &ProjectSettings) -> String {
     let minutes = fctl_domain::settings::idle_timeout_secs(s) / 60;
     let unit = if minutes == 1 { "minute" } else { "minutes" };
     format!("stop after waiting {minutes} {unit} for a message; a message resumes them")
+}
+
+/// Whether a project's sessions share their package caches, in words.
+fn caches(s: &ProjectSettings) -> &'static str {
+    if s.package_caches {
+        "sessions on each runner share what their package managers download"
+    } else {
+        "each session's package managers download what it needs"
+    }
 }
 
 /// Whether a project's agents publish screenshots, in words.
@@ -624,6 +639,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 "setup:   {}",
                 script_summary(p.settings.setup_script.as_deref().unwrap_or_default())
             );
+            println!("caches:  {}", caches(&p.settings));
             if !p.settings.env.is_empty() {
                 let keys: Vec<&str> = p.settings.env.keys().map(String::as_str).collect();
                 println!("env:     {}", keys.join(", "));
@@ -691,6 +707,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             build,
             build_context,
             setup_script: script,
+            package_caches,
             env,
             unset_env,
             cpus,
@@ -730,6 +747,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(arg) = &script {
                 settings.setup_script = setup_script(arg)?;
+            }
+            if let Some(on) = package_caches {
+                settings.package_caches = on;
             }
             for pair in &env {
                 let Some((k, v)) = pair.split_once('=') else {
@@ -824,6 +844,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::accent("✓"),
                     style::bold(&p.slug),
                     script_summary(p.settings.setup_script.as_deref().unwrap_or_default())
+                );
+            }
+            if package_caches.is_some() {
+                println!(
+                    "{} In {}, {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    caches(&p.settings)
                 );
             }
             if !env.is_empty() || !unset_env.is_empty() {

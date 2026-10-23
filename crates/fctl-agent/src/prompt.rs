@@ -1,6 +1,7 @@
 //! The text fctl gives Claude: what it appends to the system prompt, and the
 //! AGENTS.md at the root of the sandbox's home, beside the checkout.
 
+use crate::caches::Ready;
 use crate::tasks::{self, Task};
 use crate::workspace::Paths;
 use fctl_domain::{files, memory, size};
@@ -285,6 +286,7 @@ pub fn system_prompt(
     workdir: &str,
     paths: &Paths,
     sandbox: Option<SandboxSize>,
+    cache: Option<&Ready>,
 ) -> String {
     let mut s = String::new();
     s.push_str("You are running as an autonomous agent in fctl, a software factory. ");
@@ -355,6 +357,19 @@ pub fn system_prompt(
             size::cpus(size.cpus),
             size::memory(size.memory_mb.into()),
             size.cpus
+        ));
+    }
+    if let Some(cache) = cache {
+        let limit = match cache.max_mb {
+            Some(mb) => format!(
+                "the runner empties it once it takes more than {}",
+                size::memory(mb)
+            ),
+            None => "the runner empties it when it needs the room".to_owned(),
+        };
+        s.push_str(&format!(
+            "- Package managers keep their downloads in {} ($FCTL_CACHE_DIR), which this project's sessions on this runner share: npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright find there what earlier sessions fetched. Leave it in place; {limit}.\n",
+            cache.dir.display()
         ));
     }
     s.push_str("- Work in small, verified steps: read before you change, and run the project's tests and linters.\n");
@@ -732,15 +747,32 @@ mod tests {
     }
 
     #[test]
+    fn tells_claude_where_package_managers_keep_their_downloads() {
+        let cache = Ready {
+            dir: PathBuf::from("/var/cache/fctl"),
+            max_mb: Some(10 * 1024),
+            env: Vec::new(),
+        };
+        let text = system_prompt(&spec(), "/work", &paths(), None, Some(&cache));
+        assert!(
+            text.contains("- Package managers keep their downloads in /var/cache/fctl ($FCTL_CACHE_DIR), which this project's sessions on this runner share: npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright find there what earlier sessions fetched. Leave it in place; the runner empties it once it takes more than 10 GiB.\n"),
+            "{text}"
+        );
+        assert!(!system_prompt(&spec(), "/work", &paths(), None, None).contains("$FCTL_CACHE_DIR"));
+    }
+
+    #[test]
     fn tells_claude_the_sandboxs_size() {
         let size = SandboxSize {
             cpus: 4,
             memory_mb: 8192,
         };
-        let text = system_prompt(&spec(), "/work", &paths(), Some(size));
+        let text = system_prompt(&spec(), "/work", &paths(), Some(size), None);
         assert!(text.contains("This sandbox has 4 CPUs and 8 GiB of memory"));
         assert!(text.contains("`make -j4`"));
-        assert!(!system_prompt(&spec(), "/work", &paths(), None).contains("This sandbox has"));
+        assert!(
+            !system_prompt(&spec(), "/work", &paths(), None, None).contains("This sandbox has")
+        );
         assert_eq!(
             sandbox_env(Some(size)),
             [
@@ -758,13 +790,14 @@ mod tests {
             "/home/agent/workspace",
             &paths(),
             None,
+            None,
         );
         assert!(text.contains("after 10 minutes without one it stops"));
         assert!(text.contains(
             "for up to an hour after your turn ends: you can end your turn to wait for it"
         ));
         // A project that waits longer for messages waits as long for background work.
-        let text = system_prompt(&spec(), "/work", &paths(), None);
+        let text = system_prompt(&spec(), "/work", &paths(), None, None);
         assert!(text.contains("after 2 hours without one it stops"));
         assert!(text.contains("for up to 2 hours after your turn ends"));
     }
@@ -852,6 +885,7 @@ mod tests {
             "/home/agent/workspace",
             &paths(),
             None,
+            None,
         );
         assert!(text.contains("The repository acme/app is cloned at /home/agent/workspace"));
         assert!(text.contains(
@@ -873,7 +907,13 @@ mod tests {
             { "owner": "acme", "access": "read" },
             { "owner": "acme", "name": "gone", "access": "write", "unavailable": "The fctl GitHub App can't reach acme/gone." }
         ]);
-        let text = system_prompt(&spec_with(repos), "/home/agent/workspace", &paths(), None);
+        let text = system_prompt(
+            &spec_with(repos),
+            "/home/agent/workspace",
+            &paths(),
+            None,
+            None,
+        );
         assert!(text.contains("into /home/agent/repos/<owner>/<name> (for example `git clone https://github.com/acme/lib /home/agent/repos/acme/lib`)"));
         assert!(text.contains("  - acme/lib (read and write)\n"));
         assert!(text.contains("  - acme/docs (read only)\n"));
@@ -887,7 +927,13 @@ mod tests {
     #[test]
     fn read_only_repositories_need_no_branch() {
         let repos = serde_json::json!([{ "owner": "acme", "access": "read" }]);
-        let text = system_prompt(&spec_with(repos), "/home/agent/workspace", &paths(), None);
+        let text = system_prompt(
+            &spec_with(repos),
+            "/home/agent/workspace",
+            &paths(),
+            None,
+            None,
+        );
         assert!(text.contains("  - any repository of acme (read only)\n"));
         assert!(
             text.contains("git clone https://github.com/acme/<name> /home/agent/repos/acme/<name>")
@@ -903,7 +949,7 @@ mod tests {
         let mut spec =
             spec_with(serde_json::json!([{ "owner": "acme", "name": "lib", "access": "write" }]));
         spec.project.repo = None;
-        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None);
+        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None, None);
         assert!(text.contains(
             "- Your working directory is /home/agent/workspace, an empty git repository.\n"
         ));
@@ -914,7 +960,7 @@ mod tests {
         assert!(text.contains("For another pull request, make its branch"));
         // Nowhere to open one.
         spec.project.repos = None;
-        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None);
+        let text = system_prompt(&spec, "/home/agent/workspace", &paths(), None, None);
         assert!(!text.contains("For another pull request"));
     }
 
@@ -936,6 +982,7 @@ mod tests {
             "/home/agent/workspace",
             &paths(),
             None,
+            None,
         );
         assert!(text.contains("  - acme/lib (read and comment)\n"));
         assert!(text.contains("  - acme/docs (read only)\n"));
@@ -956,6 +1003,7 @@ mod tests {
             "/home/agent/workspace",
             &paths(),
             None,
+            None,
         );
         assert!(text.contains("  - acme/lib (read only)\n"));
         assert!(text.contains("In this session you only read on GitHub"));
@@ -969,7 +1017,9 @@ mod tests {
             github_access: Some(GithubAccess::Read),
             ..spec()
         };
-        assert!(!system_prompt(&none, "/work", &paths(), None).contains("only read on GitHub"));
+        assert!(
+            !system_prompt(&none, "/work", &paths(), None, None).contains("only read on GitHub")
+        );
     }
 
     #[test]

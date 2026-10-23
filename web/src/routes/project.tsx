@@ -1095,6 +1095,22 @@ function Settings({ project }: { project: G.Project }) {
               />
             )}
           </Field>
+          <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+            <span>
+              Package caches
+              <span className="block text-[12.5px] text-ink-4">
+                Sessions on the same runner share what npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright
+                download, so setup scripts fetch only what's new. Each runner keeps up to 10 GiB for the
+                project, or what its owner sets, and empties them past that. Reviews and Lima runners don't
+                use them.
+              </span>
+            </span>
+            <Switch
+              checked={s.package_caches}
+              onChange={(v) => set("package_caches", v)}
+              label="Package caches"
+            />
+          </div>
           <Field
             label="Image"
             hint="Apple container and Docker runners make sandboxes from it. Lima runners clone the VM their host prepared, and the process driver uses none."

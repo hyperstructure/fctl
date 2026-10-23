@@ -63,6 +63,7 @@ const project: G.Project = {
     credit_people: true,
     credit_claude: true,
     publish_screenshots: false,
+    package_caches: false,
     project_memory: true,
     retrospectives: true,
     env: {},

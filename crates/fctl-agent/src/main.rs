@@ -6,6 +6,7 @@
 //! See docs/architecture.md and crates/fctl-proto/src/agent.rs.
 
 mod attachments;
+mod caches;
 mod claude;
 mod followed;
 mod journal;

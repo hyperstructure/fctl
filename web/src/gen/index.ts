@@ -191,6 +191,7 @@ export type { RunnerRef } from "./RunnerRef";
 export type { RunnerRegistration } from "./RunnerRegistration";
 export type { RunnerSession } from "./RunnerSession";
 export type { RunnerStatus } from "./RunnerStatus";
+export type { SandboxCache } from "./SandboxCache";
 export type { SandboxLimits } from "./SandboxLimits";
 export type { SandboxSize } from "./SandboxSize";
 export type { Schedule } from "./Schedule";
