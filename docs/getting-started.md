@@ -203,12 +203,17 @@ fctl too, keep it on your runners ([step 4](#4-connect-your-claude-subscription)
 your sessions on it then run only on your runners that keep it, in every
 workspace.
 
-Keep it on the version of fctl the app runs. While a runner of yours is
-online with an older one, your Agent Floor says so, and **How to update**
-shows what to run on it: `fctl self update`, which restarts the host
-service while its sessions carry on (or `brew upgrade fctl`, then `fctl
-host restart`, where Homebrew installed fctl). **Skip this version** hides
-the notice in that browser until the app runs a newer version.
+The host keeps itself on the version of fctl the app runs: when the app
+runs a newer one, the host downloads it, checks it, and restarts on it once
+no session is being started or stopped there, while its sessions carry on.
+To update it yourself instead, turn that off with `fctl host auto-update
+off` (or install with `--auto-update off`). Where Homebrew installed fctl,
+Homebrew updates it: `brew upgrade fctl`, then `fctl host restart`. While a
+runner of yours that doesn't update itself is online with an older fctl
+than the app, your Agent Floor says so, and **How to update** shows what to
+run on it: `fctl self update`, which restarts the host service while its
+sessions carry on. **Skip this version** hides the notice in that browser
+until the app runs a newer version.
 
 ## 6. Create a project
 

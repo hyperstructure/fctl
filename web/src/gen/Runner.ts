@@ -73,4 +73,12 @@ personal?: Array<WorkspaceId>,
  * while it keeps none. Absent for other people, from hosts too old to
  * keep one, and from control planes before it.
  */
-claude_token?: RunnerClaudeToken, };
+claude_token?: RunnerClaudeToken, 
+/**
+ * Whether its host updates its fctl to the control plane's version by
+ * itself ([`HostHello::auto_update`]). Absent from older hosts and
+ * control planes.
+ *
+ * [`HostHello::auto_update`]: crate::runner::HostHello::auto_update
+ */
+auto_update?: boolean, };

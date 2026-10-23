@@ -110,6 +110,10 @@ pub struct HostHello {
     /// keep one always send it; older hosts send none, and get no sessions
     /// on a Claude connection whose token is kept on runners.
     pub claude_token: Option<RunnerClaudeToken>,
+    /// Whether it updates its fctl to the control plane's version by
+    /// itself: its `host.toml` doesn't turn that off, and it can replace
+    /// its fctl (Homebrew didn't install it). Absent from older hosts.
+    pub auto_update: Option<bool>,
 }
 
 /// The Claude token a host keeps for its runner's owner (`fctl host claude
@@ -520,6 +524,12 @@ pub enum FleetToHost {
         runner: RunnerRef,
         heartbeat_secs: u32,
         server_time: Millis,
+        /// The control plane's version of fctl, which hosts that update
+        /// themselves update to when it is newer than theirs. Absent from
+        /// control planes before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        version: Option<String>,
     },
     StartSession {
         spec: Box<SessionSpec>,
@@ -694,6 +704,40 @@ mod tests {
             serde_json::to_value(kept)?,
             serde_json::json!({ "saved_at": 1_800_000_000_000_i64 })
         );
+        Ok(())
+    }
+
+    #[test]
+    fn welcomes_say_the_control_planes_version_and_hellos_whether_hosts_update_as_options()
+    -> serde_json::Result<()> {
+        // From a control plane before it, and to a host before it, which
+        // ignores what it doesn't know.
+        let runner = serde_json::json!({ "id": "rnr_1", "name": "mini" });
+        let msg: FleetToHost = serde_json::from_value(serde_json::json!({
+            "type": "welcome", "runner": runner, "heartbeat_secs": 15, "server_time": 1
+        }))?;
+        let FleetToHost::Welcome { version, .. } = &msg else {
+            panic!("expected a welcome");
+        };
+        assert_eq!(version, &None);
+        assert!(serde_json::to_value(&msg)?.get("version").is_none());
+        let msg = FleetToHost::Welcome {
+            runner: serde_json::from_value(runner)?,
+            heartbeat_secs: 15,
+            server_time: 1,
+            version: Some("0.22.0".into()),
+        };
+        assert_eq!(serde_json::to_value(&msg)?["version"], "0.22.0");
+
+        let mut hello: HostHello = serde_json::from_value(serde_json::json!({
+            "protocol": 1, "version": "0.21.0", "hostname": "mini", "os": "macos",
+            "arch": "aarch64", "cpus": 8, "memory_mb": 16384, "drivers": [], "driver": "apple",
+            "capacity": 4, "labels": [], "sessions": []
+        }))?;
+        assert_eq!(hello.auto_update, None);
+        assert!(serde_json::to_value(&hello)?.get("auto_update").is_none());
+        hello.auto_update = Some(false);
+        assert_eq!(serde_json::to_value(&hello)?["auto_update"], false);
         Ok(())
     }
 

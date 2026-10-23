@@ -1,6 +1,6 @@
 // On the home page, for the people who registered runners: which of theirs
-// run an older fctl than the control plane, and the command that updates
-// them, until they skip that version.
+// run an older fctl than the control plane and don't update themselves, and
+// the command that updates them, until they skip that version.
 
 import { ChevronDown, CircleFadingArrowUp } from "lucide-react";
 import { useId, useState } from "react";
@@ -28,6 +28,8 @@ export function RunnerUpdate({ user }: { user: string }) {
   const behind = outdated(runners.data?.runners ?? [], version);
   if (!version || !behind.length || skipped === version) return null;
   const one = behind.length === 1;
+  // Hosts from before they updated themselves do once updated.
+  const before = behind.every((r) => r.auto_update === undefined);
   return (
     <section
       aria-labelledby={title}
@@ -75,10 +77,17 @@ export function RunnerUpdate({ user }: { user: string }) {
         <p>
           It installs the latest fctl and restarts the host service; the sessions running there carry on. This
           notice goes away once {one ? "it reconnects" : "they reconnect"} with the new version.
+          {before && (
+            <>
+              {" "}
+              From then on, {one ? "it updates itself" : "they update themselves"} whenever the app runs a
+              newer fctl; <code className={code}>fctl host auto-update off</code> turns that off.
+            </>
+          )}
         </p>
         <p className="text-[12.5px] text-ink-4">
           Installed fctl with Homebrew? Run <code className={code}>brew upgrade fctl</code> instead, then{" "}
-          <code className={code}>fctl host restart</code>.
+          <code className={code}>fctl host restart</code>: Homebrew's fctl doesn't update itself.
         </p>
       </div>
     </section>

@@ -440,6 +440,21 @@ whatever its host does. A Claude sign-in through a host, which passes the
 full login's long-lived tokens through it, runs on one of the person's own
 runners when one is online, else on a runner that runs their sessions.
 
+**Updates.** Hosts update fctl by themselves to the version the control
+plane runs, unless `auto_update = false` in `host.toml` (`fctl host
+auto-update off`)
+([ADR 0051](adr/0051-hosts-update-themselves-to-the-control-planes-version.md)).
+The release comes from the host's own `download_base`, fctl.sh unless it
+says otherwise: the control plane names only a version, which must be newer
+than the host's, and never where to download it, so a control plane taken
+over can't make its hosts install anything else, or an older fctl. The host
+checks the archive against its SHA-256 and runs the new fctl before
+anything changes, as `fctl self update` does. The checksum comes from the
+same server, though: it catches broken downloads, not a release server
+taken over, so leaving updates on means trusting fctl.sh with what runs on
+the machine without choosing when, where `fctl self update` lets you look
+at a release first. Turn updates off on machines where that matters.
+
 Sessions run in their project's sandbox image or, without one, the host's:
 by default `ghcr.io/hyperstructure/sandbox`, which the Image workflow of
 the public [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox)

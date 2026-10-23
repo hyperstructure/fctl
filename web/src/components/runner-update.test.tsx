@@ -86,7 +86,10 @@ describe("the notice to update runners", () => {
     expect(details?.textContent).toContain("Run this on studio mac:fctl self update");
     expect(details?.textContent).toContain("This notice goes away once it reconnects with the new version.");
     expect(details?.textContent).toContain(
-      "Installed fctl with Homebrew? Run brew upgrade fctl instead, then fctl host restart.",
+      "From then on, it updates itself whenever the app runs a newer fctl; fctl host auto-update off turns that off.",
+    );
+    expect(details?.textContent).toContain(
+      "Installed fctl with Homebrew? Run brew upgrade fctl instead, then fctl host restart: Homebrew's fctl doesn't update itself.",
     );
   });
 
@@ -102,7 +105,7 @@ describe("the notice to update runners", () => {
     expect(text.textContent).toContain("This notice goes away once they reconnect with the new version.");
   });
 
-  it("says nothing of runners up to date, offline or someone else's", () => {
+  it("says nothing of runners up to date, offline, someone else's or that update themselves", () => {
     expect(
       notice([
         runner({ id: "current", version: "0.16.0" }),
@@ -110,8 +113,26 @@ describe("the notice to update runners", () => {
         runner({ id: "asleep", status: "offline" }),
         runner({ id: "off", status: "disabled" }),
         runner({ id: "theirs", yours: false }),
+        runner({ id: "updating", auto_update: true }),
       ]).textContent,
     ).toBe("");
+  });
+
+  it("asks you to update runners that don't update themselves, without saying they will", () => {
+    const text = notice([
+      runner({ id: "manual", name: "manual mac", auto_update: false }),
+      runner({ id: "updating", auto_update: true }),
+    ]);
+    expect(text.textContent).toContain("Update your runner to fctl 0.16.0manual mac runs 0.15.0");
+    expect(text.textContent).toContain("This notice goes away once it reconnects with the new version.");
+    expect(text.textContent).not.toContain("From then on");
+  });
+
+  it("says runners from before update themselves once updated", () => {
+    const text = notice([runner({ id: "studio" }), runner({ id: "mini" })]);
+    expect(text.textContent).toContain(
+      "From then on, they update themselves whenever the app runs a newer fctl; fctl host auto-update off turns that off.",
+    );
   });
 
   it("says nothing before the runners and the control plane's version load", () => {

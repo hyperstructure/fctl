@@ -491,6 +491,7 @@ fctl host install --workspace acme   # for a workspace you are in (default: the 
 fctl host install --workspace acme --personal   # only your sessions there (a member's always)
 fctl host install --token fctl_rt_…   # with a runner token from a workspace's Runners tab
 fctl host install --no-service   # write the config only (run it yourself)
+fctl host install --auto-update off   # update fctl yourself (new hosts update themselves)
 fctl host run                    # run in the foreground (what the service runs)
 fctl host status                 # with the runner's id and sessions, and whether it drains
 fctl host doctor                 # check the driver, image, agent binary, connection
@@ -499,6 +500,8 @@ fctl host image pull             # pull the sandbox image again now (the host do
 fctl host image build            # build it here instead (with Lima: the base VM)
 fctl host image build --source ~/src/sandbox   # from a checkout of hyperstructure/sandbox
 fctl host claude set-token       # keep your Claude token here, not in fctl (see Claude above)
+fctl host auto-update            # whether it updates fctl by itself to the control plane's version
+fctl host auto-update off        # or on; restarts the host service (sessions keep running)
 fctl host restart                # sessions keep running
 fctl host drain                  # take no new sessions; the ones here carry on
 fctl host drain --wait           # …and wait until none runs here
@@ -548,6 +551,7 @@ keep_caches_days = 14    # then remove the caches of a project with no session h
 # allowed_builds = ["acme/*"]           # repositories it builds images from (unset: none)
 build_timeout_minutes = 60
 max_build_mb = 20480     # the largest image a build may make
+auto_update = true       # update fctl to the version the control plane runs (false: `fctl self update`)
 ```
 
 Sessions start from their project's image or, without one, the host's:
@@ -635,6 +639,22 @@ a session that starts while the host measures or empties its project's
 caches waits for that. `max_cache_gb = 0` keeps no caches: the next sweep
 removes them, and sessions download what they need. `fctl host status`
 shows what the caches took when last measured.
+
+The host updates fctl by itself to the version the control plane runs,
+whenever that is newer than its own, and with it the agent it puts in
+sandboxes and its default image: on app.fctl.sh, every release. It
+downloads the release from `download_base` (`https://fctl.sh/releases`
+unless `host.toml` says otherwise), checks it as `fctl self update` does,
+and restarts on it once no session is being started or stopped there;
+sessions keep running. The control plane may run a release before its
+archives are published: the host tries again every minute meanwhile, for an
+hour, then every half hour. `fctl host logs` says what it does, and why it
+doesn't when it doesn't. `auto_update = false` turns this off (`fctl host
+auto-update off` sets it and restarts the host service; `--auto-update off`
+when you install). Where Homebrew installed fctl, `brew upgrade fctl` updates
+it, and a host that can't write to fctl's directory doesn't update itself
+either: `fctl host status` and `fctl host doctor` say so
+([Host updates](architecture.md#host-updates)).
 
 ## Admin
 
@@ -785,8 +805,10 @@ version (sessions keep running) and refreshes installed completions.
 Installed with Homebrew (`brew install hyperstructure/tap/fctl`)? Update with
 `brew upgrade fctl` instead; Homebrew owns those files.
 
-The web app's Agent Floor says when a runner of yours is online with an older
-fctl than the control plane, and shows this command.
+A runner's host updates itself to the version the control plane runs, unless
+its `host.toml` turns that off ([Hosts](#hosts)). The web app's Agent Floor
+says when a runner of yours is online with an older fctl than the control
+plane and doesn't update itself, and shows this command.
 
 ## Shell completions
 

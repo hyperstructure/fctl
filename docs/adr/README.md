@@ -56,3 +56,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0048](0048-hosts-keep-package-caches-for-projects-that-share-them.md) | Hosts keep package caches for projects that share them |
 | [0049](0049-agents-write-balanced-pull-request-descriptions.md) | Agents write balanced pull request descriptions, unless their project chooses otherwise |
 | [0050](0050-claude-tokens-can-stay-on-their-owners-runners.md) | Claude tokens can stay on their owner's runners |
+| [0051](0051-hosts-update-themselves-to-the-control-planes-version.md) | Hosts update themselves to the control plane's version |

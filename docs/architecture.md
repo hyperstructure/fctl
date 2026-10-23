@@ -621,12 +621,15 @@ uplinks. A Claude sign-in runs on one of the person's own runners when one
 is online, else on a runner that runs their sessions in one of their
 workspaces.
 
-The Agent Floor tells the person who registered a runner when it is online
-with an older fctl than the control plane: the version in its hello against
-the one `GET /api/v1/instance` reports, which on app.fctl.sh is the latest
-release, since each release redeploys it. It shows the command that updates
-the runner, `fctl self update`. Skipping the notice hides it for that
-version of the control plane, in that browser (localStorage, per person).
+Hosts update themselves to the version the control plane runs
+([Host updates](#host-updates)). The Agent Floor tells the person who
+registered a runner when it is online with an older fctl than the control
+plane and its hello says it doesn't update itself, or says nothing of it:
+the version in its hello against the one `GET /api/v1/instance` reports,
+which on app.fctl.sh is the latest release, since each release redeploys
+it. It shows the command that updates the runner, `fctl self update`.
+Skipping the notice hides it for that version of the control plane, in
+that browser (localStorage, per person).
 
 ## Data
 
@@ -858,6 +861,60 @@ resumed meanwhile that no runner took: the agent that still runs gets the
 messages. A session that runs on another runner by then, that someone
 stopped or archived, or whose project was deleted, stops instead, with a
 reason that says which (`fctl_domain::reconcile`).
+
+### Host updates
+
+Hosts update fctl by themselves, and with it the agents they put in
+sandboxes and their default sandbox image, to the version the control
+plane runs
+([ADR 0051](adr/0051-hosts-update-themselves-to-the-control-planes-version.md)).
+On app.fctl.sh that is the latest release; a control plane of your own
+keeps its hosts at its version, which they must not run ahead of
+([Protocols](#protocols)).
+
+1. **The version.** FleetDO's welcome says the control plane's
+   (`FleetToHost::Welcome.version`) each time a host connects, which hosts
+   do again after every deploy. A host that runs an older one follows it
+   (`crates/fctl-host/src/update.rs`). It never goes back: a control plane
+   that goes back to an older version leaves its hosts where they are, and
+   one that says none (older ones) leaves them alone.
+2. **The release.** The host downloads that version's archive for its
+   machine from `download_base` (fctl.sh/releases unless `host.toml` says
+   otherwise), never from where the control plane says: the control plane
+   names only the version, three numbers. It checks the archive against its
+   `.sha256` and runs the new fctl where it goes, which must say that
+   version, before anything changes, with the code `fctl self update` uses.
+   Hosts hear of a release together, so each waits up to half a minute
+   before its first try.
+3. **Until it can be downloaded.** CI deploys the release commit while the
+   Release workflow still builds the archives, so app.fctl.sh can run a
+   release minutes before fctl.sh has it. While the release is missing, or
+   the server or the network fails, the host tries again every minute for
+   an hour, then every half hour, for a control plane that runs a version
+   its download server doesn't have. A download that is no use (a checksum
+   that doesn't match, a new fctl that doesn't run on the machine) waits
+   ten minutes, then twice as long each time, up to 12 hours
+   (`fctl_domain::updates::retry_in`), and a newer version starts over.
+4. **The restart.** The host installs the release, fctl and the Linux
+   agent next to it, each written beside its place and then renamed over
+   it, once no sandbox is being made, stopped or removed there, no session
+   waits to start, no package caches are being measured or emptied and no
+   Claude sign-in runs; until then it looks again every five seconds.
+   Then it restarts on it: as the host service's process (launchd's or
+   systemd's, which `launchctl print` or `systemctl show` say) it exits,
+   and the service starts the new fctl; run otherwise, it runs the new fctl
+   in its own place (`exec`). Sessions carry on in their sandboxes, as over
+   any restart, and the host's uplinks reconnect within seconds.
+
+`auto_update = false` in `host.toml` turns this off (`fctl host
+auto-update off`, which changes that line alone and restarts the service,
+or `fctl host install --auto-update off`); `host.toml` files from before it
+have it on. Where Homebrew installed fctl, Homebrew updates it (`brew
+upgrade fctl`), and a host that can't write to fctl's directory doesn't
+update itself either. Hosts say in their hello whether they update
+themselves (`HostHello.auto_update`, shown as the runner's `auto_update`),
+and their log says why not when they don't. `fctl host status`, `fctl host
+doctor` and `fctl host auto-update` say it too.
 
 ### Repositories
 
@@ -2245,7 +2302,10 @@ control plane by a version. Add fields as optional; never repurpose a tag.
   `cargo xtask publish` writes (`deploy/releases.toml`); the two share the
   namespace, not code.
 - Hosts install with `curl -fsSL https://<domain>/install | sh`, then
-  `fctl login` and `fctl host install` (launchd on macOS, systemd on Linux).
+  `fctl login` and `fctl host install` (launchd on macOS, systemd on Linux),
+  and update themselves from then on, from `download_base` in `host.toml`
+  (`https://fctl.sh/releases` unless it says otherwise;
+  [Host updates](#host-updates)).
 
 Everything instance-specific (domain, GitHub App, Google client, email) is
 configuration, the same for both; see [self-hosting](self-hosting.md).

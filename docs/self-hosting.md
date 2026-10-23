@@ -157,7 +157,11 @@ choose its own address.
 - **Upgrades.** Pull the new image (or change the tag) and start the
   container again: the server applies the database migrations as it starts.
   Running sessions carry on, and their hosts reconnect. Hosts and agents
-  tolerate a control plane one version ahead.
+  tolerate a control plane one version ahead, and hosts update themselves
+  to its version within minutes, from fctl.sh unless their `host.toml`
+  sets another `download_base`
+  ([Host updates](architecture.md#host-updates)); a version that isn't
+  published there, such as a build of your own, leaves them where they are.
 - **Backups.** Everything is in the data directory. Stop the server and
   copy it, or snapshot its volume: `docker run --rm -v fctl-data:/data -v
   "$PWD":/backup busybox tar czf /backup/fctl-data.tgz /data`. Unless you
@@ -251,7 +255,9 @@ Other secrets go in with `--set`, and the GitHub App's key with
 ### Operating it
 
 - **Upgrades.** `git pull && cargo xtask deploy acme`; migrations apply first.
-  Hosts and agents tolerate a control plane one version ahead.
+  Hosts and agents tolerate a control plane one version ahead, and hosts
+  update themselves to its version within minutes
+  ([Host updates](architecture.md#host-updates)).
 - **Backups.** D1 keeps 30 days of point-in-time history (Time Travel):
   `npx wrangler d1 time-travel restore`. For a copy, `npx wrangler d1 export`.
   Session event logs live in Durable Object storage.

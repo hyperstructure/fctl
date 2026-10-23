@@ -19,6 +19,7 @@ pub mod refresh;
 pub mod service;
 pub mod session;
 pub mod sysinfo;
+pub mod update;
 pub mod uplink;
 
 pub use config::HostConfig;

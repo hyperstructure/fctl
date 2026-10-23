@@ -166,6 +166,37 @@ pub fn restart() -> Result<()> {
     Ok(())
 }
 
+/// Whether this process is the one the host service runs, which launchd
+/// (`KeepAlive`) or systemd (`Restart=always`) start again when it exits.
+pub fn runs_this_process() -> bool {
+    let main = if cfg!(target_os = "macos") {
+        sh("launchctl", &["print", &format!("gui/{}/{LABEL}", uid())])
+            .ok()
+            .and_then(|o| launchd_pid(&o))
+    } else {
+        sh(
+            "systemctl",
+            &[
+                "--user",
+                "show",
+                "--property=MainPID",
+                "--value",
+                "fctl-host.service",
+            ],
+        )
+        .ok()
+        .and_then(|o| o.trim().parse().ok())
+    };
+    main == Some(std::process::id())
+}
+
+/// The process of a running launchd job, as `launchctl print` says it.
+fn launchd_pid(print: &str) -> Option<u32> {
+    print
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("pid = ")?.trim().parse().ok())
+}
+
 /// Whether the service is installed, and whether it runs.
 pub fn status() -> (bool, bool) {
     if cfg!(target_os = "macos") {
@@ -180,5 +211,18 @@ pub fn status() -> (bool, bool) {
             .map(|o| o.trim() == "active")
             .unwrap_or(false);
         (installed, running)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_process_of_a_launchd_job() {
+        let print = "gui/501/sh.fctl.host = {\n\tactive count = 1\n\tpath = /Users/ada/Library/LaunchAgents/sh.fctl.host.plist\n\tstate = running\n\n\tprogram = /Users/ada/.local/bin/fctl\n\targuments = {\n\t\t/Users/ada/.local/bin/fctl\n\t\thost\n\t\trun\n\t}\n\n\tpid = 4242\n\timmediate reason = speculative\n}\n";
+        assert_eq!(launchd_pid(print), Some(4242));
+        let stopped = "gui/501/sh.fctl.host = {\n\tactive count = 0\n\tstate = not running\n\tlast exit code = 0\n}\n";
+        assert_eq!(launchd_pid(stopped), None);
     }
 }

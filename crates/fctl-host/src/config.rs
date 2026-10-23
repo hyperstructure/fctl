@@ -22,6 +22,7 @@
 //! keep_caches_days = 14    # then remove the caches of a project with no session here (0 keeps them)
 //! # Where `fctl host claude set-token` keeps your Claude token (unset: claude-token here).
 //! claude_token_file = "/run/secrets/claude-token"
+//! auto_update = true      # update fctl to the version the control plane runs
 //! ```
 //!
 //! The runner token lives next to it in `host-token`, and the Claude token
@@ -115,6 +116,10 @@ pub struct HostConfig {
     /// Where the Claude token the host keeps for its runner's owner is
     /// ([`crate::claude_token`]). Unset: `claude-token` next to this file.
     pub claude_token_file: Option<PathBuf>,
+    /// Update fctl, and so the agents and the default sandbox image, to
+    /// the version the control plane runs, once it is newer than this
+    /// host's ([`crate::update`]).
+    pub auto_update: bool,
 }
 
 impl Default for HostConfig {
@@ -146,6 +151,7 @@ impl Default for HostConfig {
             build_timeout_minutes: 60,
             max_build_mb: 20 * 1024,
             claude_token_file: None,
+            auto_update: true,
         }
     }
 }
@@ -243,6 +249,28 @@ impl HostConfig {
             std::fs::create_dir_all(dir)?;
         }
         std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        Ok(())
+    }
+
+    /// Sets `auto_update` in `host.toml`, and leaves the rest of the file
+    /// as it is, comments too.
+    pub fn save_auto_update(on: bool) -> Result<()> {
+        let path = Self::path();
+        let text = std::fs::read_to_string(&path).with_context(|| {
+            format!(
+                "{} not found: run `fctl host install` first",
+                path.display()
+            )
+        })?;
+        let text = with_key(&text, "auto_update", &on.to_string());
+        let saved =
+            Self::from_toml(&text).with_context(|| format!("parsing {}", path.display()))?;
+        anyhow::ensure!(
+            saved.auto_update == on,
+            "couldn't set auto_update in {}",
+            path.display()
+        );
+        std::fs::write(&path, text)?;
         Ok(())
     }
 
@@ -365,6 +393,34 @@ impl HostConfig {
             max,
         }
     }
+}
+
+/// `text`, a TOML file, with its top-level `key` set to `value`: its line
+/// replaced, or a line added before the first table, or at the end.
+fn with_key(text: &str, key: &str, value: &str) -> String {
+    let line = format!("{key} = {value}");
+    let mut out: Vec<&str> = Vec::new();
+    let mut set = false;
+    let mut top = true;
+    for l in text.lines() {
+        let t = l.trim_start();
+        if t.starts_with('[') && top {
+            top = false;
+            if !set {
+                out.push(&line);
+                set = true;
+            }
+        } else if top && !set && t.split_once('=').is_some_and(|(k, _)| k.trim() == key) {
+            out.push(&line);
+            set = true;
+            continue;
+        }
+        out.push(l);
+    }
+    if !set {
+        out.push(&line);
+    }
+    out.join("\n") + "\n"
 }
 
 /// The images a host's sessions may start from, as its hello says.
@@ -519,6 +575,40 @@ mod tests {
         let cfg = HostConfig::from_toml("max_cache_gb = 0\nkeep_caches_days = 0")?;
         assert_eq!(cfg.max_cache_mb(), None);
         assert_eq!(cfg.keep_caches_ms(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn hosts_update_themselves_unless_told_otherwise() -> Result<()> {
+        // A host.toml from before the setting.
+        assert!(HostConfig::from_toml("server = \"https://app.fctl.sh\"")?.auto_update);
+        assert!(!HostConfig::from_toml("auto_update = false")?.auto_update);
+        // host.toml says so, so that people find it there.
+        let saved = toml::to_string_pretty(&HostConfig::default())?;
+        assert!(saved.lines().any(|l| l == "auto_update = true"), "{saved}");
+        Ok(())
+    }
+
+    #[test]
+    fn auto_update_changes_in_host_toml_leave_the_rest_as_it_is() -> Result<()> {
+        let text = "server = \"https://app.fctl.sh\"\n# Ours.\nauto_update = true # for now\ncapacity = 2\n";
+        assert_eq!(
+            with_key(text, "auto_update", "false"),
+            "server = \"https://app.fctl.sh\"\n# Ours.\nauto_update = false\ncapacity = 2\n"
+        );
+        // Unset: a line of its own, at the end or before the first table.
+        assert_eq!(
+            with_key("capacity = 2", "auto_update", "false"),
+            "capacity = 2\nauto_update = false\n"
+        );
+        let tables =
+            "capacity = 2\nlabels = [\n  \"auto_update = no\",\n]\n\n[extra]\nauto_update = 1\n";
+        let set = with_key(tables, "auto_update", "false");
+        assert_eq!(
+            set,
+            "capacity = 2\nlabels = [\n  \"auto_update = no\",\n]\n\nauto_update = false\n[extra]\nauto_update = 1\n"
+        );
+        assert!(!HostConfig::from_toml(&set)?.auto_update);
         Ok(())
     }
 
