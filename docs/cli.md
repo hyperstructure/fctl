@@ -240,6 +240,7 @@ fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
 fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
+fctl projects set -p my-app --pr-descriptions brief   # pull requests described in a few sentences (balanced by default, or full)
 fctl projects set -p my-app --follow-ups comments,checks,conflicts   # agents come back for @fctl comments, failed checks and conflicts
 fctl projects use my-app
 fctl projects order my-app site        # these first in their workspace, the others after them

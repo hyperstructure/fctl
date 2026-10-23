@@ -466,6 +466,7 @@ async fn review_spec(
         memory_mb: p.memory_mb,
         idle_timeout_minutes: Some(1),
         auto_pull_request: false,
+        pull_request_descriptions: Default::default(),
         remote_control: false,
         claude_ai_connectors: false,
         credit_people: false,
