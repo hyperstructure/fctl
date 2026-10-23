@@ -28,6 +28,7 @@
 //! | `screenshot` | draws a small PNG and publishes it with `fctl publish`, as agents do for pull requests |
 //! | `remember <text>` | adds `<text>` (to the end of its line) to the project's memory with `fctl memory add`, as agents do |
 //! | `recall` | lists the project's memory with `fctl memory` |
+//! | `printenv` | shows the `CLAUDE_CODE_…` variables it got, its Claude token among them, in a `Bash` call, as an agent that looks at its environment does, then says the token back in pieces of five characters, as Claude streams what it writes (the host keeps the token out of both) |
 //! | `retro` | records a retrospective of the turn's work with `fctl retro`, as agents do when they finish a piece of work: completed, or `partial` or `blocked` when the message says so |
 //! | `revise` | updates the session's newest retrospective (after `retro`, in the same message or an earlier one) with `fctl retro list` and `fctl retro update`: completed, with what the work was and what got in the way said again, as agents do when a later turn carries on with work they recorded |
 //! | `slow` | streams for about ten seconds (try interrupting) |
@@ -416,6 +417,24 @@ impl Session {
     }
 
     fn stream_text(&mut self, text: &str) -> String {
+        let words: Vec<&str> = text.split_inclusive(' ').collect();
+        self.stream_pieces(&words)
+    }
+
+    /// Streams `text` in pieces of `size` characters, as Claude streams
+    /// what it writes: its pieces don't keep to words.
+    fn stream_text_in_pieces(&mut self, text: &str, size: usize) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let pieces: Vec<String> = chars
+            .chunks(size.max(1))
+            .map(|c| c.iter().collect())
+            .collect();
+        let pieces: Vec<&str> = pieces.iter().map(String::as_str).collect();
+        self.stream_pieces(&pieces)
+    }
+
+    /// Streams a text block made of `pieces`, one delta each.
+    fn stream_pieces(&mut self, pieces: &[&str]) -> String {
         let msg_id = format!("msg_{}", short_id(8));
         let usage = self.call_started();
         out(
@@ -425,7 +444,7 @@ impl Session {
             &json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
         );
         let mut written = String::new();
-        for word in text.split_inclusive(' ') {
+        for &word in pieces {
             if INTERRUPTED.load(Ordering::SeqCst) {
                 break;
             }
@@ -1220,6 +1239,14 @@ impl Session {
         }
         if says(&lower, "recall") {
             self.fctl(&["memory"], "Read the project's memory");
+        }
+        if says(&lower, "printenv") {
+            self.bash(
+                "printenv | grep '^CLAUDE_CODE_' | sort",
+                "Show the environment Claude Code got",
+            );
+            let token = std::env::var("CLAUDE_CODE_OAUTH_TOKEN").unwrap_or_default();
+            self.stream_text_in_pieces(&format!("Claude Code got the token {token}."), 5);
         }
         if says(&lower, "retro") {
             let outcome = ["blocked", "partial"]

@@ -46,19 +46,10 @@ import { ago, lowOnDisk } from "@/lib/format";
 import { asked } from "@/lib/models";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspaces } from "@/lib/queries";
 import { repoSummary } from "@/lib/repos";
+import { ACTIVE } from "@/lib/sessions";
 import { waitsForYou } from "@/lib/status";
 import { useTaskBoxFocus } from "@/lib/task-box";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
-
-const ACTIVE: G.SessionStatus[] = [
-  "queued",
-  "provisioning",
-  "preparing",
-  "running",
-  "idle",
-  "paused",
-  "stopping",
-];
 
 function greeting(user: G.User) {
   const h = new Date().getHours();

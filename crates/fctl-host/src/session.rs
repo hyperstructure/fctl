@@ -2,6 +2,7 @@
 //! agent and the session's uplink.
 
 use crate::caches::{self, Spot};
+use crate::claude_token::{self, Secrets};
 use crate::config::{HostConfig, Images};
 use crate::driver::{AgentIo, DiskSpot, Driver, Sandbox, SandboxSpec, sandbox_name};
 use crate::files;
@@ -286,7 +287,9 @@ impl Drop for AgentLink {
 }
 
 impl AgentLink {
-    fn open(io: AgentIo, sandbox: &str) -> Self {
+    /// Frames from the agent go without `secrets`: Claude tokens, which
+    /// must not reach the control plane in what it sends there.
+    fn open(io: AgentIo, sandbox: &str, secrets: Secrets) -> Self {
         let (tx, mut out_rx) = mpsc::unbounded_channel::<HostToAgent>();
         let (in_tx, rx) = mpsc::unbounded_channel::<AgentToHost>();
         let mut tasks = Vec::new();
@@ -334,6 +337,7 @@ impl AgentLink {
                 if line.trim().is_empty() {
                     continue;
                 }
+                let line = secrets.redact(&line);
                 match serde_json::from_str::<AgentToHost>(line.trim()) {
                     Ok(m) => {
                         if in_tx.send(m).is_err() {
@@ -731,6 +735,18 @@ async fn run(
         Start::New(spec) => (spec.session_id.clone(), Some(spec)),
         Start::Recover(id) => (id, None),
     };
+    // The Claude tokens its agent has: the one it starts with, those it
+    // gets later, and the one this host keeps (a session found running
+    // after a restart may have it), kept out of what the agent sends.
+    let secrets = Secrets::default();
+    if let Some(spec) = &spec {
+        secrets.add(&spec.credentials.claude.access_token);
+    }
+    if let Ok(Some(kept)) = claude_token::load(&ctx.cfg.claude_token()) {
+        secrets.add(&kept.token);
+    }
+    // Claude streams what it writes in pieces, which may split a token.
+    let mut streaming = claude_token::StreamRedactor::default();
     let (uplink, mut down) = Uplink::start(
         ctx.uplink_url(&session_id),
         ctx.token.clone(),
@@ -869,7 +885,7 @@ async fn run(
             r = async { match attaching.as_mut() { Some(a) => a.await, None => std::future::pending().await } } => {
                 attaching = None;
                 match r.map_err(anyhow::Error::from).and_then(|r| r) {
-                    Ok(io) => link = Some(AgentLink::open(io, &sb.name)),
+                    Ok(io) => link = Some(AgentLink::open(io, &sb.name, secrets.clone())),
                     Err(e) => {
                         tracing::warn!("attaching to {}: {e:#}", sb.name);
                         reach.down(Instant::now(), Instant::now(), format!("{e:#}"));
@@ -948,7 +964,11 @@ async fn run(
                         set_report(report.lock().map(|r| r.status).unwrap_or(SessionStatus::Running), evs.last().map(|e| e.agent_seq));
                         uplink.events(evs);
                     }
-                    AgentToHost::Stream { event } => uplink.send(UplinkUp::Stream { event }),
+                    AgentToHost::Stream { event } => {
+                        for event in streaming.apply(&secrets, event) {
+                            uplink.send(UplinkUp::Stream { event });
+                        }
+                    }
                     AgentToHost::State { state: st } => {
                         set_report(st.status, None);
                         uplink.state(st);
@@ -1077,6 +1097,9 @@ async fn run(
                 }
                 Some(SessionCmd::Superseded) => superseded = true,
                 Some(SessionCmd::Credentials { request_id, claude, github, github_read, error }) => {
+                    if let Some(c) = &claude {
+                        secrets.add(&c.access_token);
+                    }
                     if let Some(l) = &link {
                         l.send(HostToAgent::Credentials { request_id, claude, github, github_read, error });
                     }

@@ -54,3 +54,5 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0046](0046-registering-a-runner-takes-confirming-its-you.md) | Registering a runner, or replacing its token, takes confirming it's you |
 | [0047](0047-review-agents-review-outsiders-pull-requests-when-asked.md) | Review agents review outsiders' pull requests when someone asks |
 | [0048](0048-hosts-keep-package-caches-for-projects-that-share-them.md) | Hosts keep package caches for projects that share them |
+| [0049](0049-agents-write-balanced-pull-request-descriptions.md) | Agents write balanced pull request descriptions, unless their project chooses otherwise |
+| [0050](0050-claude-tokens-can-stay-on-their-owners-runners.md) | Claude tokens can stay on their owner's runners |

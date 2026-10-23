@@ -53,7 +53,8 @@ pub fn for_new_project(settings: &mut ProjectSettings, sent: &Value) {
 /// `credit_claude`, `project_memory` and `retrospectives`, on; for
 /// `publish_screenshots` and `package_caches`, off; for `screenshot_days`,
 /// 30 days (send `null` to choose the default); for `github_access`, push,
-/// which would let agents push again; for each of `follow_ups`, off. An
+/// which would let agents push again; for `pull_request_descriptions`,
+/// balanced; for each of `follow_ups`, off. An
 /// `image_build` it leaves out stays unless it chooses an image instead
 /// (send `null` for none). `sent` is the update's `settings` object as it
 /// arrived.
@@ -101,6 +102,9 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("github_access").is_none() {
         settings.github_access = stored.github_access;
+    }
+    if sent.get("pull_request_descriptions").is_none() {
+        settings.pull_request_descriptions = stored.pull_request_descriptions;
     }
 }
 
@@ -329,6 +333,23 @@ mod tests {
         let mut s = ProjectSettings::default();
         keep_unsent(&mut s, &stored, &json!({ "package_caches": false }));
         assert!(!s.package_caches);
+    }
+
+    #[test]
+    fn updates_without_pull_request_descriptions_keep_the_choice() {
+        use fctl_proto::session::Verbosity;
+        let stored = ProjectSettings {
+            pull_request_descriptions: Verbosity::Brief,
+            ..Default::default()
+        };
+        // An older client sends settings without the field: its default, balanced.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
+        assert_eq!(s.pull_request_descriptions, Verbosity::Brief);
+        let sent = json!({ "pull_request_descriptions": "balanced" });
+        let mut s: ProjectSettings = serde_json::from_value(sent.clone()).unwrap_or_default();
+        keep_unsent(&mut s, &stored, &sent);
+        assert_eq!(s.pull_request_descriptions, Verbosity::Balanced);
     }
 
     #[test]

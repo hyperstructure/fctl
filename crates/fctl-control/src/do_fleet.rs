@@ -15,12 +15,12 @@ use crate::internal::{
 use crate::spec;
 use fctl_domain::image::HostImages;
 use fctl_domain::reconcile::{self, Known, Unassigned};
-use fctl_domain::schedule::{Home, Slot, Wait};
+use fctl_domain::schedule::{Home, Slot, TokenWait, Wait};
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
     ClaudeLoginUpdate, CredentialKind, FEATURE_REVIEWS, FleetToHost, HostHello, HostSessionReport,
-    HostToFleet, SandboxLimits, StopReason,
+    HostToFleet, RunnerClaudeToken, SandboxLimits, StopReason,
 };
 use fctl_proto::session::{RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
@@ -176,6 +176,9 @@ struct Candidate {
     allowed_builds: Option<Vec<String>>,
     /// Its host runs review agents' sessions.
     reviews: bool,
+    /// The Claude token its host keeps for its owner, as it last said:
+    /// `None` from hosts too old to keep one.
+    claude_token: Option<RunnerClaudeToken>,
     /// The workspaces whose sessions it runs.
     serves: Serves,
 }
@@ -192,7 +195,9 @@ struct Serves {
 
 impl Serves {
     /// Whether it takes a session that wants `want`: one of its workspace
-    /// that runs as someone it runs sessions for there.
+    /// that runs as someone it runs sessions for there. Whether its host
+    /// keeps the token of a session whose person keeps theirs on their
+    /// runners is for [`Candidate::slot`].
     fn takes(&self, want: &spec::SessionWants) -> bool {
         self.workspaces.iter().any(|(w, personal)| {
             *w == want.workspace_id
@@ -200,7 +205,7 @@ impl Serves {
                     self.owner.as_deref(),
                     *personal,
                     want.person.as_deref(),
-                    want.own_runners,
+                    fctl_domain::schedule::only_theirs(want.own_runners, want.on_runners),
                 )
         })
     }
@@ -212,13 +217,20 @@ impl Serves {
 }
 
 impl Candidate {
-    /// As the scheduler sees it, for a session that wants `want`.
+    /// Whether its host keeps its owner's Claude token.
+    fn keeps_token(&self) -> bool {
+        self.claude_token.is_some_and(|t| t.kept())
+    }
+
+    /// As the scheduler sees it, for a session that wants `want`: one whose
+    /// person keeps their Claude token on their runners goes only to those
+    /// that keep it.
     fn slot(&self, want: &spec::SessionWants) -> Slot<'_> {
         Slot {
             id: &self.id,
             online: true,
             enabled: true,
-            serves: self.serves.takes(want),
+            serves: self.serves.takes(want) && (!want.on_runners || self.keeps_token()),
             capacity: self.capacity,
             active: self.active,
             labels: &self.labels,
@@ -703,9 +715,13 @@ impl FleetObject {
                     let _ = q.run().await;
                 }
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
+                let token_changed = self.note_claude_token(&rs.id, hb.claude_token).await;
                 // The runners list says when a runner takes no new sessions
-                // for its disk, and when it takes them again.
-                if fctl_domain::disk::low(hb.disk_available_mb, min_free) != was_low {
+                // for its disk, and when it takes them again, and its
+                // owner sees whether it keeps their Claude token.
+                if token_changed
+                    || fctl_domain::disk::low(hb.disk_available_mb, min_free) != was_low
+                {
                     self.feed_runner(&rs.id).await;
                 }
                 self.dispatch().await;
@@ -843,6 +859,54 @@ impl FleetObject {
         self.stop_idle_if_draining(&rs.id, &hello.sessions).await;
         self.feed_runner(&rs.id).await;
         self.dispatch().await;
+    }
+
+    /// Keeps what a heartbeat says of the Claude token the runner's host
+    /// keeps for its owner in the runner's hello, here and in D1, when it
+    /// changed: its owner saved or removed it while the host ran. Hosts too
+    /// old to keep one say nothing, which changes nothing. Returns whether
+    /// it changed.
+    async fn note_claude_token(&self, runner_id: &str, token: Option<RunnerClaudeToken>) -> bool {
+        #[derive(Deserialize)]
+        struct R {
+            hello: Option<String>,
+        }
+        let Some(token) = token else { return false };
+        let Some(mut hello) = self
+            .sql
+            .exec(
+                "SELECT hello FROM runners WHERE id = ?",
+                Some(vec![sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<R>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .and_then(|r| r.hello)
+            .and_then(|h| serde_json::from_str::<HostHello>(&h).ok())
+        else {
+            return false;
+        };
+        if hello.claude_token == Some(token) {
+            return false;
+        }
+        hello.claude_token = Some(token);
+        let Ok(info) = serde_json::to_string(&hello) else {
+            return false;
+        };
+        let _ = self.sql.exec(
+            "UPDATE runners SET hello = ? WHERE id = ?",
+            Some(vec![sv(&info), sv(runner_id)]),
+        );
+        if let Ok(db) = self.env.d1("DB")
+            && let Ok(q) = crate::db::q(
+                &db,
+                "UPDATE runners SET info = ? WHERE id = ?",
+                &[crate::db::s(&info), crate::db::s(runner_id)],
+            )
+        {
+            let _ = q.run().await;
+        }
+        true
     }
 
     /// Matches what the host reports with what we assigned to it.
@@ -1716,6 +1780,7 @@ impl FleetObject {
                     allowed_images: hello.allowed_images,
                     allowed_builds: hello.allowed_builds,
                     reviews: hello.features.iter().any(|f| f == FEATURE_REVIEWS),
+                    claude_token: hello.claude_token,
                     serves,
                 })
             })
@@ -2381,8 +2446,29 @@ impl FleetObject {
     /// ([`Wait::Workspace`]), by the runners, online or not, of its
     /// workspace (as of the last dispatch).
     fn no_runner_takes(&self, want: &spec::SessionWants) -> String {
-        let others_online = self
-            .candidates()
+        let candidates = self.candidates();
+        if want.on_runners {
+            // Only its person's runners take it, and of those only the
+            // ones that keep their token.
+            let online: Vec<&Candidate> =
+                candidates.iter().filter(|c| c.serves.takes(want)).collect();
+            let wait = if !online.is_empty() {
+                TokenWait::NoToken {
+                    old: online.iter().any(|c| c.claude_token.is_none()),
+                }
+            } else if self
+                .runner_workspaces
+                .borrow()
+                .values()
+                .any(|s| s.takes(want))
+            {
+                TokenWait::Offline
+            } else {
+                TokenWait::NoRunner
+            };
+            return wait.reason(&want.person_name);
+        }
+        let others_online = candidates
             .iter()
             .any(|c| c.serves.runs(&want.workspace_id) && !c.serves.takes(want));
         let runners = self.runner_workspaces.borrow();

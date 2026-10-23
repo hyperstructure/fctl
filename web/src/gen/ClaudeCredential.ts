@@ -18,4 +18,13 @@ scopes: Array<string>, expires_at?: number,
 /**
  * `pro`, `max`, `team` or `enterprise`.
  */
-subscription_type?: string, account?: ClaudeAccount, };
+subscription_type?: string, account?: ClaudeAccount, 
+/**
+ * Its token is the one the runner keeps for its owner, who keeps it on
+ * their runners rather than in fctl: the control plane sends none
+ * (`access_token` is empty), and the host puts its own in before the
+ * agent gets the credential. Only hosts that say they keep one
+ * ([`HostHello::claude_token`]) get such sessions, and only for the
+ * sessions of the person who registered them.
+ */
+on_runners?: boolean, };

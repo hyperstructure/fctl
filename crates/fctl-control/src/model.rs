@@ -880,6 +880,7 @@ impl RunnerRow {
             .collect();
         let online = live.online.contains(&self.id);
         let free = live.free.get(&self.id).copied().unwrap_or_default();
+        let yours = view.user_id.is_some() && self.created_by.as_deref() == view.user_id;
         Runner {
             id: RunnerId(self.id.clone()),
             name: self.name.clone(),
@@ -923,8 +924,13 @@ impl RunnerRow {
                 _ => None,
             },
             workspaces,
-            yours: view.user_id.is_some() && self.created_by.as_deref() == view.user_id,
+            yours,
             personal,
+            // Whether its host keeps its owner's Claude token is theirs to see.
+            claude_token: hello
+                .as_ref()
+                .and_then(|h| h.claude_token)
+                .filter(|_| yours),
         }
     }
 }
@@ -973,6 +979,10 @@ pub struct CredentialRow {
     /// Its plan usage, from [`USAGE_JSON`] when the query selects it.
     #[serde(default)]
     pub usage: Option<String>,
+    /// Its owner keeps its token on their runners: `secret_enc` is empty,
+    /// and its sessions run only on those of their runners that keep one.
+    #[serde(deserialize_with = "int_bool", default)]
+    pub on_runners: bool,
 }
 
 /// A credential's plan usage as one JSON array of its `claude_usage` rows,
@@ -1031,6 +1041,7 @@ impl CredentialRow {
             last_used_at: self.last_used_at,
             expires_at: self.expires_at,
             usage: plan_usage(self.usage.as_deref()),
+            on_runners: self.on_runners,
         }
     }
 }
