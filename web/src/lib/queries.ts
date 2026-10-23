@@ -62,7 +62,8 @@ export const keys = {
   workspaceGithub: (id: string) => ["workspace", id, "github"] as const,
   workspaceLinear: (id: string) => ["workspace", id, "linear"] as const,
   /** The teams fctl's app reaches in a Linear workspace a workspace works in. */
-  linearTeams: (id: string, organization: string) => ["workspace", id, "linear", organization, "teams"] as const,
+  linearTeams: (id: string, organization: string) =>
+    ["workspace", id, "linear", organization, "teams"] as const,
   workspaceAudit: (id: string) => ["workspace", id, "audit"] as const,
   adminWorkspaces: ["admin", "workspaces"] as const,
   adminGithub: ["admin", "github"] as const,

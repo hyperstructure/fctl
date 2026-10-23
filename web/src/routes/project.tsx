@@ -9,6 +9,7 @@ import { MemoryTab } from "@/components/project/memory";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
 import { ReviewsTab } from "@/components/project/reviews";
 import { ScheduleButton, SchedulesTab } from "@/components/project/schedules";
+import { TicketsTab } from "@/components/project/tickets";
 import {
   AttachButton,
   DraftTray,
@@ -73,6 +74,7 @@ import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 type Tab =
   | "sessions"
+  | "tickets"
   | "schedules"
   | "reviews"
   | "memory"
@@ -85,6 +87,7 @@ type Tab =
 /** Everyone in the project sees these; owners and maintainers the rest. */
 const OPEN_TABS: Tab[] = [
   "sessions",
+  "tickets",
   "schedules",
   "reviews",
   "memory",
@@ -95,7 +98,7 @@ const OPEN_TABS: Tab[] = [
 
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
-  const { tab = "sessions", schedule } = useSearch({ from: "/app/p/$slug" });
+  const { tab = "sessions", schedule, linear } = useSearch({ from: "/app/p/$slug" });
   const project = useProject(slug);
   const p = project.data;
   const manage = p?.role === "owner" || p?.role === "maintainer";
@@ -180,6 +183,7 @@ export function ProjectPage() {
           {(
             [
               "sessions",
+              "tickets",
               "schedules",
               "reviews",
               "memory",
@@ -212,6 +216,7 @@ export function ProjectPage() {
       </nav>
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
+        {p && tab === "tickets" && <TicketsTab project={p} returned={linear} />}
         {p && tab === "schedules" && <SchedulesTab project={p} open={schedule} />}
         {p && tab === "reviews" && <ReviewsTab project={p} />}
         {p && tab === "memory" && <MemoryTab project={p} />}

@@ -5,6 +5,7 @@
 import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@tanstack/react-router";
 import { api } from "@/lib/api";
 import { fetchMe, keys, queryClient } from "@/lib/queries";
+import { LINEAR_OUTCOMES, type LinearOutcome } from "@/lib/tickets";
 import { Admin } from "@/routes/admin";
 import { InvitePage, LoginPage, ResetPage, SetupPage, TwoFactorPage } from "@/routes/auth";
 import { DevicePage } from "@/routes/device";
@@ -119,6 +120,7 @@ const workspace = createRoute({
 });
 type ProjectTab =
   | "sessions"
+  | "tickets"
   | "schedules"
   | "reviews"
   | "memory"
@@ -132,10 +134,14 @@ const project = createRoute({
   getParentRoute: () => app,
   path: "/p/$slug",
   component: ProjectPage,
-  validateSearch: (s: Record<string, unknown>): { tab?: ProjectTab; schedule?: string } => ({
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { tab?: ProjectTab; schedule?: string; linear?: LinearOutcome } => ({
     tab: str(s.tab) as ProjectTab | undefined,
     // The schedule the Schedules tab opens, from a session it started.
     schedule: str(s.schedule),
+    // Back from Linear: installing fctl's app, or linking someone's account (api::linear).
+    linear: oneOf(s.linear, LINEAR_OUTCOMES),
   }),
 });
 const session = createRoute({ getParentRoute: () => app, path: "/s/$id", component: SessionPage });
