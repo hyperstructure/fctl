@@ -86,6 +86,13 @@ export function LinearTab({ w, returned }: { w: G.Workspace; returned?: LinearOu
               </a>
               <div className="mt-0.5 text-[12px] text-ink-4">
                 linear.app/{c.url_key}
+                {/* Whom people there assign issues to and mention. */}
+                {c.app_handle && (
+                  <>
+                    {" · as "}
+                    <span className="font-mono text-ink-3">@{c.app_handle}</span>
+                  </>
+                )}
                 {c.connected_by && ` · connected by ${c.connected_by.name}`}
               </div>
               {c.projects && c.projects.length > 0 ? (
