@@ -727,7 +727,10 @@ describe("messages from fctl", () => {
     [...c.querySelectorAll("button")].find((b) => b.textContent?.includes(name));
 
   it("show a review's findings in a few lines, with the message a click away", () => {
-    const findings = Array.from({ length: 3 }, (_, i) => `${i + 1}. Finding ${i + 1}\n   ${"Why. ".repeat(80)}`);
+    const findings = Array.from(
+      { length: 3 },
+      (_, i) => `${i + 1}. Finding ${i + 1}\n   ${"Why. ".repeat(80)}`,
+    );
     const text = `fctl's review agent reviewed commit 3f2a1c9 …:\n\n${findings.join("\n\n")}`;
     const review: G.PassedOnReview = {
       repo: { owner: "acme", name: "web" },
@@ -735,7 +738,12 @@ describe("messages from fctl", () => {
       url: "https://github.com/acme/web/pull/12",
       sha: "3f2a1c9d",
       session: "ses_review",
-      findings: [1, 2, 3].map((n) => ({ severity: "medium", title: `Finding ${n}`, path: "src/a.rs", line: n })),
+      findings: [1, 2, 3].map((n) => ({
+        severity: "medium",
+        title: `Finding ${n}`,
+        path: "src/a.rs",
+        line: n,
+      })),
     };
     const c = transcript([fromFctl(text, review)], "idle");
     expect(c.textContent).toContain("found 3 issues");

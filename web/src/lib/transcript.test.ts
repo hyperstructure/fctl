@@ -345,7 +345,14 @@ describe("TranscriptBuilder", () => {
     const repo = { owner: "acme", name: "web" };
     const url = "https://github.com/acme/web/pull/12";
     const followUp: G.FollowUp = { repo, number: 12, url, events: [{ kind: "closed" }] };
-    const review: G.PassedOnReview = { repo, number: 12, url, sha: "3f2a1c9", session: "ses_r", findings: [] };
+    const review: G.PassedOnReview = {
+      repo,
+      number: 12,
+      url,
+      sha: "3f2a1c9",
+      session: "ses_r",
+      findings: [],
+    };
     const items = new TranscriptBuilder().add([
       ev("user_message", { id: "dlv_1", text: "On GitHub, …", source: "system", follow_up: followUp }),
       ev("user_message", { id: "dlv_2", text: "fctl's review agent …", source: "system", review }),

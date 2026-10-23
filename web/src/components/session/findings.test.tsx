@@ -54,7 +54,13 @@ describe("review findings in the transcript", () => {
         line: 42,
         url: `${url}#discussion_r101`,
       },
-      { severity: "low", title: "The removed check guarded admins", path: "src/auth.rs", line: 9, deleted: true },
+      {
+        severity: "low",
+        title: "The removed check guarded admins",
+        path: "src/auth.rs",
+        line: 9,
+        deleted: true,
+      },
     ]);
     const c = render(<FindingsMessage review={r} text={text} ts={1} />);
     const shown = c.textContent ?? "";
