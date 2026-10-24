@@ -11,6 +11,7 @@ import { join } from "node:path";
 /** Passed to the Worker as they are, when set. */
 const VARS = [
   "FCTL_INSTANCE_NAME",
+  "FCTL_SEARCH_ENGINES",
   "GITHUB_APP_ID",
   "GITHUB_APP_SLUG",
   "GITHUB_CLIENT_ID",

@@ -12,6 +12,9 @@ public_url = "https://app.fctl.sh"
 # The sign-in page lets people without an account ask for early access, and
 # admins invite them from Admin → Early access.
 early_access = true
+# Search engines may index the sign-in and early access pages: /robots.txt
+# lets them, and /sitemap.xml lists them.
+search_engines = true
 
 [d1]
 database_name = "fctl-sh"

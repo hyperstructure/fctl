@@ -50,6 +50,9 @@ use worker::{Context, Env, Method, Request, Response, ScheduleContext, Scheduled
 #[event(fetch)]
 pub async fn fetch(mut req: Request, env: Env, wctx: Context) -> worker::Result<Response> {
     let path = req.path();
+    if path == "/robots.txt" || path == "/sitemap.xml" {
+        return crawlers(&env, &path);
+    }
     if !path.starts_with("/api/") {
         // Static assets are served before the Worker runs; anything that
         // reaches us here is the SPA fallback.
@@ -71,6 +74,36 @@ pub async fn fetch(mut req: Request, env: Env, wctx: Context) -> worker::Result<
     for c in &ctx.cookies {
         let _ = headers.append("Set-Cookie", c);
     }
+    Ok(response)
+}
+
+/// `/robots.txt` and `/sitemap.xml` (`fctl_domain::crawlers`): an instance
+/// whose deployment opens it to search engines lets them index its public
+/// pages; any other has no sitemap.
+fn crawlers(env: &Env, path: &str) -> worker::Result<Response> {
+    let cfg = config::Config::from_env(env);
+    let (body, content_type) = if path == "/robots.txt" {
+        (
+            fctl_domain::crawlers::robots_txt(
+                &cfg.public_url,
+                cfg.search_engines,
+                cfg.early_access,
+            ),
+            "text/plain; charset=utf-8",
+        )
+    } else if cfg.search_engines {
+        (
+            fctl_domain::crawlers::sitemap_xml(&cfg.public_url, cfg.early_access),
+            "application/xml; charset=utf-8",
+        )
+    } else {
+        return Response::error("Not found", 404);
+    };
+    let mut response = Response::ok(body)?;
+    let headers = response.headers_mut();
+    headers.set("Content-Type", content_type)?;
+    headers.set("Cache-Control", "public, max-age=3600")?;
+    headers.set("X-Content-Type-Options", "nosniff")?;
     Ok(response)
 }
 

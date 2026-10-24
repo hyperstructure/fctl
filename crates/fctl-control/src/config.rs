@@ -6,6 +6,7 @@
 //! | `FCTL_INSTANCE_NAME` | var | Shown in the UI and emails |
 //! | `FCTL_DEV` | var | `1` in local development (relaxed origin checks, dev endpoints) |
 //! | `FCTL_EARLY_ACCESS` | var | `1` where people without an account ask for early access (app.fctl.sh) |
+//! | `FCTL_SEARCH_ENGINES` | var | `1` where search engines may index the public pages (app.fctl.sh) |
 //! | `FCTL_MASTER_KEY` | secret | 32 random bytes, base64; encrypts credentials and signs state |
 //! | `FCTL_SETUP_TOKEN` | secret | One-time token for creating the owner account |
 //! | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID` | var | The GitHub App |
@@ -88,6 +89,9 @@ pub struct Config {
     /// The sign-in page lets people without an account ask for early
     /// access, and admins invite them from the list (`api::early_access`).
     pub early_access: bool,
+    /// Search engines may index the public pages: `/robots.txt` lets them
+    /// and `/sitemap.xml` lists them (`fctl_domain::crawlers`).
+    pub search_engines: bool,
     pub master_key: Option<[u8; 32]>,
     pub setup_token: Option<String>,
     pub github: Option<GithubConfig>,
@@ -169,6 +173,8 @@ impl Config {
             public_url,
             dev: var(env, "FCTL_DEV").is_some_and(|v| v == "1" || v == "true"),
             early_access: var(env, "FCTL_EARLY_ACCESS").is_some_and(|v| v == "1" || v == "true"),
+            search_engines: var(env, "FCTL_SEARCH_ENGINES")
+                .is_some_and(|v| v == "1" || v == "true"),
             master_key,
             setup_token: var(env, "FCTL_SETUP_TOKEN"),
             github,
