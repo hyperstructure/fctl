@@ -214,7 +214,8 @@ impl SearchObject {
             });
         }
         // Where each matched: its title and description first, then its
-        // newest messages and replies.
+        // newest messages and replies. A few more than it shows, for those
+        // that say the same as another (a task that is the title still).
         let ids: Vec<String> = sessions.iter().map(|s| s.session_id.clone()).collect();
         let rows: Vec<MatchRow> = self
             .sql
@@ -229,16 +230,22 @@ impl SearchObject {
                 Some(vec![
                     sv(&pattern),
                     sv(&json(&ids)),
-                    iv(search::MATCHES_SHOWN as i64),
+                    iv(search::MATCHES_SHOWN as i64 + 2),
                 ]),
             )
             .and_then(|c| c.to_array())
             .map_err(failed)?;
         let mut matches: HashMap<String, Vec<fctl_proto::api::SearchMatch>> = HashMap::new();
+        let mut said: HashMap<String, Vec<String>> = HashMap::new();
         for r in rows {
             let Some(kind) = DocKind::parse(&r.kind) else {
                 continue;
             };
+            let texts = said.entry(r.session_id.clone()).or_default();
+            if texts.len() >= search::MATCHES_SHOWN || texts.contains(&r.text) {
+                continue;
+            }
+            texts.push(r.text.clone());
             let author = r
                 .author
                 .as_deref()

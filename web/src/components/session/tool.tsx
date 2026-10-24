@@ -29,6 +29,7 @@ import {
   useCallback,
   useContext,
   useId,
+  useLayoutEffect,
   useMemo,
   useState,
 } from "react";
@@ -60,6 +61,7 @@ import {
   subagentRuns,
   type Tool,
 } from "@/lib/transcript";
+import { Reveal, useRevealed } from "./find";
 import { OpenLine, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { Thinking, thinkingNow } from "./thinking";
 
@@ -173,12 +175,12 @@ function Output({ text, error }: { text: string; error: boolean }) {
   );
 }
 
-function Todos({ input }: { input: Record<string, Json> }) {
+function Todos({ input, find }: { input: Record<string, Json>; find: string }) {
   const todos = Array.isArray(input.todos)
     ? (input.todos as { content?: string; status?: string; activeForm?: string }[])
     : [];
   return (
-    <ul className="flex flex-col gap-1.5 py-1">
+    <ul data-find={find} className="flex flex-col gap-1.5 py-1">
       {todos.map((t, i) => (
         <li key={i} className="flex items-start gap-2.5 text-[13.5px]">
           <span
@@ -270,12 +272,14 @@ function Details({ t }: { t: Tool }) {
     case "Bash":
       return (
         <div className="flex flex-col gap-2">
-          <CodeBlock code={str(input.command)} lang="bash" />
+          <div data-find={`cmd:${t.key}`}>
+            <CodeBlock code={str(input.command)} lang="bash" />
+          </div>
           {result && <Output text={result.text} error={result.isError} />}
         </div>
       );
     case "TodoWrite":
-      return <Todos input={input} />;
+      return <Todos input={input} find={`todo:${t.key}`} />;
     case "Read":
       return result ? (
         <div className="text-[12.5px] text-ink-3">
@@ -296,10 +300,11 @@ function Details({ t }: { t: Tool }) {
   }
 }
 
-/** What the agent asked of a subagent: a line that opens into it. */
-function Prompt({ text, agent }: { text: string; agent: string }) {
+/** What the agent asked of a subagent: a line that opens into it. `call`: the key of the call that started it. */
+function Prompt({ text, agent, call }: { text: string; agent: string; call: string }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  useRevealed(`prompt:${call}`, () => setOpen(true));
   if (!text.trim()) return null;
   return (
     <div>
@@ -319,6 +324,7 @@ function Prompt({ text, agent }: { text: string; agent: string }) {
       {open && (
         <div
           id={id}
+          data-find={`prompt:${call}`}
           className="mt-1 mb-2 ml-[34px] max-h-[420px] animate-rise overflow-auto rounded-md border border-line bg-sunken px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap wrap-anywhere text-ink-2"
         >
           {text}
@@ -328,9 +334,9 @@ function Prompt({ text, agent }: { text: string; agent: string }) {
   );
 }
 
-function Prose({ text }: { text: string }) {
+function Prose({ text, find }: { text: string; find: string }) {
   return (
-    <div className="py-1.5 text-[13.5px] text-ink-2">
+    <div data-find={find} className="py-1.5 text-[13.5px] text-ink-2">
       <Markdown text={text} className="prose-note" />
     </div>
   );
@@ -361,9 +367,9 @@ function SubagentDetails({ t, running, up }: { t: Tool; running: boolean; up: bo
   const waiting = running && !(last?.kind === "tool" && !last.result);
   return (
     <div className="flex flex-col">
-      <Prompt text={str(t.input.prompt)} agent={str(t.input.subagent_type)} />
+      <Prompt text={str(t.input.prompt)} agent={str(t.input.subagent_type)} call={t.key} />
       <WorkList steps={steps} running={running} up={up} />
-      {reported && <Prose text={report} />}
+      {reported && <Prose text={report} find={`report:${t.key}`} />}
       {waiting && <div className="text-shimmer self-start py-1.5 text-[12.5px] text-ink-3">Working</div>}
       {t.result?.isError && (
         <div className="mt-1.5">
@@ -385,18 +391,21 @@ function WorkList({ steps, running, up }: { steps: Step[]; running: boolean; up:
       ) : p.item.kind === "tool" ? (
         <ToolRow t={p.item} running={running} up={up} />
       ) : (
-        <Prose text={p.item.text} />
+        <Prose text={p.item.text} find={`prose:${p.item.key}`} />
       )}
     </Unreadable>
   ));
 }
 
-/** What a call is about: a file (its name brighter than its directory, which gives way first), code or words. */
-function TargetText({ target }: { target: Target }) {
+/**
+ * What a call is about: a file (its name brighter than its directory, which gives way first), code or words.
+ * `find`: what finding in the transcript knows it as.
+ */
+function TargetText({ target, find }: { target: Target; find: string }) {
   if (target.kind === "path") {
     const cut = target.text.lastIndexOf("/") + 1;
     return (
-      <span className="flex min-w-0 font-mono text-[0.925em]">
+      <span data-find={find} className="flex min-w-0 font-mono text-[0.925em]">
         {cut > 0 && (
           <span className="min-w-0 shrink-[1000] truncate text-ink-4">{target.text.slice(0, cut)}</span>
         )}
@@ -405,7 +414,10 @@ function TargetText({ target }: { target: Target }) {
     );
   }
   return (
-    <span className={cn("min-w-0 truncate text-ink-3", target.kind === "code" && "font-mono text-[0.925em]")}>
+    <span
+      data-find={find}
+      className={cn("min-w-0 truncate text-ink-3", target.kind === "code" && "font-mono text-[0.925em]")}
+    >
       {target.text}
     </span>
   );
@@ -462,6 +474,8 @@ export const ToolRow = memo(function ToolRow({
   const [own, setOwn] = useState(t.name === "TodoWrite");
   const open = shown ?? own;
   const id = useId();
+  // Its own line, not one a run keeps open: finding opens it to a match in it.
+  useRevealed(shown === undefined ? t.key : undefined, () => setOwn(true));
   const { verb, target } = describe(t.name, t.input, useContext(WorkDir));
   const agent = isSubagent(t);
   const error = !!t.result?.isError || t.agent?.ended === "failed";
@@ -497,10 +511,13 @@ export const ToolRow = memo(function ToolRow({
           </Facts>
         }
       >
-        <span className={cn(target ? "shrink-0" : "min-w-0 truncate", pending && "text-shimmer")}>
+        <span
+          data-find={target ? undefined : `line:${t.key}`}
+          className={cn(target ? "shrink-0" : "min-w-0 truncate", pending && "text-shimmer")}
+        >
           {verb}
         </span>
-        {target && <TargetText target={target} />}
+        {target && <TargetText target={target} find={`line:${t.key}`} />}
       </OpenLine>
       {open &&
         (agent ? (
@@ -566,6 +583,17 @@ export const Run = memo(
     const [shown, setShown] = useState(none);
     const [opened, setOpened] = useState(none);
     const id = useId();
+    // Finding shows the steps it gets to on their own, and opens them for a match in what they open into.
+    const reveal = useContext(Reveal);
+    useLayoutEffect(() => {
+      const show = steps.filter((s) => reveal.has(s.key)).map((s) => s.key);
+      if (!show.length) return;
+      const open = show.filter((k) => reveal.get(k) === "open");
+      const add = (keys: string[]) => (set: ReadonlySet<string>) =>
+        keys.every((k) => set.has(k)) ? set : new Set([...set, ...keys]);
+      setShown(add(show));
+      if (open.length) setOpened(add(open));
+    }, [reveal, steps]);
     const toggle = useCallback((key: string) => {
       setOpened((o) => {
         const next = new Set(o);
@@ -588,7 +616,13 @@ export const Run = memo(
             nested={nested}
           />
         ) : (
-          <Thinking text={s.text} open={opened.has(s.key)} onToggle={() => toggle(s.key)} nested={nested} />
+          <Thinking
+            text={s.text}
+            open={opened.has(s.key)}
+            onToggle={() => toggle(s.key)}
+            nested={nested}
+            find={`thought:${s.key}`}
+          />
         )}
       </Unreadable>
     );

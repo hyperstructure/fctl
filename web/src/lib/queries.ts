@@ -23,6 +23,8 @@ export const keys = {
   project: (id: string) => ["project", id] as const,
   sessions: (q: object) => ["sessions", q] as const,
   session: (id: string) => ["session", id] as const,
+  /** A search of all sessions: what was typed, and how many sessions it lists. */
+  search: (q: string, limit: number) => ["search", q, limit] as const,
   members: (id: string) => ["members", id] as const,
   secrets: (id: string) => ["secrets", id] as const,
   projectRepos: (id: string) => ["project-repos", id] as const,

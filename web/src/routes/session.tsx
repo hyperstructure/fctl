@@ -1,7 +1,7 @@
 // A session: the agent at work, live.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
   ArrowUpRight,
   Bell,
@@ -14,6 +14,7 @@ import {
   Globe,
   PanelRight,
   Play,
+  Search,
   Share2,
   Square,
   Terminal,
@@ -25,6 +26,7 @@ import { GithubAccessChip, GithubAccessLabel } from "@/components/github-access"
 import { ReviewFacts, ReviewFooter, useSessionReview } from "@/components/review";
 import { Changes } from "@/components/session/changes";
 import { Composer } from "@/components/session/composer";
+import { FindBar, findShortcut, Reveal, useFind } from "@/components/session/find";
 import {
   SessionMemory,
   SessionRetrospectives,
@@ -85,6 +87,9 @@ import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 export function SessionPage() {
   const { id } = useParams({ from: "/app/s/$id" });
+  // From a search of all sessions: what it found here, and where.
+  const { find, at } = useSearch({ from: "/app/s/$id" });
+  const navigate = useNavigate();
   const { data: me } = useMe();
   const initial = useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) });
   const [s, store] = useLiveSession(id, initial.data);
@@ -98,8 +103,29 @@ export function SessionPage() {
   const [details, setDetails] = useState(false);
   const [share, setShare] = useState(false);
   const transcript = useRef<HTMLDivElement>(null);
+  const header = useRef<HTMLDivElement>(null);
+  const footer = useRef<HTMLDivElement>(null);
   // The newest work stays in view while the reader is at the bottom.
   useStickToBottom(transcript, id);
+  // What a search of all sessions found: the find bar takes it over, and the address forgets it.
+  const [landing, setLanding] = useState<{ query: string; seq?: number }>();
+  useEffect(() => {
+    if (!find) return;
+    setLanding({ query: find, seq: at });
+    // Without a view transition of its own: one would cut short the one that opened the page.
+    void navigate({ to: "/s/$id", params: { id }, search: {}, replace: true, viewTransition: false });
+  }, [find, at, id, navigate]);
+  const finder = useFind({
+    store,
+    items: s.items,
+    cwd: s.items.find((it) => it.kind === "init")?.cwd,
+    hasMoreBefore: s.hasMoreBefore,
+    loadingOlder: s.loadingOlder,
+    transcript,
+    header,
+    footer,
+    landing,
+  });
 
   useEffect(() => {
     if (session) document.title = `${session.title} · ${session.project_slug}#${session.number}`;
@@ -163,293 +189,333 @@ export function SessionPage() {
         {/* Header. On phones it holds the menu button, in place of the top bar it would cover,
             and has room for the title and status only: the orb and title open the rest, with
             what the rail shows on wider screens, in a sheet. */}
-        <header className="sticky top-0 z-10 border-b border-line bg-canvas/80 backdrop-blur-xl max-md:h-14">
-          {/* On phones as tall as the top bar, with the menu button where the bar has it. */}
-          <div className="flex h-full items-center gap-3 px-2.5 md:gap-4 md:py-3.5 md:pr-6 md:pl-6">
-            {/* Over the edge of the title's button, which reaches out to it. */}
-            <HeaderMenuButton className="relative z-1 -mr-3" />
-            <div className="relative flex min-w-0 flex-1 items-center gap-3 md:gap-4">
-              <AgentOrb status={status} activity={s.activity} className="size-9 md:size-11" />
-              <div className="min-w-0 flex-1">
-                {session ? (
-                  <>
-                    <h1 className="flex items-center gap-0.5 font-display text-[16px] leading-5 font-medium tracking-[-0.011em] text-ink md:text-[21px] md:leading-tight md:tracking-[-0.012em]">
-                      <span className="truncate">{session.title}</span>
-                      <ChevronRight className="size-4 shrink-0 text-ink-4 md:hidden" />
-                    </h1>
-                    {/* Phones: the status, and what says most about it. */}
-                    <p className="mt-0.5 flex items-center gap-1.5 text-[12.5px] leading-4 md:hidden">
-                      <StatusPill status={session.status} label={reviewLabel(session)} className="shrink-0" />
-                      <span aria-hidden="true" className="text-ink-4">
-                        ·
-                      </span>
-                      {notes[0] ? (
-                        <span className={cn("truncate", notes[0].warn ? "text-amber" : "text-ink-3")}>
-                          {notes[0].text}
+        <div ref={header} className="sticky top-0 z-10">
+          <header className="border-b border-line bg-canvas/80 backdrop-blur-xl max-md:h-14">
+            {/* On phones as tall as the top bar, with the menu button where the bar has it. */}
+            <div className="flex h-full items-center gap-3 px-2.5 md:gap-4 md:py-3.5 md:pr-6 md:pl-6">
+              {/* Over the edge of the title's button, which reaches out to it. */}
+              <HeaderMenuButton className="relative z-1 -mr-3" />
+              <div className="relative flex min-w-0 flex-1 items-center gap-3 md:gap-4">
+                <AgentOrb status={status} activity={s.activity} className="size-9 md:size-11" />
+                <div className="min-w-0 flex-1">
+                  {session ? (
+                    <>
+                      <h1 className="flex items-center gap-0.5 font-display text-[16px] leading-5 font-medium tracking-[-0.011em] text-ink md:text-[21px] md:leading-tight md:tracking-[-0.012em]">
+                        <span className="truncate">{session.title}</span>
+                        <ChevronRight className="size-4 shrink-0 text-ink-4 md:hidden" />
+                      </h1>
+                      {/* Phones: the status, and what says most about it. */}
+                      <p className="mt-0.5 flex items-center gap-1.5 text-[12.5px] leading-4 md:hidden">
+                        <StatusPill
+                          status={session.status}
+                          label={reviewLabel(session)}
+                          className="shrink-0"
+                        />
+                        <span aria-hidden="true" className="text-ink-4">
+                          ·
                         </span>
-                      ) : (
-                        <span className="truncate font-mono text-[12px] text-ink-3">
-                          {session.project_slug}#{session.number}
-                        </span>
-                      )}
-                    </p>
-                    <div className="max-md:hidden">
-                      {session.description && (
-                        <p className="mt-0.5 truncate text-[13.5px] text-ink-2" title={session.description}>
-                          {session.description}
-                        </p>
-                      )}
-                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
-                        <span className="inline-flex min-w-0 items-center gap-1.5">
-                          {workspace && (
-                            <>
-                              <Link
-                                to="/w/$slug"
-                                params={{ slug: workspace.slug }}
-                                className="inline-flex min-w-0 items-center gap-1.5 text-ink-2 hover:text-ink"
-                              >
-                                <WorkspaceAvatar workspace={workspace} size={15} />
-                                <span className="max-w-[12rem] truncate">{workspace.name}</span>
-                              </Link>
-                              <span className="text-ink-4">/</span>
-                            </>
-                          )}
-                          <Link
-                            to="/p/$slug"
-                            params={{ slug: session.project_slug }}
-                            search={{ tab: undefined }}
-                            className="font-mono text-ink-2 hover:text-ink"
-                          >
+                        {notes[0] ? (
+                          <span className={cn("truncate", notes[0].warn ? "text-amber" : "text-ink-3")}>
+                            {notes[0].text}
+                          </span>
+                        ) : (
+                          <span className="truncate font-mono text-[12px] text-ink-3">
                             {session.project_slug}#{session.number}
-                          </Link>
-                        </span>
-                        <StatusPill status={session.status} label={reviewLabel(session)} />
-                        <ScheduleLink session={session} />
-                        <TicketLink session={session} />
-                        {/* A review agent only reads, and its footer says what fctl posts for it. */}
-                        {!session.review && <SessionGithub session={session} />}
-                        {statusReason(session) && (
-                          <span className="truncate text-ink-4">{statusReason(session)}</span>
-                        )}
-                        {session.resume_at && (
-                          <span className="text-amber">resumes in {until(session.resume_at)}</span>
-                        )}
-                        {session.branch && (
-                          <span className="inline-flex min-w-0 items-center gap-1 font-mono text-[12px] text-ink-3">
-                            <GitBranch className="size-3 shrink-0" />
-                            <span className="[overflow-wrap:anywhere]">{session.branch}</span>
                           </span>
                         )}
-                        {prs.length > 0 && (
-                          // Together, so that they wrap to the next line as one list.
-                          <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-                            {prs.map((pr) => (
-                              <a
-                                key={pr.url}
-                                href={pr.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                title={prTitle(pr)}
-                                aria-label={prLabel(pr)}
-                                className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
-                              >
-                                <PullRequestStateIcon pr={pr} className="size-3" />
-                                {prRef(pr)}
-                                <PullRequestChecksIcon pr={pr} className="size-3" />
-                              </a>
-                            ))}
-                          </span>
+                      </p>
+                      <div className="max-md:hidden">
+                        {session.description && (
+                          <p className="mt-0.5 truncate text-[13.5px] text-ink-2" title={session.description}>
+                            {session.description}
+                          </p>
                         )}
-                        {s.connection === "reconnecting" && <span className="text-amber">Reconnecting…</span>}
-                        {stall && <span className="text-amber">{stallLabel(stall)}</span>}
+                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
+                          <span className="inline-flex min-w-0 items-center gap-1.5">
+                            {workspace && (
+                              <>
+                                <Link
+                                  to="/w/$slug"
+                                  params={{ slug: workspace.slug }}
+                                  className="inline-flex min-w-0 items-center gap-1.5 text-ink-2 hover:text-ink"
+                                >
+                                  <WorkspaceAvatar workspace={workspace} size={15} />
+                                  <span className="max-w-[12rem] truncate">{workspace.name}</span>
+                                </Link>
+                                <span className="text-ink-4">/</span>
+                              </>
+                            )}
+                            <Link
+                              to="/p/$slug"
+                              params={{ slug: session.project_slug }}
+                              search={{ tab: undefined }}
+                              className="font-mono text-ink-2 hover:text-ink"
+                            >
+                              {session.project_slug}#{session.number}
+                            </Link>
+                          </span>
+                          <StatusPill status={session.status} label={reviewLabel(session)} />
+                          <ScheduleLink session={session} />
+                          <TicketLink session={session} />
+                          {/* A review agent only reads, and its footer says what fctl posts for it. */}
+                          {!session.review && <SessionGithub session={session} />}
+                          {statusReason(session) && (
+                            <span className="truncate text-ink-4">{statusReason(session)}</span>
+                          )}
+                          {session.resume_at && (
+                            <span className="text-amber">resumes in {until(session.resume_at)}</span>
+                          )}
+                          {session.branch && (
+                            <span className="inline-flex min-w-0 items-center gap-1 font-mono text-[12px] text-ink-3">
+                              <GitBranch className="size-3 shrink-0" />
+                              <span className="[overflow-wrap:anywhere]">{session.branch}</span>
+                            </span>
+                          )}
+                          {prs.length > 0 && (
+                            // Together, so that they wrap to the next line as one list.
+                            <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+                              {prs.map((pr) => (
+                                <a
+                                  key={pr.url}
+                                  href={pr.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={prTitle(pr)}
+                                  aria-label={prLabel(pr)}
+                                  className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
+                                >
+                                  <PullRequestStateIcon pr={pr} className="size-3" />
+                                  {prRef(pr)}
+                                  <PullRequestChecksIcon pr={pr} className="size-3" />
+                                </a>
+                              ))}
+                            </span>
+                          )}
+                          {s.connection === "reconnecting" && (
+                            <span className="text-amber">Reconnecting…</span>
+                          )}
+                          {stall && <span className="text-amber">{stallLabel(stall)}</span>}
+                        </div>
                       </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <Skeleton className="h-5 w-40 md:h-6 md:w-80" />
-                    <Skeleton className="mt-1.5 h-3.5 w-24 md:mt-2 md:w-56" />
-                  </>
+                    </>
+                  ) : (
+                    <>
+                      <Skeleton className="h-5 w-40 md:h-6 md:w-80" />
+                      <Skeleton className="mt-1.5 h-3.5 w-24 md:mt-2 md:w-56" />
+                    </>
+                  )}
+                </div>
+                {session && (
+                  // Over the orb and the title, which are what people tap.
+                  <button
+                    type="button"
+                    aria-label="Details"
+                    aria-haspopup="dialog"
+                    aria-expanded={details}
+                    onClick={() => setDetails(true)}
+                    className="absolute -inset-x-1.5 -inset-y-1 rounded-xl transition-colors duration-150 hover:bg-hover active:bg-hover md:hidden"
+                  />
                 )}
               </div>
-              {session && (
-                // Over the orb and the title, which are what people tap.
-                <button
-                  type="button"
-                  aria-label="Details"
-                  aria-haspopup="dialog"
-                  aria-expanded={details}
-                  onClick={() => setDetails(true)}
-                  className="absolute -inset-x-1.5 -inset-y-1 rounded-xl transition-colors duration-150 hover:bg-hover active:bg-hover md:hidden"
-                />
-              )}
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              {s.viewers.length > 1 && (
-                // On phones the details list who watches.
-                <span className="hidden md:contents">
-                  <AvatarStack users={s.viewers.map((v) => v.user)} />
-                </span>
-              )}
-              {claudeUrl && (
-                <a
-                  {...claudeAppLink(claudeUrl)}
-                  className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 md:inline-flex"
-                >
-                  Open in Claude <ArrowUpRight className="size-3.5" />
-                </a>
-              )}
-              {session && (
-                // On phones it is in the menu, where the title keeps its room.
-                <span className="hidden md:contents">
-                  <IconButton
-                    label={
-                      following
-                        ? "Following: you get its notifications. Click to stop."
-                        : "Follow: get a notification when it waits for you, pauses or fails"
-                    }
-                    aria-pressed={following}
-                    onClick={() => follow.mutate()}
-                    disabled={follow.isPending}
-                    className={cn(following && "bg-accent-soft")}
+              <div className="flex shrink-0 items-center gap-1.5">
+                {s.viewers.length > 1 && (
+                  // On phones the details list who watches.
+                  <span className="hidden md:contents">
+                    <AvatarStack users={s.viewers.map((v) => v.user)} />
+                  </span>
+                )}
+                {claudeUrl && (
+                  <a
+                    {...claudeAppLink(claudeUrl)}
+                    className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 md:inline-flex"
                   >
-                    {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
+                    Open in Claude <ArrowUpRight className="size-3.5" />
+                  </a>
+                )}
+                {session && (
+                  // On phones it is in the menu, where the title keeps its room.
+                  <IconButton
+                    label={`Find in this session (${findShortcut()})`}
+                    aria-expanded={finder.open}
+                    onClick={finder.show}
+                    className={cn("max-md:hidden", finder.open && "text-ink")}
+                  >
+                    <Search className="size-4" />
                   </IconButton>
-                </span>
-              )}
-              {isOwner && (
-                // Also in the menu on phones (`hidden` would lose to IconButton's `inline-flex`).
-                <IconButton label="Share" onClick={() => setShare(true)} className="max-md:hidden">
-                  <Share2 className="size-4" />
-                </IconButton>
-              )}
-              {/* The rail where it fits. */}
-              <IconButton
-                label="Details"
-                onClick={() => setRail(!rail)}
-                className={cn("max-lg:hidden", rail && "text-ink")}
-              >
-                <PanelRight className="size-4" />
-              </IconButton>
-              {session && (
-                // Narrower, the details sheet: on phones the title opens it.
+                )}
+                {session && (
+                  // On phones it is in the menu, where the title keeps its room.
+                  <span className="hidden md:contents">
+                    <IconButton
+                      label={
+                        following
+                          ? "Following: you get its notifications. Click to stop."
+                          : "Follow: get a notification when it waits for you, pauses or fails"
+                      }
+                      aria-pressed={following}
+                      onClick={() => follow.mutate()}
+                      disabled={follow.isPending}
+                      className={cn(following && "bg-accent-soft")}
+                    >
+                      {following ? <BellRing className="size-4 text-accent" /> : <Bell className="size-4" />}
+                    </IconButton>
+                  </span>
+                )}
+                {isOwner && (
+                  // Also in the menu on phones (`hidden` would lose to IconButton's `inline-flex`).
+                  <IconButton label="Share" onClick={() => setShare(true)} className="max-md:hidden">
+                    <Share2 className="size-4" />
+                  </IconButton>
+                )}
+                {/* The rail where it fits. */}
                 <IconButton
                   label="Details"
-                  aria-haspopup="dialog"
-                  aria-expanded={details}
-                  onClick={() => setDetails(true)}
-                  className="max-md:hidden lg:hidden"
+                  onClick={() => setRail(!rail)}
+                  className={cn("max-lg:hidden", rail && "text-ink")}
                 >
                   <PanelRight className="size-4" />
                 </IconButton>
-              )}
-              <Menu
-                trigger={(toggle, open) => (
+                {session && (
+                  // Narrower, the details sheet: on phones the title opens it.
                   <IconButton
-                    label="More"
-                    aria-haspopup="menu"
-                    aria-expanded={open}
-                    onClick={toggle}
-                    className="max-md:size-11"
+                    label="Details"
+                    aria-haspopup="dialog"
+                    aria-expanded={details}
+                    onClick={() => setDetails(true)}
+                    className="max-md:hidden lg:hidden"
                   >
-                    <Ellipsis className="size-5 md:size-4" />
+                    <PanelRight className="size-4" />
                   </IconButton>
                 )}
-              >
-                {(close) => (
-                  <>
-                    {claudeUrl && (
-                      <>
-                        {/* The header has no room for the button on phones. */}
+                <Menu
+                  trigger={(toggle, open) => (
+                    <IconButton
+                      label="More"
+                      aria-haspopup="menu"
+                      aria-expanded={open}
+                      onClick={toggle}
+                      className="max-md:size-11"
+                    >
+                      <Ellipsis className="size-5 md:size-4" />
+                    </IconButton>
+                  )}
+                >
+                  {(close) => (
+                    <>
+                      {claudeUrl && (
+                        <>
+                          {/* The header has no room for the button on phones. */}
+                          <MenuItem
+                            icon={<ArrowUpRight />}
+                            link={claudeAppLink(claudeUrl)}
+                            onClick={close}
+                            className="md:hidden"
+                          >
+                            Open in Claude
+                          </MenuItem>
+                          <MenuItem
+                            icon={<Globe />}
+                            link={{ href: claudeUrl, target: "_blank", rel: "noreferrer" }}
+                            onClick={close}
+                          >
+                            Open on claude.ai
+                          </MenuItem>
+                        </>
+                      )}
+                      {isOwner && status && !["stopped", "failed"].includes(status) && (
                         <MenuItem
-                          icon={<ArrowUpRight />}
-                          link={claudeAppLink(claudeUrl)}
-                          onClick={close}
+                          icon={<Square />}
+                          onClick={() => {
+                            close();
+                            stop.mutate();
+                          }}
+                        >
+                          {session?.review ? "Stop the review" : "Stop the session"}
+                        </MenuItem>
+                      )}
+                      {isOwner && !session?.review && (status === "stopped" || status === "failed") && (
+                        <MenuItem
+                          icon={<Play />}
+                          onClick={() => {
+                            close();
+                            resume.mutate(undefined);
+                          }}
+                        >
+                          Resume
+                        </MenuItem>
+                      )}
+                      {session && (
+                        // The header has no room for its button on phones.
+                        <MenuItem
+                          icon={<Search />}
+                          onClick={() => {
+                            close();
+                            finder.show();
+                          }}
                           className="md:hidden"
                         >
-                          Open in Claude
+                          Find in this session
                         </MenuItem>
+                      )}
+                      {session && (
                         <MenuItem
-                          icon={<Globe />}
-                          link={{ href: claudeUrl, target: "_blank", rel: "noreferrer" }}
-                          onClick={close}
+                          icon={following ? <BellOff /> : <Bell />}
+                          onClick={() => {
+                            close();
+                            follow.mutate();
+                          }}
                         >
-                          Open on claude.ai
+                          {following ? "Stop following" : "Follow"}
                         </MenuItem>
-                      </>
-                    )}
-                    {isOwner && status && !["stopped", "failed"].includes(status) && (
+                      )}
+                      {isOwner && (
+                        // The header has no room for its button on phones.
+                        <MenuItem
+                          icon={<Share2 />}
+                          onClick={() => {
+                            close();
+                            setShare(true);
+                          }}
+                          className="md:hidden"
+                        >
+                          Share
+                        </MenuItem>
+                      )}
                       <MenuItem
-                        icon={<Square />}
+                        icon={<Terminal />}
                         onClick={() => {
                           close();
-                          stop.mutate();
+                          void navigator.clipboard.writeText(`fctl attach ${id}`);
+                          toast("Copied `fctl attach` command");
                         }}
                       >
-                        {session?.review ? "Stop the review" : "Stop the session"}
+                        Copy `fctl attach`
                       </MenuItem>
-                    )}
-                    {isOwner && !session?.review && (status === "stopped" || status === "failed") && (
                       <MenuItem
-                        icon={<Play />}
+                        icon={<ExternalLink />}
                         onClick={() => {
                           close();
-                          resume.mutate(undefined);
+                          void navigator.clipboard.writeText(location.href);
+                          toast("Link copied");
                         }}
                       >
-                        Resume
+                        Copy link
                       </MenuItem>
-                    )}
-                    {session && (
-                      <MenuItem
-                        icon={following ? <BellOff /> : <Bell />}
-                        onClick={() => {
-                          close();
-                          follow.mutate();
-                        }}
-                      >
-                        {following ? "Stop following" : "Follow"}
-                      </MenuItem>
-                    )}
-                    {isOwner && (
-                      // The header has no room for its button on phones.
-                      <MenuItem
-                        icon={<Share2 />}
-                        onClick={() => {
-                          close();
-                          setShare(true);
-                        }}
-                        className="md:hidden"
-                      >
-                        Share
-                      </MenuItem>
-                    )}
-                    <MenuItem
-                      icon={<Terminal />}
-                      onClick={() => {
-                        close();
-                        void navigator.clipboard.writeText(`fctl attach ${id}`);
-                        toast("Copied `fctl attach` command");
-                      }}
-                    >
-                      Copy `fctl attach`
-                    </MenuItem>
-                    <MenuItem
-                      icon={<ExternalLink />}
-                      onClick={() => {
-                        close();
-                        void navigator.clipboard.writeText(location.href);
-                        toast("Link copied");
-                      }}
-                    >
-                      Copy link
-                    </MenuItem>
-                  </>
-                )}
-              </Menu>
+                    </>
+                  )}
+                </Menu>
+              </div>
             </div>
-          </div>
-        </header>
+          </header>
+          {/* Finding in the transcript: under the header, over the page, which stays where it is. */}
+          {finder.open && (
+            <div className="absolute inset-x-0 top-full border-b border-line bg-canvas/85 backdrop-blur-xl">
+              <div className="mx-auto w-full max-w-[760px] px-2.5 py-2 md:px-6 md:py-2.5">
+                <FindBar {...finder.bar} />
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Transcript */}
         <div ref={transcript} className="mx-auto w-full max-w-[760px] flex-1 px-6 pt-6 pb-4">
@@ -465,26 +531,31 @@ export function SessionPage() {
               <Skeleton className="h-24 w-full" />
             </div>
           ) : (
-            <Transcript
-              sessionId={id}
-              items={s.items}
-              live={s.live}
-              status={status}
-              stall={stall}
-              canManage={isOwner}
-              startedBy={session.created_by}
-              me={me?.user.id}
-              projectSlug={session.project_slug}
-              onLoadOlder={() => void store.loadOlder()}
-              hasMoreBefore={s.hasMoreBefore}
-              loadingOlder={s.loadingOlder}
-              olderFailed={s.olderFailed}
-            />
+            <Reveal.Provider value={finder.reveal}>
+              <Transcript
+                sessionId={id}
+                items={s.items}
+                live={s.live}
+                status={status}
+                stall={stall}
+                canManage={isOwner}
+                startedBy={session.created_by}
+                me={me?.user.id}
+                projectSlug={session.project_slug}
+                onLoadOlder={() => void store.loadOlder()}
+                hasMoreBefore={s.hasMoreBefore}
+                loadingOlder={s.loadingOlder}
+                olderFailed={s.olderFailed}
+              />
+            </Reveal.Provider>
           )}
         </div>
 
         {/* Composer: a review agent takes no messages, and says what becomes of its review instead. */}
-        <div className="sticky bottom-0 z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+        <div
+          ref={footer}
+          className="sticky bottom-0 z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-[max(1.25rem,env(safe-area-inset-bottom))]"
+        >
           <div className="mx-auto w-full max-w-[760px] px-6">
             {session?.review ? (
               <ReviewFooter session={session} review={review} />

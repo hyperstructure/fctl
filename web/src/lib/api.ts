@@ -291,6 +291,14 @@ export const api = {
     return request<G.SessionList>("GET", `/sessions?${p}`);
   },
   session: (id: string) => request<G.Session>("GET", `/sessions/${enc(id)}`),
+  /** The sessions whose title, description, people's messages or agent's replies say `q`. */
+  search: (q: string, o: { workspace?: string; project?: string; limit?: number } = {}) => {
+    const p = new URLSearchParams({ q });
+    if (o.workspace) p.set("workspace", o.workspace);
+    if (o.project) p.set("project", o.project);
+    if (o.limit) p.set("limit", String(o.limit));
+    return request<G.SearchResults>("GET", `/search?${p}`);
+  },
   createSession: (project: string, b: G.CreateSessionRequest) =>
     request<G.Session>("POST", `/projects/${enc(project)}/sessions`, b),
   updateSession: (id: string, b: G.UpdateSessionRequest) =>

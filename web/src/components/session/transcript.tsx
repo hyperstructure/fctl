@@ -20,7 +20,7 @@ import {
   TriangleAlert,
   Unplug,
 } from "lucide-react";
-import { type MouseEvent, memo, useId, useMemo, useRef, useState } from "react";
+import { type MouseEvent, memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ImageSizes, Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
 import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
@@ -50,8 +50,9 @@ import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
 import { callsIn, lastRun, parts } from "@/lib/runs";
 import { splitRunNote } from "@/lib/schedules";
 import { type Stall, stallText } from "@/lib/stall";
-import type { Item, LiveTurn } from "@/lib/transcript";
+import { findingsBefore, type Item, type LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
+import { useRevealed } from "./find";
 import { FindingsMessage } from "./findings";
 import { FollowUpMessage, HeldFollowUp } from "./follow-up";
 import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
@@ -70,10 +71,20 @@ const UserMessage = memo(function UserMessage({
   const files = item.attachments ?? [];
   // A schedule's run: its task, then what fctl told the agent about the run.
   const { task, note } = useMemo(() => splitRunNote(item.text), [item.text]);
-  if (item.followUp) return <FollowUpMessage followUp={item.followUp} text={item.text} ts={item.ts} />;
+  if (item.followUp)
+    return <FollowUpMessage followUp={item.followUp} text={item.text} ts={item.ts} findKey={item.key} />;
   if (item.ticket)
-    return <TicketMessageView message={item.ticket} author={author} text={item.text} ts={item.ts} />;
-  if (item.review) return <FindingsMessage review={item.review} text={item.text} ts={item.ts} />;
+    return (
+      <TicketMessageView
+        message={item.ticket}
+        author={author}
+        text={item.text}
+        ts={item.ts}
+        findKey={item.key}
+      />
+    );
+  if (item.review)
+    return <FindingsMessage review={item.review} text={item.text} ts={item.ts} findKey={item.key} />;
   return (
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
       <div className="mb-1.5 flex items-center gap-2.5 text-[12.5px]">
@@ -90,9 +101,9 @@ const UserMessage = memo(function UserMessage({
       {item.text && (
         <div className="ml-[34px] rounded-xl rounded-tl-sm border border-line bg-raised/50 px-4 py-2.5 text-[14.5px] leading-[1.6] whitespace-pre-wrap wrap-anywhere text-ink">
           {findingsBefore(item) ? (
-            <LongText text={item.text} />
+            <LongText text={item.text} findKey={item.key} />
           ) : (
-            <>
+            <div data-find={`msg:${item.key}`}>
               {task}
               {note && (
                 <p className="mt-2.5 flex gap-2 border-t border-line pt-2.5 text-[12.5px] leading-relaxed text-ink-3">
@@ -100,7 +111,7 @@ const UserMessage = memo(function UserMessage({
                   <span className="min-w-0">{note}</span>
                 </p>
               )}
-            </>
+            </div>
           )}
         </div>
       )}
@@ -113,20 +124,14 @@ const UserMessage = memo(function UserMessage({
   );
 });
 
-/**
- * Whether a message is one from fctl that passed a review's findings on before such messages
- * carried the review (`UserMessage.review`): it starts as fctl_domain::reviews::passed_on writes it.
- */
-const findingsBefore = (item: Extract<Item, { kind: "user" }>) =>
-  item.source === "system" && item.text.startsWith("fctl's review agent reviewed commit ");
-
-/** A long message from fctl: its first lines, with the rest a click away. */
-function LongText({ text }: { text: string }) {
+/** A long message from fctl: its first lines, with the rest a click away, or where finding gets to. */
+function LongText({ text, findKey }: { text: string; findKey: string }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  useRevealed(`long:${findKey}`, () => setOpen(true));
   return (
     <>
-      <div id={id} className={cn(!open && "line-clamp-5")}>
+      <div id={id} data-find={`msg:${findKey}`} className={cn(!open && "line-clamp-5")}>
         {text}
       </div>
       <button
@@ -151,10 +156,13 @@ function MemoryNotice({
   memory,
   stale,
   projectSlug,
+  findKey,
 }: {
   memory: G.Memory;
   stale: boolean;
   projectSlug?: string;
+  /** The notice's key in the transcript, which finding in it knows the note by. */
+  findKey: string;
 }) {
   const duplicateOf = stale ? memory.stale?.duplicate_of : undefined;
   return (
@@ -175,7 +183,9 @@ function MemoryNotice({
         )}
       </Milestone>
       <Thread className={cn("text-[13.5px]", stale ? "text-ink-3" : "text-ink-2")}>
-        <Markdown text={memory.text} className="prose-note" />
+        <div data-find={`memory:${findKey}`}>
+          <Markdown text={memory.text} className="prose-note" />
+        </div>
         {stale && (memory.stale?.replaced_by || duplicateOf || memory.stale?.reason) && (
           <p className="mt-1 text-[12.5px] text-ink-4 [overflow-wrap:anywhere]">
             {memory.stale?.replaced_by ? (
@@ -211,7 +221,7 @@ function MemoryNotice({
  * A retrospective the agent recorded as it finished a piece of work, or
  * updated as a later turn carried on with it: as it was then.
  */
-function RetrospectiveNotice({ r }: { r: G.Retrospective }) {
+function RetrospectiveNotice({ r, findKey }: { r: G.Retrospective; findKey: string }) {
   return (
     <div className="my-2 animate-rise rounded-xl border border-line bg-raised/30 px-4 py-3.5">
       <div className="mb-3 flex items-center gap-2 text-[12.5px] text-ink-3">
@@ -219,7 +229,7 @@ function RetrospectiveNotice({ r }: { r: G.Retrospective }) {
         <span>{r.updated_at ? "Retrospective updated" : "Retrospective"}</span>
         <OutcomeBadge outcome={r.outcome} />
       </div>
-      <RetrospectiveParts r={r} wide />
+      <RetrospectiveParts r={r} wide findKey={findKey} />
     </div>
   );
 }
@@ -460,6 +470,10 @@ function GitItem({ git, repos }: { git: G.GitState; repos: (string | undefined)[
   ));
 }
 
+/** Why the session stopped, paused or queued, as finding in the transcript knows it. */
+const reason = (item: Extract<Item, { kind: "status" }>) =>
+  item.reason ? <span data-find={`status:${item.key}`}>{item.reason}</span> : undefined;
+
 const ItemView = memo(function ItemView({
   item,
   seconds,
@@ -493,7 +507,7 @@ const ItemView = memo(function ItemView({
       return <UserMessage item={item} sessionId={sessionId} />;
     case "prose":
       return (
-        <div className="animate-fade py-2">
+        <div data-find={`prose:${item.key}`} className="animate-fade py-2">
           <Markdown text={item.text} />
         </div>
       );
@@ -514,24 +528,25 @@ const ItemView = memo(function ItemView({
     case "status":
       return item.status === "failed" ? (
         <Milestone icon={<CircleAlert />} tone="error">
-          Failed{item.reason ? ` — ${item.reason}` : ""}
+          Failed{item.reason && <> — {reason(item)}</>}
         </Milestone>
       ) : item.status === "paused" ? (
         <Milestone icon={<Hourglass />} tone="warn">
-          {item.reason ?? "Paused"}
+          {reason(item) ?? "Paused"}
           {item.resumeAt ? ` · resumes in ${until(item.resumeAt)}` : ""}
         </Milestone>
       ) : item.status === "queued" ? (
-        <Milestone icon={<Hourglass />}>{item.reason ?? "Queued"}</Milestone>
+        <Milestone icon={<Hourglass />}>{reason(item) ?? "Queued"}</Milestone>
       ) : (
-        <Milestone icon={<CircleStop />}>{item.reason ?? "Stopped"}</Milestone>
+        <Milestone icon={<CircleStop />}>{reason(item) ?? "Stopped"}</Milestone>
       );
     case "logs":
       return <Logs lines={item.lines} />;
     case "notice":
       if (item.notice.published && shown(item.notice.published))
         return <PublishedShot file={item.notice.published} canManage={canManage} />;
-      if (item.notice.retrospective) return <RetrospectiveNotice r={item.notice.retrospective} />;
+      if (item.notice.retrospective)
+        return <RetrospectiveNotice r={item.notice.retrospective} findKey={item.key} />;
       if (item.notice.review) return <ReviewPostedNotice posted={item.notice.review} />;
       if (item.notice.follow_up) return <HeldFollowUp followUp={item.notice.follow_up} ts={item.ts} />;
       if (item.notice.ticket) return <TicketNoticeView notice={item.notice.ticket} code={item.notice.code} />;
@@ -541,6 +556,7 @@ const ItemView = memo(function ItemView({
             memory={item.notice.memory}
             stale={item.notice.code === "memory_stale"}
             projectSlug={projectSlug}
+            findKey={item.key}
           />
         );
       return (
@@ -556,7 +572,7 @@ const ItemView = memo(function ItemView({
           }
           tone={item.notice.level === "error" ? "error" : item.notice.level === "warn" ? "warn" : "info"}
         >
-          {item.notice.message}
+          <span data-find={`notice:${item.key}`}>{item.notice.message}</span>
           {item.notice.until ? ` (until ${clock(item.notice.until)})` : ""}
         </Milestone>
       );
@@ -765,8 +781,12 @@ export const Transcript = memo(function Transcript({
   // session waits for them, until they end or the session stops.
   const up = (status === "running" || status === "idle") && !stall;
   const list = useRef<HTMLDivElement>(null);
-  // Earlier activity goes in above the reader, who stays where they are.
+  // Earlier activity goes in above the reader, who stays where they are:
+  // what scrolling up asks for, and what finding in the transcript loads.
   const keepPlace = useKeepPlace(list, loadingOlder);
+  useLayoutEffect(() => {
+    if (loadingOlder) keepPlace();
+  }, [loadingOlder, keepPlace]);
   // The screenshots the agent published, which its answers show: they take
   // their room before they load. A new map only when it publishes another.
   const shots = items.flatMap((it) =>
@@ -794,7 +814,7 @@ export const Transcript = memo(function Transcript({
           )}
           <WorkDir value={cwd}>
             {ps.map((p) => (
-              <div key={p.key} data-item>
+              <div key={p.key} data-item data-part={p.key}>
                 <Unreadable>
                   {p.kind === "run" ? (
                     <Run

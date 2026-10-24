@@ -73,12 +73,15 @@ export function RetrospectiveParts({
   wide,
   remember,
   className,
+  findKey,
 }: {
   r: G.Retrospective;
   wide?: boolean;
   /** The project to remember insights in, for people who may edit its memory. */
   remember?: G.Project;
   className?: string;
+  /** In a transcript: the notice's key, which finding in it knows the parts by. */
+  findKey?: string;
 }) {
   const [noting, setNoting] = useState(false);
   return (
@@ -94,7 +97,9 @@ export function RetrospectiveParts({
         <div key={p.key} className={wide ? "block sm:contents" : "block"}>
           <dt className={cn("text-[12px] font-medium text-ink-3", wide && "sm:pt-[3px]")}>{p.label}</dt>
           <dd className={cn("mt-0.5 min-w-0 text-ink-2 [overflow-wrap:anywhere]", wide && "sm:mt-0")}>
-            <Markdown text={p.text} className="prose-note" />
+            <div data-find={findKey && `retro:${findKey}:${p.key}`}>
+              <Markdown text={p.text} className="prose-note" />
+            </div>
             {p.key === "insights" && remember && (
               <button
                 type="button"

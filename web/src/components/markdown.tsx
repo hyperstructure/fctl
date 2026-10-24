@@ -175,7 +175,11 @@ export const CodeBlock = memo(function CodeBlock({
         <CopyButton text={code} />
       </div>
       {lang && lang !== "text" && (
-        <span className="absolute top-2 right-3 font-sans text-[10.5px] tracking-wide text-ink-4 uppercase group-hover/code:opacity-0">
+        // Not the code's text: finding in the transcript passes over it.
+        <span
+          data-find-skip=""
+          className="absolute top-2 right-3 font-sans text-[10.5px] tracking-wide text-ink-4 uppercase group-hover/code:opacity-0"
+        >
           {lang}
         </span>
       )}
