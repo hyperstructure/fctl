@@ -325,10 +325,14 @@ Dependabot opens security updates, and no version updates
 (`.github/dependabot.yml`). It opens them from the root, where
 `package-lock.json` and `Cargo.lock` are, and titles them as Conventional
 Commits (`build(deps): bump …`, `ci(deps): bump …` for the workflows'
-actions), so they pass these checks like any other pull request. GitHub
-also raises an alert for `web/package.json`, `deploy/standalone/package.json`
-and the crates' own `Cargo.toml` files, but Dependabot would update those
-without the lockfile, so their directories open none.
+actions), so they pass these checks like any other pull request. A title
+that a long package name and its versions take past 72 characters
+(`build(deps): bump @cloudflare/workerd-linux-64 from …`) fails the
+Conventional Commits check: shorten it on the pull request, which reruns
+the check. GitHub also raises an alert for `web/package.json`,
+`deploy/standalone/package.json` and the crates' own `Cargo.toml` files,
+but Dependabot would update those without the lockfile, so their
+directories open none.
 
 ## Repository map
 

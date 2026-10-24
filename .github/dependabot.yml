@@ -2,7 +2,9 @@
 # on, and `open-pull-requests-limit: 0` keeps version updates off (each entry
 # still needs a schedule). This file shapes those pull requests. Their titles
 # become commits on main, so they are Conventional Commits that `xtask
-# lint-commit` takes: `build(deps): bump …`, `ci(deps): bump …`.
+# lint-commit` takes: `build(deps): bump …`, `ci(deps): bump …`. One that a
+# long package name and its versions take past 72 characters fails it all the
+# same: shorten it on the pull request.
 #
 # GitHub raises an alert, and opens a pull request, for each manifest that
 # holds a vulnerable version. The JavaScript is one npm workspace with one
