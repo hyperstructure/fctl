@@ -315,7 +315,10 @@ pub async fn member(
     .await
 }
 
-/// The statement that makes `user_id` a member, as `email`.
+/// The statement that makes `user_id` a member, as `email`, while they are
+/// in fewer than `limit` workspaces (`None`: any number,
+/// [`policy::workspace_limit`]).
+#[allow(clippy::too_many_arguments)]
 pub fn add_member(
     db: &D1Database,
     workspace_id: &str,
@@ -323,6 +326,7 @@ pub fn add_member(
     email: &str,
     role: WorkspaceRole,
     added_by: Option<&str>,
+    limit: Option<usize>,
     now: i64,
 ) -> AppResult<Query> {
     // Within the limit when it runs, not only when it was checked: two
@@ -331,7 +335,7 @@ pub fn add_member(
         db,
         "INSERT INTO workspace_members (workspace_id, user_id, email, role, added_by, created_at) \
          SELECT ?1, ?2, ?3, ?4, ?5, ?6 \
-         WHERE (SELECT COUNT(*) FROM workspace_members WHERE user_id = ?2) < ?7 \
+         WHERE (?7 IS NULL OR (SELECT COUNT(*) FROM workspace_members WHERE user_id = ?2) < ?7) \
          AND EXISTS (SELECT 1 FROM workspaces WHERE id = ?1) \
          ON CONFLICT (workspace_id, user_id) DO NOTHING",
         &[
@@ -341,7 +345,7 @@ pub fn add_member(
             s(role.as_str()),
             os(added_by),
             n(now),
-            n(policy::MAX_WORKSPACES as i64),
+            on(limit.map(|l| l as i64)),
         ],
     )
 }
@@ -459,7 +463,8 @@ pub async fn join(
         .await?;
         return Ok(false);
     }
-    policy::check_limit(membership_count(db, &user.id).await?)?;
+    let limit = policy::workspace_limit(user.role());
+    policy::check_limit(membership_count(db, &user.id).await?, limit)?;
     if user.blocked_by(settings, invitation.require_two_factor) {
         return Err(AppError(ApiError::new(
             ErrorCode::Forbidden,
@@ -479,6 +484,7 @@ pub async fn join(
                 &invitation.email,
                 invitation.role(),
                 invitation.invited_by.as_deref(),
+                limit,
                 now,
             )?,
             // Once they are in: this invitation, and those of their other
@@ -498,7 +504,7 @@ pub async fn join(
         .is_none()
     {
         // They joined another one in the meantime, or it was deleted.
-        policy::check_limit(membership_count(db, &user.id).await?)?;
+        policy::check_limit(membership_count(db, &user.id).await?, limit)?;
         return Err(not_found("Workspace"));
     }
     Ok(true)

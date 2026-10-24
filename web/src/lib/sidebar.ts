@@ -25,10 +25,9 @@ export type SidebarProject = Pick<G.Project, "id" | "slug" | "name" | "active_se
 export type SidebarInvitation = Pick<G.WorkspaceInvitation, "id" | "workspace">;
 
 /** Your workspaces, the invitations waiting for you, and how many workspaces you may be in. */
-export interface SidebarWorkspaces {
+export interface SidebarWorkspaces extends Pick<G.WorkspaceList, "limit" | "unlimited"> {
   workspaces: SidebarWorkspace[];
   invitations: SidebarInvitation[];
-  limit: number;
 }
 
 /** What the sidebar shows. */
@@ -63,6 +62,7 @@ export function keepSidebar(user: string, workspaces: G.WorkspaceList, projects:
       workspaces: workspaces.workspaces.map((w) => ({ ...ref(w), role: w.role, blocked: w.blocked })),
       invitations: workspaces.invitations.map((i) => ({ id: i.id, workspace: ref(i.workspace) })),
       limit: workspaces.limit,
+      unlimited: workspaces.unlimited,
     },
     projects: projects.projects.map((p) => ({
       id: p.id,
@@ -150,9 +150,11 @@ export function keptSidebar(user: string): Omit<SidebarLists, "kept"> | undefine
   const workspaces = readAll(d.workspaces.workspaces, readWorkspace);
   const invitations = readAll(d.workspaces.invitations, readInvitation);
   const projects = readAll(d.projects, readProject);
-  const { limit } = d.workspaces;
+  const { limit, unlimited } = d.workspaces;
   if (!workspaces || !invitations || !projects || typeof limit !== "number") return;
-  return { workspaces: { workspaces, invitations, limit }, projects };
+  // Absent from lists kept before the primary instance owner could be in any number.
+  if (unlimited !== undefined && typeof unlimited !== "boolean") return;
+  return { workspaces: { workspaces, invitations, limit, unlimited }, projects };
 }
 
 /**

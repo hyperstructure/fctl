@@ -417,8 +417,12 @@ their sessions run on and the GitHub accounts their projects use
 It has a name, an address (`/w/<slug>`), a color and an avatar image (at most
 256 KB, which the web app makes 256 px square; `GET
 /api/v1/workspaces/{id}/avatar`, at a URL that changes with it). Someone can
-be in at most five (`fctl_domain::workspace::MAX_WORKSPACES`), and anyone on
-the instance creates one, as its primary admin.
+be in at most five (`fctl_domain::workspace::MAX_WORKSPACES`), and the
+primary instance owner in any number (`workspace_limit`,
+[ADR 0058](adr/0058-the-primary-instance-owner-can-be-in-any-number-of-workspaces.md)):
+admins are held to five as members are, and an owner who hands the role
+over keeps every workspace they are in but joins no more while they are in
+five or more. Anyone on the instance creates one, as its primary admin.
 
 - **Who sees what.** Every project belongs to one workspace, and only its
   members see it (`fctl_domain::workspace::project_role`): its admins own

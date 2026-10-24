@@ -1,6 +1,6 @@
 # 0024: Workspaces hold people, projects, runners and GitHub accounts
 
-2026-10-19 · accepted
+2026-10-19 · accepted · the primary instance owner can be in any number of workspaces since [0058](0058-the-primary-instance-owner-can-be-in-any-number-of-workspaces.md)
 
 ## Context
 

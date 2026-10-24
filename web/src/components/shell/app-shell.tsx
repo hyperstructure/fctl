@@ -54,6 +54,7 @@ import {
   groupProjects,
   reorderProjects,
   reorderWorkspaces,
+  roomForAnother,
   useFactorsWatch,
   useFolded,
 } from "@/lib/workspaces";
@@ -308,7 +309,7 @@ export function Sidebar({
         <p id={ORDER_HELP} hidden>
           Drag to move it, or press Alt or Option with the up or down arrow.
         </p>
-        {workspaces && workspaces.workspaces.length < workspaces.limit && (
+        {workspaces && roomForAnother(workspaces) && (
           <Link
             to="/w/new"
             onClick={onNavigate}

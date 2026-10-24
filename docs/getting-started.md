@@ -76,9 +76,10 @@ shows on your Agent Floor, where you join it; or choose **New workspace** in
 the sidebar (`fctl workspaces create "Side project"`) and be its primary
 admin. Each workspace has its own people, admins, runners, GitHub accounts
 and audit log, and can require two-factor sign-in of its members. You can be
-in up to five. Until a new workspace has them, its page asks its admins for
-people, a runner, a GitHub account and a project; in a workspace for one,
-**Skip for now** leaves out the people. Drag workspaces, and the projects
+in up to five, and the primary instance owner in any number. Until a new
+workspace has them, its page asks its admins for people, a runner, a GitHub
+account and a project; in a workspace for one, **Skip for now** leaves out
+the people. Drag workspaces, and the projects
 in each, into the order you want in the sidebar (Alt or Option with ↑ or
 ↓ moves the focused one): the order follows you to your other devices and
 to `fctl workspaces` and `fctl projects list`.

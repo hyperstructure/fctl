@@ -7,6 +7,12 @@ import type { WorkspaceInvitation } from "./WorkspaceInvitation";
  */
 export type WorkspaceList = { workspaces: Array<Workspace>, invitations: Array<WorkspaceInvitation>, 
 /**
- * The most workspaces one person can be a member of.
+ * The most workspaces one person can be a member of, but the primary
+ * instance owner.
  */
-limit: number, };
+limit: number, 
+/**
+ * You can be in any number of workspaces, more than `limit`: you are
+ * the primary instance owner.
+ */
+unlimited?: boolean, };

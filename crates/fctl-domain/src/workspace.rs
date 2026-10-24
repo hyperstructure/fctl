@@ -8,9 +8,10 @@ use crate::naming;
 use crate::validate::{self, Result};
 use fctl_proto::ApiError;
 use fctl_proto::api::{BaseRole, InstanceSettings};
-use fctl_proto::session::{ProjectRole, WorkspaceRole};
+use fctl_proto::session::{InstanceRole, ProjectRole, WorkspaceRole};
 
-/// The most workspaces one person can be a member of.
+/// The most workspaces one person can be a member of, but the primary
+/// instance owner ([`workspace_limit`]).
 pub const MAX_WORKSPACES: usize = 5;
 /// How long an invitation to a workspace waits for an answer.
 pub const INVITATION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -153,15 +154,29 @@ pub fn check_two_factor(settings: &InstanceSettings, require: bool) -> Result<()
     Ok(())
 }
 
-/// Whether someone who is a member of `count` workspaces may join, or
-/// create, another one.
-pub fn check_limit(count: usize) -> Result<()> {
-    if count >= MAX_WORKSPACES {
-        return Err(ApiError::conflict(format!(
-            "You are a member of {MAX_WORKSPACES} workspaces, the most anyone can be. Leave one first."
-        )));
+/// The most workspaces someone whose instance role is `role` can be a
+/// member of: [`MAX_WORKSPACES`], or any number (`None`) for the primary
+/// instance owner, whose instance it is. Admins are held to it as members
+/// are, and so is an owner who hands the role over: they stay in every
+/// workspace they are in, and join no more until they are in fewer.
+pub fn workspace_limit(role: InstanceRole) -> Option<usize> {
+    (role != InstanceRole::Owner).then_some(MAX_WORKSPACES)
+}
+
+/// Whether someone who is a member of `count` workspaces, of at most
+/// `limit` ([`workspace_limit`]), may join, or create, another one.
+pub fn check_limit(count: usize, limit: Option<usize>) -> Result<()> {
+    match limit {
+        Some(max) if count >= max => Err(ApiError::conflict(if count == max {
+            format!("You are a member of {max} workspaces, the most you can be. Leave one first.")
+        } else {
+            format!(
+                "You are a member of {count} workspaces, and you can be in {max} at most. Leave {} first.",
+                count + 1 - max
+            )
+        })),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// The role an invitation gives: a member or an admin, never the primary
@@ -368,10 +383,29 @@ mod tests {
     }
 
     #[test]
-    fn five_workspaces_at_most() {
-        assert!(check_limit(0).is_ok());
-        assert!(check_limit(MAX_WORKSPACES - 1).is_ok());
-        assert!(check_limit(MAX_WORKSPACES).is_err());
+    fn five_workspaces_at_most_but_for_the_primary_instance_owner() {
+        for role in [InstanceRole::Admin, InstanceRole::Member] {
+            let limit = workspace_limit(role);
+            assert_eq!(limit, Some(MAX_WORKSPACES));
+            assert!(check_limit(0, limit).is_ok());
+            assert!(check_limit(MAX_WORKSPACES - 1, limit).is_ok());
+            let full = check_limit(MAX_WORKSPACES, limit).err().map(|e| e.message);
+            assert_eq!(
+                full.as_deref(),
+                Some("You are a member of 5 workspaces, the most you can be. Leave one first.")
+            );
+        }
+        let owner = workspace_limit(InstanceRole::Owner);
+        assert_eq!(owner, None);
+        for count in [0, MAX_WORKSPACES, 100] {
+            assert!(check_limit(count, owner).is_ok());
+        }
+        // An owner who handed the role over, in more than the limit.
+        let over = check_limit(7, workspace_limit(InstanceRole::Admin));
+        assert_eq!(
+            over.err().map(|e| e.message).as_deref(),
+            Some("You are a member of 7 workspaces, and you can be in 5 at most. Leave 3 first.")
+        );
     }
 
     #[test]
