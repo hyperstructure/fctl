@@ -480,6 +480,77 @@ impl Api {
         .await
     }
 
+    /// A project's members and their roles.
+    pub async fn project_members(&self, project: &str) -> Result<MemberList> {
+        self.get(&format!("/projects/{}/members", enc(project)))
+            .await
+    }
+
+    /// Adds someone in the project's workspace, by the address they are in
+    /// it as, or changes the role of a member (maintainers).
+    pub async fn add_project_member(
+        &self,
+        project: &str,
+        req: &AddMemberRequest,
+    ) -> Result<MemberList> {
+        self.post(&format!("/projects/{}/members", enc(project)), req)
+            .await
+    }
+
+    /// Changes a member's role (maintainers; owners for an owner's).
+    pub async fn set_project_role(
+        &self,
+        project: &str,
+        user_id: &str,
+        role: fctl_proto::session::ProjectRole,
+    ) -> Result<MemberList> {
+        self.patch(
+            &format!("/projects/{}/members/{}", enc(project), enc(user_id)),
+            &SetRoleRequest { role },
+        )
+        .await
+    }
+
+    /// Removes someone from a project, or leaves it (your own id): the
+    /// members left, or `{"ok": true}` when you left.
+    pub async fn remove_project_member(
+        &self,
+        project: &str,
+        user_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.delete(&format!(
+            "/projects/{}/members/{}",
+            enc(project),
+            enc(user_id)
+        ))
+        .await
+    }
+
+    /// The names of a project's secrets, and who set each when; never
+    /// their values (maintainers).
+    pub async fn secrets(&self, project: &str) -> Result<SecretList> {
+        self.get(&format!("/projects/{}/secrets", enc(project)))
+            .await
+    }
+
+    /// Sets a secret, which the project's sandboxes get as an environment
+    /// variable (maintainers).
+    pub async fn set_secret(&self, project: &str, name: &str, value: &str) -> Result<SecretList> {
+        self.put(
+            &format!("/projects/{}/secrets/{}", enc(project), enc(name)),
+            &SetSecretRequest {
+                value: value.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Deletes a secret (maintainers).
+    pub async fn delete_secret(&self, project: &str, name: &str) -> Result<SecretList> {
+        self.delete(&format!("/projects/{}/secrets/{}", enc(project), enc(name)))
+            .await
+    }
+
     // ── sessions ──
 
     pub async fn sessions(
@@ -488,15 +559,17 @@ impl Api {
         status: Option<&str>,
         limit: u32,
     ) -> Result<SessionList> {
-        self.sessions_in(None, project, status, limit).await
+        self.sessions_in(None, project, status, false, limit).await
     }
 
-    /// Sessions, of one workspace when it is given.
+    /// Sessions, of one workspace when it is given, with the archived ones
+    /// among them when `archived` says so.
     pub async fn sessions_in(
         &self,
         workspace: Option<&str>,
         project: Option<&str>,
         status: Option<&str>,
+        archived: bool,
         limit: u32,
     ) -> Result<SessionList> {
         let mut q = format!("/sessions?limit={limit}");
@@ -509,14 +582,18 @@ impl Api {
         if let Some(s) = status {
             q.push_str(&format!("&status={}", enc(s)));
         }
+        if archived {
+            q.push_str("&archived=1");
+        }
         self.get(&q).await
     }
 
-    /// A project's sessions with its review agents' among them, which the
-    /// other lists leave out: to find one by its number.
+    /// A project's sessions with its review agents' and its archived ones
+    /// among them, which the other lists leave out: to find one by its
+    /// number.
     pub async fn sessions_with_reviews(&self, project: &str, limit: u32) -> Result<SessionList> {
         self.get(&format!(
-            "/sessions?limit={limit}&project={}&reviews=1",
+            "/sessions?limit={limit}&project={}&reviews=1&archived=1",
             enc(project)
         ))
         .await
@@ -945,6 +1022,29 @@ impl Api {
     pub async fn unfollow(&self, session: &str) -> Result<Session> {
         self.delete(&format!("/sessions/{}/follow", enc(session)))
             .await
+    }
+
+    /// The people a session is shared with, besides its project's.
+    pub async fn shares(&self, session: &str) -> Result<ShareList> {
+        self.get(&format!("/sessions/{}/shares", enc(session)))
+            .await
+    }
+
+    /// Shares a session with someone in its workspace, by the address they
+    /// are in it as, or changes their role in it (the session's owners).
+    pub async fn share(&self, session: &str, req: &CreateShareRequest) -> Result<ShareList> {
+        self.post(&format!("/sessions/{}/shares", enc(session)), req)
+            .await
+    }
+
+    /// Stops sharing a session with someone (the session's owners).
+    pub async fn unshare(&self, session: &str, user_id: &str) -> Result<ShareList> {
+        self.delete(&format!(
+            "/sessions/{}/shares/{}",
+            enc(session),
+            enc(user_id)
+        ))
+        .await
     }
 
     pub async fn events(&self, session: &str, after: u64, limit: u32) -> Result<EventPage> {

@@ -242,7 +242,9 @@ shows a tool's request.
 
 `settings` in a `PATCH` replaces all of the project's settings, so send
 them all: read the project, change what you need, and send its `settings`
-back.
+back, as `fctl projects set` does (`fctl projects set -p my-app
+--instructions "Write the tests first." --model opus --effort high` is
+the same as this):
 
 ```sh
 API=$FCTL_SERVER/api/v1

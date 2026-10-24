@@ -238,6 +238,9 @@ From the terminal:
 ```sh
 fctl projects create "My app" --repo my-org/my-app
 fctl projects use my-app
+fctl projects set --setup-script 'npm ci' --instructions-file agents.md
+fctl projects secrets set STRIPE_KEY       # asks for the value
+fctl projects members add grace@example.com
 ```
 
 Agents can use more repositories of the same account: add them under the
@@ -389,8 +392,9 @@ nobody signed up with yet can be invited right away: its owner joins when
 they sign up.
 
 In a workspace, admins own every project, and members work in the projects
-they are members of (a project's **Members**) and in every project with the
-workspace's base role, which its admins choose in its settings:
+they are members of (a project's **Members**, or `fctl projects members`)
+and in every project with the workspace's base role, which its admins
+choose in its settings:
 
 | Role | Can |
 |---|---|
@@ -400,7 +404,8 @@ workspace's base role, which its admins choose in its settings:
 | Owner | everything, including deleting the project |
 
 Share a single session with someone else in the workspace from its
-**Share** menu. Everyone watching a session sees who else is there.
+**Share** menu, or with `fctl share my-app#12 grace@example.com`. Everyone
+watching a session sees who else is there.
 
 A workspace has one primary admin, whom no other admin can demote or
 remove; they hand the role to another admin under its **Settings**, as the

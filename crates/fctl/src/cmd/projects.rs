@@ -12,7 +12,8 @@ use fctl_proto::api::{
 use fctl_proto::session::{
     FollowUps, GithubAccess, ImageBuild, Project, ProjectSettings, RepoAccess, Verbosity,
 };
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
 pub enum ProjectsCmd {
@@ -65,13 +66,44 @@ pub enum ProjectsCmd {
     /// Change a project's settings (maintainers). Sessions take a change
     /// when they next start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
         #[arg(short, long)]
         project: Option<String>,
+        /// The model its agents work with: opus, sonnet, haiku, fable or a
+        /// model's ID; "default" for Claude's own. A session can ask for
+        /// another (`fctl run --model`).
+        #[arg(long)]
+        model: Option<String>,
+        /// Their effort level: low, medium, high, xhigh or max; "default"
+        /// for Claude's own.
+        #[arg(long, value_name = "LEVEL")]
+        effort: Option<String>,
+        /// What its agents are told in every session, after fctl's own
+        /// instructions ("" for nothing). They read the repository's
+        /// CLAUDE.md too.
+        #[arg(long, conflicts_with = "instructions_file")]
+        instructions: Option<String>,
+        /// Read those instructions from a file (`-`: stdin).
+        #[arg(long, value_name = "FILE")]
+        instructions_file: Option<PathBuf>,
+        /// Ask agents to open a pull request when they finish their task (on
+        /// by default). Off, they open one when someone asks for it.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        auto_pull_request: Option<bool>,
+        /// Remote Control: people follow the project's sessions in
+        /// claude.ai/code and the Claude apps, in sessions on a full Claude
+        /// login (on by default).
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        remote_control: Option<bool>,
+        /// Let agents use the claude.ai connectors (mail, files, docs) of the
+        /// person who starts a session, without asking. Only full Claude
+        /// logins have them, and new projects start with them off.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        connectors: Option<bool>,
         /// Credit the person who started a session in its commits, with a
         /// Co-authored-by trailer for the commit email they set (`fctl
         /// account set`).
@@ -224,6 +256,19 @@ pub enum ProjectsCmd {
     /// The repositories the project's agents may use besides its primary one.
     #[command(subcommand)]
     Repos(ReposCmd),
+    /// The project's members and their roles: list them, add someone in
+    /// its workspace, change a role, remove someone.
+    #[command(
+        after_help = "Its workspace's admins own it besides, and every member of the workspace has the workspace's base role in it.\n\nExamples:\n  fctl projects members -p my-app\n  fctl projects members add grace@example.com -p my-app   # an editor\n  fctl projects members add grace@example.com --role viewer\n  fctl projects members role grace@example.com maintainer\n  fctl projects members remove grace@example.com"
+    )]
+    Members(super::project_members::MembersArgs),
+    /// The project's secrets, which its sandboxes get as environment
+    /// variables (maintainers): list their names, set one, remove one.
+    /// Nobody reads a value back.
+    #[command(
+        after_help = "Anything an agent runs can read them, as it can the project's other variables.\n\nExamples:\n  fctl projects secrets -p my-app\n  fctl projects secrets set STRIPE_KEY -p my-app     # asks for the value\n  printenv STRIPE_KEY | fctl projects secrets set STRIPE_KEY -p my-app\n  fctl projects secrets remove STRIPE_KEY -p my-app"
+    )]
+    Secrets(super::project_secrets::SecretsArgs),
     /// Delete a project with its sessions and their transcripts (owners only).
     /// Its repository on GitHub stays. This cannot be undone.
     Delete {
@@ -391,6 +436,65 @@ fn follow_ups_arg(s: &str) -> std::result::Result<FollowUps, String> {
         }
     }
     Ok(f)
+}
+
+/// Whether a project's agents open pull requests by themselves, and how
+/// they describe them, in words.
+fn pull_requests(s: &ProjectSettings) -> String {
+    format!(
+        "{}, and {}",
+        if s.auto_pull_request {
+            "open one when they finish their task"
+        } else {
+            "open one when someone asks for it"
+        },
+        descriptions(s)
+    )
+}
+
+/// The model and effort a project's agents work with, in words.
+fn model(s: &ProjectSettings) -> String {
+    match (s.model.as_deref(), s.effort.as_deref()) {
+        (None, None) => "Claude's default model and effort".to_owned(),
+        (Some(m), None) => format!("{m}, at Claude's default effort"),
+        (None, Some(e)) => format!("Claude's default model, at {e} effort"),
+        (Some(m), Some(e)) => format!("{m}, at {e} effort"),
+    }
+}
+
+/// `--model` and `--effort`: `None` for Claude's own, `default` or `""`.
+fn or_claudes(arg: &str) -> Option<String> {
+    let arg = arg.trim();
+    (!arg.is_empty() && !arg.eq_ignore_ascii_case("default")).then(|| arg.to_owned())
+}
+
+/// Text from a file, or from stdin for `-`.
+fn read_text(path: &Path) -> Result<String> {
+    if path == Path::new("-") {
+        let mut text = String::new();
+        std::io::stdin().read_to_string(&mut text)?;
+        return Ok(text);
+    }
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
+
+/// What a project's sessions do in the Claude apps and on claude.ai, in
+/// words. Both take a full Claude login.
+fn claude_apps(s: &ProjectSettings) -> &'static str {
+    match (s.remote_control, s.claude_ai_connectors) {
+        (true, true) => {
+            "on a full Claude login, sessions show up in the Claude apps and agents use the claude.ai connectors of whoever starts them"
+        }
+        (true, false) => {
+            "on a full Claude login, sessions show up in the Claude apps; agents use no claude.ai connectors"
+        }
+        (false, true) => {
+            "sessions stay out of the Claude apps; on a full Claude login, agents use the claude.ai connectors of whoever starts them"
+        }
+        (false, false) => {
+            "sessions stay out of the Claude apps, and agents use no claude.ai connectors"
+        }
+    }
 }
 
 /// What brings a project's agents back to their pull requests, in words.
@@ -722,8 +826,16 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             println!("idle:    sessions {}", idle(&p.settings));
             println!("agents:  {}", learning(&p.settings));
+            if let Some(text) = p.settings.instructions.as_deref() {
+                println!(
+                    "         are told: {}",
+                    style::terminal_safe(&script_summary(text))
+                );
+            }
+            println!("model:   {}", model(&p.settings));
+            println!("claude:  {}", claude_apps(&p.settings));
             println!("github:  agents {}", on_github(&p.settings));
-            println!("prs:     agents {}", descriptions(&p.settings));
+            println!("prs:     agents {}", pull_requests(&p.settings));
             println!("tickets: {}", tickets(&p.settings));
             println!("follow:  agents {}", follow_ups(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
@@ -773,8 +885,17 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             );
         }
         ProjectsCmd::Repos(cmd) => repos(&api, cmd, json).await?,
+        ProjectsCmd::Members(args) => super::project_members::run(&api, args, json).await?,
+        ProjectsCmd::Secrets(args) => super::project_secrets::run(&api, args, json).await?,
         ProjectsCmd::Set {
             project,
+            model: new_model,
+            effort,
+            instructions,
+            instructions_file,
+            auto_pull_request,
+            remote_control,
+            connectors,
             credit_people,
             credit_claude,
             idle_timeout,
@@ -832,6 +953,28 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     );
                 };
                 b.context = (!dir.trim().is_empty()).then(|| dir.trim().to_owned());
+            }
+            if let Some(m) = &new_model {
+                settings.model = or_claudes(m);
+            }
+            if let Some(e) = &effort {
+                settings.effort = or_claudes(e);
+            }
+            let instructions = match &instructions_file {
+                Some(path) => Some(read_text(path)?),
+                None => instructions,
+            };
+            if let Some(text) = &instructions {
+                settings.instructions = (!text.trim().is_empty()).then(|| text.clone());
+            }
+            if let Some(on) = auto_pull_request {
+                settings.auto_pull_request = on;
+            }
+            if let Some(on) = remote_control {
+                settings.remote_control = on;
+            }
+            if let Some(on) = connectors {
+                settings.claude_ai_connectors = on;
             }
             if let Some(arg) = &script {
                 settings.setup_script = setup_script(arg)?;
@@ -917,6 +1060,46 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 .await?;
             if json {
                 return style::print_json(&p);
+            }
+            if new_model.is_some() || effort.is_some() {
+                println!(
+                    "{} Agents in {} work with {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    model(&p.settings)
+                );
+            }
+            if instructions.is_some() {
+                println!(
+                    "{} Agents in {} are told {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    match p.settings.instructions.as_deref() {
+                        Some(text) =>
+                            format!("this: {}", style::terminal_safe(&script_summary(text))),
+                        None => "nothing besides fctl's own instructions".to_owned(),
+                    }
+                );
+            }
+            if auto_pull_request.is_some() {
+                println!(
+                    "{} Agents in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    if p.settings.auto_pull_request {
+                        "open a pull request when they finish their task"
+                    } else {
+                        "open pull requests when someone asks for them"
+                    }
+                );
+            }
+            if remote_control.is_some() || connectors.is_some() {
+                println!(
+                    "{} In {}, {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    claude_apps(&p.settings)
+                );
             }
             if credit_people.is_some() || credit_claude.is_some() {
                 println!(
@@ -1331,6 +1514,120 @@ mod tests {
     struct Fctl {
         #[command(subcommand)]
         projects: ProjectsCmd,
+    }
+
+    fn set(args: &[&str]) -> Option<ProjectsCmd> {
+        Fctl::try_parse_from(["fctl", "set"].iter().chain(args).copied())
+            .ok()
+            .map(|f| f.projects)
+    }
+
+    #[test]
+    fn agents_settings_are_set_one_at_a_time() {
+        let Some(ProjectsCmd::Set {
+            model,
+            effort,
+            instructions,
+            auto_pull_request,
+            remote_control,
+            connectors,
+            credit_claude,
+            ..
+        }) = set(&[
+            "--model",
+            "opus",
+            "--effort",
+            "default",
+            "--instructions",
+            "",
+            "--auto-pull-request",
+            "off",
+            "--remote-control",
+            "on",
+            "--connectors",
+            "on",
+        ])
+        else {
+            panic!("fctl projects set takes the agents' settings");
+        };
+        assert_eq!(model.as_deref().and_then(or_claudes), Some("opus".into()));
+        assert_eq!(effort.as_deref().and_then(or_claudes), None);
+        assert_eq!(instructions.as_deref(), Some(""));
+        assert_eq!(auto_pull_request, Some(false));
+        assert_eq!(remote_control, Some(true));
+        assert_eq!(connectors, Some(true));
+        // Settings left out stay as they are.
+        assert_eq!(credit_claude, None);
+        // Any one of them is a change.
+        for flag in [
+            "--model",
+            "--effort",
+            "--instructions",
+            "--instructions-file",
+            "--auto-pull-request",
+            "--remote-control",
+            "--connectors",
+        ] {
+            let value = if flag.ends_with("-file") { "-" } else { "on" };
+            assert!(set(&[flag, value]).is_some(), "{flag}");
+        }
+        assert!(set(&[]).is_none());
+        assert!(
+            set(&[
+                "--instructions",
+                "Test first.",
+                "--instructions-file",
+                "a.md"
+            ])
+            .is_none()
+        );
+        assert!(set(&["--connectors", "maybe"]).is_none());
+        assert_eq!(or_claudes(" Default "), None);
+        assert_eq!(
+            or_claudes("claude-opus-5-5"),
+            Some("claude-opus-5-5".into())
+        );
+    }
+
+    #[test]
+    fn show_says_how_agents_work() {
+        let said = |s: ProjectSettings| (model(&s), pull_requests(&s), claude_apps(&s));
+        let (model, prs, apps) = said(ProjectSettings::default());
+        assert_eq!(model, "Claude's default model and effort");
+        assert_eq!(
+            prs,
+            "open one when they finish their task, and describe their pull requests in a short summary, with what's worth confirming"
+        );
+        assert_eq!(
+            apps,
+            "on a full Claude login, sessions show up in the Claude apps and agents use the claude.ai connectors of whoever starts them"
+        );
+        let (model, prs, apps) = said(ProjectSettings {
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+            auto_pull_request: false,
+            pull_request_descriptions: Verbosity::Brief,
+            remote_control: false,
+            claude_ai_connectors: false,
+            ..Default::default()
+        });
+        assert_eq!(model, "opus, at high effort");
+        assert_eq!(
+            prs,
+            "open one when someone asks for it, and describe their pull requests in a few sentences"
+        );
+        assert_eq!(
+            apps,
+            "sessions stay out of the Claude apps, and agents use no claude.ai connectors"
+        );
+        let effort_only = ProjectSettings {
+            effort: Some("max".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::model(&effort_only),
+            "Claude's default model, at max effort"
+        );
     }
 
     #[test]

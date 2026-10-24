@@ -232,9 +232,9 @@ wrote.
   with `--github comment` or `--github read`; a project's maintainers can
   cap every session (`fctl projects set --github comment`).
 - `--env` for credentials: its values are not secret. Secrets go in the
-  project's secrets (its Secrets tab, or `PUT
-  /api/v1/projects/{id}/secrets/{name}`); anything the agent runs can read
-  both.
+  project's secrets, with the value on stdin (`printenv STRIPE_KEY | fctl
+  projects secrets set STRIPE_KEY -p my-app`), never as an argument;
+  anything the agent runs can read both.
 - Pushing to a session's branch from outside while its agent works, force
   pushing it, or reusing it once its pull request merged: fctl pushes it
   after every turn until the merge, then no more. Message the agent, or
@@ -415,13 +415,17 @@ fctl projects set -p my-app --image ghcr.io/acme/agent:1      # or --build .devc
 fctl projects set -p my-app --cpus 8 --memory 16g --package-caches on
 fctl projects set -p my-app --github push --pr-descriptions balanced --follow-ups all
 fctl projects set -p my-app --tickets github
+fctl projects set -p my-app --model opus --effort high --instructions-file agents.md
+fctl projects set -p my-app --auto-pull-request on --remote-control on --connectors off
+printenv STRIPE_KEY | fctl projects secrets set STRIPE_KEY -p my-app
+fctl projects members add grace@example.com --role maintainer -p my-app
 fctl projects show my-app --json
 ```
 
-The project's instructions for agents, its model and effort, whether agents
-open a pull request when they finish, Remote Control, claude.ai connectors,
-secrets, members and shares are in the web app (the project's Settings,
-Secrets and Members tabs), or the API: [Projects](api.md#projects).
+And for a session: `fctl share SESSION grace@example.com --role viewer`
+lets someone else in its workspace read it (`editor` also messages its
+agent), `fctl unshare SESSION grace@example.com` takes it back, and `fctl
+archive SESSION` takes it out of the lists.
 
 ### Bring a machine online
 
