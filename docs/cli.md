@@ -435,7 +435,8 @@ it, on the Claude subscription of the owner who turned them on, and fctl
 posts what it found on the pull request, with a check on the commit.
 A pull request from someone who can't write to the repository gets one
 only when someone asks for it (`fctl review start`), since what it says
-reaches an agent with the owner's Claude token.
+reaches an agent with the owner's Claude token. Dependabot's get one by
+themselves, from an agent that installs and runs nothing of them.
 When an fctl agent opened the pull request, its session gets the findings
 in a message from fctl, decides what to do about them and answers in
 their threads. The project's owners turn them on (on their own
