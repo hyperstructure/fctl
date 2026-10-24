@@ -76,7 +76,7 @@ curl -sS -H "Authorization: Bearer $FCTL_TOKEN" -H "Content-Type: application/js
   "$FCTL_SERVER/api/v1/projects/my-app/sessions"
 ```
 
-| Field | |
+| Field | What it asks for |
 |---|---|
 | `prompt` | the task (may be empty when `attachments` has files) |
 | `title` | default: the task's first line; the agent renames the session once it understands the work |
@@ -88,7 +88,7 @@ curl -sS -H "Authorization: Bearer $FCTL_TOKEN" -H "Content-Type: application/js
 
 It answers with the session, `queued`. A session is:
 
-| Field | |
+| Field | What it says |
 |---|---|
 | `id`, `number`, `project_id`, `project_slug`, `workspace` | who it is: `my-app#12` is `project_slug#number` |
 | `title`, `description` | what it works on, as its agent or people say |
@@ -209,7 +209,7 @@ closes it with 4403 once the caller may no longer see the session.
 
 ## Schedules
 
-| Request | |
+| Request | What it does |
 |---|---|
 | `GET /api/v1/projects/{project}/schedules` | `{"schedules": […]}`: each with `id`, `name`, `prompt`, `cron` or `at` (or neither: runs when asked), `timezone`, `model`, `effort`, `base_branch`, `github_access`, `enabled`, `state` (`active`, `paused`, `done`), `paused_reason`, `problem`, `next_run_at`, `last_run`, `owner` |
 | `POST /api/v1/projects/{project}/schedules` | `{"name", "prompt", "cron" or "at", "timezone", "model", "effort", "base_branch", "github_access", "enabled": false}`: set one up, on the caller's subscription (people who start sessions in the project; tokens with `full` access) |
@@ -228,7 +228,7 @@ shows a tool's request.
 
 ## Projects
 
-| Request | |
+| Request | What it does |
 |---|---|
 | `GET /api/v1/projects` | the caller's projects (`?workspace=`) |
 | `GET /api/v1/projects/{project}` | one, with its primary `repo`, `default_branch`, `settings`, session counts and the caller's `role` |
@@ -265,7 +265,7 @@ fctl's own), `model`, `effort`, `image` or `image_build`, `cpus`,
 
 ### Memory, retrospectives and reviews
 
-| Request | |
+| Request | What it does |
 |---|---|
 | `GET /api/v1/projects/{project}/memories` | `{"memories": […], "current": n}`: current notes first, newest first, then stale ones; `?session=` for one session's |
 | `POST /api/v1/projects/{project}/memories` | `{"text": "…", "replaces": "mem_…", "also_replaces": [...]}`: a note for later agents (editors; tokens that run sessions) |

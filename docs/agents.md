@@ -176,7 +176,7 @@ since the epoch. The kinds:
 | `user_message` | what a person, fctl or a tool sent: `text`, `author`, `source` (`web`, `cli`, `api`, `remote_control`, `system`), files, and what brought it (a follow-up, a review, a ticket) |
 | `claude` | a message of Claude Code's stream-json output, as Claude Code wrote it: `type` is `system`, `assistant` (text and tool calls in `.message.content`), `user` (tool results), `result` (the end of a turn: `.result` is the final text, `.is_error`), `rate_limit_event` |
 | `status` | `status`, `reason`, `resume_at` |
-| `git` | the repositories' state: `branch`, `base`, `head`, `ahead`, `behind`, `files`, `pull_requests`, `repos` |
+| `git` | the repositories' state: `branch`, `base`, `head`, `ahead`, `behind`, `files`, `uncommitted`, `pushed`, `last_commit`, `pull_requests`, and the other repositories in `repos` |
 | `log` | output of provisioning, the setup script and the supervisor |
 | `notice` | something to notice: a usage-limit pause, a runner that went away, a note added to memory, a retrospective, a follow-up held back |
 | `remote_control`, `interrupt` | Remote Control became available or not; someone interrupted a turn |
