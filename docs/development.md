@@ -361,7 +361,7 @@ directories open none.
 | `web` | The web app (React, TanStack Router and Query, Tailwind, WebGL) |
 | `deploy/instances` | Instance descriptions for `cargo xtask deploy` |
 | `deploy/standalone` | The control plane without Cloudflare: its server, container image, Compose and Kubernetes examples |
-| `docs` | These docs; `docs/adr` records decisions |
+| `docs` | These docs; `docs/adr` records decisions, and `docs/llms.txt` sums fctl up for agents |
 
 ## Changing a protocol
 

@@ -23,12 +23,20 @@ Three pieces make up a factory:
 |---|---|
 | Start using fctl on an instance someone set up | [Getting started](getting-started.md) |
 | Drive everything from a terminal or a script | [The CLI](cli.md) |
+| Hand work to fctl from an agent or a program, and wait for it | [fctl for agents](agents.md) |
+| Call fctl's API from your own tools | [The HTTP API](api.md) |
 | Run agents from CI or a bot, such as review agents on your pull requests | [Automation](automation.md) |
 | Run your own instance, on a machine of yours or on Cloudflare | [Self-hosting](self-hosting.md) |
 | Know what sessions run in, give a project its own image, or choose the images a host runs | [Sandbox images](sandbox-images.md) |
 | Understand how the pieces talk to each other | [Architecture](architecture.md) |
 | Know what fctl does with your credentials | [Security](security.md) |
 | Work on fctl itself | [Development](development.md) |
+
+Agents find all of this summed up in [llms.txt](llms.txt), at
+https://fctl.sh/llms.txt and at `/llms.txt` of every instance: what fctl
+is, its words, how to drive it safely and where the details are. Each page
+here is also at `https://fctl.sh/docs/<page>.md` as Markdown, and all of
+them are in https://fctl.sh/llms-full.txt.
 
 ## Words used in these docs
 

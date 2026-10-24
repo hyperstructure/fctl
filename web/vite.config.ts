@@ -40,11 +40,31 @@ function brandAssets(): Plugin {
   };
 }
 
+/** fctl's guide for agents, which every instance serves at /llms.txt as fctl.sh does: one copy, in docs/. */
+export const LLMS_TXT = fileURLToPath(new URL("../docs/llms.txt", import.meta.url));
+
+/** Serves and emits /llms.txt from docs/llms.txt. */
+export function llmsTxt(): Plugin {
+  return {
+    name: "llms-txt",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.split("?")[0] !== "/llms.txt") return next();
+        res.setHeader("content-type", "text/plain; charset=utf-8");
+        res.end(readFileSync(LLMS_TXT));
+      });
+    },
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "llms.txt", source: readFileSync(LLMS_TXT) });
+    },
+  };
+}
+
 // In development the control plane runs on :8787 (`cargo xtask dev`).
 const api = process.env.FCTL_API ?? "http://127.0.0.1:8787";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), brandAssets()],
+  plugins: [react(), tailwindcss(), brandAssets(), llmsTxt()],
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   server: {
     port: 5173,
