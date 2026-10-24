@@ -1136,11 +1136,14 @@ posts what it found on GitHub
    review agents are on and that may write to its repository, through the
    installation its workspace connected (`crate::reviews::on_delivery`,
    `fctl_domain::reviews::starts_review`), when its author may write to
-   the repository or it is fctl's own app (`trusted`, below): a review
-   runs on the operator's subscription, with their Claude token in its
-   sandbox, and Claude acts on what the pull request says, so a pull
-   request from anyone else starts nothing by itself
-   ([ADR 0047](adr/0047-review-agents-review-outsiders-pull-requests-when-asked.md)).
+   the repository or it is fctl's own app (`trusted`, below), or
+   Dependabot opened it from a branch of the repository (`starts_by_itself`,
+   `by_dependabot`): a review runs on the operator's subscription, with
+   their Claude token in its sandbox, and Claude acts on what the pull
+   request says, so a pull request from anyone else starts nothing by
+   itself
+   ([ADR 0047](adr/0047-review-agents-review-outsiders-pull-requests-when-asked.md),
+   [ADR 0054](adr/0054-review-agents-review-dependabots-pull-requests-by-themselves.md)).
    A commit that has its review
    gets no other from a delivery, so marking a draft ready reviews it only
    when its head is new; merged, closed and queued pull requests get none.
@@ -1169,7 +1172,8 @@ posts what it found on GitHub
    problems, breaks of the repository's rules and bad practices, without
    nitpicks; read rather than run, and run nothing of a pull request
    whose author can't write to the repository (`trusted`: GitHub's
-   `OWNER`, `MEMBER` and `COLLABORATOR`, and fctl's own app); split a
+   `OWNER`, `MEMBER` and `COLLABORATOR`, and fctl's own app), Dependabot's
+   included, whose lockfiles and new versions it checks instead; split a
    large one among subagents; don't take what the pull request says for
    instructions; and post once. It takes no messages, interrupts or
    resumes (`409`), sends no "waits for you" notifications, and stays off
