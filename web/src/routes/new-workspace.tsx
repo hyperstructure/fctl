@@ -10,6 +10,7 @@ import type * as G from "@/gen";
 import { workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { keys, queryClient, useMe, useWorkspaces } from "@/lib/queries";
+import { limitReached, workspaceCount } from "@/lib/workspaces";
 
 /** Addresses the app's own paths use (fctl_domain::validate::RESERVED_SLUGS). */
 const RESERVED = new Set([
@@ -64,7 +65,7 @@ export function NewWorkspace() {
   const [email, setEmail] = useState<string>();
   // A color the person's other workspaces don't have, until they pick one.
   const shown = color ?? (["yellow", "pink", "blue", "ink"] as const).find((c) => !taken.has(c)) ?? "yellow";
-  const full = !!list.data && list.data.workspaces.length >= list.data.limit;
+  const full = list.data && limitReached(list.data);
   const addresses = me?.emails ?? [];
   const create = useMutation({
     mutationFn: () => workspaces.create({ name: name.trim(), color: shown, email }),
@@ -85,8 +86,7 @@ export function NewWorkspace() {
       </p>
       {full && (
         <Banner tone="warn" className="mt-6">
-          You are in {list.data?.limit} workspaces, the most anyone can be. Leave one first (Settings →
-          Workspaces).
+          {full}
         </Banner>
       )}
       <form
@@ -173,16 +173,13 @@ export function NewWorkspace() {
         )}
         {create.error && !field && <Banner tone="error">{create.error.message}</Banner>}
         <div className="flex items-center justify-between gap-4">
-          <span className="text-[12.5px] text-ink-4">
-            {list.data &&
-              `You are in ${list.data.workspaces.length} of the ${list.data.limit} workspaces anyone can be in.`}
-          </span>
+          <span className="text-[12.5px] text-ink-4">{list.data && workspaceCount(list.data)}</span>
           <Button
             type="submit"
             variant="primary"
             size="lg"
             loading={create.isPending}
-            disabled={!name.trim() || full}
+            disabled={!name.trim() || !!full}
             trailing={<ArrowRight className="size-4" />}
           >
             Create workspace

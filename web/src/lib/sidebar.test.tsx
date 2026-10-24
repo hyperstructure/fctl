@@ -116,6 +116,16 @@ describe("the sidebar kept in this browser", () => {
     expect(keptSidebar("usr_grace")).toBeUndefined();
   });
 
+  it("keeps that the primary instance owner can be in any number of workspaces", () => {
+    keepSidebar("usr_ada", { ...workspaces, unlimited: true }, projects);
+    expect(keptSidebar("usr_ada")?.workspaces).toMatchObject({ limit: 5, unlimited: true });
+    // Kept before they could: the limit holds until the control plane's list comes.
+    const kept = JSON.parse(localStorage.getItem("fctl:sidebar") ?? "");
+    delete kept.workspaces.unlimited;
+    localStorage.setItem("fctl:sidebar", JSON.stringify(kept));
+    expect(keptSidebar("usr_ada")?.workspaces).toMatchObject({ limit: 5, unlimited: undefined });
+  });
+
   it("ignores what it can't read", () => {
     keepSidebar("usr_ada", workspaces, projects);
     const good = JSON.parse(localStorage.getItem("fctl:sidebar") ?? "");
@@ -133,6 +143,7 @@ describe("the sidebar kept in this browser", () => {
     expect(keep((d) => delete d.workspaces.workspaces[0].role)).toBeUndefined();
     expect(keep((d) => (d.workspaces.invitations[0].workspace = null))).toBeUndefined();
     expect(keep((d) => delete d.workspaces.limit)).toBeUndefined();
+    expect(keep((d) => (d.workspaces.unlimited = "yes"))).toBeUndefined();
     expect(keep((d) => (d.projects = {}))).toBeUndefined();
     localStorage.setItem("fctl:sidebar", "{not json");
     expect(keptSidebar("usr_ada")).toBeUndefined();

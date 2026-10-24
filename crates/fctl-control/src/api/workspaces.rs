@@ -3,7 +3,7 @@
 //! (docs/architecture.md#workspaces). GitHub accounts are in `api::github`.
 
 use crate::ctx::Ctx;
-use crate::db::{Count, b, batch, n, os, q, s};
+use crate::db::{Count, b, batch, n, on, os, q, s};
 use crate::error::{AppError, AppResult, conflict, forbidden, not_found, validation};
 use crate::http;
 use crate::internal::{self, LiveRunners};
@@ -123,6 +123,7 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
             .map(|i| i.to_invitation(ws::blocked_for(ctx, user, i.require_two_factor)))
             .collect(),
         limit: policy::MAX_WORKSPACES as u32,
+        unlimited: policy::workspace_limit(user.role()).is_none(),
     })
 }
 
@@ -152,7 +153,8 @@ async fn own_address(ctx: &Ctx, user: &UserRow, requested: Option<&str>) -> AppR
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: CreateWorkspaceRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
-    policy::check_limit(ws::membership_count(&ctx.db, &user.id).await?)?;
+    let limit = policy::workspace_limit(user.role());
+    policy::check_limit(ws::membership_count(&ctx.db, &user.id).await?, limit)?;
     let name = policy::name(&body.name)?;
     let slug = match body.slug.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(sl) => {
@@ -195,7 +197,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 &ctx.db,
                 "INSERT INTO workspaces (id, slug, name, color, base_role, require_two_factor, created_by, created_at, updated_at) \
                  SELECT ?1, ?2, ?3, ?4, 'editor', 0, ?5, ?6, ?6 \
-                 WHERE (SELECT COUNT(*) FROM workspace_members WHERE user_id = ?5) < ?7",
+                 WHERE ?7 IS NULL OR (SELECT COUNT(*) FROM workspace_members WHERE user_id = ?5) < ?7",
                 &[
                     s(id.as_str()),
                     s(&slug),
@@ -203,7 +205,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                     s(color.as_str()),
                     s(&user.id),
                     n(ctx.now),
-                    n(policy::MAX_WORKSPACES as i64),
+                    on(limit.map(|l| l as i64)),
                 ],
             )?,
             ws::add_member(
@@ -213,6 +215,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 &email,
                 WorkspaceRole::Owner,
                 Some(&user.id),
+                limit,
                 ctx.now,
             )?,
         ],
@@ -229,7 +232,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         return Err(e);
     }
     if ws::member(&ctx.db, id.as_str(), &user.id).await?.is_none() {
-        policy::check_limit(ws::membership_count(&ctx.db, &user.id).await?)?;
+        policy::check_limit(ws::membership_count(&ctx.db, &user.id).await?, limit)?;
         return Err(not_found("Workspace"));
     }
     let data = serde_json::json!({ "name": name, "slug": slug });

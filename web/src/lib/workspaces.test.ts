@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { claudeOptions, createsProjects, runnersOf } from "./workspaces";
+import {
+  claudeOptions,
+  createsProjects,
+  limitReached,
+  roomForAnother,
+  runnersOf,
+  workspaceCount,
+} from "./workspaces";
 
 const cred = (c: Partial<G.ClaudeCredentialInfo> & { id: string }): G.ClaudeCredentialInfo => ({
   kind: "oauth",
@@ -102,5 +109,41 @@ describe("createsProjects", () => {
     expect(createsProjects({ role: "admin", blocked: false })).toBe(true);
     expect(createsProjects({ role: "member", blocked: false })).toBe(false);
     expect(createsProjects({ role: "admin", blocked: true })).toBe(false);
+  });
+});
+
+describe("the workspace limit", () => {
+  const list = (n: number, unlimited?: boolean) => ({ workspaces: Array(n).fill({}), limit: 5, unlimited });
+
+  it("leaves room for another below it", () => {
+    expect(roomForAnother(list(4))).toBe(true);
+    expect(limitReached(list(4))).toBeUndefined();
+    expect(workspaceCount(list(4))).toBe("You are in 4 of the 5 workspaces you can be in.");
+  });
+
+  it("says what to leave at it, or past it", () => {
+    expect(roomForAnother(list(5))).toBe(false);
+    expect(limitReached(list(5))).toBe(
+      "You are in 5 workspaces, the most you can be. Leave one first (Settings → Workspaces).",
+    );
+    // An owner who handed the role over, in more than they can be in now.
+    expect(roomForAnother(list(7))).toBe(false);
+    expect(limitReached(list(7))).toBe(
+      "You are in 7 workspaces, and you can be in 5 at most. Leave 3 first (Settings → Workspaces).",
+    );
+    expect(workspaceCount(list(7))).toBe("You are in 7 workspaces, and you can be in 5 at most.");
+  });
+
+  it("doesn't hold the primary instance owner", () => {
+    for (const n of [0, 5, 12]) {
+      expect(roomForAnother(list(n, true))).toBe(true);
+      expect(limitReached(list(n, true))).toBeUndefined();
+    }
+    expect(workspaceCount(list(1, true))).toBe(
+      "You are in 1 workspace. As the primary instance owner, you can be in any number.",
+    );
+    expect(workspaceCount(list(12, true))).toBe(
+      "You are in 12 workspaces. As the primary instance owner, you can be in any number.",
+    );
   });
 });

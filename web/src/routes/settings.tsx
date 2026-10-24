@@ -64,7 +64,7 @@ import { forgetSidebar } from "@/lib/sidebar";
 import { useTheme } from "@/lib/theme";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
-import { claudeOptions, roleLabel } from "@/lib/workspaces";
+import { claudeOptions, roleLabel, roomForAnother, workspaceCount } from "@/lib/workspaces";
 
 const LINK_ERRORS: Record<string, string> = {
   google_linked_elsewhere: "That Google account is already linked to another user.",
@@ -390,7 +390,7 @@ function Workspaces({ me }: { me: G.Me }) {
       title="Workspaces"
       description="The ones you are in, each with its own people, projects, runners and GitHub accounts."
       actions={
-        data && data.workspaces.length < data.limit ? (
+        data && roomForAnother(data) ? (
           <Link to="/w/new">
             <Button size="sm" icon={<Plus className="size-3.5" />}>
               New workspace
@@ -455,11 +455,7 @@ function Workspaces({ me }: { me: G.Me }) {
           ))}
         </ul>
       )}
-      {data && (
-        <p className="mt-3 text-[12.5px] text-ink-4">
-          {data.workspaces.length} of the {data.limit} workspaces anyone can be in.
-        </p>
-      )}
+      {data && <p className="mt-3 text-[12.5px] text-ink-4">{workspaceCount(data)}</p>}
       <Dialog
         open={!!leaving}
         onClose={() => setLeaving(null)}

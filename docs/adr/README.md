@@ -63,3 +63,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0055](0055-maintainers-start-sessions-that-reach-github-issues-beyond-the-tracker.md) | Maintainers start sessions that reach GitHub issues beyond the tracker |
 | [0056](0056-sessions-are-searched-in-an-index-per-workspace.md) | Sessions are searched in an index per workspace, in a Durable Object |
 | [0057](0057-projects-choose-which-apps-pull-requests-start-reviews.md) | Projects choose which apps' pull requests start reviews by themselves |
+| [0058](0058-the-primary-instance-owner-can-be-in-any-number-of-workspaces.md) | The primary instance owner can be in any number of workspaces |

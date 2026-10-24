@@ -13,6 +13,31 @@ export function createsProjects(w: Pick<G.Workspace, "role" | "blocked">): boole
   return (w.role === "owner" || w.role === "admin") && !w.blocked;
 }
 
+/** Your workspaces, against how many you can be in. */
+type Counted = Pick<G.WorkspaceList, "limit" | "unlimited"> & { workspaces: readonly unknown[] };
+
+/** Whether you can create or join another workspace: the primary instance owner always can. */
+export const roomForAnother = (l: Counted): boolean => !!l.unlimited || l.workspaces.length < l.limit;
+
+/** Why you can't create or join another workspace, if you can't (fctl_domain::workspace::check_limit). */
+export function limitReached(l: Counted): string | undefined {
+  if (roomForAnother(l)) return undefined;
+  const n = l.workspaces.length;
+  return n === l.limit
+    ? `You are in ${n} workspaces, the most you can be. Leave one first (Settings → Workspaces).`
+    : `You are in ${n} workspaces, and you can be in ${l.limit} at most. Leave ${n + 1 - l.limit} first (Settings → Workspaces).`;
+}
+
+/** How many workspaces you are in, of how many you can be in. */
+export function workspaceCount(l: Counted): string {
+  const n = l.workspaces.length;
+  if (l.unlimited)
+    return `You are in ${n === 1 ? "1 workspace" : `${n} workspaces`}. As the primary instance owner, you can be in any number.`;
+  return n > l.limit
+    ? `You are in ${n} workspaces, and you can be in ${l.limit} at most.`
+    : `You are in ${n} of the ${l.limit} workspaces you can be in.`;
+}
+
 /** Your workspaces by id, with the reference something carries as a fallback. */
 export function useWorkspaceIndex() {
   const { data } = useWorkspaces();
