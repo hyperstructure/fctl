@@ -588,7 +588,7 @@ const NO_TRACKER: &str = "- This project uses no ticket tracker. Don't read, ope
 
 /// What a session whose tokens reach no GitHub issues is told, so that a
 /// task that needs them ends with a way to them.
-const ASK_FOR_ISSUES: &str = "When a task needs GitHub's issues (to move them into a tracker, say), say that a maintainer of the project can start a session that reaches them: with `fctl run --github-issues`, or GitHub issues too in the start form's GitHub menu.";
+const ASK_FOR_ISSUES: &str = "When a task needs GitHub's issues (to move them into a tracker, say), say that a maintainer of the project can start a session that reaches them: with `fctl run --github-issues`, or \"GitHub issues too\" in the start form's GitHub menu.";
 
 /// What a session that started from a ticket is told about it.
 fn started_from(t: &Told<'_>, from: &StartedFrom<'_>) -> String {

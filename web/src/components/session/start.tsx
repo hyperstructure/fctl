@@ -316,7 +316,7 @@ export function StartChoices({
           {beyond && choice.issues && (
             <span
               aria-hidden="true"
-              className="pointer-events-none absolute -top-0.5 -right-0.5 z-20 size-1.5 rounded-full bg-accent ring-2 ring-canvas"
+              className="pointer-events-none absolute -top-0.5 -right-0.5 z-20 size-2 rounded-full bg-accent ring-2 ring-canvas"
             />
           )}
         </span>
