@@ -126,6 +126,8 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
 - [hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site):
   fctl.sh. It renders this repository's `docs/` at a pinned commit; CI here
   pins it when `docs/` changes on `main`, so write docs in this repository.
+  It also serves `docs/llms.txt` at `/llms.txt`, each page as Markdown and
+  all of them in `/llms-full.txt`; a new page needs adding to its `PAGES`.
   `cargo xtask publish` writes releases to the KV namespace in
   `deploy/releases.toml`, which the site's Worker serves. Its privacy
   policy (`legal/privacy.md`) says what app.fctl.sh stores, who receives it
@@ -159,7 +161,10 @@ from GitHub at the tag `web/package.json` pins, without signing in.
   it. Types, scopes, breaking changes and the flow:
   [.claude/skills/commit/SKILL.md](.claude/skills/commit/SKILL.md).
 - One focused change per pull request; update docs in the same change when
-  behavior changes. A person merges agents' pull requests: `main` takes a
+  behavior changes, `docs/llms.txt` too: agents read it at fctl.sh and at
+  every instance's `/llms.txt` to learn how fctl works and how to drive it.
+  `cargo test -p xtask` checks that every link in the docs leads
+  somewhere. A person merges agents' pull requests: `main` takes a
   pull request only once a code owner who didn't push its last commit
   approves it, so agents cannot merge their own.
 - A pull request that changes how fctl looks shows it with screenshots in
