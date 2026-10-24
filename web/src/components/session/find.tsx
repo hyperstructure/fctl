@@ -16,6 +16,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { IconButton, Spinner } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -23,15 +24,54 @@ import { findables, type Reveal as How, type Match, needle, rangesIn, revealing,
 import type { LiveSession } from "@/lib/live";
 import type { Item } from "@/lib/transcript";
 
-/** What finding wants open in the transcript, by key ([`How`]): it opens what it gets to. */
-export const Reveal = createContext<ReadonlyMap<string, How[1]>>(new Map());
+/**
+ * What finding wants open in the transcript, by key ([`How`]): it opens what
+ * it gets to. The lines that open each listen for their own keys, so that a
+ * step to another match re-renders only what it opens.
+ */
+export class Revealer {
+  private wanted: ReadonlyMap<string, How[1]> = new Map();
+  private listeners = new Set<() => void>();
+
+  get = (key: string): How[1] | undefined => this.wanted.get(key);
+
+  /** All it wants open, for what finding adds to it. */
+  get all(): ReadonlyMap<string, How[1]> {
+    return this.wanted;
+  }
+
+  set(wanted: ReadonlyMap<string, How[1]>) {
+    if (wanted === this.wanted) return;
+    this.wanted = wanted;
+    for (const l of this.listeners) l();
+  }
+
+  subscribe = (l: () => void) => {
+    this.listeners.add(l);
+    return () => {
+      this.listeners.delete(l);
+    };
+  };
+}
+
+export const Reveal = createContext<Revealer | undefined>(undefined);
+
+const never = () => () => {};
+
+/** What finding wants of the lines `keys`, as one string that changes when it does: `show` or `open` each, or nothing. */
+export function useWanted(keys: readonly string[]): string {
+  const r = useContext(Reveal);
+  return useSyncExternalStore(r?.subscribe ?? never, () =>
+    r ? keys.map((k) => r.get(k) ?? "").join(" ") : "",
+  );
+}
 
 /**
  * Calls `open` once finding wants the line `key` open, for a match in what it
  * opens into. What the line shows stays its own: the reader closes it again.
  */
 export function useRevealed(key: string | undefined, open: () => void) {
-  const wanted = useContext(Reveal).get(key ?? "") === "open";
+  const wanted = useWanted(key ? [key] : []) === "open";
   const latest = useRef(open);
   latest.current = open;
   useLayoutEffect(() => {
@@ -48,6 +88,8 @@ const AUTO_PAGES = 100;
 const PAGES_AT_ONCE = 5;
 
 const NONE: ReadonlyMap<string, How[1]> = new Map();
+/** Finding looks in earlier activity for two characters or more: one finds too much to load it all for. */
+const LOOKS_BACK_FROM = 2;
 
 /** How long typing pauses before the page goes to the match it found, opening what folds it (ms). */
 const TYPING_PAUSE_MS = 350;
@@ -100,7 +142,7 @@ export function useFind({
   // The match the page went to, and whether the reader stepped to the one the bar is at.
   const [gone, setGone] = useState<string>();
   const stepped = useRef(false);
-  const [reveal, setReveal] = useState(NONE);
+  const reveal = useMemo(() => new Revealer(), []);
   const input = useRef<HTMLInputElement>(null);
   const bar = useRef<HTMLElement>(null);
   // Where the focus was before the bar took it, to go back to.
@@ -138,14 +180,14 @@ export function useFind({
     setOpen(false);
     setCurrent(undefined);
     setGone(undefined);
-    setReveal(NONE);
+    reveal.set(NONE);
     older.current = false;
     target.current = undefined;
     pages.current = 0;
     const back = before.current;
     before.current = null;
     if (back instanceof HTMLElement && back.isConnected) back.focus({ preventScroll: true });
-  }, []);
+  }, [reveal]);
 
   // Another session: the bar closes, unless a search of all sessions opened it.
   useEffect(() => {
@@ -228,7 +270,8 @@ export function useFind({
 
   // Earlier activity, to look in it too, a few pages at a time while there is something to find.
   useEffect(() => {
-    if (!open || !n || !hasMoreBefore || loadingOlder || pages.current >= AUTO_PAGES) return;
+    if (!open || [...n].length < LOOKS_BACK_FROM || !hasMoreBefore || loadingOlder) return;
+    if (pages.current >= AUTO_PAGES) return;
     const t = setTimeout(() => {
       pages.current += PAGES_AT_ONCE;
       void store.loadEarlier({ pages: PAGES_AT_ONCE });
@@ -237,13 +280,16 @@ export function useFind({
   }, [open, n, hasMoreBefore, loadingOlder, store]);
 
   // A step past the oldest match waited for earlier activity: the next match back, or around to the newest.
+  // With none before, the first that came back there: the newest of them.
   useEffect(() => {
     if (!older.current || loadingOlder) return;
-    if (at > 0) {
+    if (at > 0 || (at < 0 && matches.length)) {
       older.current = false;
-      setCurrent(matches[at - 1]?.key);
+      stepped.current = true;
+      setCurrent(matches[at > 0 ? at - 1 : matches.length - 1]?.key);
     } else if (!hasMoreBefore) {
       older.current = false;
+      stepped.current = true;
       setCurrent(matches[matches.length - 1]?.key);
     } else void store.loadEarlier({ pages: PAGES_AT_ONCE });
   }, [at, matches, hasMoreBefore, loadingOlder, store]);
@@ -296,8 +342,8 @@ export function useFind({
   // What folds it opens, and stays open.
   useEffect(() => {
     const m = gone === undefined ? undefined : matches[index.get(gone) ?? -1];
-    if (m?.findable.reveal.length) setReveal((r) => revealing(r, m));
-  }, [gone, matches, index]);
+    if (m?.findable.reveal.length) reveal.set(revealing(reveal.all, m));
+  }, [gone, matches, index, reveal]);
 
   // It comes into view: at once where the page shows it already, else once what folds it opened.
   // biome-ignore lint/correctness/useExhaustiveDependencies: it moves the page only when the bar moves
@@ -375,8 +421,11 @@ export function useFind({
   // ⌘G and ⌘⇧G step to the next match and back, as browsers do.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = apple() ? e.metaKey : e.ctrlKey;
+      // Elsewhere than on Apple's systems, ⌘ too, for a Mac whose browser says it is another.
+      const mod = e.metaKey || (!apple() && e.ctrlKey);
       const key = e.key.toLowerCase();
+      // Not over a dialog, whose keys aren't the page's.
+      if (e.target instanceof Element && e.target.closest("dialog[open]")) return;
       if (mod && !e.altKey && key === "f" && !e.shiftKey) {
         if (open && document.activeElement === input.current) return;
         e.preventDefault();

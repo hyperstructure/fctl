@@ -15,6 +15,8 @@ before changing anything that crosses a component boundary.
                 │        │   │  published screenshots                 │
                 │        │   ├─ NotifyDO (per person): notifications  │
                 │        │   ├─ ScheduleDO: schedules' alarm          │
+                │        │   ├─ SearchDO (per workspace): the index   │
+                │        │   │  that searches sessions                │
                 │        │   └─ SessionDO (one per session): events,  │
                 │        │      viewers, message delivery             │
                 │        └──────────────▲─────────────▲───────────────┘
@@ -643,7 +645,8 @@ it's its person), device codes, workspaces
 invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
 and runners, projects, their members and
-repositories, sessions (summary rows), which sessions list which pull
+repositories, sessions (summary rows, and whether the search index has
+all of each), which sessions list which pull
 request, projects' review agents and their reviews, shares, who follows
 which session,
 notification settings and browsers (push subscriptions), runners, encrypted
@@ -677,12 +680,17 @@ while they wait to go out, and forgets them once sent (see
 earliest schedule that is due, when it starts its session (see
 [Schedules](#schedules)).
 
+**SearchDO** (one per workspace, SQLite storage) holds the search index of
+its sessions: their titles and descriptions, people's messages and the
+agents' replies, with a full-text index of them (see [Search](#search)).
+
 **Deletion.** Deleting a project deletes its rows (sessions, members, secrets,
 shares, its memory, its schedules and its sessions' retrospectives cascade) and, in the
 same batch, queues its sessions in
 `session_purges` and the project in `file_purges`; their Durable Object
 storage, the event logs and the attached files and published screenshots,
-is deleted right after. An hourly cron trigger (`src/housekeeping.rs`; the
+is deleted right after, and each session's documents in the search index
+before its event log. An hourly cron trigger (`src/housekeeping.rs`; the
 standalone server runs it outside Cloudflare) retries what failed and
 deletes expired tokens, password resets, sign-ins waiting for a code,
 passkey challenges, device codes and invites, early access requests whose
@@ -1891,6 +1899,73 @@ come through:
 The session page and `fctl attach` say which, and since when, once it has
 lasted 10 seconds (a host that restarts reconnects within them), and show
 nothing in progress meanwhile.
+
+### Search
+
+People find what sessions said in two places
+([ADR 0056](adr/0056-sessions-are-searched-in-an-index-per-workspace.md)):
+
+- **In every session they see.** ⌘K, past a couple of letters, searches
+  what the sessions a person sees say, and so do `fctl search` and `GET
+  /api/v1/search?q=` (`?workspace=`, `?project=`, `?limit=`): their titles
+  and descriptions, people's messages (and fctl's) and the agents'
+  replies; not tool calls, what they returned, thoughts or subagents'
+  work (`fctl_domain::search`). It finds what was typed as typed, but for
+  case, accents and runs of whitespace, from two characters. Sessions with
+  it in their title come first, then the others, the most recently
+  mentioned first, each with snippets of about 160 characters of where it
+  matched (its title or description, then its newest messages and
+  replies, three at most, and where in them: `ranges`, in UTF-16 code
+  units), how many of its documents match, and whether it is archived.
+  Review agents' sessions aren't searched.
+- **In one session.** ⌘F (Ctrl+F) on a session's page opens a find bar
+  under its header, and a second ⌘F there gives the browser's own. It
+  finds what was typed, as search does, in all the transcript shows,
+  folded or not: people's messages, the agent's replies, what its tool
+  calls were about and their commands, the plan, its thoughts, what its
+  subagents were asked, did and reported, the notes it kept, its
+  retrospectives, notices and why the session stopped; not what calls
+  returned, files or diffs (`web/src/lib/find.ts`). It counts the matches,
+  the newest first, lights them up (the CSS Custom Highlight API), and
+  steps up the page with Enter, ↑ or ⌘G, down with Shift+Enter, ↓ or ⌘⇧G.
+  The match it gets to comes into view with what folds it opened, once
+  typing pauses, or at once when the reader steps to it. It loads earlier
+  activity, a few pages at a time, to look in it too; past 40,000 events,
+  a step past the oldest match loads more. Words selected on the page are
+  what it finds when it opens. A result of a search of all sessions opens
+  its session's page with the bar on what was typed, at the newest message
+  or reply it matched (`?find=…&at=<seq>`, which the page then takes out of
+  its address).
+
+The index:
+
+1. Each workspace's **SearchObject** keeps its sessions' documents in its
+   SQLite storage: the title, the description, and each message and reply
+   (its first 10,000 characters, with each run of whitespace as one
+   space), with its session, project, event (`seq`) and, for a message,
+   who wrote it. An FTS5 index with the `trigram` tokenizer and
+   `remove_diacritics` finds text of three characters or more in them;
+   shorter searches go through them one by one.
+2. A SessionObject notes what it stores that the index takes (a message
+   with words, a reply of the agent's own that says something, a new title
+   or description), and its alarm puts it in its workspace's index five
+   seconds later, with whatever came meanwhile (`/put`, after the last
+   event it put there, 500 events at a time). What the index didn't take
+   it tries again a few times, waiting longer each time. It records in D1
+   whether the index has all its events (`sessions.search_indexed`), and
+   the hourly job asks those whose index doesn't, the most recently active
+   first, 200 a run, to index all they hold again, from their first event
+   (`/index`): the sessions from before search, those whose index fell
+   behind, and every one after `UPDATE sessions SET search_indexed = 0`,
+   which builds a lost index again. A SessionObject that is purged takes
+   its documents out of the index first (`/forget`).
+3. A search reads from D1 the projects the caller sees in each of their
+   workspaces, as the project list does (a limited token's places and
+   roles too), and the sessions of other projects shared with them, asks
+   each of those workspaces' indexes at once for the sessions among them
+   whose documents match (`/search`), and reads the sessions it found from
+   D1, keeping those the caller sees now. A workspace whose index fails
+   leaves the others' results; all failing is an error.
 
 ### Attachments
 

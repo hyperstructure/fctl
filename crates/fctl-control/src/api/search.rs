@@ -132,18 +132,20 @@ pub async fn search(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let answers = futures::future::join_all(asks).await;
     let asked = answers.len();
     let mut hits: Vec<IndexHit> = Vec::new();
-    let mut failure = None;
+    let mut failures = Vec::new();
     for a in answers {
         match a {
             Ok(h) => hits.extend(h.sessions),
             Err(e) => {
                 worker::console_error!("searching a workspace's index: {}", e.0.message);
-                failure = Some(e);
+                failures.push(e);
             }
         }
     }
     // Some workspaces' results are better than none; none at all is an error.
-    if let Some(e) = failure.filter(|_| hits.is_empty() && asked == 1) {
+    if failures.len() == asked
+        && let Some(e) = failures.pop()
+    {
         return Err(e);
     }
     hits.sort_by(|a, b| b.titled.cmp(&a.titled).then(b.last.cmp(&a.last)));

@@ -60,3 +60,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0052](0052-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md) | Projects choose a ticket tracker, and Linear delegates tickets to fctl |
 | [0053](0053-hosts-update-themselves-to-the-control-planes-version.md) | Hosts update themselves to the control plane's version |
 | [0054](0054-review-agents-review-dependabots-pull-requests-by-themselves.md) | Review agents review Dependabot's pull requests by themselves, and run none of them |
+| [0056](0056-sessions-are-searched-in-an-index-per-workspace.md) | Sessions are searched in an index per workspace, in a Durable Object |

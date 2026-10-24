@@ -8,7 +8,7 @@
 //! some shared with them. The index is SQLite's FTS5 with the `trigram`
 //! tokenizer, which finds any text of three characters or more, case and
 //! accents aside; shorter searches look row by row. It lives here rather
-//! than in D1, which can't export a database with virtual tables (ADR 0050),
+//! than in D1, which can't export a database with virtual tables (ADR 0056),
 //! and holds nothing that can't be indexed again from the sessions.
 
 use crate::internal::{self, ForgetSession, IndexHit, IndexHits, PutDocs, SearchIndex};

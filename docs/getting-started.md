@@ -256,8 +256,9 @@ fctl run "Add a dark mode toggle to the settings page"
 On a computer, the Agent Floor opens with the cursor in its task box. From
 anywhere in the app, ⌘K and then Enter take you there (Ctrl+K and Enter on
 Linux and Windows), and ⌘Enter (Ctrl+Enter) starts the session. ⌘K opens
-the search that jumps to sessions, projects and workspaces, and ⌘P and ⌘⇧P
-open it too, as in code editors.
+the search that jumps to sessions, projects and workspaces, and finds what
+sessions said (see [Follow along and steer](#8-follow-along-and-steer)),
+and ⌘P and ⌘⇧P open it too, as in code editors.
 
 The two lists by the Start button choose the model the session runs on
 (Opus, Sonnet, Haiku or Fable, each the latest of its family) and its
@@ -341,6 +342,20 @@ started.
   which opens it in a browser. From a terminal,
   `fctl open my-app#12 --claude` opens the desktop app, or claude.ai when it
   is not installed.
+
+To find what a session said, press ⌘F (Ctrl+F) on its page, or choose
+**Find in this session** in its menu on a phone. The bar under its header
+finds what you type in all the transcript says, folded or not: messages,
+the agent's replies, the lines of its work and the commands behind them,
+its thoughts and its subagents' work. It counts the matches from the
+newest; Enter (or ↑) goes up to the one before, Shift+Enter (or ↓) back
+down, and each opens what folds it. It loads earlier activity to look in
+it too. A second ⌘F there opens your browser's own find. To find it in
+any session you can see, type it in ⌘K: past the sessions whose titles
+match, it lists those whose messages or agent's replies say it, and opens
+one at that message with its find bar on it. From a terminal, `fctl
+search "login redirect"`. Both find what you type as you type it, whatever
+the case, the accents and the spaces between the words.
 
 If the agent's work stops coming through, because the session's runner went
 away or can't reach the agent in its sandbox, the session page says so and

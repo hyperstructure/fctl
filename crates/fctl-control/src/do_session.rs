@@ -3023,10 +3023,15 @@ impl SessionObject {
         }
     }
 
-    /// The hourly job's request (`/index`): puts what the search index
-    /// doesn't have of the session in it, a few batches at once, and has
-    /// the alarm do the rest of a long transcript.
+    /// The hourly job's request (`/index`), for a session whose index may
+    /// lack something (one from before search, one whose index fell behind,
+    /// or each when its index is to be built again): puts all of it in the
+    /// index again, from its first event, a few batches at once, and has the
+    /// alarm do the rest of a long transcript, which says so in D1 when done.
     async fn backfill_search(&self) -> std::result::Result<Indexed, ApiError> {
+        self.delete_meta("search_seq");
+        self.delete_meta("search_about");
+        self.delete_meta("search_indexed");
         for _ in 0..SEARCH_BACKFILL_ROUNDS {
             if self.index_search().await? {
                 self.delete_meta("search_failures");

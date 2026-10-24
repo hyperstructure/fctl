@@ -261,7 +261,9 @@ Other secrets go in with `--set`, and the GitHub App's key with
   ([Host updates](architecture.md#host-updates)).
 - **Backups.** D1 keeps 30 days of point-in-time history (Time Travel):
   `npx wrangler d1 time-travel restore`. For a copy, `npx wrangler d1 export`.
-  Session event logs live in Durable Object storage.
+  Session event logs live in Durable Object storage, and so does each
+  workspace's search index, which the sessions can build again: after
+  `UPDATE sessions SET search_indexed = 0` the hourly job has them do it.
 - **Logs.** `npx wrangler tail fctl` streams the Worker's logs; observability
   is enabled in the rendered config. `fctl host logs` shows a host's.
 - **Costs.** The control plane is request- and storage-priced on Cloudflare;

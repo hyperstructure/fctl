@@ -83,6 +83,8 @@ fctl edit my-app#12 --title "Fix the flaky login test"
 fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" clears it
 fctl logs my-app#12              # the transcript
 fctl logs -f my-app#12           # …and keep following
+fctl search login redirect       # the sessions that say it, and where
+fctl search -p my-app "flaky test" --limit 50
 
 fctl attach my-app#12            # stream it and type messages (Ctrl-C detaches)
 fctl attach --read-only my-app#12
@@ -98,6 +100,16 @@ fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 ```
 
 `fctl run` uses the project from `fctl projects use` when `-p` is missing.
+
+`fctl search` looks in the titles and descriptions of the sessions you can
+see, in every workspace unless `-w` or `-p` says which, and in what people
+wrote to their agents and the agents replied; not in tool calls or what
+they returned. It finds the words as you type them, whatever the case, the
+accents and the spaces between them, and lists the sessions that have them
+in their title first, then those that said them most recently, each with
+up to three snippets of where (`--json` for scripts). A session is
+searchable a few seconds after its messages come; ones from before search
+existed, once the control plane's hourly job got to them.
 
 A session's agent pushes, comments or only reads on GitHub (`--github`):
 one that pushes commits and pushes its branch, as agents always did; one

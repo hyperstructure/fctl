@@ -61,7 +61,7 @@ import {
   subagentRuns,
   type Tool,
 } from "@/lib/transcript";
-import { Reveal, useRevealed } from "./find";
+import { useRevealed, useWanted } from "./find";
 import { OpenLine, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { Thinking, thinkingNow } from "./thinking";
 
@@ -584,16 +584,18 @@ export const Run = memo(
     const [opened, setOpened] = useState(none);
     const id = useId();
     // Finding shows the steps it gets to on their own, and opens them for a match in what they open into.
-    const reveal = useContext(Reveal);
+    const keys = useMemo(() => steps.map((s) => s.key), [steps]);
+    const wanted = useWanted(keys);
     useLayoutEffect(() => {
-      const show = steps.filter((s) => reveal.has(s.key)).map((s) => s.key);
+      const how = wanted.split(" ");
+      const show = keys.filter((_, i) => how[i]);
       if (!show.length) return;
-      const open = show.filter((k) => reveal.get(k) === "open");
-      const add = (keys: string[]) => (set: ReadonlySet<string>) =>
-        keys.every((k) => set.has(k)) ? set : new Set([...set, ...keys]);
+      const open = keys.filter((_, i) => how[i] === "open");
+      const add = (more: string[]) => (set: ReadonlySet<string>) =>
+        more.every((k) => set.has(k)) ? set : new Set([...set, ...more]);
       setShown(add(show));
       if (open.length) setOpened(add(open));
-    }, [reveal, steps]);
+    }, [wanted, keys]);
     const toggle = useCallback((key: string) => {
       setOpened((o) => {
         const next = new Set(o);

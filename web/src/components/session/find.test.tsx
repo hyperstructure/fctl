@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Json } from "@/lib/claude-types";
 import type { LiveSession } from "@/lib/live";
 import type { Item, Tool } from "@/lib/transcript";
-import { FindBar, Reveal, useFind } from "./find";
+import { FindBar, Reveal, Revealer, useFind, useWanted } from "./find";
 import { Run } from "./tool";
 
 vi.mock("@/components/markdown", () => ({
@@ -219,18 +219,18 @@ describe("a run of the agent's work", () => {
   const lines = (c: HTMLElement) => [...c.querySelectorAll("[data-find^='line:']")].map((e) => e.textContent);
 
   it("shows the steps finding gets to on their own, and opens them for what they open into", () => {
-    const run = (reveal: Map<string, "show" | "open">) => (
+    const reveal = new Revealer();
+    const { container } = render(
       <Reveal.Provider value={reveal}>
         <Run steps={steps} running={false} active={false} />
-      </Reveal.Provider>
+      </Reveal.Provider>,
     );
-    const { container, rerender } = render(run(new Map()));
     // Folded: its line alone.
     expect(lines(container)).toEqual([]);
-    rerender(run(new Map([[steps[1]?.key ?? "", "show"]])));
+    act(() => reveal.set(new Map([[steps[1]?.key ?? "", "show"]])));
     expect(lines(container)).toEqual(["src/login.ts"]);
-    rerender(
-      run(
+    act(() =>
+      reveal.set(
         new Map([
           [steps[1]?.key ?? "", "show"],
           [steps[0]?.key ?? "", "open"],
@@ -240,10 +240,23 @@ describe("a run of the agent's work", () => {
     expect(lines(container)).toEqual(["Run the tests", "src/login.ts"]);
     expect(container.querySelector(`[data-find="cmd:${steps[0]?.key}"]`)?.textContent).toBe("npm test");
     // What it opened stays open after finding is done.
-    rerender(run(new Map()));
+    act(() => reveal.set(new Map()));
     expect(lines(container)).toEqual(["Run the tests", "src/login.ts"]);
   });
 });
+
+/** What finding wants of the lines `keys`, as `key:how` for those it wants something of. */
+function Wanted({ keys }: { keys: string[] }) {
+  const how = useWanted(keys).split(" ");
+  return (
+    <output>
+      {keys
+        .map((k, i) => (how[i] ? `${k}:${how[i]}` : ""))
+        .filter(Boolean)
+        .join(" ")}
+    </output>
+  );
+}
 
 /** The find bar over a transcript of runs, with what finding wants open. */
 function Revealing({ items, store }: { items: Item[]; store: LiveSession }) {
@@ -261,7 +274,9 @@ function Revealing({ items, store }: { items: Item[]; store: LiveSession }) {
   return (
     <>
       {finder.open && <FindBar {...finder.bar} />}
-      <output>{[...finder.reveal].map(([k, how]) => `${k}:${how}`).join(" ")}</output>
+      <Reveal.Provider value={finder.reveal}>
+        <Wanted keys={items.map((it) => it.key)} />
+      </Reveal.Provider>
       <div ref={transcript} />
     </>
   );
@@ -287,7 +302,7 @@ describe("what finding opens", () => {
     act(() => vi.advanceTimersByTime(400));
     expect(wanted()).toBe(`${run[2]?.key}:show`);
     key(input, "Enter");
-    expect(wanted()).toBe(`${run[2]?.key}:show ${run[1]?.key}:show`);
+    expect(wanted()).toBe(`${run[1]?.key}:show ${run[2]?.key}:show`);
     // A command opens its call.
     type(input, "npm");
     act(() => vi.advanceTimersByTime(400));
