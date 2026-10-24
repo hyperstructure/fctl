@@ -167,9 +167,10 @@ web app's assets). An instance is closed to search engines unless its
 deployment opens it (`search_engines` in `deploy/instances`, which sets
 `FCTL_SEARCH_ENGINES`; app.fctl.sh's does): closed, `/robots.txt`
 disallows everything but `/llms.txt` and there is no sitemap. Open, `/robots.txt` allows
-`/`, `/login`, `/early-access` (with early access) and `/llms.txt`,
-disallows the rest and names `/sitemap.xml`, which lists those pages at
-`FCTL_PUBLIC_URL`. Published screenshots carry `noindex` either way.
+`/`, `/login`, `/early-access` (with early access), `/llms.txt` and
+`/sitemap.xml` itself (Google honours `robots.txt` when it fetches a
+sitemap), disallows the rest and names `/sitemap.xml`, which lists those
+pages at `FCTL_PUBLIC_URL`. Published screenshots carry `noindex` either way.
 
 ### Two-factor sign-in
 
