@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
+import type { LinearOutcome } from "@/lib/tickets";
 import { TicketsTab } from "./tickets";
 
 // No request is answered: the tab shows what the cache holds.
@@ -31,9 +32,11 @@ afterEach(() => {
 function render(node: ReactNode) {
   const container = document.createElement("div");
   const root = createRoot(container);
-  act(() => root.render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>));
+  const show = (n: ReactNode) =>
+    act(() => root.render(<QueryClientProvider client={queryClient}>{n}</QueryClientProvider>));
+  show(node);
   roots.push(() => act(() => root.unmount()));
-  return container;
+  return Object.assign(container, { show });
 }
 
 const settings: G.ProjectSettings = {
@@ -99,7 +102,13 @@ function tab(
     status = {},
     role = "member",
     connections = [connection],
-  }: { status?: Partial<G.ProjectTickets>; role?: G.WorkspaceRole; connections?: G.LinearConnection[] } = {},
+    returned,
+  }: {
+    status?: Partial<G.ProjectTickets>;
+    role?: G.WorkspaceRole;
+    connections?: G.LinearConnection[];
+    returned?: LinearOutcome;
+  } = {},
 ) {
   queryClient.setQueryData(keys.instance, instance);
   queryClient.setQueryData<G.WorkspaceList>(keys.workspaces, {
@@ -132,7 +141,7 @@ function tab(
     writable: [{ owner: "acme", name: "web" }],
     ...status,
   });
-  return render(<TicketsTab project={p} />);
+  return render(<TicketsTab project={p} returned={returned} />);
 }
 
 const radios = (c: HTMLElement) => [...c.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
@@ -179,6 +188,39 @@ describe("the Tickets tab", () => {
     expect(c.textContent).toContain("Only acme/web");
     expect(c.textContent).toContain("fctl ticket");
     expect(c.textContent).toContain("Their own tokens reach no issues at all.");
+  });
+
+  it("keeps a choice until what is stored changes", () => {
+    const c = tab(project());
+    act(() => radios(c)[0]?.click());
+    expect(checked(c)).toBe("none");
+    c.show(<TicketsTab project={project({ total_sessions: 4 })} />);
+    expect(checked(c)).toBe("none");
+    c.show(
+      <TicketsTab project={project({ settings: { ...settings, tickets: { tracker: "linear", linear } } })} />,
+    );
+    expect(checked(c)).toBe("linear");
+    expect(c.textContent).not.toContain("Save");
+  });
+
+  it("comes back from connecting Linear with Linear chosen, for the team next", () => {
+    const c = tab(project(), { role: "admin", returned: "connected" });
+    expect(c.textContent).toContain("Linear is connected");
+    expect(checked(c)).toBe("linear");
+    expect(c.textContent).toContain("Choose a team");
+    expect(c.textContent).toContain("Choose the team first.");
+  });
+
+  it("comes back from a Linear sign-in that failed with Linear still chosen, to try again", () => {
+    const c = tab(project(), { role: "admin", connections: [], returned: "denied" });
+    expect(checked(c)).toBe("linear");
+    expect([...c.querySelectorAll("button")].some((b) => b.textContent === "Connect Linear")).toBe(true);
+  });
+
+  it("shows those who can't choose what is stored, back from Linear too", () => {
+    const c = tab(project({ role: "editor" }), { role: "admin", returned: "connected" });
+    expect(checked(c)).toBe("github");
+    expect(c.textContent).not.toContain("Save");
   });
 
   it("has admins connect Linear, and tells others whom to ask", () => {

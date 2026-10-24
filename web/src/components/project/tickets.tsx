@@ -16,7 +16,7 @@ import {
   Play,
   RotateCcw,
 } from "lucide-react";
-import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
 import { StateDot } from "@/components/session/ticket";
 import {
   Avatar,
@@ -63,10 +63,18 @@ export function TicketsTab({ project, returned }: { project: G.Project; returned
     enabled: !!project.workspace && !!instance?.features.linear,
   });
   const saved = project.settings.tickets ?? {};
-  const [draft, setDraft] = useState<G.Tickets>(saved);
+  // Back from Linear, Linear is chosen again, as it was when the browser left for it: it can't have been
+  // saved, since saving it takes a team.
+  const [draft, setDraft] = useState<G.Tickets>(() =>
+    returned && manage && trackerOf(project.settings) !== "linear" ? { ...saved, tracker: "linear" } : saved,
+  );
   // A save, or another tab's, brings the draft back to what is stored.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the stored value, compared as JSON
-  useEffect(() => setDraft(project.settings.tickets ?? {}), [JSON.stringify(project.settings.tickets)]);
+  const stored = JSON.stringify(project.settings.tickets);
+  const [was, setWas] = useState(stored);
+  if (stored !== was) {
+    setWas(stored);
+    setDraft(project.settings.tickets ?? {});
+  }
   const tracker = draft.tracker ?? "github";
   const dirty = JSON.stringify(normalized(draft)) !== JSON.stringify(normalized(saved));
   const save = useMutation({

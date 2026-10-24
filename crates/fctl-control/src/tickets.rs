@@ -327,54 +327,23 @@ async fn recent(db: &D1Database, project_id: &str) -> AppResult<Vec<TicketRun>> 
 // ───────────────────────────── choosing Linear ─────────────────────────────
 
 /// The teams fctl's app reaches in a Linear workspace, each with its
-/// workflow, the state its tickets start in and its open projects.
+/// workflow, the state its tickets start in and its open projects. Linear
+/// prices a query by how much it asks for rather than by what it finds, so
+/// fctl counts the teams first and then asks for as many as there are.
 pub async fn teams(linear: &Linear<'_>) -> AppResult<Vec<LinearTeam>> {
-    let d = linear.graphql(lin::TEAMS, json!({})).await?;
-    let nodes = d
-        .get("teams")
-        .and_then(|t| t.get("nodes"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    Ok(nodes
-        .iter()
-        .filter_map(|t| {
-            let st = |k: &str| t.get(k).and_then(Value::as_str).map(str::to_owned);
-            let states = lin::states(t);
-            let ids: Vec<(String, fctl_proto::tickets::StateKind)> = states
-                .iter()
-                .filter_map(|s| Some((s.id.clone()?, s.kind)))
-                .collect();
-            let start_state = tk::start_state(None, &ids)
-                .and_then(|id| states.iter().find(|s| s.id.as_deref() == Some(id)))
-                .map(|s| s.name.clone());
-            Some(LinearTeam {
-                id: st("id")?,
-                key: st("key")?,
-                name: st("name").unwrap_or_default(),
-                color: st("color"),
-                states,
-                start_state,
-                projects: t
-                    .get("projects")
-                    .and_then(|p| p.get("nodes"))
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|p| {
-                        p.get("completedAt").is_none_or(Value::is_null)
-                            && p.get("canceledAt").is_none_or(Value::is_null)
-                    })
-                    .filter_map(|p| {
-                        Some(fctl_proto::tickets::LinearProject {
-                            id: p.get("id")?.as_str()?.to_owned(),
-                            name: p.get("name")?.as_str()?.to_owned(),
-                        })
-                    })
-                    .collect(),
-            })
-        })
-        .collect())
+    let ids = linear.graphql(lin::TEAM_IDS, json!({})).await?;
+    let mut teams = Vec::new();
+    let mut after: Option<String> = None;
+    for first in lin::team_pages(&ids) {
+        let d = linear
+            .graphql(lin::TEAMS, json!({ "first": first, "after": after }))
+            .await?;
+        let (page, next) = lin::teams_page(&d);
+        teams.extend(page);
+        let Some(next) = next else { break };
+        after = Some(next);
+    }
+    Ok(teams)
 }
 
 /// Checks a project's Linear choice as it is saved: its Linear workspace is
