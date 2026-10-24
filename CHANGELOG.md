@@ -2,6 +2,17 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.23.1 (2026-10-24)
+
+### Features
+
+- Let projects choose which apps' pull requests start reviews ([#262](https://github.com/hyperstructure/fctl/pull/262))
+
+### Fixes
+
+- **web:** Keep workspace invitations readable on phones ([#260](https://github.com/hyperstructure/fctl/pull/260))
+- **web:** Say plainly when a workspace isn't connected to Linear ([#261](https://github.com/hyperstructure/fctl/pull/261))
+
 ## 0.23.0 (2026-10-24)
 
 ### Features
