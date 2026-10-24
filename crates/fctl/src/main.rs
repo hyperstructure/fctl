@@ -54,7 +54,8 @@ enum Command {
         #[command(subcommand)]
         cmd: Option<cmd::workspaces::WorkspacesCmd>,
     },
-    /// List, create and inspect projects.
+    /// List, create and change projects: their settings, members, secrets
+    /// and repositories.
     #[command(subcommand)]
     Projects(cmd::projects::ProjectsCmd),
     /// Start a session: an agent working on a task.
@@ -226,6 +227,37 @@ enum Command {
         /// A session: its id (ses_…), its URL, or project#number.
         session: String,
     },
+    /// Share a session with someone in its workspace, or change what they
+    /// may do in it (its owners); without them, list who it is shared
+    /// with. Its project's people see it already.
+    #[command(
+        after_help = "Whoever can message a session's agent can have it hand over what its sandbox holds: the project's secrets, its GitHub tokens and the Claude token it runs on.
+
+Examples:
+  fctl share my-app#12                                  # who it is shared with
+  fctl share my-app#12 grace@example.com                # they view it and message its agent
+  fctl share my-app#12 grace@example.com --role viewer  # they only view it
+  fctl unshare my-app#12 grace@example.com"
+    )]
+    Share(cmd::sessions::ShareArgs),
+    /// Stop sharing a session with someone (its owners).
+    Unshare {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
+        /// Their address in the session's workspace, or their user id.
+        person: String,
+    },
+    /// Archive a session (its owners): lists leave it out, and nothing that
+    /// happens to its pull requests reaches its agent. Messages still do.
+    Archive {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
+    },
+    /// Bring an archived session back into the lists (its owners).
+    Unarchive {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
+    },
     /// Open a session or project in the browser (or the Claude app with --claude).
     Open {
         /// A session or project (default: the instance).
@@ -368,6 +400,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         } => cmd::sessions::resume(server, &session, &message.join(" "), &attach, json).await,
         Command::Follow { session } => cmd::sessions::follow(server, &session, true, json).await,
         Command::Unfollow { session } => cmd::sessions::follow(server, &session, false, json).await,
+        Command::Share(args) => cmd::sessions::share(server, args, json).await,
+        Command::Unshare { session, person } => {
+            cmd::sessions::unshare(server, &session, &person, json).await
+        }
+        Command::Archive { session } => cmd::sessions::archive(server, &session, true, json).await,
+        Command::Unarchive { session } => {
+            cmd::sessions::archive(server, &session, false, json).await
+        }
         Command::Open { target, claude } => {
             cmd::sessions::open(server, target.as_deref(), claude).await
         }
@@ -389,5 +429,55 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             install,
             refresh,
         } => cmd::completions::run(shell, install, refresh),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn every_command_is_well_formed() {
+        // Clap's own checks: no flag defined twice in a command, groups of
+        // flags that exist, and the like.
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn sessions_are_shared_and_archived_from_the_top() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("fctl").chain(args.iter().copied()))
+                .map(|c| c.command)
+        };
+        assert!(matches!(
+            parse(&["unshare", "my-app#12", "grace@example.com"]),
+            Ok(Command::Unshare { .. })
+        ));
+        assert!(matches!(
+            parse(&["archive", "my-app#12", "--json"]),
+            Ok(Command::Archive { .. })
+        ));
+        assert!(matches!(
+            parse(&["unarchive", "ses_01ABC"]),
+            Ok(Command::Unarchive { .. })
+        ));
+        assert!(matches!(
+            parse(&["sessions", "--archived", "-p", "my-app"]),
+            Ok(Command::Sessions(cmd::sessions::ListArgs {
+                archived: true,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            parse(&["projects", "secrets", "set", "STRIPE_KEY", "-p", "my-app"]),
+            Ok(Command::Projects(cmd::projects::ProjectsCmd::Secrets(_)))
+        ));
+        assert!(matches!(
+            parse(&["projects", "members", "-p", "my-app", "--json"]),
+            Ok(Command::Projects(cmd::projects::ProjectsCmd::Members(_)))
+        ));
+        // A secret's value never comes as an argument.
+        assert!(parse(&["projects", "secrets", "set", "STRIPE_KEY", "sk_live_123"]).is_err());
     }
 }
