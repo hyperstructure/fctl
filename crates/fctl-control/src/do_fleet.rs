@@ -2080,6 +2080,7 @@ impl FleetObject {
                     &grants,
                     row.github_access(),
                     &project.settings().tickets,
+                    row.github_issues,
                     now,
                 )
                 .await

@@ -1,6 +1,7 @@
 // Starting a session from a prompt, on the home page and on a project's page, with the model
-// and effort level it asks for, and what its agent may do on GitHub. What is written in either
-// stays in this browser until a session starts with it.
+// and effort level it asks for, and what its agent may do on GitHub: how much, and for a
+// maintainer, whether it reaches GitHub's issues whatever the project's tracker says. What is
+// written in either stays in this browser until a session starts with it.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -20,7 +21,7 @@ import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { type DraftText, forgetDraft, saveText } from "@/lib/draft";
-import { githubOffers, onGithub } from "@/lib/github-access";
+import { githubOffers, issuesOffers, offersIssues, onGithub } from "@/lib/github-access";
 import { type Choice, effortOffers, modelOffers, type Offer, startChoice } from "@/lib/models";
 import { keys } from "@/lib/queries";
 import type { SentFiles } from "./attachments";
@@ -32,7 +33,7 @@ export interface StartFiles {
 }
 
 /** The model, effort level and GitHub access a session asks for as it starts (see `asked`). */
-export type StartAsks = Pick<G.CreateSessionRequest, "model" | "effort" | "github_access">;
+export type StartAsks = Pick<G.CreateSessionRequest, "model" | "effort" | "github_access" | "github_issues">;
 
 /**
  * Starts a session and opens it. While a start is in flight, `start` does nothing, so a double
@@ -66,6 +67,7 @@ export function useStartSession(onStarted?: (s: G.Session) => unknown) {
       if (asks?.model) body.model = asks.model;
       if (asks?.effort) body.effort = asks.effort;
       if (asks?.github_access) body.github_access = asks.github_access;
+      if (asks?.github_issues) body.github_issues = true;
       try {
         return await api.createSession(project, body);
       } catch (e) {
@@ -145,14 +147,18 @@ export function useKeepDraft(
   };
 }
 
-/** A project as a start form knows it: its repositories say whether its agents work on GitHub. */
+/**
+ * A project as a start form knows it: its repositories say whether its agents work on GitHub, and
+ * its tracker and the caller's role whether a session may reach GitHub's issues beyond it.
+ */
 type ChoiceProject = Parameters<typeof startChoice>[0] &
-  Partial<Pick<G.Project, "repo" | "other_repos" | "all_repos_of">>;
+  Partial<Pick<G.Project, "repo" | "other_repos" | "all_repos_of" | "role">>;
 
 /**
  * The model, effort level and GitHub access a start form shows for `project` (see
  * `startChoice`), and `pick` for the pickers. What was picked (`picked`, starting as `kept`) stays
- * when the project changes, as far as the new one allows it.
+ * when the project changes, as far as the new one allows it. Reaching GitHub's issues beyond the
+ * tracker (`issues`) is asked anew for each session: no draft keeps it.
  */
 export function useStartChoice(project: ChoiceProject | undefined, kept?: Partial<Choice>) {
   const [picked, setPicked] = useState<Partial<Choice>>(() => ({
@@ -160,8 +166,14 @@ export function useStartChoice(project: ChoiceProject | undefined, kept?: Partia
     effort: kept?.effort,
     github: kept?.github,
   }));
-  const pick = useCallback((c: Partial<Choice>) => setPicked((p) => ({ ...p, ...c })), []);
-  const choice: Choice = project ? startChoice(project, picked) : { model: "", effort: "", github: "push" };
+  const [issues, setIssues] = useState(false);
+  const pick = useCallback(({ issues, ...c }: Partial<Choice>) => {
+    if (issues !== undefined) setIssues(issues);
+    setPicked((p) => ({ ...p, ...c }));
+  }, []);
+  const choice: Choice = project
+    ? { ...startChoice(project, picked), issues: issues && offersIssues(project) }
+    : { model: "", effort: "", github: "push" };
   return { choice, picked, pick };
 }
 
@@ -169,6 +181,7 @@ export function useStartChoice(project: ChoiceProject | undefined, kept?: Partia
 const MODEL = { key: "model", label: "Model" };
 const EFFORT = { key: "effort", label: "Effort" };
 const GITHUB = { key: "github", label: "On GitHub" };
+const ISSUES = { key: "issues", label: "Issues" };
 
 /** Where the project's own setting is, which sessions follow unless they ask for another. */
 const theirs = (o: Offer) => (o.own ? "The project's default" : undefined);
@@ -192,22 +205,28 @@ const joined =
  * sidebar beside it from `md`), they take a line of their own above it, which needs the row to
  * wrap. On a phone they show just the model's name and the symbols of the effort level and the
  * GitHub access, in one control, so that they fit in the row with the others; where it has too
- * little room, the model's name gives way, never the symbols.
+ * little room, the model's name gives way, never the symbols. With `issues`, the GitHub picker
+ * also offers a maintainer GitHub's issues beyond the project's tracker (`offersIssues`), and a
+ * dot on its symbol says the session will reach them.
  */
 export function StartChoices({
   project,
   choice,
   onPick,
+  issues,
   disabled,
   className,
 }: {
   project: ChoiceProject;
   choice: Choice;
   onPick: (c: Partial<Choice>) => void;
+  /** The form starts sessions now, which may reach GitHub's issues; a schedule's doesn't. */
+  issues?: boolean;
   disabled?: boolean;
   className?: string;
 }) {
   const github = onGithub(project);
+  const beyond = issues && offersIssues(project);
   return (
     <div
       className={cn(
@@ -257,24 +276,50 @@ export function StartChoices({
         }))}
       />
       {github && (
-        <Select
-          size="sm"
-          narrow="bare"
-          compact
-          className={cn("max-sm:-ml-px max-sm:shrink-0 max-sm:rounded-l-none", joined)}
-          aria-label="On GitHub"
-          value={choice.github}
-          disabled={disabled}
-          onChange={(g) => onPick({ github: g })}
-          options={githubOffers(project).map((l) => ({
-            value: l.value,
-            label: l.label,
-            short: "",
-            icon: <GithubAccessIcon access={l.value} />,
-            description: l.description,
-            section: GITHUB,
-          }))}
-        />
+        <span className="relative flex min-w-0 max-sm:shrink-0">
+          <Select<string>
+            size="sm"
+            narrow="bare"
+            compact
+            className={cn("max-sm:-ml-px max-sm:shrink-0 max-sm:rounded-l-none", joined)}
+            aria-label="On GitHub"
+            value={choice.github}
+            disabled={disabled}
+            onChange={(v) =>
+              v === "issues" || v === "tracker"
+                ? onPick({ issues: v === "issues" })
+                : onPick({ github: v as G.GithubAccess })
+            }
+            options={[
+              ...githubOffers(project).map((l) => ({
+                value: l.value,
+                // The trigger says it all when it is hovered; the list, each choice alone.
+                label: beyond && choice.issues ? `${l.label}, and GitHub issues` : l.label,
+                item: l.label,
+                short: "",
+                icon: <GithubAccessIcon access={l.value} />,
+                description: l.description,
+                checked: beyond ? l.value === choice.github : undefined,
+                section: GITHUB,
+              })),
+              ...(beyond
+                ? issuesOffers(project).map((o) => ({
+                    value: o.on ? "issues" : "tracker",
+                    label: o.label,
+                    description: o.description,
+                    checked: o.on === !!choice.issues,
+                    section: ISSUES,
+                  }))
+                : []),
+            ]}
+          />
+          {beyond && choice.issues && (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute -top-0.5 -right-0.5 z-20 size-1.5 rounded-full bg-accent ring-2 ring-canvas"
+            />
+          )}
+        </span>
       )}
     </div>
   );

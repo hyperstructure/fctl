@@ -61,7 +61,14 @@ effort?: string,
  * `github_access` as it is now. Absent: push, as from control planes
  * before it.
  */
-github_access?: GithubAccess, remote_control?: RemoteControlState, stats: SessionStats, 
+github_access?: GithubAccess, 
+/**
+ * Its agent reaches the GitHub issues of the repositories it writes
+ * to, whatever its project's ticket tracker says, as the maintainer
+ * who started it asked (`api::CreateSessionRequest::github_issues`).
+ * Absent for other sessions, and from control planes before it.
+ */
+github_issues?: boolean, remote_control?: RemoteControlState, stats: SessionStats, 
 /**
  * The caller's role.
  */

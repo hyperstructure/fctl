@@ -1489,6 +1489,17 @@ sessions get the tracker's permissions with their next token, within the
 hour, as with `github_access`. Review agents read issues only where the
 project's tracker lets agents, and never reach Linear.
 
+A maintainer can start a session that reaches GitHub's issues beyond the
+tracker (`CreateSessionRequest::github_issues`, `fctl run
+--github-issues`, [ADR 0055](adr/0055-maintainers-start-sessions-that-reach-github-issues-beyond-the-tracker.md)),
+to move them into Linear, say. Its tokens carry the issues permission as
+in the table's second row (`fctl_domain::tickets::session_issues`), for as
+long as it runs; it reaches the tracker as other sessions do, with `gh`
+where that is one repository's issues, which its tokens then reach; and
+its agent is told to use GitHub's issues only as its task asks. Agents
+whose tokens reach no issues are told that a maintainer can start such a
+session, so that a task that needs them ends with a way on.
+
 1. **`fctl ticket`** in the sandbox goes to the control plane as an agent
    call (`AgentCall::Ticket`), as `fctl memory` does: a `TicketRequest`
    (`fctl_proto::tickets`) that hosts and fctl-agent pass on as it is, so

@@ -50,7 +50,7 @@ pub async fn spec(
 ) -> AppResult<TicketsSpec> {
     let t = &settings.tickets;
     let primary = project.repo();
-    let mut via = tk::via(t, primary.as_ref(), grants, access);
+    let mut via = tk::session_via(t, primary.as_ref(), grants, access, row.github_issues);
     let linear_workspace = match (&t.tracker, &t.linear) {
         (Tracker::Linear, Some(l)) => {
             // A workspace that disconnected it reaches none of its tickets.
@@ -80,6 +80,7 @@ pub async fn spec(
         primary: primary.as_ref(),
         grants,
         access,
+        github_issues: row.github_issues,
         linear_workspace: linear_workspace.as_deref(),
         started_from,
     });

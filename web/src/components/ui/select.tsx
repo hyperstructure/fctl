@@ -33,6 +33,12 @@ export interface SelectOption<T extends string = string> {
   description?: ReactNode;
   icon?: ReactNode;
   disabled?: boolean;
+  /**
+   * Whether its check mark shows, where a section of the list sets something besides the value (a
+   * choice of its own, that picking one of its options changes). Without it, the value's option
+   * has the mark.
+   */
+  checked?: boolean;
   /** Options that share a section's key sit under its label, in the list only. */
   section?: { key: string; label: ReactNode };
 }
@@ -400,7 +406,7 @@ export function Select<T extends string>({
             )}
           />
           {options.map((o, i) => {
-            const checked = picked !== null ? o.value === picked : i === selected;
+            const checked = o.checked ?? (picked !== null ? o.value === picked : i === selected);
             const heading = o.section && o.section.key !== options[i - 1]?.section?.key;
             return (
               <Fragment key={o.value}>

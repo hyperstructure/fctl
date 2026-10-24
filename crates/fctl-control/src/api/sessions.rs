@@ -115,6 +115,14 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         ctx.limits().and_then(|l| l.github_access),
     )
     .map_err(AppError)?;
+    // Reaching GitHub's issues whatever the project's tracker says is for
+    // those who may change the tracker.
+    let github_issues = body.github_issues.unwrap_or(false);
+    if github_issues && !fctl_domain::perm::can_manage_project(p.role) {
+        return Err(forbidden(
+            "Only the project's maintainers may start a session that reaches GitHub issues its ticket tracker doesn't",
+        ));
+    }
     let credential = default_credential(ctx, &user, p.workspace_id()).await?;
     let id = fctl_domain::ids::session_id(ctx.now);
     // The task's files belong to the new session from here on.
@@ -149,7 +157,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     q(
         &ctx.db,
         "INSERT INTO sessions (id, project_id, number, title, prompt, prompt_attachments, status, created_by, credential_id, branch, base_branch, model, effort, \
-         claude_session_id, stats, created_at, updated_at, last_activity_at, github_access) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)",
+         claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, github_issues) \
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&p.row.id),
@@ -168,6 +177,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             n(ctx.now),
             n(ctx.now),
             s(github_access.as_str()),
+            n(i64::from(github_issues)),
         ],
     )?
     .run()
@@ -231,6 +241,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             "project": p.row.slug,
             "number": number,
             "github_access": github_access,
+            "github_issues": github_issues.then_some(true),
             "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat).map(|a| &a.token_id),
         })),
     );
