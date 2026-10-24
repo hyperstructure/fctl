@@ -62,3 +62,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0054](0054-review-agents-review-dependabots-pull-requests-by-themselves.md) | Review agents review Dependabot's pull requests by themselves, and run none of them |
 | [0055](0055-maintainers-start-sessions-that-reach-github-issues-beyond-the-tracker.md) | Maintainers start sessions that reach GitHub issues beyond the tracker |
 | [0056](0056-sessions-are-searched-in-an-index-per-workspace.md) | Sessions are searched in an index per workspace, in a Durable Object |
+| [0057](0057-projects-choose-which-apps-pull-requests-start-reviews.md) | Projects choose which apps' pull requests start reviews by themselves |

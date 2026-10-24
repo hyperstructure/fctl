@@ -1,6 +1,6 @@
 # 0054: Review agents review Dependabot's pull requests by themselves, and run none of them
 
-2026-10-24 · accepted
+2026-10-24 · accepted · projects choose which apps' pull requests start reviews, Dependabot until they choose otherwise, since [0057](0057-projects-choose-which-apps-pull-requests-start-reviews.md)
 
 ## Context
 

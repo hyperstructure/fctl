@@ -231,6 +231,12 @@ export const api = {
     request<G.ReviewAgents>("GET", `/projects/${enc(project)}/review-agents`),
   updateReviewAgents: (project: string, b: G.UpdateReviewAgentsRequest) =>
     request<G.ReviewAgents>("PATCH", `/projects/${enc(project)}/review-agents`, b),
+  /** The apps that opened the newest pull requests in a project's repositories, those that opened most first (its owners). */
+  reviewBots: (project: string) =>
+    request<G.ReviewBotList>("GET", `/projects/${enc(project)}/review-agents/bots`),
+  /** An app as GitHub shows it, by its bot (`renovate[bot]`), through the project's installation (its owners). */
+  reviewBot: (project: string, login: string) =>
+    request<G.ReviewBot>("GET", `/projects/${enc(project)}/review-agents/bots/${enc(login)}`),
   /** A project's reviews, newest first; with `session`, that session's alone. */
   reviews: (project: string, q: { before?: number; limit?: number; session?: string } = {}) => {
     const p = new URLSearchParams();

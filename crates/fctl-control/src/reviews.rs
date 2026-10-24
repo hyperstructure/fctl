@@ -334,6 +334,7 @@ pub async fn repos(db: &D1Database, project: &ProjectRow) -> AppResult<Vec<RepoR
 /// installations its workspace connected; repositories it can't reach are
 /// left out.
 pub async fn seen_bots(ctx: &Ctx, project: &ProjectRow) -> AppResult<Vec<ReviewBot>> {
+    let gh = github::from_config(&ctx.cfg, ctx.now)?;
     let mut by_installation: Vec<(u64, Vec<RepoRef>)> = Vec::new();
     for repo in repos(&ctx.db, project)
         .await?
@@ -356,7 +357,6 @@ pub async fn seen_bots(ctx: &Ctx, project: &ProjectRow) -> AppResult<Vec<ReviewB
             None => by_installation.push((inst, vec![repo])),
         }
     }
-    let gh = github::from_config(&ctx.cfg, ctx.now)?;
     let mut answers = Vec::new();
     for (inst, list) in by_installation {
         answers.push(gh.lookup(inst, rv::bots_query(&list)).await?);
@@ -374,11 +374,11 @@ pub async fn find_bot(ctx: &Ctx, project: &ProjectRow, name: &str) -> AppResult<
             "Name a GitHub App as renovate, renovate[bot] or https://github.com/apps/renovate",
         )));
     };
+    let gh = github::from_config(&ctx.cfg, ctx.now)?;
     let mut why = None;
     for repo in repos(&ctx.db, project).await? {
         match reach(ctx, project, &repo).await {
             Ok(inst) => {
-                let gh = github::from_config(&ctx.cfg, ctx.now)?;
                 let slug = login.trim_end_matches("[bot]");
                 return Ok(gh.app(inst, slug).await?.as_ref().and_then(rv::app_found));
             }

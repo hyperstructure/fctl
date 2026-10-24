@@ -86,7 +86,7 @@ pub enum ReviewCmd {
         /// (dependabot,renovate), or `none`. `fctl review bots` lists the
         /// apps that opened pull requests lately.
         #[arg(long, value_name = "LIST", value_parser = bots_arg)]
-        bots: Option<Vec<String>>,
+        bots: Option<Bots>,
     },
     /// The apps that opened the newest pull requests in the project's
     /// repositories, and which of them start reviews by themselves; with a
@@ -180,7 +180,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
                 model: default(model),
                 effort: default(effort),
                 instructions,
-                bots,
+                bots: bots.map(|b| b.0),
             };
             let changes = req != UpdateReviewAgentsRequest::default();
             let agents = if changes {
@@ -200,10 +200,14 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
     }
 }
 
+/// `--bots`: the apps' bots, as `renovate[bot]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bots(Vec<String>);
+
 /// `--bots`: apps separated by commas, or `none`.
-fn bots_arg(s: &str) -> std::result::Result<Vec<String>, String> {
+fn bots_arg(s: &str) -> std::result::Result<Bots, String> {
     if s.trim().eq_ignore_ascii_case("none") {
-        return Ok(Vec::new());
+        return Ok(Bots(Vec::new()));
     }
     s.split(',')
         .map(str::trim)
@@ -213,7 +217,8 @@ fn bots_arg(s: &str) -> std::result::Result<Vec<String>, String> {
                 format!("“{b}” isn't a GitHub App's name: give one as renovate, renovate[bot] or https://github.com/apps/renovate")
             })
         })
-        .collect()
+        .collect::<std::result::Result<_, _>>()
+        .map(Bots)
 }
 
 /// `fctl review bots [NAME]`.
@@ -720,19 +725,41 @@ fn print_posted(p: &PostedReview) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Fctl {
+        #[command(flatten)]
+        review: ReviewArgs,
+    }
 
     #[test]
     fn bots_take_a_list_or_none() {
+        let set = |list: &str| match Fctl::try_parse_from(["fctl", "settings", "--bots", list])
+            .map(|f| f.review.cmd)
+        {
+            Ok(Some(ReviewCmd::Settings { bots, .. })) => bots,
+            _ => None,
+        };
+        assert_eq!(
+            set("dependabot,renovate"),
+            Some(Bots(vec![
+                "dependabot[bot]".to_owned(),
+                "renovate[bot]".to_owned()
+            ]))
+        );
+        assert_eq!(set("none"), Some(Bots(Vec::new())));
+        assert_eq!(set("renovate,acme/web"), None);
         assert_eq!(
             bots_arg("dependabot, Renovate[bot],,https://github.com/apps/pre-commit-ci"),
-            Ok(vec![
+            Ok(Bots(vec![
                 "dependabot[bot]".to_owned(),
                 "renovate[bot]".to_owned(),
                 "pre-commit-ci[bot]".to_owned()
-            ])
+            ]))
         );
-        assert_eq!(bots_arg("none"), Ok(Vec::new()));
-        assert_eq!(bots_arg(" NONE "), Ok(Vec::new()));
+        assert_eq!(bots_arg("none"), Ok(Bots(Vec::new())));
+        assert_eq!(bots_arg(" NONE "), Ok(Bots(Vec::new())));
         assert!(
             bots_arg("renovate,https://github.com/mallory")
                 .is_err_and(|e| e.contains("“https://github.com/mallory”"))

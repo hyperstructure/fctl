@@ -369,14 +369,19 @@ outside it except through these channels:
   GitHub token only reads, fctl posts what they find, and they get no
   secrets, setup script, memory or connectors. A pull request starts a
   review by itself only when its author may write to the repository, or
-  one of fctl's agents or Dependabot opened it; anyone else's waits until
-  someone in the project looks at it and asks for its review, since its
-  text could otherwise have the agent hand the operator's token over
+  one of fctl's agents or of the GitHub Apps the project's owners chose
+  (Dependabot until they choose) opened it from a branch of the
+  repository; anyone else's waits until someone in the project looks at
+  it and asks for its review, since its text could otherwise have the
+  agent hand the operator's token over
   ([ADR 0047](adr/0047-review-agents-review-outsiders-pull-requests-when-asked.md)).
-  Dependabot's descriptions quote what its dependencies' authors wrote,
-  and installing those runs their code, so its pull requests' agent
-  installs and runs nothing of them
-  ([ADR 0054](adr/0054-review-agents-review-dependabots-pull-requests-by-themselves.md)).
+  An app's pull requests can carry text from outside all the same, such
+  as the release notes Dependabot and Renovate quote, and installing the
+  dependencies they update runs their code, so their agent installs and
+  runs nothing of them: add only apps whose pull requests you'd have it
+  read unasked
+  ([ADR 0054](adr/0054-review-agents-review-dependabots-pull-requests-by-themselves.md),
+  [ADR 0057](adr/0057-projects-choose-which-apps-pull-requests-start-reviews.md)).
 - **Project secrets** are exported to the agent's environment. Treat them as
   readable by anything the agent runs.
 - **The image and the setup script.** Whoever sets a project's image or
