@@ -242,10 +242,13 @@ export function useFind({
     [transcript, footer],
   );
 
-  // What was typed changed: the bar goes to the match nearest the reader.
+  // What was typed changed: the bar goes to the match nearest the reader. Typed over what a
+  // search of all sessions found, it finds what the reader typed, wherever that found it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only a new search moves it there
   useEffect(() => {
-    if (!open || target.current !== undefined) return;
+    if (!open) return;
+    if (target.current && needle(target.current.query) !== needle(query)) target.current = undefined;
+    if (target.current !== undefined) return;
     older.current = false;
     setCurrent(nearest(matches)?.key);
   }, [open, typed]);

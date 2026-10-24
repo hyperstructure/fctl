@@ -407,4 +407,15 @@ describe("earlier activity", () => {
     // The oldest of three: the newest counts first.
     expect(container.querySelector("#find-count")?.textContent).toBe("3 of 3");
   });
+
+  it("finds what the reader types over what a search found, before its event loaded", () => {
+    const store = { loadEarlier: vi.fn() } as unknown as LiveSession;
+    const later = [message("cookie, again"), message("and the redirect")];
+    const landing = { query: "cookie", seq: 1 };
+    const history = { ...idle, firstSeq: later[0]?.seq ?? 0, loadingOlder: true };
+    const { container } = render(<Later items={later} store={store} history={history} landing={landing} />);
+    const input = container.querySelector("search input") as HTMLInputElement;
+    type(input, "redirect");
+    expect(container.querySelector("#find-count")?.textContent).toBe("1 of 1+");
+  });
 });
