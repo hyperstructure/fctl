@@ -488,52 +488,61 @@ function Invitations({ invitations }: { invitations: G.WorkspaceInvitation[] }) 
       {invitations.map((i) => (
         <div
           key={i.id}
-          className="flex flex-wrap items-center gap-4 rounded-xl border border-accent/25 bg-accent-soft px-4 py-3.5"
+          // Narrower than 36rem inside, as on a phone or beside the sidebar on a tablet, the
+          // buttons take a line of their own under the text.
+          className="@container rounded-xl border border-accent/25 bg-accent-soft px-4 py-3.5"
         >
-          <WorkspaceAvatar workspace={i.workspace} size={36} />
-          <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-            <div className="text-[14.5px] text-ink">
-              {i.invited_by ? `${i.invited_by.name} invited you to ` : "You're invited to "}
-              <span className="font-medium">{i.workspace.name}</span>
+          <div className="flex flex-col gap-3.5 @xl:flex-row @xl:items-center @xl:gap-4">
+            <div className="flex min-w-0 flex-1 items-start gap-3 @xl:items-center @xl:gap-4">
+              <WorkspaceAvatar workspace={i.workspace} size={36} />
+              <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                <div className="text-[14.5px] text-ink">
+                  {i.invited_by ? `${i.invited_by.name} invited you to ` : "You're invited to "}
+                  <span className="font-medium">{i.workspace.name}</span>
+                </div>
+                <div className="mt-0.5 text-[12.5px] text-ink-3">
+                  As {i.email}, {i.role === "admin" ? "an admin" : "a member"} ·{" "}
+                  <span className="whitespace-nowrap">{ago(i.created_at)}</span>
+                  {i.needs_two_factor && (
+                    <span className="text-amber">
+                      {" "}
+                      · it requires two-factor sign-in:{" "}
+                      <Link
+                        to="/settings"
+                        search={{ linked: undefined, error: undefined }}
+                        className="underline underline-offset-2"
+                      >
+                        set it up
+                      </Link>{" "}
+                      to join
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
-            <div className="mt-0.5 text-[12.5px] text-ink-3">
-              As {i.email}, {i.role === "admin" ? "an admin" : "a member"} · {ago(i.created_at)}
-              {i.needs_two_factor && (
-                <span className="text-amber">
-                  {" "}
-                  · it requires two-factor sign-in:{" "}
-                  <Link
-                    to="/settings"
-                    search={{ linked: undefined, error: undefined }}
-                    className="underline underline-offset-2"
-                  >
-                    set it up
-                  </Link>{" "}
-                  to join
-                </span>
-              )}
+            {/* Under the text, Join takes the room Decline leaves; beside it, a long name gives
+                way before the text does. */}
+            <div className="flex min-w-0 gap-2 @xl:max-w-1/2">
+              <Button
+                size="sm"
+                variant="ghost"
+                loading={decline.isPending && decline.variables?.id === i.id}
+                onClick={() => decline.mutate(i)}
+                className="@max-xl:h-9"
+              >
+                Decline
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={i.needs_two_factor}
+                loading={accept.isPending && accept.variables?.id === i.id}
+                onClick={() => accept.mutate(i)}
+                className="min-w-0 @max-xl:h-9 @max-xl:flex-1"
+              >
+                <span className="truncate">Join {i.workspace.name}</span>
+              </Button>
             </div>
-          </div>
-          {/* On a phone they take a line of their own, where a long name gives way. */}
-          <div className="flex max-w-full min-w-0 gap-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              loading={decline.isPending && decline.variables?.id === i.id}
-              onClick={() => decline.mutate(i)}
-            >
-              Decline
-            </Button>
-            <Button
-              size="sm"
-              variant="primary"
-              disabled={i.needs_two_factor}
-              loading={accept.isPending && accept.variables?.id === i.id}
-              onClick={() => accept.mutate(i)}
-              className="min-w-0"
-            >
-              <span className="truncate">Join {i.workspace.name}</span>
-            </Button>
           </div>
         </div>
       ))}
