@@ -20,7 +20,8 @@ use crate::validate::Result;
 use fctl_proto::ApiError;
 use fctl_proto::session::{LinearTickets, SessionTicket, Tracker};
 use fctl_proto::tickets::{
-    StateKind, Ticket, TicketComment, TicketField, TicketLink, TicketPerson, TicketState,
+    LinearProject, LinearTeam, StateKind, Ticket, TicketComment, TicketField, TicketLink,
+    TicketPerson, TicketState,
 };
 use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
@@ -373,12 +374,72 @@ impl Tokens {
 /// Who signed in, and their Linear workspace.
 pub const VIEWER: &str = "query { viewer { id name displayName email avatarUrl app organization { id name urlKey logoUrl } } }";
 
-/// The teams fctl's app reaches, each with its workflow and its projects,
-/// for people to choose from. Linear refuses queries of more than 10,000
-/// points (an object costs one, times how many a connection asks for), so
-/// the lists stop at 100 teams of 50 projects (7,600); a choice is checked
-/// by its ids ([`TEAM`], [`PROJECT`]), wherever it is in them.
-pub const TEAMS: &str = "query { teams(first: 100) { nodes { id key name color states(first: 25) { nodes { id name type position } } projects(first: 50) { nodes { id name completedAt canceledAt } } } } }";
+/// Linear refuses a query that costs more than this many points: a field
+/// costs 0.1, an object 1, and a connection its children's points times
+/// how many it asks for (`first` or `last`, else 50), whatever it finds.
+pub const MAX_COMPLEXITY: u32 = 10_000;
+
+/// The teams fctl's app reaches, by their ids alone (275 points), for
+/// [`TEAMS`] to ask for as many as there are: the list stops at 250.
+pub const TEAM_IDS: &str = "query { teams(first: 250) { nodes { id } } }";
+
+/// Teams fctl's app reaches, `$first` of them after `$after`, each with its
+/// workflow and its open projects, for people to choose from. A team costs
+/// about 98 points here, so they come [`TEAMS_PAGE`] at a time; a choice
+/// is checked by its ids ([`TEAM`], [`PROJECT`]), wherever it is in them.
+pub const TEAMS: &str = "query($first: Int!, $after: String) { teams(first: $first, after: $after) { nodes { id key name color states(first: 25) { nodes { id name type position } } projects(first: 50, filter: { completedAt: { null: true }, canceledAt: { null: true } }) { nodes { id name } } } pageInfo { hasNextPage endCursor } } }";
+
+/// How many teams a query of [`TEAMS`] asks for at most (4,880 points).
+pub const TEAMS_PAGE: usize = 50;
+
+/// How many teams each query of [`TEAMS`] asks for, given what
+/// [`TEAM_IDS`] found: all of them, [`TEAMS_PAGE`] at a time.
+pub fn team_pages(ids: &Value) -> Vec<usize> {
+    let n = nodes(ids, "teams").count();
+    (0..n)
+        .step_by(TEAMS_PAGE)
+        .map(|from| (n - from).min(TEAMS_PAGE))
+        .collect()
+}
+
+/// The teams on a page of [`TEAMS`], and where the next page starts, if
+/// there is one.
+pub fn teams_page(d: &Value) -> (Vec<LinearTeam>, Option<String>) {
+    let teams = nodes(d, "teams").filter_map(team).collect();
+    let page = d.get("teams").and_then(|t| t.get("pageInfo"));
+    let next = page
+        .filter(|p| p.get("hasNextPage").and_then(Value::as_bool) == Some(true))
+        .and_then(|p| s(p, "endCursor"));
+    (teams, next)
+}
+
+/// A team as [`TEAMS`] reads it, with the state its tickets start in.
+fn team(t: &Value) -> Option<LinearTeam> {
+    let workflow = states(t);
+    let ids: Vec<(String, StateKind)> = workflow
+        .iter()
+        .filter_map(|s| Some((s.id.clone()?, s.kind)))
+        .collect();
+    let start_state = crate::tickets::start_state(None, &ids)
+        .and_then(|id| workflow.iter().find(|s| s.id.as_deref() == Some(id)))
+        .map(|s| s.name.clone());
+    Some(LinearTeam {
+        id: s(t, "id")?,
+        key: s(t, "key")?,
+        name: s(t, "name").unwrap_or_default(),
+        color: s(t, "color"),
+        states: workflow,
+        start_state,
+        projects: nodes(t, "projects")
+            .filter_map(|p| {
+                Some(LinearProject {
+                    id: s(p, "id")?,
+                    name: s(p, "name")?,
+                })
+            })
+            .collect(),
+    })
+}
 
 /// A team fctl's app reaches, by its id.
 pub const TEAM: &str = "query($id: String!) { team(id: $id) { id key name } }";
@@ -1225,6 +1286,193 @@ mod tests {
         assert_eq!(children, ["ENG-2"]);
         let theirs = json!({ "team": { "id": "t1" }, "parent": { "identifier": "ENG-1", "team": { "id": "t1" } } });
         assert!(within(&l, theirs).get("parent").is_some());
+    }
+
+    /// What Linear charges for `query`, as its docs count
+    /// (linear.app/developers/rate-limiting): a field 0.1 point, an object
+    /// 1, and a connection its children's points times how many it asks for
+    /// (`first` or `last`, else 50), rounded up. `vars` holds the values of
+    /// the variables that ask for how many.
+    fn complexity(query: &str, vars: &[(&str, u32)]) -> u32 {
+        let mut t: Vec<String> = Vec::new();
+        let mut chars = query.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                c if c.is_whitespace() || c == ',' => {}
+                '"' => t.push(format!(
+                    "\"{}",
+                    chars.by_ref().take_while(|c| *c != '"').collect::<String>()
+                )),
+                c if c.is_alphanumeric() || c == '_' || c == '$' => {
+                    let mut word = String::from(c);
+                    while let Some(c) = chars.next_if(|c| c.is_alphanumeric() || *c == '_') {
+                        word.push(c);
+                    }
+                    t.push(word);
+                }
+                c => t.push(c.to_string()),
+            }
+        }
+        // A selection set's tenths of a point, from its `{` at `i` to past
+        // its `}`, and whether it lists nodes, as a connection's does.
+        fn set(t: &[String], i: &mut usize, vars: &[(&str, u32)]) -> (u32, bool) {
+            *i += 1;
+            let (mut cost, mut lists) = (0, false);
+            while t[*i] != "}" {
+                let field = &t[*i];
+                lists |= field == "nodes" || field == "edges";
+                *i += 1;
+                let mut asked = None;
+                if t[*i] == "(" {
+                    *i += 1;
+                    while t[*i] != ")" {
+                        let (arg, value) = (&t[*i], &t[*i + 2]);
+                        if arg == "first" || arg == "last" {
+                            asked = Some(match value.strip_prefix('$') {
+                                Some(var) => vars
+                                    .iter()
+                                    .find(|(v, _)| *v == var)
+                                    .map_or_else(|| panic!("no value for ${var}"), |(_, n)| *n),
+                                None => value
+                                    .parse()
+                                    .unwrap_or_else(|_| panic!("{value} isn't a number")),
+                            });
+                        }
+                        *i += 2;
+                        // An object or a list goes whole.
+                        let mut depth = 0;
+                        loop {
+                            match t[*i].as_str() {
+                                "{" | "[" => depth += 1,
+                                "}" | "]" => depth -= 1,
+                                _ => {}
+                            }
+                            *i += 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    *i += 1;
+                }
+                cost += if t[*i] == "{" {
+                    let (children, nodes) = set(t, i, vars);
+                    match asked {
+                        Some(n) => n * children,
+                        None if nodes => 50 * children,
+                        None => 10 + children,
+                    }
+                } else {
+                    1
+                };
+            }
+            *i += 1;
+            (cost, lists)
+        }
+        // The operation's selection set: the first `{` outside its variables.
+        let mut depth = 0;
+        let mut i = t
+            .iter()
+            .position(|w| {
+                match w.as_str() {
+                    "(" => depth += 1,
+                    ")" => depth -= 1,
+                    _ => {}
+                }
+                w == "{" && depth == 0
+            })
+            .unwrap_or_else(|| panic!("no selection set in {query}"));
+        set(&t, &mut i, vars).0.div_ceil(10)
+    }
+
+    #[test]
+    fn counts_complexity_as_linear_does() {
+        // The examples in Linear's docs.
+        assert_eq!(
+            complexity(r#"query WhoAmI { user(id: "me") { name } }"#, &[]),
+            2
+        );
+        let mine = r#"query MyCreatedIssues { user(id: "me") { createdIssues { nodes { id title createdAt } } } }"#;
+        assert_eq!(complexity(mine, &[]), 66);
+        let ten = mine.replace("createdIssues", "createdIssues(first: 10)");
+        assert_eq!(complexity(&ten, &[]), 14);
+        // The teams query of fctl 0.22, as Linear refused it.
+        let teams = "query { teams(first: 100) { nodes { id key name color states(first: 25) { nodes { id name type position } } projects(first: 50) { nodes { id name completedAt canceledAt } } } } }";
+        assert_eq!(complexity(teams, &[]), 10_640);
+    }
+
+    #[test]
+    fn every_query_costs_well_under_linears_maximum() {
+        // Half of it at most, should Linear count more than its docs say.
+        let fits = |name: &str, query: &str, vars: &[(&str, u32)]| {
+            let cost = complexity(query, vars);
+            assert!(cost <= MAX_COMPLEXITY / 2, "{name} costs {cost} points");
+        };
+        let list = [("first", crate::tickets::MAX_LIST)];
+        let teams = [("first", u32::try_from(TEAMS_PAGE).unwrap_or(u32::MAX))];
+        fits("VIEWER", VIEWER, &[]);
+        fits("TEAM_IDS", TEAM_IDS, &[]);
+        fits("TEAMS", TEAMS, &teams);
+        fits("TEAM", TEAM, &[]);
+        fits("PROJECT", PROJECT, &[]);
+        fits("TEAM_STATES", TEAM_STATES, &[]);
+        fits("TEAM_LABELS", TEAM_LABELS, &[]);
+        fits("issue_query", &issue_query(), &[]);
+        fits("issues_query", &issues_query(), &list);
+        fits("search_query", &search_query(), &list);
+        fits("issue_create", &issue_create(), &[]);
+        fits("issue_update", &issue_update(), &[]);
+        fits("COMMENT_CREATE", COMMENT_CREATE, &[]);
+        fits("ACTIVITY_CREATE", ACTIVITY_CREATE, &[]);
+        fits("SESSION_UPDATE", SESSION_UPDATE, &[]);
+        fits("ATTACHMENT_LINK_URL", ATTACHMENT_LINK_URL, &[]);
+        fits("REPOSITORY_SUGGESTIONS", REPOSITORY_SUGGESTIONS, &[]);
+        assert_eq!(complexity(TEAM_IDS, &[]), 275);
+        assert_eq!(complexity(TEAMS, &teams), 4_880);
+    }
+
+    #[test]
+    fn teams_come_with_their_start_state_and_open_projects() {
+        let page = json!({ "teams": {
+            "nodes": [
+                { "id": "t1", "key": "ENG", "name": "Engineering", "color": "#5e6ad2",
+                  "states": { "nodes": [
+                      { "id": "r", "name": "In Review", "type": "started", "position": 3 },
+                      { "id": "p", "name": "In Progress", "type": "started", "position": 2 },
+                      { "id": "t", "name": "Todo", "type": "unstarted", "position": 1 }
+                  ] },
+                  "projects": { "nodes": [{ "id": "p1", "name": "Website" }] } },
+                // A team without a key can't be chosen.
+                { "id": "t2", "name": "Keyless" }
+            ],
+            "pageInfo": { "hasNextPage": true, "endCursor": "c50" }
+        } });
+        let (teams, next) = teams_page(&page);
+        assert_eq!(next.as_deref(), Some("c50"));
+        let [t] = teams.as_slice() else {
+            panic!("one team, not {teams:?}");
+        };
+        assert_eq!((t.key.as_str(), t.name.as_str()), ("ENG", "Engineering"));
+        assert_eq!(t.start_state.as_deref(), Some("In Progress"));
+        assert_eq!(t.states.len(), 3);
+        assert_eq!(
+            t.projects,
+            [LinearProject {
+                id: "p1".into(),
+                name: "Website".into()
+            }]
+        );
+        let last = json!({ "teams": { "nodes": [], "pageInfo": { "hasNextPage": false, "endCursor": "c60" } } });
+        assert_eq!(teams_page(&last), (vec![], None));
+    }
+
+    #[test]
+    fn asks_for_as_many_teams_as_there_are() {
+        let ids = |n: usize| json!({ "teams": { "nodes": (0..n).map(|i| json!({ "id": format!("t{i}") })).collect::<Vec<_>>() } });
+        assert!(team_pages(&ids(0)).is_empty());
+        assert_eq!(team_pages(&ids(3)), [3]);
+        assert_eq!(team_pages(&ids(50)), [50]);
+        assert_eq!(team_pages(&ids(120)), [50, 50, 20]);
     }
 
     #[test]

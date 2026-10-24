@@ -1558,7 +1558,12 @@ issue's delegate (the person stays its assignee), and mention.
    a Linear workspace connected to the project's workspace
    (`GET /api/v1/workspaces/{id}/linear/{organization}/teams`), which the
    control plane checks with Linear as the choice is saved
-   (`tickets::check_linear`).
+   (`tickets::check_linear`). Linear prices a query by how much it asks
+   for, whatever it finds, and refuses one of more than 10,000 points, so
+   the control plane counts the teams first (up to 250) and then asks for
+   their workflows and open projects 50 teams at a time, under 5,000
+   points a query; a test prices every query fctl sends to Linear
+   (`fctl_domain::linear`).
 3. **Knowing people.** fctl starts sessions only for people it knows in
    the Linear workspace, as them: on their Claude subscription, while they
    may start sessions in the project. People link their Linear account
