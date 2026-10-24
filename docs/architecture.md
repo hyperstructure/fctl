@@ -1911,7 +1911,8 @@ People find what sessions said in two places
   and descriptions, people's messages (and fctl's) and the agents'
   replies; not tool calls, what they returned, thoughts or subagents'
   work (`fctl_domain::search`). It finds what was typed as typed, but for
-  case, accents and runs of whitespace, from two characters. Sessions with
+  case, accents and runs of whitespace, from three characters (two in
+  Chinese, Japanese or Korean). Sessions with
   it in their title come first, then the others, the most recently
   mentioned first, each with snippets of about 160 characters of where it
   matched (its title or description, then its newest messages and
@@ -1941,11 +1942,12 @@ The index:
 
 1. Each workspace's **SearchObject** keeps its sessions' documents in its
    SQLite storage: the title, the description, and each message and reply
-   (its first 10,000 characters, with each run of whitespace as one
-   space), with its session, project, event (`seq`) and, for a message,
-   who wrote it. An FTS5 index with the `trigram` tokenizer and
-   `remove_diacritics` finds text of three characters or more in them;
-   shorter searches go through them one by one.
+   (a reply as the page shows its Markdown, without its syntax or link
+   addresses; its first 10,000 characters, with each run of whitespace as
+   one space), with its session, project, event (`seq`) and, for a
+   message, who wrote it. An FTS5 index with the `trigram` tokenizer and
+   `remove_diacritics` finds text of three characters or more in them; two
+   characters of Chinese, Japanese or Korean go through them one by one.
 2. A SessionObject notes what it stores that the index takes (a message
    with words, a reply of the agent's own that says something, a new title
    or description), and its alarm puts it in its workspace's index five

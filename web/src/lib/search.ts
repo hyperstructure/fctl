@@ -31,8 +31,9 @@ export function useSettled<T>(value: T, ms: number): T {
 }
 
 /**
- * The sessions that say `q`, once typing paused: the last results stay
- * while the next ones load. Nothing for what isn't [`searchable`].
+ * The sessions that say `q`, once typing paused, and what they say (`for`):
+ * the last results stay while the next ones load, so that `for` can be what
+ * was typed before. Nothing for what isn't [`searchable`].
  */
 export function useSessionSearch(
   q: string,
@@ -42,7 +43,7 @@ export function useSessionSearch(
   const on = enabled && searchable(typed);
   const result = useQuery({
     queryKey: keys.search(typed, limit),
-    queryFn: () => api.search(typed, { limit }),
+    queryFn: async () => ({ for: typed, ...(await api.search(typed, { limit })) }),
     enabled: on,
     staleTime: 30_000,
     placeholderData: keepPreviousData,

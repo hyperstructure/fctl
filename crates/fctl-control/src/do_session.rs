@@ -219,26 +219,6 @@ fn has_files(d: &Delivery) -> bool {
     matches!(&d.kind, DeliveryKind::Message { attachments, .. } if !attachments.is_empty())
 }
 
-/// Whether an event holds something the search index takes: a message
-/// with words, or the agent's reply that says something
-/// (`fctl_domain::search::docs_of`).
-fn searchable(body: &EventBody) -> bool {
-    match body {
-        EventBody::UserMessage(m) => !m.text.trim().is_empty(),
-        EventBody::Claude(v) => {
-            v.get("type").and_then(|t| t.as_str()) == Some("assistant")
-                && v.get("parent_tool_use_id").is_none_or(|p| p.is_null())
-                && v.pointer("/message/content")
-                    .and_then(|c| c.as_array())
-                    .is_some_and(|c| {
-                        c.iter()
-                            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                    })
-        }
-        _ => false,
-    }
-}
-
 fn create_schema(sql: &SqlStorage) {
     for stmt in [
         "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, agent_seq INTEGER)",
@@ -536,7 +516,7 @@ impl SessionObject {
 
     /// Stores an event and returns its JSON (for broadcasting).
     fn append(&self, ts: i64, body: &EventBody, agent_seq: Option<u64>) -> Option<String> {
-        if searchable(body) {
+        if search::searchable(body) {
             self.mem.borrow_mut().search_due = true;
         }
         let kind = body.kind();

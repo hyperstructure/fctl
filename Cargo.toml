@@ -55,6 +55,7 @@ hyper-rustls = { version = "0.27.10", default-features = false, features = ["rin
 hyper-util = { version = "0.1.21", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
 libc = "0.2.191"
 nix = { version = "0.31.3", features = ["signal", "process", "fs", "term", "user"] }
+pulldown-cmark = { version = "0.13.5", default-features = false }
 qrcode = { version = "0.14.1", default-features = false }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }

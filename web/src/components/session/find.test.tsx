@@ -119,8 +119,10 @@ function Page({ items, store }: { items: Item[]; store: LiveSession }) {
   const finder = useFind({
     store,
     items,
+    firstSeq: 1,
     hasMoreBefore: false,
     loadingOlder: false,
+    olderFailed: false,
     transcript,
     header,
     footer,
@@ -265,8 +267,10 @@ function Revealing({ items, store }: { items: Item[]; store: LiveSession }) {
   const finder = useFind({
     store,
     items,
+    firstSeq: 1,
     hasMoreBefore: false,
     loadingOlder: false,
+    olderFailed: false,
     transcript,
     header: none,
     footer: none,
@@ -307,5 +311,100 @@ describe("what finding opens", () => {
     type(input, "npm");
     act(() => vi.advanceTimersByTime(400));
     expect(wanted()).toContain(`${run[0]?.key}:open`);
+  });
+});
+
+/** The find bar over a transcript of messages, with earlier activity as `history` says. */
+function Later({
+  items,
+  store,
+  history,
+  landing,
+}: {
+  items: Item[];
+  store: LiveSession;
+  history: { firstSeq: number; hasMoreBefore: boolean; loadingOlder: boolean; olderFailed: boolean };
+  landing?: { query: string; seq?: number };
+}) {
+  const transcript = useRef<HTMLDivElement>(null);
+  const none = useRef<HTMLDivElement>(null);
+  const finder = useFind({ store, items, ...history, transcript, header: none, footer: none, landing });
+  return (
+    <>
+      {finder.open && <FindBar {...finder.bar} />}
+      <div ref={transcript}>
+        {items.map((it) => (
+          <div key={it.key} data-part={it.key}>
+            <div data-find={`msg:${it.key}`}>{it.kind === "user" ? it.text : ""}</div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+describe("earlier activity", () => {
+  const items = [message("Fix the cookie"), message("And the redirect")];
+  const idle = { firstSeq: items[0]?.seq ?? 1, hasMoreBefore: true, loadingOlder: false, olderFailed: false };
+
+  it("loads by itself only while nothing is found", () => {
+    vi.useFakeTimers();
+    const loadEarlier = vi.fn();
+    const store = { loadEarlier } as unknown as LiveSession;
+    const { container } = render(<Later items={items} store={store} history={idle} />);
+    key(window as unknown as Element, "f", { ctrlKey: true });
+    const input = container.querySelector("search input") as HTMLInputElement;
+    type(input, "cookie");
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(loadEarlier).not.toHaveBeenCalled();
+    // More may be further back.
+    expect(container.querySelector("#find-count")?.textContent).toBe("1 of 1+");
+    type(input, "pineapple");
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(loadEarlier).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't ask again by itself after a load brought nothing", () => {
+    vi.useFakeTimers();
+    const loadEarlier = vi.fn();
+    const store = { loadEarlier } as unknown as LiveSession;
+    const failed = { ...idle, olderFailed: true };
+    const { container, rerender } = render(<Later items={items} store={store} history={idle} />);
+    key(window as unknown as Element, "f", { ctrlKey: true });
+    const input = container.querySelector("search input") as HTMLInputElement;
+    type(input, "cookie");
+    // A step past the oldest match loads more, once.
+    key(input, "Enter");
+    expect(loadEarlier).toHaveBeenCalledTimes(1);
+    rerender(<Later items={items} store={store} history={{ ...idle, loadingOlder: true }} />);
+    rerender(<Later items={items} store={store} history={failed} />);
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(loadEarlier).toHaveBeenCalledTimes(1);
+    // The reader steps back again: it asks again.
+    key(input, "Enter");
+    expect(loadEarlier).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads back to where a search of all sessions found the text, then goes there", () => {
+    const loadEarlier = vi.fn();
+    const store = { loadEarlier } as unknown as LiveSession;
+    const old = message("The cookie expires");
+    const later = [message("cookie, again"), message("and the cookie")];
+    const landing = { query: "cookie", seq: old.seq };
+    const history = { ...idle, firstSeq: later[0]?.seq ?? 0 };
+    const { container, rerender } = render(
+      <Later items={later} store={store} history={history} landing={landing} />,
+    );
+    expect(loadEarlier).toHaveBeenCalledWith({ until: old.seq, pages: 50 });
+    rerender(
+      <Later
+        items={[old, ...later]}
+        store={store}
+        history={{ ...history, firstSeq: old.seq, hasMoreBefore: false }}
+        landing={landing}
+      />,
+    );
+    // The oldest of three: the newest counts first.
+    expect(container.querySelector("#find-count")?.textContent).toBe("3 of 3");
   });
 });

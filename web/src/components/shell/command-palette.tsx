@@ -217,7 +217,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           icon: <StatusDot status={s.status} />,
           run: () => {
             onClose();
-            void navigate({ to: "/s/$id", params: { id: s.id }, search: landing(hit, q) });
+            // What found it, which may be what was typed before the last keys.
+            void navigate({
+              to: "/s/$id",
+              params: { id: s.id },
+              search: landing(hit, found.results?.for ?? q),
+            });
           },
         };
       });

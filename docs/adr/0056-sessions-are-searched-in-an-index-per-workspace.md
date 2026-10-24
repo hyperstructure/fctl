@@ -22,20 +22,23 @@ state, under one 10 GB limit with it.
 ## Decision
 
 - **What is searched.** A session's title and description, people's
-  messages (and fctl's) and the agent's replies: what the session is
-  about, without its tool calls, what they returned, its thoughts or its
-  subagents' work (`fctl_domain::search`). Each is a document, at most its
-  first 10,000 characters. Review agents' sessions aren't searched: their
-  project's reviews list them.
+  messages (and fctl's) and the agent's replies, the replies as the
+  session page shows their Markdown (without its syntax or link
+  addresses): what the session is about, without its tool calls, what
+  they returned, its thoughts or its subagents' work
+  (`fctl_domain::search`). Each is a document, at most its first 10,000
+  characters. Review agents' sessions aren't searched: their project's
+  reviews list them.
 - **How it matches.** As typed, but for case, accents and how much
   whitespace separates words: a search for `login redirect` finds
   "the Login  redirect", not "the redirect after login". It looks for text
-  of two characters or more.
+  of three characters or more, or two in Chinese, Japanese or Korean.
 - **Where the index lives.** Each workspace has a `SearchObject`, a
   Durable Object whose SQLite holds its sessions' documents and an FTS5
   index of them with the `trigram` tokenizer (which finds any text of
   three characters or more, and with `remove_diacritics` ignores accents);
-  shorter searches look through the documents. SessionObjects put new
+  two characters of Chinese, Japanese or Korean look through the
+  documents. SessionObjects put new
   documents there from their alarm, five seconds after they come, and a
   session's when its title or description changes; they take theirs out
   when their project is deleted. D1 says which sessions' documents the

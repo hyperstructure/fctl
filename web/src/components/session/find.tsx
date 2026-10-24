@@ -83,9 +83,13 @@ export function useRevealed(key: string | undefined, open: () => void) {
 const apple = () => /Macintosh|iPhone|iPad|iPod/.test(navigator.userAgent);
 export const findShortcut = () => (apple() ? "⌘F" : "Ctrl+F");
 
-/** Pages of earlier activity finding loads by itself, a few at a time: 40,000 events. Further back, a step past the oldest match loads more. */
+/**
+ * Pages of earlier activity finding loads by itself, while it has found nothing: 40,000
+ * events, 4,000 at a time. Once it has found something, or further back, a step past the
+ * oldest match loads more.
+ */
 const AUTO_PAGES = 100;
-const PAGES_AT_ONCE = 5;
+const PAGES_AT_ONCE = 10;
 
 const NONE: ReadonlyMap<string, How[1]> = new Map();
 /** Finding looks in earlier activity for two characters or more: one finds too much to load it all for. */
@@ -118,8 +122,10 @@ export function useFind({
   store,
   items,
   cwd,
+  firstSeq,
   hasMoreBefore,
   loadingOlder,
+  olderFailed,
   transcript,
   header,
   footer,
@@ -129,8 +135,12 @@ export function useFind({
   store: LiveSession;
   items: Item[];
   cwd?: string;
+  /** The first event loaded. */
+  firstSeq: number;
   hasMoreBefore: boolean;
   loadingOlder: boolean;
+  /** The last load of earlier activity brought nothing: the reader asks again, by stepping back. */
+  olderFailed: boolean;
   transcript: RefObject<HTMLElement | null>;
   header: RefObject<HTMLElement | null>;
   footer: RefObject<HTMLElement | null>;
@@ -153,8 +163,8 @@ export function useFind({
   // Pages finding loaded by itself this time, and a step past the oldest match that waits for more.
   const pages = useRef(0);
   const older = useRef(false);
-  // The event a search of all sessions found the text in, until the bar gets there.
-  const target = useRef<number | undefined>(undefined);
+  // What a search of all sessions found, and the event it found it in, until the bar gets there.
+  const target = useRef<{ query: string; seq?: number } | undefined>(undefined);
 
   const n = needle(typed);
   const regions = useMemo(() => (open ? findables(items, cwd) : []), [open, items, cwd]);
@@ -204,7 +214,7 @@ export function useFind({
     if (!landing?.query) return;
     setOpen(true);
     setQuery(landing.query);
-    target.current = landing.seq;
+    target.current = landing.seq === undefined ? undefined : landing;
     if (window.matchMedia?.("(pointer: fine)").matches) focus();
   }, [landing, focus]);
 
@@ -247,11 +257,12 @@ export function useFind({
     if (current === undefined || !index.has(current)) setCurrent(nearest(matches)?.key);
   }, [open, current, index, matches, nearest]);
 
-  // Landing from a search of all sessions: the first match in the event it found, once it loaded.
+  // Landing from a search of all sessions: the first match in the event it found, once the
+  // transcript is there with that event and the bar finds what the search did.
   useEffect(() => {
-    const seq = target.current;
-    // Once the transcript is there.
-    if (!open || seq === undefined || !n || !items.length) return;
+    const t = target.current;
+    if (!open || t?.seq === undefined || !items.length || !n || n !== needle(t.query)) return;
+    const seq = t.seq;
     const found = matches.find((m) => m.findable.seq === seq);
     if (found) {
       target.current = undefined;
@@ -259,31 +270,33 @@ export function useFind({
       setCurrent(found.key);
       return;
     }
-    const first = items[0]?.seq ?? 0;
-    if (hasMoreBefore && (first === 0 || first > seq)) {
+    if (hasMoreBefore && firstSeq > seq && !olderFailed) {
       if (!loadingOlder) void store.loadEarlier({ until: seq, pages: 50 });
       return;
     }
-    // Not where the search found it (its text changed, or finding reads it another way): the nearest event's.
+    // Not where the search found it (its text changed, finding reads it another way, or it
+    // didn't load): the match of the nearest event.
     target.current = undefined;
     stepped.current = true;
     const after = matches.find((m) => m.findable.seq >= seq);
     setCurrent((after ?? matches[matches.length - 1])?.key);
-  }, [open, matches, n, items, hasMoreBefore, loadingOlder, store]);
+  }, [open, matches, n, items, firstSeq, hasMoreBefore, loadingOlder, olderFailed, store]);
 
-  // Earlier activity, to look in it too, a few pages at a time while there is something to find.
+  // While it has found nothing, earlier activity, to look in it too. Once it has, the reader
+  // goes further back by stepping past the oldest match, and the count says there is more.
   useEffect(() => {
-    if (!open || [...n].length < LOOKS_BACK_FROM || !hasMoreBefore || loadingOlder) return;
-    if (pages.current >= AUTO_PAGES) return;
+    if (!open || [...n].length < LOOKS_BACK_FROM || matches.length) return;
+    if (!hasMoreBefore || loadingOlder || olderFailed || pages.current >= AUTO_PAGES) return;
     const t = setTimeout(() => {
       pages.current += PAGES_AT_ONCE;
       void store.loadEarlier({ pages: PAGES_AT_ONCE });
     }, 250);
     return () => clearTimeout(t);
-  }, [open, n, hasMoreBefore, loadingOlder, store]);
+  }, [open, n, matches.length, hasMoreBefore, loadingOlder, olderFailed, store]);
 
-  // A step past the oldest match waited for earlier activity: the next match back, or around to the newest.
-  // With none before, the first that came back there: the newest of them.
+  // A step past the oldest match waited for earlier activity: the next match back, or around to
+  // the newest; with none before, the first that came back there, the newest of them. A load that
+  // brought nothing stops it, until the reader steps back again.
   useEffect(() => {
     if (!older.current || loadingOlder) return;
     if (at > 0 || (at < 0 && matches.length)) {
@@ -294,8 +307,9 @@ export function useFind({
       older.current = false;
       stepped.current = true;
       setCurrent(matches[matches.length - 1]?.key);
-    } else void store.loadEarlier({ pages: PAGES_AT_ONCE });
-  }, [at, matches, hasMoreBefore, loadingOlder, store]);
+    } else if (olderFailed) older.current = false;
+    else void store.loadEarlier({ pages: PAGES_AT_ONCE });
+  }, [at, matches, hasMoreBefore, loadingOlder, olderFailed, store]);
 
   /** To the match before (`older`: up the page), or after; around at either end. */
   const step = useCallback(

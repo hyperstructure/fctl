@@ -62,6 +62,16 @@ describe("folded text", () => {
     expect(fold("café").text).toBe("cafe");
   });
 
+  it("leaves the marks of other scripts, which make other letters", () => {
+    expect(occurrences(fold("か"), needle("が"))).toEqual([]);
+    expect(occurrences(fold("がか"), needle("が"))).toEqual([[0, 1]]);
+    // Korean syllables stay whole.
+    expect(occurrences(fold("한국"), needle("하"))).toEqual([]);
+    expect(occurrences(fold("किताब"), needle("क"))).toEqual([[0, 1]]);
+    expect(occurrences(fold("कि"), needle("कि"))).toEqual([[0, 2]]);
+    expect(occurrences(fold("क"), needle("कि"))).toEqual([]);
+  });
+
   it("says where each match is in the original", () => {
     const text = "Un CAFÉ,\n\nun  café";
     const found = occurrences(fold(text), needle("un cafe"));

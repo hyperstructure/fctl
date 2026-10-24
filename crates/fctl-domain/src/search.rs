@@ -12,14 +12,15 @@
 
 use fctl_proto::ApiError;
 use fctl_proto::api::{SearchMatch, SearchMatchKind};
-use fctl_proto::event::UserMessage;
+use fctl_proto::event::{EventBody, UserMessage};
 use fctl_proto::session::UserRef;
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The shortest search, in characters: one character finds too much to be
-/// of use, and two already narrow it down in Chinese or Japanese.
-pub const MIN_QUERY_CHARS: usize = 2;
+/// The shortest search, in characters: fewer find too much to be of use,
+/// but in scripts that write words in two ([`dense`]), where two do.
+pub const MIN_QUERY_CHARS: usize = 3;
 /// The longest search, in characters.
 pub const MAX_QUERY_CHARS: usize = 200;
 /// The most of a message or a reply that is searchable, in characters: its
@@ -111,15 +112,27 @@ fn doc_text(text: &str) -> String {
     }
 }
 
-/// A search, checked: [`normalize`]d, between [`MIN_QUERY_CHARS`] and
-/// [`MAX_QUERY_CHARS`] long.
+/// Whether a character is of a script that writes many words in two
+/// characters: Chinese, Japanese and Korean.
+fn dense(c: char) -> bool {
+    matches!(c,
+        '\u{3040}'..='\u{30ff}' // Hiragana, Katakana
+        | '\u{3400}'..='\u{4dbf}' // CJK Extension A
+        | '\u{4e00}'..='\u{9fff}' // CJK Unified Ideographs
+        | '\u{ac00}'..='\u{d7af}' // Hangul syllables
+        | '\u{f900}'..='\u{faff}' // CJK Compatibility Ideographs
+        | '\u{20000}'..='\u{2fa1f}') // CJK Extensions B and on
+}
+
+/// A search, checked: [`normalize`]d, between [`MIN_QUERY_CHARS`] (two in
+/// Chinese, Japanese or Korean) and [`MAX_QUERY_CHARS`] long.
 pub fn query(input: &str) -> Result<String, ApiError> {
     let q = normalize(input);
     let n = q.chars().count();
-    if n < MIN_QUERY_CHARS {
+    if n < MIN_QUERY_CHARS && !(n == 2 && q.chars().any(dense)) {
         return Err(ApiError::validation(
             "q",
-            "Search for at least 2 characters",
+            "Search for at least 3 characters (2 in Chinese, Japanese or Korean)",
         ));
     }
     if n > MAX_QUERY_CHARS {
@@ -135,8 +148,8 @@ pub fn query(input: &str) -> Result<String, ApiError> {
 }
 
 /// Whether an index of trigrams (SQLite's FTS5 `trigram` tokenizer) can
-/// find `query`: it needs three characters at least. Shorter ones are
-/// looked for row by row.
+/// find `query`: it needs three characters at least. Two of Chinese,
+/// Japanese or Korean are looked for row by row.
 pub fn indexable(query: &str) -> bool {
     query.chars().count() >= 3
 }
@@ -185,9 +198,21 @@ pub fn about(title: &str, description: Option<&str>, ts: i64) -> Vec<Doc> {
     docs
 }
 
+/// Whether an event holds something the index takes: a message with words,
+/// or an agent's reply that says something (what [`docs_of`] makes
+/// documents of).
+pub fn searchable(body: &EventBody) -> bool {
+    match body {
+        EventBody::UserMessage(m) => !m.text.trim().is_empty(),
+        EventBody::Claude(v) => reply_text(v).is_some(),
+        _ => false,
+    }
+}
+
 /// The searchable documents of a stored event (its `kind` and `data`, as
-/// SessionDO keeps them): a message's text, or the text an agent's reply
-/// says. A subagent's replies, which go to the agent, aren't the agent's.
+/// SessionDO keeps them): a message's text, or what an agent's reply says,
+/// as the session page shows its Markdown ([`markdown_text`]). A
+/// subagent's replies, which go to the agent, aren't the agent's.
 pub fn docs_of(seq: i64, ts: i64, kind: &str, data: &Value) -> Vec<Doc> {
     let text = match kind {
         "user_message" => {
@@ -207,7 +232,7 @@ pub fn docs_of(seq: i64, ts: i64, kind: &str, data: &Value) -> Vec<Doc> {
                 text,
             }];
         }
-        "claude" => reply_text(data),
+        "claude" => reply_text(data).map(|t| markdown_text(&t)),
         _ => None,
     };
     let Some(text) = text.map(|t| doc_text(&t)).filter(|t| !t.is_empty()) else {
@@ -241,6 +266,44 @@ fn reply_text(v: &Value) -> Option<String> {
         .filter(|t| !t.trim().is_empty())
         .collect();
     (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+/// Markdown's text as the session page shows it (web/src/lib/find.ts
+/// `plainText`): what its blocks say, each on a line of its own, without
+/// its syntax, link addresses or pictures, which show no text, so that a
+/// search finds what the page's find bar does, and shows clean snippets.
+pub fn markdown_text(markdown: &str) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    // Inside pictures, whose text shows only for those the page doesn't load.
+    let mut pictures: Vec<bool> = Vec::new();
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    for event in Parser::new_ext(markdown, options) {
+        let shown = pictures.iter().all(|&shows_text| shows_text);
+        match event {
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                pictures.push(!dest_url.to_ascii_lowercase().starts_with("https:"));
+            }
+            Event::End(TagEnd::Image) => {
+                pictures.pop();
+            }
+            Event::Text(t) | Event::Code(t) | Event::Html(t) | Event::InlineHtml(t) if shown => {
+                out.push_str(&t);
+            }
+            Event::SoftBreak | Event::HardBreak => out.push('\n'),
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::BlockQuote(_)
+                | TagEnd::CodeBlock
+                | TagEnd::HtmlBlock
+                | TagEnd::Item
+                | TagEnd::TableCell,
+            ) => out.push('\n'),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// A character as a search compares it: lowercase, and without its accent
@@ -427,7 +490,14 @@ mod tests {
             query("  login \n redirect ").ok().as_deref(),
             Some("login redirect")
         );
+        assert_eq!(query("abc").ok().as_deref(), Some("abc"));
+        // Two characters find too much, but in Chinese, Japanese or Korean.
         assert_eq!(query("検索").ok().as_deref(), Some("検索"));
+        assert_eq!(query("한국").ok().as_deref(), Some("한국"));
+        assert_eq!(
+            query("ab").err().and_then(|e| e.field).as_deref(),
+            Some("q")
+        );
         assert_eq!(
             query(" a ").err().and_then(|e| e.field).as_deref(),
             Some("q")
@@ -523,6 +593,79 @@ mod tests {
         let result = json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "secret"}]}});
         assert!(docs_of(12, 200, "claude", &result).is_empty());
         assert!(docs_of(13, 200, "log", &json!({"text": "x"})).is_empty());
+    }
+
+    #[test]
+    fn replies_are_searched_as_the_page_shows_them() {
+        let reply = |text: &str| {
+            let v = json!({
+                "type": "assistant",
+                "message": {"id": "m1", "content": [{"type": "text", "text": text}]},
+            });
+            docs_of(1, 1, "claude", &v)
+                .into_iter()
+                .next()
+                .map(|d| d.text)
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            reply(
+                "Fixed **the login** redirect in `auth.rs`: see [the PR](https://github.com/acme/web/pull/42)."
+            ),
+            "Fixed the login redirect in auth.rs: see the PR."
+        );
+        assert_eq!(
+            reply("# Done\n\n- one *thing*\n- two\n\n```sh\ncargo test -p fctl\n```"),
+            "Done one thing two cargo test -p fctl"
+        );
+        assert_eq!(reply("| a | b |\n|---|---|\n| one | two |"), "a b one two");
+        // A picture shows no text, but one the page doesn't load shows what it is.
+        assert_eq!(
+            reply("Look: ![the header](https://example.com/a.png) and ![a sketch](http://x/b.png)"),
+            "Look: and a sketch"
+        );
+        assert_eq!(
+            reply("A &amp; B <b>html</b> ~~gone~~ \\*kept\\*"),
+            "A & B <b>html</b> gone *kept*"
+        );
+        assert_eq!(reply("- [x] done\n- [ ] to do"), "done to do");
+        assert_eq!(
+            markdown_text("line one  \nline two"),
+            "line one\nline two\n"
+        );
+    }
+
+    #[test]
+    fn events_with_words_are_searchable() {
+        let message = |text: &str| {
+            EventBody::UserMessage(UserMessage {
+                id: fctl_proto::DeliveryId("dlv_1".into()),
+                author: None,
+                text: text.into(),
+                source: fctl_proto::event::MessageSource::Web,
+                attachments: Vec::new(),
+                follow_up: None,
+                review: None,
+                ticket: None,
+            })
+        };
+        assert!(searchable(&message("Fix it")));
+        assert!(!searchable(&message("  ")));
+        let said = |content: Value| {
+            EventBody::Claude(
+                json!({"type": "assistant", "message": {"id": "m", "content": content}}),
+            )
+        };
+        assert!(searchable(&said(
+            json!([{"type": "text", "text": "Done."}])
+        )));
+        assert!(!searchable(&said(json!([{"type": "text", "text": " \n"}]))));
+        assert!(!searchable(&said(
+            json!([{"type": "tool_use", "id": "t", "name": "Bash", "input": {}}])
+        )));
+        assert!(!searchable(&EventBody::Claude(
+            json!({"type": "result", "result": "Done."})
+        )));
     }
 
     #[test]

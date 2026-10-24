@@ -59,7 +59,12 @@ export interface Folded {
   end: number[];
 }
 
-const MARKS = /\p{M}/gu;
+/**
+ * The accents finding leaves out: the combining diacritical marks of Latin, Greek and
+ * Cyrillic letters, as the search of all sessions does. Not other scripts' marks, which make
+ * other letters (Japanese が is not か) or are part of them (Hindi's vowel signs).
+ */
+const ACCENTS = /[\u0300-\u036f]/g;
 const SPACE = /\s/;
 
 /** `s` as finding compares it ([`Folded`]). */
@@ -84,7 +89,7 @@ export function fold(s: string): Folded {
           ? code >= 65 && code <= 90
             ? String.fromCharCode(code + 32)
             : c
-          : c.normalize("NFD").replace(MARKS, "").toLowerCase();
+          : c.normalize("NFD").replace(ACCENTS, "").normalize("NFC").toLowerCase();
       for (let k = 0; k < f.length; k++) {
         text += f[k];
         start.push(i);
