@@ -1930,9 +1930,12 @@ People find what sessions said in two places
   the newest first, lights them up (the CSS Custom Highlight API), and
   steps up the page with Enter, ↑ or ⌘G, down with Shift+Enter, ↓ or ⌘⇧G.
   The match it gets to comes into view with what folds it opened, once
-  typing pauses, or at once when the reader steps to it. It loads earlier
-  activity, a few pages at a time, to look in it too; past 40,000 events,
-  a step past the oldest match loads more. Words selected on the page are
+  typing pauses, or at once when the reader steps to it. While it has
+  found nothing, it loads earlier activity to look in it too, 4,000 events
+  at a time and 40,000 at most; once it has, the count says when there is
+  more ("3 of 12+"), and a step past the oldest match loads more. A load
+  that brings nothing waits for the reader to step back again. Words
+  selected on the page are
   what it finds when it opens. A result of a search of all sessions opens
   its session's page with the bar on what was typed, at the newest message
   or reply it matched (`?find=…&at=<seq>`, which the page then takes out of

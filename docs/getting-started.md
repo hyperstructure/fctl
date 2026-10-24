@@ -349,8 +349,9 @@ finds what you type in all the transcript says, folded or not: messages,
 the agent's replies, the lines of its work and the commands behind them,
 its thoughts and its subagents' work. It counts the matches from the
 newest; Enter (or ↑) goes up to the one before, Shift+Enter (or ↓) back
-down, and each opens what folds it. It loads earlier activity to look in
-it too. A second ⌘F there opens your browser's own find. To find it in
+down, and each opens what folds it. Going up past the oldest match loads
+earlier activity to look in it too, and so does finding nothing in what
+has loaded. A second ⌘F there opens your browser's own find. To find it in
 any session you can see, type it in ⌘K: past the sessions whose titles
 match, it lists those whose messages or agent's replies say it, and opens
 one at that message with its find bar on it. From a terminal, `fctl
