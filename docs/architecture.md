@@ -159,6 +159,18 @@ account (the hourly cron trigger), when an admin removes it (`DELETE
 asked withdraws it (which the audit log doesn't record), or a year after it
 last asked (`access_requests`).
 
+### Search engines
+
+The Worker answers `/robots.txt` and `/sitemap.xml` itself
+(`fctl_domain::crawlers`; `run_worker_first` sends them to it ahead of the
+web app's assets). An instance is closed to search engines unless its
+deployment opens it (`search_engines` in `deploy/instances`, which sets
+`FCTL_SEARCH_ENGINES`; app.fctl.sh's does): closed, `/robots.txt`
+disallows everything but `/llms.txt` and there is no sitemap. Open, `/robots.txt` allows
+`/`, `/login`, `/early-access` (with early access) and `/llms.txt`,
+disallows the rest and names `/sitemap.xml`, which lists those pages at
+`FCTL_PUBLIC_URL`. Published screenshots carry `noindex` either way.
+
 ### Two-factor sign-in
 
 People turn it on in Settings, or with `fctl account two-factor enable`,

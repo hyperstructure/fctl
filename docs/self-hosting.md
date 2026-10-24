@@ -111,6 +111,7 @@ Docker and Kubernetes secrets do.
 | `FCTL_SETUP_TOKEN` | made at each start | The token in the setup link, which works until the first account exists |
 | `FCTL_DATA_DIR` | `/data` in the image | Where the state lives |
 | `FCTL_PORT`, `FCTL_LISTEN` | `8787` (or `PORT`), `0.0.0.0` | Where it listens |
+| `FCTL_SEARCH_ENGINES` | `0` | `1` lets search engines index the sign-in page ([search engines](#search-engines)) |
 | `FCTL_TRUST_PROXY` | `0` | How many [reverse proxies](#https-and-reverse-proxies) in front add `X-Forwarded-For` |
 | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
 | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET` | | [Linear](#connect-linear-optional) |
@@ -219,6 +220,8 @@ location = "weur"                       # optional primary location
 ```
 
 Nothing in this file is secret; commit it to your fork if you like.
+To let search engines index the sign-in page, add `search_engines = true`
+([search engines](#search-engines)).
 
 ### 2. Deploy
 
@@ -661,6 +664,16 @@ from = "Acme factory <fctl@acme.dev>"
 echo "$RESEND_API_KEY" | cargo xtask secrets acme --set RESEND_API_KEY
 cargo xtask deploy acme
 ```
+
+## Search engines
+
+An instance asks search engines to keep out: its `/robots.txt` disallows
+everything but `/llms.txt`. To have its sign-in page found, set `search_engines = true` in
+its file in `deploy/instances` on Cloudflare, or `FCTL_SEARCH_ENGINES=1`
+for the server. `/robots.txt` then allows the sign-in page (and the early
+access page where there is one) and `/llms.txt`, and names
+`/sitemap.xml`, which lists them, for Google Search Console and the like.
+Everything else stays disallowed, and needs signing in anyway.
 
 ## Bring hosts online
 

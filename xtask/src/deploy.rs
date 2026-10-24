@@ -27,6 +27,11 @@ pub struct Instance {
     /// access, and admins invite them from a list (app.fctl.sh).
     #[serde(default)]
     pub early_access: bool,
+    /// Search engines may index the public pages (the sign-in page, early
+    /// access): `/robots.txt` lets them and `/sitemap.xml` lists them
+    /// (app.fctl.sh).
+    #[serde(default)]
+    pub search_engines: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +134,9 @@ impl Instance {
         if self.early_access {
             vars.push(("FCTL_EARLY_ACCESS", "1".to_owned()));
         }
+        if self.search_engines {
+            vars.push(("FCTL_SEARCH_ENGINES", "1".to_owned()));
+        }
         let q = |s: &str| toml::Value::String(s.to_owned()).to_string();
         let vars = vars
             .iter()
@@ -151,7 +159,7 @@ custom_domain = true
 directory = "../../web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*"]
+run_worker_first = ["/api/*", "/robots.txt", "/sitemap.xml"]
 
 [[d1_databases]]
 binding = "DB"
@@ -474,6 +482,16 @@ client_id = "lin_client"
         );
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
         assert!(doc["vars"].get("FCTL_EARLY_ACCESS").is_none());
+        assert!(doc["vars"].get("FCTL_SEARCH_ENGINES").is_none());
+        assert_eq!(
+            doc["assets"]["run_worker_first"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p.as_str())
+                .collect::<Vec<_>>(),
+            ["/api/*", "/robots.txt", "/sitemap.xml"]
+        );
     }
 
     #[test]
@@ -485,5 +503,16 @@ client_id = "lin_client"
         let example: toml::Table =
             toml::from_str(&load(&root, "example").unwrap().wrangler_toml()).unwrap();
         assert!(example["vars"].get("FCTL_EARLY_ACCESS").is_none());
+    }
+
+    #[test]
+    fn app_fctl_sh_lets_search_engines_index_its_public_pages() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let doc: toml::Table =
+            toml::from_str(&load(&root, "fctl-sh").unwrap().wrangler_toml()).unwrap();
+        assert_eq!(doc["vars"]["FCTL_SEARCH_ENGINES"].as_str(), Some("1"));
+        let example: toml::Table =
+            toml::from_str(&load(&root, "example").unwrap().wrangler_toml()).unwrap();
+        assert!(example["vars"].get("FCTL_SEARCH_ENGINES").is_none());
     }
 }
