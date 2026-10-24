@@ -106,7 +106,7 @@ export function SessionPage() {
   const header = useRef<HTMLDivElement>(null);
   const footer = useRef<HTMLDivElement>(null);
   // The newest work stays in view while the reader is at the bottom.
-  useStickToBottom(transcript, id);
+  const letGo = useStickToBottom(transcript, id);
   // What a search of all sessions found: the find bar takes it over, and the address forgets it.
   const [landing, setLanding] = useState<{ query: string; seq?: number }>();
   useEffect(() => {
@@ -124,6 +124,7 @@ export function SessionPage() {
     transcript,
     header,
     footer,
+    letGo,
     landing,
   });
 
@@ -190,7 +191,8 @@ export function SessionPage() {
             and has room for the title and status only: the orb and title open the rest, with
             what the rail shows on wider screens, in a sheet. */}
         <div ref={header} className="sticky top-0 z-10">
-          <header className="border-b border-line bg-canvas/80 backdrop-blur-xl max-md:h-14">
+          {/* Above the find bar, so that its menu opens over it. */}
+          <header className="relative z-1 border-b border-line bg-canvas/80 backdrop-blur-xl max-md:h-14">
             {/* On phones as tall as the top bar, with the menu button where the bar has it. */}
             <div className="flex h-full items-center gap-3 px-2.5 md:gap-4 md:py-3.5 md:pr-6 md:pl-6">
               {/* Over the edge of the title's button, which reaches out to it. */}

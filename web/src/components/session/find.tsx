@@ -123,6 +123,7 @@ export function useFind({
   transcript,
   header,
   footer,
+  letGo,
   landing,
 }: {
   store: LiveSession;
@@ -133,6 +134,8 @@ export function useFind({
   transcript: RefObject<HTMLElement | null>;
   header: RefObject<HTMLElement | null>;
   footer: RefObject<HTMLElement | null>;
+  /** Lets go of the page's bottom, which it keeps in view as the agent works, before the page goes to a match. */
+  letGo?: () => void;
   landing?: { query: string; seq?: number };
 }) {
   const [open, setOpen] = useState(false);
@@ -363,7 +366,7 @@ export function useFind({
       const ranges = el ? rangesIn(el, n) : [];
       const into =
         ranges[match.at] ?? ranges[ranges.length - 1] ?? el ?? byId(root, "data-part", match.findable.part);
-      if (into) bringIntoView(into, bar.current ?? header.current, footer.current);
+      if (into) bringIntoView(into, bar.current ?? header.current, footer.current, letGo);
     };
     go();
     return () => cancelAnimationFrame(raf);
@@ -481,7 +484,12 @@ function touchesRegion(r: MutationRecord): boolean {
  * view, unless it is well in view already. Far, the page jumps there, as a
  * browser's find does; near, it glides.
  */
-function bringIntoView(to: Range | Element, header: HTMLElement | null, footer: HTMLElement | null) {
+function bringIntoView(
+  to: Range | Element,
+  header: HTMLElement | null,
+  footer: HTMLElement | null,
+  letGo?: () => void,
+) {
   const start = to instanceof Range ? to.startContainer : to;
   for (
     let box = start.nodeType === 1 ? (start as Element) : start.parentElement;
@@ -504,6 +512,7 @@ function bringIntoView(to: Range | Element, header: HTMLElement | null, footer: 
   const r = to.getBoundingClientRect();
   const margin = 32;
   if (r.top >= top + margin && r.bottom <= bottom - margin) return;
+  letGo?.();
   const middle = top + (bottom - top) / 2;
   const by = r.top + r.height / 2 - middle;
   const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;

@@ -5,7 +5,7 @@
 // a pressed button or finger, and what the reader opens in the transcript (a
 // tool call's details) stays where they opened it.
 
-import { type RefObject, useLayoutEffect } from "react";
+import { type RefObject, useCallback, useLayoutEffect, useRef } from "react";
 
 /**
  * How close (px) to the bottom scrolling down has to come to stick again: a
@@ -63,9 +63,13 @@ export class Stick {
 /**
  * Keeps the page's bottom in view while `content` grows, or anything else on
  * the page, as long as the reader is at the bottom. A new `key` (another
- * session) starts at the bottom again.
+ * session) starts at the bottom again. Returns what lets go of the bottom
+ * before the page moves elsewhere for the reader, as finding in the
+ * transcript does: what that opens grows the page, which would otherwise
+ * take it back down.
  */
-export function useStickToBottom(content: RefObject<HTMLElement | null>, key: unknown) {
+export function useStickToBottom(content: RefObject<HTMLElement | null>, key: unknown): () => void {
+  const letGo = useRef<() => void>(undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` starts it over
   useLayoutEffect(() => {
     const el = content.current;
@@ -133,6 +137,10 @@ export function useStickToBottom(content: RefObject<HTMLElement | null>, key: un
       characterDataOldValue: true,
     });
     syncAnchoring();
+    letGo.current = () => {
+      stick.stuck = false;
+      syncAnchoring();
+    };
 
     const off = new AbortController();
     const on = { signal: off.signal };
@@ -186,8 +194,10 @@ export function useStickToBottom(content: RefObject<HTMLElement | null>, key: un
       grown.disconnect();
       changed.disconnect();
       page.style.overflowAnchor = "";
+      letGo.current = undefined;
     };
   }, [content, key]);
+  return useCallback(() => letGo.current?.(), []);
 }
 
 /**
