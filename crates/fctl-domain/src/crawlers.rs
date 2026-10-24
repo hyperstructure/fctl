@@ -1,6 +1,8 @@
 //! What the app tells search engines: `/robots.txt` and `/sitemap.xml`.
 //!
-//! An instance is closed to crawlers unless its deployment opens it
+//! Every instance lets crawlers read `/llms.txt`, which tells agents what
+//! fctl is and how to drive it. An instance is otherwise closed to crawlers
+//! unless its deployment opens it
 //! (`search_engines` in deploy/instances, which sets `FCTL_SEARCH_ENGINES`;
 //! app.fctl.sh's does). An open instance lets them read its public pages
 //! (the sign-in page, the early access page where it has one, and
@@ -20,7 +22,7 @@ pub fn public_pages(early_access: bool) -> Vec<&'static str> {
 /// `/robots.txt`. `public_url` has no trailing slash.
 pub fn robots_txt(public_url: &str, open: bool, early_access: bool) -> String {
     if !open {
-        return "User-agent: *\nDisallow: /\n".to_owned();
+        return "User-agent: *\nAllow: /llms.txt\nDisallow: /\n".to_owned();
     }
     let mut out = String::from("User-agent: *\nAllow: /$\n");
     for page in public_pages(early_access) {
@@ -61,10 +63,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_closed_instance_disallows_everything() {
+    fn a_closed_instance_disallows_everything_but_llms_txt() {
         assert_eq!(
             robots_txt("https://fctl.example.com", false, true),
-            "User-agent: *\nDisallow: /\n"
+            "User-agent: *\nAllow: /llms.txt\nDisallow: /\n"
         );
     }
 

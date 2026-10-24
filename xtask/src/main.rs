@@ -4,6 +4,7 @@ mod check;
 mod deploy;
 mod dev;
 mod dist;
+mod docs;
 mod macho;
 mod release;
 mod serve;

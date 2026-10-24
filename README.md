@@ -34,6 +34,9 @@ fctl run -p my-app "Add a dark mode toggle"
 Prefer Homebrew? `brew install hyperstructure/tap/fctl` installs the same
 release.
 
+Pointing an agent at fctl? [llms.txt](docs/llms.txt), also at
+https://fctl.sh/llms.txt, tells it what fctl is and how to drive it.
+
 ![app.fctl.sh](https://github.com/user-attachments/assets/751d4c25-4eea-4691-999a-c886ee8288c8)
 
 ## How it works

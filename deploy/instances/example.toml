@@ -14,7 +14,8 @@ instance_name = "fctl"
 # must be on your Cloudflare account.
 public_url = "https://fctl.example.com"
 # Optional: let search engines index the sign-in page (/robots.txt lets them,
-# /sitemap.xml lists it). Without it, /robots.txt disallows everything.
+# /sitemap.xml lists it). Without it, /robots.txt disallows everything
+# but /llms.txt.
 # search_engines = true
 
 [d1]
