@@ -6,7 +6,9 @@
 //! (`search_engines` in deploy/instances, which sets `FCTL_SEARCH_ENGINES`;
 //! app.fctl.sh's does). An open instance lets them read its public pages
 //! (the sign-in page, the early access page where it has one, and
-//! `/llms.txt`) and lists those in its sitemap; everything else stays
+//! `/llms.txt`) and lists those in its sitemap, which crawlers may read
+//! too (Google honours robots.txt when it fetches a sitemap, and reports a
+//! disallowed one as "General HTTP error"); everything else stays
 //! disallowed, though it needs signing in anyway.
 
 /// The public pages an open instance lists, in order.
@@ -29,7 +31,7 @@ pub fn robots_txt(public_url: &str, open: bool, early_access: bool) -> String {
         out.push_str(&format!("Allow: {page}\n"));
     }
     out.push_str(&format!(
-        "Disallow: /\n\nSitemap: {public_url}/sitemap.xml\n"
+        "Allow: /sitemap.xml\nDisallow: /\n\nSitemap: {public_url}/sitemap.xml\n"
     ));
     out
 }
@@ -79,6 +81,7 @@ mod tests {
              Allow: /login\n\
              Allow: /early-access\n\
              Allow: /llms.txt\n\
+             Allow: /sitemap.xml\n\
              Disallow: /\n\
              \n\
              Sitemap: https://app.fctl.sh/sitemap.xml\n"

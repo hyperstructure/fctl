@@ -671,8 +671,9 @@ An instance asks search engines to keep out: its `/robots.txt` disallows
 everything but `/llms.txt`. To have its sign-in page found, set `search_engines = true` in
 its file in `deploy/instances` on Cloudflare, or `FCTL_SEARCH_ENGINES=1`
 for the server. `/robots.txt` then allows the sign-in page (and the early
-access page where there is one) and `/llms.txt`, and names
-`/sitemap.xml`, which lists them, for Google Search Console and the like.
+access page where there is one), `/llms.txt` and `/sitemap.xml`, and
+names `/sitemap.xml`, which lists them, for Google Search Console and the
+like.
 Everything else stays disallowed, and needs signing in anyway.
 
 ## Bring hosts online
