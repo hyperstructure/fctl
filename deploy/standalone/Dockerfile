@@ -42,6 +42,8 @@ COPY web/package.json web/
 COPY deploy/standalone/package.json deploy/standalone/
 RUN npm ci --no-audit --no-fund
 COPY web web
+# The web app serves fctl's guide for agents at /llms.txt (web/vite.config.ts).
+COPY docs/llms.txt docs/
 RUN npm run build --workspace web
 
 FROM docker.io/library/node:22-bookworm-slim
