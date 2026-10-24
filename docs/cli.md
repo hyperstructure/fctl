@@ -61,15 +61,21 @@ runs review agents from GitHub Actions with one.
 
 Configuration lives in `~/.config/fctl/` (`config.toml`, and
 `credentials.toml` with mode 0600). `FCTL_CONFIG_DIR` moves it.
+`FCTL_SERVER` and `FCTL_TOKEN` take the place of the instance and token
+`fctl login` saved there, and `--server` the place of both.
 
 ## Sessions
 
-Sessions are named by their id (`ses_…`), their URL, or `project#number`.
+Sessions are named by their id (`ses_…`), their URL, or `project#number`,
+which fctl looks up among the project's latest 200 sessions: scripts keep
+the id.
 
 ```sh
 fctl run -p my-app "Add a dark mode toggle"   # start one and follow it
 fctl run -p my-app -d -f task.md              # start from a file, don't follow
+fctl run -p my-app -d --json "…" | jq -r .id  # the new session's id, for scripts
 echo "Fix the flaky test" | fctl run -p my-app
+fctl run --title "Fix the login loop" "…"     # its title (default: the task's first line)
 fctl run --model opus --effort high "…"       # override the project's agent settings
 fctl run --github comment "Review pull request #12"   # its agent reviews and comments, and pushes nothing
 fctl run --github read "Plan the move to Postgres"    # its agent only reads on GitHub
@@ -77,8 +83,9 @@ fctl run --github-issues "Move the open GitHub issues to Linear"   # its agent r
 fctl run --branch fix/login --base develop "…"
 fctl run -p my-app -a screenshot.png "Make the header match this"   # attach files (repeat -a)
 
-fctl sessions                    # recent sessions
+fctl sessions                    # recent sessions (only the default project's, once fctl projects use set one)
 fctl sessions --active -p my-app
+fctl sessions -w acme --limit 100   # a workspace's (30 unless --limit says)
 fctl show my-app#12              # status, branch, pull requests and their checks, model and effort, usage
 fctl edit my-app#12 --title "Fix the flaky login test"
 fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" clears it
@@ -101,6 +108,17 @@ fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 ```
 
 `fctl run` uses the project from `fctl projects use` when `-p` is missing.
+
+`fctl run` follows the session as `fctl attach` does, until you press
+Ctrl-C, also once the session has stopped; with `-d` it returns as soon as
+the session is created, which is what scripts and agents want. `fctl
+attach --read-only` and `fctl logs -f` return at once for a session that
+had already stopped or failed when they connected, and otherwise keep
+following, after it stops too. Without message text, `fctl run` and `fctl
+send` read it from stdin, to its end, when stdin isn't a terminal: where
+stdin stays open, they wait. [fctl for agents](agents.md) has the rest of
+what matters when a program drives fctl, and how to wait for a session's
+turn to end.
 
 `fctl search` looks in the titles and descriptions of the sessions you can
 see, in every workspace unless `-w` or `-p` says which, and in what people
@@ -196,6 +214,7 @@ fctl workspaces remove grace@example.com   # their sessions there stop
 fctl workspaces transfer grace@example.com # the primary admin hands the role to an admin
 
 fctl workspaces set --name "Side project" --avatar logo.png   # or --avatar none
+fctl workspaces set --slug side            # its address in URLs (create takes --slug too); old links stop working
 fctl workspaces set --base-role editor     # every member starts sessions in every project
 fctl workspaces set --require-two-factor on   # closed to members without a second factor
 fctl workspaces set --skip-invites on      # a workspace for one: its setup stops asking for people
@@ -210,6 +229,7 @@ fctl workspaces github                     # the GitHub accounts it works in
 fctl workspaces connect                    # opens a GitHub sign-in; you choose what it works in on its GitHub tab
 fctl workspaces connect acme               # the same, for acme only
 fctl workspaces connect acme --repo web --repo design   # only these repositories of it, without the choice
+fctl workspaces connect --no-browser       # print the link to open where you are signed in (linear connect takes it too)
 fctl workspaces disconnect acme
 
 fctl workspaces linear                     # the Linear workspaces it works in, and which projects take their tickets
@@ -219,6 +239,7 @@ fctl workspaces linear disconnect acme     # its projects take no more tickets f
 
 fctl workspaces audit                      # what happened in it (admins)
 fctl workspaces delete side-project        # with its projects and sessions; asks you to type its name
+fctl workspaces delete side-project --confirm "Side project"   # …or takes it, without a terminal
 ```
 
 Admins invite people by an address they sign in with, or one the allowlist
@@ -246,6 +267,7 @@ fctl projects list                     # all your workspaces' projects
 fctl projects list -w side-project
 fctl projects show my-app
 fctl projects create "My app" --repo my-org/my-app -w acme   # a workspace's admins create its projects
+fctl projects create "Docs" --repo my-org/docs --slug docs --description "The handbook"   # its URL name, and a sentence for people
 fctl projects create "New thing" --new-repo new-thing --owner my-org --public
 fctl projects create "Site" --repo my-org/site --connectors   # claude.ai connectors in its sessions (off by default)
 fctl projects set -p my-app --credit-claude off   # no Claude trailer in its commits
@@ -267,7 +289,17 @@ fctl projects set -p my-app --tickets linear --linear-team ENG   # its tickets a
 fctl projects use my-app
 fctl projects order my-app site        # these first in their workspace, the others after them
 fctl projects delete my-app            # with its sessions; asks you to type the slug
+fctl projects delete my-app --confirm my-app   # …or takes it, without a terminal
 ```
+
+`--env` sets variables that aren't secret: the project's people see them in
+its settings and `fctl projects show`. Secrets, which sessions get as
+environment variables too, are set on the project's **Secrets** tab in the
+web app, or through [the HTTP API](api.md#projects), as are its members,
+the instructions its agents get, its model and effort, whether agents open
+a pull request when they finish, Remote Control, and claude.ai connectors
+once it exists. Anything an agent runs can read both variables and
+secrets.
 
 Agents start in the project's repository and can use more of the same GitHub
 account. They clone them when they need them, into `~/repos/<owner>/<name>`;
@@ -373,11 +405,15 @@ and without a sign-in, as for `fctl edit`:
 
 ```sh
 fctl ticket                                # the tracker, and the ticket this session works on
-fctl ticket list --search login --label Bug   # open ones, most recently changed first (--closed, --all)
+fctl ticket list --search login --label Bug   # open ones, most recently changed first (--closed, --all, --limit up to 50)
 fctl ticket view ENG-123                   # its description, parent, sub-tickets and comments
 fctl ticket create --title "Add a test for retries" --parent ENG-123 --description-file notes.md
+fctl ticket create --title "…" --label Tests --state Todo --priority High   # state and priority: Linear
+fctl ticket create --title "…" --in my-org/api   # which repository, for the GitHub issues of several
 fctl ticket comment ENG-123 "The fix needs a migration first: should it run in the deploy?"
+fctl ticket comment ENG-123 --reply-to 2f6c… --file answer.md   # answer a comment, where trackers thread them
 fctl ticket update ENG-123 --state "In Review" --add-label Bug
+fctl ticket update ENG-123 --remove-label Triage --parent none --priority Low
 fctl ticket states                         # the states tickets can be in, in order
 fctl ticket labels
 ```
@@ -417,7 +453,7 @@ lists them all:
 
 ```sh
 fctl retro list -p my-app              # newest first, with how many ended each way
-fctl retro list -p my-app --outcome blocked
+fctl retro list -p my-app --outcome blocked --limit 50   # 20 unless --limit says
 fctl retro list my-app#12              # one session's
 fctl retro rm rtr_01JC3W…              # people who manage the session
 ```
@@ -480,6 +516,7 @@ fctl review settings -p my-app --model default # the project's model again
 fctl review settings -p my-app --off           # reviews under way finish
 fctl review -p my-app                          # the reviews, newest first, with what came of each
 fctl review start -p my-app 12                 # review a pull request's head now (or acme/api#7, or its link)
+fctl review list -p my-app --limit 50          # more of them (20 unless --limit says)
 ```
 
 Review sessions take no messages: `fctl show my-app#12` says which pull
@@ -512,14 +549,16 @@ fctl schedules add -p my-app --cron "0 8 * * 1-5" --task-file triage.md --github
 fctl schedules add -p my-app --at 2h -m "Check whether the deploy went out, and say so."
 fctl schedules add -p my-app --at 2026-10-30T16:00+01:00 -m "Draft the release notes."
 fctl schedules add "Triage an issue" -p my-app --when-asked -m "Triage the issue that comes with this."
+fctl schedules add "Release notes" -p my-app --at 1d --paused -m "…"   # set up paused: it runs once resumed
 fctl schedules show "Weekly dependencies" -p my-app   # by name or id: its task, settings and latest runs
 fctl schedules edit "Weekly dependencies" -p my-app --cron "0 7 * * 1" --effort high
 fctl schedules edit sch_01JC… --mine           # run it on your subscription from now on
+fctl schedules edit sch_01JC… --name "Monday dependencies"
 fctl schedules pause sch_01JC…                 # it starts nothing until it's resumed
 fctl schedules resume sch_01JC…
 fctl schedules run sch_01JC…                   # its task now, in a session on your subscription
 fctl schedules run sch_01JC… --context "Issue #41 was just opened: the login page hangs"
-fctl schedules runs sch_01JC…                  # the sessions it started, and why it started none
+fctl schedules runs sch_01JC… --limit 50       # the sessions it started, and why it started none
 fctl schedules rm sch_01JC…                    # the sessions it started stay
 ```
 
@@ -586,11 +625,12 @@ your secrets manager writes.
 ```sh
 fctl host install                # register this machine and start the service
 fctl host install --driver lima --capacity 2 --build-image
-fctl host install --cpus 4 --memory 8g --max-memory 12g   # sandbox sizes
+fctl host install --cpus 4 --memory 8g --max-cpus 8 --max-memory 12g   # sandbox sizes
+fctl host install --name studio-mac --image ghcr.io/acme/agent:1   # its name (default: the hostname), and the image for projects that choose none
 fctl host install --allow-image 'ghcr.io/acme/*' --allow-build 'acme/*'   # what projects may run and build
 fctl host install --workspace acme   # for a workspace you are in (default: the one you administer, or your only one)
 fctl host install --workspace acme --personal   # only your sessions there (a member's always)
-fctl host install --token fctl_rt_…   # with a runner token from a workspace's Runners tab
+fctl host install --token fctl_rt_…   # with a runner token from a workspace's Runners tab (or FCTL_RUNNER_TOKEN)
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host install --auto-update off   # update fctl yourself (new hosts update themselves)
 fctl host run                    # run in the foreground (what the service runs)
@@ -600,6 +640,7 @@ fctl host logs -n 200
 fctl host image pull             # pull the sandbox image again now (the host does every 6 hours)
 fctl host image build            # build it here instead (with Lima: the base VM)
 fctl host image build --source ~/src/sandbox   # from a checkout of hyperstructure/sandbox
+fctl host image build --tag acme/sandbox:dev    # under another name (default: the host's image)
 fctl host claude set-token       # keep your Claude token here, not in fctl (see Claude above)
 fctl host auto-update            # whether it updates fctl by itself to the control plane's version
 fctl host auto-update off        # or on; restarts the host service (sessions keep running)
@@ -771,10 +812,10 @@ fctl admin invite grace@example.com -w side-project -w acme:admin   # and to you
 fctl admin role grace@example.com admin    # an instance admin, or member again (the primary instance owner)
 fctl admin transfer grace@example.com      # the primary instance owner hands the role to an admin
 fctl admin disable grace@example.com       # can't sign in; their tokens stop working (or enable)
-fctl admin delete-user grace@example.com   # asks you to type their address
+fctl admin delete-user grace@example.com   # asks you to type their address (--confirm ADDRESS without a terminal)
 fctl admin workspaces                      # and which need a primary admin
 fctl admin set-primary side-project grace@example.com   # when its primary admin's account is disabled
-fctl admin delete-workspace side-project   # asks you to type its name
+fctl admin delete-workspace side-project   # asks you to type its name (--confirm NAME without a terminal)
 fctl admin github                          # the app's installations, and the workspaces that use each
 fctl admin github remove acme side-project               # take acme from the workspace (its admins reconnect it)
 fctl admin early-access                    # who asked for early access, where the instance takes requests
@@ -822,9 +863,9 @@ fctl account primary ada.lovelace@acme.example   # where fctl writes to you
 fctl account disconnect ada@private.example      # it stops signing in; you leave its workspaces
 fctl account export                        # your data as JSON: fctl-export-<date>.json
 fctl account export -o - | jq .sessions    # or print it
-fctl account delete                        # shows what goes, asks for your email address
+fctl account delete                        # shows what goes, asks for your email address (--confirm EMAIL without a terminal)
 fctl account linear                        # who fctl knows you as in Linear workspaces
-fctl account linear connect                # opens Linear's sign-in; what you delegate there runs as you
+fctl account linear connect                # opens Linear's sign-in; what you delegate there runs as you (--no-browser prints the link)
 fctl account linear disconnect acme
 ```
 
@@ -937,6 +978,31 @@ Delete the script and the block to undo it.
 
 ## Exit codes and output
 
-Commands exit non-zero on failure and print errors to stderr. With `--json`,
-results go to stdout as one JSON document (or one per line for streams such as
-`fctl logs -f --json`), using the same shapes as the HTTP API.
+Commands exit with 0 when they succeed, 1 when they fail (the API refused,
+the network failed, there was nothing to do) and 2 when the command line is
+wrong (an unknown flag, a missing argument). Errors go to stderr as text,
+`error: …`, with `--json` too. With `--json`, results go to stdout as one
+JSON document, in the shapes of [the HTTP API](api.md); `fctl logs --json`
+prints one event per line instead, with `-f` or without.
+
+What waits for you, which matters in scripts and agents' tool calls
+([fctl for agents](agents.md)):
+
+- `fctl run` without `-d`, and `fctl attach`, follow the session until you
+  press Ctrl-C, also once it has stopped. `fctl attach --read-only` and
+  `fctl logs -f` return at once only for a session that had already stopped
+  or failed when they connected.
+- `fctl run`, `fctl send` and `fctl schedules add` without their text read
+  it from stdin, to its end, when stdin isn't a terminal.
+- Deleting a project, a workspace or an account asks you to type its slug,
+  name or address; without a terminal, `--confirm` takes it. `fctl host
+  uninstall` asks before it stops running sessions; without a terminal, it
+  needs `--wait` or `--force`.
+- Where the instance asks for it, sensitive actions ask you to confirm it's
+  you; without a terminal, they fail until `fctl account verify` has.
+
+Environment variables: `FCTL_SERVER` and `FCTL_TOKEN` (in place of the
+instance and token `fctl login` saved), `FCTL_CONFIG_DIR` (in place of
+`~/.config/fctl`), `FCTL_RUNNER_TOKEN` (`fctl host install --token`),
+`FCTL_DOWNLOAD` (the release server `fctl self update` downloads from),
+`FCTL_LOG` (what it logs to stderr, such as `debug`) and `NO_COLOR`.

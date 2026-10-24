@@ -1,0 +1,244 @@
+# fctl
+
+> fctl is a software factory for Claude Code. People, scripts and other agents describe work; fctl runs Claude Code agents on it in isolated Linux sandboxes on machines the team owns, around the clock, on the Claude subscriptions of the people who start them, never on API billing. Each piece of work is a session: one Claude conversation in its own sandbox, on its own git branch, usually ending in a pull request that the agent keeps working on. Everything is reachable from the web app, the `fctl` CLI (every command takes `--json`) and an HTTP API.
+
+This file is for agents and the people who set them up: what fctl is, the words it uses, how to drive it safely from a terminal or another program, recipes for common flows, what to avoid, and where the details are. It is served at https://fctl.sh/llms.txt, at `/llms.txt` of every fctl instance (such as https://app.fctl.sh/llms.txt), and kept in the repository as `docs/llms.txt`. Every doc page is also served as Markdown (`https://fctl.sh/docs/<page>.md`), and https://fctl.sh/llms-full.txt is this file followed by all the docs in one file. Everything below is current as of the docs it links; the CLI's own `fctl <command> --help` is authoritative for flags.
+
+fctl is MIT licensed and open source: https://github.com/hyperstructure/fctl. The hosted instance is https://app.fctl.sh (by invitation or early access); anyone can run their own instance on Cloudflare or in one container.
+
+## What fctl gives you
+
+- **Unattended agents in sandboxes.** Each session runs Claude Code with permission prompts off inside its own Linux VM or container on a runner (a Mac with Apple's `container`, Lima, or Docker). The agent clones the project's repository, works on a branch named `fctl/<number>-<title>`, commits, and fctl pushes after every turn; it opens a pull request when the task is done, unless the project turns that off.
+- **Live, steerable work.** Every event is journaled and streamed: follow a session in the web app, in a terminal (`fctl attach`), or in the Claude apps (Remote Control, with a full Claude login). Message the agent at any time (with files), interrupt its turn, stop it, resume it later in the same sandbox and conversation.
+- **Work that starts itself.** Schedules (cron, once at a time, or only when asked), Linear (assign or mention fctl on an issue), GitHub Actions and any tool that can make an HTTP request with an access token.
+- **Agents that finish the job.** Follow-ups bring an agent back to the pull request it opened when someone who can write to the repository mentions `@fctl` or `@agent`, a check fails, the pull request conflicts with its base branch, or it merges or closes. Built-in review agents review every new commit of pull requests and hand their findings to the agent that opened the pull request.
+- **Agents that learn.** A project memory of notes that each session's agent starts with and adds to, and a retrospective of each piece of work for the people who follow along.
+- **Teams.** Workspaces with people, roles, runners, GitHub accounts, Linear workspaces, an audit log, two-factor sign-in and passkeys; projects with members, settings and secrets; sessions shared with others.
+- **Subscriptions only.** API keys are stripped from every sandbox, a session must report a subscription credential, and a session pauses before it would draw on paid extra usage.
+- **Yours to run.** The control plane runs on Cloudflare (a Rust → WebAssembly Worker with Durable Objects and D1) or in one container anywhere (`ghcr.io/hyperstructure/fctl-control`). Hosts dial out; nothing listens on your machines.
+
+## How it fits together
+
+```
+web app · fctl CLI · HTTP API · Claude apps · Linear · GitHub webhooks
+                         │
+              control plane (an instance)      users, workspaces, projects, sessions' event logs,
+                         │  (hosts dial out)    scheduling, credentials, GitHub App, Linear app
+              fctl host on a machine (runner)  one sandbox per session: apple · lima · docker · process
+                         │
+              fctl-agent + Claude Code         in the sandbox: journals events, pushes, reports git state
+```
+
+- The **control plane** (one per instance, such as app.fctl.sh) serves the API and the web app, keeps each session's event log, mints short-lived GitHub tokens, hands sessions to runners and relays messages. It never runs Claude itself.
+- A **host** is the `fctl host` service on a machine; registered with an instance it is a **runner**. It runs each session in a **sandbox** made by its **driver**, and puts **fctl-agent** in it.
+- **fctl-agent** supervises `claude -p` in stream-json mode, journals every event until the control plane acknowledges it, pushes branches, looks up pull requests, and answers the in-sandbox `fctl` commands (`fctl edit`, `fctl memory`, `fctl ticket`…) without any fctl credentials in the sandbox.
+
+## Vocabulary
+
+- **Instance**: one fctl deployment: a control plane and the hosts connected to it. Its URL is what `fctl login` and `FCTL_SERVER` name (`https://app.fctl.sh`, or a self-hosted one).
+- **Workspace** (`wsp_…`, `/w/<slug>`): the people who work together, their projects, the runners their sessions run on, the GitHub accounts and Linear workspaces they work in, and an audit log. A person is in at most five workspaces (the primary instance owner in any number).
+- **Project** (`prj_…`, `/p/<slug>`, slugs are unique per instance): a primary GitHub repository (or none), more repositories of the same GitHub account (read only or read and write), and everything agents need: setup script, instructions, model and effort, image, CPUs and memory, environment variables, secrets, idle timeout, GitHub access, follow-ups, ticket tracker, memory, schedules, review agents.
+- **Session** (`ses_…`, or `<project>#<number>` like `my-app#12`, URL `/s/<id>`): one agent working on one task: one Claude conversation in one sandbox on its own branch. A session has turns, a status, a transcript (its event log), pull requests, and a person it runs for, whose Claude subscription it uses.
+- **Task**: the first message of a session. **Turn**: one round of Claude's work, from a message to the `result` that ends it. **Message**: what a person or tool sends a running or stopped session; it reaches the agent at its next step.
+- **Agent**: Claude Code running in a session's sandbox. **Review agent**: an agent that reviews a pull request's commit and posts findings through fctl. In these docs "agent" means one of these unless it says otherwise.
+- **Runner** (`rnr_…`): a machine registered with an instance, running `fctl host`. It belongs to the person who registered it and runs the sessions of the workspaces it is added to: everyone's there (added by an admin) or only its owner's (added by a member, or `--personal`).
+- **Host**: the `fctl host` daemon (and the machine). **Driver**: how a host makes sandboxes: `apple` (a lightweight VM per session, Apple silicon, macOS 26+), `lima` (a full VM), `docker` (a container; on macOS inside Docker's VM), `process` (no isolation, development only).
+- **Sandbox**: the VM or container a session runs in. Its user is `agent`, the repository is at `~/workspace`, other repositories go in `~/repos/<owner>/<name>`, attachments in `~/attachments/`. A stopped session keeps its sandbox (72 hours by default) so a resume continues the same conversation.
+- **Image**: what sandboxes start from: `ghcr.io/hyperstructure/sandbox:<version>` by default (Debian with git, gh, Python and uv, Rust, Node.js, TypeScript, Bun, Claude Code and fctl), or the project's own, or one built from a Dockerfile or devcontainer.json in its repository.
+- **Claude connection** (`crd_…`): a person's Claude subscription credential: a full Claude login (Remote Control works), a long-lived token from `claude setup-token`, or a token kept on their runners that fctl never sees.
+- **Access token** (`fctl_pat_…`, id `tok_…`): a token for scripts, CI, bots and other agents, optionally limited to reading, running sessions or everything, to some projects or workspaces, and in what its sessions' agents may do on GitHub.
+- **GitHub access** of a session: `push` (commit, push, open pull requests), `comment` (review, comment, label, resolve review threads; push nothing) or `read` (read only). The most a session gets is what its project and the token that starts it allow.
+- **Follow-up**: a message from fctl that brings an agent back to a pull request its session opened: `comments`, `checks`, `conflicts`, `closed`.
+- **Schedule** (`sch_…`, runs `srn_…`): a task fctl starts sessions for on its own: on a cron expression in a time zone, once at a time, or only when asked (by a person or a tool).
+- **Ticket tracker**: where a project's agents read and write tickets: GitHub Issues (of every repository they write to, or one), a Linear team, or none. In a sandbox, `fctl ticket` reaches it.
+- **Memory** (`mem_…`): a project's notes for the agents of later sessions. **Retrospective** (`rtr_…`): how a piece of work ended (`completed`, `partial`, `blocked`), what was done, the approach, what got in the way, and what a future agent should know.
+- **Agent Floor**: the web app's home page: the task box and every active session.
+- **Remote Control**: Claude Code's link to the Claude apps; sessions on a full Claude login show up in claude.ai/code and the Claude apps of the person they run for.
+- **Published screenshot**: an image an agent publishes with `fctl publish` at an unguessable link, to show in a pull request (off unless the instance and the project allow it).
+- **Drain**: a runner that drains takes no new sessions while the ones it has carry on.
+
+## Roles
+
+- **Instance**: `owner` (the primary instance owner, one), `admin` (people, invitations, allowlist, runners, GitHub installations, instance settings; not inside workspaces they aren't in), `member`.
+- **Workspace**: the primary admin (one; hands the role over before leaving), `admin` (people, roles, runners, GitHub and Linear connections, settings; creates projects; owns every project), `member`. A **base role** (`none`, `viewer`, `editor`, `maintainer`; new workspaces: `editor`) gives every member that role in every project.
+- **Project**: `owner` (everything, including deleting it and turning review agents on), `maintainer` (settings, secrets, members, schedules of others), `editor` (start sessions, message agents, keep memory), `viewer` (read sessions). A member's role is the higher of their project role and the base role.
+- **Session**: `owner` (who started it, while they may still start sessions in the project, and the project's maintainers and owners: stop, resume, archive, share), `editor` (message and interrupt), `viewer` (read). Sessions can be shared with people in the same workspace, as viewers, editors or owners.
+- **Access token**: `read` (like a viewer), `run` (like an editor, and it stops and resumes the sessions it started), `full` (whatever its person may in its projects). A limited token never reaches the account, workspaces' people and settings, Claude connections, other tokens or administration.
+
+## Session lifecycle
+
+```
+queued → provisioning → preparing → running ⇄ idle → stopping → stopped
+                                       │                         failed (any time)
+                                       └→ paused (usage limit; resumes on its own)
+```
+
+- `queued`: waiting for a runner of its workspace that is online, has a free slot, runs its image and size, and runs this person's sessions. `status_reason` says why it waits ("Waiting for a runner: …"): a session can't start until a person fixes that.
+- `provisioning` → `preparing`: the host makes the sandbox; the agent clones the repository, creates the branch and runs the project's setup script.
+- `running`: a turn is under way. `idle`: the turn ended and the agent waits for a message (`status_reason` "Waiting for a message"), or for its background tasks ("Waiting for 2 background tasks"), whose results Claude takes in a turn of its own.
+- An idle session stops after the project's idle timeout (10 minutes unless set; `fctl projects set --idle-timeout`). Background work keeps it up for at most an hour after its last turn. `stopped` keeps the sandbox: a message to a stopped session resumes it on the same runner, with Claude's conversation and anything uncommitted; if that runner is gone or busy for 10 minutes, it resumes on another runner in a new sandbox from the pushed branch, with a new conversation.
+- `paused`: the person's plan hit a usage limit (or the turn would have drawn on paid extra usage); it continues by itself when the limit resets (`resume_at`).
+- `failed`: something went wrong (`status_reason` says what). Only a resume (`fctl resume`, on the resumer's subscription) restarts a failed session; a message doesn't.
+- A runner that goes away leaves its agents working; after ten minutes the session shows as stopped and a message resumes it elsewhere, unless the runner comes back first.
+- Review agents' sessions take no messages, stop as soon as their review is posted, and stay off the Agent Floor and session lists.
+
+## How agents work in a session
+
+- **Instructions.** Each agent gets fctl's system prompt (the repository and branch, other repositories, sandbox size, how to commit and open pull requests, the project's pull request description style, tracker rules, then the project's instructions) and a `~/AGENTS.md` (imported by `~/.claude/CLAUDE.md`) with the project's memory and how to keep it, how to name the session and record retrospectives. The repository's own `CLAUDE.md`/`AGENTS.md` apply as usual.
+- **Git and pull requests.** Commits are authored by the instance's GitHub App bot, with `Co-authored-by` trailers for Claude and for the person who started the session (if they set a commit email; projects can turn either off). fctl pushes the session branch after every turn until its pull request merges; agents never force-push or rewrite pushed history. In other repositories they change, agents use the same branch and open a pull request in each. After a merge fctl stops pushing that branch: further work goes in a new branch and pull request. Session pages and `fctl show` list every pull request with its state (`open`, `draft`, `queued`, `merged`, `closed`) and its checks.
+- **GitHub tokens.** Installation tokens for the project's repositories only, valid an hour and refreshed through the host: one that writes as far as the session's GitHub access allows, one that only reads. git and `gh` are signed in. Changes to a project's repositories or GitHub access reach running sessions within the hour.
+- **Follow-ups** (webhook needed; new projects have all four on): a comment, review or line comment that mentions `@fctl` or `@agent` (or starts with `fctl:`/`agent:`) from someone who can write to the repository; a failed check of the newest commit (at most three in a row while nobody messages the agent); a conflict with the base branch, which the agent resolves by merging the base branch in (never rebasing), running the tests and pushing; a merge or close. Each arrives as a message from fctl that resumes the session on the subscription it ran on, and the agent answers in the threads on GitHub.
+- **Review agents** (per project, on an owner's subscription): each new commit of a pull request in the repositories the project writes to gets a review: an `eyes` reaction, an `fctl review` check, a summary comment and findings on the lines. Pull requests from people who can't write to the repository, and from apps other than the ones the owners chose (Dependabot by default), are reviewed only when someone asks (`fctl review start`). When an fctl agent opened the pull request, its session gets the findings to fix or answer (at most five reviews in a row while no person messages it).
+- **In-sandbox commands** (through fctl-agent, no sign-in): `fctl edit --title … --description …` (name the session), `fctl memory` / `fctl memory add|stale|duplicate`, `fctl retro` / `fctl retro update|list`, `fctl ticket …`, `fctl publish FILE` (screenshots for pull requests; `gh pr edit --attach` fails with the app's token), `fctl resolve PRRT_…` (resolve review threads, for agents that comment), and for review agents `fctl review threads` and `fctl review submit FILE`.
+- **What a sandbox has.** The project's environment variables and secrets, `CLAUDE_CODE_OAUTH_TOKEN`, `FCTL_SESSION_ID`, `FCTL_SESSION_URL`, `FCTL_SANDBOX_CPUS`, `FCTL_SANDBOX_MEMORY_MB`, outbound network, sudo. No fctl credentials, no API keys, no GitHub App key.
+
+## Claude credentials and usage
+
+- Each person connects their own subscription (Pro or Max) in Settings → Claude or with `fctl claude connect --login` (full login through a host; Remote Control and claude.ai connectors), `fctl claude connect` (paste a `claude setup-token` token; lasts a year), or `fctl claude connect --on-runners` after `fctl host claude set-token` on each of their runners (the token never reaches fctl; their sessions then run only on those runners).
+- A session runs on the connection of the person it runs for: who started it (or resumed it last; a schedule's owner; whoever delegated a Linear ticket; the access token's person). A member chooses which connection each workspace's sessions use (`fctl workspaces claude <connection> -w <workspace>`).
+- `fctl claude status` shows each connection's plan usage (five-hour window, week, per-model week) as sessions last reported it. Sessions pause at a limit and resume when it resets.
+
+## Driving fctl from an agent or a script
+
+Install and sign in:
+
+```sh
+curl -fsSL https://fctl.sh/install | sh      # or: brew install hyperstructure/tap/fctl
+export FCTL_SERVER=https://app.fctl.sh      # the instance
+export FCTL_TOKEN=fctl_pat_…                # an access token a person made for this
+fctl whoami                                  # who it acts as, and what the token may do
+```
+
+- Prefer an access token limited to the job over a person's sign-in: `fctl token "Nightly triage" --access run -p my-app --github comment --days 30` (a person runs it; it prints the token once). `fctl login` needs a person to approve the device in a browser (`--no-browser` prints the link).
+- Name sessions by id (`ses_…`, also in URLs) in scripts: `my-app#12` only finds the project's latest 200 sessions.
+- `--json` prints one JSON document on stdout, in the API's shapes (`fctl run -d --json` prints the new session, `.id` is its id). `fctl logs --json` is the exception: one event per line (JSON Lines), with or without `-f`; use `jq -s` to read it as an array.
+- Exit codes: 0 success; 1 an error (the message on stderr, as text even with `--json`); 2 a usage error (unknown flag, missing argument). Check the exit code; don't parse stderr.
+- Commands that take a project use `-p`, else the default from `fctl projects use`. Commands that take a workspace use `-w`, else `fctl workspaces use`, else your only one.
+- Statuses to wait for after starting or messaging a session: the turn is over when a new `result` event appears in the transcript, or when the status is `idle`, `stopped`, `failed` or `paused`.
+
+The core loop:
+
+```sh
+id=$(fctl run -p my-app -d --json "Fix the flaky login test and open a pull request" | jq -r .id)
+
+turns() { fctl logs "$1" --json | jq -s '[.[] | select(.kind == "claude" and .data.type == "result")] | length'; }
+wait_turn() {   # waits until the session has more than $2 finished turns, or can't go on
+  while [ "$(turns "$1")" -le "$2" ]; do
+    case $(fctl show "$1" --json | jq -r .status) in failed|paused) return 1 ;; esac
+    sleep 20
+  done
+}
+
+wait_turn "$id" 0
+fctl logs "$id" --json | jq -s -r '[.[] | select(.kind == "claude" and .data.type == "result")] | last | .data.result'
+fctl show "$id" --json | jq '{status, status_reason, branch, pull_requests}'
+
+n=$(turns "$id"); fctl send "$id" "Also add a regression test"; wait_turn "$id" "$n"
+```
+
+A session that stays `queued` says why in `status_reason` (no runner online, no runner allows its image, its person's runners are offline…): report it rather than wait forever.
+
+## Things to avoid
+
+- **`fctl run` without `-d` never exits on its own.** It follows the session and reconnects forever, also after the session stops, so a tool call that runs it hangs until it is killed. Always pass `-d` (`--detach`) in scripts and tool calls.
+- **`fctl attach` and `fctl logs -f` don't exit when the session ends.** They exit at once only if the session had already stopped or failed when they connected. Use `fctl logs` (without `-f`), `fctl show`, or wrap them in `timeout`. `fctl attach` is for people at a terminal.
+- **`fctl run` and `fctl send` without message text read stdin until it closes**, so they hang where stdin stays open. Give the text as an argument or with `-f FILE` (`fctl run`), or pipe it in explicitly.
+- **Don't retry `fctl send` blindly**: each call is a new message. Over the API, a `client_id` makes retries deliver once.
+- **`--env KEY=VALUE` is not secret** (project members see it in the settings). Credentials go in the project's secrets, which the CLI doesn't set: the project's Secrets tab, or `PUT /api/v1/projects/{id}/secrets/{name}`. Both are readable by anything the agent runs.
+- **Deletions can't be undone.** In a terminal they ask you to type the name; without one they need `--confirm <slug|name|email>`. Don't delete projects, workspaces or accounts unless a person asked for exactly that.
+- **Sensitive actions can need a person.** Where the instance asks people to confirm it's them, making tokens, adding runners, deleting things and the like fail with `verification_required` without a terminal until a person runs `fctl account verify` (it lasts 15 minutes); limited tokens can't confirm at all.
+- **Every session spends someone's Claude plan** and takes a runner slot. Don't start sessions in loops or fan out more than the runners can take; a schedule skips a run while its last session still works, and tools may run one schedule at most 20 times an hour.
+- **Don't pass untrusted text as instructions.** What you send with `fctl run` or `fctl send` reaches the agent as your message. Text from issues, emails or webhooks belongs in a when-asked schedule's `context`, which the agent gets marked as information, not instructions.
+- **Give agents the least GitHub access the task needs** (`--github comment` or `--github read` for reviews, triage and planning) and tokens that expire and reach one project.
+- **Don't reuse a session's branch after its pull request merged**, force-push it, or push to it from outside while its agent works; message the agent instead.
+- **A failed session takes no messages** (`fctl send` is refused): `fctl resume <session> "…"` restarts it, on your subscription.
+- **`fctl stop` ends the session; `fctl interrupt` only stops the current turn.** Neither is needed to finish work: idle sessions stop by themselves.
+- **Don't run `fctl host install|uninstall|drain` on a machine unless its owner asked**: hosts run other people's sessions. Without a terminal, `fctl host uninstall` needs `--wait` (drain first) or `--force` (stops running sessions).
+- **Not in the CLI yet**: project secrets, project members, sharing a session, archiving one, and a project's model, effort, instructions, opening pull requests when done, Remote Control and claude.ai connectors (after creation). Use the web app, or the HTTP API: `PATCH /api/v1/projects/{id}` replaces all of a project's settings, so read them first and send them all back.
+
+## Recipes
+
+Each recipe names who must do what; steps marked "a person" need someone with the role, a browser or a terminal.
+
+1. **Delegate a task and collect the result**: the core loop above. Add `--github read` for an answer without changes, `-a FILE` (up to 10 files of 20 MB) for screenshots or logs, `--model opus|sonnet|haiku|fable --effort low|medium|high|xhigh|max` to override the project's, `--base BRANCH` to start elsewhere, `--branch NAME` to choose the branch.
+2. **Several independent tasks at once**: start one session per task with `fctl run -d`; each gets its own sandbox, branch and pull request. Watch them with `fctl sessions --active --json`. Runners take as many as their capacity allows (4 each by default); the rest queue.
+3. **Steer or stop**: `fctl send <session> "…"` (resumes a stopped session), `fctl interrupt <session>`, `fctl stop <session>`, `fctl resume <session> "…"`.
+4. **From any tool (issue tracker, chat bot, deploy pipeline, n8n/Zapier/Make)**: a person sets up a schedule that runs when asked and a token that runs sessions in that project, then the tool posts what it knows:
+   ```sh
+   fctl schedules add "Triage an issue" -p my-app --when-asked --github comment \
+     -m "Triage the issue that comes with this: label it, say what is missing, link duplicates."
+   fctl token "Issue triage" --access run -p my-app --github comment --days 90
+   curl -H "Authorization: Bearer $FCTL_TOKEN" -H "Content-Type: application/json" \
+     -d '{"context": "Issue #41: The login page hangs on Safari…"}' \
+     "$FCTL_SERVER/api/v1/schedules/sch_…/runs"          # context: at most 20,000 characters
+   ```
+   The answer is the run, with the session it started (`.session.id`). From a shell: `fctl schedules run sch_… --context-file -`.
+5. **Recurring work**: `fctl schedules add "Weekly dependencies" -p my-app --cron "0 9 * * 1" --tz Europe/Stockholm -m "Update the dependencies with patch or minor releases, run the tests and open a pull request."` Once: `--at 2h` or `--at 2026-10-30T16:00+01:00`. Five-field cron or `@daily`/`@weekly`…, at most every 15 minutes, `--tz` defaults to the machine's zone (set it in CI), `--paused` to set one up stopped. Runs go on the schedule owner's subscription; `fctl schedules runs sch_…` says what each run started or why not.
+6. **Review pull requests**: a project owner turns on review agents: `fctl review settings -p my-app --on --model opus --effort high` (instructions: `--instructions-file review.md`; apps whose pull requests start reviews: `--bots dependabot,renovate`). Ask for one now: `fctl review start -p my-app 12`. Reviews that run tests or start on a label: a GitHub Actions workflow with a run token ([Automation](https://fctl.sh/docs/automation.md)).
+7. **Agents that fix their own pull requests**: `fctl projects set -p my-app --follow-ups all` (the default for new projects); then comment `@fctl please split this function` on the pull request, and failed checks and conflicts come back to the agent on their own. Needs the instance's GitHub webhook.
+8. **Linear**: a workspace admin who is a Linear admin runs `fctl workspaces linear connect`; a maintainer picks the team (`fctl projects set -p my-app --tickets linear --linear-team ENG`, optionally `--linear-project "Mobile app"`); each person links their Linear account once (`fctl account linear connect`). Then assigning an issue to fctl (it becomes the delegate) or mentioning fctl starts a session as that person, moves the issue to In Progress, names the branch after the issue key, and posts the agent's steps, pull requests and replies in the issue; replies there reach the agent. The `explore` label asks for a plan first.
+9. **GitHub Issues as the tracker**: the default; agents use `gh issue` in the repositories they write to. `fctl projects set -p my-app --tickets github --tickets-repo owner/name` keeps them to one repository's issues (through `fctl ticket` when they write to other repositories too); `--tickets none` keeps them away from trackers. A maintainer can start a session that reaches GitHub's issues whatever the tracker says, to move them into Linear, say (`fctl run --github-issues`).
+10. **Plan or review without changes**: `fctl run -p my-app -d --github read "Plan the move to Postgres: what changes, in what order, what can break."` or a project-wide cap: `fctl projects set -p my-app --github comment`.
+11. **Set up a project** (a workspace admin): `fctl projects create "My app" --repo my-org/my-app -w acme`, then `fctl projects set -p my-app --setup-script 'npm ci' --idle-timeout 30 --pr-descriptions balanced`, more repositories with `fctl projects repos add my-org/my-lib --write -p my-app`, an image with `--image ghcr.io/acme/agent:1` or `--build Dockerfile`, size with `--cpus 8 --memory 16g`, shared package caches with `--package-caches on`. Instructions, model, effort and secrets: the project's Settings and Secrets tabs.
+12. **Bring a machine online** (its owner, at its terminal): install Apple's `container` (macOS 26+, `container system start`), Lima, or Docker; then `fctl login`, `fctl host install --workspace acme` (or `--token fctl_rt_…` from the workspace's Runners tab), `fctl host doctor`, `fctl host status`. Maintenance: `fctl host drain --wait`, `fctl host undrain`.
+13. **Dashboards and reports**: a token with `--access read` lists sessions, transcripts, memory and retrospectives and starts nothing: `fctl sessions --active --json`, `fctl retro list -p my-app --json`, `fctl search "flaky test" --json`, `fctl logs my-app#12 --json`.
+14. **Keep agents informed**: `fctl memory add -p my-app "Deploys happen on Thursdays: merge migrations by Tuesday."`; read what they learned with `fctl memory -p my-app` and `fctl retro list -p my-app --outcome blocked`.
+
+## Web app
+
+- **Agent Floor** (`/`): the task box (project, model, effort, GitHub access, files; ⌘Enter starts, **Schedule** turns the task into a schedule), sessions **Working now** and **Recently**, plan usage, invitations. ⌘K searches sessions, projects, workspaces and what sessions said.
+- **Session page** (`/s/<id>`): the live transcript (tool calls fold into lines), the composer to message the agent, Interrupt, Stop and Resume, Share, the follow bell, Changes (the branch's diff), pull requests with checks, context and usage, retrospectives, ⌘F to find in the transcript, Open in Claude.
+- **Project page** (`/p/<slug>`): Sessions, Tickets, Schedules, Reviews, Memory, Retrospectives, Repositories and Members tabs; maintainers and owners also see Settings (agents, sandbox, GitHub, follow-ups…) and Secrets.
+- **Workspace page** (`/w/<slug>`): Projects, People, Runners (with the command and token that add one), GitHub, Linear, Settings, and the Audit log for admins.
+- **Settings** (`/settings`): profile, email addresses and commit emails, workspaces (which Claude connection, only my runners), Claude, notifications, Linear account, sign-in methods, passkeys, two-factor sign-in, devices and access tokens, appearance, your data, deleting your account. **Admin** (`/admin`, instance admins): people, access (allowlist), early access, workspaces, GitHub, runners, settings, audit.
+- Notifications are Web Push to browsers where people turned them on (on iPhone and iPad, fctl added to the Home Screen): a followed session waits for a reply, pauses on a usage limit, or fails.
+
+## Docs
+
+- [Overview](https://fctl.sh/docs/index.md): the three pieces (control plane, hosts, clients), where to go next, and the words the docs use.
+- [Getting started](https://fctl.sh/docs/getting-started.md): signing in, installing the CLI, workspaces, connecting Claude, bringing a machine online, creating a project, starting, following and steering sessions, working together, roles.
+- [The CLI](https://fctl.sh/docs/cli.md): every command: sign-in and access tokens, sessions, search, workspaces, projects, repositories, ticket trackers, memory and retrospectives, review agents, schedules, notifications, Claude, hosts and `host.toml`, admin, your account, updating, exit codes.
+- [fctl for agents](https://fctl.sh/docs/agents.md): driving fctl from agents, scripts and other programs: tokens, waiting for sessions, reading transcripts, JSON and exit codes, pitfalls, recipes in full, and what agents do inside a session's sandbox.
+- [The HTTP API](https://fctl.sh/docs/api.md): authentication, errors, paging, and the endpoints for sessions, messages, events, schedules, projects, memory, retrospectives and reviews, with examples.
+- [Automation](https://fctl.sh/docs/automation.md): schedules, Linear delegation, starting agents from other tools, access tokens, GitHub access levels, review agents from GitHub Actions, other uses.
+- [Self-hosting](https://fctl.sh/docs/self-hosting.md): the control plane in a container (Docker, Kubernetes) or on Cloudflare, settings, HTTPS, the first account, the GitHub App (permissions, webhook, follow-ups), the Linear app, Google sign-in, email, hosts.
+- [Sandbox images](https://fctl.sh/docs/sandbox-images.md): the default image and its layout, a project's own image or one built from its repository, which images a host runs, what an image needs, what fctl writes into a sandbox.
+- [Architecture](https://fctl.sh/docs/architecture.md): how every piece works and talks: identity, workspaces, sessions, GitHub, review agents, follow-ups, schedules, trackers, Linear, events, credentials, sandboxes, protocols, deployment.
+- [Security](https://fctl.sh/docs/security.md): what fctl protects and how, what sandboxes can reach, what tokens carry, billing guards, hosts, retention.
+- [Development](https://fctl.sh/docs/development.md): working on fctl itself: the local stack with fake-claude, checks, the repository map.
+
+## Topics in depth
+
+- [Session lifecycle and idle sessions](https://fctl.sh/docs/architecture.md#idle-sessions): idle timeout, background work, resumes on the same or another runner, overlapping runs.
+- [GitHub access](https://fctl.sh/docs/architecture.md#github-access) and [repositories](https://fctl.sh/docs/architecture.md#repositories): tokens per session, push/comment/read, other repositories, how branches and pull requests are followed.
+- [Pull request state and checks](https://fctl.sh/docs/architecture.md#pull-request-state-and-checks): the GitHub webhook and lookups.
+- [Follow-ups](https://fctl.sh/docs/architecture.md#follow-ups): comments, failed checks, conflicts, merges; limits and what the agent is told.
+- [Review agents](https://fctl.sh/docs/architecture.md#review-agents): what starts a review, what the agent may do, how findings are posted and passed on.
+- [Schedules](https://fctl.sh/docs/architecture.md#schedules): cron and time zones, skipped runs, runs from tools, whose subscription.
+- [Ticket trackers](https://fctl.sh/docs/architecture.md#ticket-trackers) and [Linear](https://fctl.sh/docs/architecture.md#linear): `fctl ticket`, rate limits, delegation, what goes back to Linear. More trackers (Jira, Shortcut, ClickUp) are on the roadmap, on the same `fctl ticket` model.
+- [Project memory](https://fctl.sh/docs/architecture.md#project-memory) and [retrospectives](https://fctl.sh/docs/architecture.md#retrospectives).
+- [Access tokens](https://fctl.sh/docs/architecture.md#access-tokens): limits, what a limited token reaches.
+- [Workspaces](https://fctl.sh/docs/architecture.md#workspaces), [GitHub accounts](https://fctl.sh/docs/architecture.md#github-accounts) and [runners and workspaces](https://fctl.sh/docs/architecture.md#runners-and-workspaces).
+- [Claude credentials](https://fctl.sh/docs/architecture.md#claude-credentials), [tokens on your runners](https://fctl.sh/docs/architecture.md#tokens-on-your-runners) and [plan usage](https://fctl.sh/docs/architecture.md#plan-usage).
+- [Sandboxes and drivers](https://fctl.sh/docs/architecture.md#sandboxes-and-drivers), [package caches](https://fctl.sh/docs/architecture.md#package-caches), [draining a runner](https://fctl.sh/docs/architecture.md#draining-a-runner), [host updates](https://fctl.sh/docs/architecture.md#host-updates).
+- [Event flow and reliability](https://fctl.sh/docs/architecture.md#event-flow-and-reliability) and [viewers](https://fctl.sh/docs/architecture.md#viewers): journaling, replay, the live socket.
+- [Model and effort](https://fctl.sh/docs/architecture.md#model-and-effort), [commits](https://fctl.sh/docs/architecture.md#commits), [pull request descriptions](https://fctl.sh/docs/architecture.md#pull-request-descriptions).
+- [Sandboxes' security](https://fctl.sh/docs/security.md#sandboxes): what an agent can reach, and why project secrets and Claude tokens are readable by what it runs.
+
+## Source
+
+- [Repository](https://github.com/hyperstructure/fctl): Rust (control plane, host, agent, CLI) and a React web app. Raw files: `https://raw.githubusercontent.com/hyperstructure/fctl/main/<path>`.
+- [AGENTS.md](https://github.com/hyperstructure/fctl/blob/main/AGENTS.md): how to work on fctl itself: commands, rules, conventions.
+- [Decision records](https://github.com/hyperstructure/fctl/blob/main/docs/adr/README.md): why fctl works the way it does, one decision each.
+- [Roadmap](https://github.com/hyperstructure/fctl/blob/main/ROADMAP.md) and [changelog](https://github.com/hyperstructure/fctl/blob/main/CHANGELOG.md).
+- [API types](https://github.com/hyperstructure/fctl/blob/main/crates/fctl-proto/src/api.rs): every request and response body of the HTTP API, with [sessions](https://github.com/hyperstructure/fctl/blob/main/crates/fctl-proto/src/session.rs) and [events](https://github.com/hyperstructure/fctl/blob/main/crates/fctl-proto/src/event.rs).
+- [CLI source](https://github.com/hyperstructure/fctl/tree/main/crates/fctl/src/cmd): one file per command group.
+
+## Optional
+
+- [Everything in one file](https://fctl.sh/llms-full.txt): this file followed by every doc page.
+- [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox): the default sandbox image.
+- [hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site): fctl.sh, the installer and release downloads.
+- [hyperstructure/design](https://github.com/hyperstructure/design): the design system the web app uses.
+- [hyperstructure/homebrew-tap](https://github.com/hyperstructure/homebrew-tap): `brew install hyperstructure/tap/fctl`.
+- [Security policy](https://github.com/hyperstructure/fctl/blob/main/SECURITY.md): reporting a vulnerability.
