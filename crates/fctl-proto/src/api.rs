@@ -1421,7 +1421,8 @@ impl Workspace {
 pub struct WorkspaceList {
     pub workspaces: Vec<Workspace>,
     pub invitations: Vec<WorkspaceInvitation>,
-    /// The most workspaces one person can be a member of.
+    /// The most workspaces one person can be a member of, but the primary
+    /// instance owner.
     pub limit: u32,
     /// You can be in any number of workspaces, more than `limit`: you are
     /// the primary instance owner.
