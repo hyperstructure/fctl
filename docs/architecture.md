@@ -396,9 +396,9 @@ the token itself, nothing more.
 Its role in a project is its person's, at most a viewer's (`read`) or an
 editor's (`run`); in a session, its person's with their project role so
 capped, and at most a viewer's for a token that reads
-(`limits::session_role`). Lists of projects, sessions and workspaces keep
-to its places in SQL (`access::places_sql`), so that their pages stay
-full, and sockets opened with it check its limits again as they check its
+(`limits::session_role`). Lists of projects, sessions and workspaces, and
+searches of sessions, keep to its places in SQL (`access::places_sql`), so
+that their pages stay full, and sockets opened with it check its limits again as they check its
 person ([Viewers](#viewers)); it opens no feed. Limits that don't read as
 limits, as a newer version's might, reach nothing. A place that is deleted, or
 that its person no longer sees, drops out of its reach, and a token whose
