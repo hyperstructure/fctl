@@ -61,3 +61,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0053](0053-hosts-update-themselves-to-the-control-planes-version.md) | Hosts update themselves to the control plane's version |
 | [0054](0054-review-agents-review-dependabots-pull-requests-by-themselves.md) | Review agents review Dependabot's pull requests by themselves, and run none of them |
 | [0055](0055-maintainers-start-sessions-that-reach-github-issues-beyond-the-tracker.md) | Maintainers start sessions that reach GitHub issues beyond the tracker |
+| [0056](0056-sessions-are-searched-in-an-index-per-workspace.md) | Sessions are searched in an index per workspace, in a Durable Object |

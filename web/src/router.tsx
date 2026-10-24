@@ -152,7 +152,16 @@ const project = createRoute({
     linear: oneOf(s.linear, LINEAR_OUTCOMES),
   }),
 });
-const session = createRoute({ getParentRoute: () => app, path: "/s/$id", component: SessionPage });
+const session = createRoute({
+  getParentRoute: () => app,
+  path: "/s/$id",
+  component: SessionPage,
+  // From a search of all sessions: what was found, and the event it was found in (lib/find.ts).
+  validateSearch: (s: Record<string, unknown>): { find?: string; at?: number } => ({
+    find: str(s.find),
+    at: typeof s.at === "number" && Number.isSafeInteger(s.at) && s.at > 0 ? s.at : undefined,
+  }),
+});
 const settings = createRoute({
   getParentRoute: () => app,
   path: "/settings",

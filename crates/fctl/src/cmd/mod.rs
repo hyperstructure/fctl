@@ -15,6 +15,7 @@ pub mod resolve;
 pub mod retro;
 pub mod review;
 pub mod schedules;
+pub mod search;
 pub mod selfcmd;
 pub mod sessions;
 pub mod ticket;

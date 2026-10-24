@@ -232,3 +232,32 @@ describe("earlier activity", () => {
     expect(store.state).toMatchObject({ loadingOlder: false, olderFailed: false, firstSeq: 1 });
   });
 });
+
+describe("earlier activity for finding in the transcript", () => {
+  it("loads the pages it asks for, whatever they show", async () => {
+    history = [said("Tidy up"), ...working(SCREENFUL), ...commands(1500, 1)];
+    const store = open();
+    await settle();
+    events.mockClear();
+    void store.loadEarlier({ pages: 2 });
+    expect(store.state.loadingOlder).toBe(true);
+    await settle();
+    expect(events).toHaveBeenCalledTimes(2);
+    expect(store.state).toMatchObject({ loadingOlder: false, hasMoreBefore: true });
+  });
+
+  it("loads back to an event, and no further", async () => {
+    history = [said("Tidy up"), ...working(SCREENFUL), ...commands(800, 1)];
+    const store = open();
+    await settle();
+    events.mockClear();
+    void store.loadEarlier({ until: 3, pages: 50 });
+    await settle();
+    expect(store.state.firstSeq).toBeLessThanOrEqual(3);
+    expect(store.state.items[0]).toMatchObject({ kind: "user", text: "Tidy up" });
+    // What it has already goes without asking.
+    events.mockClear();
+    await store.loadEarlier({ until: 3 });
+    expect(events).not.toHaveBeenCalled();
+  });
+});

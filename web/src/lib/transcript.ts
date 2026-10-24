@@ -131,6 +131,13 @@ export function subagentReport(t: Tool): string | undefined {
   return parts.join("\n\n").trim() || t.agent?.report || r.text;
 }
 
+/**
+ * Whether a message is one from fctl that passed a review's findings on before such messages
+ * carried the review (`UserMessage.review`): it starts as fctl_domain::reviews::passed_on writes it.
+ */
+export const findingsBefore = (item: Extract<Item, { kind: "user" }>) =>
+  item.source === "system" && item.text.startsWith("fctl's review agent reviewed commit ");
+
 /** Statuses shown in the transcript after setup (others live in the header). */
 const SHOWN_STATUSES = new Set<G.SessionStatus>(["paused", "stopped", "failed", "queued"]);
 

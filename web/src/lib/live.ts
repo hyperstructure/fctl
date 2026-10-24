@@ -397,6 +397,40 @@ export class LiveSession {
       this.set({ loadingOlder: false, hasMoreBefore: more, olderFailed: more });
       return;
     }
+    this.prepend(older, more, firstSeq);
+  }
+
+  /**
+   * Loads earlier activity for finding in the transcript, whatever it shows:
+   * `pages` pages at most, or until it has event `until` and the page it is
+   * on. The transcript changes once, as with `loadOlder`.
+   */
+  async loadEarlier({ pages = MAX_PAGES, until }: { pages?: number; until?: number }) {
+    const { loadingOlder, hasMoreBefore, firstSeq } = this.state;
+    if (loadingOlder || !hasMoreBefore || !firstSeq) return;
+    if (until !== undefined && firstSeq <= until) return;
+    this.set({ loadingOlder: true, olderFailed: false });
+    let older: G.SessionEvent[] = [];
+    let more = true;
+    try {
+      for (let n = 0; n < pages && more; n++) {
+        const page = await api.events(this.id, { before: older[0]?.seq ?? firstSeq, limit: PAGE });
+        older = page.events.concat(older);
+        more = page.has_more;
+        if (until !== undefined && (older[0]?.seq ?? firstSeq) <= until) break;
+      }
+    } catch {
+      // What came in shows; finding asks again.
+    }
+    if (!older.length) {
+      this.set({ loadingOlder: false, hasMoreBefore: more, olderFailed: more });
+      return;
+    }
+    this.prepend(older, more, firstSeq);
+  }
+
+  /** Puts earlier events before those the transcript has, which it builds again. */
+  private prepend(older: G.SessionEvent[], more: boolean, firstSeq: number) {
     this.events = older.concat(this.events);
     this.builder = new TranscriptBuilder();
     const items = this.show(this.builder.add(this.events));

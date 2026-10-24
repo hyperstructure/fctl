@@ -197,6 +197,24 @@
   animation: text-shimmer 4s ease-in-out infinite;
 }
 
+/* Finding in a session's transcript (components/session/find.tsx): its
+   matches marked as with a highlighter in the brand's yellow (lime on light
+   backgrounds), and the one the reader is at filled with it. */
+::highlight(fctl-find) {
+  background-color: color-mix(in srgb, var(--c-highlight) 24%, transparent);
+}
+::highlight(fctl-find-current) {
+  background-color: var(--c-highlight);
+  color: var(--c-highlight-ink);
+}
+:root[data-theme="light"] ::highlight(fctl-find) {
+  background-color: color-mix(in srgb, var(--c-highlight) 45%, transparent);
+}
+:root[data-theme="light"] ::highlight(fctl-find-current) {
+  background-color: color-mix(in srgb, var(--c-highlight), var(--c-ink) 14%);
+  text-decoration: underline 2px var(--c-ink);
+}
+
 /* The steps of a run in the transcript (components/session/tool.tsx) settle
    in one after another as it opens, and a new one as it comes. */
 @keyframes step-in {

@@ -526,6 +526,25 @@ impl Api {
         self.get(&format!("/sessions/{}", enc(id))).await
     }
 
+    /// The sessions whose title, description, people's messages or agent's
+    /// replies contain `q`, of one workspace or project when it is given.
+    pub async fn search(
+        &self,
+        q: &str,
+        workspace: Option<&str>,
+        project: Option<&str>,
+        limit: u32,
+    ) -> Result<SearchResults> {
+        let mut path = format!("/search?q={}&limit={limit}", enc(q));
+        if let Some(w) = workspace {
+            path.push_str(&format!("&workspace={}", enc(w)));
+        }
+        if let Some(p) = project {
+            path.push_str(&format!("&project={}", enc(p)));
+        }
+        self.get(&path).await
+    }
+
     pub async fn update_session(&self, id: &str, req: &UpdateSessionRequest) -> Result<Session> {
         self.patch(&format!("/sessions/{}", enc(id)), req).await
     }

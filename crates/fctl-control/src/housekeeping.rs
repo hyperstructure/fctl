@@ -9,7 +9,9 @@
 //! (`pull_requests::sweep`), and sets the alarm of schedules again
 //! (`schedules::wake`), in case a change never reached it. It forgets the
 //! delegations in Linear that waited an hour for their person, and gives
-//! up fctl's access to Linear workspaces no fctl workspace works in.
+//! up fctl's access to Linear workspaces no fctl workspace works in. And it
+//! has sessions put what the search index lacks of them there
+//! (`index_sessions`).
 
 use crate::db::{n, q, s};
 use crate::error::AppResult;
@@ -26,6 +28,10 @@ const LOGIN_JOB_RETENTION_MS: i64 = DAY_MS;
 pub const ACCESS_REQUEST_RETENTION_MS: i64 = 365 * DAY_MS;
 /// Event logs purged per run (each is one Durable Object request).
 pub const PURGES_PER_RUN: i64 = 200;
+/// Sessions asked to index their transcript for search per run (each is
+/// one Durable Object request), and how many at once.
+pub const INDEXES_PER_RUN: i64 = 200;
+const INDEXES_AT_ONCE: usize = 10;
 
 #[derive(Deserialize)]
 struct Queued {
@@ -117,6 +123,55 @@ pub async fn purge_files(env: &Env, db: &D1Database, limit: i64) -> AppResult<us
     Ok(purged)
 }
 
+/// Has the SessionObjects of sessions that the search index lacks some of
+/// put it there (`sessions.search_indexed`), the most recently active
+/// first: the sessions from before search, and those whose index didn't
+/// take what came. A long transcript goes on on its SessionObject's alarm.
+/// Review agents' sessions aren't searched. Returns how many are done.
+pub async fn index_sessions(env: &Env, db: &D1Database, limit: i64) -> AppResult<usize> {
+    let queued: Vec<Queued> = q(
+        db,
+        "SELECT s.id AS session_id FROM sessions s WHERE s.search_indexed = 0 \
+         AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id) \
+         ORDER BY s.last_activity_at DESC LIMIT ?",
+        &[n(limit)],
+    )?
+    .all()
+    .await?;
+    let mut done = 0;
+    for group in queued.chunks(INDEXES_AT_ONCE) {
+        let asked = group.iter().map(|row| async move {
+            let result: AppResult<internal::Indexed> = async {
+                let stub = internal::session_stub(env, &row.session_id)?;
+                internal::post(&stub, "/index", &serde_json::json!({})).await
+            }
+            .await;
+            (row, result)
+        });
+        for (row, result) in futures::future::join_all(asked).await {
+            match result {
+                Ok(i) if i.done => {
+                    done += 1;
+                    q(
+                        db,
+                        "UPDATE sessions SET search_indexed = 1 WHERE id = ?",
+                        &[s(&row.session_id)],
+                    )?
+                    .run()
+                    .await?;
+                }
+                Ok(_) => {}
+                Err(e) => worker::console_error!(
+                    "indexing session {} for search: {}",
+                    row.session_id,
+                    e.0.message
+                ),
+            }
+        }
+    }
+    Ok(done)
+}
+
 /// Purges what deleting projects left behind: session event logs and files.
 pub async fn purge_deleted(env: &Env, db: &D1Database) -> AppResult<()> {
     purge_sessions(env, db, PURGES_PER_RUN).await?;
@@ -196,6 +251,11 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     }
     // In case a change of schedules never reached the alarm.
     crate::schedules::wake(env).await;
+    match index_sessions(env, &db, INDEXES_PER_RUN).await {
+        Ok(0) => {}
+        Ok(indexed) => worker::console_log!("housekeeping: indexed {indexed} sessions for search"),
+        Err(e) => worker::console_error!("indexing sessions for search: {}", e.0.message),
+    }
     if purged > 0 || purged_files > 0 || deleted > 0 {
         worker::console_log!(
             "housekeeping: purged {purged} sessions and the files of {purged_files} projects, deleted {deleted} rows"

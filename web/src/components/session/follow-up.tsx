@@ -24,17 +24,21 @@ import {
 import { clock } from "@/lib/format";
 import { githubLink } from "@/lib/pulls";
 import { shortSha } from "@/lib/reviews";
+import { useRevealed } from "./find";
 import { MilestoneButton, RailIcon, Thread } from "./lines";
 
 export const FollowUpMessage = memo(function FollowUpMessage({
   followUp,
   text,
   ts,
+  findKey,
 }: {
   followUp: G.FollowUp;
   /** What fctl told the agent. */
   text: string;
   ts: number;
+  /** The message's key in the transcript, which finding in it knows it by. */
+  findKey?: string;
 }) {
   const { wrote, happened } = parts(followUp);
   return (
@@ -47,7 +51,7 @@ export const FollowUpMessage = memo(function FollowUpMessage({
           <HappenedLine key={`${e.kind}-${i}`} f={followUp} e={e} ts={ts} />
         ))}
       </div>
-      <Told text={text} />
+      <Told text={text} findKey={findKey} />
     </div>
   );
 });
@@ -270,9 +274,11 @@ function HappenedLine({ f, e, ts, muted }: { f: G.FollowUp; e: Happened; ts: num
 }
 
 /** What fctl told the agent, word for word, a click away. */
-export function Told({ text }: { text: string }) {
+export function Told({ text, findKey }: { text: string; findKey?: string }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  // Finding in the transcript looks in it, and opens it for a match.
+  useRevealed(findKey && `told:${findKey}`, () => setOpen(true));
   return (
     <div className="mt-2">
       <MilestoneButton
@@ -286,7 +292,10 @@ export function Told({ text }: { text: string }) {
       </MilestoneButton>
       {open && (
         <Thread id={id} className="mt-1.5 animate-rise">
-          <div className="rounded-lg border border-line bg-sunken/50 px-3.5 py-2.5 font-mono text-[11.75px] leading-relaxed whitespace-pre-wrap text-ink-3 wrap-anywhere">
+          <div
+            data-find={findKey && `told:${findKey}`}
+            className="rounded-lg border border-line bg-sunken/50 px-3.5 py-2.5 font-mono text-[11.75px] leading-relaxed whitespace-pre-wrap text-ink-3 wrap-anywhere"
+          >
             {text.trim()}
           </div>
         </Thread>

@@ -10,6 +10,7 @@ import { Avatar, GithubIcon, LinearIcon } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { stateTone } from "@/lib/tickets";
+import { useRevealed } from "./find";
 import { When } from "./follow-up";
 import { MilestoneButton, RailIcon, Thread } from "./lines";
 
@@ -55,6 +56,7 @@ export const TicketMessageView = memo(function TicketMessageView({
   author,
   text,
   ts,
+  findKey,
 }: {
   message: G.TicketMessage;
   /** Whom fctl knows them as. */
@@ -62,6 +64,8 @@ export const TicketMessageView = memo(function TicketMessageView({
   /** What fctl told the agent. */
   text: string;
   ts: number;
+  /** The message's key in the transcript, which finding in it knows it by. */
+  findKey?: string;
 }) {
   const t = message.ticket;
   const name = author?.name ?? message.by?.name ?? "Someone";
@@ -103,7 +107,7 @@ export const TicketMessageView = memo(function TicketMessageView({
           </>
         )}
       </div>
-      <Told text={text} />
+      <Told text={text} findKey={findKey} />
     </div>
   );
 });
@@ -200,9 +204,11 @@ function Body({ text }: { text: string }) {
 }
 
 /** What fctl told the agent, word for word, a click away. */
-function Told({ text }: { text: string }) {
+function Told({ text, findKey }: { text: string; findKey?: string }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  // Finding in the transcript looks in it, and opens it for a match.
+  useRevealed(findKey && `told:${findKey}`, () => setOpen(true));
   return (
     <div className="mt-2">
       <MilestoneButton
@@ -216,7 +222,10 @@ function Told({ text }: { text: string }) {
       </MilestoneButton>
       {open && (
         <Thread id={id} className="mt-1.5 animate-rise">
-          <div className="rounded-lg border border-line bg-sunken/50 px-3.5 py-2.5 font-mono text-[11.75px] leading-relaxed whitespace-pre-wrap text-ink-3 wrap-anywhere">
+          <div
+            data-find={findKey && `told:${findKey}`}
+            className="rounded-lg border border-line bg-sunken/50 px-3.5 py-2.5 font-mono text-[11.75px] leading-relaxed whitespace-pre-wrap text-ink-3 wrap-anywhere"
+          >
             {text.trim()}
           </div>
         </Thread>

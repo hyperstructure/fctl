@@ -104,7 +104,8 @@ this file is the overview. Order within a section is priority.
       session reports back in the ticket's agent session
 - [ ] More ticket trackers (Jira, Shortcut, ClickUp), on the same `Ticket`
       model and `fctl ticket`
-- [ ] Search across transcripts (#11)
+- [x] Search across transcripts: ⌘K and `fctl search` find what sessions
+      said, and ⌘F finds it in a session's transcript (#11)
 - [ ] Session templates and a shared library of project instructions
 
 ## Later

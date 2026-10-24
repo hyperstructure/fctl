@@ -190,11 +190,22 @@ wrangler instead; `--smoke` runs one session and stops ([Checks](#checks)).
 Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/` to start over.
 
 The hourly housekeeping job (`crates/fctl-control/src/housekeeping.rs`:
-purging deleted sessions, deleting expired sign-in records) runs on a cron
-trigger. To run it locally:
+purging deleted sessions, deleting expired sign-in records, indexing
+sessions for search that the index lacks) runs on a cron trigger. To run
+it locally:
 
 ```sh
 curl "http://127.0.0.1:8787/cdn-cgi/handler/scheduled?cron=17+*+*+*+*"
+```
+
+A session is searchable (⌘K, `fctl search`) five seconds after its
+messages and replies come, when its alarm puts them in its workspace's
+SearchObject. The job indexes again, from their first events, the sessions
+D1 says the index lacks something of, as from before search; to see it do
+so, say that of them all, then run it:
+
+```sh
+cd crates/fctl-control && npx wrangler d1 execute DB --local --command "UPDATE sessions SET search_indexed = 0"
 ```
 
 Schedules (`crates/fctl-control/src/schedules.rs`) start their sessions on

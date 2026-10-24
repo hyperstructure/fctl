@@ -61,6 +61,13 @@ enum Command {
     Run(cmd::sessions::RunArgs),
     /// List sessions.
     Sessions(cmd::sessions::ListArgs),
+    /// Search sessions: their titles and descriptions, what people wrote to
+    /// their agents and what the agents replied, in every session you see.
+    #[command(after_help = "Examples:
+  fctl search login redirect           # found as typed, whatever the case and accents
+  fctl search \"database migration\" -p my-app
+  fctl search --json flaky | jq -r '.sessions[].session.id'")]
+    Search(cmd::search::SearchArgs),
     /// Show a session's details.
     Show {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -332,6 +339,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Projects(c) => cmd::projects::run(server, c, json).await,
         Command::Run(args) => cmd::sessions::start(server, args, json).await,
         Command::Sessions(args) => cmd::sessions::list(server, args, json).await,
+        Command::Search(args) => cmd::search::run(server, args, json).await,
         Command::Show { session } => cmd::sessions::show(server, &session, json).await,
         Command::Edit(args) => cmd::sessions::edit(server, args, json).await,
         Command::Publish(args) => cmd::publish::publish(args, json).await,

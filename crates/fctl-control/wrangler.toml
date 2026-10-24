@@ -29,6 +29,7 @@ bindings = [
   { name = "FILES", class_name = "FilesObject" },
   { name = "NOTIFY", class_name = "NotifyObject" },
   { name = "SCHEDULES", class_name = "ScheduleObject" },
+  { name = "SEARCH", class_name = "SearchObject" },
 ]
 
 [[migrations]]
@@ -46,6 +47,10 @@ new_sqlite_classes = ["NotifyObject"]
 [[migrations]]
 tag = "v4"
 new_sqlite_classes = ["ScheduleObject"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["SearchObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"

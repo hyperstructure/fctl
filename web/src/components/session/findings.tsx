@@ -16,11 +16,14 @@ export const FindingsMessage = memo(function FindingsMessage({
   review,
   text,
   ts,
+  findKey,
 }: {
   review: G.PassedOnReview;
   /** What fctl told the agent. */
   text: string;
   ts: number;
+  /** The message's key in the transcript, which finding in it knows it by. */
+  findKey?: string;
 }) {
   // A finding's comment, else the review's summary, which GitHub shows above the comments.
   const where = review.summary_url ?? review.url;
@@ -76,7 +79,7 @@ export const FindingsMessage = memo(function FindingsMessage({
           </ul>
         </div>
       </div>
-      <Told text={text} />
+      <Told text={text} findKey={findKey} />
     </div>
   );
 });

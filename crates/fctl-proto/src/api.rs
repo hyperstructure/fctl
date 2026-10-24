@@ -2219,6 +2219,67 @@ pub struct EventPage {
     pub has_more: bool,
 }
 
+// ───────────────────────────── search ─────────────────────────────
+
+/// `GET /api/v1/search?q=`: the sessions the caller sees whose title,
+/// description, people's messages or agent's replies contain `q`, as typed
+/// but for case, accents and runs of whitespace (`fctl_domain::search`).
+/// Those with `q` in their title come first, then the others, the most
+/// recently mentioned first. `?workspace=` and `?project=` narrow it down;
+/// `?limit=` (20, at most 50) says how many.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SearchResults {
+    pub sessions: Vec<SessionMatches>,
+    /// More sessions match than it lists.
+    pub more: bool,
+}
+
+/// A session a search found, and where.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SessionMatches {
+    pub session: Session,
+    /// Its title or description first, where they match, then its newest
+    /// messages and replies that do: three at most.
+    pub matches: Vec<SearchMatch>,
+    /// How many of its title, description, messages and replies match, at
+    /// most 100.
+    pub count: u32,
+}
+
+/// Where a search matched in a session: a snippet of the text around it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SearchMatch {
+    pub kind: SearchMatchKind,
+    /// The message or reply's event, where its session's page opens.
+    /// Absent for the title and description.
+    pub seq: Option<u64>,
+    /// When it was written. Absent for the title and description.
+    pub ts: Option<Millis>,
+    /// Who wrote a message: absent for fctl's own and the agent's replies.
+    pub author: Option<UserRef>,
+    /// The words around the match, with "…" where they were cut.
+    pub text: String,
+    /// Where `text` matches, `[start, end)` in UTF-16 code units, as
+    /// JavaScript slices strings.
+    pub ranges: Vec<[u32; 2]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMatchKind {
+    Title,
+    Description,
+    /// A message to the agent, from a person or from fctl.
+    Message,
+    /// What the agent said.
+    Reply,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SessionShare {

@@ -381,12 +381,78 @@ pub struct Unpublish {
     pub id: String,
 }
 
+// ───────────────────────────── SearchObject ─────────────────────────────
+
+/// A session's searchable documents, new or changed (`/put`), from its
+/// SessionObject. `about`, when present, are its title and description as
+/// they are now, in place of those the index has.
+#[derive(Serialize, Deserialize)]
+pub struct PutDocs {
+    pub session_id: SessionId,
+    pub project_id: ProjectId,
+    #[serde(default)]
+    pub about: Option<Vec<fctl_domain::search::Doc>>,
+    #[serde(default)]
+    pub docs: Vec<fctl_domain::search::Doc>,
+}
+
+/// Forgets a session's documents (`/forget`): its project was deleted.
+#[derive(Serialize, Deserialize)]
+pub struct ForgetSession {
+    pub session_id: SessionId,
+}
+
+/// A search in a workspace's index (`/search`), among the sessions of
+/// `projects` and the sessions `sessions` (shared with the caller):
+/// those the caller sees there.
+#[derive(Serialize, Deserialize)]
+pub struct SearchIndex {
+    /// Checked (`fctl_domain::search::query`).
+    pub q: String,
+    pub projects: Vec<String>,
+    pub sessions: Vec<String>,
+    pub limit: u32,
+}
+
+/// What a workspace's index found: its sessions in order, with `limit + 1`
+/// at most to say there are more.
+#[derive(Serialize, Deserialize)]
+pub struct IndexHits {
+    pub sessions: Vec<IndexHit>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct IndexHit {
+    pub session_id: String,
+    /// `q` is in its title.
+    pub titled: bool,
+    /// When the newest document that matched was written.
+    pub last: Millis,
+    pub count: u32,
+    pub matches: Vec<fctl_proto::api::SearchMatch>,
+}
+
+/// Backfills a session's documents (`/index`, from the hourly job):
+/// whether its index has all its events now.
+#[derive(Serialize, Deserialize)]
+pub struct Indexed {
+    pub done: bool,
+}
+
 // ───────────────────────────── calling ─────────────────────────────
 
 pub fn session_stub(env: &Env, session_id: &str) -> AppResult<Stub> {
     Ok(env
         .durable_object("SESSION")?
         .id_from_name(session_id)?
+        .get_stub()?)
+}
+
+/// The SearchObject of a workspace: the search index of its sessions.
+pub fn search_stub(env: &Env, workspace_id: &str) -> AppResult<Stub> {
+    Ok(env
+        .durable_object("SEARCH")?
+        .id_from_name(workspace_id)?
         .get_stub()?)
 }
 

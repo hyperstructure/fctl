@@ -19,6 +19,7 @@ pub mod retrospectives;
 pub mod reviews;
 pub mod runners;
 pub mod schedules;
+pub mod search;
 pub mod sessions;
 pub mod tickets;
 pub mod tokens;
