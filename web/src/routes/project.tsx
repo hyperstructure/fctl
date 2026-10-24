@@ -224,7 +224,7 @@ export function ProjectPage() {
       </nav>
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
-        {p && tab === "tickets" && <TicketsTab project={p} returned={linear} />}
+        {p && tab === "tickets" && <TicketsTab key={p.id} project={p} returned={linear} />}
         {p && tab === "schedules" && <SchedulesTab project={p} open={schedule} />}
         {p && tab === "reviews" && <ReviewsTab project={p} />}
         {p && tab === "memory" && <MemoryTab project={p} />}
