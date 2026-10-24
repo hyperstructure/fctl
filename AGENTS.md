@@ -98,6 +98,12 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
 
 - Logic: unit tests next to the code (`#[cfg(test)]` in Rust, `*.test.ts` in
   the web app).
+- A test that writes a script and runs it (a stand-in for `docker`, `gh` or
+  wrangler) has `sh` write it, with `write_script` (in fctl-host's
+  `driver::fake`, fctl-agent's `claude::tests` and xtask's `util::tests`): a
+  process another test starts holds copies of the test binary's open files
+  until it execs, and a script that such a copy holds open for writing fails
+  to run with "Text file busy".
 - End to end: `cargo xtask dev`, then drive it with the CLI (`fctl run`,
   `fctl attach`, `fctl logs --json`) or the browser. fake-claude makes runs
   deterministic and free.

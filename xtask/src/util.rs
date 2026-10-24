@@ -366,6 +366,21 @@ mod tests {
         assert_eq!(throttled("not json\n"), None);
     }
 
+    /// Writes `script` to `path`, executable, for a test to run right away.
+    /// A process that another test starts holds copies of this process's open
+    /// files until it execs, and running a script while such a copy is open for
+    /// writing fails with "Text file busy". So `sh` writes the script, and it is
+    /// never open here.
+    fn write_script(path: &Path, script: &str) -> Result<()> {
+        let status = Command::new("sh")
+            .args(["-c", r#"printf %s "$2" > "$1" && chmod 755 "$1""#, "sh"])
+            .arg(path)
+            .arg(script)
+            .status()?;
+        anyhow::ensure!(status.success(), "writing {}: {status}", path.display());
+        Ok(())
+    }
+
     /// A stand-in for wrangler that fails with `entry` (written where
     /// wrangler writes it) on its first `failures` runs, then prints how
     /// many times it ran.
@@ -374,9 +389,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("wrangler");
-        std::fs::write(
+        write_script(
             &bin,
-            format!(
+            &format!(
                 "#!/bin/sh\necho . >> \"$0.runs\"\nruns=$(wc -l < \"$0.runs\")\n\
                  if [ \"$runs\" -le {failures} ]; then\n  \
                  echo '{entry}' >> \"$WRANGLER_OUTPUT_FILE_PATH\"\n  exit 1\nfi\n\
@@ -384,11 +399,6 @@ mod tests {
             ),
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         bin
     }
 
@@ -413,8 +423,8 @@ mod tests {
     fn gives_up_on_a_command_the_api_keeps_throttling() {
         let bin = wrangler("throttled-always", u32::MAX, NOW);
         let err = retry_throttled(&mut Command::new(&bin), run).unwrap_err();
-        assert_eq!(runs(&bin), THROTTLED_ATTEMPTS as usize);
         assert!(err.to_string().contains("4 times in a row"), "{err:#}");
+        assert_eq!(runs(&bin), THROTTLED_ATTEMPTS as usize);
         std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
     }
 
@@ -423,13 +433,14 @@ mod tests {
         let denied = r#"{"type":"command-failed","version":1,"code":10000}"#;
         let later = r#"{"type":"command-failed","version":1,"code":971,"retry_after_ms":600000}"#;
         for (name, entry, says) in [
-            ("denied", denied, "failed"),
+            ("denied", denied, "failed (exit status: 1)"),
             ("throttled-for-long", later, "wait 600 s"),
         ] {
             let bin = wrangler(name, 1, entry);
             let err = retry_throttled(&mut Command::new(&bin), run).unwrap_err();
-            assert_eq!(runs(&bin), 1);
+            // The stand-in's own failure, not a failure to start it.
             assert!(err.to_string().contains(says), "{err:#}");
+            assert_eq!(runs(&bin), 1);
             std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
         }
     }
