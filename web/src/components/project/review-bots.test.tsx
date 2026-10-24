@@ -183,7 +183,10 @@ describe("the apps that start reviews", () => {
 
   it("takes one off until the form saves, and puts it back", async () => {
     const changed = vi.fn();
-    const c = await render(<Form saved={["dependabot[bot]", "renovate[bot]"]} onChange={changed} />);
+    const submit = vi.fn();
+    const c = await render(
+      <Form saved={["dependabot[bot]", "renovate[bot]"]} onChange={changed} onSubmit={submit} />,
+    );
     act(() => (c.querySelector('button[aria-label="Take Dependabot off the list"]') as HTMLElement).click());
     expect(changed).toHaveBeenLastCalledWith(["renovate[bot]"]);
     expect(listed(c)[0]).toContain("Taken off the list when you save");
@@ -193,6 +196,8 @@ describe("the apps that start reviews", () => {
     act(() => undo?.click());
     expect(changed).toHaveBeenLastCalledWith(["renovate[bot]", "dependabot[bot]"]);
     expect(listed(c)[0]).not.toContain("Taken off");
+    // Neither saves the form: Save does.
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("asks GitHub about an app nobody here knows", async () => {

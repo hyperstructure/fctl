@@ -398,7 +398,7 @@ function ListedBot({
         </span>
       )}
       {removed ? (
-        <Button size="sm" variant="ghost" onClick={() => onUndo(view)}>
+        <Button type="button" size="sm" variant="ghost" onClick={() => onUndo(view)}>
           Undo
         </Button>
       ) : (

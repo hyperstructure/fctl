@@ -542,7 +542,12 @@ function SettingsForm({
           )}
         </div>
         {!mine && (
-          <Button size="sm" loading={takeOver.isPending} onClick={() => takeOver.mutate({ run_as_me: true })}>
+          <Button
+            type="button"
+            size="sm"
+            loading={takeOver.isPending}
+            onClick={() => takeOver.mutate({ run_as_me: true })}
+          >
             Run them on mine
           </Button>
         )}
@@ -610,11 +615,11 @@ function SettingsForm({
         <Banner tone="error">{save.error.message}</Banner>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-        <Button variant="quiet" size="sm" onClick={onTurnOff}>
+        <Button type="button" variant="quiet" size="sm" onClick={onTurnOff}>
           Turn off review agents
         </Button>
         <div className="flex gap-2">
-          <Button variant="ghost" onClick={onDone}>
+          <Button type="button" variant="ghost" onClick={onDone}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" loading={save.isPending} disabled={!changed}>
