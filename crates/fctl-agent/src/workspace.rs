@@ -1449,12 +1449,7 @@ cat "$answer"
             let here = dir.join("fake-gh");
             std::fs::create_dir_all(here.join("prs"))?;
             let gh = here.join("gh");
-            std::fs::write(&gh, FAKE_GH)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755))?;
-            }
+            crate::claude::tests::write_script(&gh, FAKE_GH)?;
             p.gh = gh.display().to_string();
             Ok(Self(here))
         }
