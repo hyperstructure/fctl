@@ -593,6 +593,11 @@ pub struct SessionRow {
     /// What its project's settings let agents do on GitHub now.
     #[serde(default)]
     pub project_github_access: Option<String>,
+    /// Its agent reaches the GitHub issues of the repositories it writes
+    /// to, whatever its project's tracker says
+    /// (`fctl_domain::tickets::session_issues`).
+    #[serde(deserialize_with = "int_bool", default)]
+    pub github_issues: bool,
     /// The caller's project membership role and share role (LEFT JOINs).
     pub member_role: Option<String>,
     pub share_role: Option<String>,
@@ -739,6 +744,7 @@ impl SessionRow {
             model: self.model.clone(),
             effort: self.claude_effort.clone(),
             github_access: Some(self.github_access()),
+            github_issues: self.github_issues.then_some(true),
             remote_control: self
                 .remote_control
                 .as_deref()
@@ -767,7 +773,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
     s.claude_effort, s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.pull_requests, s.remote_control, s.stats, s.archived, \
-    s.github_access, json_extract(p.settings, '$.github_access') AS project_github_access, \
+    s.github_access, json_extract(p.settings, '$.github_access') AS project_github_access, s.github_issues, \
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \

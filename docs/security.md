@@ -257,7 +257,11 @@ outside it except through these channels:
   only a write token for that repository alone carries it, since a token
   has one set of permissions for all its repositories. Public
   repositories' issues stay readable to anyone, so there the agent's
-  instructions keep it away from them.
+  instructions keep it away from them. A session that a maintainer of
+  the project, who may change its tracker, starts with `fctl run
+  --github-issues` gets the issues permission as for the GitHub issues
+  of every repository it writes to, whatever the tracker says, for as
+  long as it runs, whoever messages or resumes it.
 - **Ticket trackers.** `fctl ticket` reaches the project's tracker through
   fctl-agent and the control plane, which holds the tracker's access: a
   Linear token reaches every team of its Linear workspace as fctl's app,

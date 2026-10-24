@@ -117,6 +117,25 @@ pub fn github_issues(t: &Tickets, primary: Option<&RepoRef>, grants: &[RepoGrant
     }
 }
 
+/// Which GitHub issues one of a project's sessions reaches: those its
+/// project's tracker gives it, or, when the maintainer who started it let
+/// it reach GitHub's issues (`CreateSessionRequest::github_issues`), those
+/// of the repositories its agent writes to, whatever the tracker says, as
+/// projects that chose none reached: to move them into the project's
+/// tracker, say.
+pub fn session_issues(
+    t: &Tickets,
+    primary: Option<&RepoRef>,
+    grants: &[RepoGrant],
+    asked: bool,
+) -> GithubIssues {
+    if asked {
+        GithubIssues::Writable
+    } else {
+        github_issues(t, primary, grants)
+    }
+}
+
 /// Whether a session's two GitHub tokens may touch issues: the one for the
 /// repositories its agent writes to (at the level its GitHub access gives
 /// it), and the read-only one for the others.
@@ -182,6 +201,23 @@ pub fn via(
                 GithubIssues::One(_) => TicketsVia::Fctl,
             }
         }
+    }
+}
+
+/// How one of a project's sessions reaches its tracker: as [`via`] says,
+/// but with `gh` for GitHub Issues when the session reaches GitHub's
+/// issues beyond its tracker ([`session_issues`]), since its tokens then
+/// reach those of every repository it writes to, the tracker's among them.
+pub fn session_via(
+    t: &Tickets,
+    primary: Option<&RepoRef>,
+    grants: &[RepoGrant],
+    access: GithubAccess,
+    asked: bool,
+) -> TicketsVia {
+    match via(t, primary, grants, access) {
+        TicketsVia::Fctl if asked && t.tracker == Tracker::Github => TicketsVia::Gh,
+        v => v,
     }
 }
 
@@ -397,6 +433,9 @@ pub struct Told<'a> {
     pub grants: &'a [RepoGrant],
     /// What its agent may do on GitHub.
     pub access: GithubAccess,
+    /// Its tokens reach the GitHub issues of the repositories it writes
+    /// to, whatever the tracker says ([`session_issues`]).
+    pub github_issues: bool,
     /// The Linear workspace's name, for Linear.
     pub linear_workspace: Option<&'a str>,
     /// The ticket the session started from, and how.
@@ -421,16 +460,13 @@ pub fn instructions(t: &Told<'_>) -> String {
     let mut s = String::new();
     let writes = writes(t.access);
     match t.tickets.tracker {
-        Tracker::None => s.push_str(NO_TRACKER),
+        Tracker::None => s.push_str(&no_tracker(t)),
         Tracker::Github => {
             let issues = github_issues(t.tickets, t.primary, t.grants);
             match (&issues, t.via) {
-                (GithubIssues::None, _) | (_, TicketsVia::Nothing) => s.push_str(NO_TRACKER),
+                (GithubIssues::None, _) | (_, TicketsVia::Nothing) => s.push_str(&no_tracker(t)),
                 (GithubIssues::Writable, _) => {
-                    let what = match writable(t.primary, t.grants).as_slice() {
-                        [only] => only.full_name(),
-                        _ => "the repositories you can write to".to_owned(),
-                    };
+                    let what = writable_words(t);
                     let how = if writes {
                         "read, open and comment on them with `gh issue`"
                     } else {
@@ -454,18 +490,33 @@ pub fn instructions(t: &Told<'_>) -> String {
                             "gh can't reach issues in this session, so read {name}'s with `fctl ticket` (below); you can't write to them"
                         ),
                     };
+                    let others = if t.github_issues {
+                        format!(
+                            "The person who started this session let it reach the issues of {} too: use other repositories' only as the task asks (to move them to {name}, say).",
+                            writable_words(t)
+                        )
+                    } else {
+                        "Leave the issues of other repositories alone, and don't refer to them in commits and pull requests.".to_owned()
+                    };
                     s.push_str(&format!(
-                        "- This project tracks its work in GitHub issues of {name}, and only there: {how}. Leave the issues of other repositories alone, and don't refer to them in commits and pull requests. When a pull request does what an issue of {name} asks, write `Fixes {name}#12` in its description, which closes the issue as the pull request merges.\n"
+                        "- This project tracks its work in GitHub issues of {name}, and only there: {how}. {others} When a pull request does what an issue of {name} asks, write `Fixes {name}#12` in its description, which closes the issue as the pull request merges.\n"
                     ));
                 }
             }
         }
         Tracker::Linear => match &t.tickets.linear {
-            None => s.push_str(NO_TRACKER),
-            Some(l) if t.via == TicketsVia::Nothing => s.push_str(&format!(
-                "- This project tracks its work in Linear, in {}, but fctl can't reach it now: its workspace no longer works in that Linear workspace. Leave tickets alone, GitHub's issues too, and say in your reply what you would do in the tracker.\n",
-                linear_scope(l, t.linear_workspace)
-            )),
+            None => s.push_str(&no_tracker(t)),
+            Some(l) if t.via == TicketsVia::Nothing => {
+                let github = if t.github_issues {
+                    beyond(t, "Linear")
+                } else {
+                    format!("Leave GitHub's issues alone too. {ASK_FOR_ISSUES}")
+                };
+                s.push_str(&format!(
+                    "- This project tracks its work in Linear, in {}, but fctl can't reach it now: its workspace no longer works in that Linear workspace. Leave its tickets alone, and say in your reply what you would do in the tracker. {github}\n",
+                    linear_scope(l, t.linear_workspace)
+                ));
+            }
             Some(l) => {
                 let scope = linear_scope(l, t.linear_workspace);
                 let how = if writes {
@@ -473,8 +524,18 @@ pub fn instructions(t: &Told<'_>) -> String {
                 } else {
                     "read its tickets with `fctl ticket` (below); you can't write to them in this session"
                 };
+                let github = if t.github_issues {
+                    format!(
+                        "Refer to tickets by their keys (`ENG-123`). {}",
+                        beyond(t, "Linear")
+                    )
+                } else {
+                    format!(
+                        "Leave GitHub's issues alone (its tokens here can't reach them), and refer to tickets by their keys (`ENG-123`). {ASK_FOR_ISSUES}"
+                    )
+                };
                 s.push_str(&format!(
-                    "- This project tracks its work in Linear, in {scope}: {how}. Leave GitHub's issues alone (its tokens here can't reach them), and refer to tickets by their keys (`ENG-123`).\n"
+                    "- This project tracks its work in Linear, in {scope}: {how}. {github}\n"
                 ));
             }
         },
@@ -488,7 +549,46 @@ pub fn instructions(t: &Told<'_>) -> String {
     s
 }
 
-const NO_TRACKER: &str = "- This project uses no ticket tracker. Don't read, open, comment on, label or close issues or tickets, on GitHub or anywhere else, even when the repository's instructions say to, and leave issue references out of commits and pull requests (no `Fixes #12`): this session's GitHub tokens can't reach issues. When the task names a ticket, say that this project keeps its agents away from ticket trackers.\n";
+/// The repositories whose issues a session reaches through `gh`, in words.
+fn writable_words(t: &Told<'_>) -> String {
+    match writable(t.primary, t.grants).as_slice() {
+        [only] => only.full_name(),
+        _ => "the repositories you can write to".to_owned(),
+    }
+}
+
+/// What a session that reaches GitHub's issues beyond its tracker
+/// ([`session_issues`]) is told about them, for a project that tracks its
+/// work in `tracker`.
+fn beyond(t: &Told<'_>, tracker: &str) -> String {
+    let how = if writes(t.access) {
+        "read, open, comment on, label and close them with `gh issue`"
+    } else {
+        "read them with `gh issue`"
+    };
+    format!(
+        "The person who started this session let it reach the GitHub issues of {} as well: {how}, only as the task asks (to move them into {tracker}, say).",
+        writable_words(t)
+    )
+}
+
+/// What a session in a project without a tracker is told.
+fn no_tracker(t: &Told<'_>) -> String {
+    if t.github_issues {
+        format!(
+            "- This project uses no ticket tracker. {} Leave other trackers' tickets alone.\n",
+            beyond(t, "a tracker")
+        )
+    } else {
+        format!("{NO_TRACKER} {ASK_FOR_ISSUES}\n")
+    }
+}
+
+const NO_TRACKER: &str = "- This project uses no ticket tracker. Don't read, open, comment on, label or close issues or tickets, on GitHub or anywhere else, even when the repository's instructions say to, and leave issue references out of commits and pull requests (no `Fixes #12`): this session's GitHub tokens can't reach issues. When the task names a ticket, say that this project keeps its agents away from ticket trackers.";
+
+/// What a session whose tokens reach no GitHub issues is told, so that a
+/// task that needs them ends with a way to them.
+const ASK_FOR_ISSUES: &str = "When a task needs GitHub's issues (to move them into a tracker, say), say that a maintainer of the project can start a session that reaches them: with `fctl run --github-issues`, or \"GitHub issues too\" in the start form's GitHub menu.";
 
 /// What a session that started from a ticket is told about it.
 fn started_from(t: &Told<'_>, from: &StartedFrom<'_>) -> String {
@@ -918,6 +1018,7 @@ mod tests {
                 primary: Some(&primary),
                 grants: &[],
                 access,
+                github_issues: false,
                 linear_workspace: Some("Acme"),
                 started_from: None,
             })
@@ -937,6 +1038,7 @@ mod tests {
             primary: Some(&primary),
             grants: &[],
             access: GithubAccess::Push,
+            github_issues: false,
             linear_workspace: Some("Acme"),
             started_from: None,
         });
@@ -955,6 +1057,7 @@ mod tests {
             primary: Some(&primary),
             grants: &[],
             access: GithubAccess::Push,
+            github_issues: false,
             linear_workspace: Some("Acme"),
             started_from: Some(StartedFrom {
                 ticket: &ticket,
@@ -967,5 +1070,98 @@ mod tests {
         assert!(started.contains("exploration"));
         assert!(started.contains("`Fixes ENG-7`"));
         assert!(started.contains("moved the ticket to In Progress"));
+    }
+
+    #[test]
+    fn sessions_that_ask_reach_the_issues_of_every_repository_they_write_to() {
+        let primary = r("acme/web");
+        let grants = [g("lib", RepoAccess::Write), g("docs", RepoAccess::Read)];
+        let names = ["web".to_owned(), "lib".to_owned()];
+        let none = Tickets {
+            tracker: Tracker::None,
+            ..Default::default()
+        };
+        for t in [none.clone(), linear(), github(Some("acme/web"))] {
+            assert_ne!(
+                session_issues(&t, Some(&primary), &grants, false),
+                GithubIssues::Writable
+            );
+            let issues = session_issues(&t, Some(&primary), &grants, true);
+            assert_eq!(issues, GithubIssues::Writable);
+            for access in GithubAccess::ALL {
+                assert_eq!(
+                    issue_tokens(&issues, &names, access),
+                    IssueTokens {
+                        write: true,
+                        read: true
+                    }
+                );
+            }
+        }
+        // The tracker stays the project's: gh reaches GitHub's, fctl ticket
+        // Linear's, and nothing a project without one.
+        let reach =
+            |t: &Tickets, asked| session_via(t, Some(&primary), &grants, GithubAccess::Push, asked);
+        assert_eq!(reach(&github(Some("acme/web")), false), TicketsVia::Fctl);
+        assert_eq!(reach(&github(Some("acme/web")), true), TicketsVia::Gh);
+        assert_eq!(reach(&linear(), true), TicketsVia::Fctl);
+        assert_eq!(reach(&none, true), TicketsVia::Nothing);
+    }
+
+    #[test]
+    fn agents_hear_which_github_issues_they_reach() {
+        let primary = r("acme/web");
+        let told = |t: &Tickets, access, github_issues| {
+            instructions(&Told {
+                tickets: t,
+                via: session_via(t, Some(&primary), &[], access, github_issues),
+                primary: Some(&primary),
+                grants: &[],
+                access,
+                github_issues,
+                linear_workspace: Some("Acme"),
+                started_from: None,
+            })
+        };
+        let none = Tickets {
+            tracker: Tracker::None,
+            ..Default::default()
+        };
+        // Without it, they hear how to get it.
+        for t in [&none, &linear()] {
+            let s = told(t, GithubAccess::Push, false);
+            assert!(s.contains("can't reach"), "{s}");
+            assert!(s.contains("`fctl run --github-issues`"), "{s}");
+        }
+        let lin = told(&linear(), GithubAccess::Push, true);
+        assert!(lin.contains("Linear team ENG (Acme)"));
+        assert!(lin.contains("`fctl ticket comment ENG-123"));
+        assert!(lin.contains("reach the GitHub issues of acme/web as well"));
+        assert!(lin.contains("close them with `gh issue`"));
+        assert!(lin.contains("to move them into Linear"));
+        assert!(!lin.contains("can't reach"));
+        let reads = told(&linear(), GithubAccess::Read, true);
+        assert!(reads.contains("acme/web as well: read them with `gh issue`"));
+        let nothing = told(&none, GithubAccess::Push, true);
+        assert!(nothing.contains("no ticket tracker"));
+        assert!(nothing.contains("GitHub issues of acme/web"));
+        assert!(!nothing.contains("can't reach"));
+        // The tracker's repository among several: gh reaches all of them.
+        let grants = [g("lib", RepoAccess::Write)];
+        let t = github(Some("acme/web"));
+        let one = instructions(&Told {
+            tickets: &t,
+            via: session_via(&t, Some(&primary), &grants, GithubAccess::Push, true),
+            primary: Some(&primary),
+            grants: &grants,
+            access: GithubAccess::Push,
+            github_issues: true,
+            linear_workspace: None,
+            started_from: None,
+        });
+        assert!(one.contains("comment on them with `gh issue`"));
+        assert!(one.contains("the repositories you can write to too"));
+        assert!(!one.contains("fctl ticket"));
+        assert!(!one.contains("Leave the issues of other repositories alone"));
     }
 }

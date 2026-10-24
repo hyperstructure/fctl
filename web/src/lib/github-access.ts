@@ -68,3 +68,38 @@ export const githubOffers = (p: Pick<G.Project, "settings">) =>
 /** Whether a project's agents work on GitHub at all: it has a repository. */
 export const onGithub = (p: Pick<G.Project, "repo" | "other_repos" | "all_repos_of">) =>
   !!p.repo || !!p.other_repos || !!p.all_repos_of;
+
+/**
+ * Whether a session in `p` may ask to reach the GitHub issues of the repositories its agent writes
+ * to, whatever the project's tracker says (`CreateSessionRequest.github_issues`), to move them into
+ * the tracker, say: its project's maintainers may, where its agents work on GitHub and its tracker
+ * doesn't already give them those issues (GitHub Issues of every repository they write to, as
+ * projects that never chose a tracker have).
+ */
+export function offersIssues(
+  p: Pick<G.Project, "settings" | "role" | "repo" | "other_repos" | "all_repos_of">,
+): boolean {
+  const t = p.settings.tickets;
+  const theirs = (t?.tracker ?? "github") === "github" && !t?.repo;
+  return onGithub(p) && !theirs && (p.role === "owner" || p.role === "maintainer");
+}
+
+/** The GitHub menu's choice of issues for a session in `p` (see `offersIssues`), the project's first. */
+export function issuesOffers(p: Pick<G.Project, "settings">) {
+  const t = p.settings.tickets;
+  const repo = t?.repo && `${t.repo.owner}/${t.repo.name}`;
+  const [theirs, into] =
+    t?.tracker === "linear"
+      ? ["Linear's tickets, and no GitHub issues.", ", to move them into Linear, say"]
+      : t?.tracker === "github" && repo
+        ? [`Only the issues of ${repo}.`, `, to move them to ${repo}, say`]
+        : ["No tickets, and no GitHub issues.", ""];
+  return [
+    { on: false, label: "As the project says", description: theirs },
+    {
+      on: true,
+      label: "GitHub issues too",
+      description: `Also reads, comments on and closes the issues of the repositories it writes to${into}.`,
+    },
+  ];
+}

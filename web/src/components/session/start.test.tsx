@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { draftId, loadText, saveText } from "@/lib/draft";
+import { asked } from "@/lib/models";
 import { StartButton, StartChoices, useKeepDraft, useStartChoice, useStartSession } from "./start";
 
 const { createSession, navigate, toast } = vi.hoisted(() => ({
@@ -317,6 +318,90 @@ describe("StartChoices", () => {
     expect(github?.querySelector(":scope > .grid")?.classList.contains("sr-only")).toBe(true);
     expect(github?.querySelector(":scope > span:not(.grid) > svg")).not.toBeNull();
     expect(github?.getAttribute("title")).toBe("On GitHub: Comments only");
+  });
+
+  describe("GitHub's issues beyond the tracker", () => {
+    const repo = { repo: { owner: "acme", name: "web" } };
+    const linear = { tickets: { tracker: "linear" } } as Partial<G.ProjectSettings>;
+    let asks: ReturnType<typeof asked> | undefined;
+    function Form({ p, issues = true }: { p: ReturnType<typeof project>; issues?: boolean }) {
+      const { choice, pick } = useStartChoice(p);
+      asks = asked(p, choice);
+      return <StartChoices project={p} choice={choice} onPick={pick} issues={issues} />;
+    }
+    const picker = (container: HTMLElement) =>
+      container.querySelectorAll<HTMLElement>("[role=combobox]")[2] as HTMLElement;
+    /** The GitHub picker's sections, and their options with whether they are checked. */
+    const listed = (container: HTMLElement) => {
+      act(() => picker(container).click());
+      const list = container.querySelector("[role=listbox]");
+      return [...(list?.children ?? [])].flatMap((el) =>
+        el.getAttribute("role") === "presentation"
+          ? [el.textContent]
+          : el.getAttribute("role") === "option"
+            ? [
+                `${el.querySelector(".truncate")?.textContent}${el.getAttribute("aria-selected") === "true" ? " ✓" : ""}`,
+              ]
+            : [],
+      );
+    };
+    const option = (container: HTMLElement, text: string) =>
+      [...container.querySelectorAll<HTMLElement>("[role=option]")].find(
+        (o) => o.querySelector(".truncate")?.textContent === text,
+      ) as HTMLElement;
+
+    it("are offered to a project's maintainers where its tracker keeps agents off them", () => {
+      const { container, rerender } = render(
+        <Form p={{ ...project(linear), ...repo, role: "maintainer" }} />,
+      );
+      expect(listed(container)).toEqual([
+        "On GitHub",
+        "Can push ✓",
+        "Comments only",
+        "Read only",
+        "Issues",
+        "As the project says ✓",
+        "GitHub issues too",
+      ]);
+      expect(option(container, "GitHub issues too").textContent).toContain("to move them into Linear, say.");
+      // Not to an editor, who may not change the tracker either.
+      rerender(<Form p={{ ...project(linear), ...repo, role: "editor" }} />);
+      expect(listed(container)).not.toContain("Issues");
+      // Nor where the tracker gives agents the issues of every repository they write to.
+      rerender(<Form p={{ ...project({}), ...repo, role: "owner" }} />);
+      expect(listed(container)).not.toContain("Issues");
+      // Nor in a schedule's form, whose sessions start later.
+      rerender(<Form p={{ ...project(linear), ...repo, role: "owner" }} issues={false} />);
+      expect(listed(container)).not.toContain("Issues");
+    });
+
+    it("are asked for once picked, with a dot on the picker", async () => {
+      const p = { ...project(linear), ...repo, role: "owner" as const };
+      const { container } = render(<Form p={p} />);
+      const dot = () => picker(container).parentElement?.querySelector(":scope > span[aria-hidden]");
+      /** Picks an option, and waits for the list to close, as it does after the pick flashes. */
+      const pickIt = async (text: string) => {
+        listed(container);
+        act(() => option(container, text).click());
+        await act(() => new Promise((r) => setTimeout(r, 600)));
+      };
+      expect(asks?.github_issues).toBeUndefined();
+      expect(dot()).toBeNull();
+      await pickIt("GitHub issues too");
+      expect(asks?.github_issues).toBe(true);
+      expect(picker(container).getAttribute("title")).toBe("On GitHub: Can push, and GitHub issues");
+      expect(dot()).not.toBeNull();
+      // Picking another level keeps them.
+      await pickIt("Comments only");
+      expect(asks).toEqual({ github_access: "comment", github_issues: true });
+      expect(listed(container)).toContain("GitHub issues too ✓");
+      act(() => picker(container).click());
+      await act(() => new Promise((r) => setTimeout(r, 600)));
+      expect(container.querySelector("[role=listbox]")).toBeNull();
+      await pickIt("As the project says");
+      expect(asks?.github_issues).toBeUndefined();
+      expect(dot()).toBeNull();
+    });
   });
 });
 

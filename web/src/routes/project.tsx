@@ -446,6 +446,7 @@ function StartForm({ project, user }: { project: G.Project; user: string }) {
             project={project}
             choice={choice}
             onPick={pick}
+            issues
             disabled={starting}
             className="max-sm:ml-auto"
           />
