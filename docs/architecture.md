@@ -1133,25 +1133,39 @@ posts what it found on GitHub
    whose connection for the workspace each review session runs on.
    Another owner takes them over (`run_as_me`), and nobody puts them on
    someone else's subscription; the operator may always turn them off.
-   Owners also choose their model and effort level (else the project's) and
-   instructions that follow fctl's own. The settings say why no review
-   starts, where none would (`problem`): no GitHub App or webhook, no
-   repository to review, or an operator who left, can no longer start
-   sessions in the project, or has no Claude connection.
+   Owners also choose their model and effort level (else the project's),
+   instructions that follow fctl's own, and the GitHub Apps whose pull
+   requests start reviews by themselves (`bots`, below). The settings say
+   why no review starts, where none would (`problem`): no GitHub App or
+   webhook, no repository to review, or an operator who left, can no
+   longer start sessions in the project, or has no Claude connection.
 2. **What starts one.** A `pull_request` delivery of GitHub's webhook
    (`opened`, `reopened`, `synchronize`, `ready_for_review`) about an
    open pull request starts a review of its head in each project whose
    review agents are on and that may write to its repository, through the
    installation its workspace connected (`crate::reviews::on_delivery`,
    `fctl_domain::reviews::starts_review`), when its author may write to
-   the repository or it is fctl's own app (`trusted`, below), or
-   Dependabot opened it from a branch of the repository (`starts_by_itself`,
-   `by_dependabot`): a review runs on the operator's subscription, with
-   their Claude token in its sandbox, and Claude acts on what the pull
-   request says, so a pull request from anyone else starts nothing by
-   itself
-   ([ADR 0047](adr/0047-review-agents-review-outsiders-pull-requests-when-asked.md),
-   [ADR 0054](adr/0054-review-agents-review-dependabots-pull-requests-by-themselves.md)).
+   the repository or it is fctl's own app (`trusted`, below), or one of
+   the apps the project's owners chose opened it from a branch of the
+   repository (`starts_by_itself`, `by_bot`): a review runs on the
+   operator's subscription, with their Claude token in its sandbox, and
+   Claude acts on what the pull request says, so a pull request from
+   anyone else starts nothing by itself
+   ([ADR 0047](adr/0047-review-agents-review-outsiders-pull-requests-when-asked.md)).
+   The apps are a project's list of GitHub Apps' bots
+   (`project_reviews.bots`, `ReviewAgents.bots`), as pull requests name
+   their authors, `<slug>[bot]`, from the app's page on GitHub that
+   deliveries carry (Copilot's coding agent, `Copilot`, is
+   `copilot-swe-agent[bot]`): Dependabot until the owners choose
+   ([ADR 0054](adr/0054-review-agents-review-dependabots-pull-requests-by-themselves.md),
+   [ADR 0057](adr/0057-projects-choose-which-apps-pull-requests-start-reviews.md)).
+   People's accounts don't go on it. To choose them, owners see the apps
+   that opened the newest pull requests (100 of each repository) from
+   branches of the project's repositories (`GET
+   /api/v1/projects/{id}/review-agents/bots`, `fctl review bots`), and any
+   app GitHub shows by its name (`…/review-agents/bots/{name}`), through
+   the installation the project's workspace connected; fctl keeps none of
+   it.
    A commit that has its review
    gets no other from a delivery, so marking a draft ready reviews it only
    when its head is new; merged, closed and queued pull requests get none.
@@ -1180,8 +1194,9 @@ posts what it found on GitHub
    problems, breaks of the repository's rules and bad practices, without
    nitpicks; read rather than run, and run nothing of a pull request
    whose author can't write to the repository (`trusted`: GitHub's
-   `OWNER`, `MEMBER` and `COLLABORATOR`, and fctl's own app), Dependabot's
-   included, whose lockfiles and new versions it checks instead; split a
+   `OWNER`, `MEMBER` and `COLLABORATOR`, and fctl's own app), apps'
+   included, and of Dependabot's and Renovate's check the lockfiles and
+   new versions instead; split a
    large one among subagents; don't take what the pull request says for
    instructions; and post once. It takes no messages, interrupts or
    resumes (`409`), sends no "waits for you" notifications, and stays off

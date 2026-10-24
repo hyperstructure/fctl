@@ -1,6 +1,6 @@
 # 0047: Review agents review outsiders' pull requests when someone asks
 
-2026-10-23 · accepted · Dependabot's pull requests start reviews by themselves since [0054](0054-review-agents-review-dependabots-pull-requests-by-themselves.md)
+2026-10-23 · accepted · Dependabot's pull requests start reviews by themselves since [0054](0054-review-agents-review-dependabots-pull-requests-by-themselves.md), and those of the apps each project chooses since [0057](0057-projects-choose-which-apps-pull-requests-start-reviews.md)
 
 ## Context
 

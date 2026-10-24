@@ -25,4 +25,10 @@ effort?: string,
 /**
  * `""` for none.
  */
-instructions?: string, };
+instructions?: string, 
+/**
+ * The GitHub Apps whose pull requests start reviews by themselves, in
+ * place of those that do: each as `renovate`, `renovate[bot]` or
+ * `https://github.com/apps/renovate`; `[]` for none.
+ */
+bots?: Array<string>, };

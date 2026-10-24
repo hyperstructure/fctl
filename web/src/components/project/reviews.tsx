@@ -15,7 +15,8 @@ import {
   Crosshair,
   Settings2,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { BotMark, ReviewBots } from "@/components/project/review-bots";
 import { ReviewStateIcon } from "@/components/review";
 import {
   Avatar,
@@ -49,6 +50,7 @@ import {
   modelLabel,
 } from "@/lib/models";
 import { keys, queryClient, useMe } from "@/lib/queries";
+import { botView, sameBots } from "@/lib/review-bots";
 import {
   canAskForReview,
   canManageReviews,
@@ -172,8 +174,7 @@ function Intro({ project, agents }: { project: G.Project; agents: G.ReviewAgents
         </h2>
         <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-ink-3">
           When a pull request in {repos} opens or gets a new commit, a review agent reads it and posts what it
-          finds there, in one review, with a check on the commit. Pull requests from people who can't write to
-          the repository wait until someone here asks for their review.
+          finds there, in one review, with a check on the commit. <Waiting bots={agents.bots} here />
         </p>
         <ul className="mt-6 flex max-w-xl flex-col gap-3">
           {POINTS.map((p) => (
@@ -236,6 +237,51 @@ function OnError({ error }: { error: Error }) {
         </>
       )}
     </Banner>
+  );
+}
+
+/**
+ * Whose pull requests wait for someone to ask for their review: those of people who can't write to
+ * the repository, and of the apps other than those that start reviews by themselves (`bots`).
+ */
+function Waiting({ bots, here }: { bots: readonly string[]; here?: boolean }) {
+  const someone = here ? "someone here" : "someone";
+  if (bots.length === 0)
+    return (
+      <>
+        Pull requests by apps, and by people who can't write to the repository, wait until {someone} asks for
+        their review.
+      </>
+    );
+  return (
+    <>
+      Pull requests by apps other than <AppNames bots={bots} />, and by people who can't write to the
+      repository, wait until {someone} asks for their review.
+    </>
+  );
+}
+
+/** "Dependabot and Renovate", each with its logo; "Dependabot, Renovate and 2 more" past three. */
+function AppNames({ bots }: { bots: readonly string[] }) {
+  const shown = bots.length > 3 ? bots.slice(0, 2) : bots;
+  const parts: ReactNode[] = shown.map((login) => (
+    <span key={login} className="inline-flex items-baseline gap-1 whitespace-nowrap text-ink-2">
+      <span className="relative top-[2px] self-start">
+        <BotMark login={login} size={15} />
+      </span>
+      {botView(login).name}
+    </span>
+  ));
+  if (bots.length > shown.length) parts.push(`${bots.length - shown.length} more`);
+  return (
+    <>
+      {parts.map((p, i) => (
+        <Fragment key={typeof p === "string" ? p : i}>
+          {i > 0 && (i === parts.length - 1 ? " and " : ", ")}
+          {p}
+        </Fragment>
+      ))}
+    </>
   );
 }
 
@@ -347,8 +393,7 @@ function Status({
                       )}
                     </>
                   ) : null}
-                  . Pull requests from people who can't write to the repository wait until someone asks for
-                  their review.
+                  . <Waiting bots={agents.bots} />
                 </>
               ) : (
                 "Pull requests get no new reviews. The reviews they had stay below."
@@ -456,6 +501,7 @@ function SettingsForm({
   const [modelId, setModelId] = useState(modelChoice(agents.model) === "id" ? (agents.model ?? "") : "");
   const [effort, setEffort] = useState(agents.effort ?? "");
   const [instructions, setInstructions] = useState(agents.instructions ?? "");
+  const [bots, setBots] = useState<string[]>(agents.bots);
   const save = useUpdate(project, () => {
     toast("Saved: the next review runs with it");
     onDone();
@@ -466,7 +512,8 @@ function SettingsForm({
   const changed =
     (chosenModel(model, modelId) ?? "") !== (agents.model ?? "") ||
     effort !== (agents.effort ?? "") ||
-    instructions.trim() !== (agents.instructions ?? "").trim();
+    instructions.trim() !== (agents.instructions ?? "").trim() ||
+    !sameBots(bots, agents.bots);
   return (
     <form
       onSubmit={(e) => {
@@ -479,6 +526,7 @@ function SettingsForm({
           model: chosenModel(model, modelId) ?? "",
           effort,
           instructions,
+          bots,
         });
       }}
       className="flex flex-col gap-5"
@@ -494,7 +542,12 @@ function SettingsForm({
           )}
         </div>
         {!mine && (
-          <Button size="sm" loading={takeOver.isPending} onClick={() => takeOver.mutate({ run_as_me: true })}>
+          <Button
+            type="button"
+            size="sm"
+            loading={takeOver.isPending}
+            onClick={() => takeOver.mutate({ run_as_me: true })}
+          >
             Run them on mine
           </Button>
         )}
@@ -557,15 +610,16 @@ function SettingsForm({
           />
         )}
       </Field>
+      <ReviewBots project={project} value={bots} saved={agents.bots} onChange={setBots} error={err("bots")} />
       {save.error && !(save.error as { field?: string }).field && (
         <Banner tone="error">{save.error.message}</Banner>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-        <Button variant="quiet" size="sm" onClick={onTurnOff}>
+        <Button type="button" variant="quiet" size="sm" onClick={onTurnOff}>
           Turn off review agents
         </Button>
         <div className="flex gap-2">
-          <Button variant="ghost" onClick={onDone}>
+          <Button type="button" variant="ghost" onClick={onDone}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" loading={save.isPending} disabled={!changed}>

@@ -54,7 +54,7 @@ pub enum ReviewCmd {
     /// how they review (the project's owners; the person they run for may
     /// turn them off).
     #[command(
-        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine.\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --mine\n  fctl review settings --off"
+        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine.\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --bots dependabot,renovate\n  fctl review settings --mine\n  fctl review settings --off"
     )]
     Settings {
         /// Turn them on, on your Claude subscription.
@@ -81,6 +81,22 @@ pub enum ReviewCmd {
         /// Read those instructions from a file (`-`: stdin).
         #[arg(long, value_name = "FILE")]
         instructions_file: Option<PathBuf>,
+        /// The GitHub Apps whose pull requests start reviews by themselves,
+        /// in place of those that do: their names, separated by commas
+        /// (dependabot,renovate), or `none`. `fctl review bots` lists the
+        /// apps that opened pull requests lately.
+        #[arg(long, value_name = "LIST", value_parser = bots_arg)]
+        bots: Option<Bots>,
+    },
+    /// The apps that opened the newest pull requests in the project's
+    /// repositories, and which of them start reviews by themselves; with a
+    /// name, that app as GitHub shows it (the project's owners).
+    #[command(
+        after_help = "Pull requests that the apps of `fctl review settings --bots` open from a branch of the repository start reviews by themselves, from an agent that runs none of their code. Other apps' wait until someone asks for their review.\n\nExamples:\n  fctl review bots\n  fctl review bots renovate\n  fctl review settings --bots dependabot,renovate"
+    )]
+    Bots {
+        /// An app: renovate, renovate[bot] or https://github.com/apps/renovate.
+        name: Option<String>,
     },
     /// fctl's earlier findings on the pull request this session reviews,
     /// with their ids, whether they are resolved and what people answered
@@ -135,6 +151,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
             effort,
             instructions,
             instructions_file,
+            bots,
         } => {
             let api = config::api(server)?;
             let project = super::sessions::project_or_default(args.project)?;
@@ -163,6 +180,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
                 model: default(model),
                 effort: default(effort),
                 instructions,
+                bots: bots.map(|b| b.0),
             };
             let changes = req != UpdateReviewAgentsRequest::default();
             let agents = if changes {
@@ -176,9 +194,146 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
             print_settings(&project, &agents);
             Ok(())
         }
+        ReviewCmd::Bots { name } => bots(server, args.project, name, json).await,
         ReviewCmd::Threads => threads(json).await,
         ReviewCmd::Submit { file } => submit(&file, json).await,
     }
+}
+
+/// `--bots`: the apps' bots, as `renovate[bot]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bots(Vec<String>);
+
+/// `--bots`: apps separated by commas, or `none`.
+fn bots_arg(s: &str) -> std::result::Result<Bots, String> {
+    if s.trim().eq_ignore_ascii_case("none") {
+        return Ok(Bots(Vec::new()));
+    }
+    s.split(',')
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(|b| {
+            fctl_domain::reviews::bot_login(b).ok_or_else(|| {
+                format!("“{b}” isn't a GitHub App's name: give one as renovate, renovate[bot] or https://github.com/apps/renovate")
+            })
+        })
+        .collect::<std::result::Result<_, _>>()
+        .map(Bots)
+}
+
+/// `fctl review bots [NAME]`.
+async fn bots(
+    server: Option<&str>,
+    project: Option<String>,
+    name: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let api = config::api(server)?;
+    let project = super::sessions::project_or_default(project)?;
+    if let Some(name) = name {
+        let (agents, bot) =
+            tokio::try_join!(api.review_agents(&project), api.review_bot(&project, &name))?;
+        if json {
+            return style::print_json(&bot);
+        }
+        let named = match (&bot.name, &bot.owner) {
+            (Some(n), Some(o)) => format!("{n}, by {o}"),
+            (Some(n), None) => n.clone(),
+            _ => bot.login.clone(),
+        };
+        println!(
+            "{} {}",
+            style::bold(&style::terminal_safe(&named)),
+            style::dim(&format!("{} · {}", bot.login, bot.url))
+        );
+        let allowed = agents
+            .bots
+            .iter()
+            .any(|b| b.eq_ignore_ascii_case(&bot.login));
+        println!(
+            "  {}",
+            if allowed {
+                format!("Its pull requests start reviews in {project} by themselves.")
+            } else {
+                format!("Its pull requests wait until someone asks for their review in {project}.")
+            }
+        );
+        return Ok(());
+    }
+    let (agents, seen) = tokio::try_join!(api.review_agents(&project), api.review_bots(&project))?;
+    if json {
+        return style::print_json(&seen);
+    }
+    println!(
+        "Apps whose pull requests start reviews in {project}: {}",
+        if agents.bots.is_empty() {
+            "none".to_owned()
+        } else {
+            agents.bots.join(", ")
+        }
+    );
+    println!();
+    if seen.bots.is_empty() {
+        println!(
+            "No app opened any of the newest pull requests in {}.",
+            if agents.repos.len() == 1 {
+                "its repository".to_owned()
+            } else {
+                "its repositories".to_owned()
+            }
+        );
+        return Ok(());
+    }
+    println!("Apps that opened the newest pull requests:");
+    let width = seen.bots.iter().map(|b| b.login.len()).max().unwrap_or(0);
+    for b in &seen.bots {
+        let on = agents.bots.iter().any(|x| x.eq_ignore_ascii_case(&b.login));
+        let mut facts = vec![style::count(
+            b.pull_requests,
+            "pull request",
+            "pull requests",
+        )];
+        if let Some(at) = b.latest_at {
+            facts.push(format!("the newest {}", style::ago(at)));
+        }
+        println!(
+            "{} {:<width$}  {}",
+            if on { style::accent("✓") } else { " ".into() },
+            b.login,
+            style::dim(&facts.join(", "))
+        );
+        if let Some(title) = b.latest.as_ref().and_then(|l| l.title.as_deref()) {
+            println!(
+                "  {:<width$}  {}",
+                "",
+                style::dim(&style::terminal_safe(title))
+            );
+        }
+    }
+    let off: Vec<&str> = seen
+        .bots
+        .iter()
+        .filter(|b| !agents.bots.iter().any(|x| x.eq_ignore_ascii_case(&b.login)))
+        .map(|b| b.login.trim_end_matches("[bot]"))
+        .collect();
+    if !off.is_empty() {
+        let mut all: Vec<&str> = agents
+            .bots
+            .iter()
+            .map(|b| b.trim_end_matches("[bot]"))
+            .collect();
+        all.extend(off.iter().take(1));
+        println!();
+        println!(
+            "{}",
+            style::dim(&format!(
+                "✓ starts reviews by itself. To let {} start them too: fctl review settings --bots {}",
+                off[0],
+                all.join(",")
+            ))
+        );
+    }
+    Ok(())
 }
 
 /// A file's text, or stdin's for `-`.
@@ -296,6 +451,14 @@ fn print_settings(project: &str, a: &ReviewAgents) {
             "none: link one the project's agents may write to".into()
         } else {
             repos.join(", ")
+        },
+    );
+    row(
+        "Bots",
+        if a.bots.is_empty() {
+            "none: apps' pull requests wait until someone asks for their review".into()
+        } else {
+            format!("{}: their pull requests start reviews", a.bots.join(", "))
         },
     );
     match a.instructions.as_deref() {
@@ -555,6 +718,51 @@ fn print_posted(p: &PostedReview) {
             style::dim(
                 "fctl sent the findings to the agent of the session that opened the pull request."
             )
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Fctl {
+        #[command(flatten)]
+        review: ReviewArgs,
+    }
+
+    #[test]
+    fn bots_take_a_list_or_none() {
+        let set = |list: &str| match Fctl::try_parse_from(["fctl", "settings", "--bots", list])
+            .map(|f| f.review.cmd)
+        {
+            Ok(Some(ReviewCmd::Settings { bots, .. })) => bots,
+            _ => None,
+        };
+        assert_eq!(
+            set("dependabot,renovate"),
+            Some(Bots(vec![
+                "dependabot[bot]".to_owned(),
+                "renovate[bot]".to_owned()
+            ]))
+        );
+        assert_eq!(set("none"), Some(Bots(Vec::new())));
+        assert_eq!(set("renovate,acme/web"), None);
+        assert_eq!(
+            bots_arg("dependabot, Renovate[bot],,https://github.com/apps/pre-commit-ci"),
+            Ok(Bots(vec![
+                "dependabot[bot]".to_owned(),
+                "renovate[bot]".to_owned(),
+                "pre-commit-ci[bot]".to_owned()
+            ]))
+        );
+        assert_eq!(bots_arg("none"), Ok(Bots(Vec::new())));
+        assert_eq!(bots_arg(" NONE "), Ok(Bots(Vec::new())));
+        assert!(
+            bots_arg("renovate,https://github.com/mallory")
+                .is_err_and(|e| e.contains("“https://github.com/mallory”"))
         );
     }
 }

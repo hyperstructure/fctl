@@ -87,6 +87,8 @@ this file is the overview. Order within a section is priority.
       review, posted in one pass with a check, on an owner's subscription
 - [x] Review agents' findings go to the agent session that opened the pull
       request, which acts on them and answers in their threads
+- [x] Review agents: projects choose which apps' pull requests start reviews
+      by themselves (Dependabot, Renovate, their own apps)
 - [ ] Review agents: choose the repositories they review, and whether
       drafts get reviews
 - [ ] Learning from retrospectives: a session that reads a project's and

@@ -39,6 +39,9 @@ export const keys = {
   sessionRetrospectives: (id: string) => ["session-retrospectives", id] as const,
   /** A project's review agents, by project id. */
   reviewAgents: (project: string) => ["review-agents", project] as const,
+  /** The apps that opened a project's newest pull requests, and one looked up by its bot, by project id. */
+  reviewBots: (project: string) => ["review-bots", project] as const,
+  reviewBot: (project: string, login: string) => ["review-bot", project, login] as const,
   /** A project's reviews, by project id: the list, and each session's under it. */
   reviews: (project: string) => ["reviews", project] as const,
   sessionReview: (project: string, session: string) => ["reviews", project, "session", session] as const,

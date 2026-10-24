@@ -456,8 +456,10 @@ it, on the Claude subscription of the owner who turned them on, and fctl
 posts what it found on the pull request, with a check on the commit.
 A pull request from someone who can't write to the repository gets one
 only when someone asks for it (`fctl review start`), since what it says
-reaches an agent with the owner's Claude token. Dependabot's get one by
-themselves, from an agent that installs and runs nothing of them.
+reaches an agent with the owner's Claude token. So does an app's, unless
+it is one of the GitHub Apps the project's owners chose, Dependabot until
+they choose: their pull requests from the repository's branches get one
+by themselves, from an agent that installs and runs nothing of them.
 When an fctl agent opened the pull request, its session gets the findings
 in a message from fctl, decides what to do about them and answers in
 their threads. The project's owners turn them on (on their own
@@ -468,6 +470,9 @@ run for may turn them off:
 fctl review settings -p my-app                 # on or off, on whose subscription, how
 fctl review settings -p my-app --on --model opus --effort high
 fctl review settings -p my-app --instructions-file review.md   # what they're told besides fctl's own
+fctl review settings -p my-app --bots dependabot,renovate      # the apps whose pull requests start reviews (or none)
+fctl review bots -p my-app                     # the apps that opened the newest pull requests, and which start reviews
+fctl review bots -p my-app my-app-bot          # an app as GitHub shows it: its name and who makes it
 fctl review settings -p my-app --mine          # run them on your subscription from now on
 fctl review settings -p my-app --model default # the project's model again
 fctl review settings -p my-app --off           # reviews under way finish
