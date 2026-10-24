@@ -34,27 +34,31 @@ export function RunnerUpdate({ user }: { user: string }) {
   return (
     <section
       aria-labelledby={title}
-      className="animate-rise rounded-xl border border-blue/20 bg-blue-soft px-4 py-3.5"
+      // Narrower than 36rem inside, as on a phone or beside the sidebar on a tablet, the
+      // buttons take a line of their own under the text.
+      className="@container animate-rise rounded-xl border border-blue/20 bg-blue-soft px-4 py-3.5"
     >
-      <div className="flex flex-wrap items-center gap-4">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-blue/15 text-blue">
-          <CircleFadingArrowUp className="size-4.5" />
-        </span>
-        <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-          <div id={title} className="text-[14.5px] text-ink">
-            Update your {one ? "runner" : "runners"} to fctl {version}
-          </div>
-          <div className="mt-0.5 text-[12.5px] text-ink-3">
-            {and(behind.map((r) => `${r.name} runs ${r.version}`))}
+      <div className="flex flex-col gap-3.5 @xl:flex-row @xl:items-center @xl:gap-4">
+        <div className="flex min-w-0 flex-1 items-start gap-3 @xl:items-center @xl:gap-4">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-blue/15 text-blue">
+            <CircleFadingArrowUp className="size-4.5" />
+          </span>
+          <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+            <div id={title} className="text-[14.5px] text-ink">
+              Update your {one ? "runner" : "runners"} to fctl {version}
+            </div>
+            <div className="mt-0.5 text-[12.5px] text-ink-3">
+              {and(behind.map((r) => `${r.name} runs ${r.version}`))}
+            </div>
           </div>
         </div>
-        {/* On a phone they take a line of their own. */}
         <div className="flex gap-2">
-          <Button size="sm" variant="ghost" onClick={() => skip(version)}>
+          <Button size="sm" variant="ghost" onClick={() => skip(version)} className="@max-xl:h-9">
             Skip this version
           </Button>
           <Button
             size="sm"
+            className="@max-xl:h-9"
             aria-expanded={open}
             aria-controls={how}
             onClick={() => setOpen(!open)}
@@ -71,7 +75,7 @@ export function RunnerUpdate({ user }: { user: string }) {
       <div
         id={how}
         hidden={!open}
-        className="mt-3.5 animate-rise space-y-2 text-[13px] leading-relaxed text-ink-3 sm:ml-13"
+        className="mt-3.5 animate-rise space-y-2 text-[13px] leading-relaxed text-ink-3 @xl:ml-13"
       >
         <p>Run this on {and(behind.map((r) => r.name))}:</p>
         <CodeBox value="fctl self update" />
