@@ -853,7 +853,7 @@ function Delegating({ project, status }: { project: G.Project; status?: G.Projec
           </ol>
           <YourAccount project={project} status={status} />
         </div>
-        <Preview team={team} project={project.slug} app={app} />
+        <DelegatedTicket team={team} project={project.slug} app={app} />
       </div>
     </section>
   );
@@ -893,8 +893,11 @@ function YourAccount({ project, status }: { project: G.Project; status?: G.Proje
   );
 }
 
-/** What a delegated ticket looks like in Linear: fctl's session on it, a step, a pull request, a reply. */
-function Preview({ team, project, app }: { team: string; project: string; app: string }) {
+/**
+ * What a delegated ticket looks like in Linear: fctl's session on it, a step, a pull request, a reply.
+ * The workspace's Linear tab shows it too, before Linear is connected.
+ */
+export function DelegatedTicket({ team, project, app }: { team: string; project: string; app: string }) {
   const key = `${team === "the team" ? "ENG" : team}-142`;
   return (
     <div aria-hidden="true" className="relative select-none max-md:max-w-sm">
@@ -930,7 +933,7 @@ function Preview({ team, project, app }: { team: string; project: string; app: s
           </li>
           <li className="rounded-lg border border-line bg-raised/60 px-3 py-2 leading-relaxed text-ink-2">
             The session cookie lost its SameSite setting on Safari: I set it again and added a test. Fixes{" "}
-            {key}.
+            <span className="whitespace-nowrap">{key}.</span>
           </li>
           <li className="flex gap-2 text-ink-3">
             <span className="mt-px flex size-3.5 shrink-0 items-center justify-center rounded-full bg-pink/80 text-[8px] font-semibold text-white">

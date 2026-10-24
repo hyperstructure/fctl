@@ -55,26 +55,63 @@ function tab(linear: G.WorkspaceLinear, role: G.WorkspaceRole = "admin", returne
 describe("LinearTab", () => {
   it("lists the Linear workspaces it works in, as whom, and the projects that take their tickets", () => {
     const c = tab({ configured: true, webhook: true, connections: [connection] });
-    expect(c.textContent).toContain("Acme Inc");
+    expect(c.textContent).toContain("People in Acme Inc delegate issues to fctl");
     expect(c.textContent).toContain("linear.app/acme · as @fctl-sh · connected by Ada");
     expect(c.textContent).toContain("WebENG");
     expect(c.textContent).toContain("Connected");
     expect(c.textContent).toContain("Connect another Linear workspace");
+    expect(c.textContent).not.toContain("isn't connected");
+  });
+
+  it("says plainly that a new workspace isn't connected, and what connecting one leads to", () => {
+    const admin = tab({ configured: true, webhook: true, connections: [] });
+    expect(admin.textContent).toContain("Acme isn't connected to Linear yet");
+    // What happens is what connecting leads to, not what happens already.
+    expect(admin.textContent).toContain(
+      "Connect a Linear workspace, and people there delegate issues to fctl",
+    );
+    expect(admin.textContent).not.toContain("People in");
+    expect(admin.textContent).toContain("Once Linear is connected");
+    expect(admin.textContent).toContain("in its Tickets tab");
+    const button = [...admin.querySelectorAll("button")].find((b) => b.textContent === "Connect Linear");
+    expect(button?.className).toContain("bg-highlight");
+    expect(admin.textContent).not.toContain("Connect another");
   });
 
   it("has admins connect one, and tells others who does", () => {
-    const admin = tab({ configured: true, webhook: true, connections: [] });
-    expect(admin.textContent).toContain("Acme works in no Linear workspace yet.");
-    expect([...admin.querySelectorAll("button")].some((b) => b.textContent === "Connect Linear")).toBe(true);
+    const empty = tab({ configured: true, webhook: true, connections: [] }, "member");
+    expect(empty.textContent).toContain("Acme isn't connected to Linear yet");
+    expect(empty.textContent).toContain("Acme's admins connect it");
+    expect([...empty.querySelectorAll("button")].some((b) => b.textContent === "Connect Linear")).toBe(false);
     const member = tab({ configured: true, webhook: true, connections: [connection] }, "member");
     expect(member.textContent).toContain("Acme's admins connect Linear workspaces.");
     expect(member.querySelector('[aria-label^="Disconnect"]')).toBeNull();
+  });
+
+  it("points at the projects that could take its tickets, until one does", () => {
+    const project = (slug: string, workspace: string, role: G.ProjectRole) =>
+      ({ id: `prj_${slug}`, slug, name: slug, workspace: { id: workspace }, role }) as unknown as G.Project;
+    queryClient.setQueryData(keys.projects, {
+      projects: [
+        project("web", "wsp_1", "owner"),
+        project("api", "wsp_1", "editor"),
+        project("ops", "wsp_2", "owner"),
+      ],
+    });
+    const c = tab({ configured: true, webhook: true, connections: [{ ...connection, projects: [] }] });
+    expect(c.textContent).toContain("No project takes its tickets yet");
+    // Only the ones whose tracker the caller chooses, in this workspace.
+    const links = [...c.querySelectorAll("a")].map((a) => a.textContent);
+    expect(links).toContain("web");
+    expect(links).not.toContain("api");
+    expect(links).not.toContain("ops");
   });
 
   it("says what to do when Linear took fctl's access back", () => {
     const c = tab({ configured: true, webhook: true, connections: [{ ...connection, status: "revoked" }] });
     expect(c.textContent).toContain("Connect again");
     expect(c.textContent).not.toContain("Connected");
+    expect(c.textContent).not.toContain("People in Acme Inc");
   });
 
   it("says when the instance has no Linear app, or takes no webhooks", () => {
