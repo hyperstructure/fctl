@@ -9,13 +9,14 @@
 
 use crate::ctx::now_ms;
 use crate::internal::{
-    self, CloseUplink, ControlState, Deliver, Delivered, DrainStop, DrainStopped, InitSession,
-    ViewerIdentity,
+    self, CloseUplink, ControlState, Deliver, Delivered, DrainStop, DrainStopped, ForgetSession,
+    Indexed, InitSession, PutDocs, ViewerIdentity,
 };
 use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_domain::follow_ups;
 use fctl_domain::journal::{self, Take};
 use fctl_domain::notify;
+use fctl_domain::search;
 use fctl_domain::usage as plan;
 use fctl_proto::api::{EventPage, PlanLimit};
 use fctl_proto::event::{EventBody, FollowUp, FollowUpEvent, GitState, StatusChange, UserMessage};
@@ -123,6 +124,8 @@ struct Mem {
     pulse_weight: u32,
     last_d1_write: i64,
     d1_dirty: bool,
+    /// A message or a reply came that the search index doesn't have yet.
+    search_due: bool,
 }
 
 #[durable_object]
@@ -190,6 +193,19 @@ fn in_a_row_key(kind: follow_ups::Repeats) -> &'static str {
     }
 }
 
+/// How soon after a message or a reply came the alarm puts it in the
+/// workspace's search index, with whatever else came meanwhile.
+const SEARCH_DELAY_MS: i64 = 5_000;
+/// Events the search index takes at a time.
+const SEARCH_BATCH: i64 = 500;
+/// Batches the hourly job's request indexes at once; the alarm does the
+/// rest of a long transcript.
+const SEARCH_BACKFILL_ROUNDS: u32 = 10;
+/// Times in a row the alarm tries again when the search index didn't take
+/// what's new, waiting longer each time; after that the hourly job does
+/// (`housekeeping::index_sessions`).
+const SEARCH_RETRIES: u32 = 5;
+
 /// The most of the agent's last message of a turn that SessionDO keeps,
 /// for the ticket's thread its session answers in, which shows a shorter
 /// cut of it (`fctl_domain::tickets::MAX_REPLY`).
@@ -201,6 +217,26 @@ fn api_err(code: ErrorCode, message: &str) -> ApiError {
 
 fn has_files(d: &Delivery) -> bool {
     matches!(&d.kind, DeliveryKind::Message { attachments, .. } if !attachments.is_empty())
+}
+
+/// Whether an event holds something the search index takes: a message
+/// with words, or the agent's reply that says something
+/// (`fctl_domain::search::docs_of`).
+fn searchable(body: &EventBody) -> bool {
+    match body {
+        EventBody::UserMessage(m) => !m.text.trim().is_empty(),
+        EventBody::Claude(v) => {
+            v.get("type").and_then(|t| t.as_str()) == Some("assistant")
+                && v.get("parent_tool_use_id").is_none_or(|p| p.is_null())
+                && v.pointer("/message/content")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|c| {
+                        c.iter()
+                            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    })
+        }
+        _ => false,
+    }
 }
 
 fn create_schema(sql: &SqlStorage) {
@@ -289,6 +325,9 @@ impl DurableObject for SessionObject {
             (worker::Method::Get, "/viewer") => return self.accept_viewer(&req),
             (worker::Method::Get, "/uplink") => return self.accept_uplink(&req),
             (worker::Method::Post, "/purge") => self.purge().await,
+            (worker::Method::Post, "/index") => {
+                self.backfill_search().await.map(|d| serde_json::json!(d))
+            }
             (worker::Method::Post, "/close-uplink") => match req.json::<CloseUplink>().await {
                 Ok(b) => Ok(self.close_uplink(&b.runner_id)),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
@@ -351,6 +390,7 @@ impl DurableObject for SessionObject {
         }
         self.flush_follow_ups(now_ms()).await;
         self.ask_again(now_ms()).await;
+        self.index_now(now_ms()).await;
         Response::ok("ok")
     }
 }
@@ -360,6 +400,22 @@ impl SessionObject {
     /// project was deleted, so nothing routes here afterwards
     /// (`housekeeping::purge_sessions`).
     async fn purge(&self) -> std::result::Result<serde_json::Value, ApiError> {
+        // Its documents leave the workspace's search index first: once its
+        // storage is gone, nothing says which workspace has them.
+        if let Some(s) = self.summary().filter(|s| s.review.is_none())
+            && let Some(workspace) = self.workspace_id(&s).await
+        {
+            let stub = internal::search_stub(&self.env, &workspace).map_err(|e| e.0)?;
+            let _: serde_json::Value = internal::post(
+                &stub,
+                "/forget",
+                &ForgetSession {
+                    session_id: s.id.clone(),
+                },
+            )
+            .await
+            .map_err(|e| e.0)?;
+        }
         for ws in self.state.get_websockets() {
             let _ = ws.close(Some(4404), Some("the session was deleted"));
         }
@@ -480,6 +536,9 @@ impl SessionObject {
 
     /// Stores an event and returns its JSON (for broadcasting).
     fn append(&self, ts: i64, body: &EventBody, agent_seq: Option<u64>) -> Option<String> {
+        if searchable(body) {
+            self.mem.borrow_mut().search_due = true;
+        }
         let kind = body.kind();
         let data = match serde_json::to_value(body) {
             Ok(v) => v
@@ -708,6 +767,9 @@ impl SessionObject {
             }),
             None,
         );
+        // Its title too.
+        self.mem.borrow_mut().search_due = true;
+        self.search_soon(now).await;
         Ok(serde_json::json!({ "ok": true }))
     }
 
@@ -774,6 +836,7 @@ impl SessionObject {
             self.broadcast_events(&[json]);
         }
         self.touch_activity(now);
+        self.search_soon(now).await;
         if !stopping {
             self.send_uplink(&UplinkDown::Deliver {
                 delivery: b.delivery.clone(),
@@ -1413,6 +1476,10 @@ impl SessionObject {
         if status_changed || described {
             self.write_through().await;
         }
+        if described {
+            self.mem.borrow_mut().search_due = true;
+            self.search_soon(now).await;
+        }
         self.notify_fleet(&s);
         self.notify_followers(&s, before, now);
         Ok(serde_json::json!({ "ok": true }))
@@ -2031,6 +2098,7 @@ impl SessionObject {
                     }
                     self.mark_dirty(now).await;
                 }
+                self.search_soon(now).await;
             }
             UplinkUp::Stream { event } => {
                 let text = event.to_string();
@@ -2488,6 +2556,10 @@ impl SessionObject {
         } else {
             self.mark_dirty(now).await;
         }
+        if described {
+            self.mem.borrow_mut().search_due = true;
+            self.search_soon(now).await;
+        }
         self.notify_fleet(&s);
         self.notify_followers(&s, before, now);
         // Failed checks and conflicts waited for the turn to end: they
@@ -2781,6 +2853,189 @@ impl SessionObject {
             }
         }
         changed
+    }
+
+    // ───────────────────────────── search ─────────────────────────────
+
+    /// The workspace of the session's project, whose search index has it:
+    /// as its summary says, or D1 for a summary from before workspaces.
+    async fn workspace_id(&self, s: &Session) -> Option<String> {
+        if let Some(w) = &s.workspace {
+            return Some(w.id.0.clone());
+        }
+        if let Some(w) = self.meta("workspace_id") {
+            return Some(w);
+        }
+        #[derive(Deserialize)]
+        struct W {
+            workspace_id: Option<String>,
+        }
+        let db = self.env.d1("DB").ok()?;
+        let row: Option<W> = crate::db::q(
+            &db,
+            "SELECT workspace_id FROM projects WHERE id = ?",
+            &[crate::db::s(s.project_id.as_str())],
+        )
+        .ok()?
+        .first()
+        .await
+        .ok()?;
+        let w = row?.workspace_id?;
+        self.set_meta("workspace_id", &w);
+        Some(w)
+    }
+
+    /// Has the alarm put what's new in the search index soon, once a
+    /// message or a reply came, or the title or description changed.
+    async fn search_soon(&self, now: i64) {
+        let due = std::mem::take(&mut self.mem.borrow_mut().search_due);
+        if due {
+            self.arm(now + SEARCH_DELAY_MS).await;
+        }
+    }
+
+    /// Puts what the workspace's search index doesn't have yet in it: the
+    /// title and description when they changed, and the messages and
+    /// replies of the events after the last it took, `SEARCH_BATCH` events
+    /// at most. `Ok(true)` once it has them all. A review agent's session
+    /// isn't searched: its project's reviews list it.
+    async fn index_search(&self) -> std::result::Result<bool, ApiError> {
+        let Some(s) = self.summary().filter(|s| s.review.is_none()) else {
+            return Ok(true);
+        };
+        let Some(workspace) = self.workspace_id(&s).await else {
+            return Err(api_err(
+                ErrorCode::Internal,
+                "the session's workspace is unknown",
+            ));
+        };
+        let after: i64 = self
+            .meta("search_seq")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let last = self.next_seq() - 1;
+        let about = search::about(&s.title, s.description.as_deref(), s.created_at);
+        let about_key = about
+            .iter()
+            .map(|d| d.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let about_changed = self.meta("search_about").as_deref() != Some(about_key.as_str());
+        if !about_changed && after >= last {
+            return Ok(true);
+        }
+        // Only events that may hold a message or a reply are read; tool
+        // results are most of a transcript.
+        let rows = self.load_events(
+            "SELECT seq, ts, kind, data FROM events WHERE seq > ? AND seq <= ? \
+             AND (kind = 'user_message' OR (kind = 'claude' AND json_extract(data, '$.type') = 'assistant')) \
+             ORDER BY seq LIMIT ?",
+            vec![iv(after), iv(last), iv(SEARCH_BATCH)],
+        );
+        let done = (rows.len() as i64) < SEARCH_BATCH;
+        let through = match rows.last() {
+            Some(r) if !done => r.seq as i64,
+            _ => last,
+        };
+        let docs: Vec<search::Doc> = rows
+            .iter()
+            .filter_map(|r| {
+                let data = serde_json::from_str::<serde_json::Value>(&r.data).ok()?;
+                Some(search::docs_of(r.seq as i64, r.ts as i64, &r.kind, &data))
+            })
+            .flatten()
+            .collect();
+        if about_changed || !docs.is_empty() {
+            let stub = internal::search_stub(&self.env, &workspace).map_err(|e| e.0)?;
+            let _: serde_json::Value = internal::post(
+                &stub,
+                "/put",
+                &PutDocs {
+                    session_id: s.id.clone(),
+                    project_id: s.project_id.clone(),
+                    about: about_changed.then_some(about),
+                    docs,
+                },
+            )
+            .await
+            .map_err(|e| e.0)?;
+        }
+        if about_changed {
+            self.set_meta("search_about", &about_key);
+        }
+        // Another indexing may have gone further meanwhile.
+        let now_at: i64 = self
+            .meta("search_seq")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        self.set_meta("search_seq", &through.max(now_at).to_string());
+        Ok(done)
+    }
+
+    /// Records in D1 whether the search index has all the session's events
+    /// (`sessions.search_indexed`), when that changed: the hourly job
+    /// indexes those that it doesn't.
+    async fn search_state(&self, indexed: bool) {
+        let value = if indexed { "1" } else { "0" };
+        if self.meta("search_indexed").as_deref() == Some(value) {
+            return;
+        }
+        let Some(s) = self.summary() else { return };
+        let Ok(db) = self.env.d1("DB") else { return };
+        let res = match crate::db::q(
+            &db,
+            "UPDATE sessions SET search_indexed = ? WHERE id = ?",
+            &[crate::db::b(indexed), crate::db::s(s.id.as_str())],
+        ) {
+            Ok(q) => q.run().await,
+            Err(e) => Err(e),
+        };
+        match res {
+            Ok(_) => self.set_meta("search_indexed", value),
+            Err(e) => worker::console_error!("recording the search index: {}", e.0.message),
+        }
+    }
+
+    /// The alarm's part in search: what's new goes in the index, and what's
+    /// left after that comes next; one that the index didn't take is tried
+    /// again a few times, a little later each time.
+    async fn index_now(&self, now: i64) {
+        match self.index_search().await {
+            Ok(true) => {
+                self.delete_meta("search_failures");
+                self.search_state(true).await;
+            }
+            Ok(false) => self.arm(now + 1_000).await,
+            Err(e) => {
+                let failures = self
+                    .meta("search_failures")
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(0)
+                    + 1;
+                worker::console_error!("indexing the session for search: {}", e.message);
+                self.set_meta("search_failures", &failures.to_string());
+                self.search_state(false).await;
+                if failures <= SEARCH_RETRIES {
+                    self.arm(now + 30_000 * (1 << failures.min(SEARCH_RETRIES)))
+                        .await;
+                }
+            }
+        }
+    }
+
+    /// The hourly job's request (`/index`): puts what the search index
+    /// doesn't have of the session in it, a few batches at once, and has
+    /// the alarm do the rest of a long transcript.
+    async fn backfill_search(&self) -> std::result::Result<Indexed, ApiError> {
+        for _ in 0..SEARCH_BACKFILL_ROUNDS {
+            if self.index_search().await? {
+                self.delete_meta("search_failures");
+                self.search_state(true).await;
+                return Ok(Indexed { done: true });
+            }
+        }
+        self.arm(now_ms() + 1_000).await;
+        Ok(Indexed { done: false })
     }
 
     // ───────────────────────────── write-through ─────────────────────────────

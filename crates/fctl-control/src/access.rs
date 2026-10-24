@@ -7,7 +7,9 @@
 use crate::ctx::Ctx;
 use crate::db::{Val, q, s};
 use crate::error::{AppResult, forbidden, not_found};
-use crate::model::{PROJECT_SELECT, ProjectRow, SESSION_SELECT, SessionRow, UserRow};
+use crate::model::{
+    PROJECT_SELECT, ProjectRow, SESSION_SELECT, SessionRow, UserRow, WorkspaceCols,
+};
 use fctl_domain::limits::Limits;
 use fctl_domain::perm::{self, SessionAccess};
 use fctl_proto::api::InstanceSettings;
@@ -46,9 +48,33 @@ pub fn project_role(
     limits: Option<&Limits>,
     row: &ProjectRow,
 ) -> Option<ProjectRole> {
-    let role = perm::project_role(row.workspace.membership(user, settings), row.member_role());
+    project_role_in(
+        user,
+        settings,
+        limits,
+        &row.workspace,
+        &row.id,
+        row.member_role(),
+    )
+}
+
+/// [`project_role`] from what decides it: the project's workspace, with
+/// the caller's membership there, and their own role in the project.
+pub fn project_role_in(
+    user: &UserRow,
+    settings: &InstanceSettings,
+    limits: Option<&Limits>,
+    workspace: &WorkspaceCols,
+    project_id: &str,
+    member_role: Option<ProjectRole>,
+) -> Option<ProjectRole> {
+    let role = perm::project_role(workspace.membership(user, settings), member_role);
     match limits {
-        Some(l) => l.project_role(row.workspace_id(), &row.id, role),
+        Some(l) => l.project_role(
+            workspace.workspace_id.as_deref().unwrap_or_default(),
+            project_id,
+            role,
+        ),
         None => role,
     }
 }

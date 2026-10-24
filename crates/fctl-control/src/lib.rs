@@ -13,6 +13,7 @@ mod do_files;
 mod do_fleet;
 mod do_notify;
 mod do_schedule;
+mod do_search;
 mod do_session;
 mod email;
 mod error;
@@ -40,6 +41,7 @@ pub use do_files::FilesObject;
 pub use do_fleet::FleetObject;
 pub use do_notify::NotifyObject;
 pub use do_schedule::ScheduleObject;
+pub use do_search::SearchObject;
 pub use do_session::SessionObject;
 use error::{AppError, AppResult};
 use fctl_proto::ApiError;
@@ -325,6 +327,7 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
 
         // Sessions
         (Get, ["sessions"]) => api::sessions::list(ctx, req).await,
+        (Get, ["search"]) => api::search::search(ctx, req).await,
         (Get, ["sessions", id]) => api::sessions::get(ctx, id).await,
         (Patch, ["sessions", id]) => api::sessions::update(ctx, req, id).await,
         (Post, ["sessions", id, "messages"]) => api::sessions::send_message(ctx, req, id).await,

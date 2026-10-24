@@ -206,6 +206,8 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
             | ["sessions", _, "events" | "retrospectives" | "ws" | "shares"]
             | ["sessions", _, "attachments", _],
         ) => Read,
+        // Searching what its sessions said.
+        ("GET", ["search"]) => Read,
         // Starting and steering sessions (a review's too), and keeping the memory.
         (
             "POST",
@@ -499,6 +501,7 @@ mod tests {
                 ("GET", "sessions/ses_1/events"),
                 ("GET", "sessions/ses_1/ws"),
                 ("GET", "sessions/ses_1/attachments/att_1"),
+                ("GET", "search"),
                 ("GET", "workspaces"),
             ] {
                 let segs: Vec<&str> = path.split('/').collect();

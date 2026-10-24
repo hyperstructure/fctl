@@ -36,6 +36,7 @@ pub mod retrospectives;
 pub mod reviews;
 pub mod schedule;
 pub mod schedules;
+pub mod search;
 pub mod settings;
 pub mod size;
 pub mod threads;
