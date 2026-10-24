@@ -1,0 +1,57 @@
+# Dependabot opens security updates only: the repository's settings turn them
+# on, and `open-pull-requests-limit: 0` keeps version updates off (each entry
+# still needs a schedule). This file shapes those pull requests. Their titles
+# become commits on main, so they are Conventional Commits that `xtask
+# lint-commit` takes: `build(deps): bump …`, `ci(deps): bump …`.
+#
+# GitHub raises an alert, and opens a pull request, for each manifest that
+# holds a vulnerable version. The JavaScript is one npm workspace with one
+# lockfile, package-lock.json at the root, so a package that web/package.json
+# pins gets two: one from / that changes web/package.json and the lockfile,
+# and one from /web that changes web/package.json alone, which `npm ci`
+# refuses (#252). Dependabot looks for package-lock.json and Cargo.lock only in
+# the directory it updates, so the workspaces' and the crates' own directories
+# open none, and the root's pull requests cover them.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: build(deps)
+  - package-ecosystem: npm
+    directories:
+      - /web
+      - /deploy/standalone
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: "*"
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: build(deps)
+  - package-ecosystem: cargo
+    directories:
+      - /crates/*
+      - /xtask
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: ci(deps)
