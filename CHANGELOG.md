@@ -2,6 +2,28 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.23.0 (2026-10-24)
+
+### Features
+
+- **control:** Review Dependabot's pull requests without being asked ([#255](https://github.com/hyperstructure/fctl/pull/255))
+- Let maintainers start sessions that reach GitHub's issues too ([#258](https://github.com/hyperstructure/fctl/pull/258))
+- Find in a session's transcript, and search what all sessions said ([#259](https://github.com/hyperstructure/fctl/pull/259))
+
+### Fixes
+
+- Let projects choose a Linear team after connecting Linear ([#251](https://github.com/hyperstructure/fctl/pull/251))
+
+### Documentation
+
+- Move preview links to the roadmap's later list ([#257](https://github.com/hyperstructure/fctl/pull/257))
+
+### Other changes
+
+- Fix xtask tests that fail now and then with Text file busy ([#253](https://github.com/hyperstructure/fctl/pull/253))
+- Make Dependabot's security updates pass the checks ([#254](https://github.com/hyperstructure/fctl/pull/254))
+- **deps:** Bump happy-dom from 21.0.3 to 21.0.4 ([#252](https://github.com/hyperstructure/fctl/pull/252))
+
 ## 0.22.0 (2026-10-23)
 
 ### Features
