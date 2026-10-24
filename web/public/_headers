@@ -13,3 +13,8 @@
 # The service worker: browsers check it for updates; never let a cache hold an old one.
 /sw.js
   Cache-Control: no-cache
+
+# fctl's guide for agents (docs/llms.txt): Cloudflare sends .txt as text/plain
+# without a charset, and clients that then read it as Latin-1 garble its UTF-8.
+/llms.txt
+  Content-Type: text/plain; charset=utf-8
