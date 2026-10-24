@@ -73,6 +73,7 @@ echo "Fix the flaky test" | fctl run -p my-app
 fctl run --model opus --effort high "…"       # override the project's agent settings
 fctl run --github comment "Review pull request #12"   # its agent reviews and comments, and pushes nothing
 fctl run --github read "Plan the move to Postgres"    # its agent only reads on GitHub
+fctl run --github-issues "Move the open GitHub issues to Linear"   # its agent reaches GitHub's issues, whatever the tracker
 fctl run --branch fix/login --base develop "…"
 fctl run -p my-app -a screenshot.png "Make the header match this"   # attach files (repeat -a)
 
@@ -339,6 +340,14 @@ set of permissions, so with one repository among several the session's
 tokens get no issues permission either. A change reaches running
 sessions' GitHub tokens with their next one, within the hour, and what
 agents are told from their next session on.
+
+A maintainer of the project can start a session that reaches GitHub's
+issues whatever the tracker says, to move them into Linear, say: `fctl
+run --github-issues`, or **GitHub issues too** in the start form's GitHub
+menu. Its tokens carry the issues permission on the repositories it
+writes to, as with GitHub Issues of all of them, for as long as it runs,
+and its agent is told to use those issues only as its task asks. It
+reaches the project's tracker as other sessions do.
 
 A Linear team takes a Linear workspace the project's workspace works in
 ([Workspaces](#workspaces): `fctl workspaces linear connect`). There,

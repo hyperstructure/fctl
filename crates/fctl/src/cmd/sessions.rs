@@ -48,6 +48,11 @@ pub struct RunArgs {
     /// project and your token allow.
     #[arg(long, value_enum)]
     pub github: Option<super::tokens::Github>,
+    /// Let its agent reach the GitHub issues of the repositories it writes
+    /// to, whatever the project's ticket tracker says: to move them into
+    /// Linear, say. Only the project's maintainers may.
+    #[arg(long)]
+    pub github_issues: bool,
     /// Start it and return instead of following along.
     #[arg(short, long)]
     pub detach: bool,
@@ -194,6 +199,7 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
                 effort: args.effort,
                 attachments,
                 github_access: args.github.map(Into::into),
+                github_issues: args.github_issues.then_some(true),
             },
         )
         .await?;
@@ -207,6 +213,17 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
         let _ = api.stop(session.id.as_str()).await;
         bail!(
             "{} can't hold agents to less than pushing yet, so fctl stopped {}#{}. Update the instance, or start the session without --github.",
+            api.base(),
+            session.project_slug,
+            session.number
+        );
+    }
+    // Nor does one from before reaching GitHub's issues, and its agent
+    // would set out on a task it can't do.
+    if args.github_issues && session.github_issues != Some(true) {
+        let _ = api.stop(session.id.as_str()).await;
+        bail!(
+            "{} can't let sessions reach GitHub issues yet, so fctl stopped {}#{}. Update the instance, or start the session without --github-issues.",
             api.base(),
             session.project_slug,
             session.number
@@ -423,6 +440,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         }
         Some(GithubAccess::Read) => println!("github:   reads only"),
         _ => {}
+    }
+    if s.github_issues == Some(true) {
+        println!("issues:   GitHub's too, whatever the project's tracker says");
     }
     if let Some(following) = s.following {
         println!("follow:   {}", if following { "yes" } else { "no" });

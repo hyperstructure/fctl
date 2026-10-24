@@ -2162,6 +2162,13 @@ pub struct CreateSessionRequest {
     /// settings and the access token starting it allow, which is what it
     /// gets when absent. Asking for more fails.
     pub github_access: Option<GithubAccess>,
+    /// Let its agent reach the GitHub issues of the repositories it writes
+    /// to whatever its project's ticket tracker says, to move them into
+    /// the tracker, say (`fctl_domain::tickets::session_issues`). Only the
+    /// project's maintainers, who may change its tracker, may ask for it.
+    /// Control planes from before it ignore it: `Session::github_issues`
+    /// says whether the session got it.
+    pub github_issues: Option<bool>,
 }
 
 #[skip_serializing_none]

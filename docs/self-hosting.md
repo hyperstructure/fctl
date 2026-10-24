@@ -507,7 +507,9 @@ only on a write token for that repository alone; no tracker, or Linear,
 none at all. For a project that keeps its agents to one repository's
 issues among several it writes to, the control plane reads and writes
 that one's for them (`fctl ticket`), with a token for its issues alone
-that it revokes once used.
+that it revokes once used. A session a maintainer starts to reach
+GitHub's issues (`fctl run --github-issues`) gets them as above, whatever
+the tracker says.
 
 What a session's agent may do on GitHub, push, comment or read, is its
 own choice within its project's setting

@@ -299,7 +299,7 @@ function QuickStart({
             />
           </div>
           {target && (
-            <StartChoices project={target} choice={choice} onPick={pickChoice} disabled={starting} />
+            <StartChoices project={target} choice={choice} onPick={pickChoice} issues disabled={starting} />
           )}
           {/* From lg the pickers share its row, which has room for it again from xl. Its margins set it
               apart from them, and a little from the button. */}

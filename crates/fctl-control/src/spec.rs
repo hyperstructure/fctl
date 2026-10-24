@@ -275,6 +275,7 @@ pub async fn build(
         &grants,
         github_access,
         &project.settings().tickets,
+        row.github_issues,
         now,
     )
     .await?;
@@ -449,6 +450,7 @@ async fn review_spec(
         &grants,
         GithubAccess::Read,
         &reading,
+        false,
         now,
     )
     .await?;
@@ -645,8 +647,9 @@ async fn bot_identity(cfg: &Config, _now: i64) -> GitIdentity {
 
 /// A session's GitHub tokens (none without a GitHub App or repositories),
 /// within what its workspace may use, for an agent that may do `access` on
-/// GitHub, reaching the issues its project's ticket tracker lets it
-/// (`fctl_domain::tickets::issue_tokens`). Listed repositories the
+/// GitHub, reaching the issues its project's ticket tracker lets it, or
+/// those of the repositories it writes to when its starter asked
+/// (`github_issues`, `fctl_domain::tickets::session_issues`). Listed repositories the
 /// workspace may not use, or the GitHub App cannot reach, are left out;
 /// without the primary repository the session cannot start.
 #[allow(clippy::too_many_arguments)]
@@ -658,6 +661,7 @@ pub async fn github_tokens(
     grants: &[RepoGrant],
     access: GithubAccess,
     tickets: &fctl_proto::session::Tickets,
+    github_issues: bool,
     now: i64,
 ) -> AppResult<github::SessionTokens> {
     let (Some(gh), Some(plan)) = (
@@ -694,9 +698,10 @@ pub async fn github_tokens(
         // while its login is still that account's.
         let gh = github::from_config(cfg, now)?;
         let inst = crate::workspaces::installation(db, &gh, &connections, &plan.owner).await?;
-        // Which issues they reach is the project's tracker's to say.
+        // Which issues they reach is the project's tracker's to say, unless
+        // the session's starter let it reach GitHub's.
         let issues = fctl_domain::tickets::issue_tokens(
-            &fctl_domain::tickets::github_issues(tickets, primary, grants),
+            &fctl_domain::tickets::session_issues(tickets, primary, grants, github_issues),
             &plan.write,
             access,
         );

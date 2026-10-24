@@ -59,6 +59,11 @@ export interface Choice {
   model: string;
   effort: string;
   github: G.GithubAccess;
+  /**
+   * Its agent reaches GitHub's issues whatever the project's tracker says (`offersIssues`), where
+   * the form offers it.
+   */
+  issues?: boolean;
 }
 
 type Project = Pick<G.Project, "settings" | "last_model" | "last_effort">;
@@ -98,12 +103,13 @@ export function startChoice(p: Project, picked: Partial<Choice> = {}): Choice {
 export function asked(
   p: Project,
   c: Choice,
-): Pick<G.CreateSessionRequest, "model" | "effort" | "github_access"> {
+): Pick<G.CreateSessionRequest, "model" | "effort" | "github_access" | "github_issues"> {
   const own = projectChoice(p);
   return {
     model: c.model && c.model !== own.model ? c.model : undefined,
     effort: c.effort && c.effort !== own.effort ? c.effort : undefined,
     github_access: c.github !== own.github ? c.github : undefined,
+    github_issues: c.issues || undefined,
   };
 }
 

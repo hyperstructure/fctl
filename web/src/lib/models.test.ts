@@ -84,6 +84,11 @@ describe("the composer's model and effort", () => {
     // A session asks only for less than the project allows.
     expect(asked(reviews, { model: "", effort: "", github: "comment" })).toEqual({});
     expect(asked(reviews, { model: "", effort: "", github: "read" })).toEqual({ github_access: "read" });
+    // Reaching GitHub's issues beyond the tracker is asked anew each time.
+    expect(asked(reviews, { model: "", effort: "", github: "comment", issues: true })).toEqual({
+      github_issues: true,
+    });
+    expect(asked(reviews, { model: "", effort: "", github: "comment", issues: false })).toEqual({});
   });
 
   it("offers the aliases, Claude's default where the project has it, and the models it names", () => {

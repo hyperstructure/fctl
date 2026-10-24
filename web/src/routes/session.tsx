@@ -995,6 +995,16 @@ function Details({
         {project && onGithub(project) && (
           <Row k="On GitHub" v={<GithubAccessLabel access={sessionGithub(session, project)} />} />
         )}
+        {session.github_issues && (
+          <Row
+            k="Issues"
+            v={
+              <span title="Its agent reaches the GitHub issues of the repositories it writes to, whatever the project's tracker says.">
+                GitHub's too
+              </span>
+            }
+          />
+        )}
         {session.runner && (
           <Row
             k="Runner"
