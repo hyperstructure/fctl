@@ -104,7 +104,6 @@ this file is the overview. Order within a section is priority.
       session reports back in the ticket's agent session
 - [ ] More ticket trackers (Jira, Shortcut, ClickUp), on the same `Ticket`
       model and `fctl ticket`
-- [ ] Preview links: share a sandbox's dev server through a tunnel (#10)
 - [x] Search across transcripts: ⌘K and `fctl search` find what sessions
       said, and ⌘F finds it in a session's transcript (#11)
 - [ ] Session templates and a shared library of project instructions
@@ -113,6 +112,8 @@ this file is the overview. Order within a section is priority.
 
 - [ ] Agents that plan and start sub-sessions, with a review step
 - [ ] Network egress policies per project
+- [ ] Preview links: share a sandbox's dev server through a tunnel, when a
+      real need arises
 - [ ] Master key rotation
 - [ ] Email through Cloudflare's email service (no Resend account)
 - [x] Workspace admins connect the GitHub accounts they manage themselves,
