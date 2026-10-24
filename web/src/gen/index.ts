@@ -191,6 +191,8 @@ export type { RetrospectiveList } from "./RetrospectiveList";
 export type { RetrospectiveOutcome } from "./RetrospectiveOutcome";
 export type { Review } from "./Review";
 export type { ReviewAgents } from "./ReviewAgents";
+export type { ReviewBot } from "./ReviewBot";
+export type { ReviewBotList } from "./ReviewBotList";
 export type { ReviewList } from "./ReviewList";
 export type { ReviewSpec } from "./ReviewSpec";
 export type { ReviewState } from "./ReviewState";

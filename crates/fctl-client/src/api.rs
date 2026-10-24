@@ -765,6 +765,24 @@ impl Api {
             .await
     }
 
+    /// The apps that opened the newest pull requests in a project's
+    /// repositories, those that opened most first (its owners).
+    pub async fn review_bots(&self, project: &str) -> Result<ReviewBotList> {
+        self.get(&format!("/projects/{}/review-agents/bots", enc(project)))
+            .await
+    }
+
+    /// An app as GitHub shows it, by its name (`renovate`, `renovate[bot]`
+    /// or its page), through a project's installation (its owners).
+    pub async fn review_bot(&self, project: &str, name: &str) -> Result<ReviewBot> {
+        self.get(&format!(
+            "/projects/{}/review-agents/bots/{}",
+            enc(project),
+            enc(name)
+        ))
+        .await
+    }
+
     /// A project's reviews, newest first, before `before` for the next page.
     pub async fn reviews(
         &self,

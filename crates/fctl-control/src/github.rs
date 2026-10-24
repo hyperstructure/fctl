@@ -850,6 +850,32 @@ impl<'a> Github<'a> {
         Ok(answer)
     }
 
+    /// The GitHub App whose slug is `slug`, as installation `inst` sees it
+    /// (`GET /apps/{slug}`): `None` where GitHub shows it none, as it shows
+    /// no other account's private apps.
+    pub async fn app(&self, inst: u64, slug: &str) -> AppResult<Option<Value>> {
+        let token = self.lookup_token(inst).await?;
+        let (status, answer) = self
+            .call(
+                Method::Get,
+                &format!("/apps/{slug}"),
+                &format!("token {token}"),
+                None,
+            )
+            .await?;
+        if status == 401 {
+            LOOKUP_TOKENS.with(|m| m.borrow_mut().remove(&inst));
+        }
+        match status {
+            200 => Ok(Some(answer)),
+            404 => Ok(None),
+            _ => {
+                worker::console_error!("looking up the app {slug}: GitHub answered {status}");
+                Err(unavailable("GitHub did not answer"))
+            }
+        }
+    }
+
     /// Review thread `id`, as installation `inst` sees it: the pull
     /// request it is on, and whether it is resolved. `None` when GitHub has
     /// no thread by that id there.

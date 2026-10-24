@@ -21,7 +21,7 @@ use crate::github::{self, Github};
 use crate::internal::{self, InitSession, Schedule, Stop};
 use crate::model::{CredentialRow, PROJECT_SELECT, ProjectRow, UserRow, user_columns};
 use fctl_domain::reviews::{self as rv, Links, PullRequest};
-use fctl_proto::api::{FindingThread, PostedReview, Review, ReviewState};
+use fctl_proto::api::{FindingThread, PostedReview, Review, ReviewBot, ReviewState};
 use fctl_proto::event::{MessageSource, UserMessage};
 use fctl_proto::runner::{GithubCredential, StopReason};
 use fctl_proto::session::{
@@ -44,6 +44,9 @@ pub struct SettingsRow {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub instructions: Option<String>,
+    /// The apps whose pull requests start reviews by themselves, as JSON.
+    #[serde(default)]
+    pub bots: Option<String>,
     pub updated_by: Option<String>,
     pub updater_name: Option<String>,
     pub updater_avatar: Option<String>,
@@ -69,12 +72,21 @@ impl SettingsRow {
     }
 }
 
+/// The apps whose pull requests start reviews by themselves in a project
+/// with these settings (`None`: none yet), as their bots are named.
+pub fn bots(conf: Option<&SettingsRow>) -> Vec<String> {
+    match conf {
+        Some(c) => rv::stored_bots(c.bots.as_deref()),
+        None => rv::default_bots(),
+    }
+}
+
 /// A project's review agents; `None` until someone set them.
 pub async fn settings(db: &D1Database, project_id: &str) -> AppResult<Option<SettingsRow>> {
     q(
         db,
         "SELECT r.enabled, r.operator_id, ou.name AS operator_name, ou.avatar_url AS operator_avatar, \
-         r.model, r.effort, r.instructions, r.updated_by, uu.name AS updater_name, \
+         r.model, r.effort, r.instructions, r.bots, r.updated_by, uu.name AS updater_name, \
          uu.avatar_url AS updater_avatar, r.updated_at FROM project_reviews r \
          LEFT JOIN users ou ON ou.id = r.operator_id LEFT JOIN users uu ON uu.id = r.updated_by \
          WHERE r.project_id = ?",
@@ -315,6 +327,72 @@ pub async fn repos(db: &D1Database, project: &ProjectRow) -> AppResult<Vec<RepoR
     Ok(repos)
 }
 
+// ───────────────────────────── apps that start reviews ─────────────────────────────
+
+/// The apps that opened the newest pull requests in the project's
+/// repositories from their branches (`rv::bots_query`), through the
+/// installations its workspace connected; repositories it can't reach are
+/// left out.
+pub async fn seen_bots(ctx: &Ctx, project: &ProjectRow) -> AppResult<Vec<ReviewBot>> {
+    let mut by_installation: Vec<(u64, Vec<RepoRef>)> = Vec::new();
+    for repo in repos(&ctx.db, project)
+        .await?
+        .into_iter()
+        .take(rv::MAX_BOTS_REPOS)
+    {
+        let inst = match reach(ctx, project, &repo).await {
+            Ok(inst) => inst,
+            Err(e) => {
+                worker::console_log!(
+                    "not reading the pull requests of {}: {}",
+                    repo.full_name(),
+                    e.0.message
+                );
+                continue;
+            }
+        };
+        match by_installation.iter_mut().find(|(i, _)| *i == inst) {
+            Some((_, list)) => list.push(repo),
+            None => by_installation.push((inst, vec![repo])),
+        }
+    }
+    let gh = github::from_config(&ctx.cfg, ctx.now)?;
+    let mut answers = Vec::new();
+    for (inst, list) in by_installation {
+        answers.push(gh.lookup(inst, rv::bots_query(&list)).await?);
+    }
+    Ok(rv::bots_seen(&answers, app_login(&ctx.cfg).as_deref()))
+}
+
+/// The app someone names (`rv::bot_login`), as GitHub shows it through an
+/// installation of the project's: `None` where it shows none by that name,
+/// as it shows no other account's private apps.
+pub async fn find_bot(ctx: &Ctx, project: &ProjectRow, name: &str) -> AppResult<Option<ReviewBot>> {
+    let Some(login) = rv::bot_login(name) else {
+        return Err(AppError(ApiError::validation(
+            "bots",
+            "Name a GitHub App as renovate, renovate[bot] or https://github.com/apps/renovate",
+        )));
+    };
+    let mut why = None;
+    for repo in repos(&ctx.db, project).await? {
+        match reach(ctx, project, &repo).await {
+            Ok(inst) => {
+                let gh = github::from_config(&ctx.cfg, ctx.now)?;
+                let slug = login.trim_end_matches("[bot]");
+                return Ok(gh.app(inst, slug).await?.as_ref().and_then(rv::app_found));
+            }
+            Err(e) => why = Some(e),
+        }
+    }
+    Err(why.unwrap_or_else(|| {
+        AppError(ApiError::validation(
+            "bots",
+            "This project has no repository its agents may write to, through which fctl would ask GitHub. Link one under Repositories.",
+        ))
+    }))
+}
+
 /// Why no review of the project starts now, or would start once its
 /// review agents are on.
 pub async fn problem(
@@ -373,11 +451,12 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
     // its sandbox, where Claude acts on what the pull request says: text in
     // anyone's pull request could make it hand that token over, with nobody
     // in the project having looked. Only pull requests of people who may
-    // write to the repository, fctl's own agents' and Dependabot's (whose
-    // code its agent doesn't run) start one by themselves; anyone else's
-    // waits for someone in the project to ask for it
-    // (`POST /api/v1/projects/{id}/reviews`).
-    if !rv::starts_by_itself(&pr, app_login(&ctx.cfg).as_deref()) {
+    // write to the repository, fctl's own agents' and those of the apps the
+    // project's owners chose (whose code its agent doesn't run) start one by
+    // themselves; anyone else's waits for someone in the project to ask for
+    // it (`POST /api/v1/projects/{id}/reviews`).
+    let app = app_login(&ctx.cfg);
+    if !rv::could_start_by_itself(&pr, app.as_deref()) {
         worker::console_log!(
             "not reviewing {}#{} by itself: its author can't write to the repository",
             pr.repo.full_name(),
@@ -385,6 +464,7 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
         );
         return Ok(0);
     }
+    let trusted = rv::trusted(&pr, app.as_deref());
     let sent_by = payload.pointer("/installation/id").and_then(Value::as_u64);
     #[derive(Deserialize)]
     struct Id {
@@ -406,6 +486,16 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
         let Some(project) = crate::spec::project_row(&ctx.db, &id).await? else {
             continue;
         };
+        if !trusted && !rv::by_bot(&pr, &bots(settings(&ctx.db, &id).await?.as_ref())) {
+            worker::console_log!(
+                "not reviewing {}#{} by itself in {}: its owners don't let {} start reviews",
+                pr.repo.full_name(),
+                pr.number,
+                project.slug,
+                pr.author.as_deref().unwrap_or("its app")
+            );
+            continue;
+        }
         let inst = match reach(ctx, &project, &pr.repo).await {
             Ok(inst) => inst,
             Err(e) => {

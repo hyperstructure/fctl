@@ -26,6 +26,14 @@ effort?: string,
  */
 instructions?: string, 
 /**
+ * The GitHub Apps whose pull requests start reviews by themselves, as
+ * pull requests name their bots (`dependabot[bot]`), when they come
+ * from a branch of the repository: Dependabot until the project's
+ * owners choose. Other apps' wait until someone asks for their
+ * review, as outsiders' do.
+ */
+bots: Array<string>, 
+/**
  * The repositories whose pull requests they review: those the
  * project's agents may write to.
  */

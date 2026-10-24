@@ -307,6 +307,10 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Patch, ["projects", id, "review-agents"]) => {
             api::reviews::update_settings(ctx, req, id).await
         }
+        (Get, ["projects", id, "review-agents", "bots"]) => api::reviews::bots(ctx, id).await,
+        (Get, ["projects", id, "review-agents", "bots", name]) => {
+            api::reviews::bot(ctx, id, &http::decode(name)).await
+        }
         (Get, ["projects", id, "reviews"]) => api::reviews::list(ctx, req, id).await,
         (Post, ["projects", id, "reviews"]) => api::reviews::start(ctx, req, id).await,
         (Get, ["projects", id, "retrospectives"]) => {

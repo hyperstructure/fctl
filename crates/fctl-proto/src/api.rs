@@ -7,9 +7,9 @@
 use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, RunnerClaudeToken, SandboxLimits};
 use crate::session::{
-    GithubAccess, InstanceRole, Memory, Project, ProjectRole, ProjectSettings, RepoAccess, RepoRef,
-    Retrospective, RetrospectiveOutcome, Session, SessionRef, SessionRole, SessionStatus, UserRef,
-    WorkspaceColor, WorkspaceRef, WorkspaceRole,
+    GithubAccess, InstanceRole, Memory, Project, ProjectRole, ProjectSettings, PullRequestRef,
+    RepoAccess, RepoRef, Retrospective, RetrospectiveOutcome, Session, SessionRef, SessionRole,
+    SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use crate::{
     AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId,
@@ -2394,6 +2394,13 @@ pub struct ReviewAgents {
     pub effort: Option<String>,
     /// What they are told besides fctl's own review instructions.
     pub instructions: Option<String>,
+    /// The GitHub Apps whose pull requests start reviews by themselves, as
+    /// pull requests name their bots (`dependabot[bot]`), when they come
+    /// from a branch of the repository: Dependabot until the project's
+    /// owners choose. Other apps' wait until someone asks for their
+    /// review, as outsiders' do.
+    #[serde(default)]
+    pub bots: Vec<String>,
     /// The repositories whose pull requests they review: those the
     /// project's agents may write to.
     pub repos: Vec<RepoRef>,
@@ -2421,6 +2428,50 @@ pub struct UpdateReviewAgentsRequest {
     pub effort: Option<String>,
     /// `""` for none.
     pub instructions: Option<String>,
+    /// The GitHub Apps whose pull requests start reviews by themselves, in
+    /// place of those that do: each as `renovate`, `renovate[bot]` or
+    /// `https://github.com/apps/renovate`; `[]` for none.
+    pub bots: Option<Vec<String>>,
+}
+
+/// A GitHub App that opens pull requests, as the project's owners see it
+/// when they choose which apps start reviews by themselves: one that
+/// opened pull requests in the project's repositories lately
+/// ([`ReviewBotList`]), or one they looked up by name
+/// (`GET /api/v1/projects/{id}/review-agents/bots/{name}`).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ReviewBot {
+    /// Its bot, as pull requests name their author and
+    /// [`ReviewAgents::bots`] lists it: `renovate[bot]`.
+    pub login: String,
+    /// Its name and its owner's login, as GitHub shows them (`Renovate`,
+    /// `mend`): only a lookup by name says.
+    pub name: Option<String>,
+    pub owner: Option<String>,
+    /// Its logo, on avatars.githubusercontent.com.
+    pub avatar_url: Option<String>,
+    /// Its page on GitHub: `https://github.com/apps/renovate`.
+    pub url: String,
+    /// How many of the newest pull requests in the project's repositories
+    /// it opened from their branches.
+    #[serde(default)]
+    pub pull_requests: u32,
+    /// The newest of them, and when it opened.
+    pub latest: Option<PullRequestRef>,
+    pub latest_at: Option<Millis>,
+}
+
+/// `GET /api/v1/projects/{id}/review-agents/bots`, for the project's
+/// owners: the apps that opened the newest pull requests in its
+/// repositories (100 of each) from their branches, those that opened most
+/// first. fctl's own app isn't among them: its pull requests start reviews
+/// anyway.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReviewBotList {
+    pub bots: Vec<ReviewBot>,
 }
 
 /// How a review went, or that it is still under way.

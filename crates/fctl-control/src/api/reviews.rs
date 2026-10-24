@@ -12,7 +12,9 @@ use crate::reviews::{self, Started};
 use fctl_domain::reviews as rv;
 use fctl_domain::validate;
 use fctl_proto::ApiError;
-use fctl_proto::api::{ReviewAgents, ReviewList, StartReviewRequest, UpdateReviewAgentsRequest};
+use fctl_proto::api::{
+    ReviewAgents, ReviewBotList, ReviewList, StartReviewRequest, UpdateReviewAgentsRequest,
+};
 use serde_json::json;
 use worker::{Request, Response};
 
@@ -33,6 +35,7 @@ async fn agents(ctx: &Ctx, project: &crate::model::ProjectRow) -> AppResult<Revi
         model: conf.as_ref().and_then(|c| c.model.clone()),
         effort: conf.as_ref().and_then(|c| c.effort.clone()),
         instructions: conf.as_ref().and_then(|c| c.instructions.clone()),
+        bots: reviews::bots(conf.as_ref()),
         repos,
         problem,
         updated_by: conf.as_ref().and_then(reviews::SettingsRow::updater),
@@ -56,7 +59,8 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         && body.run_as_me.is_none()
         && body.model.is_none()
         && body.effort.is_none()
-        && body.instructions.is_none();
+        && body.instructions.is_none()
+        && body.bots.is_none();
     if !fctl_domain::perm::can_own_project(p.role) && !(mine && only_off) {
         return Err(forbidden(
             "Only the project's owners and its workspace's admins change its review agents. They run on your Claude subscription: you can turn them off.",
@@ -78,6 +82,10 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         .map(|i| validate::text("instructions", i, 20_000))
         .transpose()?
         .map(|i| (!i.is_empty()).then_some(i));
+    let bots = match body.bots.as_deref() {
+        Some(list) => rv::bots(list)?,
+        None => reviews::bots(conf.as_ref()),
+    };
     let was_on = conf.as_ref().is_some_and(|c| c.enabled);
     let enabled = body.enabled.unwrap_or(was_on);
     // Turning them on, or taking them over, runs them on the caller's
@@ -123,10 +131,11 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
     );
     q(
         &ctx.db,
-        "INSERT INTO project_reviews (project_id, enabled, operator_id, model, effort, instructions, updated_by, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT (project_id) DO UPDATE SET enabled = excluded.enabled, \
+        "INSERT INTO project_reviews (project_id, enabled, operator_id, model, effort, instructions, bots, updated_by, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT (project_id) DO UPDATE SET enabled = excluded.enabled, \
          operator_id = excluded.operator_id, model = excluded.model, effort = excluded.effort, \
-         instructions = excluded.instructions, updated_by = excluded.updated_by, updated_at = excluded.updated_at",
+         instructions = excluded.instructions, bots = excluded.bots, updated_by = excluded.updated_by, \
+         updated_at = excluded.updated_at",
         &[
             s(&p.row.id),
             crate::db::b(enabled),
@@ -134,6 +143,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             os(model.as_deref()),
             os(effort.as_deref()),
             os(instructions.as_deref()),
+            s(&serde_json::to_string(&bots)?),
             s(&me.id),
             n(ctx.now),
         ],
@@ -155,9 +165,36 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             "operator": operator,
             "model": model,
             "effort": effort,
+            "bots": bots,
         })),
     );
     http::ok(&agents(ctx, &p.row).await?)
+}
+
+/// `GET /api/v1/projects/{id}/review-agents/bots`: the apps that opened
+/// the newest pull requests in the project's repositories, for its owners,
+/// who choose which of them start reviews by themselves.
+pub async fn bots(ctx: &Ctx, id: &str) -> AppResult<Response> {
+    let p = access::project(ctx, id).await?;
+    p.require_owner()?;
+    http::ok(&ReviewBotList {
+        bots: reviews::seen_bots(ctx, &p.row).await?,
+    })
+}
+
+/// `GET /api/v1/projects/{id}/review-agents/bots/{name}`: an app, as
+/// GitHub shows it (its name, owner and logo), for the project's owners
+/// to check one they name before they let it start reviews.
+pub async fn bot(ctx: &Ctx, id: &str, name: &str) -> AppResult<Response> {
+    let p = access::project(ctx, id).await?;
+    p.require_owner()?;
+    match reviews::find_bot(ctx, &p.row, name).await? {
+        Some(bot) => http::ok(&bot),
+        None => Err(AppError(ApiError::new(
+            fctl_proto::ErrorCode::NotFound,
+            "GitHub shows no app by that name. It shows no other account's private apps.",
+        ))),
+    }
 }
 
 /// `GET /api/v1/projects/{id}/reviews`: newest first, a page at a time

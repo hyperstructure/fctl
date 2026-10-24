@@ -193,6 +193,8 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         session::SessionReview,
         api::ReviewAgents,
         api::UpdateReviewAgentsRequest,
+        api::ReviewBot,
+        api::ReviewBotList,
         api::ReviewState,
         api::Review,
         api::ReviewList,
