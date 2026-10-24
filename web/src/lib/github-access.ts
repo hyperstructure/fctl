@@ -84,25 +84,22 @@ export function offersIssues(
   return onGithub(p) && !theirs && (p.role === "owner" || p.role === "maintainer");
 }
 
-/** The GitHub menu's choice of issues for a session in `p` (see `offersIssues`). */
+/** The GitHub menu's choice of issues for a session in `p` (see `offersIssues`), the project's first. */
 export function issuesOffers(p: Pick<G.Project, "settings">) {
   const t = p.settings.tickets;
-  const into =
+  const repo = t?.repo && `${t.repo.owner}/${t.repo.name}`;
+  const [theirs, into] =
     t?.tracker === "linear"
-      ? " To move them into Linear, say."
-      : t?.tracker === "github" && t.repo
-        ? ` To move them to ${t.repo.owner}/${t.repo.name}, say.`
-        : "";
+      ? ["Linear's tickets, and no GitHub issues.", ", to move them into Linear, say"]
+      : t?.tracker === "github" && repo
+        ? [`Only the issues of ${repo}.`, `, to move them to ${repo}, say`]
+        : ["No tickets, and no GitHub issues.", ""];
   return [
-    {
-      on: false,
-      label: "The tracker's only",
-      description: "Reaches the issues and tickets the project's tracker says, and no others.",
-    },
+    { on: false, label: "As the project says", description: theirs },
     {
       on: true,
       label: "GitHub issues too",
-      description: `Also reads, opens, comments on and closes the GitHub issues of the repositories it writes to.${into}`,
+      description: `Also reads, comments on and closes the issues of the repositories it writes to${into}.`,
     },
   ];
 }

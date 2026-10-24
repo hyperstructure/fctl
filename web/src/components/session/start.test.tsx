@@ -360,10 +360,10 @@ describe("StartChoices", () => {
         "Comments only",
         "Read only",
         "Issues",
-        "The tracker's only ✓",
+        "As the project says ✓",
         "GitHub issues too",
       ]);
-      expect(option(container, "GitHub issues too").textContent).toContain("To move them into Linear, say.");
+      expect(option(container, "GitHub issues too").textContent).toContain("to move them into Linear, say.");
       // Not to an editor, who may not change the tracker either.
       rerender(<Form p={{ ...project(linear), ...repo, role: "editor" }} />);
       expect(listed(container)).not.toContain("Issues");
@@ -398,7 +398,7 @@ describe("StartChoices", () => {
       act(() => picker(container).click());
       await act(() => new Promise((r) => setTimeout(r, 600)));
       expect(container.querySelector("[role=listbox]")).toBeNull();
-      await pickIt("The tracker's only");
+      await pickIt("As the project says");
       expect(asks?.github_issues).toBeUndefined();
       expect(dot()).toBeNull();
     });

@@ -5,7 +5,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, CircleDot, Ticket } from "lucide-react";
 import {
   type ReactNode,
   type RefObject,
@@ -16,7 +16,7 @@ import {
   useState,
 } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
-import { EffortIcon, Select, Spinner, toast } from "@/components/ui";
+import { EffortIcon, LinearIcon, Select, Spinner, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -306,6 +306,13 @@ export function StartChoices({
                 ? issuesOffers(project).map((o) => ({
                     value: o.on ? "issues" : "tracker",
                     label: o.label,
+                    icon: o.on ? (
+                      <CircleDot />
+                    ) : project.settings.tickets?.tracker === "linear" ? (
+                      <LinearIcon />
+                    ) : (
+                      <Ticket />
+                    ),
                     description: o.description,
                     checked: o.on === !!choice.issues,
                     section: ISSUES,
