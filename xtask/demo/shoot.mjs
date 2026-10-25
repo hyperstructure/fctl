@@ -84,6 +84,23 @@ async function dress(page) {
   }, new URL(manifest.app).origin);
 }
 
+/**
+ * Brings the open tab of a project's or workspace's tabs into view, as
+ * someone would: on a phone they scroll sideways, and open at the first.
+ */
+async function showTab(page) {
+  await page.evaluate(() => {
+    for (const a of document.querySelectorAll('nav a[data-status="active"][href*="tab="]')) {
+      const strip = a.closest("nav");
+      if (!strip || strip.scrollWidth <= strip.clientWidth) continue;
+      const tab = a.getBoundingClientRect();
+      const view = strip.getBoundingClientRect();
+      if (tab.left >= view.left && tab.right <= view.right) continue;
+      strip.scrollLeft += tab.left + tab.width / 2 - (view.left + view.width / 2);
+    }
+  });
+}
+
 /** Opens the transcript's setup row. */
 async function openSetup(page) {
   await page.locator('button:has-text("Sandbox ready in")').first().click();
@@ -431,6 +448,7 @@ if (open) {
           });
           await tab.waitForTimeout(shot.settle ?? 1500);
           try {
+            await showTab(tab);
             if (shot.act) await shot.act(tab);
           } catch (e) {
             console.error(`${shot.name} (${theme}): ${e.message.split("\n")[0]}`);
