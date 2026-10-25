@@ -429,7 +429,9 @@ impl<'a> World<'a> {
                  min_free_disk_gb = 1\n",
                 api = dev::LOCAL_API,
                 name = dev::toml_str(Path::new(&r.name)),
-                capacity = r.capacity.max(2),
+                // Room for what the seed runs at once, faster than the
+                // story: the app shows the story's capacity (`machines`).
+                capacity = r.capacity.max(8),
                 claude = dev::toml_str(&bin.join("fake-claude")),
                 agent = dev::toml_str(&bin.join("fctl-agent")),
                 replays = dev::toml_str(&replays),
