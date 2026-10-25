@@ -69,17 +69,22 @@ fn note(what: &str) {
 /// Notes what went wrong with a replay in `replay.log` (stderr before a
 /// library has loaded).
 fn warn(what: &str) {
-    let written = LOG.get().is_some_and(|path| {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .and_then(|mut f| writeln!(f, "{what}"))
-            .is_ok()
-    });
+    let written = LOG
+        .get()
+        .is_some_and(|path| append_line(path, what).is_ok());
     if !written {
         eprintln!("fake-claude: {what}");
     }
+}
+
+/// Adds a line to a log in one write, so that lines that other sessions'
+/// fake-claudes add at the same time don't run into it.
+fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(format!("{line}\n").as_bytes())
 }
 
 /// The replays in a directory, and what it says about playing them.
@@ -265,11 +270,7 @@ impl Library {
             .iter()
             .find(|r| !taken(&r.name))
             .or(matching.first())?;
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)
-            .and_then(|mut f| writeln!(f, "{}: started", replay.name));
+        let _ = append_line(&log, &format!("{}: started", replay.name));
         Some(Playing {
             replay: (*replay).clone(),
             next: 0,
