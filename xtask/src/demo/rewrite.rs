@@ -85,7 +85,11 @@ fn session_objects(state: &std::path::Path) -> Result<BTreeMap<String, PathBuf>>
     let mut out = BTreeMap::new();
     for path in sqlite::objects(state, "SessionObject")? {
         let rows = Db::open(&path).query("SELECT value FROM meta WHERE key = 'summary'", &[])?;
-        let Some(text) = rows.first().and_then(|r| r.get("value")).and_then(Value::as_str) else {
+        let Some(text) = rows
+            .first()
+            .and_then(|r| r.get("value"))
+            .and_then(Value::as_str)
+        else {
             continue;
         };
         let v: Value = serde_json::from_str(text)?;
@@ -135,8 +139,8 @@ pub fn rewrite(w: &World, anchor: i64) -> Result<()> {
         let path = objects
             .get(&made.id)
             .with_context(|| format!("no stored session for {}", s.id))?;
-        let clock = session(&ctx, s, path, &mut d1)
-            .with_context(|| format!("rewriting {}", s.id))?;
+        let clock =
+            session(&ctx, s, path, &mut d1).with_context(|| format!("rewriting {}", s.id))?;
         clocks.insert(made.id.clone(), clock);
     }
     reviews(&ctx, &mut d1)?;
@@ -167,7 +171,12 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     let mut summary: Value = serde_json::from_str(&summary_text)?;
     let events = obj.query("SELECT seq, ts, kind, data FROM events ORDER BY seq", &[])?;
     let ts = |r: &sqlite::Row| r.get("ts").and_then(Value::as_i64).unwrap_or_default();
-    let kind = |r: &sqlite::Row| r.get("kind").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let kind = |r: &sqlite::Row| {
+        r.get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
 
     // The fixed points: its start, each later message, the end of its
     // last turn (or, still at work, of what it stored before the shots).
@@ -342,10 +351,7 @@ fn review_title(repo_name: &str, number: u64, title: &str) -> String {
 /// outside contributor would push.
 fn review_branch(ctx: &Ctx, of: &str) -> Result<String> {
     if let Some(s) = ctx.w.cast.pull_session(of) {
-        return ctx.w.sessions[&s.id]
-            .branch
-            .clone()
-            .context("no branch");
+        return ctx.w.sessions[&s.id].branch.clone().context("no branch");
     }
     let p = ctx
         .w
@@ -424,7 +430,10 @@ fn pull_requests(
 fn session_ticket(ctx: &Ctx, s: &SessionSpec, key: &str) -> Result<Value> {
     let t = ctx.w.cast.ticket(key)?;
     let (project, _) = cast::session_ref(&s.id)?;
-    let w = ctx.w.cast.workspace(&ctx.w.cast.project(project)?.workspace)?;
+    let w = ctx
+        .w
+        .cast
+        .workspace(&ctx.w.cast.project(project)?.workspace)?;
     let l = w.linear.as_ref().context("no Linear")?;
     Ok(json!({
         "tracker": "linear", "id": format!("lin-issue-{}", key.to_lowercase()), "key": key, "title": t.title,
@@ -496,7 +505,12 @@ fn reviews(ctx: &Ctx, d1: &mut Db) -> Result<()> {
     let w = ctx.w;
     // Each pull request's reviews in order, for what came before each.
     let mut before: BTreeMap<String, String> = BTreeMap::new();
-    let mut ordered: Vec<&SessionSpec> = w.cast.sessions.iter().filter(|s| s.review.is_some()).collect();
+    let mut ordered: Vec<&SessionSpec> = w
+        .cast
+        .sessions
+        .iter()
+        .filter(|s| s.review.is_some())
+        .collect();
     ordered.sort_by_key(|s| s.start.offset());
     for s in ordered {
         let r = s.review.as_ref().context("a review")?;
@@ -526,10 +540,17 @@ fn reviews(ctx: &Ctx, d1: &mut Db) -> Result<()> {
                 .find(|x| x.start.offset() > s.start.offset())
                 .and_then(|x| w.reviewed_sha(x).ok())
                 .unwrap_or_default();
-            format!("A newer commit came, {}: fctl reviews that one instead.", &next[..7.min(next.len())])
+            format!(
+                "A newer commit came, {}: fctl reviews that one instead.",
+                &next[..7.min(next.len())]
+            )
         });
-        let posted = (r.result == "passed" || r.result == "commented")
-            .then(|| format!("https://github.com/{repo}/pull/{number}#pullrequestreview-{}", 2_000_000 + number + u64::from(r.findings) * 7 + start.unsigned_abs() % 97));
+        let posted = (r.result == "passed" || r.result == "commented").then(|| {
+            format!(
+                "https://github.com/{repo}/pull/{number}#pullrequestreview-{}",
+                2_000_000 + number + u64::from(r.findings) * 7 + start.unsigned_abs() % 97
+            )
+        });
         d1.exec(
             "INSERT INTO reviews (session_id, project_id, repo, repo_key, number, head_sha, attempt, url, title, author, draft, fork, trusted, \
              previous_sha, pr_updated_at, installation_id, state, reason, findings, resolved, still_open, review_url, created_at, finished_at) \
@@ -567,16 +588,32 @@ fn reviews(ctx: &Ctx, d1: &mut Db) -> Result<()> {
 /// people's notes take the story's times; notes others replaced go stale.
 fn memory(ctx: &Ctx, clocks: &BTreeMap<String, Clock>, d1: &mut Db) -> Result<()> {
     let w = ctx.w;
-    let rows = d1.query("SELECT id, session_id, created_at, text, project_id FROM memories", &[])?;
+    let rows = d1.query(
+        "SELECT id, session_id, created_at, text, project_id FROM memories",
+        &[],
+    )?;
     let rows: Vec<(String, Option<String>, i64, String, String)> = rows
         .iter()
         .map(|r| {
             (
-                r.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
-                r.get("session_id").and_then(Value::as_str).map(str::to_owned),
-                r.get("created_at").and_then(Value::as_i64).unwrap_or_default(),
-                r.get("text").and_then(Value::as_str).unwrap_or_default().to_owned(),
-                r.get("project_id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                r.get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                r.get("session_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                r.get("created_at")
+                    .and_then(Value::as_i64)
+                    .unwrap_or_default(),
+                r.get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                r.get("project_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
             )
         })
         .collect();
@@ -592,10 +629,14 @@ fn memory(ctx: &Ctx, clocks: &BTreeMap<String, Clock>, d1: &mut Db) -> Result<()
                 .map_or(*at, |n| ctx.at(&n.at)),
         };
         created.insert(id.clone(), new);
-        d1.exec("UPDATE memories SET created_at = ? WHERE id = ?", vec![json!(new), json!(id)]);
+        d1.exec(
+            "UPDATE memories SET created_at = ? WHERE id = ?",
+            vec![json!(new), json!(id)],
+        );
     }
     for n in &w.cast.notes {
-        let Some((id, _, _, _, project)) = rows.iter().find(|r| r.1.is_none() && r.3 == n.text) else {
+        let Some((id, _, _, _, project)) = rows.iter().find(|r| r.1.is_none() && r.3 == n.text)
+        else {
             continue;
         };
         if let Some(by) = &n.replaced_by {
@@ -634,9 +675,15 @@ fn memory(ctx: &Ctx, clocks: &BTreeMap<String, Clock>, d1: &mut Db) -> Result<()
             );
         }
     }
-    let retros = d1.query("SELECT id, session_id, created_at, updated_at FROM retrospectives", &[])?;
+    let retros = d1.query(
+        "SELECT id, session_id, created_at, updated_at FROM retrospectives",
+        &[],
+    )?;
     for r in retros {
-        let (Some(id), Some(sid)) = (r.get("id").and_then(Value::as_str), r.get("session_id").and_then(Value::as_str)) else {
+        let (Some(id), Some(sid)) = (
+            r.get("id").and_then(Value::as_str),
+            r.get("session_id").and_then(Value::as_str),
+        ) else {
             continue;
         };
         let Some(c) = clocks.get(sid) else { continue };
@@ -646,9 +693,15 @@ fn memory(ctx: &Ctx, clocks: &BTreeMap<String, Clock>, d1: &mut Db) -> Result<()
             vec![json!(at("created_at")), json!(at("updated_at")), json!(id)],
         );
     }
-    let published = d1.query("SELECT id, session_id, created_at, expires_at FROM published_files", &[])?;
+    let published = d1.query(
+        "SELECT id, session_id, created_at, expires_at FROM published_files",
+        &[],
+    )?;
     for r in published {
-        let (Some(id), Some(sid)) = (r.get("id").and_then(Value::as_str), r.get("session_id").and_then(Value::as_str)) else {
+        let (Some(id), Some(sid)) = (
+            r.get("id").and_then(Value::as_str),
+            r.get("session_id").and_then(Value::as_str),
+        ) else {
             continue;
         };
         let Some(c) = clocks.get(sid) else { continue };
@@ -713,7 +766,12 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         - 86_400_000;
     d1.exec(
         "UPDATE users SET created_at = ?, updated_at = ?, last_login_at = ? WHERE email = ?",
-        vec![json!(earliest), json!(earliest), json!(earliest), json!(w.cast.instance.owner.email)],
+        vec![
+            json!(earliest),
+            json!(earliest),
+            json!(earliest),
+            json!(w.cast.instance.owner.email),
+        ],
     );
     // The last session each person started is when they were last in.
     let mut last_in: BTreeMap<&str, i64> = BTreeMap::new();
@@ -725,12 +783,18 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
     for p in &w.cast.people {
         let joined = ctx.at(&p.joined);
         let uid = &w.users[&p.id];
-        let seen = last_in.get(p.id.as_str()).copied().unwrap_or(ctx.anchor - 26 * 3_600_000);
+        let seen = last_in
+            .get(p.id.as_str())
+            .copied()
+            .unwrap_or(ctx.anchor - 26 * 3_600_000);
         d1.exec(
             "UPDATE users SET created_at = ?, updated_at = ?, last_login_at = ? WHERE id = ?",
             vec![json!(joined), json!(joined), json!(seen), json!(uid)],
         );
-        d1.exec("UPDATE user_emails SET created_at = ? WHERE user_id = ?", vec![json!(joined), json!(uid)]);
+        d1.exec(
+            "UPDATE user_emails SET created_at = ? WHERE user_id = ?",
+            vec![json!(joined), json!(uid)],
+        );
         d1.exec(
             "UPDATE tokens SET created_at = ?, last_used_at = ? WHERE user_id = ?",
             vec![json!(joined + 3_600_000), json!(seen), json!(uid)],
@@ -741,7 +805,10 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
                 "UPDATE claude_credentials SET subscription_type = ?, created_at = ?, updated_at = ?, last_used_at = ? WHERE id = ?",
                 vec![json!(c.plan), json!(joined + 7_200_000 + i as i64 * 86_400_000), json!(joined), json!(seen), json!(cred)],
             );
-            d1.exec("DELETE FROM claude_usage WHERE credential_id = ?", vec![json!(cred)]);
+            d1.exec(
+                "DELETE FROM claude_usage WHERE credential_id = ?",
+                vec![json!(cred)],
+            );
             if let Some(u) = c.usage {
                 let five = 5 * 3_600_000;
                 let five_resets = match u.limited {
@@ -749,9 +816,19 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
                     None => ctx.anchor - ctx.anchor.rem_euclid(five) + five,
                 };
                 let week = 7 * 86_400_000;
-                let week_resets = ctx.anchor - (ctx.anchor - 3 * 86_400_000).rem_euclid(week) + week;
+                let week_resets =
+                    ctx.anchor - (ctx.anchor - 3 * 86_400_000).rem_euclid(week) + week;
                 for (window, used, resets, status) in [
-                    ("five_hour", u.five_hour, five_resets, if u.limited.is_some() { "rejected" } else { "allowed" }),
+                    (
+                        "five_hour",
+                        u.five_hour,
+                        five_resets,
+                        if u.limited.is_some() {
+                            "rejected"
+                        } else {
+                            "allowed"
+                        },
+                    ),
                     ("seven_day", u.seven_day, week_resets, "allowed"),
                 ] {
                     d1.exec(
@@ -774,7 +851,13 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
                 .joined
                 .get(person)
                 .map(|j| ctx.at(j))
-                .unwrap_or_else(|| ctx.at(&w.cast.person(person).map(|p| p.joined.clone()).unwrap_or(ws.created.clone())))
+                .unwrap_or_else(|| {
+                    ctx.at(&w
+                        .cast
+                        .person(person)
+                        .map(|p| p.joined.clone())
+                        .unwrap_or(ws.created.clone()))
+                })
                 .max(created);
             d1.exec(
                 "UPDATE workspace_members SET created_at = ? WHERE workspace_id = ? AND user_id = ?",
@@ -790,7 +873,11 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         }
         d1.exec(
             "UPDATE workspace_github SET created_at = ?, updated_at = ? WHERE workspace_id = ?",
-            vec![json!(created + 3_600_000), json!(created + 3_600_000), json!(wid)],
+            vec![
+                json!(created + 3_600_000),
+                json!(created + 3_600_000),
+                json!(wid),
+            ],
         );
         if let Some(l) = &ws.linear {
             let at = ctx.at(&l.at);
@@ -851,7 +938,10 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
 fn runners(ctx: &Ctx, state: &std::path::Path, d1: &mut Db) -> Result<()> {
     let w = ctx.w;
     let template = d1
-        .query("SELECT info FROM runners WHERE info IS NOT NULL LIMIT 1", &[])?
+        .query(
+            "SELECT info FROM runners WHERE info IS NOT NULL LIMIT 1",
+            &[],
+        )?
         .first()
         .and_then(|r| r.get("info"))
         .and_then(Value::as_str)
@@ -878,19 +968,31 @@ fn runners(ctx: &Ctx, state: &std::path::Path, d1: &mut Db) -> Result<()> {
         let seen = r.seen.as_ref().map_or(ctx.anchor, |s| ctx.at(s));
         d1.exec(
             "UPDATE runners SET info = ?, created_at = ?, last_seen_at = ? WHERE id = ?",
-            vec![json!(hello.to_string()), json!(ctx.at(&r.created)), json!(seen), json!(id)],
+            vec![
+                json!(hello.to_string()),
+                json!(ctx.at(&r.created)),
+                json!(seen),
+                json!(id),
+            ],
         );
         d1.exec(
             "UPDATE runner_workspaces SET created_at = ? WHERE runner_id = ?",
             vec![json!(ctx.at(&r.created)), json!(id)],
         );
         if r.seen.is_some() {
-            fleet.exec("UPDATE runners SET last_seen = ? WHERE id = ?", vec![json!(seen), json!(id)]);
+            fleet.exec(
+                "UPDATE runners SET last_seen = ? WHERE id = ?",
+                vec![json!(seen), json!(id)],
+            );
         }
         if let Some(d) = &r.drained {
             fleet.exec(
                 "UPDATE runners SET draining_since = ?, drained_by = ? WHERE id = ?",
-                vec![json!(ctx.at(&d.at)), json!(ctx.user(&d.by).to_string()), json!(id)],
+                vec![
+                    json!(ctx.at(&d.at)),
+                    json!(ctx.user(&d.by).to_string()),
+                    json!(id),
+                ],
             );
         }
     }
@@ -917,7 +1019,8 @@ fn machine(r: &cast::RunnerSpec, info: &str) -> Result<Value> {
     hello["capacity"] = json!(r.capacity);
     hello["sessions"] = json!([]);
     hello["auto_update"] = json!(true);
-    let most = json!({ "cpus": (r.cpus / 2).max(2), "memory_mb": (r.memory_gb * 1024 / 2).max(4096) });
+    let most =
+        json!({ "cpus": (r.cpus / 2).max(2), "memory_mb": (r.memory_gb * 1024 / 2).max(4096) });
     hello["sandbox"] = json!({ "default": { "cpus": 4, "memory_mb": 8192 }, "max": most });
     serde_json::from_value::<fctl_proto::runner::HostHello>(hello.clone())
         .with_context(|| format!("runner {}'s machine doesn't read as a host's hello", r.name))?;
@@ -1032,8 +1135,12 @@ fn fillers(ctx: &Ctx, d1: &mut Db) -> Result<()> {
             let at = from + span * i as i64 / count + jitter.min(span / count / 2);
             let by = people[(i * 7 + i / 3) % people.len()];
             let took = (12 + (i * 37) % 70) as i64 * 60_000;
-            let runner = runners.get(i % runners.len().max(1)).map(|r| w.runners[*r].clone());
-            let pr = first_pr.saturating_sub((count as u64 - i as u64) * 2 + 1).max(1);
+            let runner = runners
+                .get(i % runners.len().max(1))
+                .map(|r| w.runners[*r].clone());
+            let pr = first_pr
+                .saturating_sub((count as u64 - i as u64) * 2 + 1)
+                .max(1);
             let has_pr = p.repo.is_some() && i % 9 != 4;
             let branch = format!("fctl/{n}-{}", super::world::slug(title));
             let stats = json!({
@@ -1096,13 +1203,21 @@ fn audit(ctx: &Ctx, clocks: &BTreeMap<String, Clock>, d1: &mut Db) -> Result<()>
         when.insert(w.projects[&p.slug].as_str(), ctx.at(&p.created));
     }
     for r in &w.cast.runners {
-        when.insert(w.runners[&r.name].as_str(), r.drained.as_ref().map_or(ctx.at(&r.created), |d| ctx.at(&d.at)));
+        when.insert(
+            w.runners[&r.name].as_str(),
+            r.drained
+                .as_ref()
+                .map_or(ctx.at(&r.created), |d| ctx.at(&d.at)),
+        );
     }
     for p in &w.cast.people {
         when.insert(w.users[&p.id].as_str(), ctx.at(&p.joined));
     }
     for r in rows {
-        let (Some(id), Some(ts)) = (r.get("id").and_then(Value::as_str), r.get("ts").and_then(Value::as_i64)) else {
+        let (Some(id), Some(ts)) = (
+            r.get("id").and_then(Value::as_str),
+            r.get("ts").and_then(Value::as_i64),
+        ) else {
             continue;
         };
         let target = r.get("target").and_then(Value::as_str).unwrap_or_default();
@@ -1111,7 +1226,10 @@ fn audit(ctx: &Ctx, clocks: &BTreeMap<String, Clock>, d1: &mut Db) -> Result<()>
             .map(|c| c.map(ts))
             .or_else(|| when.get(target).copied())
             .unwrap_or(ctx.anchor - 30 * 86_400_000 + (ts - w.started).max(0) * 1000);
-        d1.exec("UPDATE audit_log SET ts = ? WHERE id = ?", vec![json!(new), json!(id)]);
+        d1.exec(
+            "UPDATE audit_log SET ts = ? WHERE id = ?",
+            vec![json!(new), json!(id)],
+        );
     }
     Ok(())
 }

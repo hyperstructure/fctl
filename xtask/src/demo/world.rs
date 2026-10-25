@@ -76,7 +76,11 @@ impl Transcripts {
                 .and_then(toml::Value::as_array)
                 .map(|ts| {
                     ts.iter()
-                        .map(|t| t.get("match").and_then(toml::Value::as_str).map(str::to_owned))
+                        .map(|t| {
+                            t.get("match")
+                                .and_then(toml::Value::as_str)
+                                .map(str::to_owned)
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -131,7 +135,13 @@ pub fn made_up_sha(of: &str) -> String {
 }
 
 impl<'a> World<'a> {
-    pub fn new(cast: &'a Cast, root: &Path, state: &Path, github: &'a Github, transcripts: Transcripts) -> Self {
+    pub fn new(
+        cast: &'a Cast,
+        root: &Path,
+        state: &Path,
+        github: &'a Github,
+        transcripts: Transcripts,
+    ) -> Self {
         Self {
             cast,
             root: root.to_owned(),
@@ -181,14 +191,23 @@ impl<'a> World<'a> {
             "POST",
             "/setup",
             None,
-            Some(json!({ "token": dev::SETUP_TOKEN, "email": o.email, "given_name": o.given, "family_name": o.family, "password": self.cast.instance.password })),
+            Some(
+                json!({ "token": dev::SETUP_TOKEN, "email": o.email, "given_name": o.given, "family_name": o.family, "password": self.cast.instance.password }),
+            ),
         )?;
         dev::ok("setting the instance up", &res)?;
         let cookie = res.2.context("no session cookie from the setup")?;
         self.ops = token_for(&cookie, "cargo xtask demo")?;
         for p in &self.cast.people {
-            let invite = self.api("ops", "POST", "/admin/invites", Some(json!({ "email": p.email })))?;
-            let link = invite["url"].as_str().context("no link in the invitation")?;
+            let invite = self.api(
+                "ops",
+                "POST",
+                "/admin/invites",
+                Some(json!({ "email": p.email })),
+            )?;
+            let link = invite["url"]
+                .as_str()
+                .context("no link in the invitation")?;
             let secret = link
                 .split("#token=")
                 .nth(1)
@@ -197,7 +216,9 @@ impl<'a> World<'a> {
                 "POST",
                 "/auth/signup",
                 None,
-                Some(json!({ "email": p.email, "given_name": p.given, "family_name": p.family, "password": self.cast.instance.password, "invite": secret })),
+                Some(
+                    json!({ "email": p.email, "given_name": p.given, "family_name": p.family, "password": self.cast.instance.password, "invite": secret }),
+                ),
             )?;
             dev::ok(&format!("signing {} up", p.id), &res)?;
             let cookie = res.2.context("no session cookie from the signup")?;
@@ -254,7 +275,10 @@ impl<'a> World<'a> {
                 "/workspaces",
                 Some(json!({ "name": w.name, "slug": w.slug, "color": w.color })),
             )?;
-            let id = made["id"].as_str().context("no id for a workspace")?.to_owned();
+            let id = made["id"]
+                .as_str()
+                .context("no id for a workspace")?
+                .to_owned();
             if let Some(file) = &w.avatar {
                 let bytes = std::fs::read(demo.join("avatars").join(file))
                     .with_context(|| format!("reading avatar {file}"))?;
@@ -269,7 +293,12 @@ impl<'a> World<'a> {
             if let Some(role) = &w.base_role {
                 change["base_role"] = json!(role);
             }
-            self.api(&w.owner, "PATCH", &format!("/workspaces/{id}"), Some(change))?;
+            self.api(
+                &w.owner,
+                "PATCH",
+                &format!("/workspaces/{id}"),
+                Some(change),
+            )?;
             for person in w.admins.iter().chain(&w.members) {
                 let p = self.cast.person(person)?;
                 self.api(
@@ -287,7 +316,12 @@ impl<'a> World<'a> {
                     })
                     .and_then(|i| i["id"].as_str())
                     .with_context(|| format!("{person} has no invitation to {}", w.slug))?;
-                self.api(person, "POST", &format!("/invitations/{invitation}/accept"), None)?;
+                self.api(
+                    person,
+                    "POST",
+                    &format!("/invitations/{invitation}/accept"),
+                    None,
+                )?;
                 if w.admins.contains(person) {
                     self.api(
                         &w.owner,
@@ -328,7 +362,12 @@ impl<'a> World<'a> {
                 .filter(|w| w.people().contains(&p.id.as_str()))
                 .filter_map(|w| self.workspaces.get(&w.slug))
                 .collect();
-            self.api(&p.id, "PUT", "/me/workspace-order", Some(json!({ "workspaces": order })))?;
+            self.api(
+                &p.id,
+                "PUT",
+                "/me/workspace-order",
+                Some(json!({ "workspaces": order })),
+            )?;
         }
         Ok(())
     }
@@ -351,8 +390,14 @@ impl<'a> World<'a> {
                 "/runners",
                 Some(json!({ "name": r.name, "workspace": first, "personal": r.personal.contains(first) })),
             )?;
-            let id = made["runner"]["id"].as_str().context("no runner id")?.to_owned();
-            let token = made["token"].as_str().context("no runner token")?.to_owned();
+            let id = made["runner"]["id"]
+                .as_str()
+                .context("no runner id")?
+                .to_owned();
+            let token = made["token"]
+                .as_str()
+                .context("no runner token")?
+                .to_owned();
             for w in r.workspaces.iter().skip(1) {
                 self.api(
                     &r.owner,
@@ -470,7 +515,10 @@ impl<'a> World<'a> {
                 "/projects",
                 Some(json!({ "workspace": p.workspace, "name": p.name, "slug": p.slug, "description": p.description, "settings": settings })),
             )?;
-            let id = made["id"].as_str().context("no id for a project")?.to_owned();
+            let id = made["id"]
+                .as_str()
+                .context("no id for a project")?
+                .to_owned();
             for (people, role) in [(&p.owners, "owner"), (&p.maintainers, "maintainer")] {
                 for person in people {
                     self.api(
@@ -596,11 +644,17 @@ impl<'a> World<'a> {
             if let Some(t) = &p.tickets {
                 let w = self.cast.workspace(&p.workspace)?;
                 let tickets = if t == "github" {
-                    let repo = p.repo.as_deref().context("GitHub issues need a repository")?;
+                    let repo = p
+                        .repo
+                        .as_deref()
+                        .context("GitHub issues need a repository")?;
                     let (o, n) = repo.split_once('/').context("a repo is owner/name")?;
                     json!({ "tracker": "github", "repo": { "owner": o, "name": n } })
                 } else {
-                    let l = w.linear.as_ref().context("Linear tickets need a Linear connection")?;
+                    let l = w
+                        .linear
+                        .as_ref()
+                        .context("Linear tickets need a Linear connection")?;
                     let team = l
                         .teams
                         .iter()
@@ -665,8 +719,12 @@ impl<'a> World<'a> {
                 &format!("/projects/{pid}/schedules"),
                 Some(body),
             )?;
-            let id = made["id"].as_str().context("no id for a schedule")?.to_owned();
-            self.schedules.insert((s.project.clone(), s.name.clone()), id);
+            let id = made["id"]
+                .as_str()
+                .context("no id for a schedule")?
+                .to_owned();
+            self.schedules
+                .insert((s.project.clone(), s.name.clone()), id);
         }
         Ok(())
     }
@@ -739,7 +797,9 @@ impl<'a> World<'a> {
                 format!("{}…", t.chars().take(79).collect::<String>())
             });
         }
-        s.title.clone().with_context(|| format!("{} has no title", s.id))
+        s.title
+            .clone()
+            .with_context(|| format!("{} has no title", s.id))
     }
 
     /// The title of pull request `of` (`owner/name#number`).
@@ -775,10 +835,13 @@ impl<'a> World<'a> {
             .with_context(|| format!("{} reviews {}, which hasn't started", s.id, pr_session.id))?;
         let commits = self.github.commits(repo, &branch)?;
         let n = r.commit.map_or(commits.len(), |c| c as usize);
-        commits
-            .get(n.saturating_sub(1))
-            .cloned()
-            .with_context(|| format!("{}'s branch has {} commits, not {n}", pr_session.id, commits.len()))
+        commits.get(n.saturating_sub(1)).cloned().with_context(|| {
+            format!(
+                "{}'s branch has {} commits, not {n}",
+                pr_session.id,
+                commits.len()
+            )
+        })
     }
 
     /// Whether what `s` needs before it starts has happened: the commit a
@@ -817,7 +880,14 @@ impl<'a> World<'a> {
                         children.check()?;
                         self.reap()?;
                         if Instant::now() > deadline {
-                            bail!("{} waited too long for what it needs: {:#}", s.id, self.reviewed_sha(s).err().map(|e| e.to_string()).unwrap_or_default());
+                            bail!(
+                                "{} waited too long for what it needs: {:#}",
+                                s.id,
+                                self.reviewed_sha(s)
+                                    .err()
+                                    .map(|e| e.to_string())
+                                    .unwrap_or_default()
+                            );
                         }
                         std::thread::sleep(Duration::from_millis(500));
                     }
@@ -830,9 +900,18 @@ impl<'a> World<'a> {
                     self.until(&made.id, &s.by, children, Duration::from_secs(180), |v| {
                         v["status"] == "idle"
                     })
-                    .with_context(|| format!("{} didn't finish its turn before {}'s message", s.id, m.from))?;
+                    .with_context(|| {
+                        format!(
+                            "{} didn't finish its turn before {}'s message",
+                            s.id, m.from
+                        )
+                    })?;
                     let text = self.message_text(s, m)?;
-                    let who = if m.from == "fctl" { s.by.as_str() } else { m.from.as_str() };
+                    let who = if m.from == "fctl" {
+                        s.by.as_str()
+                    } else {
+                        m.from.as_str()
+                    };
                     self.api(
                         who,
                         "POST",
@@ -859,7 +938,8 @@ impl<'a> World<'a> {
                     let turns = 1 + s.messages.len() as u64;
                     self.until(&made.id, &s.by, children, Duration::from_secs(240), |v| {
                         v["status"] == "stopped"
-                            || (v["status"] == "idle" && v["stats"]["turns"].as_u64() >= Some(turns))
+                            || (v["status"] == "idle"
+                                && v["stats"]["turns"].as_u64() >= Some(turns))
                     })
                     .with_context(|| format!("{} didn't finish its last turn", s.id))?;
                     if self.stopped.insert(s.id.clone()) {
@@ -879,7 +959,12 @@ impl<'a> World<'a> {
                 }
             }
         }
-        for s in self.cast.sessions.iter().filter(|s| s.state == State::Stopped) {
+        for s in self
+            .cast
+            .sessions
+            .iter()
+            .filter(|s| s.state == State::Stopped)
+        {
             let made = self.sessions[&s.id].clone();
             self.until(&made.id, &s.by, children, Duration::from_secs(120), |v| {
                 v["status"] == "stopped"
@@ -900,7 +985,12 @@ impl<'a> World<'a> {
             .filter_map(|s| {
                 let made = self.sessions.get(&s.id)?;
                 (made.messages.len() == s.messages.len()).then(|| {
-                    (s.id.clone(), made.id.clone(), s.by.clone(), 1 + s.messages.len() as u64)
+                    (
+                        s.id.clone(),
+                        made.id.clone(),
+                        s.by.clone(),
+                        1 + s.messages.len() as u64,
+                    )
                 })
             })
             .collect();
@@ -929,7 +1019,11 @@ impl<'a> World<'a> {
         let mut text = format!(
             "fctl's review agent reviewed commit {} of your pull request {repo}#{number}, \u{201c}{title}\u{201d}, and found {} (https://github.com/{repo}/pull/{number}#pullrequestreview-{}):\n\n",
             &sha[..7.min(sha.len())],
-            if n == 1 { "1 issue".to_owned() } else { format!("{n} issues") },
+            if n == 1 {
+                "1 issue".to_owned()
+            } else {
+                format!("{n} issues")
+            },
             2_000_000 + number,
         );
         for (i, f) in m.findings.iter().enumerate() {
@@ -984,7 +1078,11 @@ impl<'a> World<'a> {
                 ),
             )?;
         } else if counter + 1 > number {
-            bail!("{} would be #{}: start the cast's sessions in order", s.id, counter + 1);
+            bail!(
+                "{} would be #{}: start the cast's sessions in order",
+                s.id,
+                counter + 1
+            );
         }
         // Steer a session that is still at work in the shots onto its runner.
         let steer: Vec<(String, String)> = match (&s.runner, s.state) {
@@ -1001,7 +1099,12 @@ impl<'a> World<'a> {
             _ => Vec::new(),
         };
         for (id, owner) in &steer {
-            self.api(owner, "PATCH", &format!("/runners/{id}"), Some(json!({ "draining": true })))?;
+            self.api(
+                owner,
+                "PATCH",
+                &format!("/runners/{id}"),
+                Some(json!({ "draining": true })),
+            )?;
         }
         let id = if let Some(name) = &s.schedule {
             let sid = self.schedules[&(p.slug.clone(), name.clone())].clone();
@@ -1015,7 +1118,8 @@ impl<'a> World<'a> {
             let deadline = Instant::now() + Duration::from_secs(60);
             loop {
                 children.check()?;
-                let runs = self.api(&sched.owner, "GET", &format!("/schedules/{sid}/runs"), None)?;
+                let runs =
+                    self.api(&sched.owner, "GET", &format!("/schedules/{sid}/runs"), None)?;
                 if let Some(id) = runs["runs"]
                     .as_array()
                     .and_then(|r| r.first())
@@ -1036,8 +1140,16 @@ impl<'a> World<'a> {
             if let Some(e) = s.effort.as_ref().or(p.effort.as_ref()) {
                 body["effort"] = json!(e);
             }
-            let made = self.api(&s.by, "POST", &format!("/projects/{pid}/sessions"), Some(body))?;
-            made["id"].as_str().context("no id for a session")?.to_owned()
+            let made = self.api(
+                &s.by,
+                "POST",
+                &format!("/projects/{pid}/sessions"),
+                Some(body),
+            )?;
+            made["id"]
+                .as_str()
+                .context("no id for a session")?
+                .to_owned()
         };
         let session = self.api(&s.by, "GET", &format!("/sessions/{id}"), None)?;
         if session["number"].as_u64() != Some(u64::from(number)) {
@@ -1055,7 +1167,12 @@ impl<'a> World<'a> {
             })
             .with_context(|| format!("{} didn't start on {target}", s.id))?;
             for (rid, owner) in &steer {
-                self.api(owner, "PATCH", &format!("/runners/{rid}"), Some(json!({ "draining": false })))?;
+                self.api(
+                    owner,
+                    "PATCH",
+                    &format!("/runners/{rid}"),
+                    Some(json!({ "draining": false })),
+                )?;
             }
         }
         if let Some(name) = &s.schedule {
@@ -1100,7 +1217,11 @@ impl<'a> World<'a> {
                 bail!("session {id} failed: {}", s["status_reason"]);
             }
             if Instant::now() > deadline {
-                bail!("session {id} is {} after {}s", s["status"], timeout.as_secs());
+                bail!(
+                    "session {id} is {} after {}s",
+                    s["status"],
+                    timeout.as_secs()
+                );
             }
             std::thread::sleep(Duration::from_millis(400));
         }
@@ -1207,7 +1328,10 @@ mod tests {
             slug("Let subscribers skip a week from the reminder email"),
             "let-subscribers-skip-a-week-from-the"
         );
-        assert_eq!(slug("Read the new soil sensor over I²C"), "read-the-new-soil-sensor-over-i-c");
+        assert_eq!(
+            slug("Read the new soil sensor over I²C"),
+            "read-the-new-soil-sensor-over-i-c"
+        );
         assert_eq!(ascii("Tomás"), "Tomas");
         assert_eq!(made_up_sha("romanescohq/shop#1289").len(), 40);
     }

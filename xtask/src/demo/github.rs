@@ -67,7 +67,13 @@ impl Github {
     /// Creates `owner/name` with the files in `files` (when it exists) in
     /// its first commit on `main`, which `author` made at `at` (seconds
     /// since the epoch).
-    pub fn create(&self, repo: &str, files: Option<&Path>, author: (&str, &str), at: i64) -> Result<()> {
+    pub fn create(
+        &self,
+        repo: &str,
+        files: Option<&Path>,
+        author: (&str, &str),
+        at: i64,
+    ) -> Result<()> {
         let bare = self.dir.join(format!("{repo}.git"));
         if bare.exists() {
             return Ok(());
@@ -105,7 +111,17 @@ impl Github {
             Ok(())
         };
         std::fs::create_dir_all(bare.parent().unwrap_or(&self.dir))?;
-        git(&["init", "-q", "--bare", "-b", "main", &bare.display().to_string()], &self.dir)?;
+        git(
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                &bare.display().to_string(),
+            ],
+            &self.dir,
+        )?;
         git(&["init", "-q", "-b", "main"], &work)?;
         git(&["add", "-A"], &work)?;
         git(&["commit", "-q", "-m", "Initial commit"], &work)?;

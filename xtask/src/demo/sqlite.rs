@@ -126,7 +126,8 @@ fn run(path: &Path, ops: &[Value]) -> Result<Vec<Value>> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    serde_json::from_slice(&out.stdout).with_context(|| format!("reading what node said of {}", path.display()))
+    serde_json::from_slice(&out.stdout)
+        .with_context(|| format!("reading what node said of {}", path.display()))
 }
 
 /// The SQLite files of a Durable Object class under `wrangler dev
@@ -168,5 +169,8 @@ pub fn d1(state: &Path) -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    bail!("no D1 database with the control plane's tables in {}", dir.display())
+    bail!(
+        "no D1 database with the control plane's tables in {}",
+        dir.display()
+    )
 }

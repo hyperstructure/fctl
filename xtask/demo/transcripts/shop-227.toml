@@ -13,19 +13,18 @@ description = "Name the session"
 bash = "npm outdated"
 description = "List outdated dependencies"
 output = """Package               Current   Wanted   Latest  Location
+@playwright/test       1.58.1   1.58.2   1.58.2  node_modules/@playwright/test
 @sentry/nextjs        9.41.0    9.47.1   10.6.0  node_modules/@sentry/nextjs
-@stripe/stripe-js      7.8.0     7.9.0    7.9.0  node_modules/@stripe/stripe-js
 @tanstack/react-query 5.84.1   5.87.4   5.87.4  node_modules/@tanstack/react-query
 eslint                 9.33.0   9.35.0   10.1.0  node_modules/eslint
 next                  16.0.7   16.0.10  16.0.10  node_modules/next
-playwright            1.58.1   1.58.2   1.58.2  node_modules/playwright
 stripe                19.1.0   19.3.0   19.3.0  node_modules/stripe
 typescript             5.9.2    5.9.3    5.9.3  node_modules/typescript
 vitest                 4.0.4    4.0.6    4.0.6  node_modules/vitest
 zod                   4.1.11   4.1.12   4.1.12  node_modules/zod"""
 
 [[turn.step]]
-bash = "npm update && npm test && npm run e2e"
+bash = "npm update --save && npm test && npm run e2e"
 description = "Update within the ranges and run every test"
 seconds = 20
 output = """added 3 packages, changed 41 packages, and audited 1187 packages in 12s
@@ -37,7 +36,7 @@ Running 38 tests using 4 workers
   38 passed (2.1m)"""
 
 [[turn.step]]
-silently = "printf '{\\n  \"name\": \"shop\",\\n  \"version\": \"3.18.1\"\\n}\\n' > package.json"
+silently = """sed -i -e 's|"@playwright/test": "^1.58.1"|"@playwright/test": "^1.58.2"|' -e 's|"@sentry/nextjs": "^9.41.0"|"@sentry/nextjs": "^9.47.1"|' -e 's|"@tanstack/react-query": "^5.84.1"|"@tanstack/react-query": "^5.87.4"|' -e 's|"eslint": "^9.33.0"|"eslint": "^9.35.0"|' -e 's|"next": "^16.0.7"|"next": "^16.0.10"|' -e 's|"stripe": "^19.1.0"|"stripe": "^19.3.0"|' -e 's|"typescript": "^5.9.2"|"typescript": "^5.9.3"|' -e 's|"vitest": "^4.0.4"|"vitest": "^4.0.6"|' -e 's|"zod": "^4.1.11"|"zod": "^4.1.12"|' package.json"""
 
 [[turn.step]]
 commit = "Update 9 npm dependencies"

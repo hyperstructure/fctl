@@ -1,0 +1,1494 @@
+# The demo cast (.claude/skills/demo): who and what exists, and the sessions
+# they ran, as `cargo xtask demo` loads them. Times are the story's, from the
+# moment of the shots, a Tuesday at 09:10 (`today 08:52`, `yesterday 22:40`,
+# `last thursday 14:00`, `-5mo`); the seed moves them to whenever it runs.
+#
+# Each session plays its transcript, `transcripts/<project>-<number>.toml`,
+# and its project's repository starts as the files in `repos/<owner>/<name>`.
+
+[instance]
+name = "fctl"
+password = "romanesco-demo"
+github_app = "fctl-sh"
+owner = { email = "ops@fctl.example", given = "fctl", family = "Ops" }
+
+# ─────────────────────────────── people ───────────────────────────────
+
+[[person]]
+id = "noor"
+given = "Noor"
+family = "Haddad"
+email = "noor@romanesco.farm"
+github = "punschrulle"
+avatar = true
+joined = "-5mo"
+claude = [
+  { label = "Romanesco Max", plan = "max", usage = { five_hour = 0.34, seven_day = 0.58 } },
+  { label = "Personal", plan = "pro", workspaces = ["punschrulle", "crimp-collective"] },
+]
+
+[[person]]
+id = "jonas"
+given = "Jonas"
+family = "Weber"
+email = "jonas@romanesco.farm"
+github = "jweber87"
+avatar = true
+joined = "-5mo"
+claude = [{ label = "Claude Pro", plan = "pro" }]
+
+[[person]]
+id = "asha"
+given = "Asha"
+family = "Patel"
+email = "asha@romanesco.farm"
+github = "asha-pg"
+avatar = true
+joined = "-5mo"
+claude = [{ label = "Claude Max", plan = "max", usage = { five_hour = 0.41, seven_day = 0.71 } }]
+
+[[person]]
+id = "tomas"
+given = "Tomás"
+family = "Ferreira"
+email = "tomas@romanesco.farm"
+github = "tferreira-pt"
+avatar = true
+joined = "-5mo"
+claude = [{ label = "Claude Max", plan = "max", usage = { five_hour = 0.27, seven_day = 0.49 } }]
+
+[[person]]
+id = "aiko"
+given = "Aiko"
+family = "Tanaka"
+email = "aiko@romanesco.farm"
+github = "aikotnk"
+avatar = true
+joined = "-4mo"
+claude = [{ label = "Claude Max", plan = "max", usage = { five_hour = 0.18, seven_day = 0.37 } }]
+
+[[person]]
+id = "kofi"
+given = "Kofi"
+family = "Mensah"
+email = "kofi@romanesco.farm"
+github = "kofiops"
+avatar = true
+joined = "-5mo"
+claude = [{ label = "Claude Max", plan = "max", usage = { five_hour = 0.12, seven_day = 0.44 } }]
+
+[[person]]
+id = "lucia"
+given = "Lucía"
+family = "Navarro"
+email = "lucia@romanesco.farm"
+github = "luciadraws"
+avatar = true
+joined = "-4mo"
+claude = [{ label = "Claude Pro", plan = "pro", usage = { five_hour = 1.0, seven_day = 0.62, limited = "4h5m" } }]
+
+[[person]]
+id = "sanna"
+given = "Sanna"
+family = "Virtanen"
+email = "sanna@romanesco.farm"
+github = "sannavirtanen"
+joined = "-3w"
+claude = [{ label = "Claude Pro", plan = "pro" }]
+
+[[person]]
+id = "lena"
+given = "Lena"
+family = "Fischer"
+email = "lena@milkfloat.dev"
+github = "lfischer-rs"
+avatar = true
+joined = "-3mo"
+claude = [{ label = "Claude Pro", plan = "pro" }]
+
+[[person]]
+id = "elsa"
+given = "Elsa"
+family = "Berglund"
+email = "elsa@crimpcollective.org"
+github = "elsaberglund"
+avatar = true
+joined = "-3mo"
+claude = [{ label = "Claude Pro", plan = "pro" }]
+
+# ───────────────────────────── workspaces ─────────────────────────────
+
+[[workspace]]
+slug = "romanesco"
+name = "Romanesco"
+color = "blue"
+avatar = "romanescohq.png"
+owner = "noor"
+admins = ["kofi"]
+members = ["jonas", "asha", "tomas", "aiko", "lucia", "sanna"]
+base_role = "editor"
+created = "-5mo"
+github = ["romanescohq"]
+linear = { name = "Romanesco", url_key = "romanesco", by = "noor", at = "-4mo", team = [
+  { key = "SHOP", name = "Shop", color = "#4cb782" },
+  { key = "PLAT", name = "Platform", color = "#4ea7fc" },
+  { key = "DEL", name = "Delivery", color = "#f2994a" },
+] }
+invitation = [{ email = "ines@romanesco.farm", by = "noor", at = "-2d" }]
+
+[[workspace]]
+slug = "milkfloat"
+name = "milkfloat"
+color = "yellow"
+avatar = "milkfloat.png"
+owner = "noor"
+admins = ["asha"]
+members = ["lena"]
+joined = { asha = "-3mo", lena = "-3mo" }
+base_role = "maintainer"
+created = "-3mo"
+github = ["milkfloat"]
+
+[[workspace]]
+slug = "punschrulle"
+name = "punschrulle"
+color = "ink"
+avatar = "punschrulle.png"
+owner = "noor"
+skip_invites = true
+created = "-5mo"
+github = ["punschrulle"]
+
+[[workspace]]
+slug = "crimp-collective"
+name = "Crimp Collective"
+color = "pink"
+owner = "elsa"
+members = ["noor"]
+joined = { noor = "-3mo" }
+base_role = "editor"
+created = "-3mo"
+github = ["crimpcollective"]
+
+# ─────────────────────────────── runners ───────────────────────────────
+# Romanesco names its machines after vegetables.
+
+[[runner]]
+name = "kohlrabi"
+owner = "kofi"
+os = "macos"
+arch = "aarch64"
+cpus = 16
+memory_gb = 128
+driver = "apple"
+capacity = 6
+workspaces = ["romanesco"]
+created = "-5mo"
+
+[[runner]]
+name = "parsnip"
+owner = "kofi"
+os = "macos"
+arch = "aarch64"
+cpus = 14
+memory_gb = 64
+driver = "apple"
+capacity = 4
+workspaces = ["romanesco"]
+created = "-4mo"
+
+[[runner]]
+name = "celeriac"
+owner = "kofi"
+os = "linux"
+arch = "x86_64"
+cpus = 32
+memory_gb = 128
+driver = "docker"
+capacity = 10
+workspaces = ["romanesco"]
+created = "-3mo"
+
+[[runner]]
+name = "turnip"
+owner = "kofi"
+os = "linux"
+arch = "x86_64"
+cpus = 16
+memory_gb = 64
+driver = "docker"
+capacity = 6
+workspaces = ["romanesco"]
+created = "-3mo"
+drained = { at = "today 08:40", by = "kofi" }
+
+[[runner]]
+name = "Noors-MacBook-Pro"
+owner = "noor"
+os = "macos"
+arch = "aarch64"
+cpus = 16
+memory_gb = 48
+driver = "apple"
+capacity = 2
+workspaces = ["romanesco", "milkfloat", "punschrulle"]
+personal = ["romanesco"]
+created = "-5mo"
+
+[[runner]]
+name = "fika"
+owner = "noor"
+os = "linux"
+arch = "x86_64"
+cpus = 16
+memory_gb = 32
+driver = "docker"
+capacity = 3
+workspaces = ["punschrulle", "milkfloat"]
+created = "-6w"
+
+[[runner]]
+name = "routeboard"
+owner = "elsa"
+os = "macos"
+arch = "aarch64"
+cpus = 8
+memory_gb = 16
+driver = "lima"
+capacity = 2
+workspaces = ["crimp-collective"]
+created = "-3mo"
+seen = "sunday 18:02"
+
+# ──────────────────────────── repositories ────────────────────────────
+
+[[repo]]
+name = "romanescohq/shop"
+created = "-3y"
+by = "noor"
+
+[[repo]]
+name = "romanescohq/platform"
+created = "-3y"
+by = "noor"
+
+[[repo]]
+name = "romanescohq/driver-app"
+created = "-2y"
+by = "aiko"
+
+[[repo]]
+name = "romanescohq/infra"
+created = "-3y"
+by = "kofi"
+
+[[repo]]
+name = "romanescohq/design-system"
+created = "-1y"
+by = "lucia"
+
+[[repo]]
+name = "milkfloat/milkfloat"
+created = "-2y"
+by = "noor"
+
+[[repo]]
+name = "milkfloat/milkfloat.dev"
+created = "-2y"
+by = "lena"
+
+[[repo]]
+name = "milkfloat/bench"
+created = "-1y"
+by = "noor"
+
+[[repo]]
+name = "punschrulle/sourdough"
+created = "-1y"
+by = "noor"
+
+[[repo]]
+name = "punschrulle/plantwatch"
+created = "-2y"
+by = "noor"
+
+[[repo]]
+name = "punschrulle/noorhaddad.se"
+created = "-4y"
+by = "noor"
+
+[[repo]]
+name = "crimpcollective/bookings"
+created = "-6y"
+by = "elsa"
+
+# ─────────────────────────────── projects ──────────────────────────────
+
+[[project]]
+slug = "shop"
+workspace = "romanesco"
+name = "Shop"
+description = "🥕 The web shop: build a box, pick a delivery day, pay and manage the subscription. Next.js, TypeScript and Stripe."
+by = "noor"
+created = "-5mo"
+repo = "romanescohq/shop"
+grant = [
+  { repo = "romanescohq/design-system", access = "write", by = "noor", at = "-4mo" },
+  { repo = "romanescohq/platform", access = "read", by = "noor", at = "-5mo" },
+]
+owners = ["tomas"]
+maintainers = ["lucia"]
+model = "opus"
+effort = "high"
+idle_timeout = 240
+reviews = { operator = "tomas", model = "sonnet", effort = "high", bots = ["dependabot[bot]"], since = "-4mo" }
+tickets = "SHOP"
+secrets = ["STRIPE_SECRET_KEY", "RESEND_API_KEY", "SENTRY_AUTH_TOKEN"]
+counted = 164
+retros = [131, 14, 3]
+history = [
+  "Set up Playwright for the checkout",
+  "Move the box builder to the app router",
+  "Show the delivery fee before the checkout",
+  "Fix the postcode field on Android keyboards",
+  "Let people pause their subscription for a month",
+  "Translate the account pages into English",
+  "Fix prices rounding in the cart summary",
+  "Add a recipe card to each box page",
+  "Send a receipt email after each delivery",
+  "Show allergens on every item",
+  "Speed up the box builder's first load",
+  "Fix the checkout's back button on iOS",
+  "Add gift cards",
+  "Move the emails to MJML",
+  "Let people swap one item in their box",
+  "Fix the newsletter signup's double opt-in",
+  "Show sold-out items at the end of the list",
+  "Add an FAQ page from the support macros",
+  "Fix the cookie banner covering the pay button",
+  "Lazy-load the farm photos",
+  "Add structured data to the box pages",
+  "Let people choose a delivery window",
+  "Update 7 npm dependencies",
+  "Fix the account page's dark mode",
+  "Add a referral code to the checkout",
+  "Show the next delivery on the account page",
+  "Handle Stripe's failed renewals",
+  "Update 5 npm dependencies",
+  "Add e2e tests for skipping a delivery",
+  "Show the price per portion",
+  "Stop the box builder at what fits in the box",
+  "Fix the order confirmation's time zone",
+  "Update 11 npm dependencies",
+  "Show a seasonal banner from the CMS",
+  "Add a size guide for the boxes",
+  "Fix the box builder's keyboard navigation",
+  "Let people add eggs and bread to any box",
+  "Update 6 npm dependencies",
+  "Speed up the e2e tests on CI",
+  "Fix VAT on receipts for gift cards",
+  "Add a waiting list for full postcodes",
+  "Show the farmer's note in the box",
+  "Update 8 npm dependencies",
+  "Fix the delivery-day picker's focus ring",
+  "Add Open Graph images to the box pages",
+  "Explain the subscription's billing dates",
+  "Update 4 npm dependencies",
+  "Fix the cart badge after a swap",
+  "Let people rate last week's box",
+  "Update 9 npm dependencies",
+  "Show the box's weight on the checkout",
+  "Fix the farm map on small screens",
+  "Update 6 npm dependencies",
+  "Add the Christmas boxes' landing page",
+]
+
+[[project]]
+slug = "platform"
+workspace = "romanesco"
+name = "Platform"
+description = "Orders, subscriptions, farms and delivery routes behind every app. Rust (axum, sqlx) on Postgres, with milkfloat planning the vans' routes."
+by = "noor"
+created = "-5mo"
+repo = "romanescohq/platform"
+grant = [{ repo = "romanescohq/infra", access = "read", by = "kofi", at = "-3mo" }]
+owners = ["asha"]
+model = "opus"
+effort = "high"
+idle_timeout = 240
+reviews = { operator = "asha", model = "sonnet", effort = "high", bots = ["dependabot[bot]"], since = "-4mo" }
+tickets = "PLAT"
+secrets = ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "MAPBOX_TOKEN", "SENTRY_AUTH_TOKEN"]
+counted = 287
+retros = [229, 31, 9]
+history = [
+  "Move the farms API to axum 0.8",
+  "Add an index for orders by delivery date",
+  "Import the farms' weekly harvest lists",
+  "Expire unpaid orders after 30 minutes",
+  "Add a health check for the job queue",
+  "Fix the subscription renewal at month's end",
+  "Log Stripe event ids with every charge",
+  "Let farms mark items as sold out",
+  "Split the orders table's hot columns",
+  "Speed up the weekly packing list",
+  "Add Copenhagen's postcodes to the zones",
+  "Fix the route export for the drivers' app",
+  "Retry failed emails from the job queue",
+  "Add per-farm pickup windows",
+  "Fix the delivery count on public holidays",
+  "Record who skipped a delivery and how",
+  "Add a dry run to the invoice job",
+  "Move secrets to the parameter store",
+  "Fix double-counted credits on refunds",
+  "Bump sqlx to 0.9",
+  "Add a Danish VAT rate",
+  "Plan routes per depot",
+  "Fix the farm payout report's rounding",
+  "Rate-limit the postcode lookup",
+  "Add an API for the drivers' photos",
+  "Cache the box catalogue per week",
+  "Fix a deadlock in the packing job",
+  "Add tracing to the checkout path",
+  "Store delivery windows per stop",
+  "Speed up the subscriptions page query",
+  "Fix the time zone of the cutoff",
+  "Add the depot to every order",
+  "Clean up expired skip tokens",
+  "Add a migration check to CI",
+  "Fix the invoice PDF's page breaks",
+  "Let support refund one item",
+  "Count failed deliveries per driver",
+  "Bump tokio and axum",
+  "Fix flaky tests in the route planner",
+  "Add a webhook for farm stock changes",
+  "Find why the packing list missed an order",
+  "Add a cap on deliveries per van",
+  "Fix the credit balance after a pause",
+  "Export the week's orders for the farms",
+  "Add a read replica for reports",
+  "Fix flaky tests in the billing module",
+  "Make the cutoff configurable per depot",
+  "Add the Copenhagen depot",
+  "Fix a panic on empty harvest lists",
+  "Measure the slot query per postcode",
+]
+
+[[project]]
+slug = "driver-app"
+workspace = "romanesco"
+name = "Driver app"
+description = "📱 The app drivers deliver with: the day's route, door codes, a photo at the door when nobody answers. Expo and React Native."
+by = "aiko"
+created = "-4mo"
+repo = "romanescohq/driver-app"
+owners = ["aiko"]
+model = "opus"
+effort = "high"
+tickets = "DEL"
+secrets = ["MAPBOX_DOWNLOADS_TOKEN", "SENTRY_AUTH_TOKEN"]
+counted = 77
+retros = [61, 7, 2]
+history = [
+  "Set up Expo Router",
+  "Show the day's route on a map",
+  "Mark a stop as delivered",
+  "Show door codes only at the door",
+  "Work offline in basements",
+  "Call the customer from a stop",
+  "Reorder stops by hand",
+  "Add a dark theme for night rounds",
+  "Show the van's load per stop",
+  "Fix the map's zoom on Android",
+  "Sync deliveries when back online",
+  "Add a checklist before leaving the depot",
+  "Show the next three stops",
+  "Fix the route list's scroll position",
+  "Log in with a one-time code",
+  "Translate the app into Danish",
+  "Show a stop's delivery notes",
+  "Report a damaged box",
+  "Fix the sign-out on token expiry",
+  "Speed up the route's first load",
+  "Show a summary at the end of the round",
+  "Add haptics to stop actions",
+  "Fix the camera permission prompt",
+  "Upgrade Expo to the latest SDK",
+  "Show which boxes are cold",
+]
+
+[[project]]
+slug = "infra"
+workspace = "romanesco"
+name = "Infra"
+description = "Terraform for AWS and Cloudflare, and the workflows that deploy everything. Agents plan; people apply."
+by = "kofi"
+created = "-3mo"
+repo = "romanescohq/infra"
+owners = ["kofi"]
+model = "sonnet"
+effort = "high"
+tickets = "github"
+secrets = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLOUDFLARE_API_TOKEN"]
+counted = 38
+retros = [29, 4, 2]
+history = [
+  "Import the production VPC into Terraform",
+  "Split staging and production state",
+  "Add a deploy workflow for the platform",
+  "Move DNS records to Terraform",
+  "Rotate the database passwords",
+  "Add budgets and cost alerts",
+  "Pin the providers' versions",
+  "Cache the platform's Docker layers on CI",
+  "Add a staging database snapshot schedule",
+  "Turn on Postgres's slow query log",
+  "Add WAF rules for the shop",
+  "Move the shop to the new CDN rules",
+  "Check for drift weekly",
+  "Add an alarm on 5xx rates",
+  "Tag every resource with its team",
+  "Clean up unused security groups",
+  "Add a bastion-free database tunnel",
+  "Upgrade the EKS node groups",
+  "Add the Copenhagen depot's printers to the VPN",
+  "Back up the Terraform state bucket",
+  "Plan the Copenhagen region's resources",
+  "Check production and staging for Terraform drift",
+]
+
+[[project]]
+slug = "milkfloat"
+workspace = "milkfloat"
+name = "milkfloat"
+description = "🚐 A vehicle-routing solver in Rust with Python bindings: time windows, capacities, driver breaks, and re-planning while the vans are out. MIT licensed."
+by = "noor"
+created = "-3mo"
+repo = "milkfloat/milkfloat"
+grant = [{ repo = "milkfloat/milkfloat.dev", access = "write", by = "noor", at = "-3mo" }]
+model = "opus"
+effort = "high"
+reviews = { operator = "noor", model = "sonnet", effort = "high", bots = ["renovate[bot]"], since = "-10w" }
+tickets = "github"
+counted = 61
+retros = [50, 5, 1]
+history = [
+  "Add a benchmark harness for the Solomon instances",
+  "Speed up 2-opt with neighbour lists",
+  "Expose the solver's progress to Python",
+  "Add capacity constraints with several dimensions",
+  "Fix a panic when every stop is infeasible",
+  "Write the getting-started guide",
+  "Re-plan from the vans' current positions",
+  "Add a GeoJSON export of routes",
+  "Publish abi3 wheels with maturin",
+  "Add soft time windows with a penalty",
+  "Fix the solver's seed not being used",
+  "Add a CLI for solving from a CSV",
+  "Parallelise the local search",
+  "Add property tests for route invariants",
+  "Document the cost function",
+  "Add pickup and delivery pairs",
+  "Fix drift in the travel-time matrix",
+  "Add type stubs for the Python package",
+  "Speed up the insertion heuristic",
+  "Add the Gehring–Homberger instances",
+  "Explain re-planning in the docs",
+  "Add a changelog and release notes",
+  "Fix the build on Windows",
+  "Add maximum route durations",
+]
+
+[[project]]
+slug = "milkfloat-bench"
+workspace = "milkfloat"
+name = "Benchmarks"
+description = "Nightly runs of the Solomon and Gehring–Homberger instances against main, published at milkfloat.dev/bench."
+by = "noor"
+created = "-6w"
+repo = "milkfloat/bench"
+grant = [{ repo = "milkfloat/milkfloat", access = "read", by = "noor", at = "-6w" }]
+model = "sonnet"
+effort = "medium"
+counted = 41
+retros = [36, 4, 0]
+history = [
+  "Set up the nightly benchmark",
+  "Benchmark main on 112 instances",
+  "Add the Gehring–Homberger instances",
+  "Benchmark main on 356 instances",
+  "Publish results to milkfloat.dev/bench",
+  "Benchmark main on 356 instances",
+  "Benchmark main: 3 instances got worse",
+  "Benchmark main on 356 instances",
+  "Benchmark main: 1 instance got better",
+  "Benchmark main on 356 instances",
+]
+
+[[project]]
+slug = "sourdough"
+workspace = "punschrulle"
+name = "sourdough"
+description = "🍞 Feeding reminders for my starter, and a bake-day plan that works back from when the bread should be ready. SvelteKit, installed on my phone."
+by = "noor"
+created = "-4mo"
+repo = "punschrulle/sourdough"
+model = "sonnet"
+counted = 12
+retros = [10, 1, 0]
+history = [
+  "Set up SvelteKit with a web app manifest",
+  "Log each feeding with a photo",
+  "Plan a bake back from when it should be ready",
+  "Show the starter's rise over time",
+  "Add a dark theme",
+  "Keep the data on the phone",
+  "Add a recipe for rye",
+  "Fix the timer when the screen locks",
+  "Export the log as CSV",
+  "Show hydration for each recipe",
+  "Fix the home screen icon",
+]
+
+[[project]]
+slug = "plantwatch"
+workspace = "punschrulle"
+name = "plantwatch"
+description = "🌱 Soil sensors on ESP32s in every pot, Rust firmware on embassy, and a dashboard that says which plant is thirsty."
+by = "noor"
+created = "-4mo"
+repo = "punschrulle/plantwatch"
+model = "opus"
+effort = "high"
+counted = 23
+retros = [18, 3, 1]
+history = [
+  "Read the analog soil sensor on embassy",
+  "Send readings over MQTT",
+  "Sleep between readings to save battery",
+  "Add a dashboard of every pot",
+  "Calibrate each pot's dry and wet values",
+  "Flash the boards over the air",
+  "Show battery levels",
+  "Fix Wi-Fi reconnects after a router restart",
+  "Say which plant is thirsty",
+  "Add a weekly watering summary",
+  "Store readings in SQLite on the server",
+  "Fix the dashboard's time zone",
+  "Add a temperature reading",
+  "Group pots by room",
+  "Fix readings spiking after a deep sleep",
+  "Add a notification when a pot is dry",
+  "Show a week of readings per pot",
+  "Cut the firmware's size",
+  "Fix the OTA update on low battery",
+  "Add the balcony's pots",
+  "Document the wiring",
+  "Test the firmware's parser on the host",
+]
+
+[[project]]
+slug = "website"
+workspace = "punschrulle"
+name = "Website"
+description = "noorhaddad.se: notes on building Romanesco, recipes and the odd talk. Astro on Cloudflare Pages."
+by = "noor"
+created = "-4mo"
+repo = "punschrulle/noorhaddad.se"
+model = "sonnet"
+counted = 9
+retros = [8, 0, 0]
+history = [
+  "Move the site to Astro",
+  "Add an RSS feed",
+  "Add the recipes section",
+  "Fix the dark mode's code blocks",
+  "Add Open Graph images for posts",
+  "Write up the Copenhagen announcement",
+  "Fix broken links from the old site",
+  "Add a talks page",
+]
+
+[[project]]
+slug = "bookings"
+workspace = "crimp-collective"
+name = "Bookings"
+description = "Session bookings, memberships and the route board for the club's wall. Django, kept alive by volunteers."
+by = "elsa"
+created = "-3mo"
+repo = "crimpcollective/bookings"
+model = "sonnet"
+counted = 17
+retros = [13, 2, 0]
+history = [
+  "Add tests for the booking form",
+  "Fix the waiting list's emails",
+  "Show the route board on the screen by the wall",
+  "Let members cancel up to two hours before",
+  "Add yearly memberships",
+  "Fix the calendar on phones",
+  "Upgrade to Python 3.13",
+  "Add a volunteer rota",
+  "Export members for the annual meeting",
+  "Fix duplicate bookings on double clicks",
+  "Add grades to the route board",
+  "Send a reminder the day before a session",
+  "Fix the admin's member search",
+  "Add a guest pass",
+  "Move the app to a new host",
+]
+
+# ─────────────── pull requests no session of the cast opened ───────────────
+
+[[pull]]
+id = "romanescohq/shop#1289"
+title = "Bump actions/checkout from 7.0.1 to 7.0.2"
+author = "dependabot[bot]"
+state = "open"
+at = "today 04:11"
+
+[[pull]]
+id = "milkfloat/milkfloat#309"
+title = "Fix a panic when a depot has no vehicles"
+author = "o-adeyemi"
+state = "merged"
+at = "last wednesday 18:44"
+
+[[pull]]
+id = "milkfloat/milkfloat#311"
+title = "Add driver breaks"
+author = "anoukvdberg"
+state = "open"
+at = "yesterday 17:52"
+
+[[pull]]
+id = "milkfloat/milkfloat#312"
+title = "Update Rust crate pyo3 to v0.28.3"
+author = "renovate[bot]"
+state = "open"
+at = "today 03:02"
+
+# ─────────────────────────────── schedules ─────────────────────────────
+
+[[schedule]]
+project = "shop"
+name = "Weekly dependency updates"
+cron = "0 2 * * 2"
+zone = "Europe/Stockholm"
+owner = "tomas"
+prompt = "Update the shop's npm dependencies that have patch or minor releases, run the unit and e2e tests, and open one pull request with all of them. Leave majors out and list them in its description."
+model = "sonnet"
+created = "-3mo"
+
+[[schedule]]
+project = "shop"
+name = "Design check"
+cron = "0 9 * * 2"
+zone = "Europe/Stockholm"
+owner = "lucia"
+prompt = "Compare the shop's pages with the design system's components and file one ticket in Shop listing where they drifted, with a screenshot of each."
+model = "sonnet"
+created = "-6w"
+skipped = { at = "today 09:00", reason = "Lucía Navarro's Claude plan was at its 5-hour limit, which resets on {resets}. Its runs until then are skipped." }
+
+[[schedule]]
+project = "platform"
+name = "Weekly flaky test hunt"
+cron = "0 3 * * 6"
+zone = "Europe/Stockholm"
+owner = "asha"
+prompt = "Look at the last week of CI runs on main, find the tests that failed and then passed on a retry, and fix the flakiest. Say in the pull request how often it failed."
+created = "-2mo"
+
+[[schedule]]
+project = "infra"
+name = "Weekly drift check"
+cron = "0 9 * * 2"
+zone = "Europe/Stockholm"
+owner = "kofi"
+prompt = "Run `terraform plan -lock=false` for production and staging. If anything drifted, open an issue in romanescohq/infra with what changed and the commit that last touched it; otherwise end without one."
+created = "-10w"
+
+[[schedule]]
+project = "milkfloat-bench"
+name = "Nightly benchmarks"
+cron = "0 1 * * *"
+zone = "Europe/Stockholm"
+owner = "noor"
+prompt = "Run the Solomon and Gehring–Homberger instances against main and open a pull request to milkfloat/bench with the results, naming every instance that got worse."
+created = "-6w"
+
+[[schedule]]
+project = "website"
+name = "Monthly link check"
+cron = "0 8 1 * *"
+zone = "Europe/Stockholm"
+owner = "noor"
+prompt = "Check every link on the site, and fix or remove the broken ones."
+paused = true
+created = "-4mo"
+
+# ──────────────────────── people's notes in memory ─────────────────────
+
+[[note]]
+project = "shop"
+by = "lucia"
+at = "last wednesday 11:20"
+text = "Copy is written in Swedish first, in `messages/sv.json`, then `en.json`; `npm run i18n:check` fails on a key missing from either. Ask Lucía before changing words customers read."
+replaced_by = "shop#231"
+
+[[note]]
+project = "platform"
+by = "asha"
+at = "-6w"
+text = "The shop's delivery-slot query takes 400 ms or more for postcodes with many farms: don't add joins to it."
+stale = "Cached per postcode since platform#831."
+stale_by = "platform#430"
+
+[[note]]
+project = "platform"
+by = "asha"
+at = "last wednesday 16:05"
+text = "Billing changes need Asha's review on GitHub as well as the review agent's: ask for it in the pull request."
+
+[[note]]
+project = "infra"
+by = "kofi"
+at = "-5w"
+text = "Sessions plan, people apply: the project's AWS keys are read-only, so run `terraform plan -lock=false`, and leave applying to the apply workflow after a merge."
+
+[[note]]
+project = "milkfloat"
+by = "noor"
+at = "-3w"
+text = "A change that beats milkfloat's best result on a benchmark instance updates `data/best.csv` in the same pull request, or the bench check fails."
+
+# ───────────────────────── tickets in Linear ───────────────────────────
+
+[[ticket]]
+key = "SHOP-398"
+title = "Gift boxes for companies"
+description = "Three companies asked whether they can send boxes to their staff for Christmas. Explore what it would take: ordering for many addresses at once, invoicing the company, a card with a message. Don't build it yet: I'd like a plan and a rough size first."
+by = "jonas"
+labels = ["explore"]
+
+[[ticket]]
+key = "DEL-97"
+title = "Next stop on the lock screen"
+description = "Drivers unlock the phone at every stop to see where they go next. Show the next stop's address and delivery window on the lock screen, as a Live Activity, and move on as stops are done."
+by = "aiko"
+
+[[ticket]]
+key = "PLAT-238"
+title = "Two customers charged twice"
+description = "Customers 18342 and 20517 were charged twice for last Wednesday's box; the Stripe events are in the thread. Find out why and make sure it can't happen again. Refunds are mine to make: don't touch them. (Jonas)"
+by = "asha"
+
+[[ticket]]
+key = "SHOP-405"
+title = "Show where each vegetable is grown"
+description = "Customers keep asking where things come from. In the box builder and on the box page, link each item to the farm that grows it, with the farm's photo and a line about it. The platform's farms API has both."
+by = "jonas"
+
+[[ticket]]
+key = "SHOP-419"
+title = "Danish translations for the shop"
+description = "For the Copenhagen launch: the shop in Danish, prices in DKK, delivery days from the Copenhagen depot (`cph-1`). Lucía's copy is in the comments."
+by = "tomas"
+
+# ─────────────────────────────── sessions ──────────────────────────────
+# In each project, numbers go up with time; reviews take numbers too.
+
+# ── last Tuesday ──
+
+[[session]]
+id = "platform#430"
+by = "asha"
+start = "last tuesday 10:15"
+took = "44m"
+runner = "celeriac"
+title = "Cache delivery slots per postcode"
+prompt = "The shop's delivery-slot query takes 400 ms or more at the 95th percentile, and longer for postcodes with many farms. Cache the slots per postcode for a few minutes, drop the cache when a route changes, and measure before and after."
+pr = { number = 831, state = "merged", at = "last tuesday 15:02", passed = 14 }
+
+[[session]]
+id = "platform#431"
+by = "asha"
+start = "last tuesday 10:39"
+took = "41s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#831", commit = 1, result = "superseded" }
+
+[[session]]
+id = "platform#432"
+by = "asha"
+start = "last tuesday 10:58"
+took = "1m9s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#831", commit = 2, result = "passed" }
+
+# ── last Wednesday ──
+
+[[session]]
+id = "milkfloat#89"
+by = "lena"
+start = "last wednesday 09:30"
+took = "28m"
+runner = "Noors-MacBook-Pro"
+title = "Explain time windows in the docs"
+prompt = "Write a docs page on time windows: what they mean for the solver, soft and hard windows, and an example worked through from start to finish. A bakery's morning round would make a good one."
+pr = { number = 308, state = "merged", at = "last wednesday 16:20", passed = 18 }
+
+[[session]]
+id = "milkfloat#90"
+by = "noor"
+start = "last wednesday 10:00"
+took = "33s"
+runner = "Noors-MacBook-Pro"
+review = { of = "milkfloat/milkfloat#308", result = "passed" }
+
+[[session]]
+id = "shop#212"
+by = "jonas"
+start = "last wednesday 10:30"
+took = "19m"
+runner = "kohlrabi"
+title = "Explore gift boxes for companies"
+ticket = "SHOP-398"
+
+[[session]]
+id = "driver-app#74"
+by = "aiko"
+start = "last wednesday 13:40"
+took = "52m"
+runner = "kohlrabi"
+title = "Take a photo at the door when nobody answers"
+prompt = "When nobody answers the door, drivers should be able to photograph the box on the doorstep, and the photo should go in the customer's delivery email. The photo must not leave the phone until the stop is marked delivered."
+pr = { number = 415, state = "merged", at = "last thursday 10:00", passed = 9 }
+
+[[session]]
+id = "bookings#16"
+by = "noor"
+start = "last wednesday 19:20"
+took = "46m"
+runner = "routeboard"
+title = "Upgrade to Django 5.2"
+prompt = "Upgrade the app from Django 4.2 to 5.2, both LTS, and fix whatever deprecations come up. Run the whole test suite before you open the pull request."
+pr = { number = 51, state = "merged", at = "last thursday 08:30", passed = 6 }
+
+[[session]]
+id = "platform#433"
+by = "noor"
+start = "last wednesday 20:30"
+took = "47m"
+runner = "kohlrabi"
+title = "Speed up the distance matrix for Copenhagen"
+prompt = "Building the distance matrix for Copenhagen's 1,800 addresses takes 70 seconds, which makes every planning run slow. Build it in parallel and cache it for the day: the addresses don't change after the 18:00 cutoff."
+pr = { number = 833, state = "merged", at = "last thursday 09:15", passed = 14 }
+
+[[session]]
+id = "platform#434"
+by = "asha"
+start = "last wednesday 21:12"
+took = "1m30s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#833", result = "passed" }
+
+# ── last Thursday ──
+
+[[session]]
+id = "shop#215"
+by = "lucia"
+start = "last thursday 10:05"
+took = "34m"
+runner = "kohlrabi"
+title = "Explain why a delivery day is full"
+prompt = "When a delivery day is full, the day picker only greys it out, and people write to support to ask why. Say why it's full (the van is packed, or the farm doesn't pick that day) and offer the nearest free day instead."
+pr = { number = 1281, state = "merged", at = "last thursday 15:20", passed = 23 }
+
+[[session]]
+id = "shop#216"
+by = "tomas"
+start = "last thursday 10:41"
+took = "1m14s"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1281", result = "passed" }
+
+[[session]]
+id = "milkfloat#91"
+by = "noor"
+start = "last thursday 11:20"
+took = "41s"
+runner = "Noors-MacBook-Pro"
+review = { of = "milkfloat/milkfloat#309", result = "passed" }
+
+[[session]]
+id = "infra#36"
+by = "kofi"
+start = "last thursday 14:00"
+took = "29m"
+runner = "celeriac"
+title = "Alert when the job queue backs up"
+prompt = "Add CloudWatch alarms on the platform's job queue: more than 500 jobs waiting for 10 minutes, or an oldest job older than 15 minutes. Page through the on-call SNS topic we already have, and write a runbook for it in docs/runbooks."
+pr = { number = 209, state = "merged", at = "last thursday 16:30", passed = 6 }
+
+[[session]]
+id = "milkfloat#92"
+by = "noor"
+start = "last thursday 20:10"
+took = "44m"
+runner = "Noors-MacBook-Pro"
+title = "Publish wheels for free-threaded Python 3.14"
+prompt = "Kenji asked in #305 for wheels for free-threaded Python 3.14. Build cp314t wheels for Linux, macOS and Windows with maturin, beside the abi3 ones, and run the Python tests against them in CI."
+pr = { number = 310, state = "merged", at = "last friday 09:00", passed = 18 }
+
+[[session]]
+id = "milkfloat#93"
+by = "noor"
+start = "last thursday 20:56"
+took = "1m2s"
+runner = "Noors-MacBook-Pro"
+review = { of = "milkfloat/milkfloat#310", result = "passed" }
+
+# ── last Friday ──
+
+[[session]]
+id = "driver-app#75"
+by = "aiko"
+start = "last friday 10:20"
+took = "1h4m"
+runner = "kohlrabi"
+title = "Show the next stop on the lock screen"
+ticket = "DEL-97"
+pr = { number = 417, state = "merged", at = "yesterday 09:40", passed = 9 }
+
+[[session]]
+id = "shop#217"
+by = "sanna"
+start = "last friday 14:05"
+took = "26m"
+runner = "turnip"
+title = "Add a test for the postcode lookup"
+prompt = "Add tests for the postcode lookup in src/lib/postcodes.ts. I'm new here, so keep them simple, but cover the postcodes that border two delivery zones: those are the ones support asks about."
+pr = { number = 1283, state = "merged", at = "yesterday 10:12", passed = 23 }
+
+[[session]]
+id = "shop#218"
+by = "tomas"
+start = "last friday 14:33"
+took = "37s"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1283", result = "passed" }
+
+# ── Saturday ──
+
+[[session]]
+id = "platform#435"
+by = "asha"
+start = "saturday 03:00"
+took = "39m"
+runner = "celeriac"
+title = "Fix the invoice test that fails at midnight UTC"
+schedule = "Weekly flaky test hunt"
+pr = { number = 836, state = "merged", at = "yesterday 09:30", passed = 14 }
+
+[[session]]
+id = "platform#436"
+by = "asha"
+start = "saturday 03:41"
+took = "44s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#836", result = "passed" }
+
+[[session]]
+id = "bookings#17"
+by = "elsa"
+start = "saturday 09:30"
+took = "41m"
+runner = "routeboard"
+title = "Close bookings while the wall is reset"
+prompt = "When we reset the wall nobody can climb for a day. Let admins mark a reset on the calendar, so that the sessions it overlaps can't be booked, and email the members who had already booked one."
+pr = { number = 52, state = "merged", at = "saturday 14:05", passed = 6 }
+
+[[session]]
+id = "website#9"
+by = "noor"
+start = "saturday 10:40"
+took = "33m"
+runner = "fika"
+title = "Turn the night-shift talk into a post"
+prompt = "Turn my talk \"Agents on the night shift\" into a post. The slides and my speaker notes are in talks/2026-night-shift/. Redraw the two diagrams in SVG, and keep my voice: short sentences, no hype."
+pr = { number = 14, state = "open", passed = 3 }
+
+# ── Sunday ──
+
+[[session]]
+id = "plantwatch#23"
+by = "noor"
+start = "sunday 11:30"
+took = "38m"
+runner = "fika"
+title = "Read the new soil sensor over I²C"
+prompt = "The analog soil readings drift as the board warms up. I've wired the new capacitive sensor to I²C (address 0x36) on the living room's board. Read it over I²C instead of the analog pin, and keep each pot's calibration."
+pr = { number = 19, state = "merged", at = "sunday 13:10", passed = 5 }
+
+# ── yesterday, Monday ──
+
+[[session]]
+id = "platform#437"
+by = "asha"
+start = "yesterday 09:12"
+took = "1h50m"
+runner = "celeriac"
+title = "Find why two customers were charged twice"
+ticket = "PLAT-238"
+pr = { number = 840, state = "open", title = "Make charges idempotent per subscription and period", passed = 14 }
+  [[session.message]]
+  at = "yesterday 10:23"
+  from = "fctl"
+  review = "platform#438"
+  text = "`charge_once` calls Stripe before it records the idempotency key, so two workers that race both charge the card. Insert the key first (`ON CONFLICT DO NOTHING`), call Stripe only when the insert wins, and pass the key to Stripe as its `Idempotency-Key`, so that a retried call can't charge twice either."
+    [[session.message.finding]]
+    severity = "high"
+    title = "Two workers can still both charge the card"
+    path = "src/billing/charge.rs"
+    line = 31
+
+[[session]]
+id = "platform#438"
+by = "asha"
+start = "yesterday 10:20"
+took = "2m5s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#840", commit = 1, result = "commented", findings = 1 }
+
+[[session]]
+id = "shop#219"
+by = "jonas"
+start = "yesterday 11:02"
+took = "31m"
+runner = "parsnip"
+title = "Show which farm each vegetable comes from"
+ticket = "SHOP-405"
+pr = { number = 1285, state = "merged", at = "yesterday 15:30", passed = 23 }
+
+[[session]]
+id = "platform#439"
+by = "asha"
+start = "yesterday 11:05"
+took = "58s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#840", commit = 2, result = "passed", resolved = 1 }
+
+[[session]]
+id = "shop#220"
+by = "tomas"
+start = "yesterday 11:38"
+took = "52s"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1285", result = "passed" }
+
+[[session]]
+id = "platform#440"
+by = "asha"
+start = "yesterday 13:30"
+took = "37m"
+runner = "celeriac"
+title = "Split VAT on boxes with flowers"
+prompt = "Boxes can include a bouquet of flowers now, and flowers carry 25% VAT where the vegetables carry 12%. Invoices and receipts need both rates on lines of their own, the totals have to add up to the öre, and the accounting export needs them too."
+pr = { number = 841, state = "merged", at = "yesterday 16:40", passed = 14 }
+
+[[session]]
+id = "platform#441"
+by = "asha"
+start = "yesterday 14:08"
+took = "1m47s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#841", result = "passed" }
+
+[[session]]
+id = "infra#37"
+by = "kofi"
+start = "yesterday 15:40"
+took = "41m"
+runner = "celeriac"
+title = "Move staging to Postgres 18"
+prompt = "Staging has to move to Postgres 18 before production does. Prepare it both ways, an RDS blue-green deployment and a dump and restore into a new instance, so that we can compare the plans. Don't apply anything."
+pr = { number = 211, state = "draft", passed = 6 }
+
+[[session]]
+id = "shop#221"
+by = "tomas"
+start = "yesterday 16:20"
+took = "1h9m"
+runner = "kohlrabi"
+title = "Fix the delivery-day picker on Safari"
+prompt = "On Safari on iOS the delivery-day picker loses the selected day when the keyboard closes: tap a day, then the postcode field, then Done. Fix it and add an e2e test for it."
+pr = { number = 1286, state = "merged", at = "yesterday 18:02", passed = 23 }
+  [[session.message]]
+  at = "yesterday 16:59"
+  from = "fctl"
+  review = "shop#222"
+  text = """The test waits with `page.waitForTimeout(500)`. Wait for the picker's selected state instead, or it flakes on a slow runner.
+`inputMode="none"` needs a comment saying why, or the next person removes it."""
+    [[session.message.finding]]
+    severity = "low"
+    title = "The test waits for a fixed 500 ms"
+    path = "e2e/day-picker.spec.ts"
+    line = 18
+    [[session.message.finding]]
+    severity = "low"
+    title = "Say why the picker sets inputMode=\"none\""
+    path = "src/components/DayPicker.tsx"
+    line = 42
+
+[[session]]
+id = "shop#222"
+by = "tomas"
+start = "yesterday 16:57"
+took = "1m40s"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1286", commit = 1, result = "commented", findings = 2 }
+
+[[session]]
+id = "shop#223"
+by = "tomas"
+start = "yesterday 17:31"
+took = "1m5s"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1286", commit = 2, result = "passed", resolved = 2 }
+
+[[session]]
+id = "driver-app#76"
+by = "aiko"
+start = "yesterday 18:05"
+took = "14m"
+runner = "turnip"
+title = "Upgrade the map SDK"
+prompt = "Upgrade the map SDK to its next major version. Check its changelog for anything that breaks our offline tiles before you start."
+
+[[session]]
+id = "milkfloat#94"
+by = "noor"
+start = "yesterday 19:30"
+took = "2m38s"
+runner = "Noors-MacBook-Pro"
+review = { of = "milkfloat/milkfloat#311", result = "commented", findings = 3 }
+
+[[session]]
+id = "sourdough#12"
+by = "noor"
+start = "yesterday 21:14"
+took = "22m"
+runner = "fika"
+title = "Send a feeding reminder the evening before a bake"
+prompt = "Send me a push reminder at 21:00 the evening before a bake day, saying when to feed the starter. It has to work for the app on my phone's home screen."
+pr = { number = 31, state = "merged", at = "yesterday 21:50", passed = 4 }
+
+[[session]]
+id = "platform#442"
+by = "noor"
+start = "yesterday 21:58"
+took = "2h36m"
+runner = "kohlrabi"
+title = "Plan routes with milkfloat's time windows"
+prompt = "Route planning still uses the nearest-neighbour heuristic. Move it to milkfloat, with each stop's delivery window as a time window, behind ROUTES_PLANNER so that the delivery team can compare the two for a week. Driver breaks can wait for milkfloat#311."
+pr = { number = 843, state = "open", passed = 14 }
+  [[session.message]]
+  at = "yesterday 23:51"
+  from = "fctl"
+  review = "platform#443"
+  text = """Time windows go to milkfloat in UTC seconds; it wants seconds after midnight in the depot's time zone, so every route plans an hour off in winter and two in summer.
+`ROUTES_PLANNER` falls back to the old planner on any value but `milkfloat`, so a typo switches planners silently. Refuse unknown values at startup."""
+    [[session.message.finding]]
+    severity = "medium"
+    title = "Time windows go to milkfloat in UTC"
+    path = "src/routes/plan.rs"
+    line = 88
+    [[session.message.finding]]
+    severity = "low"
+    title = "A typo in ROUTES_PLANNER switches planners silently"
+    path = "src/routes/plan.rs"
+    line = 21
+
+[[session]]
+id = "shop#224"
+by = "noor"
+start = "yesterday 22:40"
+took = "51m"
+runner = "kohlrabi"
+title = "Let subscribers skip a week from the reminder email"
+prompt = "Add a \"Skip next week\" link to Thursday's reminder email. One click should skip the next delivery without signing in, and the page it opens should let people undo it."
+pr = { number = 1287, state = "merged", at = "today 08:05", passed = 23 }
+  [[session.message]]
+  at = "yesterday 23:04"
+  from = "fctl"
+  review = "shop#225"
+  text = "The skip token isn't tied to a delivery, so last week's email skips this week's. Sign the delivery's date into the token and refuse it once that day has passed."
+    [[session.message.finding]]
+    severity = "medium"
+    title = "The skip token isn't tied to a delivery"
+    path = "src/app/skip/[token]/route.ts"
+    line = 14
+
+[[session]]
+id = "shop#225"
+by = "tomas"
+start = "yesterday 23:02"
+took = "1m31s"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1287", commit = 1, result = "commented", findings = 1 }
+
+[[session]]
+id = "shop#226"
+by = "tomas"
+start = "yesterday 23:20"
+took = "1m12s"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1287", commit = 2, result = "passed", resolved = 1 }
+
+[[session]]
+id = "platform#443"
+by = "asha"
+start = "yesterday 23:48"
+took = "2m14s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#843", commit = 1, result = "commented", findings = 2 }
+
+# ── today, Tuesday ──
+
+[[session]]
+id = "platform#444"
+by = "asha"
+start = "today 00:37"
+took = "1m51s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#843", commit = 2, result = "passed", resolved = 2 }
+
+[[session]]
+id = "milkfloat-bench#41"
+by = "noor"
+start = "today 01:00"
+took = "1h12m"
+runner = "fika"
+title = "Benchmark main on 356 instances"
+schedule = "Nightly benchmarks"
+pr = { number = 88, state = "open", passed = 3 }
+
+[[session]]
+id = "shop#227"
+by = "tomas"
+start = "today 02:00"
+took = "38m"
+runner = "celeriac"
+title = "Update 9 npm dependencies"
+schedule = "Weekly dependency updates"
+pr = { number = 1288, state = "open", passed = 23 }
+
+[[session]]
+id = "shop#228"
+by = "tomas"
+start = "today 02:41"
+took = "48s"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1288", result = "passed" }
+
+[[session]]
+id = "milkfloat#95"
+by = "noor"
+start = "today 03:05"
+took = "22s"
+runner = "Noors-MacBook-Pro"
+review = { of = "milkfloat/milkfloat#312", result = "passed" }
+
+[[session]]
+id = "shop#229"
+by = "tomas"
+start = "today 04:12"
+took = "19s"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1289", result = "passed" }
+
+[[session]]
+id = "shop#230"
+by = "lucia"
+start = "today 08:15"
+state = "paused"
+runner = "kohlrabi"
+model = "sonnet"
+title = "Match the box builder to the new illustrations"
+prompt = "Match the box builder's cards to the new vegetable illustrations, as in the two mockups attached: the illustration bleeds off the card's top edge, and the selected card gets a lime outline."
+
+[[session]]
+id = "platform#445"
+by = "asha"
+start = "today 08:31"
+state = "waiting"
+runner = "kohlrabi"
+model = "sonnet"
+title = "Retry Stripe webhook processing that fails"
+prompt = "When processing a Stripe webhook fails, we drop it. Retry it with backoff, and park it in a dead-letter table after five tries."
+pr = { number = 845, state = "open", passed = 14 }
+
+[[session]]
+id = "driver-app#77"
+by = "aiko"
+start = "today 08:35"
+state = "working"
+runner = "turnip"
+title = "Show the delivery window on each stop"
+prompt = "Show each stop's delivery window in the route list, and turn it amber when the van is running late for it. The stop already has its ETA."
+
+[[session]]
+id = "shop#231"
+by = "tomas"
+start = "today 08:52"
+state = "working"
+runner = "kohlrabi"
+title = "Add Danish to the shop"
+ticket = "SHOP-419"
+pr = { number = 1291, state = "open", passed = 11, pending = 12 }
+watching = ["tomas", "lucia"]
+
+[[session]]
+id = "platform#446"
+by = "asha"
+start = "today 08:58"
+took = "1m22s"
+runner = "celeriac"
+review = { of = "romanescohq/platform#845", result = "passed" }
+
+[[session]]
+id = "milkfloat#96"
+by = "noor"
+start = "today 08:58"
+state = "working"
+runner = "Noors-MacBook-Pro"
+title = "Finish driver breaks from Anouk's pull request"
+prompt = "Anouk's #311 adds driver breaks, and the review found three problems in it. Take her branch with her commits, fix what the review found, add the tests it's missing, and open a new pull request that credits her."
+pr = { number = 313, state = "open", title = "Add driver breaks, building on #311", passed = 9, pending = 9 }
+
+[[session]]
+id = "infra#38"
+by = "kofi"
+start = "today 09:00"
+state = "working"
+runner = "celeriac"
+title = "Check production and staging for Terraform drift"
+schedule = "Weekly drift check"
+
+[[session]]
+id = "shop#232"
+by = "tomas"
+start = "today 09:08"
+state = "working"
+runner = "parsnip"
+review = { of = "romanescohq/shop#1291", result = "running" }
+
+[[session]]
+id = "milkfloat#97"
+by = "noor"
+start = "today 09:09"
+state = "working"
+runner = "Noors-MacBook-Pro"
+review = { of = "milkfloat/milkfloat#313", result = "running" }

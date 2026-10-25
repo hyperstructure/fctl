@@ -247,10 +247,14 @@ pub struct Project {
     /// How many sessions its header counts: older ones than the cast's
     /// are made up to come to it, titled from `history`.
     pub counted: Option<u32>,
-    /// What its older sessions were about, oldest first; they take these
-    /// titles in turn.
+    /// What its older sessions were about, oldest first: the newest of
+    /// them take these titles, and older ones again from the end.
     #[serde(default)]
     pub history: Vec<String>,
+    /// How many retrospectives its tab counts, completed, partial and
+    /// blocked: older sessions' make up what the cast's don't.
+    #[serde(default)]
+    pub retros: Vec<u32>,
 }
 
 /// Another repository a project's agents may use.
@@ -521,7 +525,8 @@ impl TryFrom<String> for Dur {
 
 /// Seconds in a length of time.
 fn dur_of(s: &str) -> std::result::Result<i64, String> {
-    let bad = || format!("{s:?} isn't a length of time: say 90s, 51m, 1m31s, 2h, 3d, 3w, 14mo or 3y");
+    let bad =
+        || format!("{s:?} isn't a length of time: say 90s, 51m, 1m31s, 2h, 3d, 3w, 14mo or 3y");
     let t = s.trim();
     let mut total = 0i64;
     let mut rest = t;
@@ -657,12 +662,16 @@ impl Cast {
                 bail!("two people are {:?}", p.id);
             }
             if p.avatar && p.github.is_none() {
-                bail!("{}'s avatar is their GitHub one, but they have no `github`", p.id);
+                bail!(
+                    "{}'s avatar is their GitHub one, but they have no `github`",
+                    p.id
+                );
             }
         }
         for w in &self.workspaces {
             for id in w.people() {
-                self.person(id).with_context(|| format!("workspace {}", w.slug))?;
+                self.person(id)
+                    .with_context(|| format!("workspace {}", w.slug))?;
             }
             for id in w.joined.keys() {
                 if !w.people().contains(&id.as_str()) {
@@ -677,7 +686,9 @@ impl Cast {
             self.person(&r.owner)
                 .with_context(|| format!("runner {}", r.name))?;
             for w in &r.workspaces {
-                let ws = self.workspace(w).with_context(|| format!("runner {}", r.name))?;
+                let ws = self
+                    .workspace(w)
+                    .with_context(|| format!("runner {}", r.name))?;
                 if !ws.people().contains(&r.owner.as_str()) {
                     bail!(
                         "runner {} runs {w}'s sessions, but its owner {} isn't in {w}",
@@ -711,14 +722,23 @@ impl Cast {
                 }
                 for g in &p.grants {
                     if g.repo.split('/').next() != Some(owner) {
-                        bail!("{} grants {}, another account's than {repo}'s", p.slug, g.repo);
+                        bail!(
+                            "{} grants {}, another account's than {repo}'s",
+                            p.slug,
+                            g.repo
+                        );
                     }
                 }
+            }
+            if !matches!(p.retros.len(), 0 | 3) {
+                bail!("{}'s retros are [completed, partial, blocked]", p.slug);
             }
             // Reviews run on an owner's subscription.
             if let Some(r) = &p.reviews
                 && !p.owners.contains(&r.operator)
-                && !std::iter::once(&w.owner).chain(&w.admins).any(|a| *a == r.operator)
+                && !std::iter::once(&w.owner)
+                    .chain(&w.admins)
+                    .any(|a| *a == r.operator)
             {
                 bail!(
                     "{}'s reviews run on {}'s subscription, who doesn't own it",
@@ -730,7 +750,9 @@ impl Cast {
         let mut seen = BTreeSet::new();
         for s in &self.sessions {
             let (project, _) = session_ref(&s.id)?;
-            let p = self.project(project).with_context(|| format!("session {}", s.id))?;
+            let p = self
+                .project(project)
+                .with_context(|| format!("session {}", s.id))?;
             if !seen.insert(s.id.as_str()) {
                 bail!("two sessions are {}", s.id);
             }
@@ -745,10 +767,18 @@ impl Cast {
                     .find(|x| &x.name == r)
                     .with_context(|| format!("session {}: no runner {r}", s.id))?;
                 if !runner.workspaces.contains(&p.workspace) {
-                    bail!("{} runs on {r}, which doesn't run {}'s sessions", s.id, p.workspace);
+                    bail!(
+                        "{} runs on {r}, which doesn't run {}'s sessions",
+                        s.id,
+                        p.workspace
+                    );
                 }
                 if runner.personal.contains(&p.workspace) && runner.owner != s.by {
-                    bail!("{} runs on {r}, which runs only {}'s sessions there", s.id, runner.owner);
+                    bail!(
+                        "{} runs on {r}, which runs only {}'s sessions there",
+                        s.id,
+                        runner.owner
+                    );
                 }
             }
             if s.title.is_none() && s.review.is_none() {
@@ -768,10 +798,12 @@ impl Cast {
             }
             if let Some(r) = &s.review {
                 pull_ref(&r.of)?;
-                if self.pull_session(&r.of).is_none()
-                    && !self.pulls.iter().any(|x| x.id == r.of)
-                {
-                    bail!("{} reviews {}, which neither a session nor a [[pull]] opened", s.id, r.of);
+                if self.pull_session(&r.of).is_none() && !self.pulls.iter().any(|x| x.id == r.of) {
+                    bail!(
+                        "{} reviews {}, which neither a session nor a [[pull]] opened",
+                        s.id,
+                        r.of
+                    );
                 }
             }
             for m in &s.messages {
@@ -825,7 +857,10 @@ mod tests {
         assert_eq!(offset_of("today 08:52"), Ok(-18 * 60));
         assert_eq!(offset_of("yesterday 22:40"), Ok(-(10 * 3600 + 30 * 60)));
         assert_eq!(offset_of("Monday 22:40"), offset_of("yesterday 22:40"));
-        assert_eq!(offset_of("saturday 03:00"), Ok(-(3 * 86_400 + 6 * 3600 + 10 * 60)));
+        assert_eq!(
+            offset_of("saturday 03:00"),
+            Ok(-(3 * 86_400 + 6 * 3600 + 10 * 60))
+        );
         assert_eq!(offset_of("last thursday 09:10"), Ok(-5 * 86_400));
         assert_eq!(offset_of("last tuesday 09:10"), Ok(-7 * 86_400));
         assert_eq!(offset_of("-3w"), Ok(-21 * 86_400));

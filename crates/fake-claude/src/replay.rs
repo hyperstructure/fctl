@@ -58,7 +58,8 @@ static LOG: OnceLock<PathBuf> = OnceLock::new();
 
 /// Notes where a replay got to in `replay.log`, for whoever waits for it:
 /// `<name>: holds` once it holds a call, `<name>: limited` once it hit the
-/// usage limit, `<name>: turn <n> played` once a turn ended.
+/// usage limit, `<name>: turn <n> played` once a turn ended (and
+/// [`Library::start`] notes `<name>: started`).
 fn note(what: &str) {
     if LOG.get().is_some() {
         warn(what);
@@ -242,16 +243,37 @@ impl Library {
     }
 
     /// The replay a session's first message starts, if any: the first whose
-    /// `match` it contains.
+    /// `match` it contains that no session has started yet, else the first
+    /// whose `match` it contains. `replay.log` says which have started
+    /// (`<name>: started`), so that two reviews of one pull request, whose
+    /// messages differ only in the commit, play a replay each.
     pub fn start(&self, text: &str) -> Option<Playing> {
         let lower = text.to_lowercase();
-        self.replays
+        let log = self.dir.join("replay.log");
+        let started = std::fs::read_to_string(&log).unwrap_or_default();
+        let taken = |name: &str| {
+            started
+                .lines()
+                .any(|l| l.strip_suffix(": started") == Some(name))
+        };
+        let matching: Vec<&Replay> = self
+            .replays
             .iter()
-            .find(|r| lower.contains(&r.matches.to_lowercase()))
-            .map(|r| Playing {
-                replay: r.clone(),
-                next: 0,
-            })
+            .filter(|r| lower.contains(&r.matches.to_lowercase()))
+            .collect();
+        let replay = matching
+            .iter()
+            .find(|r| !taken(&r.name))
+            .or(matching.first())?;
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .and_then(|mut f| writeln!(f, "{}: started", replay.name));
+        Some(Playing {
+            replay: (*replay).clone(),
+            next: 0,
+        })
     }
 }
 
@@ -1269,6 +1291,62 @@ say = "The daily summary it is."
                 .is_some()
         );
         assert!(playing.take("anything").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn replays_with_one_match_play_once_each() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        for (name, says) in [("review-1", "1 issue."), ("review-2", "No issues.")] {
+            std::fs::write(
+                dir.path().join(format!("{name}.toml")),
+                format!(
+                    "match = \"Review acme/web#7\"\n[[turn]]\n[[turn.step]]\nsay = \"{says}\"\n"
+                ),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let lib = Library::load(dir.path());
+        let name = |text: &str| lib.start(text).map(|p| p.replay.name);
+        assert_eq!(
+            name("Review acme/web#7 at commit 1a2b3c4."),
+            Some("review-1".into())
+        );
+        assert_eq!(
+            name("Review acme/web#7 at commit 5d6e7f8."),
+            Some("review-2".into())
+        );
+        // Once all have started, the first again.
+        assert_eq!(
+            name("Review acme/web#7 at commit 9a0b1c2."),
+            Some("review-1".into())
+        );
+        Ok(())
+    }
+
+    /// Every transcript `cargo xtask demo` plays parses.
+    #[test]
+    fn the_demo_transcripts_parse() -> Result<(), String> {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../xtask/demo/transcripts");
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no transcripts in {}", dir.display());
+        let mut wrong = Vec::new();
+        for path in files {
+            let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            match parse(&text) {
+                Ok(r) if r.turns.is_empty() => wrong.push(format!("{}: no turns", path.display())),
+                Ok(_) => {}
+                Err(e) => wrong.push(format!("{}: {e}", path.display())),
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         Ok(())
     }
 

@@ -27,6 +27,7 @@ use crate::util;
 use anyhow::{Context, Result, bail};
 use cast::Cast;
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -135,29 +136,179 @@ pub fn wrangler_query(root: &Path, state: &Path, sql: &str) -> Result<Vec<Value>
 /// Every session has its transcript, which answers its first message and
 /// each later one.
 fn check_transcripts(cast: &Cast, transcripts: &world::Transcripts) -> Result<()> {
+    let mut wrong = Vec::new();
     for s in &cast.sessions {
         let name = world::transcript_of(s);
-        let (first, turns) = transcripts
-            .matches
-            .get(&name)
-            .with_context(|| format!("{}: no transcript {name}.toml", s.id))?;
+        let Some((first, turns)) = transcripts.matches.get(&name) else {
+            wrong.push(format!("{}: no transcript {name}.toml", s.id));
+            continue;
+        };
         if let Some(p) = &s.prompt
             && !p.to_lowercase().contains(&first.to_lowercase())
         {
-            bail!("{}'s prompt doesn't contain its transcript's match {first:?}", s.id);
+            wrong.push(format!(
+                "{}'s prompt doesn't contain its transcript's match {first:?}",
+                s.id
+            ));
         }
         for m in &s.messages {
             let answered = turns.iter().skip(1).any(|t| match t {
-                Some(t) => m.text.to_lowercase().contains(&t.to_lowercase())
-                    || (m.review.is_some() && t.to_lowercase().starts_with("fctl's review agent")),
+                Some(t) => {
+                    m.text.to_lowercase().contains(&t.to_lowercase())
+                        || (m.review.is_some()
+                            && t.to_lowercase().starts_with("fctl's review agent"))
+                }
                 None => true,
             });
             if !answered {
-                bail!("{}: no turn of {name}.toml answers {:?}", s.id, m.text);
+                wrong.push(format!(
+                    "{}: no turn of {name}.toml answers {:?}",
+                    s.id, m.text
+                ));
             }
         }
     }
+    if !wrong.is_empty() {
+        bail!(
+            "the transcripts don't play the cast:\n  {}",
+            wrong.join("\n  ")
+        );
+    }
     Ok(())
+}
+
+/// Every edit in a transcript finds what it replaces, and every read
+/// without a written `output` finds its file: in its project's repository
+/// as the stand-in makes it (`repos/<owner>/<name>`), as the transcript's
+/// earlier steps left it; a review's, as the session that opened the pull
+/// request left it. Files a command names go unchecked after it, since
+/// what it did to them isn't known.
+fn check_changes(cast: &Cast, data: &Path) -> Result<()> {
+    let mut wrong = Vec::new();
+    let mut left: BTreeMap<&str, Files> = BTreeMap::new();
+    // The sessions that open pull requests before the reviews of them.
+    let (reviews, others): (Vec<_>, Vec<_>) =
+        cast.sessions.iter().partition(|s| s.review.is_some());
+    for s in others.into_iter().chain(reviews) {
+        let name = world::transcript_of(s);
+        let path = data.join("transcripts").join(format!("{name}.toml"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let v: toml::Value =
+            toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
+        let (project, _) = cast::session_ref(&s.id)?;
+        let Some(repo) = &cast.project(project)?.repo else {
+            continue;
+        };
+        let opened = s
+            .review
+            .as_ref()
+            .and_then(|r| cast.pull_session(&r.of))
+            .and_then(|o| left.get(o.id.as_str()));
+        let mut files = Files {
+            base: data.join("repos").join(repo),
+            changed: opened.map(|o| o.changed.clone()).unwrap_or_default(),
+            unknown: opened.map(|o| o.unknown.clone()).unwrap_or_default(),
+        };
+        let turns = v.get("turn").and_then(toml::Value::as_array);
+        for turn in turns.into_iter().flatten() {
+            let steps = turn.get("step").and_then(toml::Value::as_array);
+            for step in steps.into_iter().flatten() {
+                files.step(step, &name, &mut wrong);
+            }
+        }
+        left.insert(s.id.as_str(), files);
+    }
+    if !wrong.is_empty() {
+        bail!(
+            "transcripts change what their repositories don't have:\n  {}",
+            wrong.join("\n  ")
+        );
+    }
+    Ok(())
+}
+
+/// A session's repository as its transcript changes it.
+struct Files {
+    base: std::path::PathBuf,
+    changed: BTreeMap<String, String>,
+    unknown: BTreeSet<String>,
+}
+
+impl Files {
+    fn content(&self, path: &str) -> Option<String> {
+        self.changed
+            .get(path)
+            .cloned()
+            .or_else(|| std::fs::read_to_string(self.base.join(path)).ok())
+    }
+
+    fn step(&mut self, step: &toml::Value, name: &str, wrong: &mut Vec<String>) {
+        let text = |k: &str| step.get(k).and_then(toml::Value::as_str);
+        // Several calls at once, and a subagent's.
+        for key in ["tools", "steps"] {
+            for call in step
+                .get(key)
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                self.step(call, name, wrong);
+            }
+        }
+        for key in ["run", "silently"] {
+            for word in text(key)
+                .unwrap_or_default()
+                .split(|c: char| c.is_whitespace() || "'\"<>|;&()".contains(c))
+                .filter(|w| !w.is_empty())
+            {
+                self.unknown
+                    .insert(word.trim_start_matches("./").to_owned());
+            }
+        }
+        let relative = |path: &str| {
+            (!path.starts_with('/') && !path.starts_with('~'))
+                .then(|| path.trim_start_matches("./").to_owned())
+        };
+        if let Some(path) = text("write").and_then(relative) {
+            self.changed
+                .insert(path, text("content").unwrap_or_default().to_owned());
+        }
+        if let Some(path) = text("edit").and_then(relative)
+            && !self.unknown.contains(&path)
+        {
+            let (old, new) = (
+                text("old").unwrap_or_default(),
+                text("new").unwrap_or_default(),
+            );
+            match self.content(&path) {
+                Some(c) if c.contains(old) => {
+                    let all = step
+                        .get("replace_all")
+                        .and_then(toml::Value::as_bool)
+                        .unwrap_or(false);
+                    let c = if all {
+                        c.replace(old, new)
+                    } else {
+                        c.replacen(old, new, 1)
+                    };
+                    self.changed.insert(path, c);
+                }
+                Some(_) => wrong.push(format!("{name}: the edit of {path} doesn't find {old:?}")),
+                None => wrong.push(format!("{name}: an edit of {path}, which isn't there")),
+            }
+        }
+        if let Some(path) = text("read").and_then(relative)
+            && step.get("output").is_none()
+            && !self.unknown.contains(&path)
+            && self.content(&path).is_none()
+        {
+            wrong.push(format!(
+                "{name}: a read of {path}, which isn't there: add the file, or give the read an `output`"
+            ));
+        }
+    }
 }
 
 /// The demo's control plane: its state in `.fctl-demo/wrangler`, as fctl
@@ -168,7 +319,10 @@ fn wrangler(root: &Path, state: &Path, cast: &Cast, children: &mut Children) -> 
         ("FCTL_EARLY_ACCESS", "0".to_owned()),
         ("LINEAR_CLIENT_ID", "demo-linear-client".to_owned()),
         ("LINEAR_CLIENT_SECRET", "demo-linear-secret".to_owned()),
-        ("LINEAR_WEBHOOK_SECRET", "demo-linear-webhook-secret".to_owned()),
+        (
+            "LINEAR_WEBHOOK_SECRET",
+            "demo-linear-webhook-secret".to_owned(),
+        ),
     ];
     dev::wrangler_dev(root, children, Some(&state.join("wrangler")), &vars)?;
     dev::wait_for(
@@ -220,7 +374,10 @@ fn shots(cast: &Cast, world: &world::World, state: &Path, app: &str) -> Result<(
         "workspaces": world.workspaces,
         "teams": teams,
     });
-    std::fs::write(state.join("shots.json"), serde_json::to_string_pretty(&manifest)?)?;
+    std::fs::write(
+        state.join("shots.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
     Ok(())
 }
 
@@ -247,10 +404,13 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
         .cast
         .clone()
         .unwrap_or_else(|| root.join("xtask/demo/cast.toml"));
-    let data = file.parent().map_or_else(|| root.join("xtask/demo"), Path::to_path_buf);
+    let data = file
+        .parent()
+        .map_or_else(|| root.join("xtask/demo"), Path::to_path_buf);
     let cast = Cast::load(&file)?;
     let transcripts = world::Transcripts::load(&data.join("transcripts"))?;
     check_transcripts(&cast, &transcripts)?;
+    check_changes(&cast, &data)?;
     let state = root.join(".fctl-demo");
     // The agents of an earlier run's sessions still at work outlive their
     // hosts (they have process groups of their own).
@@ -348,7 +508,11 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
         }
     }
     let noor = cast.person("noor")?;
-    let open = if opts.no_vite { dev::LOCAL_API } else { dev::WEB };
+    let open = if opts.no_vite {
+        dev::LOCAL_API
+    } else {
+        dev::WEB
+    };
     shots(&cast, &world, &state, open)?;
     eprintln!(
         "\n\x1b[1mthe demo is running\x1b[0m\n\n  \
@@ -367,7 +531,32 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{civil, iso};
+    use super::{Cast, check_changes, check_transcripts, civil, iso, world};
+    use std::path::Path;
+
+    /// The cast says what it can, every session has its transcript, and
+    /// the transcripts change only what their repositories have.
+    #[test]
+    fn the_cast_holds_together() -> anyhow::Result<()> {
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("demo");
+        let cast = Cast::load(&data.join("cast.toml"))?;
+        let transcripts = world::Transcripts::load(&data.join("transcripts"))?;
+        check_changes(&cast, &data)?;
+        check_transcripts(&cast, &transcripts)?;
+        for p in cast.people.iter().filter(|p| p.avatar) {
+            let login = p.github.as_deref().unwrap_or_default();
+            assert!(
+                data.join("avatars").join(format!("{login}.png")).exists(),
+                "no avatar for {login}"
+            );
+        }
+        for w in &cast.workspaces {
+            if let Some(file) = &w.avatar {
+                assert!(data.join("avatars").join(file).exists(), "no avatar {file}");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn dates_are_civil() {

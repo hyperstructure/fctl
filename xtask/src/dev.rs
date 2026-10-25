@@ -233,7 +233,9 @@ fn web_and_d1(root: &Path, no_vite: bool, persist: Option<&Path>) -> Result<()> 
     if let Some(dir) = persist {
         cmd.arg("--persist-to").arg(dir);
     }
-    run(cmd.env("CI", "1").current_dir(root.join("crates/fctl-control")))
+    run(cmd
+        .env("CI", "1")
+        .current_dir(root.join("crates/fctl-control")))
 }
 
 /// The control plane under `wrangler dev`, once `build` built what it runs:
