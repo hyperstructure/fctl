@@ -288,8 +288,13 @@ What the feature pages need from the seed, and where it comes from:
   `/home/agent` for the process driver's paths.
 - **Linear.** Delegated sessions get the notices fctl adds as it moves
   the ticket, comments and replies in Linear.
-- **GitHub.** The shots answer `/api/v1/instance` as an instance with a
-  GitHub App and its webhook, so that settings don't say they lack them.
+- **GitHub and Google.** The shots answer `/api/v1/instance` as an
+  instance with a GitHub App and its webhook, so that settings don't say
+  they lack them, and with Google sign-in, so that the sign-in page shows
+  Continue with Google, as app.fctl.sh's does.
+- **Watching.** A session's `watching` in `cast.toml` keeps those people's
+  `fctl attach --read-only` open while the demo runs: shop#231's page says
+  Tomás, Lucía and Noor watch it (the team page's `watching` shot).
 
 The GitHub reviews, chats, tickets and terminals on the pages are HTML,
 written from the cast and from what the CLI prints (`fctl sessions`, `fctl
