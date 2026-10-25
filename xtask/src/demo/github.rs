@@ -16,47 +16,6 @@ use std::process::Command;
 /// them. The stand-ins get their names back as the seed makes them.
 pub const KEPT_AS: &str = ".stand-in";
 
-/// Whether GitHub's dependency graph reads a file of this name as a
-/// manifest: those a stand-in's files must not be called here.
-pub fn manifest(name: &str) -> bool {
-    const NAMES: &[&str] = &[
-        "package.json",
-        "package-lock.json",
-        "npm-shrinkwrap.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "Cargo.toml",
-        "Cargo.lock",
-        "pyproject.toml",
-        "poetry.lock",
-        "uv.lock",
-        "setup.py",
-        "Pipfile",
-        "Pipfile.lock",
-        "go.mod",
-        "go.sum",
-        "Gemfile",
-        "Gemfile.lock",
-        "composer.json",
-        "composer.lock",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "packages.config",
-        "Package.swift",
-        "Package.resolved",
-        "pubspec.yaml",
-        "pubspec.lock",
-        "mix.exs",
-        "mix.lock",
-    ];
-    NAMES.contains(&name)
-        || (name.starts_with("requirements") && name.ends_with(".txt"))
-        || [".gemspec", ".csproj", ".vbproj", ".fsproj", ".nuspec"]
-            .iter()
-            .any(|ext| name.ends_with(ext))
-}
-
 pub struct Github {
     /// The bare repositories, as `<owner>/<name>.git`, and `pulls/`.
     pub dir: PathBuf,
@@ -265,8 +224,49 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KEPT_AS, copy_dir, manifest, sanitized};
+    use super::{KEPT_AS, copy_dir, sanitized};
     use std::path::Path;
+
+    /// Whether GitHub's dependency graph reads a file of this name as a
+    /// manifest: those a stand-in's files must not be called here.
+    fn manifest(name: &str) -> bool {
+        const NAMES: &[&str] = &[
+            "package.json",
+            "package-lock.json",
+            "npm-shrinkwrap.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "Cargo.toml",
+            "Cargo.lock",
+            "pyproject.toml",
+            "poetry.lock",
+            "uv.lock",
+            "setup.py",
+            "Pipfile",
+            "Pipfile.lock",
+            "go.mod",
+            "go.sum",
+            "Gemfile",
+            "Gemfile.lock",
+            "composer.json",
+            "composer.lock",
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "packages.config",
+            "Package.swift",
+            "Package.resolved",
+            "pubspec.yaml",
+            "pubspec.lock",
+            "mix.exs",
+            "mix.lock",
+        ];
+        NAMES.contains(&name)
+            || (name.starts_with("requirements") && name.ends_with(".txt"))
+            || [".gemspec", ".csproj", ".vbproj", ".fsproj", ".nuspec"]
+                .iter()
+                .any(|ext| name.ends_with(ext))
+    }
 
     /// No file of the stand-ins is called as GitHub's dependency graph reads
     /// manifests: it would take the made-up projects' dependencies for
