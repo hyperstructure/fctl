@@ -2,6 +2,7 @@ import { act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  bottomOf,
   keyDirection,
   mayShrink,
   NEAR_BOTTOM,
@@ -114,6 +115,24 @@ describe("sticking to the bottom", () => {
     s.pinned(1300);
     s.scrolled(1300, 0);
     expect(s.stuck).toBe(true);
+  });
+});
+
+describe("the page's bottom", () => {
+  it("is where the bottom of the page meets the bottom of the screen", () => {
+    expect(bottomOf(2000, 800)).toBe(1200);
+    // The on-screen keyboard covers the rest of the layout viewport.
+    expect(bottomOf(2000, 800, 400)).toBe(1600);
+    expect(bottomOf(500, 800)).toBe(0);
+  });
+
+  it("is never past the page's bottom, whatever the visual viewport is said to be", () => {
+    // Safari on iOS after the app switcher.
+    expect(bottomOf(2000, 800, -59)).toBe(1200);
+    expect(bottomOf(2000, 800, 0)).toBe(1200);
+    expect(bottomOf(2000, 800, Number.NaN)).toBe(1200);
+    // A fraction taller than the layout viewport, rounded.
+    expect(bottomOf(2000, 800, 800.5)).toBe(1200);
   });
 });
 
@@ -246,27 +265,36 @@ describe("the session page", () => {
   /**
    * A page 800 px tall whose transcript the hook follows, with a scroll bar
    * the test moves: `grow` adds to the transcript as the agent's work does.
+   * With `visual`, the browser says its visual viewport is that tall, and
+   * scrolls the page until that much of it shows, as Safari on iOS does: less
+   * than the screen with the keyboard up, and past the page's bottom with a
+   * visual viewport of no height.
    */
-  function sessionPage() {
+  function sessionPage({ visual }: { visual?: number } = {}) {
     const view = 800;
     let top = 0;
     let height = 2000;
+    const end = () => height - (visual ?? view);
     Object.defineProperty(window, "innerHeight", { configurable: true, get: () => view });
     Object.defineProperty(window, "scrollY", { configurable: true, get: () => top });
+    if (visual !== undefined) {
+      Object.defineProperty(window, "visualViewport", { configurable: true, value: { height: visual } });
+    }
     Object.defineProperty(document.documentElement, "scrollHeight", {
       configurable: true,
       get: () => height,
     });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, get: () => view });
     cleanups.push(() => {
-      for (const k of ["innerHeight", "scrollY"]) Reflect.deleteProperty(window, k);
-      Reflect.deleteProperty(document.documentElement, "scrollHeight");
+      for (const k of ["innerHeight", "scrollY", "visualViewport"]) Reflect.deleteProperty(window, k);
+      for (const k of ["scrollHeight", "clientHeight"]) Reflect.deleteProperty(document.documentElement, k);
     });
     const scroll = (to: number) => {
-      top = Math.max(0, Math.min(to, height - view));
+      top = Math.max(0, Math.min(to, end()));
       window.dispatchEvent(new Event("scroll"));
     };
     vi.spyOn(window, "scrollTo").mockImplementation(((o: ScrollToOptions) => {
-      top = Math.max(0, Math.min(o.top ?? 0, height - view));
+      top = Math.max(0, Math.min(o.top ?? 0, end()));
     }) as typeof window.scrollTo);
     let resized: ResizeObserverCallback | undefined;
     const observed = new Set<Element>();
@@ -318,6 +346,8 @@ describe("the session page", () => {
     };
     grow(0);
     const gap = () => height - top - view;
+    /** How much of the page is below the top of the screen (px): none once it is scrolled past its bottom. */
+    const below = () => height - top;
     const on = (type: string, init: object = {}) =>
       document.body.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), init));
     const button = () => container.querySelector("button") as HTMLButtonElement;
@@ -335,7 +365,7 @@ describe("the session page", () => {
       await act(async () => {});
     };
     const scrolled = () => window.dispatchEvent(new Event("scroll"));
-    return { grow, scroll, gap, top: () => top, show, leave, on, button, change, scrolled };
+    return { grow, scroll, gap, below, top: () => top, show, leave, on, button, change, scrolled };
   }
 
   it("follows the transcript to its bottom as it grows", () => {
@@ -343,6 +373,21 @@ describe("the session page", () => {
     expect(p.gap()).toBe(0);
     p.grow(26);
     expect(p.gap()).toBe(0);
+  });
+
+  it("keeps its bottom above the on-screen keyboard", () => {
+    const p = sessionPage({ visual: 400 });
+    p.grow(26);
+    expect(p.below()).toBe(400);
+  });
+
+  it("stays on the screen when Safari on iOS says the visual viewport has no height", () => {
+    // As it can after the app switcher. Asked to scroll to the page's height, it went
+    // there, past the page's bottom, and the screen showed nothing of it.
+    const p = sessionPage({ visual: -59 });
+    expect(p.below()).toBe(800);
+    p.grow(26);
+    expect(p.below()).toBe(800);
   });
 
   it("follows the rest of the page to its bottom too, like a header that gets another line", () => {
