@@ -61,6 +61,20 @@ export class Stick {
 }
 
 /**
+ * Where the page's bottom is at the bottom of the screen: how far down to
+ * scroll a page `height` px tall (px), when what shows of it is the layout
+ * viewport, `layout` px tall, or the visual viewport, `visual` px tall, which
+ * the on-screen keyboard shortens. Never past the bottom: after the app
+ * switcher, Safari on iOS can say the visual viewport has no height (-59 px
+ * on an iPhone) until the app is closed, and then lets the page scroll past
+ * its bottom, until none of it shows.
+ */
+export function bottomOf(height: number, layout: number, visual?: number): number {
+  const shown = visual !== undefined && visual > 0 ? Math.min(visual, layout) : layout;
+  return Math.max(0, height - shown);
+}
+
+/**
  * Keeps the page's bottom in view while `content` grows, or anything else on
  * the page, as long as the reader is at the bottom. A new `key` (another
  * session) starts at the bottom again. Returns what lets go of the bottom
@@ -95,7 +109,8 @@ export function useStickToBottom(content: RefObject<HTMLElement | null>, key: un
     };
     const toBottom = () => {
       if (!stick.stuck || held) return;
-      window.scrollTo({ top: page.scrollHeight, behavior: "instant" });
+      const top = bottomOf(page.scrollHeight, page.clientHeight, window.visualViewport?.height);
+      window.scrollTo({ top, behavior: "instant" });
       stick.pinned(window.scrollY);
     };
     const asked = (dir: number, target: EventTarget | null) => {
