@@ -447,13 +447,13 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     // hosts (they have process groups of their own).
     stop_leftovers(state);
     if state.exists() {
-        std::fs::remove_dir_all(&state).with_context(|| format!("removing {}", state.display()))?;
+        std::fs::remove_dir_all(state).with_context(|| format!("removing {}", state.display()))?;
     }
-    std::fs::create_dir_all(&state)?;
+    std::fs::create_dir_all(state)?;
     let started = now_ms();
     dev::build(root, true, opts.no_vite, Some(&state.join("wrangler")))?;
     // The stand-in GitHub, with the cast's repositories.
-    let github = github::Github::new(&state);
+    let github = github::Github::new(state);
     github.install()?;
     for r in &cast.repos {
         let by = cast.person(&r.by)?;
@@ -482,7 +482,7 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     std::fs::write(replays.join("env"), env)?;
 
     let mut control = Children(Vec::new());
-    wrangler(root, &state, &cast, &mut control)?;
+    wrangler(root, state, &cast, &mut control)?;
     let mut others = Children(Vec::new());
     if !opts.no_vite {
         let vite = util::without_package_env(
@@ -495,7 +495,7 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
         others.0.push(("vite", vite));
     }
 
-    let mut world = world::World::new(&cast, root, &state, &github, transcripts);
+    let mut world = world::World::new(&cast, root, state, &github, transcripts);
     let step = |what: &str| eprintln!("\x1b[1mdemo\x1b[0m {what}");
     step("people");
     world.accounts()?;
@@ -522,7 +522,7 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     let story = clock::Story::at(now_ms());
     rewrite::rewrite(&world, &story)?;
     let mut control = Children(Vec::new());
-    wrangler(root, &state, &cast, &mut control)?;
+    wrangler(root, state, &cast, &mut control)?;
     world.until_hosts_online(&mut others, false)?;
     rewrite::machines(&world)?;
     std::fs::write(replays.join("speed"), "1")?;
@@ -547,7 +547,7 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     } else {
         dev::WEB
     };
-    shots(&cast, &world, &story, &state, open)?;
+    shots(&cast, &world, &story, state, open)?;
     let ago = (now_ms() - story.anchor) / 60_000;
     eprintln!(
         "\n\x1b[1mthe demo is running\x1b[0m\n\n  \
