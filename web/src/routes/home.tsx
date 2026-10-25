@@ -261,8 +261,10 @@ function QuickStart({
           <AttachButton onFiles={(f) => attach(f)} disabled={starting} />
           {/* It takes the room left on its line, which puts what follows at the end. On a phone it
               keeps room for the start of the project's name, and gives up some of it with the model's
-              name where the row has too little. */}
-          <div className="flex min-w-0 grow items-center gap-2 text-[12.5px] max-sm:basis-24">
+              name where the row has too little. Wider, it starts from nothing, so that it never
+              pushes Start onto a line of its own (as its "Starting" would, being wider): the picker,
+              as wide as the longest name it offers, gives up room it doesn't need first. */}
+          <div className="flex min-w-0 grow basis-0 items-center gap-2 text-[12.5px] max-sm:basis-24">
             <span className="hidden text-ink-4 sm:inline">in</span>
             <Select
               size="sm"
