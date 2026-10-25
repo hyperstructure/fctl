@@ -4,7 +4,7 @@
 import { type FoundryHandle, foundry } from "@hyperstructure/design/gl/foundry";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { ArrowRight, Fingerprint } from "lucide-react";
+import { ArrowRight, Fingerprint, Sparkles } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { usePasskeySignIn } from "@/components/passkeys/sign-in";
 import { challengeCopy, SecondFactorStep } from "@/components/two-factor/challenge";
@@ -87,7 +87,8 @@ export function AuthFrame({
       <div className="absolute inset-0">
         <GLCanvas
           scene={() => {
-            const scene = foundry({ planet: [1.02, -0.75, 1.15], density: 0.6 });
+            // Dim stars that fade rather than blink: a calm sky behind the form.
+            const scene = foundry({ planet: [1.02, -0.75, 1.15], density: 0.6, stars: 0.3 });
             onFoundry?.(scene);
             return scene.scene;
           }}
@@ -188,11 +189,11 @@ function EarlyAccessLink() {
       No account yet?
       <Link
         to="/early-access"
-        className="group inline-flex items-center gap-2 rounded-full border border-line-strong bg-surface/85 py-1 pr-2.5 pl-2.5 font-medium text-ink backdrop-blur-xl transition-colors hover:border-ink-4"
+        className="group inline-flex h-10 items-center gap-2 rounded-full border border-line-strong bg-surface/85 pr-3.5 pl-3 text-[14px] font-medium text-ink backdrop-blur-xl transition-colors hover:border-ink-4"
       >
-        <span className="size-1.5 rounded-full bg-highlight ring-1 ring-ink/15" />
+        <Sparkles className="size-4 fill-highlight text-accent" />
         Request early access
-        <ArrowRight className="size-3.5 text-ink-3 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-ink motion-reduce:transition-none" />
+        <ArrowRight className="size-4 text-ink-3 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-ink motion-reduce:transition-none" />
       </Link>
     </span>
   );
