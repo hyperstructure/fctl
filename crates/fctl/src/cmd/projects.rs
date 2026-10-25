@@ -63,16 +63,28 @@ pub enum ProjectsCmd {
         #[arg(long, hide = true, conflicts_with = "connectors")]
         no_connectors: bool,
     },
-    /// Change a project's settings (maintainers). Sessions take a change
-    /// when they next start or resume.
+    /// Change a project's name, description, default branch or settings
+    /// (maintainers). Sessions take a change of settings when they next
+    /// start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
         #[arg(short, long)]
         project: Option<String>,
+        /// Its name, as people see it. Its slug, in its URL and in
+        /// commands, stays.
+        #[arg(long)]
+        name: Option<String>,
+        /// A sentence for people (agents do not see it); "" clears it.
+        #[arg(long)]
+        description: Option<String>,
+        /// The branch sessions start from, unless one asks for another
+        /// (`fctl run --base`). Sessions that already started keep theirs.
+        #[arg(long, value_name = "BRANCH")]
+        default_branch: Option<String>,
         /// The model its agents work with: opus, sonnet, haiku, fable or a
         /// model's ID; "default" for Claude's own. A session can ask for
         /// another (`fctl run --model`).
@@ -889,6 +901,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
         ProjectsCmd::Secrets(args) => super::project_secrets::run(&api, args, json).await?,
         ProjectsCmd::Set {
             project,
+            name,
+            description,
+            default_branch,
             model: new_model,
             effort,
             instructions,
@@ -1049,17 +1064,50 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 )
                 .await?;
             }
+            // The settings only when they change: sent, they replace the
+            // stored ones, so a rename would undo what someone changed since
+            // they were read.
+            let settings_changed = settings != p.settings;
             let p = api
                 .update_project(
                     p.id.as_str(),
                     &UpdateProjectRequest {
-                        settings: Some(settings),
+                        name: name.clone(),
+                        description: description.clone(),
+                        default_branch: default_branch.clone(),
+                        settings: settings_changed.then_some(settings),
                         ..Default::default()
                     },
                 )
                 .await?;
             if json {
                 return style::print_json(&p);
+            }
+            if name.is_some() {
+                println!(
+                    "{} Name of {}: {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    style::terminal_safe(&p.name)
+                );
+            }
+            if description.is_some() {
+                println!(
+                    "{} Description of {}: {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    p.description
+                        .as_deref()
+                        .map_or("none".into(), style::terminal_safe)
+                );
+            }
+            if default_branch.is_some() {
+                println!(
+                    "{} New sessions in {} start from the {} branch",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    p.default_branch
+                );
             }
             if new_model.is_some() || effort.is_some() {
                 println!(
@@ -1241,10 +1289,12 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     println!("{}", style::amber(&style::terminal_safe(problem)));
                 }
             }
-            println!(
-                "{}",
-                style::dim("Sessions take the change when they next start or resume.")
-            );
+            if settings_changed {
+                println!(
+                    "{}",
+                    style::dim("Sessions take the change when they next start or resume.")
+                );
+            }
         }
         ProjectsCmd::Tickets { project } => {
             let project = super::sessions::project_or_default(project)?;
@@ -1587,6 +1637,35 @@ mod tests {
             or_claudes("claude-opus-5-5"),
             Some("claude-opus-5-5".into())
         );
+    }
+
+    #[test]
+    fn name_description_and_default_branch_are_changes_too() {
+        let Some(ProjectsCmd::Set {
+            name,
+            description,
+            default_branch,
+            model,
+            ..
+        }) = set(&[
+            "--name",
+            "Web app",
+            "--description",
+            "",
+            "--default-branch",
+            "develop",
+        ])
+        else {
+            panic!("fctl projects set takes a name, a description and a default branch");
+        };
+        assert_eq!(name.as_deref(), Some("Web app"));
+        // Sent as it is: the control plane clears the description.
+        assert_eq!(description.as_deref(), Some(""));
+        assert_eq!(default_branch.as_deref(), Some("develop"));
+        assert_eq!(model, None);
+        for flag in ["--name", "--description", "--default-branch"] {
+            assert!(set(&[flag, "x"]).is_some(), "{flag}");
+        }
     }
 
     #[test]

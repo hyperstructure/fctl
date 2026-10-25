@@ -289,6 +289,8 @@ fctl projects create "My app" --repo my-org/my-app -w acme   # a workspace's adm
 fctl projects create "Docs" --repo my-org/docs --slug docs --description "The handbook"   # its URL name, and a sentence for people
 fctl projects create "New thing" --new-repo new-thing --owner my-org --public
 fctl projects create "Site" --repo my-org/site --connectors   # claude.ai connectors in its sessions (off by default)
+fctl projects set -p my-app --name "Web app" --description "The storefront"   # how people find it; its slug stays (--description "" clears it)
+fctl projects set -p my-app --default-branch develop   # sessions start from develop unless they ask for another (fctl run --base)
 fctl projects set -p my-app --model opus --effort high   # its agents' model and effort ("default" for Claude's own)
 fctl projects set -p my-app --instructions-file agents.md   # what its agents are told in every session (--instructions "" for nothing)
 fctl projects set -p my-app --auto-pull-request off   # agents open pull requests when someone asks, not when they finish
