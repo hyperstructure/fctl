@@ -1,0 +1,22 @@
+# shop#230 · Lucía, today 08:15 · Match the box builder to the new illustrations (paused: Pro plan's five-hour limit)
+match = "Match the box builder's cards to the new vegetable illustrations"
+
+[[turn]]
+[[turn.step]]
+run = "fctl edit --title 'Match the box builder to the new illustrations' --description 'Restyles the box builder’s cards around the new vegetable illustrations, from the two mockups.'"
+description = "Name the session"
+
+[[turn.step]]
+think = "Two mockups: the card with the illustration bleeding off the top edge, and the selected state with a lime outline. The cards live in BoxCard.tsx and take their colors from the design system."
+
+[[turn.step]]
+tools = [
+  { read = "src/components/BoxCard.tsx" },
+  { glob = "public/illustrations/*.svg", output = "public/illustrations/beetroot.svg\npublic/illustrations/carrot.svg\npublic/illustrations/kale.svg\npublic/illustrations/leek.svg\npublic/illustrations/potato.svg\npublic/illustrations/romanesco.svg" },
+]
+
+[[turn.step]]
+say = "The illustrations are in, as SVGs with a transparent background. I'll move the image above the card's padding so it can bleed off the top, as in the first mockup."
+
+[[turn.step]]
+limit = "4h5m"

@@ -1,0 +1,13 @@
+{
+  "name": "shop",
+  "version": "3.18.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "i18n:check": "node scripts/i18n-check.mjs",
+    "email:dev": "node scripts/email-preview.mjs"
+  }
+}

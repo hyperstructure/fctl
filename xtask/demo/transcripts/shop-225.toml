@@ -1,0 +1,28 @@
+# shop#225 · review of shop#1287 at its first commit: 1 issue
+match = "Review romanescohq/shop#1287, “Let subscribers skip a week from the reminder email”, at commit"
+
+[[turn]]
+duration = "1m31s"
+result = "Posted the review: 1 issue."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Let subscribers skip a week from the reminder email" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " emails/reminder.mjml            |  1 +\n src/app/skip/[token]/route.ts   | 13 +++++++++++++\n src/lib/skip-token.ts           | 17 +++++++++++++++++\n 3 files changed, 31 insertions(+)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+read = "src/lib/skip-token.ts"
+output = "     1\timport { createHmac, timingSafeEqual } from \"node:crypto\";\n     2\t\n     3\tconst secret = () => process.env.SKIP_LINK_SECRET ?? \"\";\n     4\t\n     5\t/** A link token that skips one subscription's delivery on one date. */\n     6\texport function signSkip(subscriptionId: string): string {\n     7\t  const mac = createHmac(\"sha256\", secret()).update(subscriptionId).digest(\"base64url\");\n     8\t  return `${subscriptionId}.${mac}`;\n     9\t}\n"
+
+[[turn.step]]
+think = "The doc comment says one delivery on one date, but nothing in the token names a date. The route skips whatever delivery comes next, so an email from last week still skips this week's box. That's a real bug for anyone who reads their email late."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = "Posted the review on romanescohq/shop#1287: 1 issue (medium).\nhttps://github.com/romanescohq/shop/pull/1287#pullrequestreview-2003294"
+
+[[turn.step]]
+say = "Posted the review: 1 issue."

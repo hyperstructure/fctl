@@ -26,8 +26,8 @@ use std::process::{Child, Command};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-const LOCAL_API: &str = "http://127.0.0.1:8787";
-const WEB: &str = "http://localhost:5173";
+pub(crate) const LOCAL_API: &str = "http://127.0.0.1:8787";
+pub(crate) const WEB: &str = "http://localhost:5173";
 pub const DEV_EMAIL: &str = "dev@fctl.test";
 pub const DEV_PASSWORD: &str = "fctl-dev-password";
 pub const SETUP_TOKEN: &str = "dev-setup-token";
@@ -50,11 +50,11 @@ pub struct DevOpts {
     pub server: Option<String>,
 }
 
-struct Children(Vec<(&'static str, Child)>);
+pub(crate) struct Children(pub(crate) Vec<(&'static str, Child)>);
 
 impl Children {
     /// Fails when one of them has exited.
-    fn check(&mut self) -> Result<()> {
+    pub(crate) fn check(&mut self) -> Result<()> {
         for (name, c) in &mut self.0 {
             if let Some(status) = c.try_wait()? {
                 bail!("{name} exited ({status})");
@@ -107,10 +107,10 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
         let _ = SERVER.set(server.trim_end_matches('/').to_owned());
     }
     std::fs::create_dir_all(&state)?;
-    build(root, opts.server.is_none(), no_vite)?;
+    build(root, opts.server.is_none(), no_vite, None)?;
     let mut children = Children(Vec::new());
     if opts.server.is_none() {
-        wrangler_dev(root, &mut children)?;
+        wrangler_dev(root, &mut children, None, &[])?;
     }
     wait_for(
         &format!("{}/api/v1/health", api()),
@@ -177,7 +177,9 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
 /// `wrangler dev` runs, all at once: the Worker, the web app it serves, and
 /// the local D1 with the migrations applied. The Worker builds in a target
 /// directory of its own, so neither cargo waits for the other's lock.
-fn build(root: &Path, local: bool, no_vite: bool) -> Result<()> {
+/// With `persist`, the local D1 that gets the migrations is the one there
+/// (`wrangler --persist-to`).
+pub(crate) fn build(root: &Path, local: bool, no_vite: bool, persist: Option<&Path>) -> Result<()> {
     let bins = || {
         run(Command::new("cargo")
             .args([
@@ -196,7 +198,7 @@ fn build(root: &Path, local: bool, no_vite: bool) -> Result<()> {
     }
     std::thread::scope(|s| {
         let worker = util::beside(s, "worker", || build_worker(root));
-        let web = util::beside(s, "web", || web_and_d1(root, no_vite));
+        let web = util::beside(s, "web", || web_and_d1(root, no_vite, persist));
         bins().and(util::join(worker)).and(util::join(web))
     })
 }
@@ -218,7 +220,7 @@ fn worker_target(root: &Path) -> PathBuf {
 
 /// The web app `wrangler dev` serves (Vite serves the live sources on top),
 /// and the local D1 with the migrations applied.
-fn web_and_d1(root: &Path, no_vite: bool) -> Result<()> {
+fn web_and_d1(root: &Path, no_vite: bool, persist: Option<&Path>) -> Result<()> {
     if !root.join("node_modules").exists() {
         util::npm_install(root)?;
     }
@@ -226,26 +228,40 @@ fn web_and_d1(root: &Path, no_vite: bool) -> Result<()> {
         util::build_web(root)?;
     }
     // CI=1: apply without asking (they are local and recorded in d1_migrations).
-    run(util::wrangler(root)?
-        .args(["d1", "migrations", "apply", "DB", "--local"])
-        .env("CI", "1")
-        .current_dir(root.join("crates/fctl-control")))
+    let mut cmd = util::wrangler(root)?;
+    cmd.args(["d1", "migrations", "apply", "DB", "--local"]);
+    if let Some(dir) = persist {
+        cmd.arg("--persist-to").arg(dir);
+    }
+    run(cmd.env("CI", "1").current_dir(root.join("crates/fctl-control")))
 }
 
-/// The control plane under `wrangler dev`, once `build` built what it runs.
-fn wrangler_dev(root: &Path, children: &mut Children) -> Result<()> {
+/// The control plane under `wrangler dev`, once `build` built what it runs:
+/// its state in `persist` when given, and `vars` among its variables.
+pub(crate) fn wrangler_dev(
+    root: &Path,
+    children: &mut Children,
+    persist: Option<&Path>,
+    vars: &[(&str, String)],
+) -> Result<()> {
     dev_vars(root)?;
+    let mut cmd = util::wrangler(root)?;
+    cmd.args([
+        "dev",
+        "--port",
+        "8787",
+        "--ip",
+        "127.0.0.1",
+        "--test-scheduled",
+    ]);
+    if let Some(dir) = persist {
+        cmd.arg("--persist-to").arg(dir);
+    }
+    for (k, v) in vars {
+        cmd.arg("--var").arg(format!("{k}:{v}"));
+    }
     let wrangler = util::without_package_env(
-        util::wrangler(root)?
-            .args([
-                "dev",
-                "--port",
-                "8787",
-                "--ip",
-                "127.0.0.1",
-                "--test-scheduled",
-            ])
-            .env("CARGO_TARGET_DIR", worker_target(root))
+        cmd.env("CARGO_TARGET_DIR", worker_target(root))
             .current_dir(root.join("crates/fctl-control")),
     )
     .spawn()
@@ -555,7 +571,7 @@ fn dev_vars(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn wait_for(url: &str, timeout: Duration, children: &mut Children) -> Result<()> {
+pub(crate) fn wait_for(url: &str, timeout: Duration, children: &mut Children) -> Result<()> {
     let start = Instant::now();
     while start.elapsed() < timeout {
         if ureq::get(url).call().is_ok() {
@@ -576,7 +592,7 @@ fn agent() -> ureq::Agent {
 }
 
 /// Calls the API; `auth` is either a bearer token or a cookie header.
-fn call(
+pub(crate) fn call(
     method: &str,
     path: &str,
     auth: Option<&Auth>,
@@ -611,12 +627,12 @@ fn call(
     Ok((status, json, cookie))
 }
 
-enum Auth {
+pub(crate) enum Auth {
     Bearer(String),
     Cookie(String),
 }
 
-fn ok(what: &str, (status, body, _): &(u16, Value, Option<String>)) -> Result<()> {
+pub(crate) fn ok(what: &str, (status, body, _): &(u16, Value, Option<String>)) -> Result<()> {
     if !(200..300).contains(status) {
         bail!("{what}: HTTP {status}: {body}");
     }
@@ -784,11 +800,11 @@ fn host(root: &Path, state: &Path, token: &str) -> Result<Child> {
     .context("starting the dev host")
 }
 
-fn toml_str(p: &Path) -> String {
+pub(crate) fn toml_str(p: &Path) -> String {
     toml::Value::String(p.display().to_string()).to_string()
 }
 
-fn write_private(path: &Path, value: &str) -> Result<()> {
+pub(crate) fn write_private(path: &Path, value: &str) -> Result<()> {
     std::fs::write(path, format!("{value}\n"))?;
     #[cfg(unix)]
     {

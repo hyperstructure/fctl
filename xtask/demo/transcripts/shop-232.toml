@@ -1,0 +1,35 @@
+# shop#232 · review of shop#1291, under way at 09:10
+match = "Review romanescohq/shop#1291"
+
+[[turn]]
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Add Danish translations and DKK prices" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " messages/da.json            | 412 +++++++++++++++++++++++++++\n src/i18n/config.ts          |   4 +-\n src/lib/money.ts            |  12 +-\n src/middleware.ts           |   6 +-\n 4 files changed, 428 insertions(+), 6 deletions(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+read = "src/lib/money.ts"
+
+[[turn.step]]
+think = "formatPrice now takes the currency from the locale. Danish prices use a comma for decimals and \"kr.\" after the amount, same as Swedish except the full stop. I want to check the tests cover DKK rounding of öre/øre values."
+
+[[turn.step]]
+agent = "Check every place prices are formatted"
+prompt = "Find every place in src/ that formats a price or adds up amounts, and say whether each goes through formatPrice with the locale's currency. Report file and line for any that don't."
+report = "All 14 places go through formatPrice; two pass the locale explicitly, the rest take it from the request's locale."
+  [[turn.step.steps]]
+  grep = "formatPrice|toFixed\\(2\\)"
+  path = "src"
+  output = "src/lib/money.ts:12:export function formatPrice(amount: number, locale: Locale) {\nsrc/components/BoxCard.tsx:31:        {formatPrice(box.price, locale)}\nsrc/components/Cart.tsx:58:      {formatPrice(total, locale)}\nsrc/app/checkout/Summary.tsx:22:  const shown = formatPrice(order.total, locale);"
+  [[turn.step.steps]]
+  say = "No toFixed left; checking the checkout summary passes the locale."
+  [[turn.step.steps]]
+  read = "src/app/checkout/Summary.tsx"
+  output = "    20\texport function Summary({ order, locale }: Props) {\n    21\t  // Prices are öre/øre integers.\n    22\t  const shown = formatPrice(order.total, locale);\n"
+
+[[turn.step]]
+bash = "npm test -- money"
+description = "Run the price tests"
+hold = true

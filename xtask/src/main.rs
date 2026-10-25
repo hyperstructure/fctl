@@ -1,6 +1,7 @@
 //! `cargo xtask <command>`: development automation. Run without arguments for help.
 
 mod check;
+mod demo;
 mod deploy;
 mod dev;
 mod dist;
@@ -29,6 +30,10 @@ Develop
                                 build (--quick leaves it out). No part: all of them. CI runs
                                 each part in a job of its own, and dev --smoke
   gen                           Regenerate web/src/gen from crates/fctl-proto
+  demo [--no-vite] [--cast <file>]
+                                The demo cast (.claude/skills/demo) in a stack of its own, with
+                                its state in .fctl-demo/: people, workspaces, runners, projects
+                                and sessions lived in, for screenshots and videos
 
 Self-host without Cloudflare (deploy/standalone)
   serve [--public-url <url>] [--port <n>] [--listen <addr>] [--data <dir>] [--skip-build]
@@ -92,6 +97,14 @@ fn main() -> Result<()> {
             };
             a.done()?;
             dev::dev(&root, opts)
+        }
+        "demo" => {
+            let opts = demo::DemoOpts {
+                no_vite: a.flag("--no-vite"),
+                cast: a.value("--cast")?.map(PathBuf::from),
+            };
+            a.done()?;
+            demo::demo(&root, opts)
         }
         "serve" => {
             let opts = serve::ServeOpts {

@@ -41,12 +41,45 @@
 //!
 //! Beside the files, `speed` (a number) makes everything that many times
 //! faster, and `env` (`KEY=value` lines) adds to the environment of the
-//! commands steps run. Both are read again at every turn.
+//! commands steps run. Both are read again at every turn. What goes wrong
+//! (a file that doesn't parse, an edit whose file lacks what it replaces, a
+//! command that fails silently) goes to `replay.log` there, not to stderr,
+//! which fctl-agent would show in the transcript.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+/// Where [`warn`] writes: `replay.log` beside the replays.
+static LOG: OnceLock<PathBuf> = OnceLock::new();
+
+/// Notes where a replay got to in `replay.log`, for whoever waits for it:
+/// `<name>: holds` once it holds a call, `<name>: limited` once it hit the
+/// usage limit, `<name>: turn <n> played` once a turn ended.
+fn note(what: &str) {
+    if LOG.get().is_some() {
+        warn(what);
+    }
+}
+
+/// Notes what went wrong with a replay in `replay.log` (stderr before a
+/// library has loaded).
+fn warn(what: &str) {
+    let written = LOG.get().is_some_and(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut f| writeln!(f, "{what}"))
+            .is_ok()
+    });
+    if !written {
+        eprintln!("fake-claude: {what}");
+    }
+}
 
 /// The replays in a directory, and what it says about playing them.
 pub struct Library {
@@ -156,6 +189,7 @@ impl Library {
     /// Every replay in `dir`. A file that doesn't parse is left out, with
     /// what is wrong with it on stderr.
     pub fn load(dir: &Path) -> Self {
+        let _ = LOG.set(dir.join("replay.log"));
         let mut replays = Vec::new();
         let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
             .map(|d| {
@@ -165,7 +199,7 @@ impl Library {
                     .collect()
             })
             .unwrap_or_else(|e| {
-                eprintln!("fake-claude: reading replays in {}: {e}", dir.display());
+                warn(&format!("reading replays in {}: {e}", dir.display()));
                 Vec::new()
             });
         files.sort();
@@ -181,7 +215,7 @@ impl Library {
                         .unwrap_or_default();
                     replays.push(r);
                 }
-                Err(e) => eprintln!("fake-claude: replay {}: {e}", path.display()),
+                Err(e) => warn(&format!("replay {}: {e}", path.display())),
             }
         }
         Self {
@@ -733,6 +767,10 @@ impl crate::Session {
 
     /// Plays a turn, then its result.
     pub(crate) fn play(&mut self, turn: Turn, started: std::time::Instant) {
+        let (name, number) = self
+            .playing
+            .as_ref()
+            .map_or((String::new(), 0), |p| (p.replay.name.clone(), p.next));
         let (speed, env) = self
             .library
             .as_ref()
@@ -753,6 +791,9 @@ impl crate::Session {
                     said = Some(t.clone());
                 }
                 Step::Calls(calls) => {
+                    if calls.iter().any(|c| c.hold) {
+                        note(&format!("{name}: holds"));
+                    }
                     if !self.play_calls(calls, speed, &env) {
                         interrupted = true;
                         break;
@@ -767,6 +808,7 @@ impl crate::Session {
                 Step::Limit(resets_in) => {
                     self.delay = delay;
                     self.hit_limit(*resets_in, started);
+                    note(&format!("{name}: limited"));
                     return;
                 }
                 Step::Usage {
@@ -777,7 +819,7 @@ impl crate::Session {
                 Step::Silently(command) => {
                     let (output, failed) = sh_with(command, &env);
                     if failed {
-                        eprintln!("fake-claude: {command:?} failed: {}", output.trim());
+                        warn(&format!("{command:?} failed: {}", output.trim()));
                     }
                 }
                 Step::Context(tokens) => {
@@ -794,6 +836,7 @@ impl crate::Session {
         }
         let text = turn.result.or(said).unwrap_or_else(|| "Done.".to_owned());
         self.result_took(started, &text, "success", turn.duration);
+        note(&format!("{name}: turn {number} played"));
     }
 
     /// The input a call shows: files by their absolute paths, and commits
@@ -840,13 +883,13 @@ impl crate::Session {
                             text.replacen(old.as_str(), new, 1)
                         };
                         if let Err(e) = std::fs::write(&file, changed) {
-                            eprintln!("fake-claude: editing {}: {e}", file.display());
+                            warn(&format!("editing {}: {e}", file.display()));
                         }
                     }
-                    _ => eprintln!(
-                        "fake-claude: {} doesn't have what the replay's edit replaces: only the transcript shows it",
+                    _ => warn(&format!(
+                        "{} doesn't have what the replay's edit replaces: only the transcript shows it",
                         file.display()
-                    ),
+                    )),
                 }
                 (
                     format!("The file {} has been updated successfully.", file.display()),
@@ -881,7 +924,7 @@ impl crate::Session {
                 let (output, failed) = sh_with("git push -u origin HEAD", env);
                 if failed {
                     // As it would have printed, from GitHub.
-                    eprintln!("fake-claude: git push failed: {}", output.trim());
+                    warn(&format!("git push failed: {}", output.trim()));
                     let (branch, _) = sh_with("git rev-parse --abbrev-ref HEAD", env);
                     let (origin, _) = sh_with("git remote get-url origin", env);
                     let branch = branch.trim();
