@@ -87,51 +87,64 @@ pub fn wrangler_sql(root: &Path, state: &Path, sql: &str) -> Result<()> {
     }
     let file = state.join("seed.sql");
     std::fs::write(&file, sql)?;
-    let out = util::without_package_env(
-        util::wrangler(root)?
-            .args(["d1", "execute", "DB", "--local", "--persist-to"])
-            .arg(state.join("wrangler"))
-            .arg("--file")
-            .arg(&file)
-            .env("CI", "1")
-            .current_dir(root.join("crates/fctl-control")),
-    )
-    .output()
-    .context("running wrangler d1 execute")?;
-    if !out.status.success() {
-        bail!(
-            "wrangler d1 execute: {}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
+    d1_execute(
+        root,
+        state,
+        &[std::ffi::OsStr::new("--file"), file.as_os_str()],
+    )?;
     Ok(())
 }
 
 /// Runs a query on the demo's local D1 while `wrangler dev` runs.
 pub fn wrangler_query(root: &Path, state: &Path, sql: &str) -> Result<Vec<Value>> {
-    let out = util::without_package_env(
-        util::wrangler(root)?
-            .args(["d1", "execute", "DB", "--local", "--json", "--persist-to"])
-            .arg(state.join("wrangler"))
-            .arg("--command")
-            .arg(sql)
-            .current_dir(root.join("crates/fctl-control")),
-    )
-    .output()
-    .context("running wrangler d1 execute")?;
-    if !out.status.success() {
-        bail!(
-            "wrangler d1 execute: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-    let v: Value = serde_json::from_slice(&out.stdout).context("reading wrangler's answer")?;
+    let out = d1_execute(
+        root,
+        state,
+        &[
+            std::ffi::OsStr::new("--json"),
+            "--command".as_ref(),
+            sql.as_ref(),
+        ],
+    )?;
+    let v: Value = serde_json::from_slice(&out).context("reading wrangler's answer")?;
     Ok(v.get(0)
         .and_then(|r| r.get("results"))
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default())
+}
+
+/// `wrangler d1 execute` on the demo's local D1, and what it printed. The
+/// running stack writes to the same file: while it holds the lock, wrangler
+/// finds the database busy, and tries again.
+fn d1_execute(root: &Path, state: &Path, args: &[&std::ffi::OsStr]) -> Result<Vec<u8>> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let out = util::without_package_env(
+            util::wrangler(root)?
+                .args(["d1", "execute", "DB", "--local", "--persist-to"])
+                .arg(state.join("wrangler"))
+                .args(args)
+                .env("CI", "1")
+                .current_dir(root.join("crates/fctl-control")),
+        )
+        .output()
+        .context("running wrangler d1 execute")?;
+        if out.status.success() {
+            return Ok(out.stdout);
+        }
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if attempt < 8 && (said.contains("SQLITE_BUSY") || said.contains("database is locked")) {
+            std::thread::sleep(Duration::from_millis(250 * attempt));
+            continue;
+        }
+        bail!("wrangler d1 execute: {said}");
+    }
 }
 
 /// Every session has its transcript, which answers its first message and
@@ -409,6 +422,16 @@ fn stop_leftovers(state: &Path) {
 }
 
 pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
+    let state = root.join(".fctl-demo");
+    let seeded = seed(root, opts, &state);
+    if seeded.is_err() {
+        // Its sessions' agents outlive it, in process groups of their own.
+        stop_leftovers(&state);
+    }
+    seeded
+}
+
+fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     let file = opts
         .cast
         .clone()
@@ -420,10 +443,9 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
     let transcripts = world::Transcripts::load(&data.join("transcripts"))?;
     check_transcripts(&cast, &transcripts)?;
     check_changes(&cast, &data)?;
-    let state = root.join(".fctl-demo");
     // The agents of an earlier run's sessions still at work outlive their
     // hosts (they have process groups of their own).
-    stop_leftovers(&state);
+    stop_leftovers(state);
     if state.exists() {
         std::fs::remove_dir_all(&state).with_context(|| format!("removing {}", state.display()))?;
     }
@@ -533,7 +555,7 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
          sign in   {} / {} (everyone's password)\n  \
          story     09:10 in {}, {ago} minutes ago: the times are the story's in that zone at that moment\n  \
          shoot     node xtask/demo/shoot.mjs, which shows them so (see .claude/skills/demo/SKILL.md)\n\n\
-         Ctrl-C stops everything. State lives in .fctl-demo/; the next run starts it afresh.\n",
+         Ctrl-C stops it. State lives in .fctl-demo/; the next run stops what is left of it and starts afresh.\n",
         noor.email, cast.instance.password, story.zone,
     );
     loop {

@@ -31,6 +31,8 @@ pub struct World<'a> {
     pub runners: BTreeMap<String, String>,
     pub schedules: BTreeMap<(String, String), String>,
     pub sessions: BTreeMap<String, Made>,
+    /// Each project's last session number, as the seed has given them.
+    pub numbers: BTreeMap<String, u32>,
     /// The sessions the seed stopped, once their last turn ended.
     pub stopped: std::collections::BTreeSet<String>,
     /// When the seed started: what the real times of what it made follow.
@@ -157,6 +159,7 @@ impl<'a> World<'a> {
             runners: BTreeMap::new(),
             schedules: BTreeMap::new(),
             sessions: BTreeMap::new(),
+            numbers: BTreeMap::new(),
             stopped: std::collections::BTreeSet::new(),
             started: now_ms(),
         }
@@ -567,8 +570,9 @@ impl<'a> World<'a> {
     /// Linear: repositories, the GitHub accounts workspaces work in,
     /// review agents, the Linear connection and the projects' trackers.
     /// And where each project's numbering starts.
-    pub fn connections(&self) -> Result<()> {
+    pub fn connections(&mut self) -> Result<()> {
         let mut sql = Vec::new();
+        let mut numbers = Vec::new();
         let now = now_ms();
         let q = |s: &str| s.replace('\'', "''");
         for w in &self.cast.workspaces {
@@ -685,8 +689,10 @@ impl<'a> World<'a> {
                     "UPDATE projects SET session_counter = {} WHERE id = '{pid}';",
                     n - 1
                 ));
+                numbers.push((p.slug.clone(), n - 1));
             }
         }
+        self.numbers.extend(numbers);
         wrangler_sql(&self.root, &self.state, &sql.join("\n"))
     }
 
@@ -1069,15 +1075,9 @@ impl<'a> World<'a> {
             let pr_title = pr.title.clone().unwrap_or_else(|| title.clone());
             self.github.pull(repo, pr.number, &pr_title, &branch)?;
         }
-        // Numbers the story skips go to sessions it doesn't show.
-        let counter = super::wrangler_query(
-            &self.root,
-            &self.state,
-            &format!("SELECT session_counter AS n FROM projects WHERE id = '{pid}'"),
-        )?
-        .first()
-        .and_then(|r| r["n"].as_u64())
-        .unwrap_or(0) as u32;
+        // Numbers the story skips go to sessions it doesn't show. Only the
+        // seed starts sessions, so the last number is the one it gave.
+        let counter = self.numbers.get(&p.slug).copied().unwrap_or(0);
         if counter + 1 < number {
             wrangler_sql(
                 &self.root,
@@ -1196,6 +1196,7 @@ impl<'a> World<'a> {
                 Some(json!({ "cron": sched.cron, "timezone": sched.zone })),
             )?;
         }
+        self.numbers.insert(p.slug.clone(), number);
         self.sessions.insert(
             s.id.clone(),
             Made {
