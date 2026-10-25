@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><meta http-equiv="refresh" content="300" /><title>Routes</title></head>
+  <body>
+    <ul>
+      {% for route in routes %}
+        <li class="{{ route.colour }}"><b>{{ route.grade }}</b> {{ route.name }} <small>by {{ route.setter }}</small></li>
+      {% endfor %}
+    </ul>
+  </body>
+</html>

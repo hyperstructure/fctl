@@ -1,0 +1,29 @@
+name: plan
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  plan:
+    strategy:
+      matrix:
+        environment: [staging, production]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::318406112230:role/terraform-plan
+          aws-region: eu-north-1
+      - run: terraform -chdir=${{ matrix.environment }} init -input=false
+      - run: terraform -chdir=${{ matrix.environment }} plan -lock=false -input=false -no-color | tee plan.txt
+      - uses: ./.github/actions/comment-plan
+        with:
+          environment: ${{ matrix.environment }}
+          plan: plan.txt

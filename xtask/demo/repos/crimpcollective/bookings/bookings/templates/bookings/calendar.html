@@ -1,0 +1,22 @@
+{% extends "bookings/base.html" %}
+{% block content %}
+<h1>Sessions</h1>
+{% for day in days %}
+  <section class="day">
+    <h2>{{ day|date:"l j F" }}</h2>
+    <ul>
+      {% for session in sessions %}{% if session.starts_at.date == day %}
+        <li>
+          {{ session.starts_at|time:"H:i" }}–{{ session.ends_at|time:"H:i" }}
+          {% if session.note %}<em>{{ session.note }}</em>{% endif %}
+          {% if session.places_left > 0 %}
+            <a href="{% url 'book' session.id %}">Book ({{ session.places_left }} left)</a>
+          {% else %}
+            Full
+          {% endif %}
+        </li>
+      {% endif %}{% endfor %}
+    </ul>
+  </section>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,125 @@
+# shop#212 · Jonas delegated SHOP-398 (explore), last Wednesday 10:30 · Explore gift boxes for companies (a plan, waiting for Jonas)
+match = "delegated SHOP-398 to fctl in Linear"
+
+[[turn]]
+duration = "19m"
+result = """A plan for gift boxes for companies, and a rough size. Nothing is built yet.
+
+**What it takes**
+1. **Company orders** (platform, about 4 days). Every order hangs off a subscription today: `orders::create` takes one. A company order is a new kind, one company with many deliveries and no subscription.
+2. **An address list** (shop, about 3 days). The company uploads a CSV of names, addresses and delivery days, or types them in. Each postcode is checked against the delivery zones, and the ones we don't reach are flagged before anyone pays.
+3. **One invoice** (platform, about 4 days). The invoice job charges a saved card each week. A company gets one Stripe invoice for all its boxes instead, with VAT on each line, to pay within 30 days.
+4. **A card in each box** (shop and packing, about 2 days). A message of up to 300 characters goes on the packing list, so that the farm puts a printed card in the box.
+
+**Size:** about three weeks for one person, or two with someone on the platform alongside. Ordering and the card could ship first, paid by card, with invoicing after.
+
+**Before I start**
+- Do companies pay by invoice only, or by card as well?
+- One box for everyone, or can each person choose theirs?
+- Homes only, or the office too?
+
+Reply here to go ahead, or with what to change."""
+
+[[turn.step]]
+run = "fctl edit --title 'Explore gift boxes for companies' --description 'An exploration: how companies could send boxes to their staff, and a plan for it in SHOP-398.'"
+description = "Name the session"
+
+[[turn.step]]
+bash = "fctl ticket view SHOP-398"
+description = "Read the ticket and its comments"
+output = """SHOP-398 · Gift boxes for companies · In Progress
+Team Shop · Project Christmas boxes · Labels explore · Assignee fctl-sh · Created by Jonas Weber
+
+Three companies asked whether they can send boxes to their staff for Christmas. Explore what
+it would take: ordering for many addresses at once, invoicing the company, a card with a
+message. Don't build it yet: I'd like a plan and a rough size first.
+
+Comments
+  Jonas Weber · 1 day ago
+  The three so far: a design studio (40 people), a law firm (120) and a school (65 staff).
+  All of them asked for one invoice. Deliveries in the week before Christmas.
+  Asha Patel · 1 day ago
+  The invoice job only knows subscriptions, so I'd guess invoicing is most of this."""
+
+[[turn.step]]
+say = "The ticket asks for a plan, not code, so I'll read how the shop orders a box and how the platform invoices and packs one, and change nothing."
+
+[[turn.step]]
+todo = [["Read how the shop orders a box", "in_progress"], ["Read how the platform invoices and packs", "pending"], ["Work out what company orders need", "pending"], ["Write the plan, with a rough size", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "src/lib/platform.ts" },
+  { read = "src/app/checkout/route.ts" },
+  { grep = "subscriptionId|createSubscription", path = "src", output = "src/app/checkout/pay/route.ts:19:  const sub = await createSubscription(customer, box, day);\nsrc/app/account/deliveries/page.tsx:61:      await skipDelivery(sub.id, delivery.date);\nsrc/lib/platform.ts:3:export async function nextDelivery(subscriptionId: string): Promise<{ date: string }> {\nsrc/lib/platform.ts:8:export async function skipDelivery(subscriptionId: string, date: string) {" },
+]
+
+[[turn.step]]
+think = "In the shop, paying is creating a subscription: there is no checkout for a single box, let alone many. So whatever a company orders has to exist on the platform first. Asha's comment points at invoicing; I want to see how orders, invoices and packing lists are made there before I size anything."
+
+[[turn.step]]
+todo = [["Read how the shop orders a box", "completed"], ["Read how the platform invoices and packs", "in_progress"], ["Work out what company orders need", "pending"], ["Write the plan, with a rough size", "pending"]]
+
+[[turn.step]]
+agent = "Find how the platform makes orders and invoices"
+prompt = "In ~/repos/romanescohq/platform, find how an order is created and whether one can exist without a subscription, how invoices are made and charged, and what a packing list says about each order. Report the files and functions, briefly."
+report = "Orders come only from subscriptions: `orders::create(&Subscription, Week)` in src/orders/mod.rs:41, which the weekly order job calls for each active subscription. Invoices come from `jobs::invoice_week` (src/jobs/invoice.rs), one per subscription a week, charged at once through Stripe with the customer's saved card; nothing sends an invoice to be paid later (no `send_invoice` anywhere). Packing lists (`packing::list_for`, src/packing/mod.rs:27) print one line an order: the box, the address and the door code, and no note."
+  [[turn.step.steps]]
+  bash = "grep -rn 'pub async fn create' ~/repos/romanescohq/platform/src/orders/"
+  description = "Find where orders are made"
+  output = "/home/agent/repos/romanescohq/platform/src/orders/mod.rs:41:pub async fn create(db: &Db, sub: &Subscription, week: Week) -> Result<Order> {"
+  [[turn.step.steps]]
+  bash = "grep -rn 'collection_method\\|send_invoice\\|charge_automatically' ~/repos/romanescohq/platform/src/"
+  description = "See how invoices are paid"
+  output = "/home/agent/repos/romanescohq/platform/src/jobs/invoice.rs:58:        collection_method: CollectionMethod::ChargeAutomatically,"
+  [[turn.step.steps]]
+  say = "Invoices are charged to a saved card, never sent. Now the packing list."
+  [[turn.step.steps]]
+  bash = "sed -n 27,44p ~/repos/romanescohq/platform/src/packing/mod.rs"
+  description = "Read how a packing list is made"
+  output = """pub async fn list_for(db: &Db, farm: &FarmId, day: Date) -> Result<Vec<Line>> {
+    let orders = orders::for_farm(db, farm, day).await?;
+    Ok(orders
+        .into_iter()
+        .map(|o| Line {
+            box_name: o.box_name,
+            address: o.address,
+            door_code: o.door_code,
+        })
+        .collect())
+}"""
+
+[[turn.step]]
+todo = [["Read how the shop orders a box", "completed"], ["Read how the platform invoices and packs", "completed"], ["Work out what company orders need", "in_progress"], ["Write the plan, with a rough size", "pending"]]
+
+[[turn.step]]
+think = "Four pieces, then. A company order on the platform, with many deliveries and no subscription, which is new: everything downstream (the packing list, the drivers' routes) reads orders, so once the order exists the deliveries mostly follow. An address list in the shop, with each postcode checked against the zones, which `zonesFor` already does. A Stripe invoice with net-30 terms, which the invoice job can't do today. A note on the packing list for the card. The questions that change the size: invoice or card, the same box for everyone, homes or offices."
+
+[[turn.step]]
+todo = [["Read how the shop orders a box", "completed"], ["Read how the platform invoices and packs", "completed"], ["Work out what company orders need", "completed"], ["Write the plan, with a rough size", "completed"]]
+
+[[turn.step]]
+run = "fctl edit --description 'An exploration: how companies could send boxes to their staff. The plan is in SHOP-398, waiting for Jonas to go ahead.'"
+description = "Say where the plan is"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'A plan for gift boxes for companies, in SHOP-398: company orders, an address list, one invoice and a card in each box, about three weeks of work.' --approach 'Read how the shop orders and how the platform invoices and packs, and built nothing: the ticket asked for a plan and a size.' --challenges 'The platform has no order without a subscription and no invoice to pay later; those two are most of the work.' --insights 'Every order comes from `orders::create`, which takes a subscription. Anything sold once (gift boxes, a single box) needs a way around that first.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = """A plan for gift boxes for companies, and a rough size. Nothing is built yet.
+
+**What it takes**
+1. **Company orders** (platform, about 4 days). Every order hangs off a subscription today: `orders::create` takes one. A company order is a new kind, one company with many deliveries and no subscription.
+2. **An address list** (shop, about 3 days). The company uploads a CSV of names, addresses and delivery days, or types them in. Each postcode is checked against the delivery zones, and the ones we don't reach are flagged before anyone pays.
+3. **One invoice** (platform, about 4 days). The invoice job charges a saved card each week. A company gets one Stripe invoice for all its boxes instead, with VAT on each line, to pay within 30 days.
+4. **A card in each box** (shop and packing, about 2 days). A message of up to 300 characters goes on the packing list, so that the farm puts a printed card in the box.
+
+**Size:** about three weeks for one person, or two with someone on the platform alongside. Ordering and the card could ship first, paid by card, with invoicing after.
+
+**Before I start**
+- Do companies pay by invoice only, or by card as well?
+- One box for everyone, or can each person choose theirs?
+- Homes only, or the office too?
+
+Reply here to go ahead, or with what to change."""

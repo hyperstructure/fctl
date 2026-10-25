@@ -1,0 +1,186 @@
+# bookings#16 · Noor, last Wednesday 19:20 · Upgrade to Django 5.2
+match = "Upgrade the app from Django 4.2 to 5.2"
+
+[[turn]]
+duration = "46m"
+result = "The app is on Django 5.2 in bookings#51. It hit three deprecations, all fixed: the `timezone.utc` alias, `STATICFILES_STORAGE` and `index_together`. The whole suite passes with warnings as errors, on 4.2 and on 5.2."
+
+[[turn.step]]
+run = "fctl edit --title 'Upgrade to Django 5.2' --description 'Moves the app from Django 4.2 to 5.2, both long-term releases, and fixes the three deprecations it hit.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "requirements.txt" },
+  { read = ".python-version" },
+  { read = "crimp/settings.py" },
+]
+
+[[turn.step]]
+bash = "python -Wd manage.py test"
+description = "Run the tests on 4.2, with deprecation warnings shown"
+seconds = 6
+output = """/home/agent/workspace/bookings/views.py:7: RemovedInDjango50Warning: The django.utils.timezone.utc alias is deprecated. Please update your references to use datetime.timezone.utc instead.
+  from django.utils.timezone import utc
+/home/agent/workspace/.venv/lib/python3.13/site-packages/django/conf/__init__.py:241: RemovedInDjango51Warning: The STATICFILES_STORAGE setting is deprecated. Use STORAGES instead.
+  warnings.warn(STATICFILES_STORAGE_DEPRECATED_MSG, RemovedInDjango51Warning)
+/home/agent/workspace/bookings/models.py:35: RemovedInDjango51Warning: 'index_together' is deprecated. Use 'Meta.indexes' in 'bookings.Booking' instead.
+  class Booking(models.Model):
+Found 7 test(s).
+Creating test database for alias 'default'...
+System check identified no issues (0 silenced).
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.412s
+
+OK
+Destroying test database for alias 'default'..."""
+
+[[turn.step]]
+think = "Three warnings, and each is something 5.x removed: the `timezone.utc` alias went in 5.0, `STATICFILES_STORAGE` and `index_together` in 5.1. I'll fix them while still on 4.2, where the old and new ways both work, so the tests pass with warnings as errors before the version changes. whitenoise 6.9 and psycopg 3.2 both support 5.2, and Python 3.13 is fine for it."
+
+[[turn.step]]
+todo = [["Replace the timezone.utc alias", "in_progress"], ["STATICFILES_STORAGE → STORAGES", "pending"], ["index_together → Meta.indexes, with its migration", "pending"], ["Django 5.2 in requirements.txt", "pending"], ["The whole suite with warnings as errors", "pending"]]
+
+[[turn.step]]
+edit = "bookings/views.py"
+old = """from datetime import datetime, timedelta
+
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
+from django.utils.timezone import utc
+"""
+new = """from datetime import timedelta
+
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
+"""
+
+[[turn.step]]
+edit = "bookings/views.py"
+old = """    if booking.session.starts_at - datetime.now(tz=utc) < CANCEL_BEFORE:"""
+new = """    if booking.session.starts_at - timezone.now() < CANCEL_BEFORE:"""
+
+[[turn.step]]
+edit = "crimp/settings.py"
+old = """STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage\""""
+new = """STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}"""
+
+[[turn.step]]
+edit = "bookings/models.py"
+old = """    class Meta:
+        index_together = [("session", "member")]"""
+new = """    class Meta:
+        indexes = [models.Index(fields=["session", "member"], name="booking_session_member_idx")]"""
+
+[[turn.step]]
+run = '''cat > bookings/migrations/0003_rename_booking_index.py <<'MIGRATION'
+from django.db import migrations
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ("bookings", "0002_membership_session_note"),
+    ]
+
+    operations = [
+        migrations.RenameIndex(
+            model_name="booking",
+            new_name="booking_session_member_idx",
+            old_fields=("session", "member"),
+        ),
+    ]
+MIGRATION'''
+show = "python manage.py makemigrations bookings --name rename_booking_index"
+description = "Make the index's migration"
+output = """Migrations for 'bookings':
+  bookings/migrations/0003_rename_booking_index.py
+    ~ Rename unnamed index for ('session', 'member') on booking to booking_session_member_idx"""
+
+[[turn.step]]
+bash = "python -Werror manage.py test"
+description = "Run the tests on 4.2, warnings as errors"
+seconds = 6
+output = """Found 7 test(s).
+Creating test database for alias 'default'...
+System check identified no issues (0 silenced).
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.398s
+
+OK
+Destroying test database for alias 'default'..."""
+
+[[turn.step]]
+todo = [["Replace the timezone.utc alias", "completed"], ["STATICFILES_STORAGE → STORAGES", "completed"], ["index_together → Meta.indexes, with its migration", "completed"], ["Django 5.2 in requirements.txt", "in_progress"], ["The whole suite with warnings as errors", "pending"]]
+
+[[turn.step]]
+edit = "requirements.txt"
+old = "Django==4.2.24"
+new = "Django==5.2.7"
+
+[[turn.step]]
+bash = "pip install -r requirements.txt"
+description = "Install Django 5.2"
+seconds = 5
+output = """Collecting Django==5.2.7 (from -r requirements.txt (line 1))
+  Downloading django-5.2.7-py3-none-any.whl.metadata (4.1 kB)
+Downloading django-5.2.7-py3-none-any.whl (8.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 8.3/8.3 MB 31.2 MB/s eta 0:00:00
+Installing collected packages: Django
+  Attempting uninstall: Django
+    Found existing installation: Django 4.2.24
+    Uninstalling Django-4.2.24:
+      Successfully uninstalled Django-4.2.24
+Successfully installed Django-5.2.7"""
+
+[[turn.step]]
+tools = [
+  { bash = "python -Werror manage.py test", description = "Run the whole suite on 5.2, warnings as errors", seconds = 6, output = """Found 7 test(s).
+Creating test database for alias 'default'...
+System check identified no issues (0 silenced).
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 0.431s
+
+OK
+Destroying test database for alias 'default'...""" },
+  { bash = "python manage.py makemigrations --check --dry-run", description = "Check no migration is missing", output = "No changes detected" },
+  { bash = "python manage.py collectstatic --noinput", description = "Check the static files still build", seconds = 3, output = "130 static files copied to '/home/agent/workspace/staticfiles', 383 post-processed." },
+]
+
+[[turn.step]]
+todo = [["Replace the timezone.utc alias", "completed"], ["STATICFILES_STORAGE → STORAGES", "completed"], ["index_together → Meta.indexes, with its migration", "completed"], ["Django 5.2 in requirements.txt", "completed"], ["The whole suite with warnings as errors", "completed"]]
+
+[[turn.step]]
+commit = "Upgrade to Django 5.2"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Upgrade to Django 5.2"
+number = 51
+body = """Django 4.2 to 5.2, both long-term releases: 4.2's support is over, and 5.2's lasts until April 2028.
+
+It hit three deprecations, each removed in 5.x and fixed here:
+
+- `django.utils.timezone.utc` (gone in 5.0): `timezone.now()` in the cancel view.
+- `STATICFILES_STORAGE` (gone in 5.1): the `STORAGES` setting, with whitenoise as before.
+- `index_together` (gone in 5.1): `Meta.indexes` on `Booking`. The migration renames the existing index, so nothing is rebuilt.
+
+The whole suite passes with warnings as errors (`python -Werror manage.py test`) on 4.2 and 5.2, `makemigrations --check` finds nothing missing, and `collectstatic` still builds. Deploying needs `pip install -r requirements.txt` and `python manage.py migrate`."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Moved the app from Django 4.2 to 5.2 and fixed the three deprecations it hit (bookings#51).' --approach 'Fixed the deprecations while still on 4.2, where the old and new ways both work, then changed the version: the tests ran clean with warnings as errors on both.' --challenges 'index_together needed a migration; RenameIndex keeps the existing index rather than building a new one.' --insights 'Run the tests with `python -Werror manage.py test`: Django’s deprecations fail them, so the next upgrade has nothing hidden.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "The app is on Django 5.2 in bookings#51. It hit three deprecations, all fixed: the `timezone.utc` alias, `STATICFILES_STORAGE` and `index_together`. The whole suite passes with warnings as errors, on 4.2 and on 5.2."

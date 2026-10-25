@@ -95,12 +95,12 @@ enum Command {
     /// can open, until they expire (agents, in the sandbox of a session whose
     /// project publishes screenshots). Prints Markdown that shows each.
     #[command(
-        after_help = "GitHub takes no uploads from a session's token, so `gh pr edit --attach` fails
-                      there. Put the Markdown this prints in the pull request instead.
+        after_help = "GitHub takes no uploads from a session's token, so `gh pr edit --attach` fails \
+there. Put the Markdown this prints in the pull request instead.
 
-                      Examples:
+Examples:
   fctl publish before.png after.png
-                        fctl publish --json after.png | jq -r '.published[].markdown'"
+  fctl publish --json after.png | jq -r '.published[].markdown'"
     )]
     Publish(cmd::publish::PublishArgs),
     /// Resolve review threads of a pull request (agents that review and
@@ -158,10 +158,10 @@ enum Command {
     /// findings and posting a review (review agents, in their sandbox).
     #[command(after_help = "Examples:
   fctl review                          # the project's reviews, newest first
-                              fctl review settings --on --effort high
-                              fctl review start acme/web#12
-                              fctl review threads                  # a review agent, in its sandbox
-                              fctl review submit review.json       # a review agent, in its sandbox")]
+  fctl review settings --on --effort high
+  fctl review start acme/web#12
+  fctl review threads                  # a review agent, in its sandbox
+  fctl review submit review.json       # a review agent, in its sandbox")]
     Review(cmd::review::ReviewArgs),
     /// Schedules: tasks fctl starts a session for on its own, once at a set
     /// time or again and again, on the Claude subscription of the person
@@ -452,6 +452,35 @@ mod tests {
         // Clap's own checks: no flag defined twice in a command, groups of
         // flags that exist, and the like.
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn help_texts_leave_the_source_indentation_out() {
+        // A help text that goes on to the next line without a `\` keeps the
+        // spaces that indent that line in the source, and prints them.
+        fn check(cmd: &clap::Command, path: &str) {
+            let texts = [
+                cmd.get_about(),
+                cmd.get_long_about(),
+                cmd.get_before_help(),
+                cmd.get_before_long_help(),
+                cmd.get_after_help(),
+                cmd.get_after_long_help(),
+            ];
+            let args = cmd
+                .get_arguments()
+                .flat_map(|a| [a.get_help(), a.get_long_help()]);
+            for text in texts.into_iter().chain(args).flatten() {
+                for line in text.to_string().lines() {
+                    let indent = line.len() - line.trim_start().len();
+                    assert!(indent <= 8, "`{path} --help` prints {line:?}");
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                check(sub, &format!("{path} {}", sub.get_name()));
+            }
+        }
+        check(&Cli::command(), "fctl");
     }
 
     #[test]

@@ -1,0 +1,353 @@
+# platform#430 · Asha, last Tuesday 10:15 · Cache delivery slots per postcode (two commits: CI wanted the sqlx query data)
+match = "Cache the slots per postcode for a few minutes"
+
+[[turn]]
+duration = "44m"
+result = "Delivery slots are cached per postcode in platform#831, for ten minutes, and a zone's postcodes drop out as soon as one of its routes changes. The slot endpoint's 95th percentile went from 420 ms to 30 ms over 200 Stockholm postcodes. CI failed once, on missing sqlx query data for the new query; the second commit adds it, and the checks pass."
+
+[[turn.step]]
+run = "fctl edit --title 'Cache delivery slots per postcode' --description 'Caches the shop’s delivery slots per postcode, and drops them when a route changes.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "src/slots/mod.rs" },
+  { grep = "slots::|for_postcode", path = "src", output = "src/main.rs:22:        .route(\"/v1/slots/{postcode}\", get(slots::for_postcode))\nsrc/slots/mod.rs:18:pub async fn for_postcode(" },
+  { glob = "migrations/*.sql", output = "migrations/0136_farm_pickup_windows.sql\nmigrations/0137_stop_delivery_windows.sql" },
+]
+
+[[turn.step]]
+bash = "psql \"$DATABASE_URL\" -Atc \"SELECT 'http://localhost:8080/v1/slots/' || postcode FROM zone_postcodes ORDER BY random() LIMIT 200\" > /tmp/slot-urls.txt && oha -z 30s -c 16 --no-tui --urls-from-file /tmp/slot-urls.txt"
+description = "Measure the slot endpoint for 200 postcodes"
+seconds = 30
+output = """Summary:
+  Success rate:  100.00%
+  Total:         30.0021 secs
+  Slowest:       1.1874 secs
+  Fastest:       0.0688 secs
+  Average:       0.2391 secs
+  Requests/sec:  66.8953
+
+Response time distribution:
+  50.00% in 0.2118 secs
+  90.00% in 0.3647 secs
+  95.00% in 0.4207 secs
+  99.00% in 0.6542 secs
+  99.90% in 0.9917 secs"""
+
+[[turn.step]]
+think = "420 ms at the 95th percentile, nearly all of it the five-way join. Its answer changes when a route's load changes, or when a farm's picking days do. Postcodes can be cached for a few minutes, which covers the picking days; for routes, Postgres can say when one changes: a trigger that notifies, and a listener that drops the zone's postcodes from the cache. That's less to keep in step than a cache table."
+
+[[turn.step]]
+todo = [["Measure the slot endpoint", "completed"], ["Cache slots per postcode for ten minutes", "in_progress"], ["Drop a zone's postcodes when one of its routes changes", "pending"], ["Measure again", "pending"], ["Pull request", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "Cargo.toml" },
+  { read = "src/db.rs" },
+  { read = "src/main.rs" },
+]
+
+[[turn.step]]
+edit = "Cargo.toml"
+old = """futures = "0.3"
+"""
+new = """futures = "0.3"
+moka = { version = "0.12", features = ["future"] }
+"""
+
+[[turn.step]]
+write = "src/slots/cache.rs"
+content = """//! Delivery slots cached per postcode for ten minutes, and dropped when one
+//! of their zone's routes changes: Postgres says so on `routes_changed`
+//! (0138).
+
+use super::{Slot, query};
+use crate::db::Db;
+use moka::future::Cache;
+use std::sync::LazyLock;
+use std::time::Duration;
+
+/// How long a postcode's slots are kept: farms change their picking days
+/// without any route changing, so not longer.
+const FRESH: Duration = Duration::from_secs(10 * 60);
+
+static SLOTS: LazyLock<Cache<String, Vec<Slot>>> = LazyLock::new(|| {
+    Cache::builder()
+        .max_capacity(20_000)
+        .time_to_live(FRESH)
+        .build()
+});
+
+/// A postcode's slots, from the cache while they're fresh. Requests for a
+/// postcode that isn't cached share one query.
+pub async fn slots(db: &Db, postcode: &str) -> Result<Vec<Slot>, crate::Error> {
+    SLOTS
+        .try_get_with(postcode.to_owned(), query(db, postcode))
+        .await
+        .map_err(|e| crate::Error::Slots(e.to_string()))
+}
+
+/// Drops the postcodes of each zone whose route changes, for as long as the
+/// platform runs.
+pub async fn listen(pool: sqlx::PgPool) -> Result<(), crate::Error> {
+    let mut changes = sqlx::postgres::PgListener::connect_with(&pool).await?;
+    changes.listen("routes_changed").await?;
+    loop {
+        let zone = changes.recv().await?;
+        for postcode in crate::db::postcodes_of_zone(&pool, zone.payload()).await? {
+            SLOTS.invalidate(&postcode).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_second_ask_comes_from_the_cache() {
+        let db = crate::db::test::with_slots("11635", 3).await;
+        let first = slots(&db, "11635").await.unwrap();
+        db.queries().reset();
+        assert_eq!(slots(&db, "11635").await.unwrap().len(), first.len());
+        assert_eq!(db.queries().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_route_change_drops_its_zone() {
+        let db = crate::db::test::with_slots("11635", 3).await;
+        slots(&db, "11635").await.unwrap();
+        tokio::spawn(listen(db.pool().clone()));
+        db.change_route("sto-south").await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(SLOTS.get("11635").await.is_none());
+    }
+}
+"""
+
+[[turn.step]]
+edit = "src/slots/mod.rs"
+old = """use crate::db::Db;
+use axum::Json;"""
+new = """pub mod cache;
+
+use crate::db::Db;
+use axum::Json;"""
+
+[[turn.step]]
+edit = "src/slots/mod.rs"
+old = "    Ok(Json(query(&db, &postcode).await?))"
+new = "    Ok(Json(cache::slots(&db, &postcode).await?))"
+
+[[turn.step]]
+edit = "src/db.rs"
+old = """        .connect(url)
+        .await
+}
+"""
+new = """        .connect(url)
+        .await
+}
+
+/// The postcodes a zone delivers to.
+pub async fn postcodes_of_zone(pool: &PgPool, zone: &str) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar!("SELECT postcode FROM zone_postcodes WHERE zone = $1", zone)
+        .fetch_all(pool)
+        .await
+}
+"""
+
+[[turn.step]]
+write = "migrations/0138_delivery_slot_cache.sql"
+content = """-- The slot cache drops a zone's postcodes when one of its routes changes
+-- (platform#831).
+CREATE FUNCTION notify_routes_changed() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_notify('routes_changed', NEW.zone);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER routes_changed
+    AFTER INSERT OR UPDATE OF load, capacity, zone ON routes
+    FOR EACH ROW EXECUTE FUNCTION notify_routes_changed();
+"""
+
+[[turn.step]]
+edit = "src/main.rs"
+old = """    tokio::spawn(jobs::run(pool.clone()));
+"""
+new = """    tokio::spawn(jobs::run(pool.clone()));
+    tokio::spawn(slots::cache::listen(pool.clone()));
+"""
+
+[[turn.step]]
+bash = "cargo test -p platform slots"
+description = "Run the slot tests"
+seconds = 12
+output = """   Compiling platform v0.41.0 (/home/agent/workspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.12s
+     Running unittests src/main.rs (target/debug/deps/platform-3c1f0a9e7d2b4c61)
+
+running 9 tests
+test slots::cache::tests::a_second_ask_comes_from_the_cache ... ok
+test slots::cache::tests::a_route_change_drops_its_zone ... ok
+test slots::tests::a_full_van_marks_the_day_full ... ok
+test slots::tests::farms_that_dont_pick_leave_the_day_out ... ok
+test slots::tests::postcodes_on_two_zones_get_both ... ok
+test slots::tests::slots_run_three_weeks_ahead ... ok
+test slots::tests::the_cutoff_closes_tomorrow ... ok
+test slots::tests::unknown_postcodes_get_none ... ok
+test slots::tests::windows_come_in_order ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 214 filtered out; finished in 1.94s"""
+
+[[turn.step]]
+bash = "oha -z 30s -c 16 --no-tui --urls-from-file /tmp/slot-urls.txt"
+description = "Measure again"
+seconds = 30
+output = """Summary:
+  Success rate:  100.00%
+  Total:         30.0009 secs
+  Slowest:       0.3962 secs
+  Fastest:       0.0011 secs
+  Average:       0.0093 secs
+  Requests/sec:  1719.6411
+
+Response time distribution:
+  50.00% in 0.0037 secs
+  90.00% in 0.0189 secs
+  95.00% in 0.0302 secs
+  99.00% in 0.2235 secs
+  99.90% in 0.3471 secs"""
+
+[[turn.step]]
+commit = "Cache delivery slots per postcode"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Cache delivery slots per postcode"
+number = 831
+body = """The shop's slot query took 420 ms at the 95th percentile, and longer for postcodes with many farms. Slots are cached per postcode now:
+
+- For ten minutes, since farms change their picking days without a route changing (`slots::cache`).
+- A trigger on `routes` notifies `routes_changed` (0138), and the platform drops that zone's postcodes from the cache at once.
+- Requests for a postcode that isn't cached share one query.
+
+Over 200 Stockholm postcodes for 30 s, the 95th percentile went from 420 ms to 30 ms."""
+
+[[turn.step]]
+bash = "gh pr checks 831 --watch"
+description = "Watch the checks"
+seconds = 8
+error = true
+output = """Some checks were not successful
+1 failing, 12 successful, 1 skipped, and 0 pending checks
+
+✓  Clippy                      58s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700245
+✓  Format                      12s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700246
+X  sqlx offline data           41s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700247
+✓  Tests (billing)           2m10s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700248
+✓  Tests (jobs)              1m34s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700249
+✓  Tests (routes)            2m47s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700250
+✓  Tests (slots)               49s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700251
+✓  Tests (webhooks)          1m12s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700252
+✓  Migrations                  29s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700253
+✓  Migrations, rolled back     33s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700254
+✓  cargo deny                  18s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700255
+✓  Docker image              3m02s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700256
+✓  Deploy preview            1m51s   https://github.com/romanescohq/platform/actions/runs/18233415/job/54700257
+-  fctl review                       https://github.com/romanescohq/platform/runs/54700258"""
+
+[[turn.step]]
+bash = "gh run view 18233415 --log-failed | grep -A 4 'error:' | cut -f 3- | cut -c 30-"
+description = "Read why the sqlx check failed"
+output = """error: `SQLX_OFFLINE=true` but there is no cached data for this query, run `cargo sqlx prepare` to update the query cache or unset `SQLX_OFFLINE`
+  --> src/db.rs:27:5
+   |
+27 |     sqlx::query_scalar!("SELECT postcode FROM zone_postcodes WHERE zone = $1", zone)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"""
+
+[[turn.step]]
+think = "CI builds with `SQLX_OFFLINE=true`, from the query data in `.sqlx/`, and the new query in `postcodes_of_zone` has none. The setup script started Postgres in the sandbox with the schema migrated, so `cargo sqlx prepare` can write it here."
+
+[[turn.step]]
+bash = "cargo sqlx prepare --workspace"
+description = "Write the query data"
+seconds = 6
+output = "query data written to .sqlx in the workspace root; please check this into version control"
+
+[[turn.step]]
+write = ".sqlx/query-5c2d8f0e6a41b39e7d1f0c84a9e2b6d35f7a1c08e4b29d6f3a0c5e81b7d24f96.json"
+content = """{
+  "db_name": "PostgreSQL",
+  "query": "SELECT postcode FROM zone_postcodes WHERE zone = $1",
+  "describe": {
+    "columns": [
+      { "ordinal": 0, "name": "postcode", "type_info": "Text" }
+    ],
+    "parameters": { "Left": ["Text"] },
+    "nullable": [false]
+  },
+  "hash": "5c2d8f0e6a41b39e7d1f0c84a9e2b6d35f7a1c08e4b29d6f3a0c5e81b7d24f96"
+}
+"""
+
+[[turn.step]]
+commit = "Add the query data for the slot cache"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+bash = "gh pr checks 831 --watch"
+description = "Watch the checks again"
+seconds = 10
+output = """All checks were successful
+0 failing, 14 successful, 0 skipped, and 0 pending checks
+
+✓  Clippy                      58s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701931
+✓  Format                      12s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701932
+✓  sqlx offline data           41s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701933
+✓  Tests (billing)           2m10s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701934
+✓  Tests (jobs)              1m34s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701935
+✓  Tests (routes)            2m47s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701936
+✓  Tests (slots)               49s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701937
+✓  Tests (webhooks)          1m12s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701938
+✓  Migrations                  29s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701939
+✓  Migrations, rolled back     33s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701940
+✓  cargo deny                  18s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701941
+✓  Docker image              3m02s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701942
+✓  Deploy preview            1m51s   https://github.com/romanescohq/platform/actions/runs/18233977/job/54701943
+✓  fctl review               1m09s   https://github.com/romanescohq/platform/runs/54701944"""
+
+[[turn.step]]
+bash = "fctl memory"
+description = "Read the project's notes"
+output = """mem_01M2ZK4T7Q9V3B8N5D1R6F0C2X Asha Patel · 35 days ago
+  The shop's delivery-slot query takes 400 ms or more for postcodes with many farms: don't add joins to it.
+
+1 current note"""
+
+[[turn.step]]
+bash = "fctl memory stale mem_01M2ZK4T7Q9V3B8N5D1R6F0C2X --reason 'Cached per postcode since platform#831.'"
+description = "Mark the note on the slot query stale"
+output = "✓ mem_01M2ZK4T7Q9V3B8N5D1R6F0C2X is stale: agents no longer start with it"
+
+[[turn.step]]
+run = "fctl memory add 'CI builds with `SQLX_OFFLINE=true`, from the query data in `.sqlx/`: after changing a query, run `cargo sqlx prepare --workspace` against the sandbox’s Postgres (the setup script starts it), or CI fails with \"`SQLX_OFFLINE=true` but there is no cached data for this query\".'"
+description = "Remember the query data"
+
+[[turn.step]]
+run = "fctl edit --description 'Caches delivery slots per postcode for ten minutes, which takes the shop’s slot query from 420 ms to 30 ms at the 95th percentile.'"
+description = "Say what came of it"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Cached delivery slots per postcode for ten minutes, and dropped a zone’s postcodes when one of its routes changes (platform#831): the slot endpoint’s 95th percentile went from 420 ms to 30 ms.' --approach 'An in-process cache in front of the existing query, and a trigger on routes that notifies the platform, rather than a cache table the shop would have to keep in step.' --challenges 'The first push failed CI: the new query had no offline data in `.sqlx/`. The second commit adds it.' --insights 'After changing a query, run `cargo sqlx prepare --workspace` against the sandbox’s Postgres before pushing.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Delivery slots are cached per postcode in platform#831, for ten minutes, and a zone's postcodes drop out as soon as one of its routes changes. The slot endpoint's 95th percentile went from 420 ms to 30 ms over 200 Stockholm postcodes. CI failed once, on missing sqlx query data for the new query; the second commit adds it, and the checks pass."

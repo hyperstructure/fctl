@@ -1,0 +1,276 @@
+# shop#215 · Lucía, last Thursday 10:05 · Explain why a delivery day is full
+match = "the day picker only greys it out, and people write to support to ask why"
+
+[[turn]]
+duration = "34m"
+result = "Full days say why in shop#1281: the van is packed, or a farm doesn't pick that day, with a button for the nearest free day. The copy is in Swedish and English, for you to change."
+
+[[turn.step]]
+run = "fctl edit --title 'Explain why a delivery day is full' --description 'A full delivery day says why (the van is full, or the farm doesn’t pick that day) and offers the nearest free one.'"
+description = "Name the session"
+
+[[turn.step]]
+todo = [["Find out why a day is full", "in_progress"], ["Say why in the picker", "pending"], ["Offer the nearest free day", "pending"], ["Copy in Swedish and English", "pending"], ["Tests, then the pull request", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "src/components/DayPicker.tsx" },
+  { read = "src/app/delivery/slots.ts" },
+  { read = "messages/en.json" },
+]
+
+[[turn.step]]
+bash = "grep -n -A3 'reason' ~/repos/romanescohq/platform/src/routes/slots.rs"
+description = "See what the platform says about full days"
+output = """41:    /// Why a full day is full: its van is packed, or a farm in the box doesn't pick that day.
+42:    pub reason: Option<FullReason>,
+43-}
+44-
+--
+56:#[derive(Serialize)]
+57:#[serde(tag = "kind", rename_all = "snake_case")]
+58:pub enum FullReason {
+59-    VanFull,
+60-    NoPicking { farm: String },
+61-}"""
+
+[[turn.step]]
+say = "The platform already says why a day is full, `van_full` or `no_picking` with the farm's name, and the shop drops it: `Slot` has no `reason`, and full days are disabled buttons, which do nothing when tapped. I'll keep full days tappable, so that a tap explains the day and offers the nearest free one."
+
+[[turn.step]]
+edit = "src/app/delivery/slots.ts"
+old = """  full: boolean;
+};"""
+new = """  full: boolean;
+  /** Why a full day is full: its van is packed, or a farm doesn't pick that day. */
+  reason?: { kind: "van_full" } | { kind: "no_picking"; farm: string };
+};"""
+
+[[turn.step]]
+write = "src/app/delivery/nearest.ts"
+content = """import type { Slot } from "./slots";
+
+/**
+ * The free day nearest to `date`: the later one when two are as near,
+ * since the earlier may be past its order cutoff by the time someone picks it.
+ */
+export function nearestFree(slots: Slot[], date: string): Slot | null {
+  const at = slots.findIndex((s) => s.date === date);
+  if (at < 0) return null;
+  for (let step = 1; step < slots.length; step++) {
+    const later = slots[at + step];
+    if (later && !later.full) return later;
+    const earlier = slots[at - step];
+    if (earlier && !earlier.full) return earlier;
+  }
+  return null;
+}
+"""
+
+[[turn.step]]
+todo = [["Find out why a day is full", "completed"], ["Say why in the picker", "in_progress"], ["Offer the nearest free day", "in_progress"], ["Copy in Swedish and English", "pending"], ["Tests, then the pull request", "pending"]]
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """import type { Slot } from "@/app/delivery/slots";"""
+new = """import { nearestFree } from "@/app/delivery/nearest";
+import type { Slot } from "@/app/delivery/slots";"""
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """      <Days key={layout} layout={layout} slots={slots} onChange={onChange} />"""
+new = """      <Days key={layout} layout={layout} slots={slots} locale={locale} onChange={onChange} />"""
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """type DaysProps = { layout: "list" | "grid"; slots: Slot[]; onChange: (date: string) => void };
+
+function Days({ layout, slots, onChange }: DaysProps) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const chosen = slots.find((s) => s.date === selected);"""
+new = """type DaysProps = {
+  layout: "list" | "grid";
+  slots: Slot[];
+  locale: Locale;
+  onChange: (date: string) => void;
+};
+
+function Days({ layout, slots, locale, onChange }: DaysProps) {
+  const [selected, setSelected] = useState<string | null>(null);
+  // The full day someone tapped, which the picker explains.
+  const [explained, setExplained] = useState<Slot | null>(null);
+  const chosen = slots.find((s) => s.date === selected);
+  const choose = (date: string) => {
+    setSelected(date);
+    setExplained(null);
+    onChange(date);
+  };"""
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """            disabled={s.full}
+            className="day-picker__day"
+            onClick={() => {
+              setSelected(s.date);
+              onChange(s.date);
+            }}"""
+new = """            aria-disabled={s.full}
+            className={s.full ? "day-picker__day day-picker__day--full" : "day-picker__day"}
+            onClick={() => (s.full ? setExplained(s) : choose(s.date))}"""
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """        ))}
+      </div>
+    </div>
+  );
+}"""
+new = """        ))}
+      </div>
+      {explained && <FullDay slot={explained} slots={slots} locale={locale} onChoose={choose} />}
+    </div>
+  );
+}
+
+type FullDayProps = { slot: Slot; slots: Slot[]; locale: Locale; onChoose: (date: string) => void };
+
+/** Why a full day is full, and the nearest free day instead. */
+function FullDay({ slot, slots, locale, onChoose }: FullDayProps) {
+  const nearest = nearestFree(slots, slot.date);
+  const why =
+    slot.reason?.kind === "no_picking"
+      ? t(locale, "delivery.full.farm", { farm: slot.reason.farm })
+      : t(locale, "delivery.full.van");
+  return (
+    <p className="day-picker__full" role="status">
+      {why}{" "}
+      {nearest && (
+        <button type="button" className="day-picker__nearest" onClick={() => onChoose(nearest.date)}>
+          {t(locale, "delivery.nearest", { day: nearest.label })}
+        </button>
+      )}
+    </p>
+  );
+}"""
+
+[[turn.step]]
+say = "Now the words. I'll write them in Swedish first, as the shop's copy is, and in English, and leave them for Lucía to change."
+
+[[turn.step]]
+edit = "messages/sv.json"
+old = '''  "delivery.full": "Den här dagen är full",'''
+new = '''  "delivery.full": "Den här dagen är full",
+  "delivery.full.van": "Fullt: bilen är fullpackad den dagen.",
+  "delivery.full.farm": "Fullt: {farm} plockar inte den dagen.",
+  "delivery.nearest": "Ta {day} i stället",'''
+
+[[turn.step]]
+edit = "messages/en.json"
+old = '''  "delivery.full": "This day is full",'''
+new = '''  "delivery.full": "This day is full",
+  "delivery.full.van": "Full: the van is packed that day.",
+  "delivery.full.farm": "Full: {farm} doesn't pick that day.",
+  "delivery.nearest": "Take {day} instead",'''
+
+[[turn.step]]
+write = "src/app/delivery/nearest.test.ts"
+content = """import { describe, expect, it } from "vitest";
+import { nearestFree } from "./nearest";
+import type { Slot } from "./slots";
+
+const day = (date: string, full = false): Slot => ({ date, label: date, full });
+const week = [
+  day("2026-11-02", true),
+  day("2026-11-03"),
+  day("2026-11-04", true),
+  day("2026-11-05", true),
+  day("2026-11-06"),
+];
+
+describe("nearestFree", () => {
+  it("takes the next day when it's free", () => {
+    expect(nearestFree(week, "2026-11-02")?.date).toBe("2026-11-03");
+  });
+  it("looks both ways, the later day first", () => {
+    expect(nearestFree(week, "2026-11-04")?.date).toBe("2026-11-03");
+    expect(nearestFree(week, "2026-11-05")?.date).toBe("2026-11-06");
+  });
+  it("finds none when every day is full", () => {
+    expect(nearestFree(week.map((s) => ({ ...s, full: true })), "2026-11-04")).toBeNull();
+  });
+  it("finds none for a day it doesn't have", () => {
+    expect(nearestFree(week, "2026-12-24")).toBeNull();
+  });
+  it("finds none in an empty week", () => {
+    expect(nearestFree([], "2026-11-04")).toBeNull();
+  });
+});
+"""
+
+[[turn.step]]
+write = "e2e/full-day.spec.ts"
+content = """import { expect, test } from "@playwright/test";
+
+test("explains a full day and offers the nearest free one", async ({ page }) => {
+  await page.goto("/checkout/delivery?postcode=11432");
+  await page.getByRole("option", { name: "Mon 2 Nov" }).click();
+  await expect(page.getByRole("status")).toHaveText(/Full: Björkhaga doesn't pick that day/);
+  await page.getByRole("button", { name: "Take Tue 3 Nov instead" }).click();
+  await expect(page.getByLabel("Pick a delivery day")).toHaveValue("Tue 3 Nov");
+});
+"""
+
+[[turn.step]]
+tools = [
+  { bash = "npm run i18n:check", description = "Check every locale has every key", output = "✓ 120 keys in en, sv" },
+  { bash = "npm test", description = "Run the unit tests", seconds = 6, output = """
+> shop@3.18.0 test
+> vitest run
+
+ Test Files  61 passed (61)
+      Tests  365 passed (365)
+   Duration  8.31s""" },
+]
+
+[[turn.step]]
+bash = "npm run e2e"
+description = "Run the e2e tests"
+seconds = 20
+output = """
+> shop@3.18.0 e2e
+> playwright test
+
+Running 34 tests using 4 workers
+  34 passed (1.8m)"""
+
+[[turn.step]]
+todo = [["Find out why a day is full", "completed"], ["Say why in the picker", "completed"], ["Offer the nearest free day", "completed"], ["Copy in Swedish and English", "completed"], ["Tests, then the pull request", "in_progress"]]
+
+[[turn.step]]
+commit = "Explain why a delivery day is full, and offer the nearest free day"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Explain why a delivery day is full"
+number = 1281
+body = """A full delivery day says why it's full, and offers the nearest free day.
+
+- The platform's slots API already gave a reason (`van_full`, or `no_picking` with the farm's name); `Slot` keeps it now.
+- Full days stay tappable: a tap explains the day under the picker, with a button for the nearest free day (the later one when two are as near).
+- New copy, in Swedish and English:
+  - Fullt: bilen är fullpackad den dagen. / Full: the van is packed that day.
+  - Fullt: {farm} plockar inte den dagen. / Full: {farm} doesn't pick that day.
+  - Ta {day} i stället / Take {day} instead
+
+Lucía, change the words as you like: they're in `messages/sv.json` and `messages/en.json`.
+
+Tested with `npm test`, and end to end with `e2e/full-day.spec.ts`."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'A full delivery day says why it’s full (the van is packed, or a farm doesn’t pick that day) and offers the nearest free day (shop#1281).' --approach 'The platform’s slots API already said why a day is full: the picker only had to keep the reason and show it. Full days stay tappable, so that a tap explains the day rather than doing nothing.' --challenges 'None of the copy existed. I wrote it in Swedish and English, for Lucía to change in the pull request.' --insights 'When two free days are as near, offer the later: the earlier may be past its order cutoff by the time someone picks it.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Full days say why in shop#1281: the van is packed, or a farm doesn't pick that day, with a button for the nearest free day. The copy is in Swedish and English, for you to change."

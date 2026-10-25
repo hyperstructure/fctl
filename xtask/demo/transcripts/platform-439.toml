@@ -1,0 +1,91 @@
+# platform#439 · review of platform#840 at its second commit: passed, 1 fixed
+match = "Review romanescohq/platform#840, “Make charges idempotent per subscription and period”, at commit"
+
+[[turn]]
+duration = "58s"
+result = "No issues. The earlier finding is fixed: the key is claimed before Stripe is called, and Stripe gets it as its idempotency key."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Claim the charge key before calling Stripe\nMake charges idempotent per subscription and period" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[{\"id\": \"PRRT_kwDOPlat840a1\", \"path\": \"src/billing/charge.rs\", \"line\": 31, \"title\": \"Two workers can still both charge the card\", \"resolved\": false, \"replies\": 1}]" },
+]
+
+[[turn.step]]
+bash = "git diff HEAD~1 -- src/billing/charge.rs src/db.rs"
+description = "Read what changed since the last review"
+output = """diff --git a/src/billing/charge.rs b/src/billing/charge.rs
+index c511165..050a5f9 100644
+--- a/src/billing/charge.rs
++++ b/src/billing/charge.rs
+@@ -25,9 +25,19 @@
+ /// whose card was declined: both can come to one subscription at once.
+ pub async fn charge_once(db: &Db, subscription: &str, period: &str) -> Result<Charged, Error> {
+-    if db.charge_for(subscription, period).await?.is_some() {
++    // Whoever inserts the key charges; anyone after finds it taken. Stripe
++    // gets the key too, so a call retried after a timeout can't charge again.
++    if !db.claim_charge_key(subscription, period).await? {
+         return Ok(Charged::Already);
+     }
++    let key = format!("charge:{subscription}:{period}");
+     let amount = amount_due(db, subscription, period).await?;
+-    let charge = stripe::charge(subscription, amount).await?;
++    let charge = match stripe::charge_with_key(subscription, amount, &key).await {
++        Ok(charge) => charge,
++        Err(e) => {
++            // Declined, or Stripe unreachable: the next try may charge.
++            db.release_charge_key(subscription, period).await?;
++            return Err(e);
++        }
++    };
+     db.record_charge(subscription, period, &charge.id).await?;
+     Ok(Charged::Now(charge.id))
+diff --git a/src/db.rs b/src/db.rs
+index 484b37b..0f87fb9 100644
+--- a/src/db.rs
++++ b/src/db.rs
+@@ -26,4 +26,29 @@
+         .map(Option::flatten)
+     }
++
++    /// Claims the charge of `subscription` for `period`: true for the one
++    /// caller whose insert wins, false for everyone after it.
++    pub async fn claim_charge_key(&self, subscription: &str, period: &str) -> Result<bool, sqlx::Error> {
++        let inserted = sqlx::query!(
++            "INSERT INTO charge_keys (subscription, period) VALUES ($1, $2) ON CONFLICT DO NOTHING",
++            subscription,
++            period
++        )
++        .execute(&self.0)
++        .await?;
++        Ok(inserted.rows_affected() == 1)
++    }
++
++    /// Gives a claimed charge back, when Stripe didn't charge.
++    pub async fn release_charge_key(&self, subscription: &str, period: &str) -> Result<(), sqlx::Error> {
++        sqlx::query!(
++            "DELETE FROM charge_keys WHERE subscription = $1 AND period = $2 AND charge_id IS NULL",
++            subscription,
++            period
++        )
++        .execute(&self.0)
++        .await?;
++        Ok(())
++    }
+ }
+ """
+
+[[turn.step]]
+read = "tests/charge_race.rs"
+
+[[turn.step]]
+think = "The insert decides now: only the caller whose `ON CONFLICT DO NOTHING` inserted a row calls Stripe, with the key as its idempotency key. A failed call gives the key back, but only while it has no charge id, so it can't undo a charge that happened. The race test runs 500 rounds of two workers."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = """Posted the review on romanescohq/platform#840: no issues; 1 earlier finding marked fixed and resolved.
+https://github.com/romanescohq/platform/pull/840#pullrequestreview-2002466"""
+
+[[turn.step]]
+say = "No issues. The earlier finding is fixed: the key is claimed before Stripe is called, and Stripe gets it as its idempotency key."

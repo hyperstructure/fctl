@@ -1,0 +1,463 @@
+# platform#442 · Noor, yesterday 21:58 · Plan routes with milkfloat's time windows (a review round)
+match = "Move it to milkfloat, with each stop's delivery window as a time window"
+
+[[turn]]
+duration = "1h48m"
+result = "Routes plan with milkfloat in platform#843, with each stop's delivery window and each van's shift. `ROUTES_PLANNER=milkfloat` turns it on, and every run goes into `route_planner_runs` with its planner, so the delivery team can compare a week of both. On Monday's Stockholm stops milkfloat planned 12 routes instead of 14, 356 km instead of 412. Driver breaks wait for milkfloat#311."
+
+[[turn.step]]
+run = "fctl edit --title \"Plan routes with milkfloat's time windows\" --description 'Route planning moves from the nearest-neighbour heuristic to milkfloat, with each stop’s delivery window. Driver breaks wait for milkfloat#311.'"
+description = "Name the session"
+
+[[turn.step]]
+todo = [["Read the planner, the stops' windows and milkfloat's API", "in_progress"], ["Plan with milkfloat: vans' shifts, stops' windows", "pending"], ["Keep the old planner behind ROUTES_PLANNER", "pending"], ["Record each run, for the delivery team's comparison", "pending"], ["Compare the two on a real day, then the pull request", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "src/routes/plan.rs" },
+  { read = "src/routes/mod.rs" },
+  { read = "migrations/0137_stop_delivery_windows.sql" },
+]
+
+[[turn.step]]
+bash = "cd \"$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == \"milkfloat\") | .manifest_path' | xargs dirname)\" && grep -rn -B1 'pub fn shift\\|pub fn window\\|pub fn new(start' src"
+description = "Read milkfloat's API for shifts and windows"
+output = """src/vehicle.rs-52-    /// The driver's shift, in seconds after midnight.
+src/vehicle.rs:53:    pub fn shift(mut self, start: i64, end: i64) -> Self {
+--
+src/visit.rs-60-    /// When the visit may start.
+src/visit.rs:61:    pub fn window(mut self, window: TimeWindow) -> Self {
+--
+src/window.rs-21-    /// A window from `start` to `end`, in seconds.
+src/window.rs:22:    pub fn new(start: i64, end: i64) -> Self {"""
+
+[[turn.step]]
+think = "milkfloat takes vehicles with a capacity and a shift, visits with a demand, a service time and a window, and the matrix we already build. Shifts are seconds after midnight, so windows will be too: a stop's window becomes its start and end as times of day. The nearest-neighbour planner moves to `legacy.rs`, `ROUTES_PLANNER` picks one, and each run is recorded with its planner and totals, so the delivery team can compare them for a week."
+
+[[turn.step]]
+write = "src/routes/legacy.rs"
+content = """//! The nearest-neighbour planner, from before milkfloat: each van takes the
+//! nearest stop it hasn't been to until it's full, then goes back. Kept for
+//! a week while the delivery team compares the two (`ROUTES_PLANNER`).
+
+use super::{Route, Stop};
+use crate::depots::Depot;
+use milkfloat::Matrix;
+
+/// Plans `depot`'s routes: each van takes the nearest stop it hasn't been
+/// to until it's full, then goes back.
+pub fn plan(depot: &Depot, stops: &[Stop], matrix: &Matrix) -> Vec<Route> {
+    let mut left: Vec<usize> = (0..stops.len()).collect();
+    let mut routes = Vec::new();
+    for van in &depot.vans {
+        let mut route = Route::new(van.id);
+        let mut at = None;
+        while let Some(next) = nearest(matrix, at, &left) {
+            if route.load() + stops[next].boxes > van.capacity {
+                break;
+            }
+            route.stops.push(stops[next].clone());
+            left.retain(|&s| s != next);
+            at = Some(next);
+        }
+        routes.push(route);
+    }
+    routes
+}
+
+/// The stop of `left` nearest to `from`, by travel time; from the depot,
+/// the first.
+fn nearest(matrix: &Matrix, from: Option<usize>, left: &[usize]) -> Option<usize> {
+    left.iter()
+        .copied()
+        .min_by_key(|&s| from.map_or(0, |f| matrix.get(f, s)))
+}
+"""
+
+[[turn.step]]
+write = "src/routes/plan.rs"
+content = """//! The vans' routes for a day: milkfloat's, or the nearest-neighbour planner's (`ROUTES_PLANNER`).
+
+use super::{Route, Stop, legacy, runs};
+use crate::{Error, db::Db, depots::Depot};
+use chrono::{NaiveTime, Timelike};
+use milkfloat::{Matrix, Problem, Solver, TimeWindow, Vehicle, Visit};
+use std::time::{Duration, Instant};
+
+/// Which planner plans the day's routes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Planner {
+    Milkfloat,
+    Legacy,
+}
+
+impl Planner {
+    /// From `ROUTES_PLANNER`: `milkfloat`, else the nearest-neighbour planner.
+    pub fn from_env() -> Self {
+        match std::env::var("ROUTES_PLANNER").as_deref() {
+            Ok("milkfloat") => Self::Milkfloat,
+            _ => Self::Legacy,
+        }
+    }
+}
+
+/// Plans `depot`'s routes with `planner`, and records the run, so that the
+/// delivery team can compare the two planners' days (`route_planner_runs`).
+pub async fn plan(
+    db: &Db,
+    depot: &Depot,
+    stops: &[Stop],
+    matrix: &Matrix,
+    planner: Planner,
+) -> Result<Vec<Route>, Error> {
+    let started = Instant::now();
+    let routes = match planner {
+        Planner::Milkfloat => with_milkfloat(depot, stops, matrix)?,
+        Planner::Legacy => legacy::plan(depot, stops, matrix),
+    };
+    runs::record(db, depot, planner, &routes, started.elapsed()).await?;
+    Ok(routes)
+}
+
+/// How long a stop takes: out of the van, to the door and back.
+const SERVICE: Duration = Duration::from_secs(90);
+
+/// How long milkfloat may search: planning starts after the 18:00 cutoff,
+/// and the drivers' app wants the routes by 18:30.
+const TIME_LIMIT: Duration = Duration::from_secs(20);
+
+/// milkfloat's routes: each van a vehicle with its capacity and shift, each
+/// stop a visit of a minute and a half within its delivery window.
+fn with_milkfloat(depot: &Depot, stops: &[Stop], matrix: &Matrix) -> Result<Vec<Route>, Error> {
+    let vehicles: Vec<Vehicle> = depot
+        .vans
+        .iter()
+        .map(|v| {
+            Vehicle::new(v.id)
+                .capacity(v.capacity)
+                .shift(seconds(v.shift_start), seconds(v.shift_end))
+        })
+        .collect();
+    let visits: Vec<Visit> = stops
+        .iter()
+        .map(|s| Visit::new(s.id).demand(s.boxes).service(SERVICE).window(window(s)))
+        .collect();
+    let problem = Problem::new(vehicles, visits, matrix.clone());
+    let solution = Solver::default()
+        .time_limit(TIME_LIMIT)
+        .solve(&problem)
+        .map_err(|e| Error::Planning(e.to_string()))?;
+    Ok(solution
+        .routes()
+        .map(|r| Route {
+            van: r.vehicle(),
+            stops: r.visits().map(|v| stops[v.index()].clone()).collect(),
+        })
+        .collect())
+}
+
+/// Seconds after midnight, as milkfloat takes shifts and time windows.
+fn seconds(t: NaiveTime) -> i64 {
+    i64::from(t.num_seconds_from_midnight())
+}
+
+/// A stop's delivery window, as milkfloat takes a time window.
+fn window(stop: &Stop) -> TimeWindow {
+    TimeWindow::new(seconds(stop.window_start.time()), seconds(stop.window_end.time()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_is_seconds_after_midnight() {
+        let stop = Stop::test("2026-10-26T08:00:00Z", "2026-10-26T10:00:00Z");
+        assert_eq!(window(&stop), TimeWindow::new(28_800, 36_000));
+    }
+}
+"""
+
+[[turn.step]]
+write = "src/routes/runs.rs"
+content = """//! Each planning run, with its planner and what its routes come to, so that
+//! the delivery team can compare a week of both planners (0141).
+
+use super::{Route, plan::Planner};
+use crate::depots::Depot;
+use std::time::Duration;
+
+pub async fn record(
+    db: &crate::db::Db,
+    depot: &Depot,
+    planner: Planner,
+    routes: &[Route],
+    took: Duration,
+) -> Result<(), crate::Error> {
+    let stops: usize = routes.iter().map(|r| r.stops.len()).sum();
+    let planner = match planner {
+        Planner::Milkfloat => "milkfloat",
+        Planner::Legacy => "legacy",
+    };
+    sqlx::query!(
+        "INSERT INTO route_planner_runs (depot, planner, routes, stops, took_ms) VALUES ($1, $2, $3, $4, $5)",
+        depot.id,
+        planner,
+        routes.len() as i32,
+        stops as i32,
+        took.as_millis() as i64,
+    )
+    .execute(db.pool())
+    .await?;
+    Ok(())
+}
+"""
+
+[[turn.step]]
+write = "migrations/0141_route_planner_runs.sql"
+content = """-- Each planning run, so that the two planners can be compared for a week
+-- (platform#843).
+CREATE TABLE route_planner_runs (
+    id         BIGSERIAL PRIMARY KEY,
+    depot      TEXT NOT NULL,
+    planner    TEXT NOT NULL CHECK (planner IN ('milkfloat', 'legacy')),
+    routes     INT NOT NULL,
+    stops      INT NOT NULL,
+    took_ms    BIGINT NOT NULL,
+    planned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+[[turn.step]]
+edit = "src/routes/mod.rs"
+old = """pub mod matrix;
+pub mod plan;
+"""
+new = """pub mod legacy;
+pub mod matrix;
+pub mod plan;
+pub mod runs;
+"""
+
+[[turn.step]]
+edit = "src/routes/mod.rs"
+old = """        all.extend(plan::plan(&depot, &stops, &matrix));
+"""
+new = """        all.extend(plan::plan(&db, &depot, &stops, &matrix, plan::Planner::from_env()).await?);
+"""
+
+[[turn.step]]
+write = "tests/plan_compare.rs"
+content = """//! Both planners on a Monday in Stockholm, side by side: what the delivery
+//! team will compare for a week.
+
+mod common;
+
+use platform::routes::plan::{Planner, plan};
+
+#[tokio::test]
+async fn both_planners_plan_a_monday() {
+    let db = common::TestDb::isolated().await;
+    let (depot, stops, matrix) = common::fixture("sto-1-monday").await;
+    println!("{}, {} stops, {} vans", depot.id, stops.len(), depot.vans.len());
+    for planner in [Planner::Legacy, Planner::Milkfloat] {
+        let routes = plan(&db.platform(), &depot, &stops, &matrix, planner).await.unwrap();
+        println!("  {:<10} {}", format!("{planner:?}").to_lowercase(), common::summary(&depot, &routes, &matrix));
+        assert!(routes.iter().all(|r| r.load() <= depot.van(r.van).capacity));
+    }
+}
+"""
+
+[[turn.step]]
+bash = "cargo sqlx prepare --workspace"
+description = "Write the query data"
+seconds = 6
+output = "query data written to .sqlx in the workspace root; please check this into version control"
+
+[[turn.step]]
+write = ".sqlx/query-c83f1a6e2d09b74f5e1c8a3d6b20f97e4a5d1c0b8e3f62a9d7c4b1e05f8a3d26.json"
+content = """{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO route_planner_runs (depot, planner, routes, stops, took_ms) VALUES ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": { "Left": ["Text", "Text", "Int4", "Int4", "Int8"] },
+    "nullable": []
+  },
+  "hash": "c83f1a6e2d09b74f5e1c8a3d6b20f97e4a5d1c0b8e3f62a9d7c4b1e05f8a3d26"
+}
+"""
+
+[[turn.step]]
+tools = [
+  { bash = "cargo test -p platform routes", description = "Run the route tests", seconds = 14, output = "running 13 tests\ntest routes::legacy::tests::a_full_van_goes_home ... ok\ntest routes::legacy::tests::every_stop_gets_a_van ... ok\ntest routes::plan::tests::a_window_is_seconds_after_midnight ... ok\ntest routes::tests::plans_two_depots_at_once ... ok\ntest routes::tests::plans_an_empty_day ... ok\ntest routes::tests::stops_keep_their_windows ... ok\ntest routes::tests::the_depot_is_first_and_last ... ok\ntest routes::tests::vans_never_exceed_their_capacity ... ok\ntest routes::tests::the_route_export_lists_every_stop ... ok\ntest routes::matrix::tests::a_day_after_the_cutoff_is_kept ... ok\ntest routes::matrix::tests::a_day_before_the_cutoff_is_built_again ... ok\ntest routes::matrix::tests::rows_land_where_they_belong ... ok\ntest routes::matrix::tests::yesterdays_matrices_go ... ok\n\ntest result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 212 filtered out; finished in 3.48s" },
+]
+
+[[turn.step]]
+bash = "cargo test -p platform --release --test plan_compare -- --nocapture"
+description = "Compare the two planners on a Monday in Stockholm"
+seconds = 40
+output = """running 1 test
+sto-1, 412 stops, 14 vans
+  legacy     14 routes   412 km   61 h 20 min   37 stops outside their window
+  milkfloat  12 routes   356 km   54 h 05 min    0 stops outside their window
+test both_planners_plan_a_monday ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.27s"""
+
+[[turn.step]]
+commit = "Plan routes with milkfloat's time windows"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Plan routes with milkfloat's time windows"
+number = 843
+body = """Route planning moves from the nearest-neighbour heuristic to milkfloat: each van is a vehicle with its capacity and shift, and each stop a visit within its delivery window.
+
+- `ROUTES_PLANNER=milkfloat` plans with milkfloat; the old planner stays in `routes::legacy` for the comparison.
+- Every run goes into `route_planner_runs` (0141) with its planner, its routes and how long it took, so the delivery team can compare a week of both.
+- On Monday's Stockholm stops: 12 routes instead of 14, 356 km instead of 412, and no stop outside its window instead of 37.
+
+Driver breaks aren't planned yet: they come with milkfloat#311."""
+
+[[turn.step]]
+say = "Routes plan with milkfloat in platform#843, with each stop's delivery window and each van's shift. `ROUTES_PLANNER=milkfloat` turns it on, and every run goes into `route_planner_runs` with its planner, so the delivery team can compare a week of both. On Monday's Stockholm stops milkfloat planned 12 routes instead of 14, 356 km instead of 412. Driver breaks wait for milkfloat#311."
+
+[[turn]]
+match = "fctl's review agent reviewed commit"
+duration = "43m"
+result = "Fixed both: windows go to milkfloat in seconds after midnight by the depot's clock (`Depot::local_seconds`), as the vans' shifts already did, so Copenhagen's 08:00 is 28 800 in winter and in summer. And `ROUTES_PLANNER` is `milkfloat`, the default, or `legacy`: anything else stops the platform at startup. Pushed to platform#843."
+
+[[turn.step]]
+say = "Both findings are right. milkfloat's clock is the depot's day: with the windows' times of day in UTC, every window is an hour early in winter and two in summer, and the comparison couldn't show it, since it measured on the same clock. And a typo in `ROUTES_PLANNER` would plan with the old planner without a word."
+
+[[turn.step]]
+grep = "fn local_seconds"
+path = "src"
+output = "src/depots.rs:15:    pub fn local_seconds(&self, t: DateTime<Utc>) -> i64 {"
+
+[[turn.step]]
+edit = "src/routes/plan.rs"
+old = """    /// From `ROUTES_PLANNER`: `milkfloat`, else the nearest-neighbour planner.
+    pub fn from_env() -> Self {
+        match std::env::var("ROUTES_PLANNER").as_deref() {
+            Ok("milkfloat") => Self::Milkfloat,
+            _ => Self::Legacy,
+        }
+    }"""
+new = """    /// From `ROUTES_PLANNER`: `milkfloat`, the default, or `legacy` for the
+    /// nearest-neighbour planner. Anything else is refused at startup, so
+    /// that a typo can't switch planners.
+    pub fn from_env() -> Result<Self, String> {
+        match std::env::var("ROUTES_PLANNER").as_deref() {
+            Err(_) | Ok("milkfloat") => Ok(Self::Milkfloat),
+            Ok("legacy") => Ok(Self::Legacy),
+            Ok(other) => Err(format!("ROUTES_PLANNER is {other:?}: say milkfloat or legacy")),
+        }
+    }"""
+
+[[turn.step]]
+edit = "src/routes/plan.rs"
+old = "        .map(|s| Visit::new(s.id).demand(s.boxes).service(SERVICE).window(window(s)))"
+new = "        .map(|s| Visit::new(s.id).demand(s.boxes).service(SERVICE).window(window(depot, s)))"
+
+[[turn.step]]
+edit = "src/routes/plan.rs"
+old = """/// A stop's delivery window, as milkfloat takes a time window.
+fn window(stop: &Stop) -> TimeWindow {
+    TimeWindow::new(seconds(stop.window_start.time()), seconds(stop.window_end.time()))
+}"""
+new = """/// A stop's delivery window, as milkfloat takes a time window: seconds after
+/// midnight by the depot's clock, as the vans' shifts are. Stops keep their
+/// windows in UTC.
+fn window(depot: &Depot, stop: &Stop) -> TimeWindow {
+    TimeWindow::new(depot.local_seconds(stop.window_start), depot.local_seconds(stop.window_end))
+}"""
+
+[[turn.step]]
+edit = "src/routes/plan.rs"
+old = """    #[test]
+    fn a_window_is_seconds_after_midnight() {
+        let stop = Stop::test("2026-10-26T08:00:00Z", "2026-10-26T10:00:00Z");
+        assert_eq!(window(&stop), TimeWindow::new(28_800, 36_000));
+    }"""
+new = """    #[test]
+    fn windows_are_seconds_after_midnight_at_the_depot() {
+        let cph = Depot::test("cph-1", chrono_tz::Europe::Copenhagen);
+        // 08:00 to 10:00 in Copenhagen: an hour ahead of UTC in winter, two
+        // in summer.
+        let winter = Stop::test("2026-11-23T07:00:00Z", "2026-11-23T09:00:00Z");
+        let summer = Stop::test("2026-06-22T06:00:00Z", "2026-06-22T08:00:00Z");
+        assert_eq!(window(&cph, &winter), TimeWindow::new(28_800, 36_000));
+        assert_eq!(window(&cph, &summer), TimeWindow::new(28_800, 36_000));
+    }
+
+    #[test]
+    fn unknown_planners_are_refused() {
+        // SAFETY: no other test reads or writes the environment.
+        unsafe { std::env::set_var("ROUTES_PLANNER", "milkflot") };
+        assert!(Planner::from_env().is_err());
+    }"""
+
+[[turn.step]]
+edit = "src/routes/mod.rs"
+old = """        all.extend(plan::plan(&db, &depot, &stops, &matrix, plan::Planner::from_env()).await?);
+"""
+new = """        all.extend(plan::plan(&db, &depot, &stops, &matrix, db.planner()).await?);
+"""
+
+[[turn.step]]
+read = "src/main.rs"
+
+[[turn.step]]
+edit = "src/main.rs"
+old = """    let pool = db::connect(&std::env::var("DATABASE_URL")?).await?;
+"""
+new = """    // Refused here rather than at 18:00, when planning starts.
+    let planner = routes::plan::Planner::from_env().map_err(anyhow::Error::msg)?;
+    let pool = db::connect(&std::env::var("DATABASE_URL")?).await?;
+"""
+
+[[turn.step]]
+edit = "src/main.rs"
+old = """        .with_state(db::Db::new(pool.clone()));
+"""
+new = """        .with_state(db::Db::new(pool.clone()).planning_with(planner));
+"""
+
+[[turn.step]]
+tools = [
+  { bash = "cargo test -p platform routes::plan", description = "Run the planner's tests", seconds = 10, output = "running 2 tests\ntest routes::plan::tests::unknown_planners_are_refused ... ok\ntest routes::plan::tests::windows_are_seconds_after_midnight_at_the_depot ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 224 filtered out; finished in 0.00s" },
+  { bash = "ROUTES_PLANNER=milkflot cargo run -q", description = "Start the platform with a typo", seconds = 4, error = true, output = "Error: ROUTES_PLANNER is \"milkflot\": say milkfloat or legacy" },
+]
+
+[[turn.step]]
+bash = "cargo test -p platform --release --test plan_compare -- --nocapture"
+description = "Compare the two planners again"
+seconds = 40
+output = """running 1 test
+sto-1, 412 stops, 14 vans
+  legacy     14 routes   412 km   61 h 20 min   37 stops outside their window
+  milkfloat  12 routes   349 km   53 h 40 min    0 stops outside their window
+test both_planners_plan_a_monday ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.94s"""
+
+[[turn.step]]
+commit = "Send milkfloat the depot's local times, and refuse unknown planners"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+run = "fctl memory add 'milkfloat’s time windows are seconds after midnight in the depot’s time zone, not UTC: convert with `Depot::local_seconds`, or every route plans an hour off in winter and two in summer.'"
+description = "Remember milkfloat's clock"
+
+[[turn.step]]
+run = "fctl retro --outcome partial --worked-on 'Moved route planning from the nearest-neighbour heuristic to milkfloat, with each stop’s delivery window (platform#843).' --approach 'Kept the old planner behind `ROUTES_PLANNER=legacy` for a week, so the delivery team can compare the two on real days.' --challenges 'The review found that the time windows went to milkfloat in UTC; it wants the depot’s local time, so every route came out an hour off.' --insights 'Driver breaks aren’t planned yet; they come with milkfloat#311.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Fixed both: windows go to milkfloat in seconds after midnight by the depot's clock (`Depot::local_seconds`), as the vans' shifts already did, so Copenhagen's 08:00 is 28 800 in winter and in summer. And `ROUTES_PLANNER` is `milkfloat`, the default, or `legacy`: anything else stops the platform at startup. Pushed to platform#843."

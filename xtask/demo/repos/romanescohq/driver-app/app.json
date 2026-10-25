@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Romanesco Driver",
+    "slug": "driver-app",
+    "scheme": "romanesco-driver",
+    "version": "2.14.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "farm.romanesco.driver",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "farm.romanesco.driver"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      ["expo-camera", { "cameraPermission": "Take a photo of a damaged box." }],
+      ["@rnmapbox/maps", { "RNMapboxMapsDownloadToken": "$MAPBOX_DOWNLOADS_TOKEN" }]
+    ]
+  }
+}

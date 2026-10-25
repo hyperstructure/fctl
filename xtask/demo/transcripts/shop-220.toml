@@ -1,0 +1,43 @@
+# shop#220 · review of shop#1285: passed
+match = "Review romanescohq/shop#1285, “Show which farm each vegetable comes from”, at commit"
+
+[[turn]]
+duration = "52s"
+result = "No issues: the farms come with the box's items in one request, and items without a farm still render."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Link each item in a box to the farm that grows it" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " e2e/farms.spec.ts           | 12 ++++++++++++\n messages/en.json            |  1 +\n messages/sv.json            |  1 +\n src/components/BoxItem.tsx  | 13 ++++++++++++-\n src/components/FarmLink.tsx | 16 ++++++++++++++++\n src/lib/boxes.ts            |  7 +++++--\n 6 files changed, 47 insertions(+), 3 deletions(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+read = "src/components/FarmLink.tsx"
+output = """     1\timport Image from "next/image";
+     2\timport Link from "next/link";
+     3\timport type { Locale } from "@/i18n/config";
+     4\timport { t } from "@/i18n/t";
+     5\timport type { Farm } from "@/lib/boxes";
+     6\t
+     7\t/** The farm an item comes from: its photo, its name and the line it wrote about itself. */
+     8\texport function FarmLink({ farm, locale }: { farm: Farm; locale: Locale }) {
+     9\t  return (
+    10\t    <Link href={`/farms/${farm.id}`} className="farm-link">
+    11\t      <Image src={`${farm.photo_url}?w=64`} alt="" width={32} height={32} className="farm-link__photo" />
+    12\t      <span className="farm-link__name">{t(locale, "box.grownAt", { farm: farm.name })}</span>
+    13\t      <span className="farm-link__blurb">{farm.blurb}</span>
+    14\t    </Link>
+    15\t  );
+    16\t}"""
+
+[[turn.step]]
+think = "The photo is decorative next to the farm's name, so the empty `alt` is right, and the link's name is the text in it. `farm` is optional on `Item`, so a box whose items come from an older cache, without farms, renders as before. `?w=64` asks for twice the 32 px it shows, for sharp screens."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = "Posted the review on romanescohq/shop#1285: no issues.\nhttps://github.com/romanescohq/shop/pull/1285#pullrequestreview-2003129"
+
+[[turn.step]]
+say = "No issues: the farms come with the box's items in one request, and items without a farm still render."

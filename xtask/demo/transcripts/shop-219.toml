@@ -1,0 +1,190 @@
+# shop#219 · Jonas delegated SHOP-405, yesterday 11:02 · Show which farm each vegetable comes from
+match = "delegated SHOP-405 to fctl in Linear"
+
+[[turn]]
+duration = "31m"
+result = "Every item in the box builder and on the box page links to its farm now, with the farm's photo and its line: shop#1285 is open."
+
+[[turn.step]]
+run = "fctl edit --title 'Show which farm each vegetable comes from' --description 'Each item in a box links to the farm it comes from, with the farm’s photo and a line about it.'"
+description = "Name the session"
+
+[[turn.step]]
+bash = "fctl ticket view SHOP-405"
+description = "Read the ticket and its comments"
+output = """SHOP-405 · Show where each vegetable is grown · In Progress
+Team Shop · Assignee fctl-sh · Created by Jonas Weber
+
+Customers keep asking where things come from. In the box builder and on the box page, link
+each item to the farm that grows it, with the farm's photo and a line about it. The
+platform's farms API has both.
+
+Comments
+  Lucía Navarro · 2 days ago
+  The farm's photo as a small circle before its name, and its line under the item's name.
+  The whole row links to the farm's page, which we have already (/farms/[id])."""
+
+[[turn.step]]
+todo = [["Find where both pages draw a box's items", "in_progress"], ["Get each item's farm from the platform", "pending"], ["A farm link with its photo and line", "pending"], ["Copy in Swedish and English", "pending"], ["Test both pages, then the pull request", "pending"]]
+
+[[turn.step]]
+tools = [
+  { grep = "<BoxItem", path = "src", output = "src/app/boxes/[slug]/page.tsx:24:          <BoxItem key={item.id} item={item} locale={locale} />\nsrc/app/build/Builder.tsx:61:            <BoxItem key={item.id} item={item} locale={locale} />" },
+  { read = "src/components/BoxItem.tsx" },
+  { read = "src/lib/boxes.ts" },
+]
+
+[[turn.step]]
+tools = [
+  { bash = "grep -n -A9 'pub struct Farm ' ~/repos/romanescohq/platform/src/routes/farms.rs", description = "See what the farms API gives", output = """14:pub struct Farm {
+15-    pub id: String,
+16-    pub name: String,
+17-    /// Where it is: "Uppsala", "Norrtälje".
+18-    pub place: String,
+19-    /// One line about it, which the farm writes.
+20-    pub blurb: String,
+21-    pub photo_url: String,
+22-}""" },
+  { bash = "grep -n 'include' ~/repos/romanescohq/platform/src/routes/boxes.rs", description = "See what box items can include", output = """88:    /// `?include=farm` embeds each item's farm, as the farms API gives it.
+91:    let include_farm = query.include.as_deref() == Some("farm");""" },
+]
+
+[[turn.step]]
+say = "Both pages draw their items with `BoxItem`, so one change covers the box builder and the box page. The platform's box items can embed each item's farm (`?include=farm`), with its name, place, photo and line, so the farms come in the request the pages already make rather than one more per item."
+
+[[turn.step]]
+edit = "src/lib/boxes.ts"
+old = """/** What a box holds this week, as the platform has it. */
+export async function boxItems(slug: string): Promise<Item[]> {
+  const res = await fetch(`${API}/boxes/${slug}/items`, { next: { revalidate: 300 } });"""
+new = """/** A farm, as the platform's farms API gives it. */
+export type Farm = { id: string; name: string; place: string; blurb: string; photo_url: string };
+
+/** What a box holds this week, as the platform has it, each item with its farm. */
+export async function boxItems(slug: string): Promise<Item[]> {
+  const res = await fetch(`${API}/boxes/${slug}/items?include=farm`, { next: { revalidate: 300 } });"""
+
+[[turn.step]]
+write = "src/components/FarmLink.tsx"
+content = """import Image from "next/image";
+import Link from "next/link";
+import type { Locale } from "@/i18n/config";
+import { t } from "@/i18n/t";
+import type { Farm } from "@/lib/boxes";
+
+/** The farm an item comes from: its photo, its name and the line it wrote about itself. */
+export function FarmLink({ farm, locale }: { farm: Farm; locale: Locale }) {
+  return (
+    <Link href={`/farms/${farm.id}`} className="farm-link">
+      <Image src={`${farm.photo_url}?w=64`} alt="" width={32} height={32} className="farm-link__photo" />
+      <span className="farm-link__name">{t(locale, "box.grownAt", { farm: farm.name })}</span>
+      <span className="farm-link__blurb">{farm.blurb}</span>
+    </Link>
+  );
+}
+"""
+
+[[turn.step]]
+edit = "src/components/BoxItem.tsx"
+old = """import { formatPrice } from "@/lib/money";
+
+export type Item = { id: string; name: string; weight: string; price: number; farmId: string };"""
+new = """import type { Farm } from "@/lib/boxes";
+import { formatPrice } from "@/lib/money";
+import { FarmLink } from "./FarmLink";
+
+export type Item = {
+  id: string;
+  name: string;
+  weight: string;
+  price: number;
+  farmId: string;
+  /** The farm that grows it, when the platform was asked to include it. */
+  farm?: Farm;
+};"""
+
+[[turn.step]]
+edit = "src/components/BoxItem.tsx"
+old = """      <span className="box-item__price">{formatPrice(item.price, locale)}</span>
+    </li>"""
+new = """      <span className="box-item__price">{formatPrice(item.price, locale)}</span>
+      {item.farm && <FarmLink farm={item.farm} locale={locale} />}
+    </li>"""
+
+[[turn.step]]
+edit = "messages/sv.json"
+old = '''  "box.add": "Lägg i korgen",'''
+new = '''  "box.add": "Lägg i korgen",
+  "box.grownAt": "Odlad på {farm}",'''
+
+[[turn.step]]
+edit = "messages/en.json"
+old = '''  "box.add": "Add to basket",'''
+new = '''  "box.add": "Add to basket",
+  "box.grownAt": "Grown at {farm}",'''
+
+[[turn.step]]
+write = "e2e/farms.spec.ts"
+content = """import { expect, test } from "@playwright/test";
+
+// The box builder and the box's page list items the same way.
+for (const path of ["/build/classic", "/boxes/classic"]) {
+  test(`links each item to its farm on ${path}`, async ({ page }) => {
+    await page.goto(path);
+    const carrots = page.getByRole("listitem").filter({ hasText: "Carrots" });
+    const farm = carrots.getByRole("link", { name: /Grown at Björkhaga/ });
+    await expect(farm).toHaveAttribute("href", "/farms/bjorkhaga");
+    await expect(farm.getByRole("img")).toBeVisible();
+  });
+}
+"""
+
+[[turn.step]]
+todo = [["Find where both pages draw a box's items", "completed"], ["Get each item's farm from the platform", "completed"], ["A farm link with its photo and line", "completed"], ["Copy in Swedish and English", "completed"], ["Test both pages, then the pull request", "in_progress"]]
+
+[[turn.step]]
+tools = [
+  { bash = "npm run i18n:check", description = "Check every locale has every key", output = "✓ 121 keys in en, sv" },
+  { bash = "npm test", description = "Run the unit tests", seconds = 6, output = """
+> shop@3.18.0 test
+> vitest run
+
+ Test Files  62 passed (62)
+      Tests  403 passed (403)
+   Duration  8.71s""" },
+]
+
+[[turn.step]]
+bash = "npm run e2e"
+description = "Run the e2e tests"
+seconds = 22
+output = """
+> shop@3.18.0 e2e
+> playwright test
+
+Running 36 tests using 4 workers
+  36 passed (1.9m)"""
+
+[[turn.step]]
+commit = "Link each item in a box to the farm that grows it"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Show which farm each vegetable comes from"
+number = 1285
+body = """Each item in the box builder and on the box page links to the farm that grows it, with the farm's photo, its name and its line about itself (SHOP-405).
+
+- The platform's box items embed each item's farm with `?include=farm`, so the pages make the one request they made before.
+- `FarmLink` goes in `BoxItem`, which both pages use, laid out as Lucía describes in the ticket: the photo in a small circle, the line under the item's name, the whole row a link to the farm's page.
+- Copy: "Odlad på {farm}" and "Grown at {farm}".
+
+Tested end to end on both pages (`e2e/farms.spec.ts`)."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Each item in the box builder and on the box page links to the farm that grows it, with the farm’s photo and its line (shop#1285, SHOP-405).' --approach 'One `FarmLink` in `BoxItem`, which both pages use, with the farms embedded in the box’s items (`?include=farm`) rather than fetched one item at a time.' --insights 'The platform’s box items embed what an item points to with `?include=`: ask for it there before adding a request per item.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Every item in the box builder and on the box page links to its farm now, with the farm's photo and its line: shop#1285 is open."

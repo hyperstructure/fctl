@@ -1,0 +1,9 @@
+Hi {{ member.first_name|default:member.username }},
+
+You've booked {{ session }}, until {{ session.ends_at|time:"H:i" }}.
+
+Can't make it? Cancel up to two hours before, on the calendar, so that
+someone else can climb.
+
+See you on the wall,
+Crimp Collective

@@ -1,0 +1,447 @@
+# plantwatch#23 · Noor, Sunday 11:30 · Read the new soil sensor over I²C
+match = "The analog soil readings drift as the board warms up"
+
+[[turn]]
+duration = "38m"
+result = "The living room’s board reads the new sensor over I²C in plantwatch#19, and each pot keeps its calibration per sensor. I couldn’t flash it from here: run `BOARD=living-room cargo run --release` in firmware/, then calibrate the Monstera on the dashboard."
+
+[[turn.step]]
+run = "fctl edit --title 'Read the new soil sensor over I²C' --description 'Reads the capacitive soil sensor over I²C rather than the analog pin, whose readings drifted as the board warmed up.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "README.md" },
+  { read = "firmware/src/main.rs" },
+  { read = "firmware/src/soil.rs" },
+  { read = "firmware/src/board.rs" },
+]
+
+[[turn.step]]
+tools = [
+  { read = "firmware/src/publish.rs" },
+  { read = "dashboard/src/db.rs" },
+  { read = "dashboard/src/page.rs" },
+]
+
+[[turn.step]]
+think = "The firmware sends raw values and the dashboard turns them into percent with each pot's calibration, which is in the analog probe's units: about 3000 dry, 1400 wet, higher when drier. The I²C sensor counts the other way and on another scale, roughly 300 dry to 1000 wet, so the living room's old calibration means nothing for it. To keep every pot's calibration, the dashboard should keep one per pot and sensor: the analog ones carry over untouched, and the Monstera gets a new one without losing the old."
+
+[[turn.step]]
+say = "Calibration lives on the dashboard, per board, in the analog probe's raw units, and the I²C sensor reports on a different scale that rises as the soil gets wetter. So I'll read it in the firmware, have each reading say which sensor took it, and key calibrations by pot and sensor on the dashboard, so that the other pots keep theirs as they are."
+
+[[turn.step]]
+todo = [["Read the I²C sensor in the firmware", "in_progress"], ["Say which sensor took each reading", "pending"], ["Calibrations per pot and sensor on the dashboard", "pending"], ["Tests and the README", "pending"]]
+
+[[turn.step]]
+edit = "firmware/Cargo.toml"
+old = """embassy-time = "0.5\""""
+new = """embassy-time = "0.5"
+embedded-hal-async = "1.0\""""
+
+[[turn.step]]
+write = "firmware/src/soil_i2c.rs"
+content = '''//! The capacitive soil sensor on I²C. It measures the soil's capacitance
+//! itself, so its readings don't move as the board warms up, as the analog
+//! probe's did. About 300 in dry soil, about 1000 just after watering.
+
+use embassy_time::{Duration, Timer};
+use embedded_hal_async::i2c::I2c as _;
+use esp_hal::gpio::interconnect::PeripheralOutput;
+use esp_hal::i2c::master::{Config, I2c};
+use esp_hal::peripherals::I2C0;
+use esp_println::println;
+
+/// Its moisture register: module 0x0F, function 0x10.
+const MOISTURE: [u8; 2] = [0x0F, 0x10];
+
+/// Reads the sensor at `address`; `None`, with why on the serial console,
+/// when it doesn't answer.
+pub async fn read(
+    i2c: I2C0<'static>,
+    sda: impl PeripheralOutput<'static>,
+    scl: impl PeripheralOutput<'static>,
+    address: u8,
+) -> Option<u16> {
+    let mut bus = match I2c::new(i2c, Config::default()) {
+        Ok(bus) => bus.with_sda(sda).with_scl(scl).into_async(),
+        Err(e) => {
+            println!("no I²C bus: {e:?}");
+            return None;
+        }
+    };
+    if let Err(e) = bus.write(address, &MOISTURE).await {
+        println!("the soil sensor at {address:#04x} didn't answer: {e:?}");
+        return None;
+    }
+    // It takes a moment to measure.
+    Timer::after(Duration::from_millis(5)).await;
+    let mut buf = [0u8; 2];
+    bus.read(address, &mut buf).await.ok()?;
+    Some(u16::from_be_bytes(buf))
+}
+'''
+
+[[turn.step]]
+edit = "firmware/src/board.rs"
+old = """pub struct Board {
+    pub id: &'static str,
+    pub pot: &'static str,
+}
+
+const BOARDS: &[Board] = &[
+    Board { id: "living-room", pot: "Monstera" },
+    Board { id: "kitchen", pot: "Basil and thyme" },
+    Board { id: "bedroom", pot: "Snake plant" },
+    Board { id: "balcony", pot: "Tomatoes" },
+];"""
+new = """pub struct Board {
+    pub id: &'static str,
+    pub pot: &'static str,
+    pub sensor: Sensor,
+}
+
+/// What a board reads its pot's soil with.
+#[derive(Clone, Copy)]
+pub enum Sensor {
+    /// The analog probe on GPIO2, whose readings drift as the board warms up.
+    Analog,
+    /// The capacitive sensor on I²C: SDA on GPIO6, SCL on GPIO7.
+    I2c { address: u8 },
+}
+
+impl Sensor {
+    /// What the dashboard calls it: it keeps a calibration for each.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Analog => "analog",
+            Self::I2c { .. } => "i2c",
+        }
+    }
+}
+
+const BOARDS: &[Board] = &[
+    Board { id: "living-room", pot: "Monstera", sensor: Sensor::I2c { address: 0x36 } },
+    Board { id: "kitchen", pot: "Basil and thyme", sensor: Sensor::Analog },
+    Board { id: "bedroom", pot: "Snake plant", sensor: Sensor::Analog },
+    Board { id: "balcony", pot: "Tomatoes", sensor: Sensor::Analog },
+];"""
+
+[[turn.step]]
+edit = "firmware/src/main.rs"
+old = """mod board;
+mod publish;
+mod soil;
+
+use embassy_executor::Spawner;"""
+new = """mod board;
+mod publish;
+mod soil;
+mod soil_i2c;
+
+use board::Sensor;
+use embassy_executor::Spawner;"""
+
+[[turn.step]]
+edit = "firmware/src/main.rs"
+old = """    let mut adc_config = AdcConfig::new();
+    let mut pin = adc_config.enable_pin(p.GPIO2, Attenuation::_11dB);
+    let mut adc = Adc::new(p.ADC1, adc_config);
+    let raw = soil::read(&mut adc, &mut pin).await;
+    println!("{}: raw {raw}", board.id);
+
+    let stack = publish::connect(spawner, p.WIFI, timg0.timer1).await;
+    if let Err(e) = publish::reading(stack, board, raw).await {
+        println!("publishing failed: {e:?}");
+    }"""
+new = """    let raw = match board.sensor {
+        Sensor::Analog => {
+            let mut adc_config = AdcConfig::new();
+            let mut pin = adc_config.enable_pin(p.GPIO2, Attenuation::_11dB);
+            let mut adc = Adc::new(p.ADC1, adc_config);
+            Some(soil::read(&mut adc, &mut pin).await)
+        }
+        Sensor::I2c { address } => soil_i2c::read(p.I2C0, p.GPIO6, p.GPIO7, address).await,
+    };
+
+    let stack = publish::connect(spawner, p.WIFI, timg0.timer1).await;
+    match raw {
+        Some(raw) => {
+            println!("{} ({}): raw {raw}", board.id, board.sensor.name());
+            if let Err(e) = publish::reading(stack, board, raw).await {
+                println!("publishing failed: {e:?}");
+            }
+        }
+        None => println!("{}: no reading this time", board.id),
+    }"""
+
+[[turn.step]]
+edit = "firmware/src/publish.rs"
+old = """struct Reading<'a> {
+    board: &'a str,
+    raw: u16,
+}
+
+/// Publishes one reading, the board's raw value.
+pub async fn reading(stack: Stack<'static>, board: &Board, raw: u16) -> Result<(), Error> {
+    let mut buf = [0u8; 96];
+    let len = serde_json_core::to_slice(&Reading { board: board.id, raw }, &mut buf)"""
+new = """struct Reading<'a> {
+    board: &'a str,
+    /// Which sensor took it: raw values compare only within one sensor.
+    sensor: &'a str,
+    raw: u16,
+}
+
+/// Publishes one reading, the board's raw value.
+pub async fn reading(stack: Stack<'static>, board: &Board, raw: u16) -> Result<(), Error> {
+    let mut buf = [0u8; 96];
+    let reading = Reading { board: board.id, sensor: board.sensor.name(), raw };
+    let len = serde_json_core::to_slice(&reading, &mut buf)"""
+
+[[turn.step]]
+bash = "cd firmware && BOARD=living-room cargo build --release"
+description = "Build the living room's firmware"
+seconds = 12
+output = """   Compiling embedded-hal-async v1.0.0
+   Compiling plantwatch-firmware v0.6.0 (/home/agent/workspace/firmware)
+    Finished `release` profile [optimized] target(s) in 41.87s"""
+
+[[turn.step]]
+todo = [["Read the I²C sensor in the firmware", "completed"], ["Say which sensor took each reading", "completed"], ["Calibrations per pot and sensor on the dashboard", "in_progress"], ["Tests and the README", "pending"]]
+
+[[turn.step]]
+edit = "dashboard/src/db.rs"
+old = """         CREATE TABLE IF NOT EXISTS calibrations (board TEXT PRIMARY KEY, dry INTEGER, wet INTEGER);",
+    )?;
+    Ok(db)"""
+new = """         CREATE TABLE IF NOT EXISTS calibrations (board TEXT PRIMARY KEY, dry INTEGER, wet INTEGER);
+         CREATE TABLE IF NOT EXISTS sensor_calibrations (
+           board TEXT NOT NULL, sensor TEXT NOT NULL, dry INTEGER, wet INTEGER,
+           PRIMARY KEY (board, sensor)
+         );
+         -- Every calibration so far was the analog probe's: each pot keeps its own.
+         INSERT OR IGNORE INTO sensor_calibrations (board, sensor, dry, wet)
+           SELECT board, 'analog', dry, wet FROM calibrations;",
+    )?;
+    // Readings say which sensor took them; the ones before, the analog probe.
+    let has_sensor = db
+        .prepare("SELECT 1 FROM pragma_table_info('readings') WHERE name = 'sensor'")?
+        .exists([])?;
+    if !has_sensor {
+        db.execute_batch("ALTER TABLE readings ADD COLUMN sensor TEXT NOT NULL DEFAULT 'analog'")?;
+    }
+    Ok(db)"""
+
+[[turn.step]]
+edit = "dashboard/src/db.rs"
+old = """pub fn record(db: &Connection, board: &str, raw: u16, at: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "INSERT INTO readings (board, raw, at) VALUES (?1, ?2, ?3)",
+        params![board, raw, at],
+    )?;
+    Ok(())
+}
+
+pub fn calibration(db: &Connection, board: &str) -> rusqlite::Result<Calibration> {
+    Ok(db
+        .query_row(
+            "SELECT dry, wet FROM calibrations WHERE board = ?1",
+            params![board],"""
+new = """pub fn record(db: &Connection, board: &str, sensor: &str, raw: u16, at: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "INSERT INTO readings (board, sensor, raw, at) VALUES (?1, ?2, ?3, ?4)",
+        params![board, sensor, raw, at],
+    )?;
+    Ok(())
+}
+
+/// A pot's calibration for one sensor: a new sensor starts uncalibrated,
+/// and the pot keeps the old one's.
+pub fn calibration(db: &Connection, board: &str, sensor: &str) -> rusqlite::Result<Calibration> {
+    Ok(db
+        .query_row(
+            "SELECT dry, wet FROM sensor_calibrations WHERE board = ?1 AND sensor = ?2",
+            params![board, sensor],"""
+
+[[turn.step]]
+edit = "dashboard/src/db.rs"
+old = """/// Takes the pot's latest reading as its dry (or wet) one.
+pub fn calibrate(db: &Connection, board: &str, wet: bool) -> rusqlite::Result<()> {
+    let column = if wet { "wet" } else { "dry" };
+    db.execute(
+        &format!(
+            "INSERT INTO calibrations (board, {column}) \\
+             VALUES (?1, (SELECT raw FROM readings WHERE board = ?1 ORDER BY at DESC LIMIT 1)) \\
+             ON CONFLICT (board) DO UPDATE SET {column} = excluded.{column}"
+        ),
+        params![board],
+    )?;
+    Ok(())
+}"""
+new = """/// Takes the pot's latest reading as its dry (or wet) one, for the sensor
+/// that took it.
+pub fn calibrate(db: &Connection, board: &str, wet: bool) -> rusqlite::Result<()> {
+    let column = if wet { "wet" } else { "dry" };
+    db.execute(
+        &format!(
+            "INSERT INTO sensor_calibrations (board, sensor, {column}) \\
+             SELECT board, sensor, raw FROM readings WHERE board = ?1 ORDER BY at DESC LIMIT 1 \\
+             ON CONFLICT (board, sensor) DO UPDATE SET {column} = excluded.{column}"
+        ),
+        params![board],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pots_keep_their_analog_calibration() -> rusqlite::Result<()> {
+        let path = std::env::temp_dir().join(format!("plantwatch-{}.db", std::process::id()));
+        let before = Connection::open(&path)?;
+        before.execute_batch(
+            "CREATE TABLE readings (board TEXT NOT NULL, raw INTEGER NOT NULL, at INTEGER NOT NULL);
+             CREATE TABLE calibrations (board TEXT PRIMARY KEY, dry INTEGER, wet INTEGER);
+             INSERT INTO calibrations VALUES ('kitchen', 2980, 1510);",
+        )?;
+        drop(before);
+        let db = open(&path.to_string_lossy())?;
+        let kitchen = calibration(&db, "kitchen", "analog")?;
+        assert_eq!(kitchen, Calibration { dry: Some(2980), wet: Some(1510) });
+        assert_eq!(calibration(&db, "kitchen", "i2c")?, Calibration::default());
+        std::fs::remove_file(&path).ok();
+        Ok(())
+    }
+}"""
+
+[[turn.step]]
+edit = "dashboard/src/main.rs"
+old = """struct Reading {
+    board: String,
+    raw: u16,
+}"""
+new = """struct Reading {
+    board: String,
+    /// Boards whose firmware predates the I²C sensor don't say.
+    #[serde(default = "analog")]
+    sensor: String,
+    raw: u16,
+}
+
+fn analog() -> String {
+    "analog".into()
+}"""
+
+[[turn.step]]
+edit = "dashboard/src/main.rs"
+old = """                let _ = db::record(&db, &r.board, r.raw, now);"""
+new = """                let _ = db::record(&db, &r.board, &r.sensor, r.raw, now);"""
+
+[[turn.step]]
+edit = "dashboard/src/page.rs"
+old = """        let raw: Option<u16> = db
+            .query_row("SELECT raw FROM readings WHERE board = ?1 ORDER BY at DESC LIMIT 1", [board], |r| r.get(0))
+            .ok();
+        let cal = db::calibration(&db, board).unwrap_or_default();
+        let wet = raw.and_then(|r| thirst::percent(r, cal));"""
+new = """        let latest: Option<(String, u16)> = db
+            .query_row(
+                "SELECT sensor, raw FROM readings WHERE board = ?1 ORDER BY at DESC LIMIT 1",
+                [board],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let wet = latest.and_then(|(sensor, raw)| {
+            let cal = db::calibration(&db, board, &sensor).unwrap_or_default();
+            thirst::percent(raw, cal)
+        });"""
+
+[[turn.step]]
+edit = "dashboard/src/thirst.rs"
+old = """    #[test]
+    fn nothing_without_both() {"""
+new = """    #[test]
+    fn the_i2c_sensor_counts_up_as_the_soil_gets_wetter() {
+        let cal = Calibration { dry: Some(330), wet: Some(1010) };
+        assert_eq!(percent(330, cal), Some(0));
+        assert_eq!(percent(1010, cal), Some(100));
+        assert_eq!(percent(670, cal), Some(50));
+    }
+
+    #[test]
+    fn nothing_without_both() {"""
+
+[[turn.step]]
+bash = "cd dashboard && cargo test"
+description = "Run the dashboard's tests"
+seconds = 8
+output = """   Compiling plantwatch-dashboard v0.6.0 (/home/agent/workspace/dashboard)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.02s
+     Running unittests src/main.rs (target/debug/deps/plantwatch_dashboard-3b1f0c2d9e8a7f61)
+
+running 6 tests
+test db::tests::pots_keep_their_analog_calibration ... ok
+test thirst::tests::a_third_is_thirsty ... ok
+test thirst::tests::beyond_the_calibration_is_clamped ... ok
+test thirst::tests::nothing_without_both ... ok
+test thirst::tests::readings_turn_into_percent ... ok
+test thirst::tests::the_i2c_sensor_counts_up_as_the_soil_gets_wetter ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"""
+
+[[turn.step]]
+edit = "README.md"
+old = """| `living-room` | Monstera | analog probe on GPIO2 |"""
+new = """| `living-room` | Monstera | capacitive sensor on I²C (0x36): SDA GPIO6, SCL GPIO7 |"""
+
+[[turn.step]]
+edit = "README.md"
+old = """then Wet just after watering. The dashboard turns raw readings into percent
+with those two."""
+new = """then Wet just after watering. The dashboard turns raw readings into percent
+with those two.
+
+A pot keeps a calibration for each sensor it has had, since their raw values
+differ: the analog probe reads about 3000 dry and 1400 wet, the I²C sensor
+about 300 dry and 1000 wet. A pot with a new sensor shows "needs
+calibrating" until you calibrate it with that one."""
+
+[[turn.step]]
+bash = "cd firmware && BOARD=living-room cargo run --release"
+description = "Flash the living room's board"
+error = true
+output = """    Finished `release` profile [optimized] target(s) in 0.24s
+     Running `espflash flash --monitor target/riscv32imc-unknown-none-elf/release/plantwatch-firmware`
+Error: espflash::no_serial
+
+  × No serial ports could be detected
+  help: Make sure the correct device is connected to the host system"""
+
+[[turn.step]]
+say = "No board is plugged into this machine, so I can't flash it from here. The firmware builds and the dashboard's tests pass; flashing and the new calibration are yours."
+
+[[turn.step]]
+commit = "Read the new soil sensor over I²C"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Read the new soil sensor over I²C"
+number = 19
+body = """The living room's board reads the capacitive soil sensor on I²C (0x36, SDA GPIO6, SCL GPIO7) instead of the analog probe, whose readings drifted as the board warmed up.
+
+- Firmware: a `Sensor` for each board in `board.rs`, and `soil_i2c.rs` reads the sensor's moisture register. Readings say which sensor took them.
+- Dashboard: calibrations are kept per pot and sensor. The analog ones carry over as they were, so every pot keeps its calibration; the Monstera shows "needs calibrating" until it's calibrated with the new sensor.
+
+Built with `BOARD=living-room cargo build --release`, and the dashboard's tests pass. Not flashed: the sandbox has no board on its USB."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'The living room’s board reads the new capacitive soil sensor over I²C instead of the analog pin (plantwatch#19).' --approach 'Calibrations are kept per pot and sensor, since the two sensors’ raw values run on different scales and in opposite directions: the analog ones carry over, and a new sensor starts uncalibrated.' --challenges 'No board on the sandbox’s USB, so it wasn’t flashed or tried against the sensor; the firmware builds and the dashboard’s tests pass.' --insights 'Flash a board with `BOARD=<board> cargo run --release` in firmware/, then calibrate its pot on the dashboard.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "The living room’s board reads the new sensor over I²C in plantwatch#19, and each pot keeps its calibration per sensor. I couldn’t flash it from here: run `BOARD=living-room cargo run --release` in firmware/, then calibrate the Monstera on the dashboard."

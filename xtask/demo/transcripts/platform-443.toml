@@ -1,0 +1,49 @@
+# platform#443 · review of platform#843 at its first commit: 2 issues
+match = "Review romanescohq/platform#843, “Plan routes with milkfloat's time windows”, at commit"
+
+[[turn]]
+duration = "2m14s"
+result = "Posted the review: 2 issues (1 medium, 1 low). Time windows go to milkfloat in UTC, and a typo in ROUTES_PLANNER switches planners silently."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Plan routes with milkfloat's time windows" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " .sqlx/query-c83f1a6e2d09b74f5e1c8a3d6b20f97e4a5d1c0b8e3f62a9d7c4b1e05f8a3d26.json |  10 ++++++++++\n migrations/0141_route_planner_runs.sql                                            |  11 +++++++++++\n src/routes/legacy.rs                                                              |  36 ++++++++++++++++++++++++++++++++++++\n src/routes/mod.rs                                                                 |   4 +++-\n src/routes/plan.rs                                                                | 124 ++++++++++++++++++++++++++++++++++++++++--------------------\n src/routes/runs.rs                                                                |  31 +++++++++++++++++++++++++++++++\n tests/plan_compare.rs                                                             |  18 ++++++++++++++++++\n 7 files changed, 204 insertions(+), 30 deletions(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+read = "src/routes/plan.rs"
+
+[[turn.step]]
+bash = "cd \"$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == \"milkfloat\") | .manifest_path' | xargs dirname)\" && sed -n '1,30p' src/window.rs"
+description = "Read what milkfloat means by a time window"
+output = """//! Time windows: when a visit may start.
+
+/// When a visit may start: `start` and `end` in seconds after midnight on
+/// the day being planned, in the depot's time zone, as vehicles' shifts
+/// are. 07:30 is 27_000.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeWindow {
+    pub start: i64,
+    pub end: i64,
+}
+
+impl TimeWindow {
+    /// A window from `start` to `end`, in seconds.
+    pub fn new(start: i64, end: i64) -> Self {
+        Self { start, end }
+    }
+}"""
+
+[[turn.step]]
+think = "`window` takes the time of day of `window_start`, which is a UTC timestamp: a stop that asked for 08:00 in Stockholm becomes 07:00 in winter and 06:00 in summer, while the vans' shifts are by the depot's clock. Every window lands an hour or two early, and the comparison can't see it, since it measures on the same clock. `Depot::local_seconds` already does the conversion for the drivers' app. Separately, `from_env` gives the old planner for any value but `milkfloat`, including a typo, and nothing says so."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = """Posted the review on romanescohq/platform#843: 2 issues (1 medium, 1 low).
+https://github.com/romanescohq/platform/pull/843#pullrequestreview-2003330"""
+
+[[turn.step]]
+say = "Posted the review: 2 issues (1 medium, 1 low). Time windows go to milkfloat in UTC, and a typo in ROUTES_PLANNER switches planners silently."

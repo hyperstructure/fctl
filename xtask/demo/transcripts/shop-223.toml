@@ -1,0 +1,45 @@
+# shop#223 · review of shop#1286 at its second commit: passed, 2 fixed
+match = "Review romanescohq/shop#1286, “Fix the delivery-day picker on Safari”, at commit"
+
+[[turn]]
+duration = "1m5s"
+result = "No issues. Both earlier findings are fixed: the test waits for the chosen day, and the picker says why it sets `inputMode`."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Wait for the chosen day in the picker's test, and say why it sets inputMode\nKeep the chosen delivery day when Safari's keyboard closes" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[{\"id\": \"PRRT_kwDODay18\", \"path\": \"e2e/day-picker.spec.ts\", \"line\": 18, \"title\": \"The test waits for a fixed 500 ms\", \"resolved\": false}, {\"id\": \"PRRT_kwDODay42\", \"path\": \"src/components/DayPicker.tsx\", \"line\": 42, \"title\": \"Say why the picker sets inputMode=\\\"none\\\"\", \"resolved\": false}]" },
+]
+
+[[turn.step]]
+bash = "git diff HEAD~1"
+description = "Read what changed since the last review"
+output = """diff --git a/e2e/day-picker.spec.ts b/e2e/day-picker.spec.ts
+@@ -15,5 +15,5 @@ test("keeps the chosen day when the keyboard closes", async ({ page }) => {
+   // Done closes it, and the grid comes back.
+   await page.getByLabel("Postcode").blur();
+   await page.setViewportSize({ width: 393, height: 852 });
+-  await page.waitForTimeout(500);
++  await expect(page.getByRole("option", { selected: true })).toHaveText("Thu 29 Oct");
+   await expect(page.getByLabel("Pick a delivery day")).toHaveValue("Thu 29 Oct");
+diff --git a/src/components/DayPicker.tsx b/src/components/DayPicker.tsx
+@@ -39,6 +39,8 @@ function Days({ layout, slots, selected, onChoose }: DaysProps) {
+     <div className={`day-picker__days day-picker__days--${layout}`}>
+       <input
+         id="delivery-day"
++        // Without it, Safari on iOS opens the keyboard for this read-only
++        // input when a day is tapped, and drops the day as the keyboard closes.
+         inputMode="none"
+         className="day-picker__value"
+         value={chosen?.label ?? ""}"""
+
+[[turn.step]]
+think = "Both are addressed as asked, and the second commit changes nothing else. The new wait names what the test is waiting for."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = "Posted the review on romanescohq/shop#1286: no issues; 2 earlier findings marked fixed and resolved.\nhttps://github.com/romanescohq/shop/pull/1286#pullrequestreview-2003247"
+
+[[turn.step]]
+say = "No issues. Both earlier findings are fixed: the test waits for the chosen day, and the picker says why it sets `inputMode`."

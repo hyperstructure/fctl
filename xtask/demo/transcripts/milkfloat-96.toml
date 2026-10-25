@@ -1,0 +1,813 @@
+# milkfloat#96 · Noor, today 08:58 · Finish driver breaks from Anouk's pull request (at work at 09:10: watching CI)
+match = "Take her branch with her commits"
+
+[[turn]]
+[[turn.step]]
+run = "fctl edit --title \"Finish driver breaks from Anouk's pull request\" --description \"Takes Anouk's driver breaks from milkfloat#311, her commits included, and adds the tests and fixes its review asked for.\""
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { bash = "gh pr view 311 --json author,headRefName,headRepositoryOwner,commits --jq '{author: .author.login, fork: .headRepositoryOwner.login, branch: .headRefName, commits: [.commits[].messageHeadline]}'", description = "Find Anouk's branch", output = "{\"author\":\"anoukvdberg\",\"branch\":\"driver-breaks\",\"commits\":[\"Add Break to the model\",\"Insert breaks into routes\",\"Expose breaks to Python\"],\"fork\":\"anoukvdberg\"}" },
+  { bash = "gh api repos/milkfloat/milkfloat/pulls/311/comments --jq '.[] | \"\\(.path):\\(.line)  \\(.body | split(\"\\n\")[0])\"'", description = "Read the review's findings", output = "src/insert.rs:53  **Medium** · A break whose window ends before the vehicle's shift starts makes `insert_break` loop forever.\npython/milkfloat/__init__.pyi:31  **Low** · The stubs lack `Break`, so type checkers reject the new argument.\nREADME.md:23  **Low** · The example still builds `Vehicle` without `breaks=`." },
+]
+
+[[turn.step]]
+bash = "git fetch https://github.com/anoukvdberg/milkfloat.git driver-breaks && git merge --ff-only FETCH_HEAD"
+description = "Take Anouk's branch, her commits as they are"
+output = """From https://github.com/anoukvdberg/milkfloat
+ * branch            driver-breaks -> FETCH_HEAD
+Updating 7d41c2e..b2e7c40
+Fast-forward
+ python/milkfloat/__init__.py |  4 ++--
+ src/export/geojson.rs        |  1 +
+ src/insert.rs                | 20 ++++++++++++++++--
+ src/model.rs                 | 12 +++++++++++
+ src/python.rs                | 22 ++++++++++++++++----
+ src/python/solution.rs       |  1 +
+ tests/breaks.rs              | 49 ++++++++++++++++++++++++++++++++++++++++++++
+ tests/gen/mod.rs             |  1 +
+ 8 files changed, 102 insertions(+), 8 deletions(-)"""
+
+[[turn.step]]
+silently = '''cat > src/model.rs <<'MILKFLOAT_EOF'
+//! What a problem is made of: vehicles, the stops they make, and when.
+
+use serde::{Deserialize, Serialize};
+
+/// A place, in degrees.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Location {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+/// When something may happen, in seconds after midnight in the depot's
+/// time zone. A soft window may be missed, at `penalty` per second late; a
+/// hard one (no penalty) may not.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimeWindow {
+    pub start: u32,
+    pub end: u32,
+    pub penalty: Option<f64>,
+}
+
+impl TimeWindow {
+    pub fn hard(start: u32, end: u32) -> Self {
+        Self { start, end, penalty: None }
+    }
+
+    pub fn contains(&self, t: u32) -> bool {
+        (self.start..=self.end).contains(&t)
+    }
+}
+
+/// A customer to visit.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Visit {
+    pub id: String,
+    pub location: Location,
+    pub window: Option<TimeWindow>,
+    /// Seconds spent there.
+    pub service: u32,
+    pub demand: Vec<u32>,
+}
+
+/// A driver's break: `duration` seconds, starting inside `window`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Break {
+    pub window: TimeWindow,
+    pub duration: u32,
+}
+
+/// A van, its driver's shift and what it carries.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Vehicle {
+    pub id: String,
+    pub depot: Location,
+    pub shift: TimeWindow,
+    pub capacity: Vec<u32>,
+    /// The driver's breaks, which its route makes room for.
+    #[serde(default)]
+    pub breaks: Vec<Break>,
+}
+
+/// A stop on a route.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Stop {
+    Depot(Location),
+    Visit(Visit),
+    Break(Break),
+}
+
+impl Stop {
+    pub fn location(&self) -> Location {
+        match self {
+            Stop::Depot(l) => *l,
+            Stop::Visit(v) => v.location,
+            Stop::Break(_) => unreachable!("a break has no location"),
+        }
+    }
+}
+
+/// Vehicles and the visits they share out.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Problem {
+    pub vehicles: Vec<Vehicle>,
+    pub visits: Vec<Visit>,
+}
+MILKFLOAT_EOF
+cat > src/insert.rs <<'MILKFLOAT_EOF'
+//! Cheapest insertion: puts each visit where it adds least to a route,
+//! without breaking a hard window, a capacity or a shift.
+
+use crate::model::{Stop, Visit};
+use crate::route::Route;
+
+/// Why something can't go on a route.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+pub enum Infeasible {
+    #[error("the vehicle has no room for it")]
+    Capacity,
+    #[error("no place on the route meets {visit}'s time window")]
+    Window { visit: String },
+    #[error("it would run past the end of the shift")]
+    Shift,
+}
+
+/// Inserts `visit` where it adds least to `route`'s cost.
+pub fn insert_visit(route: &mut Route, visit: &Visit, cost: impl Fn(&Route, usize) -> Option<f64>) -> Result<(), Infeasible> {
+    if !fits(route, visit) {
+        return Err(Infeasible::Capacity);
+    }
+    let best = (1..route.stops.len())
+        .filter_map(|i| cost(route, i).map(|c| (i, c)))
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    match best {
+        Some((i, _)) => {
+            route.stops.insert(i, Stop::Visit(visit.clone()));
+            Ok(())
+        }
+        None => Err(Infeasible::Window { visit: visit.id.clone() }),
+    }
+}
+
+fn fits(route: &Route, visit: &Visit) -> bool {
+    route.vehicle.capacity.iter().enumerate().all(|(d, cap)| {
+        let used: u32 = route
+            .stops
+            .iter()
+            .filter_map(|s| match s {
+                Stop::Visit(v) => v.demand.get(d).copied(),
+                Stop::Depot(_) | Stop::Break(_) => None,
+            })
+            .sum();
+        used + visit.demand.get(d).copied().unwrap_or(0) <= *cap
+    })
+}
+MILKFLOAT_EOF
+cat > src/export/geojson.rs <<'MILKFLOAT_EOF'
+//! Routes as GeoJSON: a LineString for each route and a Point for each stop.
+
+use crate::model::Stop;
+use crate::route::{Route, geometry};
+use serde_json::{Value, json};
+
+/// One route as a FeatureCollection.
+pub fn route(route: &Route) -> Value {
+    let line: Vec<[f64; 2]> = geometry::line(route).iter().map(|l| [l.lon, l.lat]).collect();
+    let mut features = vec![json!({
+        "type": "Feature",
+        "geometry": { "type": "LineString", "coordinates": line },
+        "properties": { "vehicle": route.vehicle.id },
+    })];
+    features.extend(route.stops.iter().zip(&route.arrivals).map(|(stop, at)| {
+        let l = stop.location();
+        json!({
+            "type": "Feature",
+            "geometry": { "type": "Point", "coordinates": [l.lon, l.lat] },
+            "properties": { "stop": name(stop), "arrival": at },
+        })
+    }));
+    json!({ "type": "FeatureCollection", "features": features })
+}
+
+fn name(stop: &Stop) -> String {
+    match stop {
+        Stop::Depot(_) => "depot".to_owned(),
+        Stop::Visit(v) => v.id.clone(),
+        Stop::Break(_) => "break".to_owned(),
+    }
+}
+MILKFLOAT_EOF
+cat > src/python/solution.rs <<'MILKFLOAT_EOF'
+//! Solutions as Python sees them.
+
+use crate::model::Stop;
+use pyo3::prelude::*;
+
+#[pyclass(name = "Route", frozen, get_all)]
+pub struct PyRoute {
+    pub vehicle: String,
+    pub stops: Vec<String>,
+    pub arrivals: Vec<u32>,
+}
+
+#[pyclass(name = "Solution", frozen, get_all)]
+pub struct PySolution {
+    pub routes: Vec<Py<PyRoute>>,
+    pub unassigned: Vec<String>,
+    pub cost: f64,
+}
+
+pub fn stop_name(stop: &Stop) -> String {
+    match stop {
+        Stop::Depot(_) => "depot".to_owned(),
+        Stop::Visit(v) => v.id.clone(),
+        Stop::Break(_) => "break".to_owned(),
+    }
+}
+MILKFLOAT_EOF
+cat > tests/gen/mod.rs <<'MILKFLOAT_EOF'
+//! Random problems for the property tests: a depot in Stockholm, vehicles
+//! with morning shifts, visits within 15 km.
+
+use milkfloat::model::{Location, Problem, Stop, TimeWindow, Vehicle, Visit};
+use milkfloat::route::Route;
+use proptest::prelude::*;
+use std::ops::Range;
+
+const DEPOT: Location = Location { lat: 59.3326, lon: 18.0649 };
+
+pub fn problem(vehicles: Range<usize>, visits: Range<usize>) -> impl Strategy<Value = Problem> {
+    (prop::collection::vec(vehicle(), vehicles), prop::collection::vec(visit(), visits)).prop_map(|(vehicles, mut visits)| {
+        for (i, v) in visits.iter_mut().enumerate() {
+            v.id = format!("v{i}");
+        }
+        Problem { vehicles, visits }
+    })
+}
+
+fn vehicle() -> impl Strategy<Value = Vehicle> {
+    (5u32..8, 6u32..10, 20u32..60).prop_map(|(start, hours, capacity)| Vehicle {
+        id: "van".into(),
+        depot: DEPOT,
+        shift: TimeWindow::hard(start * 3600, (start + hours) * 3600),
+        capacity: vec![capacity],
+        breaks: Vec::new(),
+    })
+}
+
+fn visit() -> impl Strategy<Value = Visit> {
+    (-0.1f64..0.1, -0.15f64..0.15, prop::option::of(6u32..12), 60u32..600, 1u32..10).prop_map(|(dlat, dlon, hour, service, demand)| Visit {
+        id: String::new(),
+        location: Location { lat: DEPOT.lat + dlat, lon: DEPOT.lon + dlon },
+        window: hour.map(|h| TimeWindow::hard(h * 3600, h * 3600 + 7200)),
+        service,
+        demand: vec![demand],
+    })
+}
+
+pub fn visit_ids(route: &Route) -> Vec<String> {
+    route
+        .stops
+        .iter()
+        .filter_map(|s| match s {
+            Stop::Visit(v) => Some(v.id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn keeps_hard_windows(route: &Route) -> bool {
+    route.stops.iter().zip(&route.arrivals).all(|(s, at)| match s {
+        Stop::Visit(Visit { window: Some(w), .. }) if w.penalty.is_none() => *at <= w.end,
+        _ => true,
+    })
+}
+MILKFLOAT_EOF
+git add -A && git -c user.name='Anouk van den Berg' -c user.email='anoukvdberg@users.noreply.github.com' commit -q -m 'Add Break to the model'
+cat > src/insert.rs <<'MILKFLOAT_EOF'
+//! Cheapest insertion: puts each visit where it adds least to a route,
+//! without breaking a hard window, a capacity or a shift.
+
+use crate::model::{Break, Stop, Visit};
+use crate::route::Route;
+
+/// Why something can't go on a route.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+pub enum Infeasible {
+    #[error("the vehicle has no room for it")]
+    Capacity,
+    #[error("no place on the route meets {visit}'s time window")]
+    Window { visit: String },
+    #[error("it would run past the end of the shift")]
+    Shift,
+}
+
+/// Inserts `visit` where it adds least to `route`'s cost.
+pub fn insert_visit(route: &mut Route, visit: &Visit, cost: impl Fn(&Route, usize) -> Option<f64>) -> Result<(), Infeasible> {
+    if !fits(route, visit) {
+        return Err(Infeasible::Capacity);
+    }
+    let best = (1..route.stops.len())
+        .filter_map(|i| cost(route, i).map(|c| (i, c)))
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    match best {
+        Some((i, _)) => {
+            route.stops.insert(i, Stop::Visit(visit.clone()));
+            Ok(())
+        }
+        None => Err(Infeasible::Window { visit: visit.id.clone() }),
+    }
+}
+
+fn fits(route: &Route, visit: &Visit) -> bool {
+    route.vehicle.capacity.iter().enumerate().all(|(d, cap)| {
+        let used: u32 = route
+            .stops
+            .iter()
+            .filter_map(|s| match s {
+                Stop::Visit(v) => v.demand.get(d).copied(),
+                Stop::Depot(_) | Stop::Break(_) => None,
+            })
+            .sum();
+        used + visit.demand.get(d).copied().unwrap_or(0) <= *cap
+    })
+}
+
+/// Puts `brk` on `route` after the first stop the van leaves once the
+/// break's window opens, and moves the stops after it on by its duration.
+pub fn insert_break(route: &mut Route, brk: &Break) -> Result<(), Infeasible> {
+    let mut at = brk.window.start.max(route.vehicle.shift.start);
+    loop {
+        if at <= brk.window.end
+            && let Some(i) = route.stops_after(at)
+        {
+            route.stops.insert(i, Stop::Break(brk.clone()));
+            route.delay_from(i, brk.duration);
+            return Ok(());
+        }
+        at = route.next_departure(at);
+    }
+}
+MILKFLOAT_EOF
+cat > tests/breaks.rs <<'MILKFLOAT_EOF'
+//! Driver breaks: where a route makes room for them.
+
+use milkfloat::insert::insert_break;
+use milkfloat::model::{Break, Location, Stop, TimeWindow, Vehicle};
+use milkfloat::route::Route;
+
+const DEPOT: Location = Location { lat: 59.3326, lon: 18.0649 };
+const HOUR: u32 = 3600;
+
+/// A route from 06:00 to 14:00 that leaves a stop at each of `departures`.
+fn route(departures: &[u32]) -> Route {
+    let vehicle = Vehicle {
+        id: "van".into(),
+        depot: DEPOT,
+        shift: TimeWindow::hard(6 * HOUR, 14 * HOUR),
+        capacity: vec![40],
+        breaks: Vec::new(),
+    };
+    let mut stops = vec![Stop::Depot(DEPOT)];
+    stops.extend(departures.iter().map(|_| Stop::Depot(DEPOT)));
+    let mut times = vec![6 * HOUR];
+    times.extend_from_slice(departures);
+    Route { vehicle, stops, arrivals: times.clone(), departures: times }
+}
+
+fn lunch(start: u32, end: u32) -> Break {
+    Break { window: TimeWindow::hard(start, end), duration: HOUR / 2 }
+}
+
+#[test]
+fn a_break_goes_after_the_first_stop_inside_its_window() {
+    let mut r = route(&[7 * HOUR, 9 * HOUR, 11 * HOUR + 1800, 13 * HOUR]);
+    insert_break(&mut r, &lunch(11 * HOUR, 12 * HOUR)).unwrap();
+    assert!(matches!(r.stops[4], Stop::Break(_)));
+}
+
+#[test]
+fn the_stops_after_a_break_move_on_by_its_length() {
+    let mut r = route(&[7 * HOUR, 11 * HOUR + 600, 13 * HOUR]);
+    insert_break(&mut r, &lunch(11 * HOUR, 12 * HOUR)).unwrap();
+    assert_eq!(r.departures[3], 13 * HOUR + 1800);
+}
+
+#[test]
+fn a_break_at_the_start_of_its_window_waits_for_nothing() {
+    let mut r = route(&[11 * HOUR, 13 * HOUR]);
+    insert_break(&mut r, &lunch(11 * HOUR, 12 * HOUR)).unwrap();
+    assert!(matches!(r.stops[2], Stop::Break(_)));
+}
+MILKFLOAT_EOF
+git add -A && git -c user.name='Anouk van den Berg' -c user.email='anoukvdberg@users.noreply.github.com' commit -q -m 'Insert breaks into routes'
+cat > src/python.rs <<'MILKFLOAT_EOF'
+//! The Python bindings: `milkfloat._milkfloat`, which `milkfloat` re-exports.
+
+use crate::model::{Break, Location, Problem, TimeWindow, Vehicle, Visit};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use std::time::Duration;
+
+#[pyclass(name = "TimeWindow", frozen)]
+#[derive(Clone)]
+pub struct PyTimeWindow(pub TimeWindow);
+
+#[pymethods]
+impl PyTimeWindow {
+    #[new]
+    #[pyo3(signature = (start, end, penalty = None))]
+    fn new(start: u32, end: u32, penalty: Option<f64>) -> Self {
+        Self(TimeWindow { start, end, penalty })
+    }
+}
+
+#[pyclass(name = "Break", frozen)]
+#[derive(Clone)]
+pub struct PyBreak(pub Break);
+
+#[pymethods]
+impl PyBreak {
+    #[new]
+    fn new(window: PyTimeWindow, duration: u32) -> Self {
+        Self(Break { window: window.0, duration })
+    }
+}
+
+#[pyclass(name = "Vehicle", frozen)]
+#[derive(Clone)]
+pub struct PyVehicle(pub Vehicle);
+
+#[pymethods]
+impl PyVehicle {
+    #[new]
+    #[pyo3(signature = (id, depot, shift, capacity, *, breaks = Vec::new()))]
+    fn new(id: String, depot: (f64, f64), shift: PyTimeWindow, capacity: Vec<u32>, breaks: Vec<PyBreak>) -> Self {
+        let breaks = breaks.into_iter().map(|b| b.0).collect();
+        Self(Vehicle { id, depot: Location { lat: depot.0, lon: depot.1 }, shift: shift.0, capacity, breaks })
+    }
+}
+
+#[pyclass(name = "Visit", frozen)]
+#[derive(Clone)]
+pub struct PyVisit(pub Visit);
+
+#[pymethods]
+impl PyVisit {
+    #[new]
+    #[pyo3(signature = (id, location, *, window = None, service = 0, demand = Vec::new()))]
+    fn new(id: String, location: (f64, f64), window: Option<PyTimeWindow>, service: u32, demand: Vec<u32>) -> Self {
+        Self(Visit { id, location: Location { lat: location.0, lon: location.1 }, window: window.map(|w| w.0), service, demand })
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (vehicles, visits, *, seconds = 10.0, seed = None))]
+fn solve(py: Python<'_>, vehicles: Vec<PyVehicle>, visits: Vec<PyVisit>, seconds: f64, seed: Option<u64>) -> PyResult<crate::python::solution::PySolution> {
+    let problem = Problem { vehicles: vehicles.into_iter().map(|v| v.0).collect(), visits: visits.into_iter().map(|v| v.0).collect() };
+    let time = Duration::from_secs_f64(seconds);
+    py.detach(|| crate::solve(&problem, time, seed.unwrap_or(0)))
+        .map(Into::into)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pymodule]
+fn _milkfloat(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyTimeWindow>()?;
+    m.add_class::<PyBreak>()?;
+    m.add_class::<PyVehicle>()?;
+    m.add_class::<PyVisit>()?;
+    m.add_function(wrap_pyfunction!(solve, m)?)?;
+    Ok(())
+}
+
+mod solution;
+MILKFLOAT_EOF
+cat > python/milkfloat/__init__.py <<'MILKFLOAT_EOF'
+"""A vehicle-routing solver: time windows, capacities and re-planning."""
+
+from milkfloat._milkfloat import Break, Route, Solution, TimeWindow, Vehicle, Visit, solve
+
+__all__ = ["Break", "Route", "Solution", "TimeWindow", "Vehicle", "Visit", "solve"]
+MILKFLOAT_EOF
+git add -A && git -c user.name='Anouk van den Berg' -c user.email='anoukvdberg@users.noreply.github.com' commit -q -m 'Expose breaks to Python''''
+
+[[turn.step]]
+bash = "git log --format='%h  %an  %s' origin/main..HEAD"
+description = "Check her commits are hers"
+output = "b2e7c40  Anouk van den Berg  Expose breaks to Python\n6a1f3d8  Anouk van den Berg  Insert breaks into routes\n0c94e2b  Anouk van den Berg  Add Break to the model"
+
+[[turn.step]]
+tools = [
+  { read = "src/insert.rs" },
+  { read = "src/model.rs" },
+  { grep = "\\.location\\(\\)", path = "src", output = "src/route/geometry.rs:8:    route.stops.iter().map(|s| s.location()).collect()\nsrc/export/geojson.rs:16:        let l = stop.location();" },
+]
+
+[[turn.step]]
+think = "The review's first finding is right: insert_break only ever returns Ok, so a break it can't place spins. Reading model.rs, there's a fourth problem the review didn't name: Stop::location() is unreachable!() for a break, and geometry::line and the GeoJSON export call it for every stop, so drawing any route with a break panics. Breaks are stops without a place; those two should skip them. I'll write the tests first, at the edges of the shift, and watch them fail."
+
+[[turn.step]]
+todo = [["Take Anouk's branch with her commits", "completed"], ["Tests at the edges of the shift, and for drawing a route with a break", "in_progress"], ["Return Infeasible for a break that can't fit", "pending"], ["Skip breaks where routes look up coordinates", "pending"], ["Break in the Python stubs, breaks in the README's example", "pending"], ["Open the pull request, crediting Anouk", "pending"]]
+
+[[turn.step]]
+edit = "tests/breaks.rs"
+old = """#[test]
+fn a_break_at_the_start_of_its_window_waits_for_nothing() {
+    let mut r = route(&[11 * HOUR, 13 * HOUR]);
+    insert_break(&mut r, &lunch(11 * HOUR, 12 * HOUR)).unwrap();
+    assert!(matches!(r.stops[2], Stop::Break(_)));
+}"""
+new = """#[test]
+fn a_break_at_the_start_of_its_window_waits_for_nothing() {
+    let mut r = route(&[11 * HOUR, 13 * HOUR]);
+    insert_break(&mut r, &lunch(11 * HOUR, 12 * HOUR)).unwrap();
+    assert!(matches!(r.stops[2], Stop::Break(_)));
+}
+
+#[test]
+fn a_break_before_the_shift_is_infeasible() {
+    let mut r = route(&[7 * HOUR, 9 * HOUR]);
+    assert!(insert_break(&mut r, &lunch(5 * HOUR, 5 * HOUR + 1800)).is_err());
+    assert!(r.stops.iter().all(|s| !matches!(s, Stop::Break(_))));
+}
+
+#[test]
+fn a_break_that_would_run_past_the_shift_is_infeasible() {
+    let mut r = route(&[7 * HOUR, 9 * HOUR, 13 * HOUR + 2700]);
+    assert!(insert_break(&mut r, &lunch(13 * HOUR + 1800, 14 * HOUR)).is_err());
+}
+
+#[test]
+fn a_route_with_a_break_draws_without_it() {
+    let mut r = route(&[7 * HOUR, 11 * HOUR + 600, 13 * HOUR]);
+    insert_break(&mut r, &lunch(11 * HOUR, 12 * HOUR)).unwrap();
+    assert_eq!(milkfloat::route::geometry::line(&r).len(), r.stops.len() - 1);
+    let points = milkfloat::export::geojson::route(&r)["features"].as_array().map_or(0, Vec::len);
+    assert_eq!(points, 1 + r.stops.len() - 1);
+}"""
+
+[[turn.step]]
+bash = "timeout 90 cargo test --test breaks"
+description = "Run the break tests, with a time limit"
+seconds = 75
+error = true
+output = """   Compiling milkfloat v0.9.0 (/home/agent/milkfloat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.87s
+     Running tests/breaks.rs (target/debug/deps/breaks-3f9c1e0b7a2d4c61)
+
+running 6 tests
+test a_break_at_the_start_of_its_window_waits_for_nothing ... ok
+test a_break_goes_after_the_first_stop_inside_its_window ... ok
+test the_stops_after_a_break_move_on_by_its_length ... ok
+test a_break_that_would_run_past_the_shift_is_infeasible ... FAILED
+test a_route_with_a_break_draws_without_it ... FAILED
+test a_break_before_the_shift_is_infeasible has been running for over 60 seconds
+Terminated"""
+
+[[turn.step]]
+say = "All three new tests fail as expected: the break before the shift hangs, the one past the shift is placed anyway, and drawing a route with a break panics. Fixing insert_break first."
+
+[[turn.step]]
+edit = "src/insert.rs"
+old = """use crate::model::{Break, Stop, Visit};"""
+new = """use crate::model::{Break, Stop, TimeWindow, Visit};"""
+
+[[turn.step]]
+edit = "src/insert.rs"
+old = """    #[error("it would run past the end of the shift")]
+    Shift,
+}"""
+new = """    #[error("it would run past the end of the shift")]
+    Shift,
+    #[error("no stop on the route leaves early enough for a break between {} and {}", window.start, window.end)]
+    Break { window: TimeWindow },
+}"""
+
+[[turn.step]]
+edit = "src/insert.rs"
+old = """/// Puts `brk` on `route` after the first stop the van leaves once the
+/// break's window opens, and moves the stops after it on by its duration.
+pub fn insert_break(route: &mut Route, brk: &Break) -> Result<(), Infeasible> {
+    let mut at = brk.window.start.max(route.vehicle.shift.start);
+    loop {
+        if at <= brk.window.end
+            && let Some(i) = route.stops_after(at)
+        {
+            route.stops.insert(i, Stop::Break(brk.clone()));
+            route.delay_from(i, brk.duration);
+            return Ok(());
+        }
+        at = route.next_departure(at);
+    }
+}"""
+new = """/// Puts `brk` on `route` after the first stop the van leaves once the
+/// break's window opens, and moves the stops after it on by its duration.
+/// A break the route can't reach in its window, or that would run past
+/// the end of the shift, is infeasible.
+pub fn insert_break(route: &mut Route, brk: &Break) -> Result<(), Infeasible> {
+    // The latest it may start: inside its window, and over before the shift ends.
+    let latest = brk.window.end.min(route.vehicle.shift.end.saturating_sub(brk.duration));
+    let mut at = brk.window.start.max(route.vehicle.shift.start);
+    while at <= latest {
+        if let Some(i) = route.stops_after(at)
+            && route.departures[i - 1] <= latest
+        {
+            route.stops.insert(i, Stop::Break(brk.clone()));
+            route.delay_from(i, brk.duration);
+            return Ok(());
+        }
+        let next = route.next_departure(at);
+        if next == at {
+            break;
+        }
+        at = next;
+    }
+    Err(Infeasible::Break { window: brk.window })
+}"""
+
+[[turn.step]]
+edit = "src/model.rs"
+old = """impl Stop {
+    pub fn location(&self) -> Location {
+        match self {
+            Stop::Depot(l) => *l,
+            Stop::Visit(v) => v.location,
+            Stop::Break(_) => unreachable!("a break has no location"),
+        }
+    }
+}"""
+new = """impl Stop {
+    /// Where it is: a break has no place of its own.
+    pub fn location(&self) -> Option<Location> {
+        match self {
+            Stop::Depot(l) => Some(*l),
+            Stop::Visit(v) => Some(v.location),
+            Stop::Break(_) => None,
+        }
+    }
+}"""
+
+[[turn.step]]
+edit = "src/route/geometry.rs"
+old = """/// The points a route passes, depot to depot.
+pub fn line(route: &Route) -> Vec<Location> {
+    route.stops.iter().map(|s| s.location()).collect()
+}"""
+new = """/// The points a route passes, depot to depot: its breaks have none.
+pub fn line(route: &Route) -> Vec<Location> {
+    route.stops.iter().filter_map(|s| s.location()).collect()
+}"""
+
+[[turn.step]]
+edit = "src/export/geojson.rs"
+old = """    features.extend(route.stops.iter().zip(&route.arrivals).map(|(stop, at)| {
+        let l = stop.location();
+        json!({
+            "type": "Feature",
+            "geometry": { "type": "Point", "coordinates": [l.lon, l.lat] },
+            "properties": { "stop": name(stop), "arrival": at },
+        })
+    }));"""
+new = """    // A Point for each stop with a place: breaks have none.
+    features.extend(route.stops.iter().zip(&route.arrivals).filter_map(|(stop, at)| {
+        let l = stop.location()?;
+        Some(json!({
+            "type": "Feature",
+            "geometry": { "type": "Point", "coordinates": [l.lon, l.lat] },
+            "properties": { "stop": name(stop), "arrival": at },
+        }))
+    }));"""
+
+[[turn.step]]
+bash = "cargo test"
+description = "Run every test"
+seconds = 20
+output = """   Compiling milkfloat v0.9.0 (/home/agent/milkfloat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.02s
+     Running unittests src/lib.rs (target/debug/deps/milkfloat-8b21d4e0c97a3f15)
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+     Running tests/breaks.rs (target/debug/deps/breaks-3f9c1e0b7a2d4c61)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/route_props.rs (target/debug/deps/route_props-51c7e9a2b0d3f846)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.77s"""
+
+[[turn.step]]
+edit = "python/milkfloat/__init__.pyi"
+old = """class Vehicle:
+    id: str
+    def __init__(
+        self,
+        id: str,
+        depot: tuple[float, float],
+        shift: TimeWindow,
+        capacity: Sequence[int],
+    ) -> None: ..."""
+new = """class Break:
+    \"\"\"A driver's break: `duration` seconds, starting inside `window`.\"\"\"
+
+    def __init__(self, window: TimeWindow, duration: int) -> None: ...
+
+class Vehicle:
+    id: str
+    def __init__(
+        self,
+        id: str,
+        depot: tuple[float, float],
+        shift: TimeWindow,
+        capacity: Sequence[int],
+        *,
+        breaks: Sequence[Break] = (),
+    ) -> None: ..."""
+
+[[turn.step]]
+edit = "README.md"
+old = """from milkfloat import TimeWindow, Vehicle, Visit, solve
+
+HOUR = 3600
+depot = (59.3326, 18.0649)
+vans = [
+    Vehicle("van-1", depot=depot, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40]),
+    Vehicle("van-2", depot=depot, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40]),
+]"""
+new = """from milkfloat import Break, TimeWindow, Vehicle, Visit, solve
+
+HOUR = 3600
+depot = (59.3326, 18.0649)
+# Half an hour for lunch, starting between 11:00 and 12:30.
+lunch = Break(TimeWindow(11 * HOUR, 12 * HOUR + 1800), duration=1800)
+vans = [
+    Vehicle("van-1", depot=depot, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40], breaks=[lunch]),
+    Vehicle("van-2", depot=depot, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40], breaks=[lunch]),
+]"""
+
+[[turn.step]]
+write = "tests/python/test_breaks.py"
+content = '''from milkfloat import Break, TimeWindow, Vehicle, Visit, solve
+
+HOUR = 3600
+DEPOT = (59.3326, 18.0649)
+
+
+def test_a_route_makes_room_for_lunch():
+    lunch = Break(TimeWindow(11 * HOUR, 12 * HOUR), duration=1800)
+    van = Vehicle("van", depot=DEPOT, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40], breaks=[lunch])
+    visits = [Visit(f"v{i}", (59.30 + i * 0.005, 18.03 + (i % 4) * 0.02), service=900, demand=[2]) for i in range(16)]
+    route = solve([van], visits, seconds=1, seed=1).routes[0]
+    at = route.arrivals[route.stops.index("break")]
+    assert 11 * HOUR <= at <= 12 * HOUR
+
+
+def test_a_break_the_shift_cannot_reach_stays_off_the_route():
+    early = Break(TimeWindow(4 * HOUR, 5 * HOUR), duration=1800)
+    van = Vehicle("van", depot=DEPOT, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40], breaks=[early])
+    solution = solve([van], [Visit("a", (59.34, 18.05))], seconds=1, seed=1)
+    assert "break" not in solution.routes[0].stops
+'''
+
+[[turn.step]]
+tools = [
+  { bash = "maturin develop --release -q && uv run pytest tests/python -q", description = "Build the bindings and run the Python tests", seconds = 14, output = "🛠 Installed milkfloat-0.9.0\n.........                                                                [100%]\n9 passed in 7.12s" },
+  { bash = "uv run pyright python/milkfloat tests/python examples", description = "Type-check against the stubs", seconds = 4, output = "0 errors, 0 warnings, 0 informations" },
+]
+
+[[turn.step]]
+commit = """Make driver breaks safe at the edges of a shift
+
+A break the route can't reach in its window, or that would run past the
+end of the shift, is infeasible instead of looping forever. Maps and
+GeoJSON skip breaks, which have no place, and the stubs and the README
+know about them. Builds on Anouk's commits from #311.
+
+Co-authored-by: Anouk van den Berg <anoukvdberg@users.noreply.github.com>"""
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Add driver breaks, building on #311"
+number = 313
+body = """Anouk van den Berg's driver breaks from #311, her three commits as she wrote them, and what the review of #311 asked for:
+
+- A break that the route can't reach in its window, or that would run past the end of the shift, returns `Infeasible::Break` instead of looping forever in `insert_break`.
+- `Stop::location()` is `None` for a break, so `route::geometry` and the GeoJSON export skip breaks instead of panicking on any route that has one.
+- The Python stubs have `Break` and `Vehicle(..., breaks=...)`, and the README's example gives each van a lunch break.
+
+Three more tests in `tests/breaks.rs` at the edges of the shift, and `tests/python/test_breaks.py`.
+
+Thank you, Anouk: this replaces #311, which I'll close with a link here once this is merged."""
+
+[[turn.step]]
+run = "fctl memory add 'Breaks are stops without a place: code that walks a route’s stops skips `Stop::Break` where it looks up coordinates (`route::geometry`, `export::geojson`).'"
+description = "Remember that breaks have no place"
+
+[[turn.step]]
+say = "milkfloat#313 is open, with Anouk's three commits and the fixes on top. I'll watch its checks before I call it done."
+
+[[turn.step]]
+bash = "gh pr checks 313 --watch"
+description = "Watch the checks"
+hold = true

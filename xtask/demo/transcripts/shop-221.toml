@@ -1,0 +1,251 @@
+# shop#221 · Tomás, yesterday 16:20 · Fix the delivery-day picker on Safari (two findings fixed after its review)
+match = "the delivery-day picker loses the selected day when the keyboard closes"
+
+[[turn]]
+duration = "35m"
+result = "Fixed in shop#1286: the picker keeps the chosen day when the keyboard closes, and a WebKit test with an iPhone's viewport covers it."
+
+[[turn.step]]
+run = "fctl edit --title 'Fix the delivery-day picker on Safari' --description 'The picker lost its selection on Safari on iOS when the keyboard closed. It keeps it now, with an end-to-end test in WebKit at an iPhone’s size.'"
+description = "Name the session"
+
+[[turn.step]]
+todo = [["Reproduce the lost day in WebKit", "in_progress"], ["Find what drops the selection", "pending"], ["Fix it", "pending"], ["Keep the test as an e2e test", "pending"], ["Open the pull request", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "src/components/DayPicker.tsx" },
+  { read = "src/lib/viewport.ts" },
+  { grep = "<DayPicker", path = "src", output = "src/app/checkout/DeliveryStep.tsx:18:      <DayPicker slots={slots} locale={locale} onChange={setDay} />" },
+]
+
+[[turn.step]]
+think = "The days render as `<Days key={layout}>`, and the layout follows `useShortViewport()`, which reads the visual viewport's height. On an iPhone the keyboard shrinks the visual viewport below 480 px: tapping the postcode field switches the picker to its list, and Done switches it back. Each switch changes the key, so `Days` mounts afresh and its `selected` starts at null again. I'll write the test first, to see it fail the way Tomás describes."
+
+[[turn.step]]
+write = "e2e/day-picker.spec.ts"
+content = """import { devices, expect, test } from "@playwright/test";
+
+test.use({ ...devices["iPhone 15"] });
+
+test("keeps the chosen day when the keyboard closes", async ({ page }) => {
+  await page.goto("/checkout/delivery");
+  await page.getByRole("option", { name: "Thu 29 Oct" }).tap();
+
+  // Opening the keyboard shrinks the visual viewport: the picker shows its list.
+  await page.getByLabel("Postcode").tap();
+  await page.getByLabel("Postcode").fill("11432");
+  await page.setViewportSize({ width: 393, height: 400 });
+  await expect(page.locator(".day-picker__days--list")).toBeVisible();
+
+  // Done closes it, and the grid comes back.
+  await page.getByLabel("Postcode").blur();
+  await page.setViewportSize({ width: 393, height: 852 });
+  await page.waitForTimeout(500);
+  await expect(page.getByLabel("Pick a delivery day")).toHaveValue("Thu 29 Oct");
+});
+"""
+
+[[turn.step]]
+bash = "npx playwright test e2e/day-picker.spec.ts --project=webkit"
+description = "Run the new test in WebKit"
+seconds = 9
+error = true
+output = """Running 1 test using 1 worker
+
+  ✘  1 [webkit] › day-picker.spec.ts:5:5 › keeps the chosen day when the keyboard closes (6.3s)
+
+  1) [webkit] › day-picker.spec.ts:5:5 › keeps the chosen day when the keyboard closes
+
+    Error: Timed out 5000ms waiting for expect(locator).toHaveValue(expected)
+
+    Locator: getByLabel('Pick a delivery day')
+    Expected string: "Thu 29 Oct"
+    Received string: ""
+
+      17 |   await page.setViewportSize({ width: 393, height: 852 });
+      18 |   await page.waitForTimeout(500);
+    > 19 |   await expect(page.getByLabel("Pick a delivery day")).toHaveValue("Thu 29 Oct");
+         |                                                        ^
+
+  1 failed
+    [webkit] › day-picker.spec.ts:5:5 › keeps the chosen day when the keyboard closes"""
+
+[[turn.step]]
+say = "It fails as on Tomás's phone: the day is gone once the keyboard closes. The chosen day lives in the part of the picker that remounts when the layout switches, so I'll move it up into `DayPicker`, above both layouts. Its read-only input also gets `inputMode=\"none\"`: Safari on iOS still opens the keyboard for a read-only input it focuses, which switches the layout just the same."
+
+[[turn.step]]
+todo = [["Reproduce the lost day in WebKit", "completed"], ["Find what drops the selection", "completed"], ["Fix it", "in_progress"], ["Keep the test as an e2e test", "pending"], ["Open the pull request", "pending"]]
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """  const short = useShortViewport();
+  const layout = short ? "list" : "grid";
+  return (
+    <div className="day-picker">
+      <label htmlFor="delivery-day">{t(locale, "delivery.pick")}</label>
+      <Days key={layout} layout={layout} slots={slots} onChange={onChange} />
+    </div>
+  );
+}"""
+new = """  const short = useShortViewport();
+  // The chosen day lives here, above the two layouts, so that switching
+  // between them (as a phone's keyboard opens and closes) keeps it.
+  const [selected, setSelected] = useState<string | null>(null);
+  const choose = (date: string) => {
+    setSelected(date);
+    onChange(date);
+  };
+  return (
+    <div className="day-picker">
+      <label htmlFor="delivery-day">{t(locale, "delivery.pick")}</label>
+      <Days layout={short ? "list" : "grid"} slots={slots} selected={selected} onChoose={choose} />
+    </div>
+  );
+}"""
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """type DaysProps = { layout: "list" | "grid"; slots: Slot[]; onChange: (date: string) => void };
+
+function Days({ layout, slots, onChange }: DaysProps) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const chosen = slots.find((s) => s.date === selected);"""
+new = """type DaysProps = {
+  layout: "list" | "grid";
+  slots: Slot[];
+  selected: string | null;
+  onChoose: (date: string) => void;
+};
+
+function Days({ layout, slots, selected, onChoose }: DaysProps) {
+  const chosen = slots.find((s) => s.date === selected);"""
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """        id="delivery-day"
+        className="day-picker__value\""""
+new = """        id="delivery-day"
+        inputMode="none"
+        className="day-picker__value\""""
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """            onClick={() => {
+              setSelected(s.date);
+              onChange(s.date);
+            }}"""
+new = """            onClick={() => onChoose(s.date)}"""
+
+[[turn.step]]
+bash = "npx playwright test e2e/day-picker.spec.ts --project=webkit"
+description = "Run the test again"
+seconds = 7
+output = """Running 1 test using 1 worker
+
+  ✓  1 [webkit] › day-picker.spec.ts:5:5 › keeps the chosen day when the keyboard closes (3.4s)
+
+  1 passed (4.6s)"""
+
+[[turn.step]]
+tools = [
+  { bash = "npm test", description = "Run the unit tests", seconds = 6, output = """
+> shop@3.18.0 test
+> vitest run
+
+ Test Files  62 passed (62)
+      Tests  403 passed (403)
+   Duration  8.87s""" },
+  { bash = "npm run e2e", description = "Run every e2e test", seconds = 20, output = """
+> shop@3.18.0 e2e
+> playwright test
+
+Running 37 tests using 4 workers
+  37 passed (1.9m)""" },
+]
+
+[[turn.step]]
+todo = [["Reproduce the lost day in WebKit", "completed"], ["Find what drops the selection", "completed"], ["Fix it", "completed"], ["Keep the test as an e2e test", "completed"], ["Open the pull request", "in_progress"]]
+
+[[turn.step]]
+commit = "Keep the chosen delivery day when Safari's keyboard closes"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Fix the delivery-day picker on Safari"
+number = 1286
+body = """On Safari on iOS, the delivery-day picker lost the chosen day when the keyboard closed.
+
+The keyboard shrinks the visual viewport, which switches the picker between its grid and its list, and each switch remounted the days with the chosen day in them. The chosen day now lives above the two layouts, and the picker's read-only input has `inputMode="none"`, so that tapping a day doesn't open the keyboard either.
+
+`e2e/day-picker.spec.ts` reproduces it in WebKit at an iPhone's size: it failed before the fix and passes after. The unit and e2e tests pass."""
+
+[[turn.step]]
+say = "Fixed in shop#1286: the picker keeps the chosen day when the keyboard closes, and a WebKit test with an iPhone's viewport covers it."
+
+[[turn]]
+match = "fctl's review agent reviewed commit"
+duration = "26m"
+result = "Fixed both: the test waits for the selected day instead of 500 ms, and passes 20 runs in a row; the picker says why it sets `inputMode=\"none\"`. Pushed to shop#1286."
+
+[[turn.step]]
+say = "Both findings are fair. The test will wait for the selected day rather than a fixed 500 ms, and the picker will say why it sets `inputMode=\"none\"`, so that nobody tidies it away."
+
+[[turn.step]]
+edit = "e2e/day-picker.spec.ts"
+old = """  await page.waitForTimeout(500);"""
+new = """  await expect(page.getByRole("option", { selected: true })).toHaveText("Thu 29 Oct");"""
+
+[[turn.step]]
+edit = "src/components/DayPicker.tsx"
+old = """        id="delivery-day"
+        inputMode="none\""""
+new = """        id="delivery-day"
+        // Without it, Safari on iOS opens the keyboard for this read-only
+        // input when a day is tapped, and drops the day as the keyboard closes.
+        inputMode="none\""""
+
+[[turn.step]]
+bash = "npx playwright test e2e/day-picker.spec.ts --project=webkit --repeat-each 20"
+description = "Run the test 20 times in a row"
+seconds = 30
+output = """Running 20 tests using 4 workers
+
+  20 passed (41.8s)"""
+
+[[turn.step]]
+bash = "npm run e2e"
+description = "Run every e2e test"
+seconds = 20
+output = """
+> shop@3.18.0 e2e
+> playwright test
+
+Running 37 tests using 4 workers
+  37 passed (1.9m)"""
+
+[[turn.step]]
+commit = "Wait for the chosen day in the picker's test, and say why it sets inputMode"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+bash = "gh pr checks 1286 --watch"
+description = "Watch the checks"
+seconds = 40
+output = """All checks were successful
+0 cancelled, 0 failing, 23 successful, 0 skipped, and 0 pending checks"""
+
+[[turn.step]]
+run = "fctl memory add 'The delivery-day picker sets `inputMode=\"none\"` on purpose: without it, Safari on iOS drops the selection when the keyboard closes.'"
+description = "Remember why the picker sets inputMode"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'The delivery-day picker keeps the chosen day on Safari on iOS when the keyboard closes, with an e2e test in WebKit at an iPhone’s size (shop#1286).' --approach 'Wrote the test first, which failed as on Tomás’s phone. Moved the chosen day above the picker’s two layouts, which the keyboard switches between, and set `inputMode=\"none\"` on its read-only input.' --challenges 'The review found a fixed 500 ms wait in the new test and an `inputMode` nobody would know to keep; the second commit waits for the selected day and says why.' --insights 'A phone’s keyboard shrinks the visual viewport, not the window: whatever keys on its height remounts as the keyboard opens and closes. Test it in WebKit with an iPhone’s viewport.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Fixed both: the test waits for the selected day instead of 500 ms, and passes 20 runs in a row; the picker says why it sets `inputMode=\"none\"`. Pushed to shop#1286."

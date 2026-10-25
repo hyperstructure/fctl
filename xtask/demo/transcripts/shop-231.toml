@@ -1,0 +1,243 @@
+# shop#231 · Tomás delegated SHOP-419, today 08:52 · Add Danish to the shop (at work at 09:10: watching CI)
+match = "delegated SHOP-419 to fctl in Linear"
+
+[[turn]]
+[[turn.step]]
+bash = "fctl ticket view SHOP-419"
+description = "Read the ticket and its comments"
+output = """SHOP-419 · Danish translations for the shop · In Progress
+Team Shop · Project Copenhagen launch · Assignee fctl-sh · Created by Tomás Ferreira
+
+For the Copenhagen launch: the shop in Danish, prices in DKK, delivery days from the
+Copenhagen depot (cph-1). Lucía's copy is in the comments.
+
+Comments
+  Lucía Navarro · 2 days ago
+  Here's the copy, Swedish → Danish. Box names stay as they are.
+  | sv                     | da                       |
+  | Lägg i korgen          | Læg i kurven             |
+  | Välj leveransdag       | Vælg leveringsdag        |
+  | Hoppa över en vecka    | Spring en uge over       |
+  | Din låda kommer på     | Din kasse kommer         |
+  … 408 more rows in the attached sheet (copy-da.csv)"""
+
+[[turn.step]]
+run = "fctl edit --title 'Add Danish to the shop' --description 'Translates the shop for the Copenhagen launch: Lucía’s copy from SHOP-419, prices in kroner and delivery days from the Copenhagen depot.'"
+description = "Name the session"
+
+[[turn.step]]
+todo = [["Read SHOP-419 and Lucía's copy", "completed"], ["Add da to the locales", "in_progress"], ["Write messages/da.json from the copy", "pending"], ["Format prices in DKK", "pending"], ["Pick the depot by locale", "pending"], ["Tests, then the pull request", "pending"]]
+
+[[turn.step]]
+think = "Before I write da.json I want to see how sv.json is laid out, where the locale is chosen, and where prices get formatted. The depot id is probably hard-coded somewhere since there has only been one."
+
+[[turn.step]]
+tools = [
+  { read = "src/i18n/config.ts" },
+  { read = "src/lib/money.ts" },
+  { grep = "sto-1", path = "src", output = "src/app/delivery/days.ts:9:const DEPOT = \"sto-1\";\nsrc/app/checkout/route.ts:27:  depot: \"sto-1\"," },
+  { glob = "messages/*.json", output = "messages/en.json\nmessages/sv.json" },
+]
+
+[[turn.step]]
+say = "The shop has `sv` and `en`. Prices go through `formatPrice`, which only knows SEK, and `sto-1` is hard-coded in two places where the depot should follow the locale. I'll add `da` first, then teach `formatPrice` kroner and pick the depot by locale."
+
+[[turn.step]]
+edit = "src/i18n/config.ts"
+old = """export const locales = ["sv", "en"] as const;"""
+new = """export const locales = ["sv", "en", "da"] as const;"""
+
+[[turn.step]]
+run = '''cat > messages/da.json <<'LUCIAS_COPY'
+{
+  "nav.boxes": "Kasser",
+  "nav.account": "Konto",
+  "nav.farms": "Gårdene",
+  "nav.howItWorks": "Sådan virker det",
+  "nav.gift": "Giv en kasse",
+  "nav.basket": "Kurven",
+  "nav.signIn": "Log ind",
+  "nav.signOut": "Log ud",
+  "box.add": "Læg i kurven",
+  "box.grownAt": "Dyrket på {farm}",
+  "box.remove": "Fjern",
+  "box.swap": "Byt",
+  "box.size.small": "Lille kasse, 1–2 personer",
+  "box.size.medium": "Mellemkasse, 3–4 personer",
+  "box.size.large": "Stor kasse, 5–6 personer",
+  "box.builder.title": "Byg din kasse",
+  "box.builder.intro": "Vælg det, du vil have, så pakker gårdene resten.",
+  "box.builder.full": "Kassen er fuld",
+  "box.builder.room": "Plads til {count} mere",
+  "box.builder.weight": "{kg} kg i alt",
+  "box.builder.season": "I sæson nu",
+  "box.builder.soldOut": "Udsolgt i denne uge",
+  "box.price": "{price} pr. levering",
+  "box.portion": "{price} pr. portion",
+  "box.extras": "Tilføj æg og brød",
+  "box.organic": "Økologisk",
+  "box.allergens": "Allergener",
+  "items.carrot": "Gulerødder",
+  "items.potato": "Kartofler",
+  "items.beetroot": "Rødbeder",
+  "items.kale": "Grønkål",
+  "items.leek": "Porrer",
+  "items.onion": "Løg",
+  "items.cabbage": "Hvidkål",
+  "items.romanesco": "Romanesco",
+  "items.parsnip": "Pastinak",
+  "items.celeriac": "Knoldselleri",
+  "items.kohlrabi": "Kålrabi",
+  "items.turnip": "Majroer",
+  "items.apples": "Æbler",
+  "items.pears": "Pærer",
+  "items.eggs": "Æg, 12 stk.",
+  "items.bread": "Surdejsbrød",
+  "items.flowers": "Sæsonens blomster",
+  "items.herbs": "Friske krydderurter",
+  "items.mushrooms": "Svampe",
+  "items.squash": "Græskar",
+  "farms.title": "Gårdene",
+  "farms.intro": "Alt i kassen kommer fra gårde inden for 150 km.",
+  "farms.distance": "{km} km væk",
+  "farms.picks": "Plukker {days}",
+  "farms.since": "Med siden {year}",
+  "farms.visit": "Besøg gården",
+  "delivery.pick": "Vælg leveringsdag",
+  "delivery.full": "Denne dag er fuld",
+  "delivery.full.van": "Fuldt: bilen er fyldt den dag.",
+  "delivery.full.farm": "Fuldt: {farm} plukker ikke den dag.",
+  "delivery.nearest": "Tag {day} i stedet",
+  "delivery.window": "Mellem {from} og {to}",
+  "delivery.cutoff": "Bestil senest kl. {time} dagen før",
+  "delivery.postcode": "Postnummer",
+  "delivery.postcode.check": "Tjek, om vi leverer til dig",
+  "delivery.postcode.yes": "Vi leverer til {postcode} {days}",
+  "delivery.postcode.no": "Vi leverer ikke til {postcode} endnu",
+  "delivery.postcode.waitlist": "Giv mig besked, når I kommer hertil",
+  "delivery.door": "Stil ved døren",
+  "delivery.doorCode": "Dørkode",
+  "delivery.notes": "Noget, chaufføren skal vide?",
+  "delivery.next": "Næste levering",
+  "delivery.on": "{weekday} d. {date}",
+  "checkout.title": "Kassen",
+  "checkout.summary": "Din bestilling",
+  "checkout.subtotal": "Subtotal",
+  "checkout.deliveryFee": "Levering",
+  "checkout.free": "Gratis",
+  "checkout.vat": "Heraf moms",
+  "checkout.total": "At betale",
+  "checkout.pay": "Betal {amount}",
+  "checkout.card": "Kort",
+  "checkout.giftCard": "Gavekort",
+  "checkout.code": "Rabatkode",
+  "checkout.terms": "Jeg accepterer betingelserne",
+  "checkout.every": "Hver {interval}",
+  "checkout.week": "uge",
+  "checkout.twoWeeks": "anden uge",
+  "checkout.thanks": "Tak! Din første kasse kommer {date}.",
+  "account.title": "Din konto",
+  "account.subscription": "Abonnement",
+  "account.pause": "Sæt på pause",
+  "account.resume": "Genoptag",
+  "account.cancel": "Opsig abonnementet",
+  "account.address": "Leveringsadresse",
+  "account.payment": "Betaling",
+  "account.receipts": "Kvitteringer",
+  "account.deliveries": "Leveringer",
+  "account.skipped": "Sprunget over",
+  "account.save": "Gem",
+  "account.saved": "Gemt",
+  "skip.week": "Spring en uge over",
+  "skip.done": "Leveringen d. {date} er sprunget over.",
+  "skip.undo": "Fortryd",
+  "skip.expired": "Linket virker ikke længere.",
+  "reminder.comes": "Din kasse kommer",
+  "reminder.change": "Ret din kasse",
+  "reminder.skip": "Spring næste uge over",
+  "emails.welcome.subject": "Velkommen til Romanesco",
+  "emails.receipt.subject": "Kvittering for {date}",
+  "emails.photo.subject": "Din kasse står ved døren",
+  "emails.photo.body": "Ingen åbnede, så chaufføren stillede kassen ved døren.",
+  "emails.footer": "Spørgsmål? Svar på denne mail.",
+  "errors.generic": "Noget gik galt. Prøv igen.",
+  "errors.network": "Ingen forbindelse",
+  "errors.card": "Kortet blev afvist",
+  "errors.postcode": "Det postnummer findes ikke",
+  "errors.required": "Udfyld dette",
+  "errors.email": "Det ligner ikke en e-mailadresse",
+  "footer.about": "Om os",
+  "footer.jobs": "Job hos os",
+  "footer.contact": "Kontakt",
+  "footer.privacy": "Privatliv",
+  "footer.terms": "Betingelser"
+}
+LUCIAS_COPY'''
+show = "node scripts/copy-to-messages.mjs copy-da.csv > messages/da.json"
+description = "Turn Lucía's sheet into messages/da.json"
+output = "Wrote 121 messages to stdout (121 keys, 0 missing)"
+
+[[turn.step]]
+edit = "src/lib/money.ts"
+old = """export type Currency = "SEK";"""
+new = """export type Currency = "SEK" | "DKK";"""
+
+[[turn.step]]
+edit = "src/lib/money.ts"
+old = """const currencies: Record<Locale, Currency> = { sv: "SEK", en: "SEK" };"""
+new = """const currencies: Record<Locale, Currency> = { sv: "SEK", en: "SEK", da: "DKK" };"""
+
+[[turn.step]]
+edit = "src/app/delivery/days.ts"
+old = """const DEPOT = "sto-1";"""
+new = """const DEPOTS: Record<Locale, string> = { sv: "sto-1", en: "sto-1", da: "cph-1" };"""
+
+[[turn.step]]
+tools = [
+  { bash = "npm run i18n:check", description = "Check every locale has every key", output = "✓ 121 keys in sv, en and da" },
+  { bash = "npm test", description = "Run the unit tests", seconds = 6, output = " Test Files  65 passed (65)\n      Tests  418 passed (418)\n   Duration  9.42s" },
+]
+
+[[turn.step]]
+bash = "npm run e2e -- e2e/checkout.da.spec.ts"
+description = "Run the Danish checkout end to end"
+seconds = 8
+output = """Running 4 tests using 2 workers
+  ✓  1 [chromium] › checkout.da.spec.ts:8:3 › builds a box in Danish (6.1s)
+  ✓  2 [chromium] › checkout.da.spec.ts:22:3 › shows prices in kroner (4.8s)
+  ✓  3 [chromium] › checkout.da.spec.ts:35:3 › offers Copenhagen's delivery days (5.2s)
+  ✓  4 [webkit] › checkout.da.spec.ts:8:3 › builds a box in Danish (7.9s)
+  4 passed (24.6s)"""
+
+[[turn.step]]
+run = "fctl memory add 'Prices are integers in öre and øre (1995 is 19,95 kr) everywhere. Format them with `formatPrice(amount, locale, currency)` from `lib/money.ts`, never `toFixed`: it writes a decimal point where Swedish and Danish write a comma.'"
+description = "Remember how prices are formatted"
+
+[[turn.step]]
+run = "fctl memory add 'Copy is written in Swedish first, in `messages/sv.json`; `en.json` and `da.json` follow, and `npm run i18n:check` fails on a key missing from any of them. Ask Lucía before changing words customers read.'"
+description = "Update the note on copy"
+
+[[turn.step]]
+commit = "Add Danish translations and DKK prices"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Add Danish to the shop"
+number = 1291
+body = """The shop in Danish for the Copenhagen launch (SHOP-419).
+
+- `messages/da.json` from Lucía's copy: 121 keys, none missing.
+- `formatPrice` knows DKK; prices stay integers in øre.
+- Delivery days come from the depot of the locale: `cph-1` for Danish.
+
+Tested with `npm run i18n:check`, `npm test` and the Danish checkout end to end in Chromium and WebKit."""
+
+[[turn.step]]
+say = "The shop speaks Danish now: shop#1291 is open. I'll watch its checks before I call it done."
+
+[[turn.step]]
+bash = "gh pr checks 1291 --watch"
+description = "Watch the checks"
+hold = true

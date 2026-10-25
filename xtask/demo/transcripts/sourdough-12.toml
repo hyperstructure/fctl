@@ -1,0 +1,388 @@
+# sourdough#12 · Noor, yesterday 21:14 · Send a feeding reminder the evening before a bake
+match = "Send me a push reminder at 21:00 the evening before a bake day"
+
+[[turn]]
+duration = "22m"
+result = "Reminders are in sourdough#31: at 21:00 the evening before a bake, your phone gets “Country loaf tomorrow: feed the starter at 22:00.” Turn them on in Settings → Reminders, in the app on your home screen, and add the VAPID keys to fika’s environment before you deploy."
+
+[[turn.step]]
+run = "fctl edit --title 'Send a feeding reminder the evening before a bake' --description 'A push reminder at 21:00 the evening before a bake, which the app on the home screen shows.'"
+description = "Name the session"
+
+[[turn.step]]
+think = "A push at 21:00 needs three things the app may not have yet: the phone's push subscription, a server that sends at the right time, and a service worker that shows the notification. Let me see how it's put together first."
+
+[[turn.step]]
+tools = [
+  { read = "README.md" },
+  { read = "src/service-worker.ts" },
+  { read = "src/lib/plan.ts" },
+  { read = "src/lib/server/db.ts" },
+  { glob = "src/**/*.{ts,svelte}", output = "src/lib/plan.test.ts\nsrc/lib/plan.ts\nsrc/lib/server/db.ts\nsrc/routes/+page.server.ts\nsrc/routes/+page.svelte\nsrc/routes/settings/+page.server.ts\nsrc/routes/settings/+page.svelte\nsrc/service-worker.ts" },
+]
+
+[[turn.step]]
+say = "It runs on adapter-node on fika, so the server can send the reminders itself. The service worker only caches the app shell so far, and the manifest already says `display: standalone`, which iOS needs before it allows web push at all. The plan knows when the starter needs feeding (`feedingTime`). I'll keep the phone's subscription in SQLite, check once a minute for bakes whose day is tomorrow, and send at 21:00, or an hour before the feeding when the plan has it earlier than that."
+
+[[turn.step]]
+todo = [["Keep push subscriptions", "in_progress"], ["Work out which reminders are due", "pending"], ["Send them from the server", "pending"], ["Show them in the service worker", "pending"], ["A button in Settings to turn them on", "pending"], ["Tests", "pending"]]
+
+[[turn.step]]
+bash = "npm install web-push && npm install -D @types/web-push"
+description = "Add web-push"
+seconds = 4
+output = """
+added 9 packages, and audited 214 packages in 3s
+
+41 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+
+added 1 package, and audited 215 packages in 1s
+
+found 0 vulnerabilities"""
+
+[[turn.step]]
+silently = '''sed -i -e 's|    "better-sqlite3": "^12.4.1"|    "better-sqlite3": "^12.4.1",\n    "web-push": "^3.6.7"|' -e 's|    "@types/better-sqlite3": "^7.6.13",|    "@types/better-sqlite3": "^7.6.13",\n    "@types/web-push": "^3.6.4",|' package.json'''
+
+[[turn.step]]
+edit = "src/lib/server/db.ts"
+old = """  CREATE TABLE IF NOT EXISTS feedings (
+    id INTEGER PRIMARY KEY,
+    fed_at TEXT NOT NULL,
+    flour TEXT NOT NULL,
+    grams INTEGER NOT NULL,
+    photo TEXT
+  );
+`);"""
+new = """  CREATE TABLE IF NOT EXISTS feedings (
+    id INTEGER PRIMARY KEY,
+    fed_at TEXT NOT NULL,
+    flour TEXT NOT NULL,
+    grams INTEGER NOT NULL,
+    photo TEXT
+  );
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    keys TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS reminders_sent (
+    bake_id INTEGER PRIMARY KEY REFERENCES bakes(id) ON DELETE CASCADE,
+    sent_at TEXT NOT NULL
+  );
+`);"""
+
+[[turn.step]]
+write = "src/lib/reminders.ts"
+content = '''import { type Bake, feedingTime } from "./plan";
+
+export interface Reminder {
+  bakeId: number;
+  at: Date;
+  title: string;
+  body: string;
+}
+
+const HOUR = 3_600_000;
+
+/** 21:00 the evening before the day of `bake`, in the server's time zone. */
+function eveningBefore(bake: Bake): Date {
+  const at = new Date(bake.readyAt);
+  at.setDate(at.getDate() - 1);
+  at.setHours(21, 0, 0, 0);
+  return at;
+}
+
+const clock = (d: Date) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+/**
+ * The reminder for `bake`: at 21:00 the evening before its day, or an hour
+ * before the feeding when the plan has the feeding earlier than that.
+ */
+export function reminderFor(bake: Bake): Reminder {
+  const feed = feedingTime(bake);
+  const evening = eveningBefore(bake);
+  const early = new Date(feed.getTime() - HOUR);
+  return {
+    bakeId: bake.id,
+    at: early < evening ? early : evening,
+    title: `${bake.recipe} tomorrow`,
+    body: `Feed the starter at ${clock(feed)}.`,
+  };
+}
+
+/** The reminders due at `now` that haven't gone out yet. */
+export function dueReminders(bakes: Bake[], now: Date, sent: Set<number>): Reminder[] {
+  return bakes
+    .filter((b) => !sent.has(b.id) && b.readyAt > now)
+    .map(reminderFor)
+    .filter((r) => r.at <= now);
+}
+'''
+
+[[turn.step]]
+write = "src/lib/reminders.test.ts"
+content = '''import { describe, expect, it } from "vitest";
+import { dueReminders, reminderFor } from "./reminders";
+
+// Ready at 17:00 on Saturday: the starter is fed at 22:00 on Friday.
+const bake = { id: 7, recipe: "Country loaf", readyAt: new Date("2026-03-14T17:00:00") };
+
+describe("reminderFor", () => {
+  it("comes at 21:00 the evening before", () => {
+    const r = reminderFor(bake);
+    expect(r.at).toEqual(new Date("2026-03-13T21:00:00"));
+    expect(r.body).toBe("Feed the starter at 22:00.");
+  });
+
+  it("comes an hour before a feeding earlier than that", () => {
+    const morning = { ...bake, readyAt: new Date("2026-03-14T09:00:00") };
+    expect(reminderFor(morning).at).toEqual(new Date("2026-03-13T13:00:00"));
+  });
+});
+
+describe("dueReminders", () => {
+  it("sends nothing before its time", () => {
+    expect(dueReminders([bake], new Date("2026-03-13T20:59:00"), new Set())).toEqual([]);
+  });
+
+  it("sends it once its time has come", () => {
+    expect(dueReminders([bake], new Date("2026-03-13T21:00:00"), new Set())).toHaveLength(1);
+  });
+
+  it("never sends one twice", () => {
+    expect(dueReminders([bake], new Date("2026-03-13T21:01:00"), new Set([7]))).toEqual([]);
+  });
+});
+'''
+
+[[turn.step]]
+write = "src/lib/server/push.ts"
+content = '''import webpush from "web-push";
+import { env } from "$env/dynamic/private";
+import { db } from "./db";
+
+webpush.setVapidDetails("mailto:noor@noorhaddad.se", env.VAPID_PUBLIC_KEY ?? "", env.VAPID_PRIVATE_KEY ?? "");
+
+export interface Subscription {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}
+
+export function subscribe(s: Subscription) {
+  db.prepare("INSERT OR REPLACE INTO push_subscriptions (endpoint, keys, created_at) VALUES (?, ?, ?)").run(
+    s.endpoint,
+    JSON.stringify(s.keys),
+    new Date().toISOString(),
+  );
+}
+
+export function unsubscribe(endpoint: string) {
+  db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+}
+
+/** Sends `payload` to every subscribed phone, and forgets those the push service says are gone. */
+export async function sendToAll(payload: { title: string; body: string; url: string }) {
+  const rows = db.prepare("SELECT endpoint, keys FROM push_subscriptions").all() as { endpoint: string; keys: string }[];
+  for (const row of rows) {
+    try {
+      await webpush.sendNotification({ endpoint: row.endpoint, keys: JSON.parse(row.keys) }, JSON.stringify(payload));
+    } catch (e) {
+      const status = (e as { statusCode?: number }).statusCode;
+      if (status === 404 || status === 410) unsubscribe(row.endpoint);
+      else throw e;
+    }
+  }
+}
+'''
+
+[[turn.step]]
+write = "src/lib/server/reminders.ts"
+content = '''import { dueReminders } from "$lib/reminders";
+import { db, upcomingBakes } from "./db";
+import { sendToAll } from "./push";
+
+/** Checks once a minute for reminders that are due, and sends each one once. */
+export function startReminders() {
+  const tick = async () => {
+    const now = new Date();
+    const rows = db.prepare("SELECT bake_id FROM reminders_sent").all() as { bake_id: number }[];
+    const sent = new Set(rows.map((r) => r.bake_id));
+    for (const r of dueReminders(upcomingBakes(now), now, sent)) {
+      await sendToAll({ title: r.title, body: r.body, url: "/" });
+      db.prepare("INSERT INTO reminders_sent (bake_id, sent_at) VALUES (?, ?)").run(r.bakeId, now.toISOString());
+    }
+  };
+  setInterval(() => tick().catch((e) => console.error("sending reminders:", e)), 60_000);
+}
+'''
+
+[[turn.step]]
+write = "src/hooks.server.ts"
+content = '''import { building } from "$app/environment";
+import { startReminders } from "$lib/server/reminders";
+
+export async function init() {
+  if (!building) startReminders();
+}
+'''
+
+[[turn.step]]
+write = "src/routes/api/push/+server.ts"
+content = '''import { json } from "@sveltejs/kit";
+import { subscribe, unsubscribe } from "$lib/server/push";
+
+/** The phone's push subscription, from Settings → Reminders. */
+export async function POST({ request }) {
+  subscribe(await request.json());
+  return json({ ok: true });
+}
+
+export async function DELETE({ request }) {
+  const { endpoint } = await request.json();
+  unsubscribe(endpoint);
+  return json({ ok: true });
+}
+'''
+
+[[turn.step]]
+edit = "src/service-worker.ts"
+old = """  event.respondWith(caches.match(url.pathname).then((hit) => hit ?? fetch(event.request)));
+});"""
+new = """  event.respondWith(caches.match(url.pathname).then((hit) => hit ?? fetch(event.request)));
+});
+
+// Reminders from the server, shown while the app is closed.
+sw.addEventListener("push", (event) => {
+  const { title, body, url } = event.data?.json() ?? {};
+  event.waitUntil(sw.registration.showNotification(title ?? "Sourdough", { body, icon: "/icon-192.png", data: { url } }));
+});
+
+sw.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(sw.clients.openWindow(event.notification.data?.url ?? "/"));
+});"""
+
+[[turn.step]]
+write = "src/lib/Reminders.svelte"
+content = '''<script lang="ts">
+  import { PUBLIC_VAPID_KEY } from "$env/static/public";
+
+  let state = $state<"off" | "on" | "blocked" | "unsupported">("off");
+
+  $effect(() => {
+    if (!("PushManager" in window)) state = "unsupported";
+    else if (Notification.permission === "denied") state = "blocked";
+    else
+      navigator.serviceWorker.ready
+        .then((r) => r.pushManager.getSubscription())
+        .then((s) => (state = s ? "on" : "off"));
+  });
+
+  async function turnOn() {
+    // iOS asks only after a tap, and only in the app on the home screen.
+    if ((await Notification.requestPermission()) !== "granted") return (state = "blocked");
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: PUBLIC_VAPID_KEY,
+    });
+    await fetch("/api/push", { method: "POST", body: JSON.stringify(subscription) });
+    state = "on";
+  }
+</script>
+
+<section>
+  <h2>Reminders</h2>
+  {#if state === "on"}
+    <p>On: one comes at 21:00 the evening before each bake.</p>
+  {:else if state === "blocked"}
+    <p>Notifications are off for Sourdough in the phone's settings.</p>
+  {:else if state === "unsupported"}
+    <p>Add Sourdough to your home screen first: Safari shows reminders only there.</p>
+  {:else}
+    <button onclick={turnOn}>Remind me the evening before a bake</button>
+  {/if}
+</section>
+'''
+
+[[turn.step]]
+edit = "src/routes/settings/+page.svelte"
+old = """<script lang="ts">
+  let { data } = $props();
+</script>"""
+new = """<script lang="ts">
+  import Reminders from "$lib/Reminders.svelte";
+
+  let { data } = $props();
+</script>"""
+
+[[turn.step]]
+edit = "src/routes/settings/+page.svelte"
+old = """  <p>{data.starter.name}, fed with {data.starter.flour}.</p>
+</section>"""
+new = """  <p>{data.starter.name}, fed with {data.starter.flour}.</p>
+</section>
+
+<Reminders />"""
+
+[[turn.step]]
+todo = [["Keep push subscriptions", "completed"], ["Work out which reminders are due", "completed"], ["Send them from the server", "completed"], ["Show them in the service worker", "completed"], ["A button in Settings to turn them on", "completed"], ["Tests", "in_progress"]]
+
+[[turn.step]]
+tools = [
+  { bash = "npm test", description = "Run the tests", seconds = 3, output = """
+> sourdough@0.9.0 test
+> vitest run
+
+ ✓ src/lib/plan.test.ts (4 tests) 4ms
+ ✓ src/lib/reminders.test.ts (5 tests) 6ms
+
+ Test Files  2 passed (2)
+      Tests  9 passed (9)
+   Duration  612ms""" },
+  { bash = "npm run check", description = "Check types", seconds = 6, output = """
+> sourdough@0.9.0 check
+> svelte-kit sync && svelte-check --tsconfig ./tsconfig.json
+
+====================================
+Loading svelte-check in workspace: /home/agent/workspace
+Getting Svelte diagnostics...
+
+svelte-check found 0 errors and 0 warnings""" },
+]
+
+[[turn.step]]
+think = "I can't try the push itself from here: there's no phone in the sandbox, and iOS only delivers web push to the installed app anyway. The tests cover when reminders go out; the pull request should say what Noor has to set up on fika and how to try it."
+
+[[turn.step]]
+commit = "Send a feeding reminder the evening before a bake"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Send a feeding reminder the evening before a bake"
+number = 31
+body = """A push reminder at 21:00 the evening before a bake, saying when to feed the starter. When the plan has the feeding before 21:00, the reminder comes an hour before it.
+
+- Settings → Reminders subscribes the phone (`POST /api/push`), from a tap, as iOS wants.
+- The server checks once a minute and sends each bake's reminder once (`reminders_sent`).
+- The service worker shows it, and a tap opens the app.
+
+Before deploying: add `VAPID_PUBLIC_KEY`, `PUBLIC_VAPID_KEY` (the same key) and `VAPID_PRIVATE_KEY` to fika's environment. `npx web-push generate-vapid-keys` makes a pair.
+
+Tested with `npm test` and `npm run check`; not on a phone, which the sandbox doesn't have. To try it, open the app from the home screen, not a Safari tab."""
+
+[[turn.step]]
+run = "fctl memory add 'iOS shows web push only for the app added to the home screen: test reminders there, not in a Safari tab.'"
+description = "Remember where iOS shows web push"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'A push reminder at 21:00 the evening before a bake, saying when to feed the starter (sourdough#31).' --approach 'The server on fika sends it with web-push, checking once a minute; the phone subscribes from a button in Settings, since iOS asks only after a tap.' --challenges 'No phone in the sandbox, so the push itself is untested; the tests cover when reminders go out. The VAPID keys have to be added on fika by hand.' --insights 'iOS delivers web push only to the app added to the home screen, never to a Safari tab.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Reminders are in sourdough#31: at 21:00 the evening before a bake, your phone gets “Country loaf tomorrow: feed the starter at 22:00.” Turn them on in Settings → Reminders, in the app on your home screen, and add the VAPID keys to fika’s environment before you deploy."

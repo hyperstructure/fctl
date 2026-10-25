@@ -1,0 +1,27 @@
+name: apply
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    strategy:
+      max-parallel: 1
+      matrix:
+        environment: [staging, production]
+    runs-on: ubuntu-latest
+    environment: ${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::318406112230:role/terraform-apply
+          aws-region: eu-north-1
+      - run: terraform -chdir=${{ matrix.environment }} init -input=false
+      - run: terraform -chdir=${{ matrix.environment }} apply -input=false -auto-approve

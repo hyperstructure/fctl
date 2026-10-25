@@ -1,0 +1,73 @@
+# infra#38 · the weekly drift check, for Kofi, today 09:00 (at work at 09:10: planning production)
+match = "If anything drifted, open an issue in romanescohq/infra"
+
+[[turn]]
+[[turn.step]]
+run = "fctl edit --title 'Check production and staging for Terraform drift' --description 'Runs terraform plan for production and staging, and opens an issue in romanescohq/infra for anything that drifted.'"
+description = "Name the session"
+
+[[turn.step]]
+todo = [["Plan staging", "in_progress"], ["Plan production", "pending"], ["An issue for anything that drifted", "pending"]]
+
+[[turn.step]]
+bash = "terraform -chdir=staging init -input=false"
+description = "Set up staging's plan"
+seconds = 12
+output = """Initializing the backend...
+
+Successfully configured the backend "s3"! Terraform will automatically
+use this backend unless the backend configuration changes.
+Initializing modules...
+- database in ../modules/database
+- monitoring in ../modules/monitoring
+- network in ../modules/network
+- platform in ../modules/platform
+Initializing provider plugins...
+- Reusing previous version of hashicorp/aws from the dependency lock file
+- Installing hashicorp/aws v6.14.1...
+- Installed hashicorp/aws v6.14.1 (signed by HashiCorp)
+
+Terraform has been successfully initialized!"""
+
+[[turn.step]]
+bash = "terraform -chdir=staging plan -lock=false -input=false -detailed-exitcode"
+description = "Plan staging"
+seconds = 90
+output = """module.network.aws_vpc.main: Refreshing state... [id=vpc-0c4e1f9a27d3b8e65]
+module.monitoring.aws_sns_topic.oncall: Refreshing state... [id=arn:aws:sns:eu-north-1:318406112230:staging-oncall]
+module.database.aws_db_parameter_group.main: Refreshing state... [id=staging-postgres17]
+module.database.aws_db_instance.main: Refreshing state... [id=db-7K2QXN4BHTJ5VZ3R6WUMLC8YPE]
+… 163 more
+
+No changes. Your infrastructure matches the configuration.
+
+Terraform has compared your real infrastructure against your configuration
+and found no differences, so no changes are needed."""
+
+[[turn.step]]
+todo = [["Plan staging", "completed"], ["Plan production", "in_progress"], ["An issue for anything that drifted", "pending"]]
+
+[[turn.step]]
+say = "Staging matches its configuration. Production next."
+
+[[turn.step]]
+bash = "terraform -chdir=production init -input=false"
+description = "Set up production's plan"
+seconds = 12
+output = """Initializing the backend...
+
+Successfully configured the backend "s3"! Terraform will automatically
+use this backend unless the backend configuration changes.
+Initializing modules...
+Initializing provider plugins...
+- Reusing previous version of hashicorp/aws from the dependency lock file
+- Reusing previous version of cloudflare/cloudflare from the dependency lock file
+- Installed hashicorp/aws v6.14.1 (signed by HashiCorp)
+- Installed cloudflare/cloudflare v5.11.0 (signed by a HashiCorp partner)
+
+Terraform has been successfully initialized!"""
+
+[[turn.step]]
+bash = "terraform -chdir=production plan -lock=false -input=false -detailed-exitcode"
+description = "Plan production"
+hold = true

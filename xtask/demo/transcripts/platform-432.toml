@@ -1,0 +1,31 @@
+# platform#432 · review of platform#831 at its second commit: passed
+match = "Review romanescohq/platform#831, “Cache delivery slots per postcode”, at commit"
+
+[[turn]]
+duration = "1m9s"
+result = "No issues: slots are cached per postcode for ten minutes and dropped when their zone's route changes, and the new query has its data in `.sqlx/`."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Add the query data for the slot cache\nCache delivery slots per postcode" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " .sqlx/query-5c2d8f0e6a41b39e7d1f0c84a9e2b6d35f7a1c08e4b29d6f3a0c5e81b7d24f96.json |  12 ++++++++++++\n Cargo.toml                                                                        |   1 +\n migrations/0138_delivery_slot_cache.sql                                           |  12 ++++++++++++\n src/db.rs                                                                         |   7 +++++++\n src/main.rs                                                                       |   1 +\n src/slots/cache.rs                                                                |  66 ++++++++++++++++++++++++++++++++++++++++\n src/slots/mod.rs                                                                  |   4 +++-\n 7 files changed, 102 insertions(+), 1 deletion(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+tools = [
+  { read = "src/slots/cache.rs" },
+  { read = "migrations/0138_delivery_slot_cache.sql" },
+]
+
+[[turn.step]]
+think = "The ten minutes bound how stale a farm's picking days can be, which no trigger covers; a route change drops the zone's postcodes at once. `try_get_with` makes concurrent misses share one query, so a cold postcode can't stampede the database. The trigger fires only on the columns that change slots. Nothing to raise."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = """Posted the review on romanescohq/platform#831: no issues.
+https://github.com/romanescohq/platform/pull/831#pullrequestreview-1987512"""
+
+[[turn.step]]
+say = "No issues: slots are cached per postcode for ten minutes and dropped when their zone's route changes, and the new query has its data in `.sqlx/`."

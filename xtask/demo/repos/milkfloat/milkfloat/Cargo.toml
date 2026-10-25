@@ -1,0 +1,33 @@
+[package]
+name = "milkfloat"
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A vehicle-routing solver: time windows, capacities, driver breaks and re-planning while the vans are out."
+license = "MIT"
+repository = "https://github.com/milkfloat/milkfloat"
+homepage = "https://milkfloat.dev"
+readme = "README.md"
+keywords = ["vrp", "routing", "optimization", "logistics", "solver"]
+categories = ["algorithms", "science"]
+
+[lib]
+name = "milkfloat"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+python = ["dep:pyo3"]
+
+[dependencies]
+pyo3 = { version = "0.28.2", features = ["extension-module", "abi3-py310"], optional = true }
+rayon = "1.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1.7"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

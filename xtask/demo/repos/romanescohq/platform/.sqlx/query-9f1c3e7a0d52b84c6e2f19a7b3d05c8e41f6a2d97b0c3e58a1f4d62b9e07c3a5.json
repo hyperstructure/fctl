@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.day, d.window_start, d.window_end,\n                  array_agg(DISTINCT f.name) AS \"farms!\", bool_or(r.load >= r.capacity) AS \"full!\"\n             FROM delivery_days d\n             JOIN zone_postcodes z ON z.zone = d.zone\n             JOIN routes r ON r.day = d.day AND r.zone = d.zone\n             JOIN farm_picking p ON p.weekday = extract(isodow FROM d.day)\n             JOIN farms f ON f.id = p.farm_id AND f.zone = d.zone\n            WHERE z.postcode = $1 AND d.day BETWEEN current_date AND current_date + 21\n            GROUP BY d.day, d.window_start, d.window_end\n            ORDER BY d.day, d.window_start",
+  "describe": {
+    "columns": [
+      { "ordinal": 0, "name": "day", "type_info": "Date" },
+      { "ordinal": 1, "name": "window_start", "type_info": "Time" },
+      { "ordinal": 2, "name": "window_end", "type_info": "Time" },
+      { "ordinal": 3, "name": "farms!", "type_info": "TextArray" },
+      { "ordinal": 4, "name": "full!", "type_info": "Bool" }
+    ],
+    "parameters": { "Left": ["Text"] },
+    "nullable": [false, false, false, null, null]
+  },
+  "hash": "9f1c3e7a0d52b84c6e2f19a7b3d05c8e41f6a2d97b0c3e58a1f4d62b9e07c3a5"
+}

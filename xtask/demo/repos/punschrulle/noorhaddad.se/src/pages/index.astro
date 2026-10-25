@@ -1,0 +1,21 @@
+---
+import { getCollection } from "astro:content";
+
+const posts = (await getCollection("posts", ({ data }) => import.meta.env.DEV || !data.draft)).sort(
+  (a, b) => (b.data.date?.getTime() ?? 0) - (a.data.date?.getTime() ?? 0),
+);
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Noor Haddad</title>
+  </head>
+  <body>
+    <h1>Noor Haddad</h1>
+    <p>I run the software at Romanesco, which delivers vegetables from farms around Stockholm.</p>
+    <ul>
+      {posts.map((p) => <li><a href={`/posts/${p.id}/`}>{p.data.title}</a> {p.data.summary}</li>)}
+    </ul>
+  </body>
+</html>

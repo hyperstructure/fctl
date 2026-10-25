@@ -1,0 +1,149 @@
+# driver-app#77 · Aiko, today 08:35 · Show the delivery window on each stop (at work at 09:10: checking the bundle)
+match = "turn it amber when the van is running late for it"
+
+[[turn]]
+[[turn.step]]
+run = "fctl edit --title 'Show the delivery window on each stop' --description 'Each stop in the route list shows the customer’s delivery window, and turns amber when the van runs late for it.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "src/route/StopRow.tsx" },
+  { read = "src/route/types.ts" },
+  { read = "src/theme.ts" },
+]
+
+[[turn.step]]
+think = "Each stop has window.from, window.to and eta, as ISO times. Late means the van gets there after the window closes, and only while the stop is still pending. The row shows the address and the boxes; the window can go under them, in 24-hour time. The theme has no amber yet: the design system's warning color is the one to copy, with its surface."
+
+[[turn.step]]
+todo = [["Format the window and tell when the van is late", "in_progress"], ["Show it on each stop in the route list", "pending"], ["Amber from the design system's warning color", "pending"], ["Tests, lint, and a bundle", "pending"]]
+
+[[turn.step]]
+write = "src/route/window.ts"
+content = """import type { Stop } from "./types";
+
+const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+
+/** A stop's delivery window, such as "08:00–10:00", in the phone's time zone. */
+export function formatWindow(window: Stop["window"]): string {
+  return `${time.format(new Date(window.from))}–${time.format(new Date(window.to))}`;
+}
+
+/** Whether the van gets to a stop after its window closes, at the pace it's going. */
+export function isLate(stop: Pick<Stop, "eta" | "window" | "status">): boolean {
+  return stop.status === "pending" && new Date(stop.eta) > new Date(stop.window.to);
+}
+"""
+
+[[turn.step]]
+write = "src/route/window.test.ts"
+content = """import { formatWindow, isLate } from "./window";
+
+const window = { from: "2026-10-27T08:00:00+01:00", to: "2026-10-27T10:00:00+01:00" };
+
+test("formats the window in 24-hour time", () => {
+  expect(formatWindow(window)).toBe("08:00–10:00");
+});
+
+test("is late when the van gets there after the window closes", () => {
+  expect(isLate({ status: "pending", window, eta: "2026-10-27T10:12:00+01:00" })).toBe(true);
+});
+
+test("isn't late inside the window", () => {
+  expect(isLate({ status: "pending", window, eta: "2026-10-27T09:40:00+01:00" })).toBe(false);
+});
+
+test("isn't late once the stop is done", () => {
+  expect(isLate({ status: "delivered", window, eta: "2026-10-27T10:12:00+01:00" })).toBe(false);
+});
+"""
+
+[[turn.step]]
+edit = "src/theme.ts"
+old = """  lime: "#d4f06b",
+  danger: "#b3261e","""
+new = """  lime: "#d4f06b",
+  // Late: the design system's warning color, on its surface.
+  amber: "#a15c07",
+  amberSurface: "#fdf0d5",
+  danger: "#b3261e","""
+
+[[turn.step]]
+edit = "src/route/StopRow.tsx"
+old = """import type { Stop } from "./types";"""
+new = """import type { Stop } from "./types";
+import { formatWindow, isLate } from "./window";"""
+
+[[turn.step]]
+edit = "src/route/StopRow.tsx"
+old = """  const done = stop.status !== "pending";"""
+new = """  const done = stop.status !== "pending";
+  const late = isLate(stop);"""
+
+[[turn.step]]
+edit = "src/route/StopRow.tsx"
+old = """        <Text style={styles.meta}>
+          {stop.boxes} {stop.boxes === 1 ? "box" : "boxes"}
+          {stop.cold ? " · cold" : ""}
+        </Text>"""
+new = """        <Text style={styles.meta}>
+          {stop.boxes} {stop.boxes === 1 ? "box" : "boxes"}
+          {stop.cold ? " · cold" : ""}
+        </Text>
+        <View style={[styles.window, late && styles.late]}>
+          <Text style={[styles.windowText, late && styles.lateText]}>
+            {late ? `Late for ${formatWindow(stop.window)}` : formatWindow(stop.window)}
+          </Text>
+        </View>"""
+
+[[turn.step]]
+edit = "src/route/StopRow.tsx"
+old = """  meta: { fontSize: 14, color: colors.ink3 },
+});"""
+new = """  meta: { fontSize: 14, color: colors.ink3 },
+  window: { alignSelf: "flex-start", marginTop: 2, paddingHorizontal: space.xs, borderRadius: 4 },
+  windowText: { fontSize: 14, fontVariant: ["tabular-nums"], color: colors.ink3 },
+  late: { backgroundColor: colors.amberSurface },
+  lateText: { color: colors.amber, fontWeight: "600" },
+});"""
+
+[[turn.step]]
+todo = [["Format the window and tell when the van is late", "completed"], ["Show it on each stop in the route list", "completed"], ["Amber from the design system's warning color", "completed"], ["Tests, lint, and a bundle", "in_progress"]]
+
+[[turn.step]]
+tools = [
+  { bash = "npm test -- route", description = "Run the route's tests", seconds = 5, output = """
+> driver-app@2.14.0 test
+> TZ=Europe/Stockholm jest route
+
+ PASS  src/route/window.test.ts
+  ✓ formats the window in 24-hour time (3 ms)
+  ✓ is late when the van gets there after the window closes (1 ms)
+  ✓ isn't late inside the window
+  ✓ isn't late once the stop is done (1 ms)
+ PASS  src/route/useRoute.test.ts
+  ✓ shows what the phone has while offline (6 ms)
+  ✓ takes the platform's route once it answers (4 ms)
+
+Test Suites: 2 passed, 2 total
+Tests:       6 passed, 6 total
+Snapshots:   0 total
+Time:        2.08 s""" },
+  { bash = "npm run typecheck && npm run lint", description = "Check the types and lint", seconds = 12, output = """
+> driver-app@2.14.0 typecheck
+> tsc --noEmit
+
+
+> driver-app@2.14.0 lint
+> eslint .
+""" },
+]
+
+[[turn.step]]
+say = "Each stop shows its window under the address now, and turns amber with \"Late for 08:00–10:00\" when the ETA is past it. Before the pull request, I'll check that the app still bundles for iOS, as the project's memory says to here."
+
+[[turn.step]]
+bash = "npx expo export --platform ios"
+description = "Check that the app bundles"
+hold = true

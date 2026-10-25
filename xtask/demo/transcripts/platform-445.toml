@@ -1,0 +1,94 @@
+# platform#445 · Asha, today 08:31 · Retry Stripe webhook processing that fails (waiting for Asha at 09:10)
+match = "When processing a Stripe webhook fails, we drop it"
+
+[[turn]]
+duration = "24m"
+result = "Retries are in platform#845: five tries with backoff from 30 seconds to 40 minutes, then the event goes to `webhook_dead_letters` with its last error. CI passed and the review found nothing. Before I call it done: should a dead letter page whoever is on call, or is the daily summary in #platform enough?"
+
+[[turn.step]]
+run = "fctl edit --title 'Retry Stripe webhook processing that fails' --description 'Webhooks whose processing fails are retried with backoff, and kept in a dead-letter table after five tries. The agent asks whether a dead letter should page someone.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "src/webhooks/mod.rs" },
+  { read = "src/jobs/mod.rs" },
+  { glob = "migrations/*.sql", output = "migrations/0136_farm_pickup_windows.sql\nmigrations/0137_stop_delivery_windows.sql\nmigrations/0138_delivery_slot_cache.sql\nmigrations/0139_box_flowers.sql" },
+]
+
+[[turn.step]]
+think = "Processing happens inline in the handler today, and an error just logs and returns 200, so the event is gone. The job queue already retries other jobs with backoff: webhook processing can become a job, with a dead-letter table for the ones that never succeed."
+
+[[turn.step]]
+write = "migrations/0142_webhook_dead_letters.sql"
+content = """CREATE TABLE webhook_dead_letters (
+    id          BIGSERIAL PRIMARY KEY,
+    event_id    TEXT NOT NULL UNIQUE,
+    event_type  TEXT NOT NULL,
+    payload     JSONB NOT NULL,
+    attempts    INT NOT NULL,
+    last_error  TEXT NOT NULL,
+    failed_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+[[turn.step]]
+write = "src/webhooks/retry.rs"
+content = """//! Stripe events whose processing fails, tried again with backoff, then
+//! kept in `webhook_dead_letters`.
+
+use std::time::Duration;
+
+/// Five tries: 30 s, 2 min, 8 min, 20 min, 40 min after the first.
+pub const BACKOFF: [Duration; 5] = [
+    Duration::from_secs(30),
+    Duration::from_secs(120),
+    Duration::from_secs(480),
+    Duration::from_secs(1200),
+    Duration::from_secs(2400),
+];
+
+/// When the next try is due, or `None` once the event is a dead letter.
+pub fn next_try(attempts: usize) -> Option<Duration> {
+    BACKOFF.get(attempts).copied()
+}
+"""
+
+[[turn.step]]
+edit = "src/webhooks/mod.rs"
+old = """    if let Err(e) = process(&db, &event).await {
+        tracing::error!(event = %event.id, "processing a Stripe event failed: {e:#}");
+    }"""
+new = """    jobs::enqueue(&db, jobs::Job::StripeEvent { id: event.id.clone() }).await?;"""
+
+[[turn.step]]
+tools = [
+  { bash = "cargo sqlx prepare --workspace", description = "Update the query data", seconds = 4, output = "query data written to .sqlx in the workspace root; please check this into version control" },
+  { bash = "cargo test -p platform webhooks", description = "Run the webhook tests", seconds = 9, output = "running 23 tests\n...................................\ntest result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.81s" },
+]
+
+[[turn.step]]
+commit = "Retry Stripe webhook processing that fails"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Retry Stripe webhook processing that fails"
+number = 845
+body = """Processing a Stripe event moves into the job queue: a failure is retried with backoff (30 s to 40 min), and after five tries the event goes to `webhook_dead_letters` with its last error.
+
+The handler answers Stripe at once, so a slow event no longer makes Stripe send it again."""
+
+[[turn.step]]
+run = "fctl memory add 'Answer Stripe’s webhooks at once and do the work in the job queue (`jobs::enqueue`): a handler slower than Stripe’s timeout gets the event again, which is how #437’s double charges started.'"
+description = "Remember why webhooks go through the queue"
+
+[[turn.step]]
+bash = "gh pr checks 845 --watch"
+description = "Watch the checks"
+seconds = 10
+output = "All checks were successful\n0 failing, 14 successful, 0 skipped, and 0 pending checks\n\n✓  Clippy                      58s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265721\n✓  Format                      12s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265722\n✓  sqlx offline data           41s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265723\n✓  Tests (billing)           2m10s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265724\n✓  Tests (jobs)              1m34s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265725\n✓  Tests (routes)            2m47s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265726\n✓  Tests (slots)               49s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265727\n✓  Tests (webhooks)          1m12s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265728\n✓  Migrations                  29s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265729\n✓  Migrations, rolled back     33s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265730\n✓  cargo deny                  18s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265731\n✓  Docker image              3m02s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265732\n✓  Deploy preview            1m51s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265733\n✓  fctl review               1m09s   https://github.com/romanescohq/platform/runs/55265734"
+
+[[turn.step]]
+say = "Retries are in platform#845: five tries with backoff from 30 seconds to 40 minutes, then the event goes to `webhook_dead_letters` with its last error. CI passed and the review found nothing. Before I call it done: should a dead letter page whoever is on call, or is the daily summary in #platform enough?"
