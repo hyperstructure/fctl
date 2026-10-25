@@ -92,6 +92,9 @@ pub struct TokenSpec {
     pub projects: Vec<String>,
     /// Days it works for; absent, until someone deletes it.
     pub days: Option<u32>,
+    /// The most its sessions' agents may do on GitHub: `read`, `comment`
+    /// or `push` (absent).
+    pub github: Option<String>,
     pub created: When,
     /// When something last used it.
     pub used: Option<When>,
@@ -275,6 +278,31 @@ pub struct Project {
     /// blocked: older sessions' make up what the cast's don't.
     #[serde(default)]
     pub retros: Vec<u32>,
+    /// Its sandboxes, as its settings have them.
+    pub sandbox: Option<Sandbox>,
+}
+
+/// A project's sandboxes. The rewrite sets them, and shows them in its
+/// sessions' setups: the seed's sessions run on the process driver, where
+/// fake-claude needs no setup script.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sandbox {
+    /// Its setup script, and what it prints in a sandbox.
+    pub setup: Option<String>,
+    #[serde(default)]
+    pub output: Vec<String>,
+    /// Package caches, shared by its sessions on each runner.
+    #[serde(default)]
+    pub caches: bool,
+    pub cpus: Option<u32>,
+    pub memory_gb: Option<u32>,
+    /// The Dockerfile in its repository its sandbox image is built from,
+    /// and what building it prints, in the setup of the first of its
+    /// sessions on each runner.
+    pub dockerfile: Option<String>,
+    #[serde(default)]
+    pub build: Vec<String>,
 }
 
 /// Another repository a project's agents may use.

@@ -415,6 +415,10 @@ fn shots(
         "app": app,
         "email": noor.email,
         "password": cast.instance.password,
+        // Her sign-in from the seed, which the shots use: hers has a second
+        // factor, and it hasn't confirmed it's her lately, as sensitive
+        // actions' shots need.
+        "cookie": world.cookies["noor"],
         "sessions": sessions,
         "workspaces": world.workspaces,
         "teams": teams,
@@ -535,6 +539,7 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     world.projects()?;
     world.connections()?;
     world.access_tokens()?;
+    world.two_factor()?;
     step("schedules and notes");
     world.schedules()?;
     world.notes()?;

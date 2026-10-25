@@ -587,6 +587,9 @@ impl<'a> World<'a> {
                 if let Some(d) = t.days {
                     body["expires_in_days"] = json!(d);
                 }
+                if let Some(g) = &t.github {
+                    body["github_access"] = json!(g);
+                }
                 if !t.projects.is_empty() {
                     body["projects"] = json!(
                         t.projects
@@ -604,6 +607,31 @@ impl<'a> World<'a> {
                 dev::ok(&format!("making {}'s token {}", p.id, t.name), &res)?;
             }
         }
+        Ok(())
+    }
+
+    /// Noor's authenticator app, set up through the API as the app sets
+    /// one up, with a code made from its secret; her passkeys, browsers and
+    /// CLI come in the rewrite. Her sign-in from before stays signed in.
+    pub fn two_factor(&self) -> Result<()> {
+        let cookie = Auth::Cookie(self.cookies["noor"].clone());
+        let res = dev::call(
+            "POST",
+            "/me/two-factor/authenticator",
+            Some(&cookie),
+            Some(json!({})),
+        )?;
+        dev::ok("setting up Noor's authenticator app", &res)?;
+        let secret = res.1["secret"].as_str().context("no secret")?;
+        let key = fctl_domain::totp::from_base32(secret).context("a secret in base32")?;
+        let code = fctl_domain::totp::code_text(&key, fctl_domain::totp::step(now_ms()));
+        let res = dev::call(
+            "POST",
+            "/me/two-factor/authenticator/confirm",
+            Some(&cookie),
+            Some(json!({ "setup": res.1["setup"], "code": code, "password": self.cast.instance.password })),
+        )?;
+        dev::ok("turning on Noor's authenticator app", &res)?;
         Ok(())
     }
 
