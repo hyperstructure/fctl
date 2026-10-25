@@ -109,7 +109,7 @@ async function newToken(page) {
 // show and how to get there. `act` runs once the page has settled.
 const pages = {
   sessions: [
-    { name: "floor", path: "/", settle: 3000 },
+    { name: "floor", path: "/", settle: 3000, thumb: true },
     { name: "session", path: session("shop#231"), settle: 2500 },
     {
       name: "follow-up",
@@ -120,7 +120,7 @@ const pages = {
     { name: "phone-session", path: session("shop#231"), phone: true, settle: 2500 },
   ],
   workspaces: [
-    { name: "workspace", path: "/w/romanesco" },
+    { name: "workspace", path: "/w/romanesco", thumb: true },
     { name: "project", path: "/p/shop" },
     { name: "settings", path: "/p/shop?tab=settings" },
     { name: "people", path: "/w/romanesco?tab=people" },
@@ -130,18 +130,18 @@ const pages = {
     { name: "phone-project", path: "/p/shop", phone: true },
   ],
   sandboxes: [
-    { name: "setup", path: session("shop#231"), act: openSetup },
+    { name: "setup", path: session("shop#231"), act: openSetup, thumb: true },
     { name: "build", path: session("milkfloat#89"), act: openSetup },
     {
       name: "settings",
       path: "/p/milkfloat?tab=settings",
       act: (page) => scrollTo(page, "Setup script", 180),
     },
-    { name: "runners", path: "/w/romanesco?tab=runners" },
+    { name: "runners", path: "/w/romanesco?tab=runners", thumb: true },
     { name: "phone-setup", path: session("shop#231"), phone: true, act: openSetup },
   ],
   linear: [
-    { name: "delegated", path: session("shop#231"), act: (page) => page.evaluate(() => window.scrollTo(0, 0)) },
+    { name: "delegated", path: session("shop#231"), act: (page) => page.evaluate(() => window.scrollTo(0, 0)), thumb: true },
     {
       name: "exploration",
       path: session("shop#212"),
@@ -157,7 +157,7 @@ const pages = {
     },
   ],
   "review-agents": [
-    { name: "reviews", path: "/p/platform?tab=reviews" },
+    { name: "reviews", path: "/p/platform?tab=reviews", thumb: true },
     { name: "off", path: "/p/driver-app?tab=reviews" },
     { name: "review", path: session("platform#438"), settle: 2000 },
     {
@@ -176,7 +176,7 @@ const pages = {
       act: (page) => scrollTo(page, "Remembered for later agents", 200),
     },
     { name: "retro", path: session("shop#224"), act: (page) => scrollTo(page, "Retrospective", 140) },
-    { name: "memory", path: "/p/platform?tab=memory" },
+    { name: "memory", path: "/p/platform?tab=memory", thumb: true },
     { name: "retrospectives", path: "/p/shop?tab=retrospectives" },
     { name: "phone-memory", path: "/p/platform?tab=memory", phone: true },
     { name: "phone-retrospectives", path: "/p/shop?tab=retrospectives", phone: true },
@@ -187,7 +187,7 @@ const pages = {
     { name: "phone-runners", path: "/w/romanesco?tab=runners", phone: true },
   ],
   schedules: [
-    { name: "schedules", path: "/p/shop?tab=schedules" },
+    { name: "schedules", path: "/p/shop?tab=schedules", thumb: true },
     { name: "empty", path: "/p/driver-app?tab=schedules" },
     {
       name: "editor",
@@ -202,7 +202,7 @@ const pages = {
     { name: "phone-empty", path: "/p/driver-app?tab=schedules", phone: true },
   ],
   "access-tokens": [
-    { name: "tokens", path: "/settings", act: (page) => scrollTo(page, "Devices", 120) },
+    { name: "tokens", path: "/settings", act: (page) => scrollTo(page, "Devices", 120), thumb: true },
     { name: "new", path: "/settings", act: newToken },
     {
       name: "confirm",
@@ -217,7 +217,7 @@ const pages = {
     { name: "phone-tokens", path: "/settings", phone: true, act: (page) => scrollTo(page, "Devices", 80) },
   ],
   "sign-in": [
-    { name: "login", path: "/login", signedOut: true },
+    { name: "login", path: "/login", signedOut: true, thumb: true },
     {
       name: "two-factor",
       path: "/login",
@@ -372,24 +372,33 @@ async function noor(browser, { theme, phone, flowing, signedOut }) {
   return { context, page };
 }
 
-/** A PNG as WebP, `width` pixels wide at most, with Chromium's encoder. */
-async function webp(converter, png, maxWidth) {
+/**
+ * A PNG as WebP, `width` pixels wide at most, with Chromium's encoder: all
+ * of it, or the part `crop` says ([x, y, width, height], fractions of it).
+ */
+async function webp(converter, png, maxWidth, crop = [0, 0, 1, 1]) {
   const data = await converter.evaluate(
-    async ({ b64, maxWidth }) => {
+    async ({ b64, maxWidth, crop }) => {
       const img = new Image();
       img.src = `data:image/png;base64,${b64}`;
       await img.decode();
-      const w = Math.min(maxWidth, img.naturalWidth);
-      const h = Math.round((img.naturalHeight * w) / img.naturalWidth);
+      const [sx, sy, sw, sh] = [
+        crop[0] * img.naturalWidth,
+        crop[1] * img.naturalHeight,
+        crop[2] * img.naturalWidth,
+        crop[3] * img.naturalHeight,
+      ];
+      const w = Math.round(Math.min(maxWidth, sw));
+      const h = Math.round((sh * w) / sw);
       const c = document.createElement("canvas");
       c.width = w;
       c.height = h;
       const ctx = c.getContext("2d");
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(img, 0, 0, w, h);
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
       return { url: c.toDataURL("image/webp", 0.86), w, h };
     },
-    { b64: png.toString("base64"), maxWidth },
+    { b64: png.toString("base64"), maxWidth, crop },
   );
   return { bytes: Buffer.from(data.url.split(",")[1], "base64"), width: data.w, height: data.h };
 }
@@ -436,6 +445,13 @@ if (open) {
             writeFileSync(file, w.bytes);
             sizes[`${shot.name}-${theme}`] = [w.width, w.height];
             console.log(`${file} ${w.width}×${w.height}`);
+            // The features page's card for it: the app's content, without
+            // the sidebar where it has one, small.
+            if (shot.thumb) {
+              const crop = shot.signedOut ? [0.1, 0.06, 0.8, 0.8] : [0.17, 0, 0.8, 0.8];
+              const t = await webp(converter, png, 720, crop);
+              writeFileSync(path.join(out, shot.page, `thumb-${theme}.webp`), t.bytes);
+            }
           } else {
             const file = path.join(out, `${shot.name}-${theme}.png`);
             writeFileSync(file, png);

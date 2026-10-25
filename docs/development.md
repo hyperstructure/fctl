@@ -258,7 +258,10 @@ it is there; `.fctl-demo/shots.json` says which. `xtask/demo/shoot.mjs`
 takes the browser there, signs in as Noor and shoots the pages the skill
 lists, in both themes and at a phone's width (`--only`, `--page`,
 `--theme`), and `--open` opens a browser at that moment to look around or
-record in. Any other browser shows the times as they are where it is.
+record in. Any other browser shows the times as they are where it is. With
+`--features <dir>`, it takes the screenshots of fctl.sh's feature pages
+instead, as WebP, into hyperstructure/fctl-site's `src/features/shots`
+([the demo skill](../.claude/skills/demo/SKILL.md) says what they need).
 
 fake-claude plays the transcripts with `--replays <dir>`: each `*.toml`
 there is one session's turns, which it streams as Claude Code would, its
