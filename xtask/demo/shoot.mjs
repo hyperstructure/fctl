@@ -137,7 +137,7 @@ const pages = {
       path: "/p/milkfloat?tab=settings",
       act: (page) => scrollTo(page, "Setup script", 180),
     },
-    { name: "runners", path: "/w/romanesco?tab=runners", thumb: true },
+    { name: "runners", path: "/w/romanesco?tab=runners" },
     { name: "phone-setup", path: session("shop#231"), phone: true, act: openSetup },
   ],
   linear: [
@@ -182,7 +182,7 @@ const pages = {
     { name: "phone-retrospectives", path: "/p/shop?tab=retrospectives", phone: true },
   ],
   runners: [
-    { name: "runners", path: "/w/romanesco?tab=runners" },
+    { name: "runners", path: "/w/romanesco?tab=runners", thumb: true },
     { name: "milkfloat", path: "/w/milkfloat?tab=runners" },
     { name: "phone-runners", path: "/w/romanesco?tab=runners", phone: true },
   ],
