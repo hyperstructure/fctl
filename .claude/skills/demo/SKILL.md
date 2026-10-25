@@ -231,6 +231,14 @@ of a transcript is at the top of `crates/fake-claude/src/replay.rs`. A
 session's transcript is `<project>-<number>.toml`, and it starts the session
 whose first message contains its `match`.
 
+A stand-in repository's dependency manifests (`package.json`, `Cargo.toml`,
+`pyproject.toml`, `requirements.txt` and the like) are kept in
+`xtask/demo/repos` as `<name>.stand-in`, and the seed gives them their names
+back: under their own names, GitHub would count the made-up projects'
+dependencies as fctl's, and Dependabot would raise alerts for them. A test
+fails on one kept under its own name. Transcripts name them as the stand-in
+has them, `package.json`.
+
 Worth shooting, as `shoot.mjs` does: the Agent Floor at 09:10, Shop's
 Sessions tab, shop#231's session page mid-turn, platform#445 waiting for
 Asha, shop#224 with its review round, Platform's Reviews and Memory tabs,
