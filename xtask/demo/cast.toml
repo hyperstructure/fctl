@@ -28,6 +28,10 @@ claude = [
   { label = "Romanesco Max", plan = "max", usage = { five_hour = 0.34, seven_day = 0.58 } },
   { label = "Personal", plan = "pro", workspaces = ["punschrulle", "crimp-collective"] },
 ]
+tokens = [
+  { name = "Raycast", access = "read", created = "-4mo", used = "today 08:12" },
+  { name = "Team chat", access = "run", projects = ["shop", "platform"], days = 90, created = "-3w", used = "yesterday 16:40" },
+]
 
 [[person]]
 id = "jonas"
@@ -1058,11 +1062,19 @@ review = { of = "milkfloat/milkfloat#310", result = "passed" }
 id = "driver-app#75"
 by = "aiko"
 start = "last friday 10:20"
-took = "1h4m"
+took = "2h54m"
 runner = "kohlrabi"
 title = "Show the next stop on the lock screen"
 ticket = "DEL-97"
 pr = { number = 417, state = "merged", at = "yesterday 09:40", passed = 9 }
+  [[session.message]]
+  at = "last friday 11:34"
+  from = "fctl"
+  follow_up = { kind = "checks_failed", names = ["lint"], passed = 8 }
+  [[session.message]]
+  at = "last friday 13:05"
+  from = "fctl"
+  follow_up = { kind = "comment", by = "lucia", path = "src/live/nextStopActivity.ts", line = 12, body = "@fctl the address runs out of room on the lock screen after the street. Can we drop the postcode and city there? Drivers know which city they're in." }
 
 [[session]]
 id = "shop#217"

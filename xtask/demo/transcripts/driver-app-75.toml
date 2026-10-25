@@ -2,7 +2,7 @@
 match = "delegated DEL-97 to fctl in Linear"
 
 [[turn]]
-duration = "1h"
+duration = "58m"
 result = "The next stop is on the lock screen now, as a Live Activity that moves on as stops are done: driver-app#417. It needs trying on a phone, from the internal build."
 
 [[turn.step]]
@@ -245,6 +245,7 @@ export function nextStopState(stops: Stop[]): NextStopState | null {
 write = "src/live/useNextStopActivity.ts"
 content = """import { useEffect, useRef } from "react";
 import { LiveActivity } from "@/modules/live-activity";
+import { log } from "@/src/log";
 import type { Stop } from "@/src/route/types";
 import { nextStopState } from "./nextStopActivity";
 
@@ -264,6 +265,8 @@ export function useNextStopActivity(stops: Stop[]) {
     } else {
       LiveActivity.start(next).then((started) => {
         id.current = started;
+        const stop = stops.find((s) => s.sequence === next.sequence);
+        log.info("Live Activity started", { stop });
       });
     }
     // The key says when the next stop changes.
@@ -444,8 +447,113 @@ description = "Tell the ticket"
 output = "Commented on DEL-97."
 
 [[turn.step]]
-run = "fctl retro --outcome completed --worked-on 'A Live Activity with the next stop’s address and delivery window on the lock screen, which moves on as stops are done (driver-app#417).' --approach 'A config plugin that adds the widget extension at prebuild, so the app keeps Expo’s Continuous Native Generation.' --challenges 'No simulator in the sandbox: the activity’s state has unit tests, and the pull request asks Aiko to try it on her phone.'"
+say = "The next stop is on the lock screen now, as a Live Activity that moves on as stops are done: driver-app#417. It needs trying on a phone, from the internal build."
+
+# 11:34: fctl passes on that a check of driver-app#417 failed.
+[[turn]]
+match = "On GitHub"
+duration = "6m"
+result = "Fixed the lint check: the hook logged the whole stop, door code included. It logs `stop.toLogSafe()` now, and #417 is green again."
+
+[[turn.step]]
+tools = [
+  { bash = "gh pr checks 417", description = "See which check failed", output = """lint            fail     38s   https://github.com/romanescohq/driver-app/actions/runs/18712334519/job/53361004417
+typecheck       pass     41s   https://github.com/romanescohq/driver-app/actions/runs/18712334519/job/53361004422
+unit            pass     1m2s  https://github.com/romanescohq/driver-app/actions/runs/18712334519/job/53361004430
+bundle-ios      pass     2m11s https://github.com/romanescohq/driver-app/actions/runs/18712334519/job/53361004438
+bundle-android  pass     1m58s https://github.com/romanescohq/driver-app/actions/runs/18712334519/job/53361004441""" },
+  { bash = "gh run view 18712334519 --log-failed | tail -6", description = "Read why lint failed", output = """lint  Run npm run lint
+lint  /home/runner/work/driver-app/driver-app/src/live/useNextStopActivity.ts
+lint    24:44  error  Don't log a Stop: it carries the door code. Log stop.toLogSafe() instead  local/no-unsafe-stop-log
+lint  ✖ 1 problem (1 error, 0 warnings)
+lint  Process completed with exit code 1.""" },
+]
+
+[[turn.step]]
+think = "The note from session #74 says exactly this: never log a Stop, log stop.toLogSafe(). I logged the whole stop when the activity starts, door code and all. The log only needs to say which stop."
+
+[[turn.step]]
+edit = "src/live/useNextStopActivity.ts"
+old = """        log.info("Live Activity started", { stop });"""
+new = """        log.info("Live Activity started", { stop: stop?.toLogSafe() });"""
+
+[[turn.step]]
+bash = "npm run lint && npm test -- src/live"
+description = "Lint, and the activity's tests"
+seconds = 9
+output = """> driver-app@4.12.0 lint
+> eslint .
+
+> driver-app@4.12.0 test
+> jest src/live
+
+ PASS  src/live/nextStopActivity.test.ts
+  ✓ shows the first stop still to do (3 ms)
+  ✓ counts the stops left (1 ms)
+  ✓ ends after the last stop (1 ms)
+
+Tests:       3 passed, 3 total"""
+
+[[turn.step]]
+commit = "Log the stop the Live Activity starts on safely"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+say = "Fixed the lint check: the hook logged the whole stop, door code included. It logs `stop.toLogSafe()` now, and #417 is green again."
+
+# 13:05: Lucía asks on a line of driver-app#417 for a shorter address.
+[[turn]]
+match = "On GitHub"
+duration = "9m"
+result = "The lock screen shows the street and number now, without the postcode and city, as Lucía asked on #417, and I answered her there."
+
+[[turn.step]]
+read = "src/live/nextStopActivity.ts"
+
+[[turn.step]]
+say = "Lucía is right: on a 6.1-inch lock screen the address runs out of room after the street. Drivers know the city, so the activity can show the street and number alone; the stop's screen keeps the full address."
+
+[[turn.step]]
+edit = "src/live/nextStopActivity.ts"
+old = """    address: next.address,"""
+new = """    // Street and number: the lock screen has no room for the postcode and city.
+    address: next.address.split(",")[0]?.trim() ?? next.address,"""
+
+[[turn.step]]
+edit = "src/live/nextStopActivity.test.ts"
+old = """  address: `Folkungagatan ${sequence * 10}`,"""
+new = """  address: `Folkungagatan ${sequence * 10}, 116 22 Stockholm`,"""
+
+[[turn.step]]
+bash = "npm test -- src/live && npm run lint"
+description = "The activity's tests, and lint"
+seconds = 8
+output = """ PASS  src/live/nextStopActivity.test.ts
+  ✓ shows the first stop still to do (2 ms)
+  ✓ counts the stops left (1 ms)
+  ✓ ends after the last stop (1 ms)
+
+Tests:       3 passed, 3 total
+
+> driver-app@4.12.0 lint
+> eslint ."""
+
+[[turn.step]]
+commit = "Show the street and number on the lock screen"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+bash = "gh pr comment 417 --body 'Done in 5d2e0c1: the lock screen shows the street and number now; the stop’s screen keeps the full address.'"
+description = "Answer Lucía on the pull request"
+output = "https://github.com/romanescohq/driver-app/pull/417#issuecomment-4380118204"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'A Live Activity with the next stop’s address and delivery window on the lock screen, which moves on as stops are done (driver-app#417).' --approach 'A config plugin that adds the widget extension at prebuild, so the app keeps Expo’s Continuous Native Generation.' --challenges 'No simulator in the sandbox: the activity’s state has unit tests, and the pull request asks Aiko to try it on her phone. The first push logged a whole stop, which the lint check caught; #74’s memory note had warned about it.'"
 description = "Record a retrospective"
 
 [[turn.step]]
-say = "The next stop is on the lock screen now, as a Live Activity that moves on as stops are done: driver-app#417. It needs trying on a phone, from the internal build."
+say = "The lock screen shows the street and number now, without the postcode and city, as Lucía asked on #417, and I answered her there."

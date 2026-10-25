@@ -189,6 +189,7 @@ fn check_transcripts(cast: &Cast, transcripts: &world::Transcripts) -> Result<()
                     m.text.to_lowercase().contains(&t.to_lowercase())
                         || (m.review.is_some()
                             && t.to_lowercase().starts_with("fctl's review agent"))
+                        || (m.follow_up.is_some() && t.starts_with("On GitHub"))
                 }
                 None => true,
             });
@@ -533,6 +534,7 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     step("projects");
     world.projects()?;
     world.connections()?;
+    world.access_tokens()?;
     step("schedules and notes");
     world.schedules()?;
     world.notes()?;

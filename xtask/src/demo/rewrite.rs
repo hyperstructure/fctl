@@ -153,6 +153,7 @@ pub fn rewrite(w: &World, story: &Story) -> Result<()> {
     memory(&ctx, &clocks, &mut d1)?;
     schedules(&ctx, &mut d1)?;
     people_and_places(&ctx, &mut d1)?;
+    access_tokens(&ctx, &mut d1)?;
     runners(&ctx, &state, &mut d1)?;
     audit(&ctx, &clocks, &mut d1)?;
     d1.commit()?;
@@ -244,6 +245,13 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         let idle = i64::from(p.idle_timeout.unwrap_or(10)) * 60_000;
         (end_story + idle).min(ctx.anchor - 60_000)
     });
+    // A review agent's session stops as soon as its review is posted, or when
+    // a newer commit takes its place, and says so.
+    let review_end = s.review.as_ref().map(|r| match r.result.as_str() {
+        "superseded" => superseded_reason(ctx, s),
+        _ => "Finished: its review is posted".to_owned(),
+    });
+    let notices = notices(ctx, s, &events, &clock)?;
     let last_result_seq = events
         .iter()
         .filter(|r| {
@@ -275,7 +283,7 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
                 first_message = false;
             } else {
                 if let Some(m) = s.messages.get(message_index) {
-                    later_message(ctx, s, m, &mut data)?;
+                    later_message(ctx, s, message_index, m, &mut data)?;
                 }
                 message_index += 1;
             }
@@ -284,6 +292,13 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
                 .with_context(|| format!("a message of {} no longer reads as one", s.id))?;
         }
         let mut at = clock.map(ts(r));
+        if let Some(reason) = &review_end
+            && k == "status"
+            && seq > last_result_seq
+            && matches!(data["status"].as_str(), Some("stopping" | "stopped"))
+        {
+            data["reason"] = json!(reason);
+        }
         if let Some(stop) = idle_stop
             && k == "status"
             && seq > last_result_seq
@@ -303,11 +318,17 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         );
     }
 
+    // What fctl adds to it: notices of what it did for the agent.
+    insert_events(&mut obj, notices);
+
     // Its summary.
     remap(&mut summary, &clock, ctx.window);
     if let Some(stop) = idle_stop {
         summary["status_reason"] = json!("Stopped after being idle");
         summary["ended_at"] = json!(stop + stopping);
+    }
+    if let Some(reason) = &review_end {
+        summary["status_reason"] = json!(reason);
     }
     if let Some(r) = &s.runner {
         summary["runner"] = json!({ "id": w.runners[r], "name": r });
@@ -405,6 +426,160 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     // Its published screenshots, memory and retrospectives move with it,
     // in `memory`.
     Ok(clock)
+}
+
+/// Where a review is on GitHub: its summary, above its findings.
+fn review_url(ctx: &Ctx, s: &SessionSpec) -> Option<String> {
+    let r = s.review.as_ref()?;
+    if r.result != "passed" && r.result != "commented" {
+        return None;
+    }
+    let (repo, number) = cast::pull_ref(&r.of).ok()?;
+    let start = ctx.at(&s.start);
+    Some(format!(
+        "https://github.com/{repo}/pull/{number}#pullrequestreview-{}",
+        2_000_000 + number + u64::from(r.findings) * 7 + start.unsigned_abs() % 97
+    ))
+}
+
+/// Why a superseded review stopped: the newer commit, which fctl reviews instead.
+fn superseded_reason(ctx: &Ctx, s: &SessionSpec) -> String {
+    let w = ctx.w;
+    let of = s.review.as_ref().map(|r| r.of.as_str()).unwrap_or_default();
+    let next = w
+        .cast
+        .sessions
+        .iter()
+        .filter(|x| x.review.as_ref().is_some_and(|y| y.of == of))
+        .find(|x| x.start.offset() > s.start.offset())
+        .and_then(|x| w.reviewed_sha(x).ok())
+        .unwrap_or_default();
+    format!(
+        "A newer commit came, {}: fctl reviews that one instead.",
+        &next[..7.min(next.len())]
+    )
+}
+
+/// An event fctl adds to a session: after the event `after` (its seq), at `ts`.
+struct Added {
+    after: i64,
+    ts: i64,
+    kind: &'static str,
+    data: Value,
+}
+
+/// The notices fctl would have added to session `s` that a dev stack can't:
+/// a review agent's posted review, after the call that posted it.
+fn notices(
+    ctx: &Ctx,
+    s: &SessionSpec,
+    events: &[sqlite::Row],
+    clock: &Clock,
+) -> Result<Vec<Added>> {
+    let w = ctx.w;
+    let mut out = Vec::new();
+    let parsed: Vec<(i64, i64, String, Value)> = events
+        .iter()
+        .map(|r| {
+            (
+                r.get("seq").and_then(Value::as_i64).unwrap_or_default(),
+                r.get("ts").and_then(Value::as_i64).unwrap_or_default(),
+                r.get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                r.get("data")
+                    .and_then(Value::as_str)
+                    .and_then(|d| serde_json::from_str(d).ok())
+                    .unwrap_or(Value::Null),
+            )
+        })
+        .collect();
+    // The result of the first call whose command starts with `command`.
+    let result_of = |command: &str| -> Option<(i64, i64)> {
+        let id = parsed.iter().find_map(|(_, _, k, d)| {
+            (k == "claude").then_some(())?;
+            d["message"]["content"].as_array()?.iter().find_map(|c| {
+                (c["type"] == "tool_use"
+                    && c["input"]["command"]
+                        .as_str()
+                        .is_some_and(|x| x.starts_with(command)))
+                .then(|| c["id"].as_str().map(str::to_owned))
+                .flatten()
+            })
+        })?;
+        parsed.iter().find_map(|(seq, ts, k, d)| {
+            (k == "claude").then_some(())?;
+            d["message"]["content"]
+                .as_array()?
+                .iter()
+                .any(|c| {
+                    c["type"] == "tool_result" && c["tool_use_id"].as_str() == Some(id.as_str())
+                })
+                .then_some((*seq, *ts))
+        })
+    };
+    if let Some(r) = &s.review
+        && let Some(url) = review_url(ctx, s)
+        && let Some((after, ts)) = result_of("fctl review submit")
+    {
+        let found = r.findings;
+        // The findings went to the session that opened the pull request.
+        let sent_to = (found > 0)
+            .then(|| w.cast.pull_session(&r.of))
+            .flatten()
+            .map(|o| w.sessions[&o.id].id.clone());
+        let resolved: Vec<String> = (0..r.resolved)
+            .map(|k| format!("PRRT_kwDOKe{}{k}", 7_311_000 + found * 13 + k))
+            .collect();
+        let message = if found == 0 {
+            "Review posted: nothing to point out".to_owned()
+        } else {
+            format!(
+                "Review posted on GitHub: {found} {}",
+                if found == 1 { "issue" } else { "issues" }
+            )
+        };
+        let mut review = json!({
+            "state": r.result, "url": url, "comments": found, "in_text": 0, "still_open": r.still_open,
+        });
+        if !resolved.is_empty() {
+            review["resolved"] = json!(resolved);
+        }
+        if let Some(to) = sent_to {
+            review["sent_to"] = json!(to);
+        }
+        out.push(Added {
+            after,
+            ts: clock.map(ts) + 400,
+            kind: "notice",
+            data: json!({ "level": "info", "code": "review_posted", "message": message, "review": review }),
+        });
+    }
+    Ok(out)
+}
+
+/// Adds `events` to a session object's events, each right after the one it
+/// follows: the events after it move down a place.
+fn insert_events(obj: &mut Db, mut events: Vec<Added>) {
+    // The latest first, so the places of the earlier ones still hold.
+    events.sort_by_key(|e| std::cmp::Reverse(e.after));
+    for e in events {
+        obj.exec(
+            "UPDATE events SET seq = -(seq + 1) WHERE seq > ?",
+            vec![json!(e.after)],
+        );
+        obj.exec("UPDATE events SET seq = -seq WHERE seq < 0", vec![]);
+        obj.exec(
+            "INSERT INTO events (seq, ts, kind, data, agent_seq) VALUES (?, ?, ?, ?, NULL)",
+            vec![
+                json!(e.after + 1),
+                json!(e.ts),
+                json!(e.kind),
+                json!(e.data.to_string()),
+            ],
+        );
+    }
 }
 
 /// A review session's title, as fctl gives it.
@@ -541,7 +716,13 @@ fn first_user_message(ctx: &Ctx, s: &SessionSpec, data: &mut Value) -> Result<()
 }
 
 /// A later message: fctl's passing on of a review's findings, or a person's.
-fn later_message(ctx: &Ctx, s: &SessionSpec, m: &cast::Message, data: &mut Value) -> Result<()> {
+fn later_message(
+    ctx: &Ctx,
+    s: &SessionSpec,
+    index: usize,
+    m: &cast::Message,
+    data: &mut Value,
+) -> Result<()> {
     if m.from != "fctl" {
         data["author"] = ctx.user(&m.from);
         data["source"] = json!("web");
@@ -549,6 +730,11 @@ fn later_message(ctx: &Ctx, s: &SessionSpec, m: &cast::Message, data: &mut Value
     }
     data["author"] = Value::Null;
     data["source"] = json!("system");
+    // What happened on GitHub, as fctl passed it on.
+    if let Some(f) = ctx.w.sessions[&s.id].follow_ups.get(&index) {
+        data["follow_up"] = f.clone();
+        return Ok(());
+    }
     let Some(review) = &m.review else {
         return Ok(());
     };
@@ -602,26 +788,8 @@ fn reviews(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         let outside = !author.ends_with("[bot]");
         let start = ctx.at(&s.start);
         let finished = r.took.map(|t| start + t.0 * 1000);
-        let reason = (r.result == "superseded").then(|| {
-            let next = w
-                .cast
-                .sessions
-                .iter()
-                .filter(|x| x.review.as_ref().is_some_and(|y| y.of == r.of))
-                .find(|x| x.start.offset() > s.start.offset())
-                .and_then(|x| w.reviewed_sha(x).ok())
-                .unwrap_or_default();
-            format!(
-                "A newer commit came, {}: fctl reviews that one instead.",
-                &next[..7.min(next.len())]
-            )
-        });
-        let posted = (r.result == "passed" || r.result == "commented").then(|| {
-            format!(
-                "https://github.com/{repo}/pull/{number}#pullrequestreview-{}",
-                2_000_000 + number + u64::from(r.findings) * 7 + start.unsigned_abs() % 97
-            )
-        });
+        let reason = (r.result == "superseded").then(|| superseded_reason(ctx, s));
+        let posted = review_url(ctx, s);
         d1.exec(
             "INSERT INTO reviews (session_id, project_id, repo, repo_key, number, head_sha, attempt, url, title, author, draft, fork, trusted, \
              previous_sha, pr_updated_at, installation_id, state, reason, findings, resolved, still_open, review_url, created_at, finished_at) \
@@ -1022,6 +1190,28 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
             "UPDATE project_members SET created_at = ? WHERE project_id = ?",
             vec![json!(created + 86_400_000), json!(pid)],
         );
+    }
+    Ok(())
+}
+
+/// People's access tokens for other tools: when they made them, last used
+/// them and when they expire.
+fn access_tokens(ctx: &Ctx, d1: &mut Db) -> Result<()> {
+    let w = ctx.w;
+    for p in &w.cast.people {
+        for t in &p.tokens {
+            let made = ctx.at(&t.created);
+            d1.exec(
+                "UPDATE tokens SET created_at = ?, last_used_at = ?, expires_at = ? WHERE user_id = ? AND name = ?",
+                vec![
+                    json!(made),
+                    json!(t.used.as_ref().map(|u| ctx.at(u))),
+                    json!(t.days.map(|d| made + i64::from(d) * 86_400_000)),
+                    json!(w.users[&p.id]),
+                    json!(t.name),
+                ],
+            );
+        }
     }
     Ok(())
 }

@@ -23,6 +23,8 @@ pub struct World<'a> {
     /// The instance owner's token, then everyone's.
     pub ops: String,
     pub tokens: BTreeMap<String, String>,
+    /// Each person's sign-in, which makes their other tokens.
+    pub cookies: BTreeMap<String, String>,
     pub users: BTreeMap<String, String>,
     /// (person, connection label) → credential id.
     pub credentials: BTreeMap<(String, String), String>,
@@ -46,6 +48,8 @@ pub struct Made {
     pub branch: Option<String>,
     /// When the messages that started its turns went, after the first.
     pub messages: Vec<i64>,
+    /// The follow-ups fctl passed on, by the message they went with.
+    pub follow_ups: BTreeMap<usize, Value>,
 }
 
 /// The transcripts' names and what their turns answer.
@@ -152,6 +156,7 @@ impl<'a> World<'a> {
             transcripts,
             ops: String::new(),
             tokens: BTreeMap::new(),
+            cookies: BTreeMap::new(),
             users: BTreeMap::new(),
             credentials: BTreeMap::new(),
             workspaces: BTreeMap::new(),
@@ -232,6 +237,7 @@ impl<'a> World<'a> {
             };
             let token = token_for(&cookie, &format!("fctl on {laptop}"))?;
             self.tokens.insert(p.id.clone(), token);
+            self.cookies.insert(p.id.clone(), cookie.clone());
             let me = self.api(&p.id, "GET", "/auth/me", None)?;
             let id = me["user"]["id"].as_str().context("no id for a person")?;
             self.users.insert(p.id.clone(), id.to_owned());
@@ -565,6 +571,37 @@ impl<'a> World<'a> {
                     &format!("/workspaces/{}/membership", self.workspaces[&w.slug]),
                     Some(json!({ "project_order": order })),
                 )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The access tokens people made for other tools, with their limits.
+    pub fn access_tokens(&self) -> Result<()> {
+        for p in &self.cast.people {
+            for t in &p.tokens {
+                let mut body = json!({ "name": t.name });
+                if let Some(a) = &t.access {
+                    body["access"] = json!(a);
+                }
+                if let Some(d) = t.days {
+                    body["expires_in_days"] = json!(d);
+                }
+                if !t.projects.is_empty() {
+                    body["projects"] = json!(
+                        t.projects
+                            .iter()
+                            .map(|x| self.projects[x].clone())
+                            .collect::<Vec<_>>()
+                    );
+                }
+                let res = dev::call(
+                    "POST",
+                    "/auth/tokens",
+                    Some(&Auth::Cookie(self.cookies[&p.id].clone())),
+                    Some(body),
+                )?;
+                dev::ok(&format!("making {}'s token {}", p.id, t.name), &res)?;
             }
         }
         Ok(())
@@ -918,7 +955,16 @@ impl<'a> World<'a> {
                             s.id, m.from
                         )
                     })?;
-                    let text = self.message_text(s, m)?;
+                    let text = match &m.follow_up {
+                        Some(_) => {
+                            let f = self.follow_up(s, m)?;
+                            if let Some(x) = self.sessions.get_mut(&s.id) {
+                                x.follow_ups.insert(*i, serde_json::to_value(&f)?);
+                            }
+                            fctl_domain::follow_ups::message(&f)
+                        }
+                        None => self.message_text(s, m)?,
+                    };
                     let who = if m.from == "fctl" {
                         s.by.as_str()
                     } else {
@@ -1014,6 +1060,100 @@ impl<'a> World<'a> {
             }
         }
         Ok(())
+    }
+
+    /// What happened on GitHub to the pull request of `s`, as fctl passes it
+    /// on with message `m`: its newest commit, as the stand-in has it now.
+    fn follow_up(&self, s: &SessionSpec, m: &cast::Message) -> Result<fctl_proto::event::FollowUp> {
+        use fctl_proto::event::{FollowUp, FollowUpComment, FollowUpEvent};
+        let spec = m.follow_up.as_ref().context("not a follow-up")?;
+        let p = self.project_of(s)?;
+        let repo = p
+            .repo
+            .as_deref()
+            .context("a follow-up needs a repository")?;
+        let (owner, name) = repo.split_once('/').context("a repo is owner/name")?;
+        let pr = s.pr.as_ref().context("a follow-up needs a pull request")?;
+        let url = format!("https://github.com/{repo}/pull/{}", pr.number);
+        let login = |person: &str| -> Result<String> {
+            let p = self.cast.person(person)?;
+            Ok(p.github.clone().unwrap_or_else(|| p.given.to_lowercase()))
+        };
+        let (event, state) = match spec {
+            cast::FollowUpSpec::ChecksFailed {
+                names,
+                passed,
+                pending,
+            } => {
+                let branch = self.sessions[&s.id].branch.clone().unwrap_or_default();
+                let sha = self
+                    .github
+                    .commits(repo, &branch)?
+                    .pop()
+                    .unwrap_or_default();
+                (
+                    FollowUpEvent::ChecksFailed {
+                        sha,
+                        names: names.clone(),
+                        passed: *passed,
+                        failed: names.len() as u32,
+                        pending: *pending,
+                    },
+                    "open",
+                )
+            }
+            cast::FollowUpSpec::Comment {
+                by,
+                body,
+                path,
+                line,
+            } => {
+                let login = login(by)?;
+                let id = 4_380_000_000 + u64::from(m.at.offset().unsigned_abs() as u32 % 900_000);
+                let anchor = if path.is_some() {
+                    format!("discussion_r{id}")
+                } else {
+                    format!("issuecomment-{id}")
+                };
+                (
+                    FollowUpEvent::Comment(FollowUpComment {
+                        id,
+                        avatar_url: Some(format!("https://avatars.githubusercontent.com/{login}")),
+                        login,
+                        url: format!("{url}#{anchor}"),
+                        body: body.clone(),
+                        review: None,
+                        path: path.clone(),
+                        line: *line,
+                        start_line: None,
+                        deleted: false,
+                        review_id: None,
+                        in_reply_to: None,
+                        at: None,
+                    }),
+                    "open",
+                )
+            }
+            cast::FollowUpSpec::Merged { by } => (
+                FollowUpEvent::Merged {
+                    by: Some(login(by)?),
+                    base: Some("main".into()),
+                },
+                "merged",
+            ),
+        };
+        Ok(FollowUp {
+            repo: fctl_proto::session::RepoRef {
+                owner: owner.into(),
+                name: name.into(),
+            },
+            number: pr.number,
+            url,
+            title: pr.title.clone().or_else(|| s.title.clone()),
+            state: Some(state.into()),
+            base: Some("main".into()),
+            events: vec![event],
+        })
     }
 
     /// What the agent reads of message `m` to `s`: as written, or, for
@@ -1207,6 +1347,7 @@ impl<'a> World<'a> {
                 id,
                 branch,
                 messages: Vec::new(),
+                follow_ups: BTreeMap::new(),
             },
         );
         Ok(())

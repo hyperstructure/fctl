@@ -75,6 +75,26 @@ pub struct Person {
     /// Their Claude connections, the default first.
     #[serde(default)]
     pub claude: Vec<Connection>,
+    /// Access tokens they made, beside the CLI's sign-in.
+    #[serde(default)]
+    pub tokens: Vec<TokenSpec>,
+}
+
+/// An access token for other tools, with what it may do.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenSpec {
+    pub name: String,
+    /// `read`, `run` or `full` (absent).
+    pub access: Option<String>,
+    /// The projects it reaches; none, all of its person's.
+    #[serde(default)]
+    pub projects: Vec<String>,
+    /// Days it works for; absent, until someone deletes it.
+    pub days: Option<u32>,
+    pub created: When,
+    /// When something last used it.
+    pub used: Option<When>,
 }
 
 impl Person {
@@ -434,13 +454,41 @@ pub struct Message {
     pub at: When,
     /// A person, or `fctl` for fctl's own messages.
     pub from: String,
-    /// What the agent reads.
+    /// What the agent reads; for a follow-up, fctl writes it.
+    #[serde(default)]
     pub text: String,
+    /// fctl passing on what happened to the session's pull request on
+    /// GitHub, as its follow-ups do.
+    pub follow_up: Option<FollowUpSpec>,
     /// fctl passing on a review's findings: the review's session
     /// (`project#number`), with each finding.
     pub review: Option<String>,
     #[serde(rename = "finding", default)]
     pub findings: Vec<Finding>,
+}
+
+/// What happened to a session's pull request on GitHub.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FollowUpSpec {
+    /// Checks of its newest commit failed: which, and how many others passed
+    /// or still run.
+    ChecksFailed {
+        names: Vec<String>,
+        passed: u32,
+        #[serde(default)]
+        pending: u32,
+    },
+    /// Someone who can write to the repository wrote to the agent there: a
+    /// person of the cast, on the pull request or on a line of it.
+    Comment {
+        by: String,
+        body: String,
+        path: Option<String>,
+        line: Option<u32>,
+    },
+    /// It was merged, by a person of the cast.
+    Merged { by: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -820,6 +868,17 @@ impl Cast {
             for m in &s.messages {
                 if m.from != "fctl" {
                     self.person(&m.from)?;
+                }
+                if m.follow_up.is_some() && (m.from != "fctl" || s.pr.is_none()) {
+                    bail!(
+                        "{}: follow-ups come from fctl, about the session's pull request",
+                        s.id
+                    );
+                }
+                if let Some(FollowUpSpec::Comment { by, .. } | FollowUpSpec::Merged { by }) =
+                    &m.follow_up
+                {
+                    self.person(by)?;
                 }
             }
         }
