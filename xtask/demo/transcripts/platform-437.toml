@@ -1,0 +1,477 @@
+# platform#437 · Asha delegated PLAT-238, yesterday 09:12 · Find why two customers were charged twice (a review round)
+match = "delegated PLAT-238 to fctl in Linear"
+
+[[turn]]
+duration = "1h6m"
+result = "Found it: on Wednesday, Stripe retried `invoice.payment_failed` for 18342 and 20517 while the invoice job was charging them, and both paths charged. platform#840 makes charges idempotent per subscription and period with a `charge_keys` table, and Wednesday's webhook log, replayed with two workers, now charges everyone once. The refunds are Jonas's, as the ticket says. Asha: billing changes need your review on GitHub as well as the review agent's, so I've asked for it in the pull request."
+
+[[turn.step]]
+bash = "fctl ticket view PLAT-238"
+description = "Read the ticket and its comments"
+output = """PLAT-238 · Two customers charged twice · In Progress
+Team Platform · Assignee fctl-sh · Created by Jonas Weber
+
+Customers 18342 and 20517 were charged twice for last Wednesday's box; the Stripe events are in the thread. Find out why and make sure it can't happen again. Refunds are mine to make: don't touch them. (Jonas)
+
+Comments
+  Jonas Weber · 4 days ago
+  From Stripe's dashboard, both on Wednesday morning:
+    18342  ch_3QFd8nTLk2Xb  06:00:04.112   ch_3QFd8nTVb7Rm  06:00:04.519
+    20517  ch_3QFd8o1Pq9Wc  06:00:11.870   ch_3QFd8o1Zs1Hd  06:00:12.203
+  The day's webhook log is attached: webhooks-wednesday.jsonl
+
+  Asha Patel · 4 days ago
+  Both had a declined payment on Tuesday and put in a new card that evening."""
+
+[[turn.step]]
+run = "fctl edit --title 'Find why two customers were charged twice' --description 'Finds why customers 18342 and 20517 were charged twice last Wednesday (PLAT-238), and makes sure it can’t happen again.'"
+description = "Name the session"
+
+[[turn.step]]
+todo = [["Read PLAT-238 and the Stripe charges", "completed"], ["Find what charged 18342 and 20517 twice", "in_progress"], ["Charge once per subscription and period", "pending"], ["Tests, then the pull request; refunds stay Jonas's", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "src/billing/charge.rs" },
+  { read = "src/billing/mod.rs" },
+  { read = "src/db.rs" },
+  { grep = "charge_once", path = "src", output = "src/billing/charge.rs:17:pub async fn charge_once(db: &Db, subscription: &str, period: &str) -> Result<String, Error> {\nsrc/billing/mod.rs:19:        charge::charge_once(db, &subscription, &period).await?;\nsrc/jobs/invoices.rs:15:        charge::charge_once(db, &sub.id, &invoice.period.key()).await?;" },
+]
+
+[[turn.step]]
+think = "Two paths charge a subscription: the invoice job at 06:00, and `invoice.payment_failed` once the customer has a new card. Both customers had a declined payment on Tuesday and a new card that evening, and each was charged twice within half a second at 06:00. `charge_once` charges and records the charge, and nothing stops a second caller. If Stripe sent the webhook again while the job was charging, that's the double charge. The webhook log can show it."
+
+[[turn.step]]
+bash = "scripts/replay-webhooks.sh --workers 1 --log ~/attachments/webhooks-wednesday.jsonl"
+description = "Replay Wednesday's webhooks with one worker"
+seconds = 40
+output = """Replayed 1,204 events from webhooks-wednesday.jsonl against platform_replay, 1 worker, in 41.2 s.
+Charged twice: none."""
+
+[[turn.step]]
+bash = "scripts/replay-webhooks.sh --workers 2 --log ~/attachments/webhooks-wednesday.jsonl"
+description = "Replay them with two workers, as production runs"
+seconds = 24
+output = """Replayed 1,204 events from webhooks-wednesday.jsonl against platform_replay, 2 workers, in 23.9 s.
+Charged twice:
+  18342  invoice job 06:00:04.112, invoice.payment_failed (delivery 2) 06:00:04.519
+  20517  invoice job 06:00:11.870, invoice.payment_failed (delivery 2) 06:00:12.203"""
+
+[[turn.step]]
+think = "That's it. Stripe's first delivery of `invoice.payment_failed` timed out the evening before, so Stripe sent it again at 06:00, just as the invoice job reached the same subscriptions, and with two workers both charged. With one worker the job and the webhook take turns, which is why it never showed in a replay before. The fix belongs in `charge_once`: one charge per subscription and period, whoever asks."
+
+[[turn.step]]
+todo = [["Read PLAT-238 and the Stripe charges", "completed"], ["Find what charged 18342 and 20517 twice", "completed"], ["Charge once per subscription and period", "in_progress"], ["Tests, then the pull request; refunds stay Jonas's", "pending"]]
+
+[[turn.step]]
+write = "migrations/0140_charge_keys.sql"
+content = """-- One charge per subscription and period, whoever asks for it (PLAT-238).
+CREATE TABLE charge_keys (
+    subscription TEXT NOT NULL,
+    period       TEXT NOT NULL,
+    charge_id    TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (subscription, period)
+);
+"""
+
+[[turn.step]]
+edit = "src/billing/charge.rs"
+old = """/// Charges `subscription` for `period`. The invoice job calls it for every
+/// subscription; the `invoice.payment_failed` webhook for those whose card
+/// was declined, once the customer has a new one.
+pub async fn charge_once(db: &Db, subscription: &str, period: &str) -> Result<String, Error> {
+    let amount = amount_due(db, subscription, period).await?;
+    let charge = stripe::charge(subscription, amount).await?;
+    db.record_charge(subscription, period, &charge.id).await?;
+    Ok(charge.id)
+}"""
+new = """/// What charging a subscription for a period came to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Charged {
+    /// Charged now: the Stripe charge.
+    Now(String),
+    /// Charged before: nothing to do.
+    Already,
+}
+
+/// Charges `subscription` for `period`, once. The invoice job calls it for
+/// every subscription, and the `invoice.payment_failed` webhook for those
+/// whose card was declined: both can come to one subscription at once.
+pub async fn charge_once(db: &Db, subscription: &str, period: &str) -> Result<Charged, Error> {
+    if db.charge_for(subscription, period).await?.is_some() {
+        return Ok(Charged::Already);
+    }
+    let amount = amount_due(db, subscription, period).await?;
+    let charge = stripe::charge(subscription, amount).await?;
+    db.record_charge(subscription, period, &charge.id).await?;
+    Ok(Charged::Now(charge.id))
+}"""
+
+[[turn.step]]
+edit = "src/db.rs"
+old = """    pub fn pool(&self) -> &PgPool {
+        &self.0
+    }
+}"""
+new = """    pub fn pool(&self) -> &PgPool {
+        &self.0
+    }
+
+    /// The charge of `subscription` for `period`, if it was charged.
+    pub async fn charge_for(&self, subscription: &str, period: &str) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar!(
+            "SELECT charge_id FROM charge_keys WHERE subscription = $1 AND period = $2",
+            subscription,
+            period
+        )
+        .fetch_optional(&self.0)
+        .await
+        .map(Option::flatten)
+    }
+}"""
+
+[[turn.step]]
+write = "tests/charge_once.rs"
+content = """//! A subscription is charged once a period, whoever asks for the charge
+//! (PLAT-238).
+
+mod common;
+
+use common::TestDb;
+use platform::billing::charge::{Charged, charge_once};
+use platform_test::FakeStripe;
+
+#[tokio::test]
+async fn the_invoice_job_and_a_webhook_charge_once() {
+    let db = TestDb::shared().await;
+    let stripe = FakeStripe::start().await;
+    db.subscription("18342").with_declined_payment().with_new_card().insert().await;
+    platform::jobs::invoices::run(&db.platform()).await.unwrap();
+    let again = charge_once(&db.platform(), "18342", "2026-W43").await.unwrap();
+    assert_eq!(again, Charged::Already);
+    assert_eq!(stripe.charges_for("18342").await, 1);
+}
+
+#[tokio::test]
+async fn the_next_period_is_charged_again() {
+    let db = TestDb::shared().await;
+    let stripe = FakeStripe::start().await;
+    db.subscription("20517").insert().await;
+    for week in ["2026-W43", "2026-W44"] {
+        assert!(matches!(charge_once(&db.platform(), "20517", week).await.unwrap(), Charged::Now(_)));
+    }
+    assert_eq!(stripe.charges_for("20517").await, 2);
+}
+"""
+
+[[turn.step]]
+think = "The new query needs its data in `.sqlx/`, or CI fails with `SQLX_OFFLINE=true`: the project's memory says so."
+
+[[turn.step]]
+bash = "cargo sqlx prepare --workspace"
+description = "Write the query data"
+seconds = 6
+output = "query data written to .sqlx in the workspace root; please check this into version control"
+
+[[turn.step]]
+write = ".sqlx/query-a41e7c09b25f86d3e0c7192b4f58a6d0e3b91c7f25d48a06e9f3b1c5d7a2e840.json"
+content = """{
+  "db_name": "PostgreSQL",
+  "query": "SELECT charge_id FROM charge_keys WHERE subscription = $1 AND period = $2",
+  "describe": {
+    "columns": [
+      { "ordinal": 0, "name": "charge_id", "type_info": "Text" }
+    ],
+    "parameters": { "Left": ["Text", "Text"] },
+    "nullable": [true]
+  },
+  "hash": "a41e7c09b25f86d3e0c7192b4f58a6d0e3b91c7f25d48a06e9f3b1c5d7a2e840"
+}
+"""
+
+[[turn.step]]
+bash = "cargo test -p platform --test charge_once"
+description = "Run the new tests"
+seconds = 31
+error = true
+output = """running 2 tests
+test the_next_period_is_charged_again ... ok
+test the_invoice_job_and_a_webhook_charge_once ... FAILED
+
+failures:
+
+---- the_invoice_job_and_a_webhook_charge_once stdout ----
+thread 'the_invoice_job_and_a_webhook_charge_once' panicked at tests/charge_once.rs:15:57:
+called `Result::unwrap()` on an `Err` value: Database(PgDatabaseError { severity: Error, code: "57014", message: "canceling statement due to statement timeout", .. })
+
+failures:
+    the_invoice_job_and_a_webhook_charge_once
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.11s"""
+
+[[turn.step]]
+grep = "advisory_lock"
+path = "src"
+output = "src/jobs/invoices.rs:10:    sqlx::query(\"SELECT pg_advisory_lock(4242)\").execute(db.pool()).await?;"
+
+[[turn.step]]
+read = "tests/common/mod.rs"
+
+[[turn.step]]
+think = "The test didn't fail on the charge: it waited 30 s for `pg_advisory_lock(4242)`, which the invoice job holds while it runs, and another test's job held it on the shared test database. Tests that run the job need a database of their own."
+
+[[turn.step]]
+edit = "tests/charge_once.rs"
+old = """async fn the_invoice_job_and_a_webhook_charge_once() {
+    let db = TestDb::shared().await;"""
+new = """async fn the_invoice_job_and_a_webhook_charge_once() {
+    // It runs the invoice job, whose advisory lock other tests' jobs hold on
+    // the shared database.
+    let db = TestDb::isolated().await;"""
+
+[[turn.step]]
+bash = "cargo test -p platform --test charge_once"
+description = "Run the new tests again"
+seconds = 6
+output = """running 2 tests
+test the_next_period_is_charged_again ... ok
+test the_invoice_job_and_a_webhook_charge_once ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.84s"""
+
+[[turn.step]]
+bash = "scripts/replay-webhooks.sh --workers 2 --log ~/attachments/webhooks-wednesday.jsonl"
+description = "Replay Wednesday's webhooks with two workers again"
+seconds = 24
+output = """Replayed 1,204 events from webhooks-wednesday.jsonl against platform_replay, 2 workers, in 24.3 s.
+Charged twice: none."""
+
+[[turn.step]]
+commit = "Make charges idempotent per subscription and period"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Make charges idempotent per subscription and period"
+number = 840
+body = """Customers 18342 and 20517 were charged twice last Wednesday (PLAT-238). Both had a declined payment the day before and a new card that evening. Stripe's first delivery of `invoice.payment_failed` timed out, and its second arrived at 06:00, while the invoice job was charging the same subscriptions: both called `charge_once`, which charged without asking whether anything had.
+
+- `charge_keys` (0140) holds one charge per subscription and period.
+- `charge_once` returns `Charged::Already` for a period that was charged.
+- Wednesday's webhook log replayed with two workers (`scripts/replay-webhooks.sh --workers 2`) charges everyone once.
+
+The refunds are Jonas's to make, as the ticket says. Asha: this changes billing, so it needs your review here as well as the review agent's."""
+
+[[turn.step]]
+run = "fctl memory add 'The invoice job holds a Postgres advisory lock (`pg_advisory_lock(4242)`) while it runs, so tests that run it need a database each (`TestDb::isolated()`): on a shared one they wait for each other and time out after 30 s.'"
+description = "Remember the invoice job's lock"
+
+[[turn.step]]
+run = "fctl memory add 'Billing races show only with two workers: reproduce them with `scripts/replay-webhooks.sh --workers 2` against a copy of the day’s webhook log.'"
+description = "Remember how to reproduce billing races"
+
+[[turn.step]]
+run = "fctl edit --description 'Two customers were charged twice last Wednesday, when a webhook retry raced the invoice job. Charges are now idempotent per subscription and period.'"
+description = "Say what it found"
+
+[[turn.step]]
+say = "Found it: on Wednesday, Stripe retried `invoice.payment_failed` for 18342 and 20517 while the invoice job was charging them, and both paths charged. platform#840 makes charges idempotent per subscription and period with a `charge_keys` table, and Wednesday's webhook log, replayed with two workers, now charges everyone once. The refunds are Jonas's, as the ticket says. Asha: billing changes need your review on GitHub as well as the review agent's, so I've asked for it in the pull request."
+
+[[turn]]
+match = "fctl's review agent reviewed commit"
+duration = "39m"
+result = "Fixed: the charge key goes in first (`ON CONFLICT DO NOTHING`), only the caller whose insert wins calls Stripe, and it passes the key as Stripe's `Idempotency-Key`, so a retried call can't charge twice either. A declined card gives the key back, so the next try can charge. A new test races two workers 500 times and gets one charge each time. Pushed to platform#840."
+
+[[turn.step]]
+say = "The review is right: checking for a charge and recording it after Stripe answers leaves a window in which two workers both charge, and the replay passed only because Stripe answered quickly. I'll write a test that races two workers first, then claim the key before the call."
+
+[[turn.step]]
+write = "tests/charge_race.rs"
+content = """//! Two workers that charge one subscription for one period at once charge
+//! it once (PLAT-238).
+
+mod common;
+
+use common::TestDb;
+use platform::billing::charge::charge_once;
+use platform_test::FakeStripe;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_workers_charge_a_period_once() {
+    let db = TestDb::isolated().await;
+    // Slow enough for both workers to be inside `charge_once` at once.
+    let stripe = FakeStripe::start().latency_ms(20).await;
+    db.subscription("18342").insert().await;
+    for round in 0..500 {
+        let period = format!("race-{round}");
+        let (a, b) = tokio::join!(
+            charge_once(&db.platform(), "18342", &period),
+            charge_once(&db.platform(), "18342", &period),
+        );
+        a.unwrap();
+        b.unwrap();
+        assert_eq!(stripe.charges_for_period("18342", &period).await, 1, "round {round}");
+    }
+}
+"""
+
+[[turn.step]]
+bash = "cargo test -p platform --test charge_race"
+description = "Race two workers against the first fix"
+seconds = 8
+error = true
+output = """running 1 test
+test two_workers_charge_a_period_once ... FAILED
+
+failures:
+
+---- two_workers_charge_a_period_once stdout ----
+thread 'two_workers_charge_a_period_once' panicked at tests/charge_race.rs:24:9:
+assertion `left == right` failed: round 0
+  left: 2
+ right: 1
+
+failures:
+    two_workers_charge_a_period_once
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s"""
+
+[[turn.step]]
+edit = "src/db.rs"
+old = """        .fetch_optional(&self.0)
+        .await
+        .map(Option::flatten)
+    }
+}"""
+new = """        .fetch_optional(&self.0)
+        .await
+        .map(Option::flatten)
+    }
+
+    /// Claims the charge of `subscription` for `period`: true for the one
+    /// caller whose insert wins, false for everyone after it.
+    pub async fn claim_charge_key(&self, subscription: &str, period: &str) -> Result<bool, sqlx::Error> {
+        let inserted = sqlx::query!(
+            "INSERT INTO charge_keys (subscription, period) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            subscription,
+            period
+        )
+        .execute(&self.0)
+        .await?;
+        Ok(inserted.rows_affected() == 1)
+    }
+
+    /// Gives a claimed charge back, when Stripe didn't charge.
+    pub async fn release_charge_key(&self, subscription: &str, period: &str) -> Result<(), sqlx::Error> {
+        sqlx::query!(
+            "DELETE FROM charge_keys WHERE subscription = $1 AND period = $2 AND charge_id IS NULL",
+            subscription,
+            period
+        )
+        .execute(&self.0)
+        .await?;
+        Ok(())
+    }
+}"""
+
+[[turn.step]]
+edit = "src/billing/charge.rs"
+old = """    if db.charge_for(subscription, period).await?.is_some() {
+        return Ok(Charged::Already);
+    }
+    let amount = amount_due(db, subscription, period).await?;
+    let charge = stripe::charge(subscription, amount).await?;
+    db.record_charge(subscription, period, &charge.id).await?;
+    Ok(Charged::Now(charge.id))"""
+new = """    // Whoever inserts the key charges; anyone after finds it taken. Stripe
+    // gets the key too, so a call retried after a timeout can't charge again.
+    if !db.claim_charge_key(subscription, period).await? {
+        return Ok(Charged::Already);
+    }
+    let key = format!("charge:{subscription}:{period}");
+    let amount = amount_due(db, subscription, period).await?;
+    let charge = match stripe::charge_with_key(subscription, amount, &key).await {
+        Ok(charge) => charge,
+        Err(e) => {
+            // Declined, or Stripe unreachable: the next try may charge.
+            db.release_charge_key(subscription, period).await?;
+            return Err(e);
+        }
+    };
+    db.record_charge(subscription, period, &charge.id).await?;
+    Ok(Charged::Now(charge.id))"""
+
+[[turn.step]]
+bash = "cargo sqlx prepare --workspace"
+description = "Write the query data"
+seconds = 6
+output = "query data written to .sqlx in the workspace root; please check this into version control"
+
+[[turn.step]]
+write = ".sqlx/query-0d6b2f84c19e7a35f0b8d46e2c71a9f53e08b6d4a2c1f97e5b30d8a6c4e2f719.json"
+content = """{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO charge_keys (subscription, period) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": { "Left": ["Text", "Text"] },
+    "nullable": []
+  },
+  "hash": "0d6b2f84c19e7a35f0b8d46e2c71a9f53e08b6d4a2c1f97e5b30d8a6c4e2f719"
+}
+"""
+
+[[turn.step]]
+write = ".sqlx/query-7e3c9a1f05d2b6e48c0a7f93d1b5e2c64a8f0d37b9e1c5a2f6d04b8e3a7c1d95.json"
+content = """{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM charge_keys WHERE subscription = $1 AND period = $2 AND charge_id IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": { "Left": ["Text", "Text"] },
+    "nullable": []
+  },
+  "hash": "7e3c9a1f05d2b6e48c0a7f93d1b5e2c64a8f0d37b9e1c5a2f6d04b8e3a7c1d95"
+}
+"""
+
+[[turn.step]]
+bash = "cargo test -p platform --test charge_once --test charge_race"
+description = "Run the charge tests"
+seconds = 14
+output = """     Running tests/charge_once.rs (target/debug/deps/charge_once-8e2b1f4c7a903d65)
+
+running 2 tests
+test the_next_period_is_charged_again ... ok
+test the_invoice_job_and_a_webhook_charge_once ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.79s
+
+     Running tests/charge_race.rs (target/debug/deps/charge_race-41c7e09a2b5f8d13)
+
+running 1 test
+test two_workers_charge_a_period_once ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.62s"""
+
+[[turn.step]]
+bash = "scripts/replay-webhooks.sh --workers 2 --log ~/attachments/webhooks-wednesday.jsonl"
+description = "Replay Wednesday's webhooks with two workers"
+seconds = 24
+output = """Replayed 1,204 events from webhooks-wednesday.jsonl against platform_replay, 2 workers, in 24.1 s.
+Charged twice: none."""
+
+[[turn.step]]
+commit = "Claim the charge key before calling Stripe"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Found why two customers were charged twice last Wednesday, and made charges idempotent per subscription and period (platform#840). The refunds are Jonas’s to make.' --approach 'Replayed the day’s webhook log against a copy of the database: a Stripe retry arrived while the invoice job was charging, and both charged.' --challenges 'The review found that the first fix still raced; the idempotency key now goes in before the call to Stripe, and to Stripe with it.' --insights 'Billing races need two workers to show: `scripts/replay-webhooks.sh --workers 2`.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Fixed: the charge key goes in first (`ON CONFLICT DO NOTHING`), only the caller whose insert wins calls Stripe, and it passes the key as Stripe's `Idempotency-Key`, so a retried call can't charge twice either. A declined card gives the key back, so the next try can charge. A new test races two workers 500 times and gets one charge each time. Pushed to platform#840."

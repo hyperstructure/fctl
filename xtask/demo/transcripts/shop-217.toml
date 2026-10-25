@@ -1,0 +1,201 @@
+# shop#217 · Sanna, last Friday 14:05 · Add a test for the postcode lookup
+match = "Add tests for the postcode lookup in src/lib/postcodes.ts"
+
+[[turn]]
+duration = "26m"
+result = "Tests for the postcode lookup are in shop#1283: 38 of them, from a fixture with the 14 postcodes on zone borders. The e2e tests needed the platform's API started again; I noted how in the project's memory."
+
+[[turn.step]]
+run = "fctl edit --title 'Add a test for the postcode lookup' --description 'Covers the postcode lookup with tests, the 14 postcodes that border two delivery zones included.'"
+description = "Name the session"
+
+[[turn.step]]
+todo = [["Read the postcode lookup", "in_progress"], ["Find the postcodes on a border", "pending"], ["Write the tests from a fixture", "pending"], ["Run the unit and e2e tests", "pending"], ["Open the pull request", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "src/lib/postcodes.ts" },
+  { read = "src/data/zones.json" },
+  { glob = "src/lib/*.test.ts", output = "src/lib/money.test.ts\nsrc/lib/platform.test.ts" },
+]
+
+[[turn.step]]
+think = "Postcodes compare as five-digit strings, which works because they all have five digits once normalized. A postcode is on a border when two zones' ranges overlap: the inner city and Söderort share 118 60 to 118 69, and the inner city and Solna share 113 00 to 113 03. That's 14 postcodes, and they are the ones support asks about. `normalize` is where people's typing comes in: spaces, a missing digit, a country prefix."
+
+[[turn.step]]
+say = "The lookup is small: `normalize` cleans up what people type, and `zonesFor` checks it against each zone's ranges. Two pairs of zones overlap, which puts 14 postcodes on a border. I'll keep the cases in a fixture, one row a postcode, so that covering more postcodes later means adding rows."
+
+[[turn.step]]
+todo = [["Read the postcode lookup", "completed"], ["Find the postcodes on a border", "completed"], ["Write the tests from a fixture", "in_progress"], ["Run the unit and e2e tests", "pending"], ["Open the pull request", "pending"]]
+
+[[turn.step]]
+write = "tests/fixtures/postcodes.json"
+content = """[
+  { "postcode": "111 20", "zones": ["sto-inner"] },
+  { "postcode": "113 50", "zones": ["sto-inner"] },
+  { "postcode": "114 32", "zones": ["sto-inner"] },
+  { "postcode": "116 46", "zones": ["sto-inner"] },
+  { "postcode": "118 50", "zones": ["sto-inner"] },
+  { "postcode": "120 30", "zones": ["sto-south"] },
+  { "postcode": "124 33", "zones": ["sto-south"] },
+  { "postcode": "129 38", "zones": ["sto-south"] },
+  { "postcode": "161 39", "zones": ["sto-west"] },
+  { "postcode": "165 61", "zones": ["sto-west"] },
+  { "postcode": "168 66", "zones": ["sto-west"] },
+  { "postcode": "169 31", "zones": ["sto-north"] },
+  { "postcode": "172 69", "zones": ["sto-north"] },
+  { "postcode": "131 54", "zones": ["sto-east"] },
+  { "postcode": "181 64", "zones": ["sto-east"] },
+  { "postcode": "182 79", "zones": ["sto-east"] },
+  { "postcode": "113 00", "zones": ["sto-inner", "sto-north"] },
+  { "postcode": "113 01", "zones": ["sto-inner", "sto-north"] },
+  { "postcode": "113 02", "zones": ["sto-inner", "sto-north"] },
+  { "postcode": "113 03", "zones": ["sto-inner", "sto-north"] },
+  { "postcode": "118 60", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "118 61", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "118 62", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "118 63", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "118 64", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "118 65", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "118 66", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "118 67", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "118 68", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "118 69", "zones": ["sto-inner", "sto-south"] },
+  { "postcode": "752 36", "zones": [] },
+  { "postcode": "211 22", "zones": [] }
+]
+"""
+
+[[turn.step]]
+write = "src/lib/postcodes.test.ts"
+content = """import { describe, expect, it } from "vitest";
+import cases from "../../tests/fixtures/postcodes.json";
+import { normalize, zonesFor } from "./postcodes";
+
+describe("normalize", () => {
+  it.each([
+    ["114 32", "11432"],
+    ["11432", "11432"],
+    [" 114 32 ", "11432"],
+    ["1143", null],
+    ["114 321", null],
+    ["SE-114 32", null],
+  ])("reads %j as %j", (typed, postcode) => {
+    expect(normalize(typed)).toBe(postcode);
+  });
+});
+
+// One row a postcode: the 14 on the borders between two zones are in two.
+describe("zonesFor", () => {
+  it.each(cases)("puts $postcode in $zones", ({ postcode, zones }) => {
+    expect(zonesFor(postcode).map((z) => z.id)).toEqual(zones);
+  });
+});
+"""
+
+[[turn.step]]
+bash = "npm test -- postcodes"
+description = "Run the new tests"
+seconds = 3
+output = """
+> shop@3.18.0 test
+> vitest run postcodes
+
+ ✓ src/lib/postcodes.test.ts (38 tests) 9ms
+
+ Test Files  1 passed (1)
+      Tests  38 passed (38)
+   Duration  1.12s"""
+
+[[turn.step]]
+tools = [
+  { bash = "npm test", description = "Run the unit tests", seconds = 6, output = """
+> shop@3.18.0 test
+> vitest run
+
+ Test Files  62 passed (62)
+      Tests  403 passed (403)
+   Duration  8.64s""" },
+  { bash = "npm run e2e", description = "Run the e2e tests", seconds = 24, error = true, output = """
+> shop@3.18.0 e2e
+> playwright test
+
+Running 34 tests using 4 workers
+  ✘   3 [chromium] › checkout.spec.ts:14:3 › picks a delivery day (5.4s)
+  ✘   4 [chromium] › checkout.spec.ts:31:3 › pays for a box (5.1s)
+  ✘   9 [webkit] › checkout.spec.ts:14:3 › picks a delivery day (5.6s)
+  …
+
+  1) [chromium] › checkout.spec.ts:14:3 › picks a delivery day
+
+    Error: Timed out 5000ms waiting for expect(locator).toBeVisible()
+    Locator: getByRole('listbox', { name: 'Pick a delivery day' })
+
+[WebServer] TypeError: fetch failed
+[WebServer]   [cause]: Error: connect ECONNREFUSED 127.0.0.1:8080
+
+  12 failed
+  22 passed (2.4m)""" },
+]
+
+[[turn.step]]
+think = "Every failure is at the delivery-day step, and the shop's server can't reach localhost:8080: the platform's API isn't running. The shop reaches it through `PLATFORM_API`, which defaults to localhost:8080. Nothing in my change touches it, so something that should be running isn't."
+
+[[turn.step]]
+tools = [
+  { bash = "curl -s -o /dev/null -w '%{http_code}\\n' localhost:8080/health || true", description = "Check the platform's API", output = "000" },
+  { bash = "grep -n -B1 -A2 'dev-api' ~/repos/romanescohq/platform/README.md", description = "Find out how the API starts", output = """23-## The API for other projects' sandboxes
+24:`scripts/dev-api.sh` starts the API on :8080 with seed data (five zones, the
+25-farms, two weeks of slots). The shop's sandbox setup runs it from
+26-`~/repos/romanescohq/platform`.""" },
+]
+
+[[turn.step]]
+bash = "cd ~/repos/romanescohq/platform && scripts/dev-api.sh --background"
+description = "Start the platform's API again"
+seconds = 8
+output = """Starting the platform's API with seed data…
+platform API listening on http://localhost:8080"""
+
+[[turn.step]]
+bash = "npm run e2e"
+description = "Run the e2e tests again"
+seconds = 20
+output = """
+> shop@3.18.0 e2e
+> playwright test
+
+Running 34 tests using 4 workers
+  34 passed (1.8m)"""
+
+[[turn.step]]
+say = "With the API running again, all 34 e2e tests pass. The setup script had started it and it had stopped since; I'll note that for the next session, since every checkout test fails without it."
+
+[[turn.step]]
+todo = [["Read the postcode lookup", "completed"], ["Find the postcodes on a border", "completed"], ["Write the tests from a fixture", "completed"], ["Run the unit and e2e tests", "completed"], ["Open the pull request", "in_progress"]]
+
+[[turn.step]]
+commit = "Test the postcode lookup, the postcodes on zone borders included"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Add a test for the postcode lookup"
+number = 1283
+body = """Tests for `src/lib/postcodes.ts`: how `normalize` reads what people type, and which zones `zonesFor` puts 32 postcodes in.
+
+The cases are rows in `tests/fixtures/postcodes.json`, the 14 postcodes that border two zones included (118 60 to 118 69 between the inner city and Söderort, 113 00 to 113 03 between the inner city and Solna). More postcodes are more rows.
+
+The fixture has only Stockholm's postcodes: Copenhagen's need adding before the launch."""
+
+[[turn.step]]
+run = "fctl memory add 'The e2e tests (`npm run e2e`) need the platform’s API on port 8080, which the setup script starts from `~/repos/romanescohq/platform` with `scripts/dev-api.sh`. If it stopped, run that again, or every checkout test fails at the delivery-day step.'"
+description = "Remember what the e2e tests need"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Tests for the postcode lookup, the 14 postcodes that border two delivery zones included (shop#1283).' --approach 'Table-driven, from `tests/fixtures/postcodes.json`, so more postcodes are more rows.' --challenges 'The e2e tests failed at the delivery-day step until I started the platform’s API again with `scripts/dev-api.sh`: the setup script starts it, and it had stopped.' --insights 'The fixtures hold only Stockholm’s postcodes: Copenhagen’s need adding before the launch.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Tests for the postcode lookup are in shop#1283: 38 of them, from a fixture with the 14 postcodes on zone borders. The e2e tests needed the platform's API started again; I noted how in the project's memory."

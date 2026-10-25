@@ -4,7 +4,9 @@
 # `last thursday 14:00`, `-5mo`); the seed moves them to whenever it runs.
 #
 # Each session plays its transcript, `transcripts/<project>-<number>.toml`,
-# and its project's repository starts as the files in `repos/<owner>/<name>`.
+# and its project's repository starts as the files in `repos/<owner>/<name>`:
+# main as the cast's sessions found it before they changed it. A review of a
+# pull request one of them opened works on its branch.
 
 [instance]
 name = "fctl"
@@ -258,7 +260,7 @@ driver = "lima"
 capacity = 2
 workspaces = ["crimp-collective"]
 created = "-3mo"
-seen = "sunday 18:02"
+seen = "sunday 08:55"
 
 # ──────────────────────────── repositories ────────────────────────────
 

@@ -1,0 +1,288 @@
+# infra#37 · Kofi, yesterday 15:40 · Move staging to Postgres 18 (blocked: Kofi chooses the way)
+match = "Prepare it both ways, an RDS blue-green deployment and a dump and restore into a new instance"
+
+[[turn]]
+duration = "38m"
+result = "Both ways are in infra#211, a draft, and nothing is applied. A blue-green switch takes about a minute of downtime, but needs logical replication on staging's parameter group first, which takes a reboot. A dump and restore needs no reboot, and takes staging away for about 20 minutes. Which one do you want? Production will need the same choice."
+
+[[turn.step]]
+run = "fctl edit --title 'Move staging to Postgres 18' --description 'Prepares staging’s move to Postgres 18 two ways, a blue-green switch or a dump and restore, and asks Kofi to choose.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "modules/database/main.tf" },
+  { read = "modules/database/variables.tf" },
+  { read = "staging/main.tf" },
+]
+
+[[turn.step]]
+tools = [
+  { bash = "aws rds describe-db-parameters --db-parameter-group-name staging-postgres17 --query \"Parameters[?ParameterName=='rds.logical_replication'].[ParameterValue, ApplyType]\" --output text", description = "Check logical replication on staging", output = "0\tstatic" },
+  { bash = "aws rds describe-db-engine-versions --engine postgres --engine-version 17.6 --query 'DBEngineVersions[0].ValidUpgradeTarget[?IsMajorVersionUpgrade].EngineVersion' --output text", description = "List the major versions 17.6 upgrades to", output = "18.1" },
+  { bash = "scripts/psql.sh staging -Atc \"select pg_size_pretty(pg_database_size('platform'))\"", description = "Measure staging's database", output = "41 GB" },
+]
+
+[[turn.step]]
+think = "RDS blue-green deployments for Postgres copy the data with logical replication, so the blue instance needs rds.logical_replication = 1. It's off on staging, and it's static: turning it on takes a reboot of staging's database before the deployment can even start. The switch itself is about a minute. A dump and restore needs no reboot, but staging is away while 41 GB goes through pg_dump and pg_restore: about 20 minutes at the rate the last copy went. Both can sit behind one variable, so that each plan shows what it would do."
+
+[[turn.step]]
+todo = [["One variable that picks the way", "in_progress"], ["Blue-green: logical replication and a Postgres 18 parameter group", "pending"], ["Dump and restore: a new instance and the script", "pending"], ["Plan staging both ways", "pending"], ["A draft pull request, and ask Kofi", "pending"]]
+
+[[turn.step]]
+edit = "modules/database/variables.tf"
+old = """variable "storage_gb" {
+  type    = number
+  default = 100
+}"""
+new = """variable "storage_gb" {
+  type    = number
+  default = 100
+}
+
+variable "next_engine_version" {
+  description = "The Postgres version to move to, while a move is under way."
+  type        = string
+  default     = null
+}
+
+variable "upgrade" {
+  description = "How to move to next_engine_version: blue_green, dump_restore, or null while there's no move."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.upgrade == null || contains(["blue_green", "dump_restore"], var.upgrade)
+    error_message = "Choose blue_green or dump_restore."
+  }
+}"""
+
+[[turn.step]]
+edit = "modules/database/main.tf"
+old = """  parameter {
+    name         = "shared_preload_libraries"
+    value        = "pg_stat_statements"
+    apply_method = "pending-reboot"
+  }
+}"""
+new = """  parameter {
+    name         = "shared_preload_libraries"
+    value        = "pg_stat_statements"
+    apply_method = "pending-reboot"
+  }
+
+  # A blue-green deployment copies the data with logical replication. The
+  # setting is static: it takes a reboot before the deployment can start.
+  dynamic "parameter" {
+    for_each = var.upgrade == "blue_green" ? [1] : []
+    content {
+      name         = "rds.logical_replication"
+      value        = "1"
+      apply_method = "pending-reboot"
+    }
+  }
+}
+
+# Postgres 18's parameters, the same settings, for the instance either way
+# ends on.
+resource "aws_db_parameter_group" "next" {
+  count  = var.upgrade == null ? 0 : 1
+  name   = "${var.environment}-postgres18"
+  family = "postgres18"
+
+  parameter {
+    name  = "log_min_duration_statement"
+    value = "500"
+  }
+
+  parameter {
+    name         = "shared_preload_libraries"
+    value        = "pg_stat_statements"
+    apply_method = "pending-reboot"
+  }
+}"""
+
+[[turn.step]]
+edit = "modules/database/main.tf"
+old = """  engine_version               = var.engine_version
+  instance_class               = var.instance_class"""
+new = """  engine_version               = var.upgrade == "blue_green" ? var.next_engine_version : var.engine_version
+  instance_class               = var.instance_class"""
+
+[[turn.step]]
+edit = "modules/database/main.tf"
+old = """  parameter_group_name         = aws_db_parameter_group.main.name"""
+new = """  parameter_group_name         = var.upgrade == "blue_green" ? aws_db_parameter_group.next[0].name : aws_db_parameter_group.main.name"""
+
+[[turn.step]]
+edit = "modules/database/main.tf"
+old = """  apply_immediately            = false
+}"""
+new = """  apply_immediately            = false
+
+  # Blue-green: RDS makes a copy, upgrades it, and switches over to it in
+  # about a minute.
+  blue_green_update {
+    enabled = var.upgrade == "blue_green"
+  }
+}
+
+# Dump and restore: a new instance on Postgres 18, which
+# scripts/dump-restore.sh fills while the platform is stopped.
+resource "aws_db_instance" "next" {
+  count                        = var.upgrade == "dump_restore" ? 1 : 0
+  identifier                   = "${var.environment}-platform-pg18"
+  engine                       = "postgres"
+  engine_version               = var.next_engine_version
+  instance_class               = var.instance_class
+  allocated_storage            = var.storage_gb
+  storage_type                 = "gp3"
+  multi_az                     = var.multi_az
+  db_subnet_group_name         = aws_db_subnet_group.main.name
+  parameter_group_name         = aws_db_parameter_group.next[0].name
+  username                     = "platform"
+  manage_master_user_password  = true
+  backup_retention_period      = 14
+  deletion_protection          = true
+  performance_insights_enabled = true
+}"""
+
+[[turn.step]]
+edit = "staging/main.tf"
+old = """  multi_az       = false
+  engine_version = "17.6"
+}"""
+new = """  multi_az       = false
+  engine_version = "17.6"
+
+  # Postgres 18, before production does. The way there is in variables.tf.
+  next_engine_version = "18.1"
+  upgrade             = var.postgres_upgrade
+}"""
+
+[[turn.step]]
+write = "staging/variables.tf"
+content = """variable "postgres_upgrade" {
+  description = "How staging moves to Postgres 18: blue_green, an RDS blue-green deployment (a reboot first, then a switch of about a minute), or dump_restore, a new instance (about 20 minutes of downtime)."
+  type        = string
+  default     = "blue_green"
+
+  validation {
+    condition     = contains(["blue_green", "dump_restore"], var.postgres_upgrade)
+    error_message = "Choose blue_green or dump_restore."
+  }
+}
+"""
+
+[[turn.step]]
+write = "scripts/dump-restore.sh"
+content = """#!/bin/sh
+# Copies an environment's data into its Postgres 18 instance, for the
+# dump_restore way. A person runs it, in a maintenance window, with the
+# platform stopped (desired_count = 0): about 20 minutes for staging's 41 GB.
+set -eu
+env=${1:?usage: scripts/dump-restore.sh staging}
+endpoint() {
+  aws rds describe-db-instances --db-instance-identifier "$1" --query 'DBInstances[0].Endpoint.Address' --output text
+}
+old=$(endpoint "$env-platform")
+new=$(endpoint "$env-platform-pg18")
+echo "Dumping $old, restoring into $new"
+pg_dump --host "$old" --username platform --format directory --jobs 8 --file "/tmp/$env.dump" platform
+pg_restore --host "$new" --username platform --dbname platform --jobs 8 --exit-on-error "/tmp/$env.dump"
+psql --host "$new" --username platform --dbname platform --command 'ANALYZE'
+echo "Done: point the platform's database_url at $new, then start it again."
+"""
+
+[[turn.step]]
+todo = [["One variable that picks the way", "completed"], ["Blue-green: logical replication and a Postgres 18 parameter group", "completed"], ["Dump and restore: a new instance and the script", "completed"], ["Plan staging both ways", "in_progress"], ["A draft pull request, and ask Kofi", "pending"]]
+
+[[turn.step]]
+tools = [
+  { bash = "terraform -chdir=staging init -input=false > /dev/null && terraform -chdir=staging plan -lock=false -input=false -var postgres_upgrade=blue_green", description = "Plan the blue-green way", seconds = 45, output = """Terraform will perform the following actions:
+
+  # module.database.aws_db_instance.main will be updated in-place
+  ~ resource "aws_db_instance" "main" {
+      ~ engine_version       = "17.6" -> "18.1"
+        id                   = "db-7K2QXN4BHTJ5VZ3R6WUMLC8YPE"
+      ~ parameter_group_name = "staging-postgres17" -> "staging-postgres18"
+        # (39 unchanged attributes hidden)
+
+      + blue_green_update {
+          + enabled = true
+        }
+    }
+
+  # module.database.aws_db_parameter_group.main will be updated in-place
+  ~ resource "aws_db_parameter_group" "main" {
+        id   = "staging-postgres17"
+        name = "staging-postgres17"
+
+      + parameter {
+          + apply_method = "pending-reboot"
+          + name         = "rds.logical_replication"
+          + value        = "1"
+        }
+
+        # (2 unchanged blocks hidden)
+    }
+
+  # module.database.aws_db_parameter_group.next[0] will be created
+  + resource "aws_db_parameter_group" "next" {
+      + family = "postgres18"
+      + name   = "staging-postgres18"
+        # (2 parameters)
+    }
+
+Plan: 1 to add, 2 to change, 0 to destroy.""" },
+  { bash = "terraform -chdir=staging plan -lock=false -input=false -var postgres_upgrade=dump_restore", description = "Plan the dump and restore", seconds = 45, output = """Terraform will perform the following actions:
+
+  # module.database.aws_db_instance.next[0] will be created
+  + resource "aws_db_instance" "next" {
+      + engine_version = "18.1"
+      + identifier     = "staging-platform-pg18"
+      + instance_class = "db.t4g.large"
+      + multi_az       = false
+        # (34 more attributes)
+    }
+
+  # module.database.aws_db_parameter_group.next[0] will be created
+  + resource "aws_db_parameter_group" "next" {
+      + family = "postgres18"
+      + name   = "staging-postgres18"
+        # (2 parameters)
+    }
+
+Plan: 2 to add, 0 to change, 0 to destroy.""" },
+]
+
+[[turn.step]]
+run = "fctl memory add 'Staging’s parameter group has `rds.logical_replication` off, and a blue-green switch needs it on, which takes a reboot: plan a switch a day ahead.'"
+description = "Remember what a blue-green switch needs"
+
+[[turn.step]]
+commit = "Prepare staging’s move to Postgres 18 both ways"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Move staging to Postgres 18"
+number = 211
+body = """A draft, to choose from: staging's move to Postgres 18, prepared two ways behind one variable, `postgres_upgrade` in `staging/variables.tf`. Nothing is applied.
+
+**Blue-green** (`blue_green`, the default here): RDS copies the instance, upgrades the copy to 18.1 and switches over in about a minute. It replicates logically, so `rds.logical_replication` has to be on in `staging-postgres17` first, and that setting takes a reboot. Plan: 1 to add, 2 to change.
+
+**Dump and restore** (`dump_restore`): a new instance, `staging-platform-pg18`, which `scripts/dump-restore.sh` fills with the platform stopped: about 20 minutes for staging's 41 GB. No reboot, then a switch of `database_url`. Plan: 2 to add.
+
+Production will need the same choice, with ten times the data. Once the way is chosen, I'll drop the other and mark this ready for review."""
+
+[[turn.step]]
+say = "I opened infra#211 as a draft: it shouldn't merge until you've chosen a way."
+
+[[turn.step]]
+run = "fctl retro --outcome blocked --worked-on 'Both ways to move staging to Postgres 18, in infra#211 (a draft): an RDS blue-green deployment, or a dump and restore into a new instance.' --approach 'One variable picks the way, so `terraform plan` shows each before anyone chooses.' --challenges 'A blue-green switch needs logical replication, which staging’s parameter group has off; turning it on takes a reboot. A dump and restore takes about 20 minutes of downtime.' --insights 'Kofi has to choose. Production will need the same choice, with more data.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Both ways are in infra#211, a draft, and nothing is applied. A blue-green switch takes about a minute of downtime, but needs logical replication on staging's parameter group first, which takes a reboot. A dump and restore needs no reboot, and takes staging away for about 20 minutes. Which one do you want? Production will need the same choice."

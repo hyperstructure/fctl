@@ -1,0 +1,68 @@
+# platform#438 · review of platform#840 at its first commit: 1 issue (high)
+match = "Review romanescohq/platform#840, “Make charges idempotent per subscription and period”, at commit"
+
+[[turn]]
+duration = "2m5s"
+result = "Posted the review: 1 issue (high). Two workers can still both charge the card: the key is recorded after the call to Stripe."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Make charges idempotent per subscription and period" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " .sqlx/query-a41e7c09b25f86d3e0c7192b4f58a6d0e3b91c7f25d48a06e9f3b1c5d7a2e840.json |  12 ++++++++++++\n migrations/0140_charge_keys.sql                                                   |   8 ++++++++\n src/billing/charge.rs                                                             |  22 +++++++++++++++++-----\n src/db.rs                                                                         |  12 ++++++++++++\n tests/charge_once.rs                                                              |  32 ++++++++++++++++++++++++++++++++\n 5 files changed, 81 insertions(+), 5 deletions(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+bash = "git diff origin/main...HEAD -- src/billing/charge.rs"
+description = "Read the change to charging"
+output = """diff --git a/src/billing/charge.rs b/src/billing/charge.rs
+index 398053e..c511165 100644
+--- a/src/billing/charge.rs
++++ b/src/billing/charge.rs
+@@ -12,11 +12,23 @@
+ }
+ 
+-/// Charges `subscription` for `period`. The invoice job calls it for every
+-/// subscription; the `invoice.payment_failed` webhook for those whose card
+-/// was declined, once the customer has a new one.
+-pub async fn charge_once(db: &Db, subscription: &str, period: &str) -> Result<String, Error> {
++/// What charging a subscription for a period came to.
++#[derive(Debug, PartialEq, Eq)]
++pub enum Charged {
++    /// Charged now: the Stripe charge.
++    Now(String),
++    /// Charged before: nothing to do.
++    Already,
++}
++
++/// Charges `subscription` for `period`, once. The invoice job calls it for
++/// every subscription, and the `invoice.payment_failed` webhook for those
++/// whose card was declined: both can come to one subscription at once.
++pub async fn charge_once(db: &Db, subscription: &str, period: &str) -> Result<Charged, Error> {
++    if db.charge_for(subscription, period).await?.is_some() {
++        return Ok(Charged::Already);
++    }
+     let amount = amount_due(db, subscription, period).await?;
+     let charge = stripe::charge(subscription, amount).await?;
+     db.record_charge(subscription, period, &charge.id).await?;
+-    Ok(charge.id)
++    Ok(Charged::Now(charge.id))
+ }"""
+
+[[turn.step]]
+tools = [
+  { read = "migrations/0140_charge_keys.sql" },
+  { read = "tests/charge_once.rs" },
+]
+
+[[turn.step]]
+think = "The check and the insert sit on either side of the call to Stripe. Two workers can both find no charge, both call Stripe, and only then does the primary key stop the second insert: after the card was charged twice. That's Wednesday's race again, narrower. The replay passing proves little, since it depends on how fast Stripe answers. The key has to be claimed before the call, and Stripe's own idempotency key would cover a request that is retried after a timeout. The tests charge one after the other, so they can't see it."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = """Posted the review on romanescohq/platform#840: 1 issue (high).
+https://github.com/romanescohq/platform/pull/840#pullrequestreview-2002410"""
+
+[[turn.step]]
+say = "Posted the review: 1 issue (high). Two workers can still both charge the card: the key is recorded after the call to Stripe."

@@ -12,6 +12,7 @@ pub async fn stripe(db: Db, event: stripe::Event) -> Result<(), crate::Error> {
 async fn process(db: &Db, event: &stripe::Event) -> Result<(), crate::Error> {
     match event.type_.as_str() {
         "invoice.paid" => crate::billing::paid(db, event).await,
+        "invoice.payment_failed" => crate::billing::payment_failed(db, event).await,
         "charge.refunded" => crate::billing::refunded(db, event).await,
         _ => Ok(()),
     }

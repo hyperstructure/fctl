@@ -7,3 +7,5 @@ on Postgres, with milkfloat planning the vans' routes.
 docker compose up -d postgres
 cargo test
 ```
+
+CI builds with `SQLX_OFFLINE=true` from the query data in `.sqlx/`.

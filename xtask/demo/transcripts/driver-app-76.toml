@@ -1,0 +1,67 @@
+# driver-app#76 · Aiko, yesterday 18:05 · Upgrade the map SDK (stopped: it waits for Expo's next SDK)
+match = "Upgrade the map SDK to its next major version"
+
+[[turn]]
+duration = "13m"
+result = "The map SDK's next major needs Expo's next SDK first: @rnmapbox/maps 11 needs React Native 0.84, which comes with Expo SDK 57, still in preview. It also drops the offline packs our route areas use. I stopped before changing anything: upgrade both once SDK 57 is out, and move src/map/offline.ts to tile regions in the same pull request."
+
+[[turn.step]]
+run = "fctl edit --title 'Upgrade the map SDK' --description 'Upgrades the map SDK to its next major, after checking its changelog for what it does to the offline tiles.'"
+description = "Name the session"
+
+[[turn.step]]
+todo = [["Read the next major's changelog", "in_progress"], ["Check what it needs of Expo and React Native", "pending"], ["Check what it does to the offline tiles", "pending"], ["Upgrade", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "package.json" },
+  { read = "src/map/offline.ts" },
+  { bash = "npm view @rnmapbox/maps dist-tags --json", description = "See the map SDK's releases", output = """{
+  "latest": "11.0.2",
+  "next": "11.1.0-rc.1",
+  "v10": "10.3.4"
+}""" },
+]
+
+[[turn.step]]
+tool = "WebFetch"
+input = { url = "https://github.com/rnmapbox/maps/blob/main/CHANGELOG.md", prompt = "What does 11.0 break: offline maps, and the React Native and Expo versions it needs?" }
+output = """11.0.0, breaking changes:
+- Requires React Native 0.84 or later, with the New Architecture. The Expo config plugin needs Expo SDK 57.
+- The legacy offline packs are removed: offlineManager.createPack, getPack, getPacks and deletePack. Offline maps use tile regions (offlineManager.loadTileRegion with a TileStore), which download style packs and tile packs apart.
+- Mapbox's native SDKs move to 11.16 on iOS and Android.
+Migration guide: docs/v11-migration.md"""
+
+[[turn.step]]
+bash = "npm view expo dist-tags --json && npm view @rnmapbox/maps@11 peerDependencies --json"
+description = "Check what Expo and the map SDK need of each other"
+output = """{
+  "latest": "56.0.12",
+  "next": "57.0.0-preview.4",
+  "sdk-56": "56.0.12"
+}
+{
+  "expo": ">=57.0.0",
+  "react": ">=19.2.0",
+  "react-native": ">=0.84.0"
+}"""
+
+[[turn.step]]
+todo = [["Read the next major's changelog", "completed"], ["Check what it needs of Expo and React Native", "completed"], ["Check what it does to the offline tiles", "completed"], ["Upgrade", "pending"]]
+
+[[turn.step]]
+think = "Two things. The offline packs go: src/map/offline.ts uses createPack, getPack, getPacks and deletePack, so the route areas have to move to tile regions, which is work I could do. But 11.0 needs React Native 0.84, and the app is on Expo SDK 56 with React Native 0.83. Only Expo SDK 57 brings 0.84, and it's still a preview. Upgrading the map SDK alone breaks the build, and moving the whole app to a preview SDK isn't something to do without asking Aiko."
+
+[[turn.step]]
+say = "I'll stop here rather than upgrade halfway. @rnmapbox/maps 11 needs React Native 0.84, which only Expo SDK 57 brings, and SDK 57 is still a preview; the app is on SDK 56 with React Native 0.83. 11.0 also removes the offline packs that `src/map/offline.ts` downloads each day's route area with: they become tile regions."
+
+[[turn.step]]
+run = "fctl edit --description 'Found that the map SDK’s next major needs Expo’s next SDK first, and stopped there: the upgrade waits for Expo’s.'"
+description = "Say where it stopped"
+
+[[turn.step]]
+run = "fctl retro --outcome partial --worked-on 'Checked what the map SDK’s next major, @rnmapbox/maps 11, takes, and stopped before upgrading.' --approach 'Read its changelog and peer dependencies against the app’s Expo SDK and its offline tiles before changing anything.' --challenges '11.0 needs React Native 0.84, which comes with Expo SDK 57, still a preview; and it removes the offline packs the route areas use, for tile regions.' --insights 'Upgrade once Expo SDK 57 is out, and move src/map/offline.ts to tile regions in the same pull request.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "The map SDK's next major needs Expo's next SDK first: @rnmapbox/maps 11 needs React Native 0.84, which comes with Expo SDK 57, still in preview. It also drops the offline packs our route areas use. I stopped before changing anything: upgrade both once SDK 57 is out, and move `src/map/offline.ts` to tile regions in the same pull request."

@@ -1056,7 +1056,15 @@ impl<'a> World<'a> {
         let pid = self.projects[&p.slug].clone();
         let (_, number) = cast::session_ref(&s.id)?;
         let title = self.title_of(s)?;
-        let branch = format!("fctl/{number}-{}", slug(&title));
+        // A review works on the branch it reviews, as review agents do,
+        // when a session of the cast's pushed it.
+        let branch = s
+            .review
+            .as_ref()
+            .and_then(|r| self.cast.pull_session(&r.of))
+            .and_then(|opened| self.sessions.get(&opened.id))
+            .and_then(|m| m.branch.clone())
+            .unwrap_or_else(|| format!("fctl/{number}-{}", slug(&title)));
         if let (Some(pr), Some(repo)) = (&s.pr, &p.repo) {
             let pr_title = pr.title.clone().unwrap_or_else(|| title.clone());
             self.github.pull(repo, pr.number, &pr_title, &branch)?;

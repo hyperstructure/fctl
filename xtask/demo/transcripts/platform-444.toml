@@ -1,0 +1,110 @@
+# platform#444 · review of platform#843 at its second commit: passed, 2 fixed
+match = "Review romanescohq/platform#843, “Plan routes with milkfloat's time windows”, at commit"
+
+[[turn]]
+duration = "1m51s"
+result = "No issues. Both earlier findings are fixed: windows go to milkfloat in the depot's local seconds, as shifts do, and unknown ROUTES_PLANNER values stop the platform at startup."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Send milkfloat the depot's local times, and refuse unknown planners\nPlan routes with milkfloat's time windows" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[{\"id\": \"PRRT_kwDOPlat843a1\", \"path\": \"src/routes/plan.rs\", \"line\": 88, \"title\": \"Time windows go to milkfloat in UTC\", \"resolved\": false, \"replies\": 1}, {\"id\": \"PRRT_kwDOPlat843a2\", \"path\": \"src/routes/plan.rs\", \"line\": 21, \"title\": \"A typo in ROUTES_PLANNER switches planners silently\", \"resolved\": false, \"replies\": 1}]" },
+]
+
+[[turn.step]]
+bash = "git diff HEAD~1 -- src/routes/plan.rs src/main.rs"
+description = "Read what changed since the last review"
+output = """diff --git a/src/routes/plan.rs b/src/routes/plan.rs
+index ae0ef95..e236d9d 100644
+--- a/src/routes/plan.rs
++++ b/src/routes/plan.rs
+@@ -15,9 +15,12 @@
+ 
+ impl Planner {
+-    /// From `ROUTES_PLANNER`: `milkfloat`, else the nearest-neighbour planner.
+-    pub fn from_env() -> Self {
++    /// From `ROUTES_PLANNER`: `milkfloat`, the default, or `legacy` for the
++    /// nearest-neighbour planner. Anything else is refused at startup, so
++    /// that a typo can't switch planners.
++    pub fn from_env() -> Result<Self, String> {
+         match std::env::var("ROUTES_PLANNER").as_deref() {
+-            Ok("milkfloat") => Self::Milkfloat,
+-            _ => Self::Legacy,
++            Err(_) | Ok("milkfloat") => Ok(Self::Milkfloat),
++            Ok("legacy") => Ok(Self::Legacy),
++            Ok(other) => Err(format!("ROUTES_PLANNER is {other:?}: say milkfloat or legacy")),
+         }
+     }
+@@ -63,5 +66,5 @@
+     let visits: Vec<Visit> = stops
+         .iter()
+-        .map(|s| Visit::new(s.id).demand(s.boxes).service(SERVICE).window(window(s)))
++        .map(|s| Visit::new(s.id).demand(s.boxes).service(SERVICE).window(window(depot, s)))
+         .collect();
+     let problem = Problem::new(vehicles, visits, matrix.clone());
+@@ -84,7 +87,9 @@
+ }
+ 
+-/// A stop's delivery window, as milkfloat takes a time window.
+-fn window(stop: &Stop) -> TimeWindow {
+-    TimeWindow::new(seconds(stop.window_start.time()), seconds(stop.window_end.time()))
++/// A stop's delivery window, as milkfloat takes a time window: seconds after
++/// midnight by the depot's clock, as the vans' shifts are. Stops keep their
++/// windows in UTC.
++fn window(depot: &Depot, stop: &Stop) -> TimeWindow {
++    TimeWindow::new(depot.local_seconds(stop.window_start), depot.local_seconds(stop.window_end))
+ }
+ 
+@@ -94,7 +99,19 @@
+ 
+     #[test]
+-    fn a_window_is_seconds_after_midnight() {
+-        let stop = Stop::test("2026-10-26T08:00:00Z", "2026-10-26T10:00:00Z");
+-        assert_eq!(window(&stop), TimeWindow::new(28_800, 36_000));
++    fn windows_are_seconds_after_midnight_at_the_depot() {
++        let cph = Depot::test("cph-1", chrono_tz::Europe::Copenhagen);
++        // 08:00 to 10:00 in Copenhagen: an hour ahead of UTC in winter, two
++        // in summer.
++        let winter = Stop::test("2026-11-23T07:00:00Z", "2026-11-23T09:00:00Z");
++        let summer = Stop::test("2026-06-22T06:00:00Z", "2026-06-22T08:00:00Z");
++        assert_eq!(window(&cph, &winter), TimeWindow::new(28_800, 36_000));
++        assert_eq!(window(&cph, &summer), TimeWindow::new(28_800, 36_000));
++    }
++
++    #[test]
++    fn unknown_planners_are_refused() {
++        // SAFETY: no other test reads or writes the environment.
++        unsafe { std::env::set_var("ROUTES_PLANNER", "milkflot") };
++        assert!(Planner::from_env().is_err());
+     }
+ }
+diff --git a/src/main.rs b/src/main.rs
+index c9bf096..5bb7389 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -17,4 +17,6 @@
+ async fn main() -> anyhow::Result<()> {
+     tracing_subscriber::fmt().json().init();
++    // Refused here rather than at 18:00, when planning starts.
++    let planner = routes::plan::Planner::from_env().map_err(anyhow::Error::msg)?;
+     let pool = db::connect(&std::env::var("DATABASE_URL")?).await?;
+     sqlx::migrate!().run(&pool).await?;
+@@ -23,5 +25,5 @@
+         .route("/v1/routes/{day}", post(routes::plan_day))
+         .route("/webhooks/stripe", post(webhooks::stripe))
+-        .with_state(db::Db::new(pool.clone()));
++        .with_state(db::Db::new(pool.clone()).planning_with(planner));
+     tokio::spawn(jobs::run(pool.clone()));
+     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;"""
+
+[[turn.step]]
+think = "Windows go through `Depot::local_seconds` now, and the new test pins Copenhagen's 08:00 to 28 800 in winter and in summer. Shifts were by the depot's clock already. `from_env` refuses unknown values, and `main` reads it before anything else, so a typo stops the deploy instead of the evening's planning. Nothing new to raise."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = """Posted the review on romanescohq/platform#843: no issues; 2 earlier findings marked fixed and resolved.
+https://github.com/romanescohq/platform/pull/843#pullrequestreview-2003352"""
+
+[[turn.step]]
+say = "No issues. Both earlier findings are fixed: windows go to milkfloat in the depot's local seconds, as shifts do, and unknown ROUTES_PLANNER values stop the platform at startup."

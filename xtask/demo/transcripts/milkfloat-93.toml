@@ -1,0 +1,52 @@
+# milkfloat#93 · review of milkfloat#310 (the free-threaded wheels): no issues
+match = "Review milkfloat/milkfloat#310, “Publish wheels for free-threaded Python 3.14”, at commit"
+
+[[turn]]
+duration = "1m2s"
+result = "No issues. The abi3 job still builds abi3 wheels, the new job builds cp314t ones without the limited API, and declaring `gil_used = false` holds up: the search releases the GIL and the module keeps no Python objects in statics."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --format='%s' origin/main..HEAD", description = "List the pull request's commits", output = "Publish wheels for free-threaded Python 3.14" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " .github/workflows/ci.yml     |  2 +-\n .github/workflows/wheels.yml | 27 ++++++++++++++++++++++++++-\n Cargo.toml                   |  5 ++++-\n pyproject.toml               |  1 +\n src/python.rs                |  4 +++-\n tests/python/test_threads.py | 29 +++++++++++++++++++++++++++++\n 6 files changed, 64 insertions(+), 4 deletions(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+bash = "git diff origin/main...HEAD -- Cargo.toml .github/workflows/wheels.yml"
+description = "Read the build changes"
+output = """--- a/Cargo.toml
++++ b/Cargo.toml
+ [features]
+ python = ["dep:pyo3"]
++# One wheel per platform for CPython 3.10 on, through the limited API.
++# Free-threaded CPython has no limited API, so its wheels leave this out.
++abi3 = ["python", "pyo3/abi3-py310"]
+
+ [dependencies]
+-pyo3 = { version = "0.28.2", features = ["extension-module", "abi3-py310"], optional = true }
++pyo3 = { version = "0.28.2", features = ["extension-module"], optional = true }
+--- a/.github/workflows/wheels.yml
++++ b/.github/workflows/wheels.yml
+-          args: --release --out dist
++          args: --release --out dist --features abi3
+@@
++  free-threaded:
++    # cp314t wheels: free-threaded CPython can't load the abi3 ones.
++          args: --release --out dist -i python3.14t"""
+
+[[turn.step]]
+grep = "static|thread_local|GILOnceCell"
+path = "src"
+output = "src/solve/search.rs:12:static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();"
+
+[[turn.step]]
+think = "Moving abi3 to a feature changes what a source build produces: pip installing from the sdist now builds a version-specific extension instead of an abi3 one, which is fine, and pyproject's features stay [\"python\"]. The only static is a OnceLock of the rayon pool, which is Sync and holds no Python objects, so gil_used = false is safe. The thread test checks results come back whole from eight threads; it doesn't prove there's no race, but there's no shared mutable state to race on."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = "Posted the review on milkfloat/milkfloat#310: no issues.\nhttps://github.com/milkfloat/milkfloat/pull/310#pullrequestreview-2003012"
+
+[[turn.step]]
+say = "No issues. The abi3 job still builds abi3 wheels, the new job builds cp314t ones without the limited API, and declaring `gil_used = false` holds up: the search releases the GIL and the module keeps no Python objects in statics."

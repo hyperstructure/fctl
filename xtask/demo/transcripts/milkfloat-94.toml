@@ -1,0 +1,95 @@
+# milkfloat#94 · review of milkfloat#311, Anouk's driver breaks from outside (Noor asked for it): 3 issues
+match = "Review milkfloat/milkfloat#311, “Add driver breaks”, at commit"
+
+[[turn]]
+duration = "2m38s"
+result = "Posted the review: 3 issues. A break whose window ends before the shift starts makes `insert_break` loop forever; the Python stubs don't know `Break`; and the README's example still builds vans without breaks."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --format='%an: %s' origin/main..HEAD", description = "List the pull request's commits", output = "Anouk van den Berg: Expose breaks to Python\nAnouk van den Berg: Insert breaks into routes\nAnouk van den Berg: Add Break to the model" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " python/milkfloat/__init__.py |  4 ++--\n src/export/geojson.rs        |  1 +\n src/insert.rs                | 20 ++++++++++++++++--\n src/model.rs                 | 12 +++++++++++\n src/python.rs                | 22 ++++++++++++++++----\n src/python/solution.rs       |  1 +\n tests/breaks.rs              | 49 ++++++++++++++++++++++++++++++++++++++++++++\n tests/gen/mod.rs             |  1 +\n 8 files changed, 102 insertions(+), 8 deletions(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+read = "src/insert.rs"
+output = """    49\t/// Puts `brk` on `route` after the first stop the van leaves once the
+    50\t/// break's window opens, and moves the stops after it on by its duration.
+    51\tpub fn insert_break(route: &mut Route, brk: &Break) -> Result<(), Infeasible> {
+    52\t    let mut at = brk.window.start.max(route.vehicle.shift.start);
+    53\t    loop {
+    54\t        if at <= brk.window.end
+    55\t            && let Some(i) = route.stops_after(at)
+    56\t        {
+    57\t            route.stops.insert(i, Stop::Break(brk.clone()));
+    58\t            route.delay_from(i, brk.duration);
+    59\t            return Ok(());
+    60\t        }
+    61\t        at = route.next_departure(at);
+    62\t    }
+    63\t}
+"""
+
+[[turn.step]]
+read = "src/route/mod.rs"
+output = """    23\t    /// When it next leaves a stop after `t`: `t` itself when it never does.
+    24\t    pub fn next_departure(&self, t: u32) -> u32 {
+    25\t        self.departures.iter().copied().find(|d| *d > t).unwrap_or(t)
+    26\t    }
+"""
+
+[[turn.step]]
+think = "The loop only ends by returning Ok. If the window ends before the shift starts, `at` starts past `window.end`, the condition never holds, and once `at` passes the last departure `next_departure` returns `at` itself: it spins forever. Same if no stop departs inside the window. insert_break returns Result but never Err, so the fix is to stop once `at` passes the window's end (or the shift's) and return Infeasible. The Rust side is otherwise careful: fits() and the stop names handle Stop::Break. Now the Python side."
+
+[[turn.step]]
+agent = "Check the Python side of breaks"
+prompt = "In this checkout, check that `Break` and `Vehicle(..., breaks=...)` are usable from Python as the pull request adds them: the extension (src/python.rs), the package (python/milkfloat/__init__.py), the type stubs (python/milkfloat/__init__.pyi) and the README's example. Report anything missing, with file and line."
+report = "The extension exports Break and Vehicle takes breaks= (src/python.rs:24, :41), and __init__.py re-exports Break. The stubs have no Break class and Vehicle.__init__ has no breaks parameter (python/milkfloat/__init__.pyi:24-32), so pyright rejects `Vehicle(..., breaks=[...])`. The README's example (README.md:23-24) builds both vans without breaks."
+  [[turn.step.steps]]
+  grep = "Break|breaks"
+  path = "python/milkfloat"
+  output = "python/milkfloat/__init__.py:3:from milkfloat._milkfloat import Break, Route, Solution, TimeWindow, Vehicle, Visit, solve\npython/milkfloat/__init__.py:5:__all__ = [\"Break\", \"Route\", \"Solution\", \"TimeWindow\", \"Vehicle\", \"Visit\", \"solve\"]"
+  [[turn.step.steps]]
+  read = "python/milkfloat/__init__.pyi"
+  output = """    24\tclass Vehicle:
+    25\t    id: str
+    26\t    def __init__(
+    27\t        self,
+    28\t        id: str,
+    29\t        depot: tuple[float, float],
+    30\t        shift: TimeWindow,
+    31\t        capacity: Sequence[int],
+    32\t    ) -> None: ..."""
+  [[turn.step.steps]]
+  say = "The stubs stop at capacity: no breaks parameter, and no Break class at all. Checking the README's example."
+  [[turn.step.steps]]
+  grep = "Vehicle\\("
+  path = "README.md"
+  output = "README.md:23:    Vehicle(\"van-1\", depot=depot, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40]),\nREADME.md:24:    Vehicle(\"van-2\", depot=depot, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40]),"
+
+[[turn.step]]
+bash = "cargo test --test breaks"
+description = "Run the pull request's tests"
+seconds = 14
+output = """   Compiling milkfloat v0.9.0 (/home/agent/milkfloat)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.41s
+     Running tests/breaks.rs (target/debug/deps/breaks-3f9c1e0b7a2d4c61)
+
+running 3 tests
+test a_break_at_the_start_of_its_window_waits_for_nothing ... ok
+test a_break_goes_after_the_first_stop_inside_its_window ... ok
+test the_stops_after_a_break_move_on_by_its_length ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"""
+
+[[turn.step]]
+think = "The three tests all place a break inside a route that reaches its window; none tries one it can't reach, which is where it hangs. I'll say so in the first finding, with the window that triggers it."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = "Posted the review on milkfloat/milkfloat#311: 3 issues (medium, low, low).\nhttps://github.com/milkfloat/milkfloat/pull/311#pullrequestreview-2004127"
+
+[[turn.step]]
+say = "Posted the review: 3 issues. A break whose window ends before the shift starts makes `insert_break` loop forever; the Python stubs don't know `Break`; and the README's example still builds vans without breaks."

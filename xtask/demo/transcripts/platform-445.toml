@@ -13,7 +13,7 @@ description = "Name the session"
 tools = [
   { read = "src/webhooks/mod.rs" },
   { read = "src/jobs/mod.rs" },
-  { glob = "migrations/*.sql", output = "migrations/0139_box_flowers.sql\nmigrations/0140_charge_keys.sql\nmigrations/0141_delivery_slot_cache.sql" },
+  { glob = "migrations/*.sql", output = "migrations/0136_farm_pickup_windows.sql\nmigrations/0137_stop_delivery_windows.sql\nmigrations/0138_delivery_slot_cache.sql\nmigrations/0139_box_flowers.sql" },
 ]
 
 [[turn.step]]
@@ -88,7 +88,7 @@ description = "Remember why webhooks go through the queue"
 bash = "gh pr checks 845 --watch"
 description = "Watch the checks"
 seconds = 10
-output = "All checks were successful\n✓ Clippy, fmt and sqlx   1m02s\n✓ Tests                  3m41s\n✓ Migrations             28s"
+output = "All checks were successful\n0 failing, 14 successful, 0 skipped, and 0 pending checks\n\n✓  Clippy                      58s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265721\n✓  Format                      12s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265722\n✓  sqlx offline data           41s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265723\n✓  Tests (billing)           2m10s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265724\n✓  Tests (jobs)              1m34s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265725\n✓  Tests (routes)            2m47s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265726\n✓  Tests (slots)               49s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265727\n✓  Tests (webhooks)          1m12s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265728\n✓  Migrations                  29s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265729\n✓  Migrations, rolled back     33s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265730\n✓  cargo deny                  18s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265731\n✓  Docker image              3m02s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265732\n✓  Deploy preview            1m51s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265733\n✓  fctl review               1m09s   https://github.com/romanescohq/platform/runs/55265734"
 
 [[turn.step]]
 say = "Retries are in platform#845: five tries with backoff from 30 seconds to 40 minutes, then the event goes to `webhook_dead_letters` with its last error. CI passed and the review found nothing. Before I call it done: should a dead letter page whoever is on call, or is the daily summary in #platform enough?"

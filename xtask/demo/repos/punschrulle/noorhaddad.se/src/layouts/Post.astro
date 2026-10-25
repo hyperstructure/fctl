@@ -1,0 +1,23 @@
+---
+interface Props {
+  title: string;
+  date?: Date;
+}
+const { title, date } = Astro.props;
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" />
+    <title>{title} · Noor Haddad</title>
+  </head>
+  <body>
+    <main>
+      <h1>{title}</h1>
+      {date && <time datetime={date.toISOString()}>{date.toLocaleDateString("en-GB", { dateStyle: "long" })}</time>}
+      <slot />
+    </main>
+  </body>
+</html>

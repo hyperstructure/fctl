@@ -1,0 +1,272 @@
+# milkfloat#89 · Lena, last Wednesday 09:30 · Explain time windows in the docs
+match = "Write a docs page on time windows"
+
+[[turn]]
+duration = "28m"
+result = "The time windows page is up for review in milkfloat#308: hard and soft windows, a table of how they differ, and a bakery's morning round worked through, whose script runs with the examples' tests so its output can't go stale."
+
+[[turn.step]]
+run = "fctl edit --title 'Explain time windows in the docs' --description 'A docs page on time windows, worked through with a bakery’s morning round.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "mkdocs.yml" },
+  { read = "src/model.rs" },
+  { read = "docs/cost-function.md" },
+  { glob = "examples/*.py", output = "examples/depot_round.py" },
+]
+
+[[turn.step]]
+think = "TimeWindow is seconds after midnight in the depot's time zone. Without a penalty it's hard; with one, each second late costs `penalty` in the cost function, the same units as distance. The cost function page says unassigned visits come first, so a hard window the solver can't meet leaves the visit unassigned rather than late. That's the thing people get wrong, so the example should show it happening. tests/python/test_examples.py runs every script in examples/, so if the page's example lives there, its output can't drift from the solver."
+
+[[turn.step]]
+todo = [["Read how the solver treats windows", "completed"], ["Write the bakery round as an example script", "in_progress"], ["Write docs/time-windows.md around it", "pending"], ["Add the page to the nav, the index and the README", "pending"], ["Build the docs strictly and run the examples", "pending"]]
+
+[[turn.step]]
+write = "examples/bakery_round.py"
+content = '''"""A bakery's morning round: one van, six customers, hard and soft windows.
+
+docs/time-windows.md walks through it.
+"""
+
+from milkfloat import TimeWindow, Vehicle, Visit, solve
+
+
+def at(clock: str) -> int:
+    """Seconds after midnight, from "06:30"."""
+    h, m = clock.split(":")
+    return int(h) * 3600 + int(m) * 60
+
+
+BAKERY = (59.3165, 18.0336)
+van = Vehicle("van", depot=BAKERY, shift=TimeWindow(at("05:30"), at("10:00")), capacity=[24])
+
+customers = [
+    # Breakfast is at 06:30: the bread has to be there before.
+    Visit("hotel", (59.3236, 18.0712), window=TimeWindow(at("06:00"), at("06:20")), service=480, demand=[5]),
+    # The kitchen takes deliveries for 45 minutes, and not a minute later.
+    Visit("school-kitchen", (59.3091, 18.0874), window=TimeWindow(at("06:30"), at("07:15")), service=600, demand=[6]),
+    # Two cafés that open at 07:00 and want their bread before.
+    Visit("cafe-harbour", (59.3189, 18.0941), window=TimeWindow(at("06:40"), at("07:00")), service=300, demand=[2]),
+    Visit("cafe-north", (59.3302, 18.0573), window=TimeWindow(at("06:40"), at("07:00")), service=300, demand=[3]),
+    # Soft windows: late costs something, but it's allowed.
+    Visit("office", (59.3366, 18.0303), window=TimeWindow(at("07:15"), at("08:00"), penalty=2.0), service=300, demand=[4]),
+    Visit("corner-shop", (59.3126, 18.0628), window=TimeWindow(at("06:00"), at("09:00"), penalty=0.5), service=240, demand=[3]),
+]
+
+solution = solve([van], customers, seconds=2, seed=1)
+for route in solution.routes:
+    print(" → ".join(f"{stop} {t // 3600:02d}:{t % 3600 // 60:02d}" for stop, t in zip(route.stops, route.arrivals)))
+print("unassigned:", solution.unassigned or "none")
+'''
+
+[[turn.step]]
+bash = "maturin develop --release -q && uv run python examples/bakery_round.py"
+description = "Run the bakery round"
+seconds = 9
+output = """🔗 Found pyo3 bindings with abi3 support
+📦 Built wheel for abi3 Python ≥ 3.10 to /tmp/.tmpQ8f2Lk/milkfloat-0.9.0-cp310-abi3-manylinux_2_34_aarch64.whl
+🛠 Installed milkfloat-0.9.0
+depot 05:30 → hotel 06:00 → corner-shop 06:14 → school-kitchen 06:30 → cafe-harbour 06:44 → cafe-north 06:57 → office 07:15 → depot 07:31
+unassigned: none"""
+
+[[turn.step]]
+think = "Good: the hotel first because its window closes earliest, the corner shop's wide soft window fills the gap before the kitchen opens, both cafés inside their 20 minutes. Now the version that can't work: tighten the cafés to 06:45–06:55 and one van can't serve both after the kitchen. With hard windows one should come back unassigned; with a soft window it should be served a few minutes late."
+
+[[turn.step]]
+bash = "uv run python -c \"import runpy; ns = runpy.run_path('examples/bakery_round.py'); print(ns['customers'][2].window)\""
+description = "See whether the example's visits can be changed from outside"
+output = """depot 05:30 → hotel 06:00 → corner-shop 06:14 → school-kitchen 06:30 → cafe-harbour 06:44 → cafe-north 06:57 → office 07:15 → depot 07:31
+unassigned: none
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+AttributeError: 'milkfloat._milkfloat.Visit' object has no attribute 'window'"""
+error = true
+
+[[turn.step]]
+say = "Visits don't expose their fields to Python, so the variant with tighter windows goes in the script itself, written out in full."
+
+[[turn.step]]
+edit = "examples/bakery_round.py"
+old = '''solution = solve([van], customers, seconds=2, seed=1)
+for route in solution.routes:
+    print(" → ".join(f"{stop} {t // 3600:02d}:{t % 3600 // 60:02d}" for stop, t in zip(route.stops, route.arrivals)))
+print("unassigned:", solution.unassigned or "none")
+'''
+new = '''
+
+def show(solution) -> None:
+    for route in solution.routes:
+        print(" → ".join(f"{stop} {t // 3600:02d}:{t % 3600 // 60:02d}" for stop, t in zip(route.stops, route.arrivals)))
+    print("unassigned:", solution.unassigned or "none")
+
+
+show(solve([van], customers, seconds=2, seed=1))
+
+if __name__ == "__main__" and "--variant" in __import__("sys").argv:
+    # The cafés' windows 10 minutes wide: one van can't serve both.
+    tight = customers[:2] + [
+        Visit("cafe-harbour", (59.3189, 18.0941), window=TimeWindow(at("06:45"), at("06:55")), service=300, demand=[2]),
+        Visit("cafe-north", (59.3302, 18.0573), window=TimeWindow(at("06:45"), at("06:55")), service=300, demand=[3]),
+    ] + customers[4:]
+    show(solve([van], tight, seconds=2, seed=1))
+    # The same, with cafe-north happy to take its bread a little late.
+    tight[3] = Visit("cafe-north", (59.3302, 18.0573), window=TimeWindow(at("06:45"), at("06:55"), penalty=1.0), service=300, demand=[3])
+    show(solve([van], tight, seconds=2, seed=1))
+'''
+
+[[turn.step]]
+bash = "uv run python examples/bakery_round.py --variant"
+description = "Run the variants with tighter café windows"
+output = """depot 05:30 → hotel 06:00 → corner-shop 06:14 → school-kitchen 06:30 → cafe-harbour 06:44 → cafe-north 06:57 → office 07:15 → depot 07:31
+unassigned: none
+depot 05:30 → hotel 06:00 → corner-shop 06:14 → school-kitchen 06:30 → cafe-harbour 06:45 → office 07:15 → depot 07:31
+unassigned: ['cafe-north']
+depot 05:30 → hotel 06:00 → corner-shop 06:14 → school-kitchen 06:30 → cafe-harbour 06:45 → cafe-north 06:59 → office 07:15 → depot 07:31
+unassigned: none"""
+
+[[turn.step]]
+think = "As expected: with hard windows cafe-north is left out rather than served late, and with a soft one it's served at 06:59, four minutes after its window closes, which costs 240 against a second van. That's the page's second half."
+
+[[turn.step]]
+write = "docs/time-windows.md"
+content = '''# Time windows
+
+A time window says when a delivery may start. A hotel that serves breakfast
+at 06:30 wants its bread before; an office wants it once someone is there to
+take it. milkfloat counts time in seconds after midnight in the depot's time
+zone, so `TimeWindow(6 * 3600, 6 * 3600 + 1200)` is 06:00 to 06:20 wherever
+the depot is.
+
+## Hard and soft windows
+
+A **hard** window can't be missed. milkfloat never starts a delivery after
+its window ends: when no route can get there in time, the visit is left out
+of every route and listed in `solution.unassigned`, for you to decide what to
+do about it.
+
+A **soft** window has a `penalty`: what each second late costs, in the units
+of the distance a route drives (metres). milkfloat starts a delivery late
+when that costs less than the detour that would make it on time:
+`penalty=2.0` makes a minute late cost as much as 120 metres of driving.
+
+Early is never late. A van that gets somewhere before its window opens
+waits, and the wait counts towards the driver's shift.
+
+| | Hard | Soft |
+|---|---|---|
+| Written | `TimeWindow(start, end)` | `TimeWindow(start, end, penalty=2.0)` |
+| Starting after `end` | Never: unassigned instead | At `penalty` for each second late |
+| Arriving before `start` | Waits | Waits |
+
+## A bakery's morning round
+
+One van leaves the bakery at 05:30 with 24 crates of bread for six
+customers: four with hard windows and two with soft ones. The whole script
+is [examples/bakery_round.py](https://github.com/milkfloat/milkfloat/blob/main/examples/bakery_round.py).
+
+```python
+van = Vehicle("van", depot=BAKERY, shift=TimeWindow(at("05:30"), at("10:00")), capacity=[24])
+
+customers = [
+    Visit("hotel", (59.3236, 18.0712), window=TimeWindow(at("06:00"), at("06:20")), service=480, demand=[5]),
+    Visit("school-kitchen", (59.3091, 18.0874), window=TimeWindow(at("06:30"), at("07:15")), service=600, demand=[6]),
+    Visit("cafe-harbour", (59.3189, 18.0941), window=TimeWindow(at("06:40"), at("07:00")), service=300, demand=[2]),
+    Visit("cafe-north", (59.3302, 18.0573), window=TimeWindow(at("06:40"), at("07:00")), service=300, demand=[3]),
+    Visit("office", (59.3366, 18.0303), window=TimeWindow(at("07:15"), at("08:00"), penalty=2.0), service=300, demand=[4]),
+    Visit("corner-shop", (59.3126, 18.0628), window=TimeWindow(at("06:00"), at("09:00"), penalty=0.5), service=240, demand=[3]),
+]
+show(solve([van], customers, seconds=2, seed=1))
+```
+
+```text
+depot 05:30 → hotel 06:00 → corner-shop 06:14 → school-kitchen 06:30 → cafe-harbour 06:44 → cafe-north 06:57 → office 07:15 → depot 07:31
+unassigned: none
+```
+
+The times are when each delivery starts. What the solver did:
+
+- The hotel comes first, since its window closes earliest. The van gets
+  there at 05:45 and waits until 06:00.
+- The corner shop's window is wide and soft, so it fills the gap before the
+  school kitchen opens.
+- Both cafés are served inside their 20 minutes, the harbour one first: it's
+  on the way from the school.
+- The office's window opens at 07:15, as the van gets there.
+
+## When a window can't be met
+
+Narrow the cafés' windows to 06:45–06:55 and one van can't serve both after
+the school kitchen. With hard windows, milkfloat leaves one out rather than
+arrive late:
+
+```text
+depot 05:30 → hotel 06:00 → corner-shop 06:14 → school-kitchen 06:30 → cafe-harbour 06:45 → office 07:15 → depot 07:31
+unassigned: ['cafe-north']
+```
+
+Give `cafe-north` a soft window instead, `penalty=1.0`, and it's served at
+06:59, four minutes late. Those 240 seconds cost 240 in the cost function:
+far less than a second van, which is what serving it on time would take.
+
+## Choosing windows
+
+- Make a window as wide as the customer really allows. A window narrower than
+  they need rules out routes that would have worked.
+- Use hard windows for "we can't take it otherwise" and soft ones for "we'd
+  like it then".
+- A soft window's penalty is a price: compare it with what a detour costs.
+  At `penalty=1.0`, a minute late is worth 60 metres of driving.
+'''
+
+[[turn.step]]
+edit = "mkdocs.yml"
+old = """  - Getting started: getting-started.md
+"""
+new = """  - Getting started: getting-started.md
+  - Time windows: time-windows.md
+"""
+
+[[turn.step]]
+edit = "docs/index.md"
+old = """- [Capacities](capacities.md): crates, kilos and cold boxes at once."""
+new = """- [Time windows](time-windows.md): hard and soft, and what the solver does with each.
+- [Capacities](capacities.md): crates, kilos and cold boxes at once."""
+
+[[turn.step]]
+edit = "README.md"
+old = """- Hard and soft time windows."""
+new = """- Hard and soft time windows ([docs/time-windows.md](docs/time-windows.md)
+  says how they differ)."""
+
+[[turn.step]]
+tools = [
+  { bash = "uv run mkdocs build --strict", description = "Build the docs, failing on any warning", seconds = 4, output = """INFO    -  Cleaning site directory
+INFO    -  Building documentation to directory: site
+INFO    -  Documentation built in 0.61 seconds""" },
+  { bash = "uv run pytest tests/python/test_examples.py -q", description = "Run the examples", seconds = 5, output = """..                                                                       [100%]
+2 passed in 4.38s""" },
+]
+
+[[turn.step]]
+commit = "Explain time windows in the docs"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Explain time windows in the docs"
+number = 308
+body = """A docs page on time windows (`docs/time-windows.md`): hard and soft windows, what the solver does with each, and a bakery's morning round worked through, with what happens when the cafés' windows get too tight for one van.
+
+The example is `examples/bakery_round.py`, which `tests/python/test_examples.py` runs with the other examples, so the page's output can't drift from the solver's. The page is in the nav, the docs' index and the README.
+
+Built with `mkdocs build --strict`."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'A docs page on time windows, worked through with a bakery’s morning round (milkfloat#308).' --approach 'Wrote the example as a script in examples/, which the example tests run, and built the page around its output, including the variant whose windows are too tight for one van.' --challenges 'Visits don’t expose their fields to Python, so the variant is written out in full rather than derived from the example’s objects.' --insights 'Every script in examples/ runs in CI through tests/python/test_examples.py: put a docs page’s code there and it can’t go stale.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "The time windows page is up for review in milkfloat#308: hard and soft windows, a table of how they differ, and a bakery's morning round worked through, whose script runs with the examples' tests so its output can't go stale."

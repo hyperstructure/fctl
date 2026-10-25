@@ -1,0 +1,66 @@
+# milkfloat#97 · review of milkfloat#313, under way at 09:10
+match = "Review milkfloat/milkfloat#313, “Add driver breaks, building on #311”, at commit"
+
+[[turn]]
+[[turn.step]]
+tools = [
+  { bash = "git log --format='%an: %s' origin/main..HEAD", description = "List the pull request's commits", output = "fctl-sh[bot]: Make driver breaks safe at the edges of a shift\nAnouk van den Berg: Expose breaks to Python\nAnouk van den Berg: Insert breaks into routes\nAnouk van den Berg: Add Break to the model" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " README.md                     |  8 +++--\n python/milkfloat/__init__.py  |  4 +--\n python/milkfloat/__init__.pyi |  7 +++++\n src/export/geojson.rs         | 10 +++---\n src/insert.rs                 | 31 +++++++++++++++++--\n src/model.rs                  | 19 ++++++++++--\n src/python.rs                 | 22 +++++++++++---\n src/python/solution.rs        |  1 +\n src/route/geometry.rs         |  4 +--\n tests/breaks.rs               | 71 +++++++++++++++++++++++++++++++++++++++++++\n tests/gen/mod.rs              |  1 +\n tests/python/test_breaks.py   | 20 ++++++++++++\n 12 files changed, 178 insertions(+), 20 deletions(-)" },
+  { bash = "gh pr view 311 --comments --json reviews --jq '.reviews[].body'", description = "Read the review of #311 this builds on", output = "fctl's review agent found 3 issues: a break whose window ends before the vehicle's shift starts makes `insert_break` loop forever (src/insert.rs:53); the stubs lack `Break` (python/milkfloat/__init__.pyi:31); the README's example builds `Vehicle` without `breaks=` (README.md:23)." },
+]
+
+[[turn.step]]
+read = "src/insert.rs"
+output = """    55\tpub fn insert_break(route: &mut Route, brk: &Break) -> Result<(), Infeasible> {
+    56\t    // The latest it may start: inside its window, and over before the shift ends.
+    57\t    let latest = brk.window.end.min(route.vehicle.shift.end.saturating_sub(brk.duration));
+    58\t    let mut at = brk.window.start.max(route.vehicle.shift.start);
+    59\t    while at <= latest {
+    60\t        if let Some(i) = route.stops_after(at)
+    61\t            && route.departures[i - 1] <= latest
+    62\t        {
+    63\t            route.stops.insert(i, Stop::Break(brk.clone()));
+    64\t            route.delay_from(i, brk.duration);
+    65\t            return Ok(());
+    66\t        }
+    67\t        let next = route.next_departure(at);
+    68\t        if next == at {
+    69\t            break;
+    70\t        }
+    71\t        at = next;
+    72\t    }
+    73\t    Err(Infeasible::Break { window: brk.window })
+    74\t}
+"""
+
+[[turn.step]]
+think = "The loop ends now: `at` only grows (next_departure returns something later or the loop breaks) and it stops past `latest`. All three findings on #311 are addressed. What I want to know is whether anything else walks a route's stops and assumes every stop has a place, now that location() returns an Option, and whether routes with breaks still keep the invariants the property tests check."
+
+[[turn.step]]
+agent = "Check everything that walks a route's stops"
+prompt = "Find every place in src/ and python/ that walks a route's stops or calls Stop::location(), and say how each handles a Stop::Break now that location() returns None for one. Report file and line for any that would panic, skip a stop wrongly, or count a break as a visit."
+report = "Five places walk stops. geometry::line and export::geojson skip breaks (filter_map on location()); insert::fits and the Python stop names match Stop::Break explicitly; search::construct only adds visits. Nothing panics or counts a break as a visit. route_props's generator never gives vehicles breaks, so the property tests don't cover routes with breaks yet."
+  [[turn.step.steps]]
+  grep = "location\\(\\)|Stop::Break|stops\\.iter"
+  path = "src"
+  output = "src/route/geometry.rs:8:    route.stops.iter().filter_map(|s| s.location()).collect()\nsrc/export/geojson.rs:16:    features.extend(route.stops.iter().zip(&route.arrivals).filter_map(|(stop, at)| {\nsrc/export/geojson.rs:17:        let l = stop.location()?;\nsrc/export/geojson.rs:31:        Stop::Break(_) => \"break\".to_owned(),\nsrc/insert.rs:44:                Stop::Depot(_) | Stop::Break(_) => None,\nsrc/insert.rs:63:            route.stops.insert(i, Stop::Break(brk.clone()));\nsrc/python/solution.rs:24:        Stop::Break(_) => \"break\".to_owned(),"
+  [[turn.step.steps]]
+  say = "The two coordinate lookups skip breaks. Checking whether the property tests ever generate a vehicle with breaks."
+  [[turn.step.steps]]
+  read = "tests/gen/mod.rs"
+  output = """    20\tfn vehicle() -> impl Strategy<Value = Vehicle> {
+    21\t    (5u32..8, 6u32..10, 20u32..60).prop_map(|(start, hours, capacity)| Vehicle {
+    22\t        id: "van".into(),
+    23\t        depot: DEPOT,
+    24\t        shift: TimeWindow::hard(start * 3600, (start + hours) * 3600),
+    25\t        capacity: vec![capacity],
+    26\t        breaks: Vec::new(),
+    27\t    })"""
+
+[[turn.step]]
+say = "No vehicle in the property tests has a break, so they don't cover routes with breaks. I'll run them as they are with more cases first, then try them locally with a lunch break in every shift before I post anything."
+
+[[turn.step]]
+bash = "PROPTEST_CASES=4096 cargo test --release --test route_props"
+description = "Run the property tests with more cases"
+hold = true

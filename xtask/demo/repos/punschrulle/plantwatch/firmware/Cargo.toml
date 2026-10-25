@@ -1,0 +1,23 @@
+[package]
+name = "plantwatch-firmware"
+version = "0.6.0"
+edition = "2024"
+
+[dependencies]
+embassy-executor = { version = "0.9", features = ["task-arena-size-32768"] }
+embassy-net = { version = "0.7", features = ["dhcpv4", "tcp", "dns"] }
+embassy-time = "0.5"
+esp-backtrace = { version = "0.18", features = ["esp32c3", "panic-handler", "println"] }
+esp-hal = { version = "1.0", features = ["esp32c3", "unstable"] }
+esp-hal-embassy = { version = "0.9", features = ["esp32c3"] }
+esp-println = { version = "0.16", features = ["esp32c3", "log-04"] }
+esp-radio = { version = "0.16", features = ["esp32c3", "wifi"] }
+heapless = "0.9"
+nb = "1"
+rust-mqtt = { version = "0.3", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde-json-core = "0.6"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"

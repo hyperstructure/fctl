@@ -1,0 +1,451 @@
+# driver-app#75 · Aiko delegated DEL-97, last Friday 10:20 · Show the next stop on the lock screen
+match = "delegated DEL-97 to fctl in Linear"
+
+[[turn]]
+duration = "1h"
+result = "The next stop is on the lock screen now, as a Live Activity that moves on as stops are done: driver-app#417. It needs trying on a phone, from the internal build."
+
+[[turn.step]]
+bash = "fctl ticket view DEL-97"
+description = "Read the ticket and its comments"
+output = """DEL-97 · Next stop on the lock screen · In Progress
+Team Delivery · Project Copenhagen launch · Assignee fctl-sh · Created by Aiko Tanaka
+
+Drivers unlock the phone at every stop to see where they go next. Show the next stop's address and delivery window on the lock screen, as a Live Activity, and move on as stops are done.
+
+Comments
+  Aiko Tanaka · 2 days ago
+  The drivers' phones are all company iPhones, so Android can wait. What matters at a glance: the address big, the window under it, and how many stops are left."""
+
+[[turn.step]]
+run = "fctl edit --title 'Show the next stop on the lock screen' --description 'A Live Activity shows the next stop’s address and delivery window on the lock screen, and moves on as stops are done.'"
+description = "Name the session"
+
+[[turn.step]]
+todo = [["Read DEL-97", "completed"], ["Add a widget extension with the Live Activity", "in_progress"], ["A native module to start, update and end it", "pending"], ["Keep it on the next stop as stops are done", "pending"], ["Tests, then the pull request", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "app.json" },
+  { read = "src/route/useRoute.ts" },
+  { read = "app/(route)/index.tsx" },
+  { glob = "ios/**", output = "No files found" },
+]
+
+[[turn.step]]
+think = "No ios/ folder: the native project comes from prebuild (Continuous Native Generation). A Live Activity lives in a widget extension target, so the extension has to come from a config plugin, or the next prebuild drops it. The app needs a small native module to start, update and end the activity. Its state is only the next stop's address, its window, its number and how many are left, and nextStop() already says which stop that is."
+
+[[turn.step]]
+say = "The app has no native project in the repository; prebuild makes it. So I'll add the Live Activity as a widget extension that a config plugin puts in at prebuild, with a small Expo module to start, update and end it, and a hook on the route screen that keeps it on the next stop."
+
+[[turn.step]]
+write = "targets/NextStop/NextStopLiveActivity.swift"
+content = """import ActivityKit
+import SwiftUI
+import WidgetKit
+
+/// The round's next stop, as the app updates it. The app's module declares the same.
+struct NextStopAttributes: ActivityAttributes {
+  struct ContentState: Codable, Hashable {
+    var address: String
+    var window: String
+    var sequence: Int
+    var left: Int
+  }
+}
+
+struct NextStopLiveActivity: Widget {
+  var body: some WidgetConfiguration {
+    ActivityConfiguration(for: NextStopAttributes.self) { context in
+      // The lock screen.
+      HStack(alignment: .top) {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(context.state.address).font(.title3.weight(.semibold)).lineLimit(2)
+          Text(context.state.window).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        Spacer()
+        VStack(alignment: .trailing, spacing: 2) {
+          Text("\\(context.state.sequence)").font(.title2.monospacedDigit().weight(.bold))
+          Text("\\(context.state.left) left").font(.caption).foregroundStyle(.secondary)
+        }
+      }
+      .padding()
+    } dynamicIsland: { context in
+      DynamicIsland {
+        DynamicIslandExpandedRegion(.leading) { Text(context.state.address).lineLimit(1) }
+        DynamicIslandExpandedRegion(.trailing) { Text(context.state.window).monospacedDigit() }
+      } compactLeading: {
+        Text("\\(context.state.sequence)")
+      } compactTrailing: {
+        Text(context.state.window).monospacedDigit()
+      } minimal: {
+        Text("\\(context.state.sequence)")
+      }
+    }
+  }
+}
+"""
+
+[[turn.step]]
+write = "targets/NextStop/NextStopBundle.swift"
+content = """import SwiftUI
+import WidgetKit
+
+@main
+struct NextStopBundle: WidgetBundle {
+  var body: some Widget {
+    NextStopLiveActivity()
+  }
+}
+"""
+
+[[turn.step]]
+write = "plugins/with-live-activity.js"
+content = """// Adds the NextStop widget extension, whose Live Activity shows the next
+// stop on the lock screen, to the iOS project at prebuild: the native
+// projects aren't in the repository (Continuous Native Generation).
+const { withInfoPlist, withXcodeProject } = require("expo/config-plugins");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const TARGET = "NextStop";
+
+module.exports = function withLiveActivity(config) {
+  config = withInfoPlist(config, (c) => {
+    c.modResults.NSSupportsLiveActivities = true;
+    return c;
+  });
+  return withXcodeProject(config, (c) => {
+    const project = c.modResults;
+    if (project.pbxTargetByName(TARGET)) return c;
+    fs.cpSync(
+      path.join(c.modRequest.projectRoot, "targets", TARGET),
+      path.join(c.modRequest.platformProjectRoot, TARGET),
+      { recursive: true },
+    );
+    const target = project.addTarget(TARGET, "app_extension", TARGET, `${c.ios.bundleIdentifier}.${TARGET}`);
+    project.addBuildPhase(["NextStopLiveActivity.swift", "NextStopBundle.swift"], "PBXSourcesBuildPhase", "Sources", target.uuid);
+    project.addBuildPhase([], "PBXFrameworksBuildPhase", "Frameworks", target.uuid);
+    for (const framework of ["WidgetKit.framework", "SwiftUI.framework", "ActivityKit.framework"]) {
+      project.addFramework(framework, { target: target.uuid, link: true });
+    }
+    const configurations = project.pbxXCBuildConfigurationSection();
+    for (const key of Object.keys(configurations)) {
+      const settings = configurations[key].buildSettings;
+      if (settings?.PRODUCT_NAME === `"${TARGET}"`) {
+        settings.IPHONEOS_DEPLOYMENT_TARGET = "17.0";
+        settings.SWIFT_VERSION = "5.0";
+        settings.TARGETED_DEVICE_FAMILY = "1";
+      }
+    }
+    return c;
+  });
+};
+"""
+
+[[turn.step]]
+write = "modules/live-activity/expo-module.config.json"
+content = """{
+  "platforms": ["apple"],
+  "apple": {
+    "modules": ["LiveActivityModule"]
+  }
+}
+"""
+
+[[turn.step]]
+write = "modules/live-activity/ios/LiveActivityModule.swift"
+content = """import ActivityKit
+import ExpoModulesCore
+
+/// The same as the widget extension's: ActivityKit matches them by their shape.
+struct NextStopAttributes: ActivityAttributes {
+  struct ContentState: Codable, Hashable {
+    var address: String
+    var window: String
+    var sequence: Int
+    var left: Int
+  }
+}
+
+struct NextStopRecord: Record {
+  @Field var address: String = ""
+  @Field var window: String = ""
+  @Field var sequence: Int = 0
+  @Field var left: Int = 0
+
+  var state: NextStopAttributes.ContentState {
+    .init(address: address, window: window, sequence: sequence, left: left)
+  }
+}
+
+public class LiveActivityModule: Module {
+  public func definition() -> ModuleDefinition {
+    Name("LiveActivity")
+
+    AsyncFunction("start") { (next: NextStopRecord) -> String? in
+      guard ActivityAuthorizationInfo().areActivitiesEnabled else { return nil }
+      let activity = try Activity.request(attributes: NextStopAttributes(), content: .init(state: next.state, staleDate: nil))
+      return activity.id
+    }
+
+    AsyncFunction("update") { (id: String, next: NextStopRecord) in
+      guard let activity = Activity<NextStopAttributes>.activities.first(where: { $0.id == id }) else { return }
+      await activity.update(.init(state: next.state, staleDate: nil))
+    }
+
+    AsyncFunction("end") { (id: String) in
+      guard let activity = Activity<NextStopAttributes>.activities.first(where: { $0.id == id }) else { return }
+      await activity.end(nil, dismissalPolicy: .immediate)
+    }
+  }
+}
+"""
+
+[[turn.step]]
+write = "modules/live-activity/index.ts"
+content = """import { requireOptionalNativeModule } from "expo";
+import { Platform } from "react-native";
+
+/** What the lock screen shows of the next stop. */
+export type NextStopState = { address: string; window: string; sequence: number; left: number };
+
+type Native = {
+  start(next: NextStopState): Promise<string | null>;
+  update(id: string, next: NextStopState): Promise<void>;
+  end(id: string): Promise<void>;
+};
+
+/** The Live Activity's native side, on iOS; none elsewhere. */
+export const LiveActivity: Native | null = Platform.OS === "ios" ? requireOptionalNativeModule<Native>("LiveActivity") : null;
+"""
+
+[[turn.step]]
+write = "src/live/nextStopActivity.ts"
+content = """import type { NextStopState } from "@/modules/live-activity";
+import type { Stop } from "@/src/route/types";
+import { nextStop } from "@/src/route/useRoute";
+
+const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+
+/** What the lock screen shows for a route: its next stop, or nothing once every stop is done. */
+export function nextStopState(stops: Stop[]): NextStopState | null {
+  const next = nextStop(stops);
+  if (!next) return null;
+  return {
+    address: next.address,
+    window: `${time.format(new Date(next.window.from))}–${time.format(new Date(next.window.to))}`,
+    sequence: next.sequence,
+    left: stops.filter((s) => s.status === "pending").length,
+  };
+}
+"""
+
+[[turn.step]]
+write = "src/live/useNextStopActivity.ts"
+content = """import { useEffect, useRef } from "react";
+import { LiveActivity } from "@/modules/live-activity";
+import type { Stop } from "@/src/route/types";
+import { nextStopState } from "./nextStopActivity";
+
+/** Keeps the lock screen's Live Activity on the route's next stop, and ends it after the last one. */
+export function useNextStopActivity(stops: Stop[]) {
+  const id = useRef<string | null>(null);
+  const next = nextStopState(stops);
+  const key = next ? `${next.sequence}:${next.left}` : "done";
+
+  useEffect(() => {
+    if (!LiveActivity) return;
+    if (!next) {
+      if (id.current) LiveActivity.end(id.current);
+      id.current = null;
+    } else if (id.current) {
+      LiveActivity.update(id.current, next);
+    } else {
+      LiveActivity.start(next).then((started) => {
+        id.current = started;
+      });
+    }
+    // The key says when the next stop changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+}
+"""
+
+[[turn.step]]
+write = "src/live/nextStopActivity.test.ts"
+content = """import type { Stop } from "@/src/route/types";
+import { nextStopState } from "./nextStopActivity";
+
+const stop = (sequence: number, status: Stop["status"]): Stop => ({
+  id: `s${sequence}`,
+  sequence,
+  address: `Folkungagatan ${sequence * 10}`,
+  postcode: "11622",
+  customerName: "",
+  doorCode: null,
+  notes: null,
+  window: { from: "2026-10-23T07:00:00+02:00", to: "2026-10-23T09:00:00+02:00" },
+  eta: "2026-10-23T07:40:00+02:00",
+  boxes: 1,
+  cold: false,
+  status,
+  toLogSafe: () => ({ id: `s${sequence}`, sequence, postcode: "11622", status }),
+});
+
+test("shows the first stop still to do", () => {
+  expect(nextStopState([stop(1, "delivered"), stop(2, "pending"), stop(3, "pending")])).toMatchObject({
+    address: "Folkungagatan 20",
+    sequence: 2,
+    left: 2,
+  });
+});
+
+test("moves on past a failed delivery", () => {
+  expect(nextStopState([stop(1, "failed"), stop(2, "pending")])?.sequence).toBe(2);
+});
+
+test("shows the window in 24-hour time", () => {
+  expect(nextStopState([stop(1, "pending")])?.window).toBe("07:00–09:00");
+});
+
+test("shows nothing once every stop is done", () => {
+  expect(nextStopState([stop(1, "delivered"), stop(2, "failed")])).toBeNull();
+});
+"""
+
+[[turn.step]]
+edit = "app.json"
+old = """      "supportsTablet": false
+    },"""
+new = """      "supportsTablet": false,
+      "infoPlist": { "NSSupportsLiveActivities": true }
+    },"""
+
+[[turn.step]]
+edit = "app.json"
+old = """      ["@rnmapbox/maps", { "RNMapboxMapsDownloadToken": "$MAPBOX_DOWNLOADS_TOKEN" }]
+    ]"""
+new = """      ["@rnmapbox/maps", { "RNMapboxMapsDownloadToken": "$MAPBOX_DOWNLOADS_TOKEN" }],
+      "./plugins/with-live-activity"
+    ]"""
+
+[[turn.step]]
+edit = "app/(route)/index.tsx"
+old = """import { StopRow } from "@/src/route/StopRow";"""
+new = """import { useNextStopActivity } from "@/src/live/useNextStopActivity";
+import { StopRow } from "@/src/route/StopRow";"""
+
+[[turn.step]]
+edit = "app/(route)/index.tsx"
+old = """  const stops = useRoute();
+  const next = nextStop(stops);"""
+new = """  const stops = useRoute();
+  const next = nextStop(stops);
+  // The next stop on the lock screen, as a Live Activity.
+  useNextStopActivity(stops);"""
+
+[[turn.step]]
+todo = [["Read DEL-97", "completed"], ["Add a widget extension with the Live Activity", "completed"], ["A native module to start, update and end it", "completed"], ["Keep it on the next stop as stops are done", "completed"], ["Tests, then the pull request", "in_progress"]]
+
+[[turn.step]]
+tools = [
+  { bash = "npm test -- live", description = "Run the Live Activity's tests", seconds = 5, output = """
+> driver-app@2.14.0 test
+> TZ=Europe/Stockholm jest live
+
+ PASS  src/live/nextStopActivity.test.ts
+  ✓ shows the first stop still to do (3 ms)
+  ✓ moves on past a failed delivery (1 ms)
+  ✓ shows the window in 24-hour time (1 ms)
+  ✓ shows nothing once every stop is done
+
+Test Suites: 1 passed, 1 total
+Tests:       4 passed, 4 total
+Snapshots:   0 total
+Time:        1.67 s""" },
+  { bash = "npm run typecheck && npm run lint", description = "Check the types and lint", seconds = 12, output = """
+> driver-app@2.14.0 typecheck
+> tsc --noEmit
+
+
+> driver-app@2.14.0 lint
+> eslint .
+""" },
+]
+
+[[turn.step]]
+bash = "npx eas build --platform ios --profile internal --local --non-interactive"
+description = "Try a local iOS build"
+seconds = 9
+error = true
+output = """Resolved \"internal\" environment for the build.
+✔ Using remote iOS credentials (Expo server)
+
+Local builds for iOS need macOS with Xcode installed: this machine runs Linux (aarch64).
+    Error: build command failed."""
+
+[[turn.step]]
+think = "The sandbox is a Linux VM even on the Mac Studio, so there is no Xcode here and no simulator. What I can check: that prebuild puts the extension in the iOS project, and that the JavaScript bundles."
+
+[[turn.step]]
+bash = "npx expo prebuild --platform ios --no-install --clean"
+description = "Generate the iOS project with the extension"
+seconds = 14
+output = """✔ Cleared ios code
+✔ Created native directory
+✔ Updated package.json | no changes
+✔ Finished prebuild
+
+› Added target NextStop (app_extension) from targets/NextStop
+› NSSupportsLiveActivities: true"""
+
+[[turn.step]]
+bash = "npx expo export --platform ios && rm -rf ios dist"
+description = "Check that the app bundles"
+seconds = 25
+output = """Starting Metro Bundler
+iOS Bundled 3104ms node_modules/expo-router/entry.js (1418 modules)
+
+› Assets (14):
+node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.ttf (390 kB)
+… 13 more
+
+› ios bundles (1):
+_expo/static/js/ios/entry-5c1f6b0e2a.hbc (3.9 MB)
+
+Exported: dist"""
+
+[[turn.step]]
+run = "fctl memory add 'EAS builds don’t run in sandboxes: check that the app bundles with `npx expo export --platform ios`, and leave builds to the eas-build workflow.'"
+description = "Remember how to check iOS builds here"
+
+[[turn.step]]
+commit = "Show the next stop on the lock screen"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Show the next stop on the lock screen"
+number = 417
+body = """A Live Activity puts the next stop on the lock screen: its address, its delivery window, its number in the round and how many stops are left. It moves on as stops are delivered or fail, and ends after the last one (DEL-97).
+
+- `targets/NextStop/`: the widget extension's SwiftUI, for the lock screen and the Dynamic Island.
+- `plugins/with-live-activity.js` adds the extension to the iOS project at prebuild, so the app keeps Continuous Native Generation.
+- `modules/live-activity/`: a small Expo module that starts, updates and ends the activity.
+- `useNextStopActivity` keeps it on the next stop, from the route screen.
+
+Tested: the activity's state has unit tests, prebuild generates the extension, and the app bundles for iOS. There's no Xcode in the sandbox, so it needs trying on a phone from the internal build before it merges."""
+
+[[turn.step]]
+bash = "fctl ticket comment DEL-97 'driver-app#417 puts the next stop on the lock screen as a Live Activity. It needs trying on a phone from the internal build before it merges.'"
+description = "Tell the ticket"
+output = "Commented on DEL-97."
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'A Live Activity with the next stop’s address and delivery window on the lock screen, which moves on as stops are done (driver-app#417).' --approach 'A config plugin that adds the widget extension at prebuild, so the app keeps Expo’s Continuous Native Generation.' --challenges 'No simulator in the sandbox: the activity’s state has unit tests, and the pull request asks Aiko to try it on her phone.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "The next stop is on the lock screen now, as a Live Activity that moves on as stops are done: driver-app#417. It needs trying on a phone, from the internal build."
