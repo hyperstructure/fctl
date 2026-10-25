@@ -13,6 +13,9 @@ replace it.
 Never commit screenshots, to this or any repository. Keep them outside the
 checkout, in `~/screenshots`.
 
+Screenshots for fctl.sh, social media or a talk, rather than a pull request,
+show the made-up company and people of the `demo` skill.
+
 ## Which changes
 
 Anything people see in the web app (`web/`): layout, styles, components,
