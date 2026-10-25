@@ -632,7 +632,9 @@ impl<'a> World<'a> {
             "POST",
             "/me/two-factor/authenticator/confirm",
             Some(&cookie),
-            Some(json!({ "setup": res.1["setup"], "code": code, "password": self.cast.instance.password })),
+            Some(
+                json!({ "setup": res.1["setup"], "code": code, "password": self.cast.instance.password }),
+            ),
         )?;
         dev::ok("turning on Noor's authenticator app", &res)?;
         Ok(())

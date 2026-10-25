@@ -658,11 +658,19 @@ fn notices(
             (k == "claude").then_some(())?;
             d["message"]["content"].as_array()?.iter().find_map(|c| {
                 let cmd = c["input"]["command"].as_str()?;
-                Some(cmd.strip_prefix(comment.as_str())?.trim_matches('\'').to_owned())
+                Some(
+                    cmd.strip_prefix(comment.as_str())?
+                        .trim_matches('\'')
+                        .to_owned(),
+                )
             })
         }) && let Some((after, ts)) = result_of(&comment)
         {
-            let url = format!("{}#comment-{:08x}", link["url"].as_str().unwrap_or_default(), spin(&text) as u32);
+            let url = format!(
+                "{}#comment-{:08x}",
+                link["url"].as_str().unwrap_or_default(),
+                spin(&text) as u32
+            );
             out.push(Added {
                 after,
                 ts: clock.map(ts) + 700,
@@ -743,7 +751,10 @@ fn setup(
     if matches!(runner.driver.as_str(), "apple" | "docker")
         && let Some((seq, ts, _, _)) = reason("Creating the sandbox on")
     {
-        let name = format!("fctl-{}", w.sessions[&s.id].id.to_lowercase().replace('_', "-"));
+        let name = format!(
+            "fctl-{}",
+            w.sessions[&s.id].id.to_lowercase().replace('_', "-")
+        );
         let mut events = Vec::new();
         let image = match sandbox.and_then(|x| x.dockerfile.as_ref()) {
             Some(file) => {
@@ -771,10 +782,13 @@ fn setup(
                     ));
                     events.push((
                         "log",
-                        log("host", &format!(
-                            "Building the sandbox image from {file} in {repo} at {}",
-                            commit.get(..7).unwrap_or_default()
-                        )),
+                        log(
+                            "host",
+                            &format!(
+                                "Building the sandbox image from {file} in {repo} at {}",
+                                commit.get(..7).unwrap_or_default()
+                            ),
+                        ),
                     ));
                     for line in sandbox.map(|x| x.build.as_slice()).unwrap_or_default() {
                         events.push(("log", log("host", line)));
@@ -783,9 +797,15 @@ fn setup(
                 }
                 tag
             }
-            None => format!("ghcr.io/hyperstructure/sandbox:{}", env!("CARGO_PKG_VERSION")),
+            None => format!(
+                "ghcr.io/hyperstructure/sandbox:{}",
+                env!("CARGO_PKG_VERSION")
+            ),
         };
-        events.push(("log", log("host", &format!("Creating sandbox {name} from {image}"))));
+        events.push((
+            "log",
+            log("host", &format!("Creating sandbox {name} from {image}")),
+        ));
         run(*seq, clock.map(*ts), events);
     }
     if sandbox.is_some_and(|x| x.setup.is_some())
@@ -1489,8 +1509,22 @@ fn sign_ins(ctx: &Ctx, d1: &mut Db) -> Result<()> {
     );
     // A passkey her Macs and iPhone share, and a security key on her keys.
     let passkeys = [
-        ("iCloud Keychain", "dd4ec289-e01d-41c9-bb89-70fa845d4bf2", true, "-5mo", "today 08:47", r#"["hybrid","internal"]"#),
-        ("YubiKey 5C", "ee882879-721c-4913-9775-3dfcce97072a", false, "-4mo", "-5w", r#"["nfc","usb"]"#),
+        (
+            "iCloud Keychain",
+            "dd4ec289-e01d-41c9-bb89-70fa845d4bf2",
+            true,
+            "-5mo",
+            "today 08:47",
+            r#"["hybrid","internal"]"#,
+        ),
+        (
+            "YubiKey 5C",
+            "ee882879-721c-4913-9775-3dfcce97072a",
+            false,
+            "-4mo",
+            "-5w",
+            r#"["nfc","usb"]"#,
+        ),
     ];
     for (i, (name, aaguid, synced, added, used, transports)) in passkeys.into_iter().enumerate() {
         let seed = format!("noor's passkey {name}");
@@ -1538,7 +1572,9 @@ fn sign_ins(ctx: &Ctx, d1: &mut Db) -> Result<()> {
     d1.exec(
         "INSERT INTO settings (key, value) VALUES ('instance_settings', ?) \
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        vec![json!(json!({ "verify_sensitive_actions": true }).to_string())],
+        vec![json!(
+            json!({ "verify_sensitive_actions": true }).to_string()
+        )],
     );
     Ok(())
 }
