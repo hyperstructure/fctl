@@ -14,7 +14,8 @@
 // the GitHub App the instance lacks), and holds the browser's clock at the
 // moment of the shots, 09:10 in the zone `cargo xtask demo` picked
 // (.fctl-demo/shots.json), so that the app shows the story's times. Each shot
-// is taken in both themes; the phone ones at 390 × 844.
+// is taken in both themes; the phone ones at 390 × 844, or with --features at
+// 390 × 788, below the status bar that fctl.sh's phone frames draw.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
