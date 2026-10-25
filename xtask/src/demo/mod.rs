@@ -189,6 +189,7 @@ fn check_transcripts(cast: &Cast, transcripts: &world::Transcripts) -> Result<()
                     m.text.to_lowercase().contains(&t.to_lowercase())
                         || (m.review.is_some()
                             && t.to_lowercase().starts_with("fctl's review agent"))
+                        || (m.follow_up.is_some() && t.starts_with("On GitHub"))
                 }
                 None => true,
             });
@@ -414,6 +415,10 @@ fn shots(
         "app": app,
         "email": noor.email,
         "password": cast.instance.password,
+        // Her sign-in from the seed, which the shots use: hers has a second
+        // factor, and it hasn't confirmed it's her lately, as sensitive
+        // actions' shots need.
+        "cookie": world.cookies["noor"],
         "sessions": sessions,
         "workspaces": world.workspaces,
         "teams": teams,
@@ -533,6 +538,8 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     step("projects");
     world.projects()?;
     world.connections()?;
+    world.access_tokens()?;
+    world.two_factor()?;
     step("schedules and notes");
     world.schedules()?;
     world.notes()?;

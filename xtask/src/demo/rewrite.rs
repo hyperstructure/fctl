@@ -81,6 +81,16 @@ pub fn remap(v: &mut Value, clock: &Clock, window: (i64, i64)) {
     }
 }
 
+/// Puts `/home/agent` in place of `home` in every string in `v`.
+fn rehome(v: &mut Value, home: &str) {
+    match v {
+        Value::String(t) if t.contains(home) => *t = t.replace(home, "/home/agent"),
+        Value::Array(a) => a.iter_mut().for_each(|x| rehome(x, home)),
+        Value::Object(m) => m.values_mut().for_each(|x| rehome(x, home)),
+        _ => {}
+    }
+}
+
 /// A session's SQLite, by session id.
 fn session_objects(state: &std::path::Path) -> Result<BTreeMap<String, PathBuf>> {
     let mut out = BTreeMap::new();
@@ -153,6 +163,9 @@ pub fn rewrite(w: &World, story: &Story) -> Result<()> {
     memory(&ctx, &clocks, &mut d1)?;
     schedules(&ctx, &mut d1)?;
     people_and_places(&ctx, &mut d1)?;
+    access_tokens(&ctx, &mut d1)?;
+    sign_ins(&ctx, &mut d1)?;
+    sandboxes(&ctx, &mut d1)?;
     runners(&ctx, &state, &mut d1)?;
     audit(&ctx, &clocks, &mut d1)?;
     d1.commit()?;
@@ -244,6 +257,13 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         let idle = i64::from(p.idle_timeout.unwrap_or(10)) * 60_000;
         (end_story + idle).min(ctx.anchor - 60_000)
     });
+    // A review agent's session stops as soon as its review is posted, or when
+    // a newer commit takes its place, and says so.
+    let review_end = s.review.as_ref().map(|r| match r.result.as_str() {
+        "superseded" => superseded_reason(ctx, s),
+        _ => "Finished: its review is posted".to_owned(),
+    });
+    let notices = notices(ctx, s, &events, &clock)?;
     let last_result_seq = events
         .iter()
         .filter(|r| {
@@ -255,6 +275,31 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         .filter_map(|r| r.get("seq").and_then(Value::as_i64))
         .max()
         .unwrap_or(i64::MAX);
+
+    // Where the seed's process driver kept its sandbox, which a container's
+    // has at /home/agent; and Claude Code's pid there, a container's.
+    let runner = s
+        .runner
+        .as_ref()
+        .and_then(|r| w.cast.runners.iter().find(|x| &x.name == r));
+    // The fleet may have run it on another of the story's runners than the
+    // cast's: any of theirs.
+    let homes: Vec<String> = w
+        .cast
+        .runners
+        .iter()
+        .map(|r| {
+            format!(
+                "{}/hosts/{}/data/sandboxes/fctl-{}/home",
+                w.state.display(),
+                r.name,
+                made.id.to_lowercase().replace('_', "-")
+            )
+        })
+        .collect();
+    let container_pid = runner
+        .filter(|r| matches!(r.driver.as_str(), "apple" | "docker"))
+        .map(|_| 41 + spin % 60);
 
     // Its events.
     let mut first_message = true;
@@ -269,13 +314,30 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
             .and_then(|d| serde_json::from_str(d).ok())
             .unwrap_or(Value::Null);
         remap(&mut data, &clock, ctx.window);
+        for home in &homes {
+            rehome(&mut data, home);
+        }
+        // Its setup's steps name the runner the story has.
+        if let (Some(r), Some(reason)) = (runner, data["reason"].as_str())
+            && k == "status"
+            && let Some((what, on)) = reason.rsplit_once(" on ")
+            && w.cast.runners.iter().any(|x| x.name == on)
+        {
+            data["reason"] = json!(format!("{what} on {}", r.name));
+        }
+        if let (Some(pid), Some(t)) = (container_pid, data["text"].as_str())
+            && k == "log"
+            && t.starts_with("Started Claude Code (pid ")
+        {
+            data["text"] = json!(format!("Started Claude Code (pid {pid})"));
+        }
         if k == "user_message" {
             if first_message {
                 first_user_message(ctx, s, &mut data)?;
                 first_message = false;
             } else {
                 if let Some(m) = s.messages.get(message_index) {
-                    later_message(ctx, s, m, &mut data)?;
+                    later_message(ctx, s, message_index, m, &mut data)?;
                 }
                 message_index += 1;
             }
@@ -284,6 +346,13 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
                 .with_context(|| format!("a message of {} no longer reads as one", s.id))?;
         }
         let mut at = clock.map(ts(r));
+        if let Some(reason) = &review_end
+            && k == "status"
+            && seq > last_result_seq
+            && matches!(data["status"].as_str(), Some("stopping" | "stopped"))
+        {
+            data["reason"] = json!(reason);
+        }
         if let Some(stop) = idle_stop
             && k == "status"
             && seq > last_result_seq
@@ -303,11 +372,17 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         );
     }
 
+    // What fctl adds to it: notices of what it did for the agent.
+    insert_events(&mut obj, notices);
+
     // Its summary.
     remap(&mut summary, &clock, ctx.window);
     if let Some(stop) = idle_stop {
         summary["status_reason"] = json!("Stopped after being idle");
         summary["ended_at"] = json!(stop + stopping);
+    }
+    if let Some(reason) = &review_end {
+        summary["status_reason"] = json!(reason);
     }
     if let Some(r) = &s.runner {
         summary["runner"] = json!({ "id": w.runners[r], "name": r });
@@ -367,6 +442,20 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     // Its row, as the session object writes it through, with what only
     // its creation sets.
     let pr = session.pull_request.as_ref();
+    // A delegated ticket as fctl keeps it: with its Linear workspace, whether
+    // they asked for an exploration, and the state fctl moved it to.
+    let ticket = match (&session.ticket, &s.ticket) {
+        (Some(t), Some(key)) => {
+            let mut c = serde_json::to_value(t)?;
+            c["organization"] = json!(format!("lin-{}", p.workspace));
+            if w.cast.ticket(key)?.labels.iter().any(|l| l == "explore") {
+                c["explore"] = json!(true);
+            }
+            c["moved_to"] = json!("In Progress");
+            Some(c.to_string())
+        }
+        _ => None,
+    };
     let prs = (!session.pull_requests.is_empty())
         .then(|| serde_json::to_string(&session.pull_requests).ok())
         .flatten();
@@ -397,7 +486,7 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
             json!(session.ended_at),
             json!(session.created_at),
             json!(session.runner.as_ref().map(|r| r.id.0.clone())),
-            json!(session.ticket.as_ref().and_then(|t| serde_json::to_string(t).ok())),
+            json!(ticket),
             json!(s.review.as_ref().map(|_| "read")),
             json!(made.id),
         ],
@@ -405,6 +494,361 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     // Its published screenshots, memory and retrospectives move with it,
     // in `memory`.
     Ok(clock)
+}
+
+/// Where a review is on GitHub: its summary, above its findings.
+fn review_url(ctx: &Ctx, s: &SessionSpec) -> Option<String> {
+    let r = s.review.as_ref()?;
+    if r.result != "passed" && r.result != "commented" {
+        return None;
+    }
+    let (repo, number) = cast::pull_ref(&r.of).ok()?;
+    let start = ctx.at(&s.start);
+    Some(format!(
+        "https://github.com/{repo}/pull/{number}#pullrequestreview-{}",
+        2_000_000 + number + u64::from(r.findings) * 7 + start.unsigned_abs() % 97
+    ))
+}
+
+/// Why a superseded review stopped: the newer commit, which fctl reviews instead.
+fn superseded_reason(ctx: &Ctx, s: &SessionSpec) -> String {
+    let w = ctx.w;
+    let of = s.review.as_ref().map(|r| r.of.as_str()).unwrap_or_default();
+    let next = w
+        .cast
+        .sessions
+        .iter()
+        .filter(|x| x.review.as_ref().is_some_and(|y| y.of == of))
+        .find(|x| x.start.offset() > s.start.offset())
+        .and_then(|x| w.reviewed_sha(x).ok())
+        .unwrap_or_default();
+    format!(
+        "A newer commit came, {}: fctl reviews that one instead.",
+        &next[..7.min(next.len())]
+    )
+}
+
+/// An event fctl adds to a session: after the event `after` (its seq), at `ts`.
+struct Added {
+    after: i64,
+    ts: i64,
+    kind: &'static str,
+    data: Value,
+}
+
+/// The notices fctl would have added to session `s` that a dev stack can't:
+/// a review agent's posted review, after the call that posted it.
+fn notices(
+    ctx: &Ctx,
+    s: &SessionSpec,
+    events: &[sqlite::Row],
+    clock: &Clock,
+) -> Result<Vec<Added>> {
+    let w = ctx.w;
+    let mut out = Vec::new();
+    let parsed: Vec<(i64, i64, String, Value)> = events
+        .iter()
+        .map(|r| {
+            (
+                r.get("seq").and_then(Value::as_i64).unwrap_or_default(),
+                r.get("ts").and_then(Value::as_i64).unwrap_or_default(),
+                r.get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                r.get("data")
+                    .and_then(Value::as_str)
+                    .and_then(|d| serde_json::from_str(d).ok())
+                    .unwrap_or(Value::Null),
+            )
+        })
+        .collect();
+    // The result of the first call whose command starts with `command`.
+    let result_of = |command: &str| -> Option<(i64, i64)> {
+        let id = parsed.iter().find_map(|(_, _, k, d)| {
+            (k == "claude").then_some(())?;
+            d["message"]["content"].as_array()?.iter().find_map(|c| {
+                (c["type"] == "tool_use"
+                    && c["input"]["command"]
+                        .as_str()
+                        .is_some_and(|x| x.starts_with(command)))
+                .then(|| c["id"].as_str().map(str::to_owned))
+                .flatten()
+            })
+        })?;
+        parsed.iter().find_map(|(seq, ts, k, d)| {
+            (k == "claude").then_some(())?;
+            d["message"]["content"]
+                .as_array()?
+                .iter()
+                .any(|c| {
+                    c["type"] == "tool_result" && c["tool_use_id"].as_str() == Some(id.as_str())
+                })
+                .then_some((*seq, *ts))
+        })
+    };
+    if let Some(r) = &s.review
+        && let Some(url) = review_url(ctx, s)
+        && let Some((after, ts)) = result_of("fctl review submit")
+    {
+        let found = r.findings;
+        // The findings went to the session that opened the pull request.
+        let sent_to = (found > 0)
+            .then(|| w.cast.pull_session(&r.of))
+            .flatten()
+            .map(|o| w.sessions[&o.id].id.clone());
+        let resolved: Vec<String> = (0..r.resolved)
+            .map(|k| format!("PRRT_kwDOKe{}{k}", 7_311_000 + found * 13 + k))
+            .collect();
+        let message = if found == 0 {
+            "Review posted: nothing to point out".to_owned()
+        } else {
+            format!(
+                "Review posted on GitHub: {found} {}",
+                if found == 1 { "issue" } else { "issues" }
+            )
+        };
+        let mut review = json!({
+            "state": r.result, "url": url, "comments": found, "in_text": 0, "still_open": r.still_open,
+        });
+        if !resolved.is_empty() {
+            review["resolved"] = json!(resolved);
+        }
+        if let Some(to) = sent_to {
+            review["sent_to"] = json!(to);
+        }
+        out.push(Added {
+            after,
+            ts: clock.map(ts) + 400,
+            kind: "notice",
+            data: json!({ "level": "info", "code": "review_posted", "message": message, "review": review }),
+        });
+    }
+    // What fctl did in Linear for a session started from a ticket there: it
+    // moved the ticket as the session started, posted the agent's comments,
+    // and answered in Linear's thread as each turn ended.
+    if let Some(key) = &s.ticket {
+        let link = session_ticket(ctx, s, key)?;
+        let team = key.split('-').next().unwrap_or_default().to_lowercase();
+        let ticket = json!({ "key": key, "title": link["title"], "url": link["url"] });
+        let started = json!({ "name": "In Progress", "kind": "started", "id": format!("lin-state-{team}-started") });
+        let notice = |code: &str, message: String, extra: Value| {
+            let mut t = json!({ "tracker": "linear", "ticket": ticket });
+            for (k, v) in extra.as_object().into_iter().flatten() {
+                t[k] = v.clone();
+            }
+            json!({ "level": "info", "code": code, "message": message, "ticket": t })
+        };
+        if let Some((seq, ts, _, _)) = parsed.iter().find(|(_, _, k, _)| k == "user_message") {
+            let mut moved = notice(
+                "ticket_moved",
+                format!("Moved {key} to In Progress in Linear"),
+                json!({ "state": started }),
+            );
+            moved["ticket"]["ticket"]["state"] = started.clone();
+            out.push(Added {
+                after: *seq,
+                ts: clock.map(*ts) + 900,
+                kind: "notice",
+                data: moved,
+            });
+        }
+        let comment = format!("fctl ticket comment {key} ");
+        if let Some(text) = parsed.iter().find_map(|(_, _, k, d)| {
+            (k == "claude").then_some(())?;
+            d["message"]["content"].as_array()?.iter().find_map(|c| {
+                let cmd = c["input"]["command"].as_str()?;
+                Some(
+                    cmd.strip_prefix(comment.as_str())?
+                        .trim_matches('\'')
+                        .to_owned(),
+                )
+            })
+        }) && let Some((after, ts)) = result_of(&comment)
+        {
+            let url = format!(
+                "{}#comment-{:08x}",
+                link["url"].as_str().unwrap_or_default(),
+                spin(&text) as u32
+            );
+            out.push(Added {
+                after,
+                ts: clock.map(ts) + 700,
+                kind: "notice",
+                data: notice(
+                    "ticket_commented",
+                    format!("Commented on {key} in Linear"),
+                    json!({ "body": text, "url": url }),
+                ),
+            });
+        }
+        let session_url = format!("http://localhost:8787/s/{}", w.sessions[&s.id].id);
+        for (seq, ts, k, d) in &parsed {
+            if k != "claude" || d["type"] != "result" {
+                continue;
+            }
+            let Some((_, body)) = d["result"]
+                .as_str()
+                .and_then(|t| fctl_domain::tickets::reply(t, &session_url))
+            else {
+                continue;
+            };
+            out.push(Added {
+                after: *seq,
+                ts: clock.map(*ts) + 1_100,
+                kind: "notice",
+                data: notice(
+                    "ticket_replied",
+                    format!("Replied on {key} in Linear"),
+                    json!({ "body": body }),
+                ),
+            });
+        }
+    }
+    out.extend(setup(ctx, s, &parsed, clock)?);
+    Ok(out)
+}
+
+/// What a session's setup logs on its runner, which the seed's process
+/// driver doesn't: the container its runner's Apple container or Docker
+/// makes, from the default image or the one built from the project's
+/// Dockerfile, and the project's setup script.
+fn setup(
+    ctx: &Ctx,
+    s: &SessionSpec,
+    parsed: &[(i64, i64, String, Value)],
+    clock: &Clock,
+) -> Result<Vec<Added>> {
+    let w = ctx.w;
+    let mut out = Vec::new();
+    let (project, _) = cast::session_ref(&s.id)?;
+    let p = w.cast.project(project)?;
+    let Some(runner) = s
+        .runner
+        .as_ref()
+        .and_then(|r| w.cast.runners.iter().find(|x| &x.name == r))
+    else {
+        return Ok(out);
+    };
+    let log = |source: &str, text: &str| json!({ "level": "info", "source": source, "text": text });
+    // A run of events right after `after`, a moment apart.
+    let mut run = |after: i64, ts: i64, events: Vec<(&'static str, Value)>| {
+        for (i, (kind, data)) in events.into_iter().enumerate() {
+            out.push(Added {
+                after,
+                ts: ts + 250 + i as i64 * 180,
+                kind,
+                data,
+            });
+        }
+    };
+    let reason = |want: &str| {
+        parsed.iter().find(|(_, _, k, d)| {
+            k == "status" && d["reason"].as_str().is_some_and(|r| r.starts_with(want))
+        })
+    };
+    let sandbox = p.sandbox.as_ref();
+    if matches!(runner.driver.as_str(), "apple" | "docker")
+        && let Some((seq, ts, _, _)) = reason("Creating the sandbox on")
+    {
+        let name = format!(
+            "fctl-{}",
+            w.sessions[&s.id].id.to_lowercase().replace('_', "-")
+        );
+        let mut events = Vec::new();
+        let image = match sandbox.and_then(|x| x.dockerfile.as_ref()) {
+            Some(file) => {
+                let tag = format!(
+                    "fctl-build-{}:{:012x}",
+                    w.projects[&p.slug].to_lowercase(),
+                    spin(&format!("{} {file}", p.slug)) & 0xffff_ffff_ffff
+                );
+                // Built once on each runner, by its first session after a change.
+                let first = w.cast.sessions.iter().find(|x| {
+                    x.runner == s.runner && cast::session_ref(&x.id).is_ok_and(|(y, _)| y == p.slug)
+                });
+                if first.is_some_and(|x| x.id == s.id)
+                    && let Some(repo) = &p.repo
+                {
+                    let commit = w
+                        .github
+                        .commits(repo, "main")?
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| super::world::made_up_sha(&format!("{repo}@main")));
+                    events.push((
+                        "status",
+                        json!({ "status": "provisioning", "reason": format!("Getting the sandbox image ready on {}", runner.name) }),
+                    ));
+                    events.push((
+                        "log",
+                        log(
+                            "host",
+                            &format!(
+                                "Building the sandbox image from {file} in {repo} at {}",
+                                commit.get(..7).unwrap_or_default()
+                            ),
+                        ),
+                    ));
+                    for line in sandbox.map(|x| x.build.as_slice()).unwrap_or_default() {
+                        events.push(("log", log("host", line)));
+                    }
+                    events.push(("log", log("host", &format!("Built {tag}"))));
+                }
+                tag
+            }
+            None => format!(
+                "ghcr.io/hyperstructure/sandbox:{}",
+                env!("CARGO_PKG_VERSION")
+            ),
+        };
+        events.push((
+            "log",
+            log("host", &format!("Creating sandbox {name} from {image}")),
+        ));
+        run(*seq, clock.map(*ts), events);
+    }
+    if sandbox.is_some_and(|x| x.setup.is_some())
+        && let Some((seq, ts, _, _)) = parsed.iter().find(|(_, _, k, d)| {
+            k == "log"
+                && d["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("Created ") || t.starts_with("Continuing on "))
+        })
+    {
+        let mut events = vec![("log", log("setup", "Running the setup script"))];
+        for line in sandbox.map(|x| x.output.as_slice()).unwrap_or_default() {
+            events.push(("log", log("setup", line)));
+        }
+        run(*seq, clock.map(*ts), events);
+    }
+    Ok(out)
+}
+
+/// Adds `events` to a session object's events, each right after the one it
+/// follows: the events after it move down a place.
+fn insert_events(obj: &mut Db, mut events: Vec<Added>) {
+    // The latest first, so the places of the earlier ones still hold; of
+    // those after the same event, the last first, so that they keep their
+    // order.
+    let mut events: Vec<(usize, Added)> = events.drain(..).enumerate().collect();
+    events.sort_by_key(|(i, e)| std::cmp::Reverse((e.after, *i)));
+    for (_, e) in events {
+        obj.exec(
+            "UPDATE events SET seq = -(seq + 1) WHERE seq > ?",
+            vec![json!(e.after)],
+        );
+        obj.exec("UPDATE events SET seq = -seq WHERE seq < 0", vec![]);
+        obj.exec(
+            "INSERT INTO events (seq, ts, kind, data, agent_seq) VALUES (?, ?, ?, ?, NULL)",
+            vec![
+                json!(e.after + 1),
+                json!(e.ts),
+                json!(e.kind),
+                json!(e.data.to_string()),
+            ],
+        );
+    }
 }
 
 /// A review session's title, as fctl gives it.
@@ -541,7 +985,13 @@ fn first_user_message(ctx: &Ctx, s: &SessionSpec, data: &mut Value) -> Result<()
 }
 
 /// A later message: fctl's passing on of a review's findings, or a person's.
-fn later_message(ctx: &Ctx, s: &SessionSpec, m: &cast::Message, data: &mut Value) -> Result<()> {
+fn later_message(
+    ctx: &Ctx,
+    s: &SessionSpec,
+    index: usize,
+    m: &cast::Message,
+    data: &mut Value,
+) -> Result<()> {
     if m.from != "fctl" {
         data["author"] = ctx.user(&m.from);
         data["source"] = json!("web");
@@ -549,6 +999,11 @@ fn later_message(ctx: &Ctx, s: &SessionSpec, m: &cast::Message, data: &mut Value
     }
     data["author"] = Value::Null;
     data["source"] = json!("system");
+    // What happened on GitHub, as fctl passed it on.
+    if let Some(f) = ctx.w.sessions[&s.id].follow_ups.get(&index) {
+        data["follow_up"] = f.clone();
+        return Ok(());
+    }
     let Some(review) = &m.review else {
         return Ok(());
     };
@@ -602,26 +1057,8 @@ fn reviews(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         let outside = !author.ends_with("[bot]");
         let start = ctx.at(&s.start);
         let finished = r.took.map(|t| start + t.0 * 1000);
-        let reason = (r.result == "superseded").then(|| {
-            let next = w
-                .cast
-                .sessions
-                .iter()
-                .filter(|x| x.review.as_ref().is_some_and(|y| y.of == r.of))
-                .find(|x| x.start.offset() > s.start.offset())
-                .and_then(|x| w.reviewed_sha(x).ok())
-                .unwrap_or_default();
-            format!(
-                "A newer commit came, {}: fctl reviews that one instead.",
-                &next[..7.min(next.len())]
-            )
-        });
-        let posted = (r.result == "passed" || r.result == "commented").then(|| {
-            format!(
-                "https://github.com/{repo}/pull/{number}#pullrequestreview-{}",
-                2_000_000 + number + u64::from(r.findings) * 7 + start.unsigned_abs() % 97
-            )
-        });
+        let reason = (r.result == "superseded").then(|| superseded_reason(ctx, s));
+        let posted = review_url(ctx, s);
         d1.exec(
             "INSERT INTO reviews (session_id, project_id, repo, repo_key, number, head_sha, attempt, url, title, author, draft, fork, trusted, \
              previous_sha, pr_updated_at, installation_id, state, reason, findings, resolved, still_open, review_url, created_at, finished_at) \
@@ -1025,6 +1462,151 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
     }
     Ok(())
 }
+
+/// People's access tokens for other tools: when they made them, last used
+/// them and when they expire.
+fn access_tokens(ctx: &Ctx, d1: &mut Db) -> Result<()> {
+    let w = ctx.w;
+    for p in &w.cast.people {
+        for t in &p.tokens {
+            let made = ctx.at(&t.created);
+            d1.exec(
+                "UPDATE tokens SET created_at = ?, last_used_at = ?, expires_at = ? WHERE user_id = ? AND name = ?",
+                vec![
+                    json!(made),
+                    json!(t.used.as_ref().map(|u| ctx.at(u))),
+                    json!(t.days.map(|d| made + i64::from(d) * 86_400_000)),
+                    json!(w.users[&p.id]),
+                    json!(t.name),
+                ],
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Noor's ways in, as she has had them for months: the authenticator app
+/// and its recovery codes (one used when she changed phones), two passkeys,
+/// the CLI she signed in with `fctl login`, and the browsers she's signed in
+/// on. And the instance, which asks people to confirm it's them before
+/// sensitive actions: on only now, after the seed's own actions.
+fn sign_ins(ctx: &Ctx, d1: &mut Db) -> Result<()> {
+    let at = |when: &str| ctx.at(&cast::When(when.to_owned()));
+    let noor = json!(ctx.w.users["noor"]);
+    let set_up = at("-5mo");
+    d1.exec(
+        "UPDATE authenticator_apps SET created_at = ?, last_used_at = ? WHERE user_id = ?",
+        vec![json!(set_up), json!(at("-9d")), noor.clone()],
+    );
+    d1.exec(
+        "UPDATE recovery_codes SET created_at = ? WHERE user_id = ?",
+        vec![json!(set_up), noor.clone()],
+    );
+    d1.exec(
+        "UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = \
+         (SELECT MIN(code_hash) FROM recovery_codes WHERE user_id = ?)",
+        vec![json!(at("-7w")), noor.clone(), noor.clone()],
+    );
+    // A passkey her Macs and iPhone share, and a security key on her keys.
+    let passkeys = [
+        (
+            "iCloud Keychain",
+            "dd4ec289-e01d-41c9-bb89-70fa845d4bf2",
+            true,
+            "-5mo",
+            "today 08:47",
+            r#"["hybrid","internal"]"#,
+        ),
+        (
+            "YubiKey 5C",
+            "ee882879-721c-4913-9775-3dfcce97072a",
+            false,
+            "-4mo",
+            "-5w",
+            r#"["nfc","usb"]"#,
+        ),
+    ];
+    for (i, (name, aaguid, synced, added, used, transports)) in passkeys.into_iter().enumerate() {
+        let seed = format!("noor's passkey {name}");
+        d1.exec(
+            "INSERT INTO passkeys (id, user_id, credential_id, public_key, algorithm, sign_count, transports, aaguid, \
+             backed_up, name, created_at, last_used_at) VALUES (?, ?, ?, ?, -7, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                json!(format!("pky_01K{:023}", spin(&seed) % 10u64.pow(18))),
+                noor.clone(),
+                json!(format!("demo-credential-{:016x}", spin(&seed))),
+                json!(format!("demo-public-key-{:016x}", spin(&format!("{seed} key")))),
+                json!(if synced { 0 } else { 41 + i * 17 }),
+                json!(transports),
+                json!(aaguid),
+                json!(i64::from(synced)),
+                json!(name),
+                json!(at(added)),
+                json!(at(used)),
+            ],
+        );
+    }
+    // The CLI, signed in with `fctl login` rather than given a token.
+    d1.exec(
+        "UPDATE tokens SET kind = 'cli', created_at = ?, last_used_at = ? WHERE user_id = ? AND name LIKE 'fctl on %'",
+        vec![json!(at("-5mo")), json!(at("today 09:02")), noor.clone()],
+    );
+    // This browser (the seed's sign-in, which the shots use), and her phone.
+    d1.exec(
+        "UPDATE tokens SET user_agent = ?, created_at = ?, verified_at = NULL WHERE user_id = ? AND kind = 'web'",
+        vec![json!(CHROME_ON_MAC), json!(at("-12d")), noor.clone()],
+    );
+    d1.exec(
+        "INSERT INTO tokens (id, hash, kind, user_id, name, user_agent, ip, created_at, last_used_at, expires_at, scope, verified_at) \
+         VALUES (?, ?, 'web', ?, NULL, ?, NULL, ?, ?, ?, NULL, NULL)",
+        vec![
+            json!(format!("tok_01K{:023}", spin("noor's iphone") % 10u64.pow(18))),
+            json!(format!("{:064x}", u128::from(spin("noor's iphone hash")))),
+            noor,
+            json!(SAFARI_ON_IPHONE),
+            json!(at("-6w")),
+            json!(at("today 07:58")),
+            json!(ctx.anchor + 21 * 86_400_000),
+        ],
+    );
+    d1.exec(
+        "INSERT INTO settings (key, value) VALUES ('instance_settings', ?) \
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        vec![json!(
+            json!({ "verify_sensitive_actions": true }).to_string()
+        )],
+    );
+    Ok(())
+}
+
+/// Projects' sandboxes, as the cast has them: their setup scripts, package
+/// caches, sizes and images, set only now that the seed's sessions ran.
+fn sandboxes(ctx: &Ctx, d1: &mut Db) -> Result<()> {
+    for p in &ctx.w.cast.projects {
+        let Some(x) = &p.sandbox else { continue };
+        let build = x
+            .dockerfile
+            .as_ref()
+            .map(|file| json!({ "file": file, "context": x.context }).to_string());
+        d1.exec(
+            // node's SQLite binds numbers as REAL, which JSON would keep as 8.0.
+            "UPDATE projects SET settings = json_set(settings, '$.setup_script', ?, '$.package_caches', json(?), \
+             '$.cpus', CAST(? AS INTEGER), '$.memory_mb', CAST(? AS INTEGER), '$.image_build', json(?)) WHERE id = ?",
+            vec![
+                json!(x.setup),
+                json!(if x.caches { "true" } else { "false" }),
+                json!(x.cpus),
+                json!(x.memory_gb.map(|g| g * 1024)),
+                json!(build.unwrap_or_else(|| "null".to_owned())),
+                json!(ctx.w.projects[&p.slug]),
+            ],
+        );
+    }
+    Ok(())
+}
+
+const CHROME_ON_MAC: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+const SAFARI_ON_IPHONE: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1";
 
 /// Runners: the machines the story has, and when they came and were seen;
 /// the one draining since the story has it.

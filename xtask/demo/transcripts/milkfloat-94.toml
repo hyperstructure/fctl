@@ -69,22 +69,14 @@ report = "The extension exports Break and Vehicle takes breaks= (src/python.rs:2
   output = "README.md:23:    Vehicle(\"van-1\", depot=depot, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40]),\nREADME.md:24:    Vehicle(\"van-2\", depot=depot, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40]),"
 
 [[turn.step]]
-bash = "cargo test --test breaks"
-description = "Run the pull request's tests"
-seconds = 14
-output = """   Compiling milkfloat v0.9.0 (/home/agent/milkfloat)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.41s
-     Running tests/breaks.rs (target/debug/deps/breaks-3f9c1e0b7a2d4c61)
-
-running 3 tests
-test a_break_at_the_start_of_its_window_waits_for_nothing ... ok
-test a_break_goes_after_the_first_stop_inside_its_window ... ok
-test the_stops_after_a_break_move_on_by_its_length ... ok
-
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"""
+grep = "^fn "
+path = "tests/breaks.rs"
+output = """tests/breaks.rs:9:fn a_break_at_the_start_of_its_window_waits_for_nothing() {
+tests/breaks.rs:24:fn a_break_goes_after_the_first_stop_inside_its_window() {
+tests/breaks.rs:37:fn the_stops_after_a_break_move_on_by_its_length() {"""
 
 [[turn.step]]
-think = "The three tests all place a break inside a route that reaches its window; none tries one it can't reach, which is where it hangs. I'll say so in the first finding, with the window that triggers it."
+think = "Anouk can't write to the repository, so her code is read, not run. Her three tests all place a break inside a route that reaches its window; none tries one it can't reach, which is where it hangs. I'll say so in the first finding, with the window that triggers it."
 
 [[turn.step]]
 bash = "fctl review submit /tmp/review.json"

@@ -8,7 +8,7 @@ result = "No issues. The earlier finding is fixed: the token names the delivery'
 [[turn.step]]
 tools = [
   { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Tie skip links to the delivery they skip\nLet subscribers skip a week from the reminder email" },
-  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[{\"id\": \"PRRT_kwDOSkip1\", \"path\": \"src/app/skip/[token]/route.ts\", \"line\": 14, \"title\": \"The skip token isn't tied to a delivery\", \"resolved\": false}]" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[{\"id\": \"PRRT_kwDOSkip1\", \"path\": \"src/app/skip/[token]/route.ts\", \"line\": 8, \"title\": \"The skip token isn't tied to a delivery\", \"resolved\": false}]" },
 ]
 
 [[turn.step]]

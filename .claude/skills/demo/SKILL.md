@@ -238,6 +238,55 @@ Shop's Retrospectives, Schedules, Tickets and Repositories tabs,
 Romanesco's Runners and People tabs, the milkfloat workspace, Noor's
 settings, and a session and the Agent Floor at a phone's width.
 
+### fctl.sh's feature pages
+
+The feature pages of hyperstructure/fctl-site (`features/<page>/`) show
+the cast in screenshots that `shoot.mjs --features` takes, into the site's
+`src/features/shots/<page>/<name>-<theme>.webp` (desktop shots 2200 px
+wide, phone ones 780) and a `thumb-<theme>.webp` of each page's first shot
+for the features overview:
+
+```sh
+cargo xtask demo                          # wait for "the demo is running"
+cd ~/screenshots
+node <repo>/xtask/demo/shoot.mjs --features ~/repos/hyperstructure/fctl-site/src/features/shots
+node <repo>/xtask/demo/shoot.mjs --features <dir> --only sandboxes,review-agents/off   # some pages, or shots
+```
+
+`pages` in `shoot.mjs` lists the shots of each page and how to get to
+them: a path, and for some an `act` that scrolls to what the shot is about
+or opens a dialog (the sandbox's setup log, a new access token, the
+schedule editor). Shots of a session pick it by the cast's name
+(`shop#231`), so they hold across runs. A page's HTML names its shots by
+those names: add a shot to both, and keep the alt texts saying what the
+shot shows. A run of all of them takes about ten minutes.
+
+What the feature pages need from the seed, and where it comes from:
+
+- **Sign-in.** Noor has an authenticator app (set up through the API, its
+  first code made from its secret), two passkeys (D1 rows), a phone's
+  browser and the CLI signed in, and the instance asks to confirm
+  sensitive actions. The shots sign in with the seed's own sign-in of
+  hers (`cookie` in `shots.json`), which hasn't confirmed it's her, so
+  making a token or exporting data opens "Confirm it's you"; signed-out
+  shots fill in her password and stop at the code. Each page gets a
+  virtual passkey authenticator, as Chromium has none headless.
+- **Sandboxes.** Projects' `sandbox` in `cast.toml` (setup script and
+  what it prints, package caches, sizes, milkfloat's Dockerfile and what
+  building it prints) goes into their settings in the rewrite, after the
+  sessions ran on the process driver; the rewrite also writes what Apple
+  container and Docker sandboxes log into each session's setup, with
+  `/home/agent` for the process driver's paths.
+- **Linear.** Delegated sessions get the notices fctl adds as it moves
+  the ticket, comments and replies in Linear.
+- **GitHub.** The shots answer `/api/v1/instance` as an instance with a
+  GitHub App and its webhook, so that settings don't say they lack them.
+
+The GitHub reviews, chats, tickets and terminals on the pages are HTML,
+written from the cast and from what the CLI prints (`fctl sessions`, `fctl
+show` and the like run against the demo stack with Noor's sign-in as
+`FCTL_TOKEN`); change them with the cast.
+
 ## The test cast
 
 Tests and docs use their own names, which read as examples there. Keep
