@@ -744,7 +744,12 @@ fn setup(
                 if first.is_some_and(|x| x.id == s.id)
                     && let Some(repo) = &p.repo
                 {
-                    let commit = w.github.commits(repo, "main")?.last().cloned().unwrap_or_default();
+                    let commit = w
+                        .github
+                        .commits(repo, "main")?
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| super::world::made_up_sha(&format!("{repo}@main")));
                     events.push((
                         "status",
                         json!({ "status": "provisioning", "reason": format!("Getting the sandbox image ready on {}", runner.name) }),
@@ -1531,10 +1536,11 @@ fn sandboxes(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         let build = x
             .dockerfile
             .as_ref()
-            .map(|file| json!({ "file": file }).to_string());
+            .map(|file| json!({ "file": file, "context": x.context }).to_string());
         d1.exec(
+            // node's SQLite binds numbers as REAL, which JSON would keep as 8.0.
             "UPDATE projects SET settings = json_set(settings, '$.setup_script', ?, '$.package_caches', json(?), \
-             '$.cpus', ?, '$.memory_mb', ?, '$.image_build', json(?)) WHERE id = ?",
+             '$.cpus', CAST(? AS INTEGER), '$.memory_mb', CAST(? AS INTEGER), '$.image_build', json(?)) WHERE id = ?",
             vec![
                 json!(x.setup),
                 json!(if x.caches { "true" } else { "false" }),

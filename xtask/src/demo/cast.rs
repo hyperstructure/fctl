@@ -301,6 +301,8 @@ pub struct Sandbox {
     /// and what building it prints, in the setup of the first of its
     /// sessions on each runner.
     pub dockerfile: Option<String>,
+    /// The directory in the repository it builds in: absent, the root.
+    pub context: Option<String>,
     #[serde(default)]
     pub build: Vec<String>,
 }
