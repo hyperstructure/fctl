@@ -251,8 +251,9 @@ settings, and a session and the Agent Floor at a phone's width.
 The feature pages of hyperstructure/fctl-site (`features/<page>/`) show
 the cast in screenshots that `shoot.mjs --features` takes, into the site's
 `src/features/shots/<page>/<name>-<theme>.webp` (desktop shots 2200 px
-wide, phone ones 780) and a `thumb-<theme>.webp` of each page's first shot
-for the features overview:
+wide, phone ones 780 × 1576: the site's phone frame draws iOS's status bar
+above them) and a `thumb-<theme>.webp` of each page's first shot for the
+features overview:
 
 ```sh
 cargo xtask demo                          # wait for "the demo is running"
