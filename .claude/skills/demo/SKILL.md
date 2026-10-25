@@ -207,8 +207,8 @@ people would through the API, and plays every session from its transcript
 with fake-claude, on hosts for its runners and a stand-in GitHub; then it
 moves everything to the story's times and fills in what a stack without a
 GitHub App or Linear can't make: checks, reviews, tickets and the projects'
-older sessions. It takes about ten minutes; Ctrl-C stops it, and the next
-run starts afresh. docs/development.md has the details.
+older sessions. It takes about a quarter of an hour; Ctrl-C stops it, and
+the next run starts afresh. docs/development.md has the details.
 
 The story happens on a Tuesday at 09:10 in Stockholm. The seed sets that
 moment at a minute when some time zone's clocks read 09:10, within the hour

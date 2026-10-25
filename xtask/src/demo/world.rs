@@ -1259,6 +1259,38 @@ impl<'a> World<'a> {
         }
     }
 
+    /// Waits until only the agents of the sessions still at work in the
+    /// story run: a host reports a stopped session's end once its agent has
+    /// gone, which, after the control plane has stopped, it reports again
+    /// once it is back, over the story's stop.
+    pub fn until_agents_gone(&self, children: &mut Children) -> Result<()> {
+        let at_work = self
+            .cast
+            .sessions
+            .iter()
+            .filter(|s| s.state != State::Stopped)
+            .count();
+        let pattern = format!("fctl-agent serve .*{}", self.state.display());
+        let deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            children.check()?;
+            let out = Command::new("pgrep").arg("-f").arg(&pattern).output()?;
+            let running = String::from_utf8_lossy(&out.stdout).lines().count();
+            if running <= at_work {
+                // And a moment for their hosts to say so.
+                std::thread::sleep(Duration::from_secs(3));
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                eprintln!(
+                    "{running} agents still run, for {at_work} sessions at work in the story: going on"
+                );
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
     /// Drains the runners the story has draining, as their people did.
     pub fn drains(&self) -> Result<()> {
         for r in &self.cast.runners {

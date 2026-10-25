@@ -540,6 +540,7 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     world.sessions(&mut others)?;
     world.drains()?;
     drop(offline);
+    world.until_agents_gone(&mut others)?;
 
     step("the story's times");
     drop(control);
