@@ -1,0 +1,297 @@
+# bookings#17 · Elsa, Saturday 09:30 · Close bookings while the wall is reset
+match = "When we reset the wall nobody can climb for a day"
+
+[[turn]]
+duration = "41m"
+result = "Wall resets are in bookings#52. In the admin, add one under Wall resets with when it starts and ends: the sessions it overlaps show “Wall reset” on the calendar and can’t be booked, and everyone who had booked one gets an email saying their booking is cancelled, and why."
+
+[[turn.step]]
+run = "fctl edit --title 'Close bookings while the wall is reset' --description 'Admins mark a reset on the calendar; sessions it overlaps can’t be booked, and members who booked get an email.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "bookings/models.py" },
+  { read = "bookings/views.py" },
+  { read = "bookings/admin.py" },
+]
+
+[[turn.step]]
+tools = [
+  { read = "bookings/templates/bookings/calendar.html" },
+  { read = "bookings/emails.py" },
+  { glob = "bookings/migrations/*.py", output = "bookings/migrations/0001_initial.py\nbookings/migrations/0002_membership_session_note.py\nbookings/migrations/__init__.py" },
+]
+
+[[turn.step]]
+think = "A reset is a stretch of time rather than a session: the setters have the wall from when they start until the new routes are up, sometimes across two days. So a WallReset with a start and an end, and any session that overlaps it can't be booked. The members who already booked one should hear about it, and their bookings should be cancelled too, or they'd still count against a session that won't happen. Admins add sessions in the admin, so resets go there as well, and the emails go out when one is saved."
+
+[[turn.step]]
+say = "Here's the plan: admins add a wall reset in the admin, with when it starts and ends. Sessions that overlap it show “Wall reset” on the calendar and can't be booked. Bookings already made for them are cancelled, and each member gets an email saying why."
+
+[[turn.step]]
+todo = [["A WallReset with a start and an end", "in_progress"], ["Refuse bookings for sessions it overlaps", "pending"], ["Cancel their bookings and email the members", "pending"], ["Show resets on the calendar", "pending"], ["Tests", "pending"]]
+
+[[turn.step]]
+edit = "bookings/models.py"
+old = """    @property
+    def places_left(self):
+        return self.capacity - self.bookings.filter(cancelled_at__isnull=True).count()
+
+
+class Membership(models.Model):"""
+new = """    @property
+    def places_left(self):
+        return self.capacity - self.bookings.filter(cancelled_at__isnull=True).count()
+
+    @property
+    def reset(self):
+        \"\"\"The wall reset this session overlaps, if there is one.\"\"\"
+        return WallReset.objects.filter(starts_at__lt=self.ends_at, ends_at__gt=self.starts_at).first()
+
+
+class WallReset(models.Model):
+    \"\"\"A stretch of time when the setters have the wall, and nobody climbs.\"\"\"
+
+    starts_at = models.DateTimeField()
+    ends_at = models.DateTimeField()
+    note = models.CharField(max_length=200, blank=True, help_text="Shown on the calendar, like “New routes on the overhang”.")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, editable=False)
+
+    class Meta:
+        ordering = ["starts_at"]
+
+    def __str__(self):
+        return f"Wall reset, {self.starts_at:%a %d %b %H:%M} to {self.ends_at:%a %d %b %H:%M}"
+
+    def sessions(self):
+        \"\"\"The sessions it overlaps.\"\"\"
+        return Session.objects.filter(starts_at__lt=self.ends_at, ends_at__gt=self.starts_at)
+
+
+class Membership(models.Model):"""
+
+[[turn.step]]
+run = '''cat > bookings/migrations/0003_wallreset.py <<'MIGRATION'
+import django.db.models.deletion
+from django.conf import settings
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+        ("bookings", "0002_membership_session_note"),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name="WallReset",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("starts_at", models.DateTimeField()),
+                ("ends_at", models.DateTimeField()),
+                ("note", models.CharField(blank=True, help_text="Shown on the calendar, like “New routes on the overhang”.", max_length=200)),
+                ("created_by", models.ForeignKey(editable=False, null=True, on_delete=django.db.models.deletion.SET_NULL, to=settings.AUTH_USER_MODEL)),
+            ],
+            options={"ordering": ["starts_at"]},
+        ),
+    ]
+MIGRATION'''
+show = "python manage.py makemigrations bookings"
+description = "Make the migration"
+output = """Migrations for 'bookings':
+  bookings/migrations/0003_wallreset.py
+    + Create model WallReset"""
+
+[[turn.step]]
+edit = "bookings/views.py"
+old = """        if session.places_left <= 0:
+            messages.error(request, "That session is full.")"""
+new = """        if session.reset:
+            messages.error(request, "The wall is being reset then, so that session can't be booked.")
+        elif session.places_left <= 0:
+            messages.error(request, "That session is full.")"""
+
+[[turn.step]]
+edit = "bookings/emails.py"
+old = """        message=render_to_string("bookings/emails/booked.txt", {"member": member, "session": session}),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[member.email],
+    )"""
+new = """        message=render_to_string("bookings/emails/booked.txt", {"member": member, "session": session}),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[member.email],
+    )
+
+
+def send_reset(member, session, reset):
+    \"\"\"Tells a member that their session is off: the wall is being reset.\"\"\"
+    send_mail(
+        subject=f"Cancelled: {session}, the wall is being reset",
+        message=render_to_string(
+            "bookings/emails/reset.txt", {"member": member, "session": session, "reset": reset}
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[member.email],
+    )"""
+
+[[turn.step]]
+write = "bookings/templates/bookings/emails/reset.txt"
+content = '''Hi {{ member.first_name|default:member.username }},
+
+We're resetting the wall, so {{ session }} is off, and your booking for it
+is cancelled.{% if reset.note %} {{ reset.note }}.{% endif %}
+
+The wall opens again {{ reset.ends_at|date:"l j F" }} at {{ reset.ends_at|time:"H:i" }}.
+Book another session on the calendar.
+
+Sorry, and see you on the new routes,
+Crimp Collective
+'''
+
+[[turn.step]]
+write = "bookings/resets.py"
+content = '''from django.db import transaction
+from django.utils import timezone
+
+from .emails import send_reset
+from .models import Booking
+
+
+def close_for(reset):
+    """Cancels the bookings of every session `reset` overlaps, and emails each
+    member why, once the cancellations are saved. Returns how many it cancelled."""
+    bookings = Booking.objects.filter(session__in=reset.sessions(), cancelled_at__isnull=True)
+    count = 0
+    with transaction.atomic():
+        for booking in bookings.select_related("member", "session"):
+            booking.cancelled_at = timezone.now()
+            booking.save(update_fields=["cancelled_at"])
+            transaction.on_commit(lambda b=booking: send_reset(b.member, b.session, reset))
+            count += 1
+    return count
+'''
+
+[[turn.step]]
+edit = "bookings/admin.py"
+old = """from django.contrib import admin
+
+from .models import Booking, Membership, Session
+"""
+new = """from django.contrib import admin, messages
+
+from .models import Booking, Membership, Session, WallReset
+from .resets import close_for
+"""
+
+[[turn.step]]
+edit = "bookings/admin.py"
+old = """admin.site.register(Membership)"""
+new = """admin.site.register(Membership)
+
+
+@admin.register(WallReset)
+class WallResetAdmin(admin.ModelAdmin):
+    list_display = ["__str__", "note", "created_by"]
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+        cancelled = close_for(obj)
+        if cancelled:
+            self.message_user(
+                request, f"Cancelled {cancelled} booking(s) and emailed the members why.", messages.WARNING
+            )"""
+
+[[turn.step]]
+edit = "bookings/templates/bookings/calendar.html"
+old = """          {% if session.places_left > 0 %}
+            <a href="{% url 'book' session.id %}">Book ({{ session.places_left }} left)</a>"""
+new = """          {% if session.reset %}
+            <strong>Wall reset</strong>{% if session.reset.note %}: {{ session.reset.note }}{% endif %}
+          {% elif session.places_left > 0 %}
+            <a href="{% url 'book' session.id %}">Book ({{ session.places_left }} left)</a>"""
+
+[[turn.step]]
+write = "bookings/tests/test_resets.py"
+content = '''from datetime import timedelta
+
+from django.contrib.auth.models import User
+from django.core import mail
+from django.test import TestCase
+from django.utils import timezone
+
+from bookings.models import Booking, Session, WallReset
+from bookings.resets import close_for
+
+
+class ResetTests(TestCase):
+    def setUp(self):
+        self.member = User.objects.create_user("maja", "maja@example.org", "climb-on")
+        start = timezone.now() + timedelta(days=2)
+        self.session = Session.objects.create(starts_at=start, ends_at=start + timedelta(hours=3))
+        self.reset = WallReset.objects.create(
+            starts_at=start - timedelta(hours=10), ends_at=start + timedelta(hours=14), note="New routes on the overhang"
+        )
+
+    def test_a_session_it_overlaps_cant_be_booked(self):
+        self.client.force_login(self.member)
+        self.client.post(f"/sessions/{self.session.id}/book")
+        self.assertFalse(Booking.objects.filter(member=self.member).exists())
+
+    def test_bookings_are_cancelled_and_members_told(self):
+        booking = Booking.objects.create(session=self.session, member=self.member)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(close_for(self.reset), 1)
+        booking.refresh_from_db()
+        self.assertIsNotNone(booking.cancelled_at)
+        self.assertIn("the wall is being reset", mail.outbox[0].subject)
+
+    def test_sessions_outside_it_stay_open(self):
+        later = self.reset.ends_at + timedelta(hours=1)
+        other = Session.objects.create(starts_at=later, ends_at=later + timedelta(hours=3))
+        self.assertIsNone(other.reset)
+'''
+
+[[turn.step]]
+todo = [["A WallReset with a start and an end", "completed"], ["Refuse bookings for sessions it overlaps", "completed"], ["Cancel their bookings and email the members", "completed"], ["Show resets on the calendar", "completed"], ["Tests", "in_progress"]]
+
+[[turn.step]]
+tools = [
+  { bash = "python manage.py makemigrations --check --dry-run", description = "Check no migration is missing", output = "No changes detected" },
+  { bash = "python manage.py test", description = "Run the tests", seconds = 6, output = """Found 10 test(s).
+Creating test database for alias 'default'...
+System check identified no issues (0 silenced).
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 0.587s
+
+OK
+Destroying test database for alias 'default'...""" },
+]
+
+[[turn.step]]
+commit = "Close bookings while the wall is reset"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Close bookings while the wall is reset"
+number = 52
+body = """Admins can mark a wall reset, and nobody can book a session while the setters have the wall.
+
+- In the admin, under Wall resets: when it starts and ends, and a note for the calendar.
+- Sessions it overlaps show "Wall reset" on the calendar, and booking them is refused.
+- Bookings already made for those sessions are cancelled, and each member gets an email saying why and when the wall opens again. The admin says how many.
+
+Tested with `python manage.py test`, with 3 new tests. Deploying needs `python manage.py migrate`."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Admins mark wall resets in the admin; sessions they overlap can’t be booked, and members who had booked get an email (bookings#52).' --approach 'A reset is a stretch of time rather than a session, so it closes whatever sessions it overlaps, across days if it has to. Their bookings are cancelled too, so they don’t count against a session that won’t happen.' --challenges 'The emails go out only once the cancellations are saved (on_commit), so a failed save emails nobody.' --insights 'Admins work in the Django admin: new things for them belong there, with a message that says what happened.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Wall resets are in bookings#52. In the admin, add one under Wall resets with when it starts and ends: the sessions it overlaps show “Wall reset” on the calendar and can’t be booked, and everyone who had booked one gets an email saying their booking is cancelled, and why."

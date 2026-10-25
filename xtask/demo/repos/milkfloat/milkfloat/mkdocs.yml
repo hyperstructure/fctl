@@ -1,0 +1,16 @@
+site_name: milkfloat
+site_url: https://milkfloat.dev/docs/
+repo_url: https://github.com/milkfloat/milkfloat
+theme:
+  name: material
+  palette:
+    primary: white
+nav:
+  - Introduction: index.md
+  - Getting started: getting-started.md
+  - Capacities: capacities.md
+  - Re-planning: replanning.md
+  - The cost function: cost-function.md
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences

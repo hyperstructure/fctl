@@ -1,0 +1,226 @@
+# platform#440 · Asha, yesterday 13:30 · Split VAT on boxes with flowers
+match = "flowers carry 25% VAT where the vegetables carry 12%"
+
+[[turn]]
+duration = "37m"
+result = "Boxes with flowers carry two VAT rates now, in platform#841: invoices and receipts show 12% and 25% on lines of their own, VAT is worked out per rate so the rates add up to the öre, and the accounting export books flowers to 3001 and food to 3002."
+
+[[turn.step]]
+run = "fctl edit --title 'Split VAT on boxes with flowers' --description 'Boxes with flowers carry two VAT rates on the invoice: food’s for the vegetables and 25% for the flowers.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "src/billing/invoice.rs" },
+  { read = "src/billing/receipt.rs" },
+  { read = "src/export/accounting.rs" },
+  { read = "src/billing/mod.rs" },
+  { grep = "vat", path = "src", output = "src/billing/invoice.rs:27:    pub vat_rate: u8,\nsrc/billing/invoice.rs:41:        .map(|i| Line { text: i.name.clone(), amount: i.price, vat_rate: 12 })\nsrc/billing/invoice.rs:52:pub fn vat(invoice: &Invoice) -> i64 {\nsrc/billing/receipt.rs:16:    out.push(format!(\"{:<32}{:>10}\", \"Varav moms 12 %\", kronor(invoice::vat(invoice))));\nsrc/export/accounting.rs:7:pub const HEADER: &str = \"subscription,period_end,account,amount,vat\";\nsrc/export/accounting.rs:12:    let vat = invoice::vat(invoice);\nsrc/export/accounting.rs:13:    vec![format!(\"{},{},3002,{},{}\", invoice.subscription, invoice.period.end, ore(total), ore(vat))]" },
+]
+
+[[turn.step]]
+think = "12% is everywhere: `invoice_for` gives every line it, `vat()` takes 12/112 of the total, the receipt prints one VAT line, and the export books everything to 3002, sales at 12%. Each box item needs its rate. Prices include VAT, so it has to be worked out per rate from each rate's total and rounded once per rate: rounding each line would leave the receipt an öre or two off its total."
+
+[[turn.step]]
+todo = [["A VAT rate on every box item, 25% for flowers", "in_progress"], ["VAT per rate, rounded once per rate", "pending"], ["Invoices and receipts: a VAT line per rate", "pending"], ["The accounting export: a row per rate", "pending"], ["Tests, then the pull request", "pending"]]
+
+[[turn.step]]
+write = "migrations/0139_box_flowers.sql"
+content = """-- Boxes can include flowers, which carry 25% VAT where food carries 12%
+-- (platform#841).
+ALTER TABLE box_items ADD COLUMN vat_rate SMALLINT NOT NULL DEFAULT 12
+    CHECK (vat_rate IN (6, 12, 25));
+
+UPDATE box_items SET vat_rate = 25 WHERE category = 'flowers';
+"""
+
+[[turn.step]]
+write = "src/billing/vat.rs"
+content = """//! VAT by rate. Prices include it, so it is worked out from each rate's
+//! total and rounded once per rate: the rates' VAT then adds up to what the
+//! receipt shows, to the öre.
+
+use super::invoice::Line;
+use std::collections::BTreeMap;
+
+/// The VAT the lines include, in öre, by rate in percent, lowest first.
+pub fn by_rate(lines: &[Line]) -> Vec<(u8, i64)> {
+    let mut totals: BTreeMap<u8, i64> = BTreeMap::new();
+    for l in lines {
+        *totals.entry(l.vat_rate).or_default() += l.amount;
+    }
+    totals
+        .into_iter()
+        .map(|(rate, total)| (rate, included(total, rate)))
+        .collect()
+}
+
+/// The VAT a price of `total` öre includes at `rate` percent, to the
+/// nearest öre, halves up.
+fn included(total: i64, rate: u8) -> i64 {
+    let rate = i64::from(rate);
+    (total * rate * 2 + 100 + rate) / ((100 + rate) * 2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(amount: i64, vat_rate: u8) -> Line {
+        Line { text: String::new(), amount, vat_rate }
+    }
+
+    #[test]
+    fn a_box_with_flowers_has_two_rates() {
+        // Kale at 35,00 kr and tulips at 149,00 kr.
+        assert_eq!(by_rate(&[line(3500, 12), line(14900, 25)]), [(12, 375), (25, 2980)]);
+    }
+
+    #[test]
+    fn each_rate_rounds_once() {
+        // Seven items at 19,95 kr: 213,75 öre each would round to 214, seven
+        // times; 13 965 öre in all include 1 496.
+        let lines: Vec<Line> = (0..7).map(|_| line(1995, 12)).collect();
+        assert_eq!(by_rate(&lines), [(12, 1496)]);
+    }
+}
+"""
+
+[[turn.step]]
+edit = "src/billing/mod.rs"
+old = """pub mod receipt;
+"""
+new = """pub mod receipt;
+pub mod vat;
+"""
+
+[[turn.step]]
+edit = "src/billing/invoice.rs"
+old = "        .map(|i| Line { text: i.name.clone(), amount: i.price, vat_rate: 12 })"
+new = "        .map(|i| Line { text: i.name.clone(), amount: i.price, vat_rate: i.vat_rate })"
+
+[[turn.step]]
+edit = "src/billing/invoice.rs"
+old = """/// The VAT an invoice's lines include, in öre: food's 12%.
+pub fn vat(invoice: &Invoice) -> i64 {
+    let total: i64 = invoice.lines.iter().map(|l| l.amount).sum();
+    total * 12 / 112
+}"""
+new = """/// The VAT an invoice's lines include, in öre, by rate: 12% for food and
+/// 25% for flowers.
+pub fn vat(invoice: &Invoice) -> Vec<(u8, i64)> {
+    super::vat::by_rate(&invoice.lines)
+}"""
+
+[[turn.step]]
+edit = "src/billing/receipt.rs"
+old = "    out.push(format!(\"{:<32}{:>10}\", \"Varav moms 12 %\", kronor(invoice::vat(invoice))));"
+new = """    for (rate, vat) in invoice::vat(invoice) {
+        out.push(format!("{:<32}{:>10}", format!("Varav moms {rate} %"), kronor(vat)));
+    }"""
+
+[[turn.step]]
+edit = "src/export/accounting.rs"
+old = """//! The week's sales for the accounting system: rows of CSV, one an
+//! invoice, booked to the BAS account for food at 12%."""
+new = """//! The week's sales for the accounting system: rows of CSV, one for each
+//! VAT rate of an invoice, booked to the BAS account for sales at that rate."""
+
+[[turn.step]]
+edit = "src/export/accounting.rs"
+old = """pub fn rows(invoice: &Invoice) -> Vec<String> {
+    let total: i64 = invoice.lines.iter().map(|l| l.amount).sum();
+    let vat = invoice::vat(invoice);
+    vec![format!("{},{},3002,{},{}", invoice.subscription, invoice.period.end, ore(total), ore(vat))]
+}"""
+new = """pub fn rows(invoice: &Invoice) -> Vec<String> {
+    invoice::vat(invoice)
+        .into_iter()
+        .map(|(rate, vat)| {
+            let lines = invoice.lines.iter().filter(|l| l.vat_rate == rate);
+            let total: i64 = lines.map(|l| l.amount).sum();
+            let (sub, end) = (&invoice.subscription, invoice.period.end);
+            format!("{sub},{end},{},{},{}", account(rate), ore(total), ore(vat))
+        })
+        .collect()
+}
+
+/// The BAS account for sales at `rate` percent VAT.
+fn account(rate: u8) -> u16 {
+    match rate {
+        25 => 3001,
+        6 => 3003,
+        _ => 3002,
+    }
+}"""
+
+[[turn.step]]
+write = "tests/vat.rs"
+content = """//! A box with flowers on its invoice, its receipt and in the export.
+
+use platform::billing::{invoice, receipt};
+use platform::export::accounting;
+use platform::BoxItem;
+
+fn box_with_tulips() -> invoice::Invoice {
+    let items = [BoxItem::test("Kale", 3500), BoxItem::test("Tulips", 14900).vat_rate(25)];
+    invoice::invoice_for("sub_20517", &items)
+}
+
+#[test]
+fn the_receipt_shows_each_rate() {
+    let lines = receipt::lines(&box_with_tulips());
+    assert!(lines.iter().any(|l| l.starts_with("Varav moms 12 %") && l.ends_with("3,75 kr")));
+    assert!(lines.iter().any(|l| l.starts_with("Varav moms 25 %") && l.ends_with("29,80 kr")));
+}
+
+#[test]
+fn the_export_books_flowers_to_3001() {
+    let rows = accounting::rows(&box_with_tulips());
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].contains(",3002,35.00,3.75"));
+    assert!(rows[1].contains(",3001,149.00,29.80"));
+}
+"""
+
+[[turn.step]]
+bash = "cargo test -p platform vat receipt accounting"
+description = "Run the VAT tests"
+seconds = 12
+output = """running 2 tests
+test billing::vat::tests::a_box_with_flowers_has_two_rates ... ok
+test billing::vat::tests::each_rate_rounds_once ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 221 filtered out; finished in 0.00s
+
+     Running tests/vat.rs (target/debug/deps/vat-5b9e03c1d7a2f846)
+
+running 2 tests
+test the_export_books_flowers_to_3001 ... ok
+test the_receipt_shows_each_rate ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"""
+
+[[turn.step]]
+commit = "Split VAT by rate on invoices, receipts and the export"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Split VAT on boxes with flowers"
+number = 841
+body = """Boxes can include a bouquet now: flowers carry 25% VAT, the vegetables 12%.
+
+- Every box item has its VAT rate (0139); flowers get 25%.
+- `billing::vat::by_rate` works VAT out per rate from prices that include it, rounded once per rate, so the rates add up to the receipt's total to the öre.
+- Invoices and receipts show a VAT line for each rate, and the accounting export books each rate to its own account: 3002 for food, 3001 for flowers.
+
+Tested with `cargo test -p platform vat receipt accounting`."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Invoices, receipts and the accounting export carry each VAT rate on lines of their own, 12% for food and 25% for flowers (platform#841).' --approach 'A rate on every box item (0139), and VAT worked out per rate from the prices, which include it, rounded once per rate, so the rates add up to the receipt’s total.' --challenges 'The export booked every sale to 3002, food at 12%: flowers go to 3001 now, which the accounting system already had.' --insights 'Prices include VAT: work it out per rate, never per line, or the öre don’t add up.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Boxes with flowers carry two VAT rates now, in platform#841: invoices and receipts show 12% and 25% on lines of their own, VAT is worked out per rate so the rates add up to the öre, and the accounting export books flowers to 3001 and food to 3002."

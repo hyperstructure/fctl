@@ -1,0 +1,38 @@
+# platform#441 · review of platform#841: passed
+match = "Review romanescohq/platform#841, “Split VAT on boxes with flowers”, at commit"
+
+[[turn]]
+duration = "1m47s"
+result = "No issues: VAT is worked out once per rate, the receipt and the export show each rate, and the totals add up to the öre."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Split VAT by rate on invoices, receipts and the export" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " migrations/0139_box_flowers.sql |   6 ++++++\n src/billing/invoice.rs          |  10 +++++-----\n src/billing/mod.rs              |   1 +\n src/billing/receipt.rs          |   4 +++-\n src/billing/vat.rs              |  48 ++++++++++++++++++++++++++++++++++++++++\n src/export/accounting.rs        |  25 ++++++++++++++++++++-----\n tests/vat.rs                    |  25 +++++++++++++++++++++++++\n 7 files changed, 108 insertions(+), 11 deletions(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+tools = [
+  { read = "src/billing/vat.rs" },
+  { read = "src/export/accounting.rs" },
+]
+
+[[turn.step]]
+grep = "invoice::vat\\(|vat\\(invoice"
+path = "src"
+output = """src/billing/invoice.rs:53:pub fn vat(invoice: &Invoice) -> Vec<(u8, i64)> {
+src/billing/receipt.rs:16:    for (rate, vat) in invoice::vat(invoice) {
+src/export/accounting.rs:11:    invoice::vat(invoice)"""
+
+[[turn.step]]
+think = "`included` rounds halves up in integers: 3500 öre at 12% is 375 exactly, 14 900 at 25% is 2 980. `vat()` changed its type, and every caller moved with it: the receipt and the export. The migration's check allows 6% too, which the export already books to 3003. Nothing to raise."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = """Posted the review on romanescohq/platform#841: no issues.
+https://github.com/romanescohq/platform/pull/841#pullrequestreview-2002703"""
+
+[[turn.step]]
+say = "No issues: VAT is worked out once per rate, the receipt and the export show each rate, and the totals add up to the öre."

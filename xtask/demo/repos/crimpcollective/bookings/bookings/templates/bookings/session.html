@@ -1,0 +1,6 @@
+{% extends "bookings/base.html" %}
+{% block content %}
+<h1>{{ session }}</h1>
+<p>{{ session.places_left }} of {{ session.capacity }} places left.</p>
+<form method="post">{% csrf_token %}<button>Book it</button></form>
+{% endblock %}

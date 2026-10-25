@@ -1,0 +1,166 @@
+# platform#433 · Noor, last Wednesday 20:30 · Speed up the distance matrix for Copenhagen
+match = "Build it in parallel and cache it for the day"
+
+[[turn]]
+duration = "47m"
+result = "The distance matrix is built 16 rows at a time and kept for the day once the cutoff has passed, in platform#833: planning Copenhagen's 1,812 stops takes 8.9 s instead of 70, and 4.2 s when the day's matrix is already built."
+
+[[turn.step]]
+run = "fctl edit --title 'Speed up the distance matrix for Copenhagen' --description 'Builds the distance matrix for Copenhagen’s addresses in parallel, and keeps it for the day.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "src/routes/matrix.rs" },
+  { read = "src/routes/mod.rs" },
+  { grep = "travel_times", path = "src", output = "src/routes/matrix.rs:13:            .travel_times(from.location, stops.iter().map(|s| s.location))" },
+]
+
+[[turn.step]]
+bash = "cargo bench -p platform --bench plan -- cph-1"
+description = "Time planning for Copenhagen"
+seconds = 75
+output = """plan/cph-1 (1,812 stops, 9 vans)
+                        time:   [69.712 s 70.384 s 71.106 s]
+  matrix                66.2 s   1,812 requests, one at a time
+  solve                  4.1 s"""
+
+[[turn.step]]
+think = "66 of the 70 seconds are the matrix: 1,812 requests to the routing service, one after another, at about 36 ms each. The service takes 20 requests at a time per key, and the drivers' app uses the same key, so 16 rows in flight leaves it room. And no stop changes after the 18:00 cutoff, so once it has passed, a depot's matrix for the day can be kept: re-planning the same day needn't build it again."
+
+[[turn.step]]
+todo = [["Time planning for Copenhagen", "completed"], ["Build the matrix 16 rows at a time", "in_progress"], ["Keep a day's matrix once the cutoff has passed", "pending"], ["Time it again, then the pull request", "pending"]]
+
+[[turn.step]]
+edit = "src/routes/matrix.rs"
+old = """//! The distance matrix between a day's stops: travel times by road, from
+//! the routing service, for the planner.
+
+use super::Stop;
+use milkfloat::Matrix;
+"""
+new = """//! The distance matrix between a day's stops: travel times by road, from
+//! the routing service, for the planner. Built 16 rows at a time, and kept
+//! for the day once its stops are final.
+
+use super::Stop;
+use futures::{StreamExt, TryStreamExt};
+use milkfloat::Matrix;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// Rows asked for at once: the routing service takes 20 requests at a time
+/// for a key, and the drivers' app needs a few of them.
+const ROWS_AT_ONCE: usize = 16;
+"""
+
+[[turn.step]]
+edit = "src/routes/matrix.rs"
+old = """pub async fn build(router: &crate::routing::Client, stops: &[Stop]) -> Result<Matrix, crate::Error> {
+    let mut matrix = Matrix::new(stops.len());
+    for (i, from) in stops.iter().enumerate() {
+        let row = router
+            .travel_times(from.location, stops.iter().map(|s| s.location))
+            .await?;
+        matrix.set_row(i, &row);
+    }
+    Ok(matrix)
+}
+"""
+new = """pub async fn build(router: &crate::routing::Client, stops: &[Stop]) -> Result<Matrix, crate::Error> {
+    let rows: Vec<(usize, Vec<u32>)> = futures::stream::iter(stops.iter().enumerate())
+        .map(|(i, from)| async move {
+            let row = router
+                .travel_times(from.location, stops.iter().map(|s| s.location))
+                .await?;
+            Ok::<_, crate::Error>((i, row))
+        })
+        .buffer_unordered(ROWS_AT_ONCE)
+        .try_collect()
+        .await?;
+    let mut matrix = Matrix::new(stops.len());
+    for (i, row) in rows {
+        matrix.set_row(i, &row);
+    }
+    Ok(matrix)
+}
+
+/// The matrices of days whose stops are final, by depot and day.
+static FINAL: Mutex<Option<HashMap<(String, chrono::NaiveDate), Arc<Matrix>>>> = Mutex::new(None);
+
+/// `depot`'s matrix for `day`. Once the 18:00 cutoff the evening before has
+/// passed, no stop changes, so it is built once and kept for the day.
+pub async fn for_day(
+    router: &crate::routing::Client,
+    depot: &str,
+    day: chrono::NaiveDate,
+    stops: &[Stop],
+) -> Result<Arc<Matrix>, crate::Error> {
+    let key = (depot.to_owned(), day);
+    let kept = FINAL.lock().ok().and_then(|days| days.as_ref()?.get(&key).cloned());
+    if let Some(matrix) = kept {
+        return Ok(matrix);
+    }
+    let matrix = Arc::new(build(router, stops).await?);
+    if crate::cutoff::passed(day)
+        && let Ok(mut days) = FINAL.lock()
+    {
+        let days = days.get_or_insert_with(HashMap::new);
+        days.retain(|(_, d), _| *d >= day);
+        days.insert(key, matrix.clone());
+    }
+    Ok(matrix)
+}
+"""
+
+[[turn.step]]
+edit = "src/routes/mod.rs"
+old = """        let matrix = matrix::build(&db.routing(), &stops).await?;
+"""
+new = """        let matrix = matrix::for_day(&db.routing(), &depot.id, day, &stops).await?;
+"""
+
+[[turn.step]]
+tools = [
+  { bash = "cargo test -p platform routes", description = "Run the route tests", seconds = 10, output = "running 12 tests\ntest routes::matrix::tests::a_day_after_the_cutoff_is_kept ... ok\ntest routes::matrix::tests::a_day_before_the_cutoff_is_built_again ... ok\ntest routes::matrix::tests::rows_land_where_they_belong ... ok\ntest routes::matrix::tests::yesterdays_matrices_go ... ok\ntest routes::plan::tests::a_full_van_goes_home ... ok\ntest routes::plan::tests::every_stop_gets_a_van ... ok\ntest routes::tests::plans_two_depots_at_once ... ok\ntest routes::tests::plans_an_empty_day ... ok\ntest routes::tests::stops_keep_their_windows ... ok\ntest routes::tests::the_depot_is_first_and_last ... ok\ntest routes::tests::vans_never_exceed_their_capacity ... ok\ntest routes::tests::the_route_export_lists_every_stop ... ok\n\ntest result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 205 filtered out; finished in 3.12s" },
+]
+
+[[turn.step]]
+bash = "cargo bench -p platform --bench plan -- cph-1"
+description = "Time it again"
+seconds = 20
+output = """plan/cph-1 (1,812 stops, 9 vans)
+                        time:   [8.6114 s 8.9032 s 9.2410 s]
+                        change: [-87.692% -87.350% -86.987%] (p = 0.00 < 0.05)
+                        Performance has improved.
+  matrix                 4.7 s   1,812 requests, 16 at a time
+  solve                  4.1 s
+plan/cph-1, the day's matrix kept
+                        time:   [4.1803 s 4.2297 s 4.2911 s]"""
+
+[[turn.step]]
+commit = "Build the distance matrix in parallel and keep it for the day"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Speed up the distance matrix for Copenhagen"
+number = 833
+body = """Planning Copenhagen's 1,812 stops took 70 s, 66 of them building the distance matrix one request at a time.
+
+- The matrix is built 16 rows at a time: the routing service takes 20 requests at a time for our key, and the drivers' app shares it.
+- Once the 18:00 cutoff has passed, a depot's matrix for the day is kept, since no stop changes after it; earlier days' go.
+
+`cargo bench --bench plan -- cph-1`: 8.9 s instead of 70.4 s, and 4.2 s when the day's matrix is kept."""
+
+[[turn.step]]
+run = "fctl edit --description 'Builds the distance matrix for Copenhagen’s 1,800 addresses in parallel and caches it for the day: planning takes 9 s instead of 70.'"
+description = "Say what came of it"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Built the distance matrix 16 rows at a time and kept it for the day once the cutoff has passed (platform#833): planning Copenhagen’s 1,812 stops takes 8.9 s instead of 70.' --approach 'Timed planning first: 66 of the 70 seconds were the routing service’s requests, one after another. Asked for 16 rows at a time, under the service’s limit of 20, which the drivers’ app shares.' --challenges 'A matrix can be kept only once its day’s stops are final, after the 18:00 cutoff: planning earlier builds it again.' --insights '`cargo bench --bench plan -- cph-1` times planning for Copenhagen, with the matrix and the solver apart.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "The distance matrix is built 16 rows at a time and kept for the day once the cutoff has passed, in platform#833: planning Copenhagen's 1,812 stops takes 8.9 s instead of 70, and 4.2 s when the day's matrix is already built."

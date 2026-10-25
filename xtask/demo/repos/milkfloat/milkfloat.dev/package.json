@@ -1,0 +1,12 @@
+{
+  "name": "milkfloat.dev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "node scripts/fetch-docs.mjs && node scripts/fetch-bench.mjs && astro build"
+  },
+  "dependencies": {
+    "astro": "^5.14.0"
+  }
+}

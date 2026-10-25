@@ -1,0 +1,20 @@
+---
+import Layout from "../layouts/Layout.astro";
+import results from "../../.bench/latest.json";
+---
+<Layout title="Benchmarks · milkfloat">
+  <h1>Benchmarks</h1>
+  <p>
+    Every night, main against the 56 Solomon and 300 Gehring–Homberger
+    instances, 10 seconds each. {results.better} got better and {results.worse}
+    worse than the night before.
+  </p>
+  <table>
+    <thead><tr><th>Instance</th><th>Vehicles</th><th>Distance</th><th>Best</th></tr></thead>
+    <tbody>
+      {results.instances.map((r) => (
+        <tr><td>{r.instance}</td><td>{r.vehicles}</td><td>{r.distance.toFixed(1)}</td><td>{r.best}</td></tr>
+      ))}
+    </tbody>
+  </table>
+</Layout>

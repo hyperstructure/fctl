@@ -1,0 +1,37 @@
+# milkfloat#91 · review of milkfloat#309, by o-adeyemi from outside (Asha asked for it): no issues
+match = "Review milkfloat/milkfloat#309, “Fix a panic when a depot has no vehicles”, at commit"
+
+[[turn]]
+duration = "41s"
+result = "No issues. An empty fleet now returns `SolveError::NoVehicles` instead of panicking, Python gets a ValueError saying so, and both have a test."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --format='%an: %s' origin/main..HEAD", description = "List the pull request's commits", output = "Oluwaseun Adeyemi: Return an error when a problem has no vehicles\nOluwaseun Adeyemi: Test solving with no vehicles from Python" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " src/solve.rs                 |  6 ++++++\n tests/no_vehicles.rs         | 14 ++++++++++++++\n tests/python/test_solve.py   |  5 +++++\n 3 files changed, 25 insertions(+)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+bash = "git diff origin/main...HEAD -- src/solve.rs"
+description = "Read the fix"
+output = """@@ -24,6 +24,9 @@ pub enum SolveError {
+ /// Solves `problem`, searching for `time` with the given seed.
+ pub fn solve(problem: &Problem, time: Duration, seed: u64) -> Result<Solution, SolveError> {
++    if problem.vehicles.is_empty() {
++        return Err(SolveError::NoVehicles);
++    }
+     if let Some(v) = problem.vehicles.iter().find(|v| v.shift.end < v.shift.start) {
+         return Err(SolveError::Shift(v.id.clone()));
+     }"""
+
+[[turn.step]]
+think = "Search::new built no routes for an empty fleet and construct() then indexed routes[0]. Returning early is the right place: before any state is built. The Python binding maps SolveError to ValueError with its message, and the new pytest checks the message says \"no vehicles\". The variant was already declared but never returned. Nothing else reads an empty fleet."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = "Posted the review on milkfloat/milkfloat#309: no issues.\nhttps://github.com/milkfloat/milkfloat/pull/309#pullrequestreview-2002916"
+
+[[turn.step]]
+say = "No issues. An empty fleet now returns `SolveError::NoVehicles` instead of panicking, Python gets a ValueError saying so, and both have a test."

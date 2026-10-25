@@ -1,0 +1,241 @@
+# milkfloat#92 · Noor, last Thursday 20:10 · Publish wheels for free-threaded Python 3.14
+match = "Build cp314t wheels for Linux, macOS and Windows with maturin"
+
+[[turn]]
+duration = "44m"
+result = "cp314t wheels build beside the abi3 ones for Linux, macOS and Windows, and CI runs the Python tests on 3.14t, a test that solves from eight threads at once included: milkfloat#310."
+
+[[turn.step]]
+run = "fctl edit --title 'Publish wheels for free-threaded Python 3.14' --description 'Builds `cp314t` wheels for Linux, macOS and Windows with maturin, beside the abi3 ones, as `kenji-sato-dev` asked in milkfloat#305.'"
+description = "Name the session"
+
+[[turn.step]]
+bash = "gh issue view 305"
+description = "Read Kenji's issue"
+output = """Wheels for free-threaded Python 3.14 (cp314t) milkfloat/milkfloat#305
+Open • kenji-sato-dev opened about 2 weeks ago • 3 comments
+
+  We plan routes for several depots at once from a thread pool, and on 3.14t
+  pip falls back to building milkfloat from source, which needs a Rust
+  toolchain on every machine. The abi3 wheels don't load on free-threaded
+  builds. Would you publish cp314t wheels?
+
+  The solver already releases the GIL while it searches, so it might be
+  close to working as is."""
+
+[[turn.step]]
+tools = [
+  { read = ".github/workflows/wheels.yml" },
+  { read = "Cargo.toml" },
+  { read = "src/python.rs" },
+]
+
+[[turn.step]]
+think = "Two things stand in the way. Free-threaded CPython has no limited API, so the abi3-py310 feature on pyo3 can't be on for a cp314t build: it has to become a feature the abi3 job turns on, not a default. And the module has to declare `gil_used = false`, or importing it on 3.14t turns the GIL back on with a warning, which would defeat Kenji's thread pool. The search releases the GIL with `py.detach`, and the only static is the rayon pool in a OnceLock, which is Sync, so declaring it is honest."
+
+[[turn.step]]
+todo = [["Move abi3 out of the default build", "in_progress"], ["Declare that the module runs without the GIL", "pending"], ["A wheels job for cp314t on Linux, macOS and Windows", "pending"], ["Run the Python tests on 3.14t in CI", "pending"], ["A test that solves from many threads at once", "pending"]]
+
+[[turn.step]]
+bash = "uv run --python 3.14t maturin build --release -i python3.14t"
+description = "Try a free-threaded build as things are"
+seconds = 6
+output = """🔗 Found pyo3 bindings with abi3 support
+🐍 Found CPython 3.14t at /home/agent/.local/share/uv/python/cpython-3.14.0+freethreaded-linux-aarch64-gnu/bin/python3.14t
+   Compiling pyo3-build-config v0.28.2
+   Compiling pyo3-ffi v0.28.2
+error: failed to run custom build command for `pyo3-ffi v0.28.2`
+
+Caused by:
+  error: the free-threaded build of CPython does not support the limited API, so the `abi3` features can't be used with it.
+  = help: build without the abi3-py310 feature for the 3.14t interpreter
+💥 maturin failed"""
+error = true
+
+[[turn.step]]
+edit = "Cargo.toml"
+old = """[features]
+python = ["dep:pyo3"]"""
+new = """[features]
+python = ["dep:pyo3"]
+# One wheel per platform for CPython 3.10 on, through the limited API.
+# Free-threaded CPython has no limited API, so its wheels leave this out.
+abi3 = ["python", "pyo3/abi3-py310"]"""
+
+[[turn.step]]
+edit = "Cargo.toml"
+old = """pyo3 = { version = "0.28.2", features = ["extension-module", "abi3-py310"], optional = true }"""
+new = """pyo3 = { version = "0.28.2", features = ["extension-module"], optional = true }"""
+
+[[turn.step]]
+edit = "src/python.rs"
+old = """#[pymodule]
+fn _milkfloat("""
+new = """// The search runs with the GIL released (`py.detach`), and the module keeps
+// no Python objects in statics, so it can run on free-threaded CPython.
+#[pymodule(gil_used = false)]
+fn _milkfloat("""
+
+[[turn.step]]
+edit = ".github/workflows/wheels.yml"
+old = """          args: --release --out dist
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-abi3-${{ matrix.os }}-${{ matrix.target }}
+          path: dist
+"""
+new = """          args: --release --out dist --features abi3
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-abi3-${{ matrix.os }}-${{ matrix.target }}
+          path: dist
+
+  free-threaded:
+    # cp314t wheels: free-threaded CPython can't load the abi3 ones.
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64 }
+          - { os: macos-14, target: aarch64 }
+          - { os: windows-latest, target: x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.14t
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist -i python3.14t
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-cp314t-${{ matrix.os }}-${{ matrix.target }}
+          path: dist
+"""
+
+[[turn.step]]
+edit = ".github/workflows/ci.yml"
+old = """        python: ["3.10", "3.12", "3.14"]"""
+new = """        python: ["3.10", "3.12", "3.14", "3.14t"]"""
+
+[[turn.step]]
+edit = "pyproject.toml"
+old = """  "Programming Language :: Python :: Implementation :: CPython","""
+new = """  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Free Threading :: 2 - Beta","""
+
+[[turn.step]]
+write = "tests/python/test_threads.py"
+content = '''"""Solving from many threads at once, as free-threaded Python lets people do."""
+
+from concurrent.futures import ThreadPoolExecutor
+
+from milkfloat import TimeWindow, Vehicle, Visit, solve
+
+HOUR = 3600
+DEPOT = (59.3326, 18.0649)
+
+
+def problem(seed):
+    van = Vehicle("van", depot=DEPOT, shift=TimeWindow(6 * HOUR, 14 * HOUR), capacity=[40])
+    visits = [
+        Visit(f"v{i}", (59.30 + (i * seed % 17) * 0.004, 18.02 + (i % 5) * 0.015), service=120, demand=[2])
+        for i in range(15)
+    ]
+    return [van], visits
+
+
+def run(seed):
+    vans, visits = problem(seed)
+    return solve(vans, visits, seconds=0.5, seed=seed)
+
+
+def test_solves_from_eight_threads_at_once():
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        solutions = list(pool.map(run, range(1, 17)))
+    assert all(not s.unassigned for s in solutions)
+    assert len({id(s) for s in solutions}) == 16
+'''
+
+[[turn.step]]
+bash = "uv run --python 3.14t maturin build --release -i python3.14t"
+description = "Build the free-threaded wheel"
+seconds = 40
+output = """🔗 Found pyo3 bindings
+🐍 Found CPython 3.14t at /home/agent/.local/share/uv/python/cpython-3.14.0+freethreaded-linux-aarch64-gnu/bin/python3.14t
+   Compiling pyo3-build-config v0.28.2
+   Compiling pyo3-ffi v0.28.2
+   Compiling pyo3 v0.28.2
+   Compiling milkfloat v0.9.0 (/home/agent/milkfloat)
+    Finished `release` profile [optimized] target(s) in 38.12s
+📦 Built wheel for CPython 3.14t to target/wheels/milkfloat-0.9.0-cp314-cp314t-manylinux_2_34_aarch64.whl"""
+
+[[turn.step]]
+bash = "uv run --python 3.14t pytest tests/python -q"
+description = "Run the Python tests on 3.14t"
+seconds = 7
+output = """........                                                                 [100%]
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  RuntimeWarning: The global interpreter lock (GIL) has been enabled to load module 'milkfloat._milkfloat', which has not declared that it can run safely without the GIL. To override this behavior and keep the GIL disabled (at your own risk), run with PYTHON_GIL=0 or -Xgil=0.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+6 passed, 1 warning in 6.21s"""
+
+[[turn.step]]
+think = "The warning says the module didn't declare gil_used = false, but it does now. So pytest didn't import the wheel I just built: `maturin build` only writes target/wheels, and uv run imports the copy uv built for the environment earlier and cached, since it doesn't rebuild when only Rust sources change. `maturin develop --release` installs the current build into the environment."
+
+[[turn.step]]
+bash = "uv run --python 3.14t maturin develop --release -q && uv run --python 3.14t pytest tests/python -q -W error::RuntimeWarning"
+description = "Install the current build, then test with warnings as errors"
+seconds = 12
+output = """🛠 Installed milkfloat-0.9.0
+......                                                                   [100%]
+6 passed in 5.87s"""
+
+[[turn.step]]
+bash = "uv run --python 3.12 maturin develop --release --features abi3 -q && uv run --python 3.12 pytest tests/python -q"
+description = "Check the abi3 build still works"
+seconds = 10
+output = """🛠 Installed milkfloat-0.9.0
+......                                                                   [100%]
+6 passed in 5.02s"""
+
+[[turn.step]]
+tools = [
+  { bash = "cargo test --release -q", description = "Run the Rust tests", seconds = 8, output = "running 37 tests\n.....................................\ntest result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.14s" },
+  { bash = "actionlint .github/workflows/*.yml", description = "Check the workflows", output = "" },
+]
+
+[[turn.step]]
+commit = "Publish wheels for free-threaded Python 3.14"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Publish wheels for free-threaded Python 3.14"
+number = 310
+body = """cp314t wheels for Linux (x86_64 and aarch64), macOS (arm64) and Windows (x64), built with maturin beside the abi3 ones, as asked in #305.
+
+- Free-threaded CPython has no limited API, so `abi3` is a feature now, which the abi3 job turns on; the free-threaded job builds without it.
+- The module declares `gil_used = false`: the search runs with the GIL released and keeps no Python objects in statics. Without it, importing milkfloat on 3.14t turns the GIL back on.
+- CI runs the Python tests on 3.14t too, and `tests/python/test_threads.py` solves from eight threads at once.
+
+Tested on 3.14t and 3.12 locally, with warnings as errors on 3.14t. Closes #305."""
+
+[[turn.step]]
+run = "fctl memory add 'Build the Python bindings with `maturin develop --release` before `uv run pytest tests/python`, or pytest imports the last wheel you built.'"
+description = "Remember how to test the bindings"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Wheels for free-threaded Python 3.14 (cp314t) on Linux, macOS and Windows beside the abi3 ones, and the Python tests on 3.14t in CI (milkfloat#310).' --approach 'Made abi3 a feature that only the abi3 job turns on, since free-threaded CPython has no limited API, and declared the module safe without the GIL, which the search already releases.' --challenges 'The first test run on 3.14t imported a stale build that uv had cached and warned that the GIL was back on; maturin develop installed the current one.' --insights 'Run `maturin develop --release` before `uv run pytest tests/python`: uv doesn’t rebuild the bindings when only Rust sources change.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "cp314t wheels build beside the abi3 ones for Linux, macOS and Windows, and CI runs the Python tests on 3.14t, a test that solves from eight threads at once included: milkfloat#310."

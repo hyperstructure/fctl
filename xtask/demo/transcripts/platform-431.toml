@@ -1,0 +1,27 @@
+# platform#431 · review of platform#831 at its first commit: superseded by the second
+match = "Review romanescohq/platform#831, “Cache delivery slots per postcode”, at commit"
+
+[[turn]]
+duration = "41s"
+result = "Stopped: the pull request has a newer commit than the one I was asked to review, and its review covers this one too."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Cache delivery slots per postcode" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " Cargo.toml                              |   1 +\n migrations/0138_delivery_slot_cache.sql |  12 ++++++++++++\n src/db.rs                               |   7 +++++++\n src/main.rs                             |   1 +\n src/slots/cache.rs                      |  66 ++++++++++++++++++++++++++++++++++++++++\n src/slots/mod.rs                        |   4 +++-\n 6 files changed, 90 insertions(+), 1 deletion(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+read = "src/slots/cache.rs"
+
+[[turn.step]]
+think = "Ten minutes per postcode, and the trigger drops a zone's postcodes when a route changes. CI is red on this commit, though, so the branch may already have moved on."
+
+[[turn.step]]
+bash = "git fetch -q origin pull/831/head && git log --oneline HEAD..FETCH_HEAD"
+description = "Check for newer commits"
+output = "Add the query data for the slot cache"
+
+[[turn.step]]
+say = "Stopped: the pull request has a newer commit than the one I was asked to review, and its review covers this one too."

@@ -1,0 +1,218 @@
+# infra#36 · Kofi, last Thursday 14:00 · Alert when the job queue backs up
+match = "more than 500 jobs waiting for 10 minutes"
+
+[[turn]]
+duration = "27m"
+result = "Two alarms on the job queue, in both environments: more than 500 jobs waiting for 10 minutes, and an oldest job older than 15 minutes. They page through the on-call topic, and docs/runbooks/job-queue.md says what to do. infra#209 is open; each plan adds the two alarms and changes nothing else."
+
+[[turn.step]]
+run = "fctl edit --title 'Alert when the job queue backs up' --description 'Adds an alarm on the job queue’s depth and oldest job, and a runbook for it in docs/runbooks.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { read = "modules/monitoring/main.tf" },
+  { read = "modules/monitoring/variables.tf" },
+  { read = "docs/runbooks/README.md" },
+  { read = "docs/runbooks/database-failover.md" },
+]
+
+[[turn.step]]
+bash = "aws cloudwatch list-metrics --namespace Romanesco/Platform --query 'Metrics[].[MetricName, Dimensions[0].Value]' --output text | sort -u"
+description = "See what the platform publishes"
+output = """CheckoutLatency	production
+CheckoutLatency	staging
+JobsWaiting	production
+JobsWaiting	staging
+OldestJobAgeSeconds	production
+OldestJobAgeSeconds	staging
+WebhookLag	production
+WebhookLag	staging"""
+
+[[turn.step]]
+think = "The platform already publishes JobsWaiting and OldestJobAgeSeconds every minute, with an Environment dimension. So this is two alarms in the monitoring module, on the oncall topic that main.tf already has, and both environments get them. A queue whose workers die stops publishing too, and that should page as well: missing data counts as breaching."
+
+[[turn.step]]
+todo = [["Alarms on the queue's depth and its oldest job", "in_progress"], ["Thresholds as variables", "pending"], ["A runbook in docs/runbooks", "pending"], ["Plan both environments", "pending"], ["The pull request", "pending"]]
+
+[[turn.step]]
+write = "modules/monitoring/job_queue.tf"
+content = """# The platform's job queue. The platform publishes how many jobs wait and
+# how old the oldest one is, every minute, to Romanesco/Platform. Missing
+# data breaches: workers that stop publishing are as bad as a queue that
+# backs up.
+
+resource "aws_cloudwatch_metric_alarm" "jobs_waiting" {
+  alarm_name          = "${var.environment}-jobs-waiting"
+  alarm_description   = "More than ${var.jobs_waiting_max} jobs have waited in the queue for 10 minutes. Runbook: docs/runbooks/job-queue.md"
+  namespace           = "Romanesco/Platform"
+  metric_name         = "JobsWaiting"
+  dimensions          = { Environment = var.environment }
+  statistic           = "Minimum"
+  period              = 60
+  evaluation_periods  = 10
+  threshold           = var.jobs_waiting_max
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.oncall.arn]
+  ok_actions          = [aws_sns_topic.oncall.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "oldest_job" {
+  alarm_name          = "${var.environment}-oldest-job"
+  alarm_description   = "The oldest waiting job is older than ${var.oldest_job_max_seconds / 60} minutes. Runbook: docs/runbooks/job-queue.md"
+  namespace           = "Romanesco/Platform"
+  metric_name         = "OldestJobAgeSeconds"
+  dimensions          = { Environment = var.environment }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 3
+  threshold           = var.oldest_job_max_seconds
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.oncall.arn]
+  ok_actions          = [aws_sns_topic.oncall.arn]
+}
+"""
+
+[[turn.step]]
+edit = "modules/monitoring/variables.tf"
+old = """variable "api_5xx_per_minute" {
+  type    = number
+  default = 20
+}"""
+new = """variable "api_5xx_per_minute" {
+  type    = number
+  default = 20
+}
+
+variable "jobs_waiting_max" {
+  description = "How many jobs may wait in the queue for 10 minutes before the alarm pages."
+  type        = number
+  default     = 500
+}
+
+variable "oldest_job_max_seconds" {
+  description = "How old the oldest waiting job may get before the alarm pages."
+  type        = number
+  default     = 900
+}"""
+
+[[turn.step]]
+todo = [["Alarms on the queue's depth and its oldest job", "completed"], ["Thresholds as variables", "completed"], ["A runbook in docs/runbooks", "in_progress"], ["Plan both environments", "pending"], ["The pull request", "pending"]]
+
+[[turn.step]]
+write = "docs/runbooks/job-queue.md"
+content = """# The job queue backs up
+
+Alarms: `jobs-waiting`, more than 500 jobs waiting for 10 minutes, and `oldest-job`, the oldest waiting job older than 15 minutes. Both also fire when the platform stops publishing the queue's metrics, which looks the same from here: nothing is taking jobs.
+
+The queue is the platform's `jobs` table: invoice runs, emails, Stripe events, route plans. Workers take jobs oldest first, and retry failed ones with backoff.
+
+## First, look
+
+1. The platform's dashboard, Jobs panel: which kinds of job wait. One kind piling up is usually one handler failing; every kind is usually the workers.
+2. The workers' errors since the alarm: `aws logs tail /ecs/production-platform-worker --since 30m --filter-pattern ERROR`.
+3. Whether the invoice run or a backfill is going: the 1st of the month and Monday mornings are busy.
+
+## Make it stop hurting
+
+- The workers are down or stuck: restart them with `aws ecs update-service --cluster production --service platform-worker --force-new-deployment`.
+- Not enough workers for a busy hour: raise `worker_count` in `production/main.tf` with a pull request. For the next hour, set the service's desired count by hand in the console, and say so in #platform.
+- One handler keeps failing: pause that kind with `scripts/jobs.sh pause KIND` until it's fixed, so that the others get through.
+
+## After
+
+Write down what happened in the incident log, and open an issue for whatever made the queue back up.
+"""
+
+[[turn.step]]
+edit = "docs/runbooks/README.md"
+old = """- [The database is overloaded or down](database-failover.md): `database-cpu`"""
+new = """- [The database is overloaded or down](database-failover.md): `database-cpu`
+- [The job queue backs up](job-queue.md): `jobs-waiting`, `oldest-job`"""
+
+[[turn.step]]
+todo = [["Alarms on the queue's depth and its oldest job", "completed"], ["Thresholds as variables", "completed"], ["A runbook in docs/runbooks", "completed"], ["Plan both environments", "in_progress"], ["The pull request", "pending"]]
+
+[[turn.step]]
+tools = [
+  { bash = "terraform fmt -check -recursive && terraform -chdir=staging init -input=false > /dev/null && terraform -chdir=staging plan -lock=false -input=false", description = "Plan staging", seconds = 40, output = """module.monitoring.aws_sns_topic.oncall: Refreshing state... [id=arn:aws:sns:eu-north-1:318406112230:staging-oncall]
+module.monitoring.aws_cloudwatch_metric_alarm.api_5xx: Refreshing state... [id=staging-api-5xx]
+module.monitoring.aws_cloudwatch_metric_alarm.database_cpu: Refreshing state... [id=staging-database-cpu]
+
+Terraform will perform the following actions:
+
+  # module.monitoring.aws_cloudwatch_metric_alarm.jobs_waiting will be created
+  + resource "aws_cloudwatch_metric_alarm" "jobs_waiting" {
+      + alarm_name          = "staging-jobs-waiting"
+      + comparison_operator = "GreaterThanThreshold"
+      + evaluation_periods  = 10
+      + metric_name         = "JobsWaiting"
+      + namespace           = "Romanesco/Platform"
+      + statistic           = "Minimum"
+      + threshold           = 500
+      + treat_missing_data  = "breaching"
+        # (6 more attributes)
+    }
+
+  # module.monitoring.aws_cloudwatch_metric_alarm.oldest_job will be created
+  + resource "aws_cloudwatch_metric_alarm" "oldest_job" {
+      + alarm_name          = "staging-oldest-job"
+      + comparison_operator = "GreaterThanThreshold"
+      + evaluation_periods  = 3
+      + metric_name         = "OldestJobAgeSeconds"
+      + namespace           = "Romanesco/Platform"
+      + statistic           = "Maximum"
+      + threshold           = 900
+      + treat_missing_data  = "breaching"
+        # (6 more attributes)
+    }
+
+Plan: 2 to add, 0 to change, 0 to destroy.""" },
+  { bash = "terraform -chdir=production init -input=false > /dev/null && terraform -chdir=production plan -lock=false -input=false", description = "Plan production", seconds = 55, output = """module.monitoring.aws_sns_topic.oncall: Refreshing state... [id=arn:aws:sns:eu-north-1:318406112230:production-oncall]
+module.monitoring.aws_sns_topic_subscription.pager[0]: Refreshing state... [id=arn:aws:sns:eu-north-1:318406112230:production-oncall:5e1c0f7a-9b2d-4c61-8f3e-2a7d1b9c4e06]
+
+Terraform will perform the following actions:
+
+  # module.monitoring.aws_cloudwatch_metric_alarm.jobs_waiting will be created
+  + resource "aws_cloudwatch_metric_alarm" "jobs_waiting" {
+      + alarm_name          = "production-jobs-waiting"
+      + threshold           = 500
+        # (12 more attributes)
+    }
+
+  # module.monitoring.aws_cloudwatch_metric_alarm.oldest_job will be created
+  + resource "aws_cloudwatch_metric_alarm" "oldest_job" {
+      + alarm_name          = "production-oldest-job"
+      + threshold           = 900
+        # (12 more attributes)
+    }
+
+Plan: 2 to add, 0 to change, 0 to destroy.""" },
+]
+
+[[turn.step]]
+commit = "Alert when the job queue backs up"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Alert when the job queue backs up"
+number = 209
+body = """Two alarms on the platform's job queue, in staging and production, paging through the on-call topic:
+
+- `jobs-waiting`: more than 500 jobs waiting for 10 minutes (`jobs_waiting_max`).
+- `oldest-job`: the oldest waiting job older than 15 minutes (`oldest_job_max_seconds`).
+
+Both read the metrics the platform already publishes to `Romanesco/Platform`. Missing data counts as breaching, so workers that stop publishing page too. What to do when they fire is in `docs/runbooks/job-queue.md`.
+
+`terraform plan -lock=false`: staging and production each add the two alarms, and change nothing else. Applying is for the apply workflow after the merge."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Alarms on the job queue’s depth (more than 500 jobs for 10 minutes) and its oldest job (older than 15 minutes), paging through the on-call topic, with a runbook in docs/runbooks/job-queue.md (infra#209).' --approach 'Built on the metrics the platform already publishes to Romanesco/Platform, in the monitoring module, so that staging and production get the same alarms.' --insights 'Missing data counts as breaching: workers that stop publishing page as a backed-up queue does. Plan with -lock=false: the keys can’t take the state’s lock.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Two alarms on the job queue, in both environments: more than 500 jobs waiting for 10 minutes, and an oldest job older than 15 minutes. They page through the on-call topic, and `docs/runbooks/job-queue.md` says what to do. infra#209 is open; each plan adds the two alarms and changes nothing else."

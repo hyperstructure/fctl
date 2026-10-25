@@ -228,6 +228,46 @@ still works (`watch 90`) is skipped. A row in `claude_usage` with a
 at its limit, which skips the runs of a schedule until then. The dev
 `.fctl-dev/token` is an access token, so its runs count as a tool's.
 
+## The demo stack
+
+```sh
+cargo xtask demo                         # the demo cast, lived in, at http://localhost:5173
+node xtask/demo/shoot.mjs --out shots    # from where Playwright is installed: its screenshots
+```
+
+`cargo xtask demo` runs the local stack as `cargo xtask dev` does, with
+its state in `.fctl-demo/` (made afresh each time), and loads the made-up
+world of [the demo skill](../.claude/skills/demo/SKILL.md) into it: the
+people, workspaces, runners, projects, schedules, memory and sessions in
+`xtask/demo/cast.toml`. Its people make it through the API, with a host for
+each runner and a stand-in GitHub (bare repositories in `.fctl-demo/github`
+that git reaches in place of github.com, holding the files in
+`xtask/demo/repos`); each session plays its transcript in
+`xtask/demo/transcripts`, forty times faster than written. Then, with the
+control plane stopped, it moves everything to the story's times in D1 and
+the Durable Objects' SQLite, and fills in what a dev instance has no GitHub
+App or Linear for: pull requests' checks, reviews, tickets, older sessions
+for the projects' counts. The sessions still at work in the story work on
+once it is back, and the people watching them watch. Sign in as any of
+them with the cast's password, which it prints with Noor's address.
+
+The story happens on a Tuesday at 09:10. The seed sets that moment at a
+minute when some time zone's clocks read 09:10, within the hour before it
+finishes, and moves the schedules to that zone and to the day of the week
+it is there; `.fctl-demo/shots.json` says which. `xtask/demo/shoot.mjs`
+takes the browser there, signs in as Noor and shoots the pages the skill
+lists, in both themes and at a phone's width (`--only`, `--page`,
+`--theme`), and `--open` opens a browser at that moment to look around or
+record in. Any other browser shows the times as they are where it is.
+
+fake-claude plays the transcripts with `--replays <dir>`: each `*.toml`
+there is one session's turns, which it streams as Claude Code would, its
+tool calls with their outputs, and makes their edits, writes, commits and
+pushes for real in the session's working directory. The format is in
+`crates/fake-claude/src/replay.rs`. `cargo test -p xtask
+the_cast_holds_together` checks that every session has a transcript that
+answers its messages and changes only what its repository holds.
+
 ## The standalone control plane
 
 Outside Cloudflare, the control plane runs as `deploy/standalone/server.mjs`

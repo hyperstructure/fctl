@@ -1,0 +1,65 @@
+# shop#222 · review of shop#1286 at its first commit: 2 issues
+match = "Review romanescohq/shop#1286, “Fix the delivery-day picker on Safari”, at commit"
+
+[[turn]]
+duration = "1m40s"
+result = "Posted the review: 2 issues, both low."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Keep the chosen delivery day when Safari's keyboard closes" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " e2e/day-picker.spec.ts       | 20 ++++++++++++++++++++\n src/components/DayPicker.tsx | 26 ++++++++++++++++----------\n 2 files changed, 37 insertions(+), 9 deletions(-)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+read = "e2e/day-picker.spec.ts"
+output = """     1\timport { devices, expect, test } from "@playwright/test";
+     2\t
+     3\ttest.use({ ...devices["iPhone 15"] });
+     4\t
+     5\ttest("keeps the chosen day when the keyboard closes", async ({ page }) => {
+     6\t  await page.goto("/checkout/delivery");
+     7\t  await page.getByRole("option", { name: "Thu 29 Oct" }).tap();
+     8\t
+     9\t  // Opening the keyboard shrinks the visual viewport: the picker shows its list.
+    10\t  await page.getByLabel("Postcode").tap();
+    11\t  await page.getByLabel("Postcode").fill("11432");
+    12\t  await page.setViewportSize({ width: 393, height: 400 });
+    13\t  await expect(page.locator(".day-picker__days--list")).toBeVisible();
+    14\t
+    15\t  // Done closes it, and the grid comes back.
+    16\t  await page.getByLabel("Postcode").blur();
+    17\t  await page.setViewportSize({ width: 393, height: 852 });
+    18\t  await page.waitForTimeout(500);
+    19\t  await expect(page.getByLabel("Pick a delivery day")).toHaveValue("Thu 29 Oct");
+    20\t});"""
+
+[[turn.step]]
+think = "The fix itself holds: the chosen day moved above the two layouts, so a remount of `Days` can't lose it. The test is the weak part. Line 18 waits a fixed 500 ms for the grid to come back: on a slow runner the re-render can take longer, and then the test fails for the wrong reason. It can wait for the selected option instead."
+
+[[turn.step]]
+read = "src/components/DayPicker.tsx"
+output = """    36\tfunction Days({ layout, slots, selected, onChoose }: DaysProps) {
+    37\t  const chosen = slots.find((s) => s.date === selected);
+    38\t  return (
+    39\t    <div className={`day-picker__days day-picker__days--${layout}`}>
+    40\t      <input
+    41\t        id="delivery-day"
+    42\t        inputMode="none"
+    43\t        className="day-picker__value"
+    44\t        value={chosen?.label ?? ""}
+    45\t        readOnly
+    46\t      />
+    47\t      <div role="listbox" aria-labelledby="delivery-day">"""
+
+[[turn.step]]
+think = "`inputMode=\"none\"` on an input that is already `readOnly` looks redundant to anyone who doesn't know Safari's behavior, and the pull request is the only place that explains it. The next person to tidy this file removes it and brings the bug back. A comment beside it keeps it."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = "Posted the review on romanescohq/shop#1286: 2 issues (low, low).\nhttps://github.com/romanescohq/shop/pull/1286#pullrequestreview-2003218"
+
+[[turn.step]]
+say = "Posted the review: 2 issues, both low."

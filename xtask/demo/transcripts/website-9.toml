@@ -1,0 +1,231 @@
+# website#9 · Noor, Saturday 10:40 · Turn the night-shift talk into a post
+match = "The slides and my speaker notes are in talks/2026-night-shift/"
+
+[[turn]]
+duration = "33m"
+result = "The post is in noorhaddad.se#14, as a draft with both diagrams redrawn in SVG. It follows your speaker notes and keeps your sentences where they read well; set a `date` and `draft: false` when you publish it."
+
+[[turn.step]]
+run = "fctl edit --title 'Turn the night-shift talk into a post' --description 'Turns the slides and notes of “Agents on the night shift” into a post, with the diagrams redrawn in SVG.'"
+description = "Name the session"
+
+[[turn.step]]
+tools = [
+  { glob = "talks/2026-night-shift/*", output = "talks/2026-night-shift/notes.md\ntalks/2026-night-shift/slides.md" },
+  { read = "talks/2026-night-shift/slides.md" },
+  { read = "talks/2026-night-shift/notes.md" },
+]
+
+[[turn.step]]
+tools = [
+  { read = "src/content.config.ts" },
+  { read = "src/content/posts/copenhagen.md" },
+  { read = "src/content/posts/what-a-box-costs.md" },
+]
+
+[[turn.step]]
+think = "The notes are what she said, slide by slide; the slides are mostly headings, plus the two diagrams in text. Her posts are short paragraphs in the first person, plain words, real numbers. So the post follows the notes, keeps her sentences where they read well, and drops what only works on a stage: the pause for a laugh, the show of hands, and the reminder to check with Sanna, which isn't for readers. The diagrams are the night as a timeline and the loop between her, the agent and the review agent."
+
+[[turn.step]]
+todo = [["Redraw “A night” in SVG", "in_progress"], ["Redraw “The loop” in SVG", "pending"], ["Write the post from the notes", "pending"], ["Build the site", "pending"]]
+
+[[turn.step]]
+write = "public/posts/night-shift/a-night.svg"
+content = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 330" role="img" aria-labelledby="t d">
+  <title id="t">A night</title>
+  <desc id="d">A task written at 22:10, a pull request at 22:55, two review findings fixed by 23:23, read over breakfast at 07:50 and merged at 08:05.</desc>
+  <style>
+    text { font: 15px system-ui, sans-serif; fill: #171717; }
+    .time { fill: #6b6b6b; font-variant-numeric: tabular-nums; }
+    .me { fill: #171717; }
+    .agent { fill: #007eff; }
+    .quiet { fill: #6b6b6b; font-style: italic; }
+  </style>
+  <line x1="84" y1="24" x2="84" y2="196" stroke="#d4d4d4" stroke-width="2"/>
+  <line x1="84" y1="196" x2="84" y2="250" stroke="#d4d4d4" stroke-width="2" stroke-dasharray="2 6"/>
+  <line x1="84" y1="250" x2="84" y2="306" stroke="#d4d4d4" stroke-width="2"/>
+  <text class="time" x="16" y="29">22:10</text><circle class="me" cx="84" cy="24" r="7"/><text x="106" y="29">I write the task and start a session</text>
+  <text class="time" x="16" y="69">22:55</text><circle class="agent" cx="84" cy="64" r="7"/><text x="106" y="69">The agent opens a pull request</text>
+  <text class="time" x="16" y="109">22:57</text><circle class="agent" cx="84" cy="104" r="7"/><text x="106" y="109">The review agent finds two problems</text>
+  <text class="time" x="16" y="149">23:20</text><circle class="agent" cx="84" cy="144" r="7"/><text x="106" y="149">The agent fixes both and pushes</text>
+  <text class="time" x="16" y="189">23:23</text><circle class="agent" cx="84" cy="184" r="7"/><text x="106" y="189">The review agent finds nothing more</text>
+  <text class="quiet" x="106" y="229">I sleep</text>
+  <text class="time" x="16" y="275">07:50</text><circle class="me" cx="84" cy="270" r="7"/><text x="106" y="275">I read it over breakfast</text>
+  <text class="time" x="16" y="311">08:05</text><circle class="me" cx="84" cy="306" r="7"/><text x="106" y="311">Merged</text>
+</svg>
+'''
+
+[[turn.step]]
+write = "public/posts/night-shift/the-loop.svg"
+content = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 270" role="img" aria-labelledby="t d">
+  <title id="t">The loop</title>
+  <desc id="d">You give an agent a task. It opens a pull request, which a review agent reads; the findings go back to the agent until there are none. Then you read it and merge.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#171717"/>
+    </marker>
+  </defs>
+  <style>
+    text { font: 15px system-ui, sans-serif; fill: #171717; text-anchor: middle; }
+    .label { font-size: 13px; fill: #555; }
+    rect { fill: #fafafa; stroke: #171717; stroke-width: 1.5; }
+    .agent rect { stroke: #007eff; }
+    .flow { fill: none; stroke: #171717; stroke-width: 1.5; marker-end: url(#arrow); }
+  </style>
+  <rect x="20" y="106" width="120" height="56" rx="10"/><text x="80" y="139">You</text>
+  <g class="agent"><rect x="270" y="106" width="140" height="56" rx="10"/><text x="340" y="139">Agent</text></g>
+  <g class="agent"><rect x="530" y="106" width="130" height="56" rx="10"/><text x="595" y="139">Review agent</text></g>
+  <path class="flow" d="M140 134 H266"/><text class="label" x="203" y="124">task</text>
+  <path class="flow" d="M410 134 H526"/><text class="label" x="468" y="124">pull request</text>
+  <path class="flow" d="M595 162 C595 226 340 226 340 166"/><text class="label" x="468" y="246">findings, until there are none</text>
+  <path class="flow" d="M595 106 C595 36 80 36 80 102"/><text class="label" x="338" y="44">no issues, checks pass: you read it and merge</text>
+</svg>
+'''
+
+[[turn.step]]
+todo = [["Redraw “A night” in SVG", "completed"], ["Redraw “The loop” in SVG", "completed"], ["Write the post from the notes", "in_progress"], ["Build the site", "pending"]]
+
+[[turn.step]]
+write = "src/content/posts/agents-on-the-night-shift.md"
+content = '''---
+title: Agents on the night shift
+summary: What we let coding agents do at Romanesco while we sleep, and what we still do ourselves.
+draft: true
+---
+
+This is a talk I gave, written down for those who weren't there.
+
+We deliver boxes of vegetables, bread and eggs from 40 farms around
+Stockholm, to about 9,000 subscribers. Eight of us write the software: the
+shop, the platform behind it and the app our drivers use. There's always
+more work than evenings.
+
+## The evening problem
+
+Some work needs a quiet evening. A migration. Moving route planning to a new
+solver. A framework upgrade. None of it is hard. It's long: two hours of
+reading, two hours of careful typing, then waiting for CI.
+
+For a year that work happened when someone gave up an evening. Usually me.
+
+## A night
+
+Now an agent does the long part. This is a real night from last month.
+
+![A night: from a task at 22:10 to a merge at 08:05](/posts/night-shift/a-night.svg)
+
+At 22:10 I write the task and start a session. By 22:55 there's a pull
+request. Two minutes later a second agent has reviewed it and found two
+problems. The first agent fixes both. At 23:23 the review is clean, and I go
+to bed. At 07:50 I read it with my coffee. At 08:05 it's merged.
+
+That's the whole trick. Everything else is about making that night go well.
+
+## What goes in the evening
+
+Not everything works. A task with a clear end does: "Cache the slot query and
+show me the numbers before and after." "Make the checkout nicer" doesn't. If
+I can't say how I'd check the result, I don't start it at night.
+
+## A second pair of eyes
+
+Every pull request is reviewed by another agent. It reads the diff fresh. It
+doesn't approve anything, and it isn't a person. But it finds what a tired
+person misses: a migration that would have locked the orders table for four
+minutes, a time zone that was an hour off, but only in winter.
+
+![The loop between you, the agent and the review agent](/posts/night-shift/the-loop.svg)
+
+You write the task. The agent works and opens a pull request. The review
+agent reads it, and its findings go back to the agent until there are none.
+When the checks pass, a person reads it and merges. The person is the last
+step. That won't change.
+
+## Notes for the next agent
+
+Agents start from nothing every time, so they leave notes for the next one.
+"Never log a stop: it carries the door code." "Run `cargo sqlx prepare` after
+you change a query, or CI fails." After a few months that's the best
+onboarding document we have. New people read it too.
+
+## The machines
+
+People expect a data centre. It's two Macs in the office, two rented Linux
+servers and my laptop. fctl runs the sessions on them, each in its own
+sandbox. When a machine needs a kernel update, we drain it: the sessions on
+it finish, and nobody notices.
+
+## Limits
+
+Plans have limits. A Pro plan can run out halfway through a long session,
+and then the session waits until it resets. So the long nightly work runs on
+the bigger plans, and we don't start everything at 02:00.
+
+## What's still hard
+
+Vague tasks. Anything visual: an agent can take a screenshot, but it has no
+taste. Flaky tests: an agent will happily retry one until it passes, so we
+told it not to.
+
+The agents work nights. We still read everything in the morning.
+'''
+
+[[turn.step]]
+bash = "npm run build"
+description = "Build the site"
+seconds = 5
+output = """
+> noorhaddad.se@1.0.0 build
+> astro build
+
+11:02:41 [content] Syncing content
+11:02:41 [content] Synced content
+11:02:41 [types] Generated 188ms
+11:02:41 [build] output: "static"
+11:02:41 [build] directory: /home/agent/workspace/dist/
+11:02:41 [build] Collecting build info...
+11:02:42 [build] ✓ Completed in 371ms.
+11:02:42 [build] Building static entrypoints...
+11:02:43 [vite] ✓ built in 1.48s
+11:02:43 [build] ✓ Completed in 1.57s.
+
+ generating static routes
+11:02:43 ▶ src/pages/index.astro
+11:02:43   └─ /index.html (+7ms)
+11:02:43 ▶ src/pages/posts/[slug].astro
+11:02:43   ├─ /posts/copenhagen/index.html (+4ms)
+11:02:43   └─ /posts/what-a-box-costs/index.html (+3ms)
+11:02:43 ✓ Completed in 38ms.
+
+11:02:43 [@astrojs/sitemap] `sitemap-index.xml` created at `dist`
+11:02:43 [build] 3 page(s) built in 2.21s
+11:02:43 [build] Complete!"""
+
+[[turn.step]]
+say = "The site builds; the post is a draft, so it shows in `npm run dev` and stays out of the build until it has a date."
+
+[[turn.step]]
+todo = [["Redraw “A night” in SVG", "completed"], ["Redraw “The loop” in SVG", "completed"], ["Write the post from the notes", "completed"], ["Build the site", "completed"]]
+
+[[turn.step]]
+commit = "Turn the night-shift talk into a post"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Turn the night-shift talk into a post"
+number = 14
+body = """"Agents on the night shift" as a post, from the speaker notes in `talks/2026-night-shift/`.
+
+- It follows the notes slide by slide and keeps your sentences where they read well. What only works on stage is out: the pause for a laugh, the show of hands, the note about checking with Sanna.
+- Both diagrams are redrawn in SVG, in `public/posts/night-shift/`, with a title and description for screen readers.
+
+It's a draft: set a `date` and `draft: false` to publish it. `npm run build` passes; the post shows in `npm run dev`."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Turned the talk “Agents on the night shift” into a post, with both diagrams redrawn in SVG (noorhaddad.se#14).' --approach 'Followed the speaker notes rather than the slides, which are mostly headings, and kept Noor’s sentences where they read well on a page.' --challenges 'Some of the notes only work spoken (a pause for a laugh, a show of hands) or aren’t for readers (a reminder to ask Sanna), so they’re out.' --insights 'Posts stay drafts until they have a date: they show in npm run dev and stay out of the build.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "The post is in noorhaddad.se#14, as a draft with both diagrams redrawn in SVG. It follows your speaker notes and keeps your sentences where they read well; set a `date` and `draft: false` when you publish it."

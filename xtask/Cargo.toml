@@ -9,6 +9,7 @@ publish = false
 anyhow.workspace = true
 base64.workspace = true
 flate2 = "1.1.10"
+fctl-domain.workspace = true
 fctl-proto = { workspace = true, features = ["ts"] }
 getrandom.workspace = true
 hex.workspace = true

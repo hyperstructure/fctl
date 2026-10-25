@@ -1,0 +1,11 @@
+<mjml>
+  <mj-body>
+    <mj-section>
+      <mj-column>
+        <mj-text>Hi {{firstName}}, your box comes on {{deliveryDay}}.</mj-text>
+        <mj-text>{{boxSummary}}</mj-text>
+        <mj-button href="{{accountUrl}}">Change your box</mj-button>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

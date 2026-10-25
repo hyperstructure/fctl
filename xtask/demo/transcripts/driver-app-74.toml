@@ -1,0 +1,315 @@
+# driver-app#74 · Aiko, last Wednesday 13:40 · Take a photo at the door when nobody answers
+match = "drivers should be able to photograph the box on the doorstep"
+
+[[turn]]
+duration = "48m"
+result = "When nobody answers, the driver can leave the box at the door and photograph it. The photo stays on the phone until the stop is marked delivered, then goes to the platform for the delivery email. driver-app#415 is open."
+
+[[turn.step]]
+run = "fctl edit --title 'Take a photo at the door when nobody answers' --description 'When nobody answers, the driver photographs the box at the door, and the photo goes in the customer’s delivery email.'"
+description = "Name the session"
+
+[[turn.step]]
+think = "A stop ends in one of two ways today: delivered or failed. A box left at the door is a delivery, so the photo belongs with the delivered mark, and it has to wait on the phone until that mark has gone. The outbox already keeps marks on the phone until it's online; the photo can travel with its entry."
+
+[[turn.step]]
+tools = [
+  { read = "app/stop/[id]/index.tsx" },
+  { read = "src/delivery/deliver.ts" },
+  { read = "src/delivery/outbox.ts" },
+  { grep = "uploadStopPhoto", path = "src", output = "src/api/client.ts:33:export async function uploadStopPhoto(id: string, file: { uri: string; type: string }, kind: \"damage\") {\nsrc/delivery/outbox.ts:1:import { markStop, uploadStopPhoto } from \"@/src/api/client\";\nsrc/delivery/outbox.ts:36:        if (entry.photo) await uploadStopPhoto(entry.stopId, { uri: entry.photo, type: \"image/jpeg\" }, \"damage\");" },
+]
+
+[[turn.step]]
+say = "The stop screen offers \"Delivered\" and \"Couldn't deliver\". Photos already reach the platform for damaged boxes, through `uploadStopPhoto`, which only knows `damage`. I'll add a third way out of the stop screen: the driver leaves the box at the door, photographs it, and the stop is delivered. The photo rides in the outbox entry that marks the stop delivered, and goes up only after that mark."
+
+[[turn.step]]
+todo = [["A camera screen for the box at the door", "in_progress"], ["Keep the photo on the phone until the stop is delivered", "pending"], ["Upload it as a doorstep photo after the mark", "pending"], ["Tests and lint", "pending"], ["The pull request", "pending"]]
+
+[[turn.step]]
+write = "src/delivery/doorstep.ts"
+content = """import { File, Paths } from "expo-file-system";
+
+/**
+ * Moves a doorstep photo from the camera's cache to the app's documents,
+ * where it stays until the outbox has sent it: the system may clear the
+ * cache, and the photo mustn't leave the phone before the stop is delivered.
+ */
+export function keepDoorstepPhoto(stopId: string, uri: string): string {
+  const kept = new File(Paths.document, `doorstep-${stopId}.jpg`);
+  new File(uri).move(kept);
+  return kept.uri;
+}
+
+/** Deletes a doorstep photo once the platform has it. */
+export function forgetDoorstepPhoto(uri: string): void {
+  const file = new File(uri);
+  if (file.exists) file.delete();
+}
+"""
+
+[[turn.step]]
+write = "app/stop/[id]/doorstep.tsx"
+content = """import { CameraView, useCameraPermissions } from "expo-camera";
+import { router, useLocalSearchParams } from "expo-router";
+import { useRef, useState } from "react";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { deliver } from "@/src/delivery/deliver";
+import { keepDoorstepPhoto } from "@/src/delivery/doorstep";
+import { log } from "@/src/log";
+import { useRoute } from "@/src/route/useRoute";
+import { colors, space } from "@/src/theme";
+
+/** Nobody answered: a photo of the box at the door, and the stop is delivered. */
+export default function DoorstepScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const stop = useRoute().find((s) => s.id === id);
+  const camera = useRef<CameraView>(null);
+  const [permission, ask] = useCameraPermissions();
+  const [photo, setPhoto] = useState<string | null>(null);
+  if (!stop) return null;
+
+  if (!permission?.granted) {
+    return (
+      <View style={styles.screen}>
+        <Text style={styles.text}>The app needs the camera to photograph the box at the door.</Text>
+        <Pressable style={styles.button} onPress={ask}>
+          <Text style={styles.label}>Allow the camera</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  const take = async () => {
+    const shot = await camera.current?.takePictureAsync({ quality: 0.6 });
+    if (shot) setPhoto(shot.uri);
+  };
+
+  const done = async () => {
+    if (!photo) return;
+    try {
+      await deliver(stop, { doorstepPhoto: keepDoorstepPhoto(stop.id, photo) });
+      router.dismissTo("/");
+    } catch (error) {
+      log.warn("couldn't keep the doorstep photo", { stop, error });
+    }
+  };
+
+  if (photo) {
+    return (
+      <View style={styles.screen}>
+        <Image source={{ uri: photo }} style={styles.preview} />
+        <Pressable style={[styles.button, styles.primary]} onPress={done}>
+          <Text style={styles.primaryLabel}>Delivered: left at the door</Text>
+        </Pressable>
+        <Pressable style={styles.button} onPress={() => setPhoto(null)}>
+          <Text style={styles.label}>Take it again</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.screen}>
+      <CameraView ref={camera} style={styles.preview} facing="back" />
+      <Text style={styles.text}>Get the box and the door in the picture, so the customer knows where to look.</Text>
+      <Pressable style={[styles.button, styles.primary]} onPress={take}>
+        <Text style={styles.primaryLabel}>Take the photo</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, padding: space.lg, gap: space.md, backgroundColor: colors.surface },
+  preview: { flex: 1, borderRadius: 16, overflow: "hidden" },
+  text: { fontSize: 15, color: colors.ink3 },
+  button: { borderRadius: 12, paddingVertical: space.lg, alignItems: "center", backgroundColor: colors.raised },
+  primary: { backgroundColor: colors.green },
+  primaryLabel: { fontSize: 17, fontWeight: "600", color: colors.surface },
+  label: { fontSize: 17, color: colors.ink },
+});
+"""
+
+[[turn.step]]
+edit = "app/stop/[id]/index.tsx"
+old = """        <Pressable style={styles.button} onPress={() => router.push(`/stop/${stop.id}/failed`)}>"""
+new = """        <Pressable style={styles.button} onPress={() => router.push(`/stop/${stop.id}/doorstep`)}>
+          <Text style={styles.label}>Nobody answered: leave it at the door</Text>
+        </Pressable>
+        <Pressable style={styles.button} onPress={() => router.push(`/stop/${stop.id}/failed`)}>"""
+
+[[turn.step]]
+edit = "src/delivery/deliver.ts"
+old = """/** Marks a stop delivered: at once when the phone is online, else as soon as it is. */
+export async function deliver(stop: Stop): Promise<void> {
+  log.info("delivered", { stop: stop.toLogSafe() });
+  await outbox.push({ kind: "delivered", stopId: stop.id });
+}"""
+new = """/**
+ * Marks a stop delivered: at once when the phone is online, else as soon as
+ * it is. A doorstep photo goes to the platform only after the mark.
+ */
+export async function deliver(stop: Stop, options: { doorstepPhoto?: string } = {}): Promise<void> {
+  log.info("delivered", { stop: stop.toLogSafe(), doorstepPhoto: Boolean(options.doorstepPhoto) });
+  await outbox.push({ kind: "delivered", stopId: stop.id, doorstepPhoto: options.doorstepPhoto });
+}"""
+
+[[turn.step]]
+todo = [["A camera screen for the box at the door", "completed"], ["Keep the photo on the phone until the stop is delivered", "in_progress"], ["Upload it as a doorstep photo after the mark", "pending"], ["Tests and lint", "pending"], ["The pull request", "pending"]]
+
+[[turn.step]]
+edit = "src/delivery/outbox.ts"
+old = """  | { kind: "delivered"; stopId: string }"""
+new = """  | { kind: "delivered"; stopId: string; doorstepPhoto?: string }"""
+
+[[turn.step]]
+edit = "src/delivery/outbox.ts"
+old = """      if (entry.kind === "delivered") {
+        await markStop(entry.stopId, "delivered");
+      } else {"""
+new = """      if (entry.kind === "delivered") {
+        await markStop(entry.stopId, "delivered");
+        // Only once the stop is delivered: the platform puts it in the delivery email.
+        if (entry.doorstepPhoto) {
+          await uploadStopPhoto(entry.stopId, { uri: entry.doorstepPhoto, type: "image/jpeg" }, "doorstep");
+          forgetDoorstepPhoto(entry.doorstepPhoto);
+        }
+      } else {"""
+
+[[turn.step]]
+edit = "src/delivery/outbox.ts"
+old = """import { storage } from "@/src/storage";"""
+new = """import { storage } from "@/src/storage";
+import { forgetDoorstepPhoto } from "./doorstep";"""
+
+[[turn.step]]
+edit = "src/api/client.ts"
+old = """/** A photo taken at a stop, for the platform to keep with it. */
+export async function uploadStopPhoto(id: string, file: { uri: string; type: string }, kind: "damage") {"""
+new = """/**
+ * A photo taken at a stop, for the platform to keep with it: a damaged box,
+ * or a box left at the door, which goes in the customer's delivery email.
+ */
+export async function uploadStopPhoto(id: string, file: { uri: string; type: string }, kind: "damage" | "doorstep") {"""
+
+[[turn.step]]
+edit = "app.json"
+old = """"Take a photo of a damaged box.\""""
+new = """"Take a photo of a damaged box, or of the box at the door when nobody answers.\""""
+
+[[turn.step]]
+write = "src/delivery/outbox.test.ts"
+content = """import { markStop, uploadStopPhoto } from "@/src/api/client";
+import { flush, outbox } from "./outbox";
+
+jest.mock("@/src/api/client");
+jest.mock("./doorstep", () => ({ forgetDoorstepPhoto: jest.fn() }));
+jest.mock("@/src/storage", () => {
+  const data = new Map<string, string>();
+  return { storage: { getString: (k: string) => data.get(k), set: (k: string, v: string) => data.set(k, v) } };
+});
+
+const calls: string[] = [];
+
+beforeEach(() => {
+  calls.length = 0;
+  jest.mocked(markStop).mockImplementation(async (id, status) => {
+    calls.push(`mark ${id} ${status}`);
+  });
+  jest.mocked(uploadStopPhoto).mockImplementation(async (id, _file, kind) => {
+    calls.push(`photo ${id} ${kind}`);
+  });
+});
+
+test("a doorstep photo goes up after the stop is marked delivered", async () => {
+  await outbox.push({ kind: "delivered", stopId: "s1", doorstepPhoto: "file:///documents/doorstep-s1.jpg" });
+  expect(calls).toEqual(["mark s1 delivered", "photo s1 doorstep"]);
+});
+
+test("offline, the photo stays on the phone with its stop", async () => {
+  jest.mocked(markStop).mockRejectedValueOnce(new Error("offline"));
+  await outbox.push({ kind: "delivered", stopId: "s2", doorstepPhoto: "file:///documents/doorstep-s2.jpg" });
+  expect(calls).toEqual([]);
+  await flush();
+  expect(calls).toEqual(["mark s2 delivered", "photo s2 doorstep"]);
+});
+
+test("a damaged box's photo still goes with its failed delivery", async () => {
+  await outbox.push({ kind: "failed", stopId: "s3", reason: "Box crushed", photo: "file:///cache/damage.jpg" });
+  expect(calls).toEqual(["mark s3 failed", "photo s3 damage"]);
+});
+"""
+
+[[turn.step]]
+tools = [
+  { bash = "npm test -- delivery", description = "Run the delivery tests", seconds = 5, output = """
+> driver-app@2.14.0 test
+> TZ=Europe/Stockholm jest delivery
+
+ PASS  src/delivery/outbox.test.ts
+  ✓ a doorstep photo goes up after the stop is marked delivered (4 ms)
+  ✓ offline, the photo stays on the phone with its stop (2 ms)
+  ✓ a damaged box's photo still goes with its failed delivery (1 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       3 passed, 3 total
+Snapshots:   0 total
+Time:        1.92 s""" },
+  { bash = "npm run lint", description = "Lint", seconds = 8, error = true, output = """
+> driver-app@2.14.0 lint
+> eslint .
+
+app/stop/[id]/doorstep.tsx
+  42:54  error  Don't log a Stop: it carries the door code. Log stop.toLogSafe() instead  local/no-unsafe-stop-log
+
+✖ 1 problem (1 error, 0 warnings)""" },
+]
+
+[[turn.step]]
+think = "The project's own lint rule caught me: the catch block logs the whole stop, door code and all, to Sentry's breadcrumbs. Every other log here uses toLogSafe()."
+
+[[turn.step]]
+edit = "app/stop/[id]/doorstep.tsx"
+old = """      log.warn("couldn't keep the doorstep photo", { stop, error });"""
+new = """      log.warn("couldn't keep the doorstep photo", { stop: stop.toLogSafe(), error });"""
+
+[[turn.step]]
+tools = [
+  { bash = "npm run lint", description = "Lint again", seconds = 8, output = """
+> driver-app@2.14.0 lint
+> eslint .
+""" },
+  { bash = "npm run typecheck", description = "Check the types", seconds = 6, output = """
+> driver-app@2.14.0 typecheck
+> tsc --noEmit
+""" },
+]
+
+[[turn.step]]
+run = "fctl memory add 'Never log a `Stop`: it carries the door code. Log `stop.toLogSafe()`; the `no-unsafe-stop-log` lint rule fails CI otherwise.'"
+description = "Remember how stops are logged"
+
+[[turn.step]]
+commit = "Take a photo at the door when nobody answers"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Take a photo at the door when nobody answers"
+number = 415
+body = """When nobody answers, the stop screen has a third way out: \"Nobody answered: leave it at the door\". The driver photographs the box at the door, and the stop is delivered.
+
+- The photo moves from the camera's cache to the app's documents (`src/delivery/doorstep.ts`), so the system can't clear it.
+- It travels in the outbox entry that marks the stop delivered, and goes up only after that mark, as a `doorstep` photo, which the platform puts in the delivery email. Offline, both wait on the phone.
+- The camera permission's text says what the photo is for.
+
+Tested with `npm test -- delivery` (the photo goes after the mark, waits offline, and damaged boxes' photos still go with failed deliveries), lint and typecheck. Not tried on a phone yet: the camera needs a device."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'A doorstep photo when nobody answers: the driver leaves the box at the door, photographs it, and the photo goes in the delivery email once the stop is marked delivered (driver-app#415).' --approach 'The photo rides in the outbox entry that marks the stop delivered, so it stays on the phone, in the app’s documents, until that mark has gone.' --challenges 'The no-unsafe-stop-log rule caught a log of the whole stop in the camera screen’s error handling; it logs stop.toLogSafe() now.' --insights 'Photos go to the platform through uploadStopPhoto with a kind; the platform decides where each kind shows.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "When nobody answers, the driver can leave the box at the door and photograph it. The photo stays on the phone until the stop is marked delivered, then goes to the platform for the delivery email. driver-app#415 is open; the camera itself needs trying on a phone."

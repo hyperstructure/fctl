@@ -1,0 +1,27 @@
+# shop#218 · review of shop#1283: passed
+match = "Review romanescohq/shop#1283, “Add a test for the postcode lookup”, at commit"
+
+[[turn]]
+duration = "37s"
+result = "No issues: tests only, and the 14 border postcodes are the ones the zones' ranges share."
+
+[[turn.step]]
+tools = [
+  { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Test the postcode lookup, the postcodes on zone borders included" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " src/lib/postcodes.test.ts     | 23 ++++++++++++++++++++\n tests/fixtures/postcodes.json | 34 ++++++++++++++++++++++++++++++\n 2 files changed, 57 insertions(+)" },
+  { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
+]
+
+[[turn.step]]
+read = "src/data/zones.json"
+
+[[turn.step]]
+think = "Tests and a fixture only, no code. The border rows match the overlaps in `zones.json`: 118 60 to 118 69 in both the inner city and Söderort, 113 00 to 113 03 in both the inner city and Solna, in the zones' order. The `normalize` cases cover spaces, a short postcode, a long one and a country prefix."
+
+[[turn.step]]
+bash = "fctl review submit /tmp/review.json"
+description = "Post the review"
+output = "Posted the review on romanescohq/shop#1283: no issues.\nhttps://github.com/romanescohq/shop/pull/1283#pullrequestreview-2002934"
+
+[[turn.step]]
+say = "No issues: tests only, and the 14 border postcodes are the ones the zones' ranges share."

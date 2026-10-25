@@ -1,0 +1,7 @@
+[
+  { "id": "sto-inner", "depot": "sto-1", "name": "Inner city", "ranges": [["11120", "11869"]] },
+  { "id": "sto-south", "depot": "sto-1", "name": "Söderort", "ranges": [["11860", "12999"]] },
+  { "id": "sto-west", "depot": "sto-1", "name": "Västerort", "ranges": [["16100", "16899"]] },
+  { "id": "sto-north", "depot": "sto-1", "name": "Solna and Sundbyberg", "ranges": [["11300", "11303"], ["16900", "17499"]] },
+  { "id": "sto-east", "depot": "sto-1", "name": "Lidingö and Nacka", "ranges": [["13100", "13199"], ["18100", "18299"]] }
+]

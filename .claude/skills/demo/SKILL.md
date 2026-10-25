@@ -1,6 +1,6 @@
 ---
 name: demo
-description: The made-up world that shows fctl in use in screenshots and videos for fctl.sh, X, LinkedIn and talks. Romanesco, a farm-box startup, with its people, workspaces, projects, runners and GitHub and Linear accounts; the sessions, reviews, memory notes, retrospectives and schedules that make it look lived in; and the avatars it needs. Use when asked for marketing screenshots or videos, for realistic demo data in cargo xtask dev, or for made-up people, companies or projects, and before adding anyone or anything to the cast.
+description: The made-up world that shows fctl in use in screenshots and videos for fctl.sh, X, LinkedIn and talks. Romanesco, a farm-box startup, with its people, workspaces, projects, runners and GitHub and Linear accounts; the sessions, reviews, memory notes, retrospectives and schedules that make it look lived in; and the avatars it needs. Use when asked for marketing screenshots or videos, for realistic demo data (cargo xtask demo loads the cast into a local stack, xtask/demo/shoot.mjs shoots it), or for made-up people, companies or projects, and before adding anyone or anything to the cast.
 ---
 
 # The demo cast
@@ -11,10 +11,13 @@ vegetables from farms around Stockholm, the people who work there and the
 projects they run agents in. The same names in every shot make the shots
 add up to one story, and keep real people's data out of them.
 
-This file is the cast: who and what exists.
-[references/content.md](references/content.md) is what fills their pages:
-sessions, reviews, memory notes, retrospectives, schedules, tickets and
-secrets.
+This file is the cast in short: who and what exists.
+[xtask/demo/cast.toml](../../../xtask/demo/cast.toml) is all of it, with
+what fills their pages (sessions, reviews, memory notes, retrospectives,
+schedules, tickets and secrets), and
+[xtask/demo/transcripts](../../../xtask/demo/transcripts) what each
+session's agent did. `cargo xtask demo` loads them into a stack of its own
+([Making the shots](#making-the-shots)).
 
 Tests and docs have a cast of their own ([below](#the-test-cast)), which
 stays there.
@@ -143,7 +146,7 @@ Romanesco names its machines after vegetables. What each is doing at 09:10:
 | `celeriac` | Rented server, Helsinki | linux/x86_64 | 32, 128 GB | docker | 10 | Kofi | Romanesco | Online: infra#38 |
 | `turnip` | Rented server, Falkenstein | linux/x86_64 | 16, 64 GB | docker | 6 | Kofi | Romanesco | Draining since 08:40, by Kofi: driver-app#77 left |
 | `Noors-MacBook-Pro` | Noor's laptop | macos/aarch64 | 16, 48 GB | apple | 2 | Noor | Romanesco (Noor's own), milkfloat, punschrulle | Online: milkfloat#96, the review of milkfloat#313 |
-| `fika` | Mini PC under Noor's TV | linux/x86_64 | 16, 32 GB | docker | 3 | Noor | punschrulle | Online, idle |
+| `fika` | Mini PC under Noor's TV | linux/x86_64 | 16, 32 GB | docker | 3 | Noor | punschrulle, milkfloat | Online, idle: the nightly benchmarks ran there from 01:00 to 02:12 |
 | `routeboard` | The club's old Mac mini behind the route-board screen | macos/aarch64 | 8, 16 GB | lima | 2 | Elsa | Crimp Collective | Offline, seen 2 days ago |
 
 Kofi drains `turnip` for a kernel update; fctl shows when and by whom, not
@@ -164,7 +167,7 @@ registered it adds it there, as a member.
 
 ## Avatars
 
-In [assets/avatars](assets/avatars): 512 × 512 PNGs, in mixed styles as
+In [xtask/demo/avatars](../../../xtask/demo/avatars): 512 × 512 PNGs, in mixed styles as
 real people's are (photos, an illustration, pixel art). fctl draws people
 round, and workspaces and GitHub accounts as rounded squares, at up to 64
 px. Their palettes are reduced (`pngquant --quality=60-98`), which keeps
@@ -193,39 +196,47 @@ show as they would for real people.
 
 ## Making the shots
 
-The screenshots skill covers the mechanics: `cargo xtask dev`, Playwright
-with reduced motion and a seeded `Math.random`, both themes, a phone width
-and `fctl publish`. What the cast adds:
+```sh
+cargo xtask demo                                   # the cast, lived in, at http://localhost:5173
+cd ~/screenshots                                   # where Playwright is (the screenshots skill)
+node <repo>/xtask/demo/shoot.mjs --out shots       # every page below, both themes, and a phone's
+```
 
-- **Loading it.** Nothing loads the cast yet. As its people, the CLI makes
-  most of it: accounts by invitation from the dev owner, workspaces and
-  their avatars (`fctl workspaces set --avatar`), projects, members,
-  invitations, secrets, schedules and memory notes, and sessions run by
-  fake-claude, which renames them, adds memory and records retrospectives
-  on cue (docs/development.md). The dev stack has no GitHub App or Linear,
-  so repositories, pull requests and their checks, reviews and the Linear
-  connection go into local D1 by hand: the project's memory (`fctl memory`)
-  has a note on each. Runners show the machine their host reports, so the
-  table's seven take more than the one dev host. Sign in as Noor, not as
-  the dev owner.
-- **Avatars.** Give each person `https://avatars.githubusercontent.com/<login>`
-  as their avatar, the address fctl also loads GitHub accounts' avatars
-  from, and answer those requests from `assets/avatars` with Playwright's
-  `page.route`. Without that, GitHub serves its grey placeholder for these
-  logins, never a stranger's face. Leave the bots' logos to GitHub.
-- **Transcripts.** fake-claude's sessions are short and generic, which
-  shows on a session page. Shots of a session page need a transcript
-  written for it; content.md outlines two.
-- **The clock.** Times show relative to now ("16h", "6d"), dates from a
-  week back, and the Agent Floor greets by the time of day. Set the
-  browser's clock to a Tuesday 09:10 with Playwright's `page.clock` and its
-  `timezoneId` to `Europe/Stockholm`, and load the cast with times relative
-  to it.
+`cargo xtask demo` makes the cast's world in a stack of its own, as its
+people would through the API, and plays every session from its transcript
+with fake-claude, on hosts for its runners and a stand-in GitHub; then it
+moves everything to the story's times and fills in what a stack without a
+GitHub App or Linear can't make: checks, reviews, tickets and the projects'
+older sessions. It takes about a quarter of an hour; Ctrl-C stops it, and
+the next run starts afresh. docs/development.md has the details.
 
-Worth shooting: the Agent Floor at 09:10, Shop's Sessions tab, shop#231's
-session page mid-turn, Platform's Reviews and Memory tabs, Romanesco's
-Runners and People tabs, Shop's Tickets tab, and a session at a phone's
-width.
+The story happens on a Tuesday at 09:10 in Stockholm. The seed sets that
+moment at a minute when some time zone's clocks read 09:10, within the hour
+before it finishes, and moves the schedules to that zone and to the day of
+the week it is there. `shoot.mjs` holds the browser's clock there, in that
+zone, so the app shows the story's times: greetings, "18m", today and
+yesterday where the story has them. It signs in as Noor, shows the cast's
+avatars where the app loads GitHub's, and answers what the stack can't ask
+GitHub or Linear. `--only floor,session` takes some of the shots, `--page
+name=/p/infra` or `--page name={driver-app#77}` others, `--theme light` one
+theme; `--open` opens a browser at that moment, on your own machine, to look
+around or record a video in. Any other browser shows the times as they are
+where it is.
+
+To change the story, change `cast.toml` and the transcripts, then check
+them: `cargo test -p xtask the_cast_holds_together` says which session lacks
+a transcript, which message no turn answers, and which edit doesn't find
+what it replaces in its repository's files (`xtask/demo/repos`). The format
+of a transcript is at the top of `crates/fake-claude/src/replay.rs`. A
+session's transcript is `<project>-<number>.toml`, and it starts the session
+whose first message contains its `match`.
+
+Worth shooting, as `shoot.mjs` does: the Agent Floor at 09:10, Shop's
+Sessions tab, shop#231's session page mid-turn, platform#445 waiting for
+Asha, shop#224 with its review round, Platform's Reviews and Memory tabs,
+Shop's Retrospectives, Schedules, Tickets and Repositories tabs,
+Romanesco's Runners and People tabs, the milkfloat workspace, Noor's
+settings, and a session and the Agent Floor at a phone's width.
 
 ## The test cast
 

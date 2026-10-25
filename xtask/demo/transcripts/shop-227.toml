@@ -1,0 +1,58 @@
+# shop#227 · the weekly dependency updates, at 02:00
+match = "Update the shop's npm dependencies that have patch or minor releases"
+
+[[turn]]
+duration = "38m"
+result = "Updated 9 dependencies in shop#1288. Two majors are left for a person: the Sentry SDK and ESLint."
+
+[[turn.step]]
+run = "fctl edit --title 'Update 9 npm dependencies' --description 'Updates the npm dependencies that have patch and minor releases in one pull request, and lists the two majors it left alone.'"
+description = "Name the session"
+
+[[turn.step]]
+bash = "npm outdated"
+description = "List outdated dependencies"
+output = """Package               Current   Wanted   Latest  Location
+@playwright/test       1.58.1   1.58.2   1.58.2  node_modules/@playwright/test
+@sentry/nextjs        9.41.0    9.47.1   10.6.0  node_modules/@sentry/nextjs
+@tanstack/react-query 5.84.1   5.87.4   5.87.4  node_modules/@tanstack/react-query
+eslint                 9.33.0   9.35.0   10.1.0  node_modules/eslint
+next                  16.0.7   16.0.10  16.0.10  node_modules/next
+stripe                19.1.0   19.3.0   19.3.0  node_modules/stripe
+typescript             5.9.2    5.9.3    5.9.3  node_modules/typescript
+vitest                 4.0.4    4.0.6    4.0.6  node_modules/vitest
+zod                   4.1.11   4.1.12   4.1.12  node_modules/zod"""
+
+[[turn.step]]
+bash = "npm update --save && npm test && npm run e2e"
+description = "Update within the ranges and run every test"
+seconds = 20
+output = """added 3 packages, changed 41 packages, and audited 1187 packages in 12s
+
+ Test Files  64 passed (64)
+      Tests  412 passed (412)
+
+Running 38 tests using 4 workers
+  38 passed (2.1m)"""
+
+[[turn.step]]
+silently = """sed -i -e 's|"@playwright/test": "^1.58.1"|"@playwright/test": "^1.58.2"|' -e 's|"@sentry/nextjs": "^9.41.0"|"@sentry/nextjs": "^9.47.1"|' -e 's|"@tanstack/react-query": "^5.84.1"|"@tanstack/react-query": "^5.87.4"|' -e 's|"eslint": "^9.33.0"|"eslint": "^9.35.0"|' -e 's|"next": "^16.0.7"|"next": "^16.0.10"|' -e 's|"stripe": "^19.1.0"|"stripe": "^19.3.0"|' -e 's|"typescript": "^5.9.2"|"typescript": "^5.9.3"|' -e 's|"vitest": "^4.0.4"|"vitest": "^4.0.6"|' -e 's|"zod": "^4.1.11"|"zod": "^4.1.12"|' package.json"""
+
+[[turn.step]]
+commit = "Update 9 npm dependencies"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Update 9 npm dependencies"
+number = 1288
+body = """Patch and minor updates for 9 dependencies; unit and e2e tests pass.
+
+Left for a person, since they need code changes:
+- @sentry/nextjs 9 → 10: `withSentryConfig` takes its options differently.
+- eslint 9 → 10: the flat config's plugins move."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Updated 9 dependencies with patch and minor releases (shop#1288).' --challenges 'Left two majors for a person, the Sentry SDK and ESLint: both need code changes, listed in the pull request.'"
+description = "Record a retrospective"

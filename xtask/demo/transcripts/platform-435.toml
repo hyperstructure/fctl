@@ -1,0 +1,154 @@
+# platform#435 · Asha's weekly flaky test hunt, Saturday 03:00 · Fix the invoice test that fails at midnight UTC
+match = "find the tests that failed and then passed on a retry"
+
+[[turn]]
+duration = "39m"
+result = "Fixed the flakiest test of last week in platform#836: `invoices_the_week_of_the_box` failed 3 times in 41 runs on main, each in the nightly run at midnight UTC, because the invoice and the test read the clock twice. The other two that needed a retry failed once each and not again in 50 runs here; the pull request lists them."
+
+[[turn.step]]
+todo = [["Find last week's runs on main that needed a retry", "in_progress"], ["Pick the flakiest test", "pending"], ["Fix it", "pending"], ["Pull request, with how often it failed", "pending"]]
+
+[[turn.step]]
+bash = "gh run list --branch main --limit 60 --json databaseId,attempt,event,createdAt --jq '.[] | select(.attempt > 1) | \"\\(.databaseId) \\(.event) \\(.createdAt[11:16])\"'"
+description = "List last week's runs on main that needed a retry"
+output = """18512044 schedule 23:58
+18498310 schedule 23:58
+18467722 push 14:21
+18455019 schedule 23:58
+18440586 push 10:07"""
+
+[[turn.step]]
+bash = "for id in 18512044 18498310 18467722 18455019 18440586; do echo \"--- $id\"; gh run view $id --attempt 1 --log-failed | grep -o 'test [a-z_:]* \\.\\.\\. FAILED'; done"
+description = "See which tests failed on the first attempt"
+seconds = 6
+output = """--- 18512044
+test billing::invoice::tests::invoices_the_week_of_the_box ... FAILED
+--- 18498310
+test billing::invoice::tests::invoices_the_week_of_the_box ... FAILED
+--- 18467722
+test jobs::tests::retries_back_off ... FAILED
+--- 18455019
+test billing::invoice::tests::invoices_the_week_of_the_box ... FAILED
+--- 18440586
+test routes::tests::plans_two_depots_at_once ... FAILED"""
+
+[[turn.step]]
+bash = "gh run view 18512044 --attempt 1 --log-failed | grep -A 2 'panicked' | cut -f 3 | cut -c 12-"
+description = "Read how the invoice test failed"
+output = """23:59:59.9712838Z thread 'billing::invoice::tests::invoices_the_week_of_the_box' panicked at src/billing/invoice.rs:65:9:
+23:59:59.9713322Z assertion `left == right` failed
+23:59:59.9713545Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"""
+
+[[turn.step]]
+run = "fctl edit --title 'Fix the invoice test that fails at midnight UTC' --description 'Three tests failed and then passed on a retry last week. Fixed the flakiest, which raced the clock at midnight UTC.'"
+description = "Name the session"
+
+[[turn.step]]
+read = "src/billing/invoice.rs"
+
+[[turn.step]]
+think = "All three failures of the invoice test came in the nightly run, which starts at 23:58 UTC, and the log says 23:59:59.97. `invoice_for` reads the clock twice, and the test twice more: when midnight falls between the reads, the invoice is issued on one day and the test expects the next. It isn't only the test, either: at midnight between a Sunday and a Monday, the invoice job could date an invoice Monday and put it in the week before."
+
+[[turn.step]]
+todo = [["Find last week's runs on main that needed a retry", "completed"], ["Pick the flakiest test", "completed"], ["Read the clock once per invoice, in the job and the test", "in_progress"], ["Pull request, with how often it failed", "pending"]]
+
+[[turn.step]]
+edit = "src/billing/invoice.rs"
+old = """/// The invoice for a box's `items`, for the week it goes out in.
+pub fn invoice_for(subscription: &str, items: &[crate::BoxItem]) -> Invoice {"""
+new = """/// The invoice for a box's `items` at `now`, for the week it goes out in.
+/// The caller reads the clock once: an invoice issued just after midnight
+/// is for the week of that same instant.
+pub fn invoice_for(subscription: &str, items: &[crate::BoxItem], now: DateTime<Utc>) -> Invoice {"""
+
+[[turn.step]]
+edit = "src/billing/invoice.rs"
+old = """        issued: Utc::now().date_naive(),
+        period: week_of(Utc::now()),"""
+new = """        issued: now.date_naive(),
+        period: week_of(now),"""
+
+[[turn.step]]
+edit = "src/billing/invoice.rs"
+old = """    #[test]
+    fn invoices_the_week_of_the_box() {
+        let invoice = invoice_for("sub_18342", &[BoxItem::test("Kale", 3500)]);
+        assert_eq!(invoice.issued, Utc::now().date_naive());
+        assert_eq!(invoice.period, week_of(Utc::now()));
+    }"""
+new = """    #[test]
+    fn invoices_the_week_of_the_box() {
+        let now: DateTime<Utc> = "2026-10-21T10:00:00Z".parse().unwrap();
+        let invoice = invoice_for("sub_18342", &[BoxItem::test("Kale", 3500)], now);
+        assert_eq!(invoice.issued, now.date_naive());
+        assert_eq!(invoice.period, week_of(now));
+    }
+
+    /// Midnight UTC, when the nightly run used to fail: a Sunday's last
+    /// instant and a Monday's first are invoiced for different weeks.
+    #[test]
+    fn midnight_starts_the_next_week() {
+        let sunday: DateTime<Utc> = "2026-10-25T23:59:59.999Z".parse().unwrap();
+        let monday: DateTime<Utc> = "2026-10-26T00:00:00Z".parse().unwrap();
+        let items = [BoxItem::test("Kale", 3500)];
+        let (before, after) = (invoice_for("sub_18342", &items, sunday), invoice_for("sub_18342", &items, monday));
+        assert_eq!(before.issued, sunday.date_naive());
+        assert_eq!(after.period.start, before.period.end + Days::new(1));
+    }"""
+
+[[turn.step]]
+grep = "invoice_for\\("
+path = "src"
+output = """src/billing/invoice.rs:40:pub fn invoice_for(subscription: &str, items: &[crate::BoxItem], now: DateTime<Utc>) -> Invoice {
+src/billing/invoice.rs:67:        let invoice = invoice_for("sub_18342", &[BoxItem::test("Kale", 3500)], now);
+src/billing/invoice.rs:79:        let (before, after) = (invoice_for("sub_18342", &items, sunday), invoice_for("sub_18342", &items, monday));
+src/jobs/invoices.rs:13:        let invoice = invoice::invoice_for(&sub.id, &items);"""
+
+[[turn.step]]
+read = "src/jobs/invoices.rs"
+
+[[turn.step]]
+edit = "src/jobs/invoices.rs"
+old = """    sqlx::query("SELECT pg_advisory_lock(4242)").execute(db.pool()).await?;
+    for sub"""
+new = """    sqlx::query("SELECT pg_advisory_lock(4242)").execute(db.pool()).await?;
+    // One instant for the whole run, which can start before midnight and
+    // end after it.
+    let now = chrono::Utc::now();
+    for sub"""
+
+[[turn.step]]
+edit = "src/jobs/invoices.rs"
+old = """        let invoice = invoice::invoice_for(&sub.id, &items);
+"""
+new = """        let invoice = invoice::invoice_for(&sub.id, &items, now);
+"""
+
+[[turn.step]]
+tools = [
+  { bash = "cargo test -p platform billing::invoice", description = "Run the invoice tests", seconds = 8, output = "running 3 tests\ntest billing::invoice::tests::a_week_runs_from_monday_to_sunday ... ok\ntest billing::invoice::tests::invoices_the_week_of_the_box ... ok\ntest billing::invoice::tests::midnight_starts_the_next_week ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.01s" },
+  { bash = "for i in $(seq 50); do cargo test -q -p platform -- retries_back_off plans_two_depots_at_once > /dev/null 2>&1 || echo failed; done | grep -c failed", description = "Run the other two 50 times", seconds = 20, output = "0" },
+]
+
+[[turn.step]]
+commit = "Read the clock once per invoice"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Fix the invoice test that fails at midnight UTC"
+number = 836
+body = """`billing::invoice::tests::invoices_the_week_of_the_box` failed 3 times in last week's 41 runs on main, and passed each time on a retry. All three were the nightly run, which starts at 23:58 UTC: `invoice_for` and the test read the clock twice, so when midnight fell between the reads, the invoice was issued on one day and the test expected the next.
+
+- `invoice_for` takes `now`, and the invoice job reads the clock once a run, so an invoice issued just after midnight is dated and placed in its week by the same instant.
+- The test uses fixed times, and a new one covers a Sunday's last instant and a Monday's first.
+
+The other two tests that needed a retry failed once each: `jobs::tests::retries_back_off` and `routes::tests::plans_two_depots_at_once`. Neither failed again in 50 runs here, so they're left for now."""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Fixed the flakiest of last week’s three retried tests on main: the invoice test that failed 3 times in 41 runs, at midnight UTC (platform#836).' --approach 'Listed the runs that needed a retry with `gh run list`, then read their first attempts’ logs. The invoice and its test read the clock twice; one `now` goes through instead, in the invoice job too.' --challenges '`jobs::tests::retries_back_off` and `routes::tests::plans_two_depots_at_once` failed once each and not again in 50 runs: listed in the pull request, not fixed.' --insights 'The nightly run starts at 23:58 UTC, so code that reads the date meets midnight there: give it one `now`.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Fixed the flakiest test of last week in platform#836: `invoices_the_week_of_the_box` failed 3 times in 41 runs on main, each in the nightly run at midnight UTC, because the invoice and the test read the clock twice. The other two that needed a retry failed once each and not again in 50 runs here; the pull request lists them."
