@@ -486,8 +486,10 @@ dependencies = [
 name = "fake-claude"
 version = "0.23.1"
 dependencies = [
+ "serde",
  "serde_json",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

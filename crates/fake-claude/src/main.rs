@@ -49,6 +49,11 @@
 //! | fctl's message about what happened to the agent's pull request on GitHub (`On GitHub, …`: a comment, failed checks, a merge) | looks at the branch's commits and says what it would do about each part, without calling GitHub; no other word in the message counts |
 //! | (attached files) | says how many images the message holds and checks that each listed file is on disk |
 //!
+//! With `--replays <dir>`, a message that starts one of the replays there
+//! (`replay.rs`) gets the turns it has written down instead: thoughts, text
+//! and tool calls, as Claude Code streams them, with the edits, commits
+//! and commands among them made for real in the working directory.
+//!
 //! Plan usage comes as Claude Code reports it after a response
 //! (`unifiedWindows` in a `rate_limit_event`): the five-hour and weekly
 //! windows follow the clock, so every session reports the same numbers.
@@ -72,6 +77,8 @@
 //! unless `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, `0`, `no` or `off`.
 //! `get_settings` answers with the model and the effort level it works at
 //! (`applied`): `--effort`, else `medium`.
+
+mod replay;
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -162,6 +169,9 @@ struct Session {
     /// What `system/init` says of the credential and the MCP servers.
     api_key_source: String,
     mcp_servers: Value,
+    /// The replays it plays (`--replays`), and the one under way.
+    library: Option<replay::Library>,
+    playing: Option<replay::Playing>,
 }
 
 /// A shell command Claude Code runs with `run_in_background`, or a
@@ -840,14 +850,19 @@ impl Session {
     /// call, `system/task_started`, and the prompt the subagent gets, which
     /// names the call, as all its messages do (`parent_tool_use_id`).
     fn start_subagent(&mut self, background: bool) -> Subagent {
+        self.start_subagent_as(background, SUBAGENT_DESCRIPTION, SUBAGENT_PROMPT)
+    }
+
+    /// Starts a subagent that does what `description` and `prompt` say.
+    fn start_subagent_as(&mut self, background: bool, description: &str, prompt: &str) -> Subagent {
         let agent = Subagent {
             tool_use_id: format!("toolu_{}", short_id(12)),
             task_id: format!("a{}", short_id(12)),
-            description: SUBAGENT_DESCRIPTION.to_owned(),
+            description: description.to_owned(),
             started: Instant::now(),
             tool_uses: 0,
         };
-        let mut input = json!({"description": SUBAGENT_DESCRIPTION, "prompt": SUBAGENT_PROMPT, "subagent_type": "general-purpose"});
+        let mut input = json!({"description": description, "prompt": prompt, "subagent_type": "general-purpose"});
         if background {
             input["run_in_background"] = json!(true);
         }
@@ -858,10 +873,10 @@ impl Session {
         );
         self.call_ended(&msg_id, "tool_use", 60);
         out(
-            &json!({"type": "system", "subtype": "task_started", "task_id": agent.task_id, "tool_use_id": agent.tool_use_id, "description": SUBAGENT_DESCRIPTION, "prompt": SUBAGENT_PROMPT, "subagent_type": "general-purpose", "task_type": "local_agent", "is_backgrounded": background, "session_id": self.id, "uuid": uuid()}),
+            &json!({"type": "system", "subtype": "task_started", "task_id": agent.task_id, "tool_use_id": agent.tool_use_id, "description": description, "prompt": prompt, "subagent_type": "general-purpose", "task_type": "local_agent", "is_backgrounded": background, "session_id": self.id, "uuid": uuid()}),
         );
         out(
-            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": SUBAGENT_PROMPT}]}, "parent_tool_use_id": agent.tool_use_id, "session_id": self.id, "uuid": uuid()}),
+            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}, "parent_tool_use_id": agent.tool_use_id, "session_id": self.id, "uuid": uuid()}),
         );
         agent
     }
@@ -908,11 +923,18 @@ impl Session {
     /// A subagent ends (`system/task_notification`). One in the background
     /// says its last words first; in the foreground, its call returns them.
     fn end_subagent(&mut self, agent: &Subagent, status: &str, background: bool) {
-        let report = if status == "completed" {
-            SUBAGENT_REPORT
-        } else {
-            ""
-        };
+        self.end_subagent_with(agent, status, background, SUBAGENT_REPORT);
+    }
+
+    /// A subagent ends, with `report` when it completed.
+    fn end_subagent_with(
+        &mut self,
+        agent: &Subagent,
+        status: &str,
+        background: bool,
+        report: &str,
+    ) {
+        let report = if status == "completed" { report } else { "" };
         if background && !report.is_empty() {
             self.subagent_says(agent, json!([{"type": "text", "text": report}]));
         }
@@ -991,8 +1013,14 @@ impl Session {
     }
 
     fn result(&mut self, started: Instant, text: &str, subtype: &str) {
+        self.result_took(started, text, subtype, None);
+    }
+
+    /// The turn's result, saying it took `took` when given, else the time
+    /// since it `started`.
+    fn result_took(&mut self, started: Instant, text: &str, subtype: &str, took: Option<Duration>) {
         self.turns += 1;
-        let ms = started.elapsed().as_millis() as u64;
+        let ms = took.unwrap_or_else(|| started.elapsed()).as_millis() as u64;
         out(&json!({
             "type": "result", "subtype": subtype, "is_error": subtype != "success", "duration_ms": ms, "duration_api_ms": ms,
             "num_turns": 3, "result": text, "stop_reason": "end_turn", "total_cost_usd": 0.0, "session_id": self.id, "uuid": uuid(),
@@ -1033,6 +1061,10 @@ impl Session {
     fn turn(&mut self, text: &str, images: usize, input: &mpsc::Receiver<Value>) {
         INTERRUPTED.store(false, Ordering::SeqCst);
         let started = Instant::now();
+        if let Some(turn) = self.replay_turn(text) {
+            self.play(turn, started);
+            return;
+        }
         let lower = text.to_lowercase();
         // What a review found, which nobody asks of fake-claude word by word.
         if is_findings(&lower) {
@@ -1697,6 +1729,8 @@ fn main() {
         } else {
             json!([{"name": "claude.ai Fake Docs", "status": "connected"}])
         },
+        library: arg("--replays").map(|dir| replay::Library::load(std::path::Path::new(&dir))),
+        playing: None,
     };
     // stdin is read on its own thread so interrupts arrive during a turn.
     let (tx, rx) = mpsc::channel::<Value>();

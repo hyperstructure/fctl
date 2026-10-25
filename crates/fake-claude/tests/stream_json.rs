@@ -549,3 +549,282 @@ fn explores_in_a_run_of_calls_with_thoughts_among_them() -> Result<(), Box<dyn E
     );
     Ok(())
 }
+
+/// A working directory with a git repository whose `origin` is a GitHub
+/// URL, and a replay directory holding `replay` played 100 times faster.
+fn replay_setup(replay: &str) -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let (home, repo, replays) = (
+        dir.path().join("home"),
+        dir.path().join("shop"),
+        dir.path().join("replays"),
+    );
+    for d in [&home, &repo, &replays] {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::create_dir_all(repo.join("lib"))?;
+    std::fs::write(
+        repo.join("lib/money.ts"),
+        "export type Currency = \"SEK\";\n",
+    )?;
+    for args in [
+        &["init", "-q", "-b", "fctl/231-add-danish"][..],
+        &["config", "user.name", "Ada"],
+        &["config", "user.email", "ada@example.com"],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/romanescohq/shop.git",
+        ],
+        &["add", "-A"],
+        &["commit", "-q", "-m", "Start"],
+    ] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("HOME", &home)
+            .status()?
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+    std::fs::write(replays.join("shop.toml"), replay)?;
+    std::fs::write(replays.join("speed"), "100")?;
+    Ok((dir, repo))
+}
+
+/// fake-claude with `--replays`, in `repo`.
+fn replaying(repo: &std::path::Path) -> Result<std::process::Child, Box<dyn Error>> {
+    let root = repo.parent().ok_or("no parent")?;
+    Ok(Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+        .args(["--replays"])
+        .arg(root.join("replays"))
+        .current_dir(repo)
+        .env("HOME", root.join("home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?)
+}
+
+#[test]
+fn a_replay_plays_its_turn_and_makes_its_changes() -> Result<(), Box<dyn Error>> {
+    let (_dir, repo) = replay_setup(
+        r#"
+match = "Add Danish to the shop"
+
+[[turn]]
+duration = "14m"
+result = "Danish is in."
+[[turn.step]]
+think = "Prices first."
+[[turn.step]]
+tools = [
+  { read = "lib/money.ts" },
+  { grep = "formatPrice", path = "src", output = "src/price.ts:3:formatPrice" },
+]
+[[turn.step]]
+edit = "lib/money.ts"
+old = "\"SEK\""
+new = "\"SEK\" | \"DKK\""
+[[turn.step]]
+write = "messages/da.json"
+content = "{ \"cart\": \"Kurv\" }\n"
+[[turn.step]]
+commit = "Add Danish translations"
+[[turn.step]]
+pr = "Add Danish to the shop"
+number = 1291
+body = "Danish copy from SHOP-419."
+[[turn.step]]
+say = "Opened the pull request."
+"#,
+    )?;
+    let mut claude = replaying(&repo)?;
+    let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
+        return Err("fake-claude's stdin and stdout aren't piped".into());
+    };
+    let turn = json!({"type": "user", "message": {"role": "user", "content": "Tomás delegated SHOP-419: Add Danish to the shop for the Copenhagen launch"}});
+    stdin.write_all(format!("{turn}\n").as_bytes())?;
+    let mut calls = Vec::new();
+    let mut outputs = HashMap::new();
+    let mut thought = false;
+    let mut result = Value::Null;
+    for line in BufReader::new(stdout).lines() {
+        let v: Value = serde_json::from_str(&line?)?;
+        let blocks = v["message"]["content"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        match v["type"].as_str() {
+            Some("assistant") => {
+                thought |= blocks.iter().any(|b| b["type"] == "thinking");
+                for b in blocks.iter().filter(|b| b["type"] == "tool_use") {
+                    calls.push((b["id"].clone(), b["name"].clone(), b["input"].clone()));
+                }
+            }
+            Some("user") => {
+                for b in blocks.iter().filter(|b| b["type"] == "tool_result") {
+                    assert_eq!(b["is_error"], false, "{}", b["content"]);
+                    outputs.insert(b["tool_use_id"].clone(), b["content"].clone());
+                }
+            }
+            Some("result") => {
+                result = v;
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(stdin);
+    claude.wait()?;
+    assert!(thought);
+    let names: Vec<&str> = calls.iter().filter_map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(names, ["Read", "Grep", "Edit", "Write", "Bash", "Bash"]);
+    // Files go by their absolute paths, and reads show the file.
+    let (read, _, input) = &calls[0];
+    let money = repo.join("lib/money.ts");
+    assert_eq!(input["file_path"], money.display().to_string());
+    assert_eq!(outputs[read], "     1\texport type Currency = \"SEK\";\n");
+    // The edit, the new file and the commit are real.
+    assert_eq!(
+        std::fs::read_to_string(&money)?,
+        "export type Currency = \"SEK\" | \"DKK\";\n"
+    );
+    assert!(repo.join("messages/da.json").is_file());
+    let log = Command::new("git")
+        .args(["log", "-1", "--format=%s%n%b"])
+        .current_dir(&repo)
+        .output()?;
+    let log = String::from_utf8(log.stdout)?;
+    assert!(log.starts_with("Add Danish translations\n"), "{log}");
+    assert!(log.contains("Co-Authored-By: Claude"), "{log}");
+    let (commit, _, input) = &calls[4];
+    assert!(
+        input["command"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("git add -A && git commit -m")),
+        "{input}"
+    );
+    assert!(
+        outputs[commit]
+            .as_str()
+            .is_some_and(|o| o.contains("2 files changed")),
+        "{}",
+        outputs[commit]
+    );
+    // The pull request is the repository's on GitHub.
+    let (pr, _, input) = &calls[5];
+    assert!(
+        input["command"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("gh pr create --title \"Add Danish to the shop\""))
+    );
+    assert_eq!(
+        outputs[pr],
+        "https://github.com/romanescohq/shop/pull/1291\n"
+    );
+    // Its result says what it was given.
+    assert_eq!(result["subtype"], "success");
+    assert_eq!(result["result"], "Danish is in.");
+    assert_eq!(result["duration_ms"], 14 * 60 * 1000);
+    Ok(())
+}
+
+#[test]
+fn a_held_call_works_until_it_is_interrupted() -> Result<(), Box<dyn Error>> {
+    let (_dir, repo) = replay_setup(
+        "match = \"Watch it\"\n[[turn]]\n[[turn.step]]\nsay = \"Watching.\"\n[[turn.step]]\nbash = \"gh pr checks 1291 --watch\"\nhold = true\n",
+    )?;
+    let mut claude = replaying(&repo)?;
+    let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
+        return Err("fake-claude's stdin and stdout aren't piped".into());
+    };
+    let turn = json!({"type": "user", "message": {"role": "user", "content": "Watch it"}});
+    stdin.write_all(format!("{turn}\n").as_bytes())?;
+    let mut ticks = 0;
+    let mut interrupted_at = None;
+    let mut ended = Value::Null;
+    for line in BufReader::new(stdout).lines() {
+        let v: Value = serde_json::from_str(&line?)?;
+        match v["type"].as_str() {
+            // It ticks on, whatever the replay's speed, until interrupted.
+            Some("tool_progress") => {
+                ticks += 1;
+                if ticks == 2 {
+                    let interrupt = json!({"type": "control_request", "request_id": "req_1", "request": {"subtype": "interrupt"}});
+                    stdin.write_all(format!("{interrupt}\n").as_bytes())?;
+                    interrupted_at = Some(Instant::now());
+                }
+            }
+            Some("result") => {
+                ended = v;
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(stdin);
+    claude.wait()?;
+    assert!(interrupted_at.is_some_and(|at| at.elapsed() < Duration::from_secs(5)));
+    assert_eq!(ended["subtype"], "error_during_execution");
+    assert_eq!(ended["result"], "Interrupted");
+    Ok(())
+}
+
+#[test]
+fn a_replay_hits_the_usage_limit_and_later_turns_answer_their_messages()
+-> Result<(), Box<dyn Error>> {
+    let (_dir, repo) = replay_setup(
+        "match = \"Match the box builder\"\n[[turn]]\n[[turn.step]]\nsay = \"Restyling.\"\n[[turn.step]]\nlimit = \"4h\"\n[[turn]]\nmatch = \"limit has reset\"\n[[turn.step]]\nsay = \"Back at it.\"\n",
+    )?;
+    let mut claude = replaying(&repo)?;
+    let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
+        return Err("fake-claude's stdin and stdout aren't piped".into());
+    };
+    let turns: String = [
+        "Match the box builder to the new illustrations",
+        "Something else first",
+        "The usage limit has reset. Continue where you left off.",
+    ]
+    .iter()
+    .map(|text| {
+        format!(
+            "{}\n",
+            json!({"type": "user", "message": {"role": "user", "content": text}})
+        )
+    })
+    .collect();
+    stdin.write_all(turns.as_bytes())?;
+    let mut limit = Value::Null;
+    let mut results = Vec::new();
+    for line in BufReader::new(stdout).lines() {
+        let v: Value = serde_json::from_str(&line?)?;
+        match v["type"].as_str() {
+            Some("rate_limit_event") if v["rate_limit_info"]["status"] == "rejected" => {
+                limit = v["rate_limit_info"].clone();
+            }
+            Some("result") => {
+                results.push(v["result"].clone());
+                if results.len() == 3 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    drop(stdin);
+    claude.wait()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let resets = limit["resetsAt"].as_u64().ok_or("no reset time")?;
+    assert!(
+        (now + 4 * 3600 - 10..=now + 4 * 3600).contains(&resets),
+        "{limit}"
+    );
+    assert_eq!(results[0], "Claude usage limit reached.");
+    // A message the replay doesn't answer gets fake-claude's usual answer.
+    assert!(results[1].as_str().is_some_and(|r| r.starts_with("Done.")));
+    assert_eq!(results[2], "Back at it.");
+    Ok(())
+}
