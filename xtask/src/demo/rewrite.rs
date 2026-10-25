@@ -258,6 +258,17 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     if let Some(r) = &s.runner {
         summary["runner"] = json!({ "id": w.runners[r], "name": r });
     }
+    // Paused at the plan's limit: until it resets, as the plan says.
+    if s.state == State::Paused
+        && let Some(left) = w
+            .cast
+            .person(&s.by)?
+            .claude
+            .iter()
+            .find_map(|c| c.usage.and_then(|u| u.limited))
+    {
+        summary["resume_at"] = json!(ctx.anchor + left.0 * 1000);
+    }
     if let (Some(pr), Some(repo)) = (&s.pr, &p.repo) {
         let refs = pull_requests(ctx, s, pr, repo, &summary)?;
         summary["pull_request"] = refs[0].clone();

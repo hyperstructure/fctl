@@ -354,7 +354,8 @@ pub struct SessionSpec {
     pub id: String,
     pub by: String,
     pub start: When,
-    /// How long it worked, to its last turn's end; absent while it works.
+    /// How long it worked, to its last turn's end: a stopped session's,
+    /// and one waiting or paused when it says; absent while it works.
     pub took: Option<Dur>,
     #[serde(default)]
     pub state: State,
@@ -784,7 +785,9 @@ impl Cast {
             if s.title.is_none() && s.review.is_none() {
                 bail!("{} has no title", s.id);
             }
-            if s.took.is_some() == (s.state != State::Stopped) {
+            if (s.state == State::Stopped && s.took.is_none())
+                || (s.state == State::Working && s.took.is_some())
+            {
                 bail!(
                     "{}: a stopped session says how long it `took`, and one still at work doesn't",
                     s.id
