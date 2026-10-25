@@ -56,6 +56,14 @@ async function scrollTo(page, text, gap = 96) {
   await page.waitForTimeout(400);
 }
 
+/** Scrolls the session page's details beside the transcript to the section with `text`. */
+async function railTo(page, text) {
+  const el = page.getByText(text, { exact: false }).first();
+  await el.waitFor({ timeout: 10_000 });
+  await el.evaluate((e) => e.scrollIntoView({ block: "center", behavior: "instant" }));
+  await page.waitForTimeout(400);
+}
+
 /**
  * Gets a page ready to shoot: a passkey authenticator, as the people's
  * browsers have (headless Chromium has none, and the sign-in page would say
@@ -234,6 +242,15 @@ const pages = {
     },
     { name: "phone-tokens", path: "/settings", phone: true, act: (page) => scrollTo(page, "Devices", 80) },
   ],
+  team: [
+    { name: "people", path: "/w/romanesco?tab=people", thumb: true },
+    { name: "members", path: "/p/shop?tab=members" },
+    { name: "project", path: "/p/shop" },
+    { name: "watching", path: session("shop#231"), settle: 2500, act: (page) => railTo(page, "Watching (") },
+    { name: "login", path: "/login", signedOut: true },
+    { name: "phone-people", path: "/w/romanesco?tab=people", phone: true, act: showTab },
+    { name: "phone-members", path: "/p/shop?tab=members", phone: true, act: showTab },
+  ],
   "sign-in": [
     { name: "login", path: "/login", signedOut: true, thumb: true },
     {
@@ -332,12 +349,14 @@ async function noor(browser, { theme, phone, flowing, signedOut }) {
     const file = path.join(avatars, `${login}.png`);
     return existsSync(file) ? route.fulfill({ path: file, contentType: "image/png" }) : route.continue();
   });
-  // An instance with a GitHub App and its webhook, which the stack can't
-  // have, as app.fctl.sh has them: no notes in settings that say it lacks them.
+  // An instance with a GitHub App and its webhook, and Google sign-in, which
+  // the stack can't have, as app.fctl.sh has them: no notes in settings that
+  // say it lacks them, and Google's button where people sign in.
   await context.route("**/api/v1/instance", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     Object.assign(body.features ?? {}, {
+      google: true,
       github: true,
       github_webhook: true,
       publish_screenshots: true,
