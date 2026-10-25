@@ -164,11 +164,13 @@ registered it adds it there, as a member.
 
 ## Avatars
 
-Square images, 512 × 512 px, in `assets/avatars/` under these names. fctl
-draws people round, and workspaces and GitHub accounts as rounded squares,
-so keep faces and logos clear of the corners. A workspace avatar can be at
-most 256 KB. Mix styles as real people do: photos, an illustration, pixel
-art.
+In [assets/avatars](assets/avatars): 512 × 512 PNGs, in mixed styles as
+real people's are (photos, an illustration, pixel art). fctl draws people
+round, and workspaces and GitHub accounts as rounded squares, at up to 64
+px. Their palettes are reduced (`pngquant --quality=60-98`), which keeps
+each under the 256 KB a workspace avatar may be, so they upload as they
+are. A new one is square, with its face or logo clear of the corners, and
+goes through the same steps.
 
 | File | Shows | Where |
 |---|---|---|
