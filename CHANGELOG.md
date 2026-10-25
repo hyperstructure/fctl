@@ -2,6 +2,34 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.24.0 (2026-10-25)
+
+### Features
+
+- Let the primary instance owner be in any number of workspaces ([#263](https://github.com/hyperstructure/fctl/pull/263))
+- **web:** Show the fctl logo in link previews ([#264](https://github.com/hyperstructure/fctl/pull/264))
+- Add llms.txt, which tells agents what fctl is and how to drive it ([#267](https://github.com/hyperstructure/fctl/pull/267))
+- Serve a sitemap of app.fctl.sh's public pages ([#265](https://github.com/hyperstructure/fctl/pull/265))
+- **cli:** Add secrets, members, sharing, archiving and agent settings ([#270](https://github.com/hyperstructure/fctl/pull/270))
+- **cli:** Set a project's name, description and default branch ([#272](https://github.com/hyperstructure/fctl/pull/272))
+- **xtask:** Add cargo xtask demo, the demo cast in a lived-in stack ([#278](https://github.com/hyperstructure/fctl/pull/278))
+- **xtask:** Shoot fctl.sh's feature pages from the demo ([#279](https://github.com/hyperstructure/fctl/pull/279))
+- **cli:** Point agents to fctl.sh/llms.txt in fctl's help ([#276](https://github.com/hyperstructure/fctl/pull/276))
+- **xtask:** Shoot fctl.sh's team page and its Google sign-in ([#282](https://github.com/hyperstructure/fctl/pull/282))
+
+### Fixes
+
+- **web:** Serve llms.txt as UTF-8 ([#268](https://github.com/hyperstructure/fctl/pull/268))
+- **control:** Let crawlers read app.fctl.sh's sitemap ([#269](https://github.com/hyperstructure/fctl/pull/269))
+- **web:** Keep the session page on screen after the iOS app switcher ([#274](https://github.com/hyperstructure/fctl/pull/274))
+- **cli:** Line up the examples in fctl publish's and fctl review's help ([#277](https://github.com/hyperstructure/fctl/pull/277))
+- **xtask:** Keep the demo's stand-in manifests out of dependency alerts ([#280](https://github.com/hyperstructure/fctl/pull/280))
+- **xtask:** Shoot the feature pages' phones below iOS's status bar ([#281](https://github.com/hyperstructure/fctl/pull/281))
+
+### Documentation
+
+- Add a made-up cast for marketing screenshots and videos ([#275](https://github.com/hyperstructure/fctl/pull/275))
+
 ## 0.23.1 (2026-10-24)
 
 ### Features
