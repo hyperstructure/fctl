@@ -2,12 +2,15 @@
 //
 //   cd ~/screenshots   # where Playwright is installed (the screenshots skill)
 //   node <repo>/xtask/demo/shoot.mjs [--out DIR] [--only floor,session] [--theme dark|light] [--size 1440x900]
+//   node <repo>/xtask/demo/shoot.mjs --page NAME=PATH   # more pages: {project#number} in PATH is that session's
+//   node <repo>/xtask/demo/shoot.mjs --open             # a browser to look around or record in, on your machine
 //
 // It signs in as Noor, shows the cast's avatars where the app loads GitHub's
-// (avatars.githubusercontent.com/<login>), answers what the dev stack can't
-// ask GitHub or Linear (review agents' problem, Linear's teams), holds the
-// motion still, and takes each shot in both themes, plus the phone-width ones.
-// `cargo xtask demo` writes what it needs to .fctl-demo/shots.json.
+// (avatars.githubusercontent.com/<login>), answers what the stack can't ask
+// GitHub or Linear (review agents' problem, Linear's teams), and holds the
+// browser's clock at the moment of the shots, 09:10 in the zone `cargo xtask
+// demo` picked (.fctl-demo/shots.json), so that the app shows the story's
+// times. Each shot is taken in both themes; the phone ones at 390 × 844.
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -30,9 +33,9 @@ const only = opt("--only", "")
   .filter(Boolean);
 const themes = opt("--theme", "dark,light").split(",");
 const [width, height] = opt("--size", "1440x900").split("x").map(Number);
+const open = args.includes("--open");
 const manifest = JSON.parse(readFileSync(path.join(root, ".fctl-demo/shots.json"), "utf8"));
 const avatars = path.join(here, "avatars");
-mkdirSync(out, { recursive: true });
 
 const session = (ref) => `/s/${manifest.sessions[ref]}`;
 // What to shoot: a name, a path, and how long the page takes to settle.
@@ -41,6 +44,7 @@ const shots = [
   { name: "shop", path: "/p/shop" },
   { name: "session", path: session("shop#231"), settle: 2500 },
   { name: "waiting", path: session("platform#445"), settle: 2000 },
+  { name: "reviewed", path: session("shop#224"), settle: 2000 },
   { name: "reviews", path: "/p/platform?tab=reviews" },
   { name: "memory", path: "/p/platform?tab=memory" },
   { name: "retrospectives", path: "/p/shop?tab=retrospectives" },
@@ -49,11 +53,11 @@ const shots = [
   { name: "repositories", path: "/p/shop?tab=repositories" },
   { name: "runners", path: "/w/romanesco?tab=runners" },
   { name: "people", path: "/w/romanesco?tab=people" },
+  { name: "milkfloat", path: "/w/milkfloat" },
   { name: "settings", path: "/settings" },
   { name: "phone-session", path: session("shop#231"), phone: true, settle: 2500 },
   { name: "phone-floor", path: "/", phone: true, settle: 3000 },
 ];
-// More pages: --page NAME=PATH, where {project#number} in PATH is that session's page.
 for (let i = 0; i < args.length; i++) {
   if (args[i] !== "--page" || !args[i + 1]) continue;
   const at = args[i + 1].indexOf("=");
@@ -62,59 +66,81 @@ for (let i = 0; i < args.length; i++) {
   shots.push({ name, path: p.startsWith("/") ? p : `/s/${p}`, phone: name.startsWith("phone"), settle: 2000 });
   if (!only.includes(name)) only.push(name);
 }
-const wanted = shots.filter((s) => s.path && !s.path.endsWith("/s/undefined") && (only.length === 0 || only.includes(s.name)));
+const wanted = shots.filter(
+  (s) => s.path && !s.path.endsWith("/s/undefined") && (only.length === 0 || only.includes(s.name)),
+);
 
-const browser = await chromium.launch();
-for (const theme of themes) {
-  for (const phone of [false, true]) {
-    const mine = wanted.filter((s) => Boolean(s.phone) === phone);
-    if (mine.length === 0) continue;
-    const context = await browser.newContext({
-      colorScheme: theme,
-      reducedMotion: "reduce",
-      timezoneId: "Europe/Stockholm",
-      locale: "en-GB",
-      viewport: phone ? { width: 390, height: 844 } : { width, height },
-      deviceScaleFactor: 2,
-      isMobile: phone,
-      hasTouch: phone,
-    });
-    await context.addInitScript(() => {
-      let seed = 42;
-      Math.random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-    });
-    // The cast's avatars in place of GitHub's; bots' logos stay GitHub's.
-    await context.route("https://avatars.githubusercontent.com/**", (route) => {
-      const login = decodeURIComponent(new URL(route.request().url()).pathname.slice(1));
-      const file = path.join(avatars, `${login}.png`);
-      return existsSync(file) ? route.fulfill({ path: file, contentType: "image/png" }) : route.continue();
-    });
-    // Review agents need a GitHub App, which the dev stack has none of.
-    await context.route("**/api/v1/projects/*/review-agents", async (route) => {
-      const response = await route.fetch();
-      const body = await response.json();
-      delete body.problem;
-      await route.fulfill({ response, json: body });
-    });
-    // Linear's teams, which the dev stack can't ask Linear for.
-    await context.route("**/api/v1/workspaces/*/linear/*/teams", (route) => {
-      const [, , , , id] = new URL(route.request().url()).pathname.split("/");
-      return route.fulfill({ json: { teams: manifest.teams[id] ?? [] } });
-    });
-    const page = await context.newPage();
-    await page.goto(new URL("/login", manifest.app).href);
-    await page.fill("input[type=email]", manifest.email);
-    await page.fill("input[type=password]", manifest.password);
-    await page.click("button[type=submit]");
-    await page.waitForURL((u) => u.pathname !== "/login");
-    for (const shot of mine) {
-      await page.goto(new URL(shot.path, manifest.app).href, { waitUntil: "networkidle" });
-      await page.waitForTimeout(shot.settle ?? 1500);
-      const file = path.join(out, `${shot.name}-${theme}.png`);
-      await page.screenshot({ path: file });
-      console.log(file);
-    }
-    await context.close();
+/** A signed-in page as Noor sees it, in `theme`, at the moment of the shots. */
+async function noor(browser, { theme, phone, flowing }) {
+  const context = await browser.newContext({
+    colorScheme: theme,
+    reducedMotion: "reduce",
+    timezoneId: manifest.zone ?? "Europe/Stockholm",
+    locale: "en-GB",
+    viewport: phone ? { width: 390, height: 844 } : open ? null : { width, height },
+    deviceScaleFactor: open ? undefined : 2,
+    isMobile: phone,
+    hasTouch: phone,
+  });
+  // Held at the moment of the shots, or, to look around, going on from it.
+  if (manifest.anchor) {
+    if (flowing) await context.clock.install({ time: manifest.anchor });
+    else await context.clock.setFixedTime(manifest.anchor);
   }
+  await context.addInitScript(() => {
+    let seed = 42;
+    Math.random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  });
+  // The cast's avatars in place of GitHub's; bots' logos stay GitHub's.
+  await context.route("https://avatars.githubusercontent.com/**", (route) => {
+    const login = decodeURIComponent(new URL(route.request().url()).pathname.slice(1));
+    const file = path.join(avatars, `${login}.png`);
+    return existsSync(file) ? route.fulfill({ path: file, contentType: "image/png" }) : route.continue();
+  });
+  // Review agents need a GitHub App, which the stack has none of.
+  await context.route("**/api/v1/projects/*/review-agents", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.problem;
+    await route.fulfill({ response, json: body });
+  });
+  // Linear's teams, which the stack can't ask Linear for.
+  await context.route("**/api/v1/workspaces/*/linear/*/teams", (route) => {
+    const [, , , , id] = new URL(route.request().url()).pathname.split("/");
+    return route.fulfill({ json: { teams: manifest.teams[id] ?? [] } });
+  });
+  const page = await context.newPage();
+  await page.goto(new URL("/login", manifest.app).href);
+  await page.fill("input[type=email]", manifest.email);
+  await page.fill("input[type=password]", manifest.password);
+  await page.click("button[type=submit]");
+  await page.waitForURL((u) => u.pathname !== "/login");
+  return { context, page };
 }
-await browser.close();
+
+if (open) {
+  const browser = await chromium.launch({ headless: false });
+  const { page } = await noor(browser, { theme: themes[0], phone: false, flowing: true });
+  console.log(`Signed in as ${manifest.email} at 09:10 in ${manifest.zone}. Close the browser to stop.`);
+  await page.waitForEvent("close", { timeout: 0 });
+  await browser.close();
+} else {
+  mkdirSync(out, { recursive: true });
+  const browser = await chromium.launch();
+  for (const theme of themes) {
+    for (const phone of [false, true]) {
+      const mine = wanted.filter((s) => Boolean(s.phone) === phone);
+      if (mine.length === 0) continue;
+      const { context, page } = await noor(browser, { theme, phone, flowing: false });
+      for (const shot of mine) {
+        await page.goto(new URL(shot.path, manifest.app).href, { waitUntil: "networkidle" });
+        await page.waitForTimeout(shot.settle ?? 1500);
+        const file = path.join(out, `${shot.name}-${theme}.png`);
+        await page.screenshot({ path: file });
+        console.log(file);
+      }
+      await context.close();
+    }
+  }
+  await browser.close();
+}

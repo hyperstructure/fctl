@@ -17,6 +17,7 @@
 //!    work in the story work on, and the people watching them watch.
 
 pub mod cast;
+mod clock;
 mod github;
 mod rewrite;
 mod sqlite;
@@ -335,7 +336,13 @@ fn wrangler(root: &Path, state: &Path, cast: &Cast, children: &mut Children) -> 
 /// What `xtask/demo/shoot.mjs` needs: where to sign in as whom, the
 /// sessions and workspaces by the cast's names, and the Linear teams the
 /// dev stack can't ask Linear for.
-fn shots(cast: &Cast, world: &world::World, state: &Path, app: &str) -> Result<()> {
+fn shots(
+    cast: &Cast,
+    world: &world::World,
+    story: &clock::Story,
+    state: &Path,
+    app: &str,
+) -> Result<()> {
     let noor = cast.person("noor")?;
     let sessions: serde_json::Map<String, Value> = world
         .sessions
@@ -373,6 +380,8 @@ fn shots(cast: &Cast, world: &world::World, state: &Path, app: &str) -> Result<(
         "sessions": sessions,
         "workspaces": world.workspaces,
         "teams": teams,
+        "anchor": story.anchor,
+        "zone": story.zone,
     });
     std::fs::write(
         state.join("shots.json"),
@@ -436,7 +445,7 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
     // fake-claude's replays, played fast while the seed runs them.
     let replays = state.join("replays");
     std::fs::create_dir_all(&replays)?;
-    for (name, _) in &transcripts.matches {
+    for name in transcripts.matches.keys() {
         std::fs::copy(
             transcripts.dir.join(format!("{name}.toml")),
             replays.join(format!("{name}.toml")),
@@ -471,7 +480,9 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
     step("workspaces");
     world.workspaces(&data)?;
     step("runners and their hosts");
-    world.runners(&mut others)?;
+    // Runners offline in the story run their sessions too, and stop after.
+    let mut offline = Children(Vec::new());
+    world.runners(&mut others, &mut offline)?;
     step("projects");
     world.projects()?;
     world.connections()?;
@@ -481,15 +492,16 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
     step("sessions, as the story has them");
     world.sessions(&mut others)?;
     world.drains()?;
+    drop(offline);
 
     step("the story's times");
     drop(control);
-    // When the control plane will be back: the moment of the shots.
-    let anchor = now_ms() + 20_000;
-    rewrite::rewrite(&world, anchor)?;
+    // The moment of the shots: just now, at 09:10 somewhere.
+    let story = clock::Story::at(now_ms());
+    rewrite::rewrite(&world, &story)?;
     let mut control = Children(Vec::new());
     wrangler(root, &state, &cast, &mut control)?;
-    world.until_hosts_online(&mut others)?;
+    world.until_hosts_online(&mut others, false)?;
     rewrite::machines(&world)?;
     std::fs::write(replays.join("speed"), "1")?;
     // The people watching the sessions they watch in the shots.
@@ -513,14 +525,16 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
     } else {
         dev::WEB
     };
-    shots(&cast, &world, &state, open)?;
+    shots(&cast, &world, &story, &state, open)?;
+    let ago = (now_ms() - story.anchor) / 60_000;
     eprintln!(
         "\n\x1b[1mthe demo is running\x1b[0m\n\n  \
          app       {open}\n  \
          sign in   {} / {} (everyone's password)\n  \
-         shoot     node xtask/demo/shoot.mjs (see .claude/skills/demo/SKILL.md)\n\n\
+         story     09:10 in {}, {ago} minutes ago: the times are the story's in that zone at that moment\n  \
+         shoot     node xtask/demo/shoot.mjs, which shows them so (see .claude/skills/demo/SKILL.md)\n\n\
          Ctrl-C stops everything. State lives in .fctl-demo/; the next run starts it afresh.\n",
-        noor.email, cast.instance.password,
+        noor.email, cast.instance.password, story.zone,
     );
     loop {
         control.check()?;

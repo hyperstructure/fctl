@@ -2500,6 +2500,7 @@ version = "0.23.1"
 dependencies = [
  "anyhow",
  "base64",
+ "fctl-domain",
  "fctl-proto",
  "flate2",
  "getrandom 0.4.3",

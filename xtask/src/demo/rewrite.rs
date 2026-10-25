@@ -8,6 +8,7 @@
 //! ([`Clock`]). Every time in what it stored moves with them.
 
 use super::cast::{self, SessionSpec, State};
+use super::clock::Story;
 use super::sqlite::{self, Db};
 use super::world::World;
 use anyhow::{Context, Result};
@@ -102,6 +103,8 @@ fn session_objects(state: &std::path::Path) -> Result<BTreeMap<String, PathBuf>>
 
 struct Ctx<'w, 'a> {
     w: &'w World<'a>,
+    /// The moment of the shots, and the zone whose clocks read 09:10 then.
+    story: &'w Story,
     anchor: i64,
     /// Where real times fell: from just before the seed started to just
     /// after the control plane is back.
@@ -124,10 +127,12 @@ impl Ctx<'_, '_> {
     }
 }
 
-pub fn rewrite(w: &World, anchor: i64) -> Result<()> {
+pub fn rewrite(w: &World, story: &Story) -> Result<()> {
     let state = w.state.join("wrangler");
+    let anchor = story.anchor;
     let ctx = Ctx {
         w,
+        story,
         anchor,
         window: (w.started - 3_600_000, anchor + 6 * 3_600_000),
     };
@@ -193,6 +198,7 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     }
     let last_result = events
         .iter()
+        .rev()
         .filter(|r| {
             kind(r) == "claude"
                 && r.get("data")
@@ -200,7 +206,7 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
                     .is_some_and(|d| d.contains("\"type\":\"result\""))
         })
         .map(ts)
-        .last();
+        .next();
     let last = events.iter().map(ts).max().unwrap_or(created);
     let end_story = match (s.took, s.state) {
         (Some(took), _) => ctx.at(&s.start) + took.0 * 1000,
@@ -739,15 +745,39 @@ fn schedules(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         }
         if let Some(skip) = &s.skipped {
             let at = ctx.at(&skip.at);
+            // `{resets}`: when the owner's plan comes off its limit.
+            let resets = w
+                .cast
+                .person(&s.owner)?
+                .claude
+                .iter()
+                .find_map(|c| c.usage.and_then(|u| u.limited))
+                .map_or(ctx.anchor + 3_600_000, |left| ctx.anchor + left.0 * 1000);
+            let reason = skip.reason.replace("{resets}", &ctx.story.stamp(resets));
             d1.exec(
                 "INSERT INTO schedule_runs (id, schedule_id, due_at, at, outcome, reason, trigger, user_id, session_id) VALUES (?, ?, ?, ?, 'skipped', ?, 'time', ?, NULL)",
-                vec![json!(format!("srn_demo{}", id.trim_start_matches("sch_"))), json!(id), json!(at), json!(at), json!(skip.reason), json!(w.users[&s.owner])],
+                vec![json!(format!("srn_demo{}", id.trim_start_matches("sch_"))), json!(id), json!(at), json!(at), json!(reason), json!(w.users[&s.owner])],
             );
             last = last.max(Some(at));
         }
+        // In the story's zone, on the days its Tuesday moved to.
+        let cron = s.cron.as_deref().map(|c| ctx.story.cron(c)).transpose()?;
+        let next = match (&s.cron, s.paused) {
+            (Some(c), false) => ctx.story.next_run(c)?,
+            _ => None,
+        };
         d1.exec(
-            "UPDATE schedules SET created_at = ?, updated_at = ?, last_run_at = COALESCE(?, last_run_at) WHERE id = ?",
-            vec![json!(created), json!(last.unwrap_or(created)), json!(last), json!(id)],
+            "UPDATE schedules SET created_at = ?, updated_at = ?, last_run_at = COALESCE(?, last_run_at), timezone = ?, \
+             cron = COALESCE(?, cron), next_run_at = COALESCE(?, next_run_at) WHERE id = ?",
+            vec![
+                json!(created),
+                json!(last.unwrap_or(created)),
+                json!(last),
+                json!(ctx.story.zone),
+                json!(cron),
+                json!(next),
+                json!(id),
+            ],
         );
     }
     Ok(())
@@ -881,12 +911,10 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         );
         if let Some(l) = &ws.linear {
             let at = ctx.at(&l.at);
-            for table in ["workspace_linear"] {
-                d1.exec(
-                    &format!("UPDATE {table} SET created_at = ? WHERE workspace_id = ?"),
-                    vec![json!(at), json!(wid)],
-                );
-            }
+            d1.exec(
+                "UPDATE workspace_linear SET created_at = ? WHERE workspace_id = ?",
+                vec![json!(at), json!(wid)],
+            );
             d1.exec(
                 "UPDATE linear_installations SET created_at = ?, updated_at = ? WHERE organization_id = ?",
                 vec![json!(at), json!(at), json!(format!("lin-{}", ws.slug))],
@@ -1074,7 +1102,9 @@ fn session_id(at: i64, seed: &str) -> String {
 }
 
 /// The sessions before the cast's, which a project's header counts and its
-/// list goes on with: rows alone, titled from the project's `history`.
+/// list goes on with: rows alone, titled from the project's `history`,
+/// started by people who were in its workspace by then, on runners it had
+/// then, with the retrospectives its tab counts beyond the cast's.
 fn fillers(ctx: &Ctx, d1: &mut Db) -> Result<()> {
     let w = ctx.w;
     for p in &w.cast.projects {
@@ -1104,14 +1134,27 @@ fn fillers(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         let numbers: Vec<u32> = (1..=wanted)
             .map(|k| (u64::from(k) * u64::from(free) / u64::from(wanted)) as u32)
             .collect();
-        let w_spec = w.cast.workspace(&p.workspace)?;
-        let people: Vec<&str> = w_spec.people();
-        let runners: Vec<&str> = w
+        let count = numbers.len();
+        let ws = w.cast.workspace(&p.workspace)?;
+        let created = ctx.at(&ws.created);
+        let people: Vec<(&str, i64)> = ws
+            .people()
+            .into_iter()
+            .map(|id| {
+                let joined = ws
+                    .joined
+                    .get(id)
+                    .or_else(|| w.cast.person(id).ok().map(|x| &x.joined))
+                    .map_or(created, |j| ctx.at(j));
+                (id, joined.max(created))
+            })
+            .collect();
+        let runners: Vec<(&str, i64)> = w
             .cast
             .runners
             .iter()
             .filter(|r| r.workspaces.contains(&p.workspace) && !r.personal.contains(&p.workspace))
-            .map(|r| r.name.as_str())
+            .map(|r| (r.name.as_str(), ctx.at(&r.created)))
             .collect();
         let from = ctx.at(&p.created) + 86_400_000;
         let until = own
@@ -1122,26 +1165,51 @@ fn fillers(ctx: &Ctx, d1: &mut Db) -> Result<()> {
             - 3_600_000;
         let span = (until - from).max(1);
         let pid = &w.projects[&p.slug];
+        // Pull requests count back from the cast's first, two apart where
+        // there is room for other people's in between.
         let first_pr = own
             .iter()
             .filter_map(|s| s.pr.as_ref().map(|x| x.number))
             .min()
             .unwrap_or(100);
-        let count = numbers.len().max(1) as i64;
+        let with_pr: Vec<usize> = (0..count)
+            .filter(|i| p.repo.is_some() && i % 9 != 4)
+            .collect();
+        let step = ((first_pr - 1) / (with_pr.len() as u64).max(1)).clamp(1, 2);
+        let pr_of: BTreeMap<usize, u64> = with_pr
+            .iter()
+            .rev()
+            .enumerate()
+            .filter_map(|(k, i)| {
+                let n = first_pr.checked_sub((k as u64 + 1) * step)?;
+                (n >= 1).then_some((*i, n))
+            })
+            .collect();
+        let outcomes = filler_outcomes(ctx, p, d1, count)?;
         for (i, n) in numbers.iter().enumerate() {
-            let title = &p.history[i % p.history.len()];
+            // The newest take the history's last titles.
+            let back = count - 1 - i;
+            let title = &p.history[p.history.len() - 1 - back % p.history.len()];
             // Spread over the project's life, a little irregular, in order.
             let jitter = (i64::from(*n) * 7919 % 97) * 60_000;
-            let at = from + span * i as i64 / count + jitter.min(span / count / 2);
-            let by = people[(i * 7 + i / 3) % people.len()];
+            let at = from + span * i as i64 / count as i64 + jitter.min(span / count as i64 / 2);
+            let there: Vec<&str> = people
+                .iter()
+                .filter(|(_, joined)| *joined <= at)
+                .map(|(id, _)| *id)
+                .collect();
+            let by = there
+                .get((i * 7 + i / 3) % there.len().max(1))
+                .copied()
+                .unwrap_or(ws.owner.as_str());
             let took = (12 + (i * 37) % 70) as i64 * 60_000;
-            let runner = runners
-                .get(i % runners.len().max(1))
-                .map(|r| w.runners[*r].clone());
-            let pr = first_pr
-                .saturating_sub((count as u64 - i as u64) * 2 + 1)
-                .max(1);
-            let has_pr = p.repo.is_some() && i % 9 != 4;
+            let on: Vec<&str> = runners
+                .iter()
+                .filter(|(_, made)| *made <= at)
+                .map(|(name, _)| *name)
+                .collect();
+            let runner = on.get(i % on.len().max(1)).map(|r| w.runners[*r].clone());
+            let pr = pr_of.get(&i).copied();
             let branch = format!("fctl/{n}-{}", super::world::slug(title));
             let stats = json!({
                 "turns": 1 + i % 3, "tool_calls": 14 + (i * 13) % 60, "files_changed": 1 + i % 7,
@@ -1149,8 +1217,8 @@ fn fillers(ctx: &Ctx, d1: &mut Db) -> Result<()> {
                 "input_tokens": 2_000 + (i * 977) % 9_000, "output_tokens": 9_000 + (i * 3_331) % 40_000,
                 "cache_read_tokens": 400_000 + (i * 91_771) % 2_400_000,
             });
-            let (url, state, prs) = match (&p.repo, has_pr) {
-                (Some(repo), true) => {
+            let (url, state, prs) = match (&p.repo, pr) {
+                (Some(repo), Some(pr)) => {
                     let (owner, name) = repo.split_once('/').context("owner/name")?;
                     let url = format!("https://github.com/{repo}/pull/{pr}");
                     let state = if i % 23 == 11 { "closed" } else { "merged" };
@@ -1160,10 +1228,14 @@ fn fillers(ctx: &Ctx, d1: &mut Db) -> Result<()> {
                 }
                 _ => (None, None, None),
             };
+            let id = session_id(at, &format!("{}#{n}", p.slug));
             d1.exec(
-                "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, runner_id, branch, base_branch, model,                  claude_session_id, pr_number, pr_url, pr_title, pr_state, pull_requests, stats, archived, created_at, updated_at,                  started_at, ended_at, last_activity_at, search_indexed)                  VALUES (?, ?, ?, ?, ?, 'stopped', ?, ?, ?, 'main', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 1)",
+                "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, runner_id, branch, base_branch, model, \
+                 claude_session_id, pr_number, pr_url, pr_title, pr_state, pull_requests, stats, archived, created_at, updated_at, \
+                 started_at, ended_at, last_activity_at, search_indexed) \
+                 VALUES (?, ?, ?, ?, ?, 'stopped', ?, ?, ?, 'main', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 1)",
                 vec![
-                    json!(session_id(at, &format!("{}#{n}", p.slug))),
+                    json!(id),
                     json!(pid),
                     json!(n),
                     json!(title),
@@ -1173,9 +1245,9 @@ fn fillers(ctx: &Ctx, d1: &mut Db) -> Result<()> {
                     json!(branch),
                     json!(p.model.clone().unwrap_or_else(|| "opus".into())),
                     json!(format!("demo-{}-{n}", p.slug)),
-                    json!(has_pr.then_some(pr)),
+                    json!(pr),
                     json!(url),
-                    json!(has_pr.then_some(title)),
+                    json!(pr.map(|_| title)),
                     json!(state),
                     json!(prs),
                     json!(stats.to_string()),
@@ -1186,9 +1258,87 @@ fn fillers(ctx: &Ctx, d1: &mut Db) -> Result<()> {
                     json!(at + took),
                 ],
             );
+            if let Some(outcome) = outcomes.get(back).copied().flatten() {
+                let repo = p.repo.as_deref().map(|r| r.rsplit('/').next().unwrap_or(r));
+                let worked_on = match (repo, pr) {
+                    (Some(r), Some(n)) => format!("{title} ({r}#{n})."),
+                    _ => format!("{title}."),
+                };
+                let challenges = match outcome {
+                    "partial" => Some(
+                        [
+                            "What's left is listed in the pull request.",
+                            "The rest needs a decision, which the pull request asks for.",
+                            "Stopped where the tests need a device the sandbox doesn't have.",
+                        ][i % 3],
+                    ),
+                    "blocked" => Some(
+                        [
+                            "It needs access the sandbox doesn't have.",
+                            "It waits for the project's owner to choose a way.",
+                        ][i % 2],
+                    ),
+                    _ => None,
+                };
+                d1.exec(
+                    "INSERT INTO retrospectives (id, project_id, session_id, created_at, outcome, worked_on, challenges) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    vec![
+                        json!(session_id(at + took, &format!("retro {}#{n}", p.slug)).replacen("ses_", "rtr_", 1)),
+                        json!(pid),
+                        json!(id),
+                        json!(at + took),
+                        json!(outcome),
+                        json!(worked_on),
+                        json!(challenges),
+                    ],
+                );
+            }
         }
     }
     Ok(())
+}
+
+/// The outcomes of the retrospectives of a project's `count` older
+/// sessions, newest first: what its `retros` count beyond those its
+/// cast's sessions recorded, spread out; the oldest sessions have none.
+fn filler_outcomes(
+    ctx: &Ctx,
+    p: &cast::Project,
+    d1: &mut Db,
+    count: usize,
+) -> Result<Vec<Option<&'static str>>> {
+    let [completed, partial, blocked] = p.retros[..] else {
+        return Ok(Vec::new());
+    };
+    let recorded = d1.query(
+        "SELECT outcome, COUNT(*) AS n FROM retrospectives WHERE project_id = ? GROUP BY outcome",
+        &[json!(ctx.w.projects[&p.slug])],
+    )?;
+    let had = |outcome: &str| {
+        recorded
+            .iter()
+            .find(|r| r.get("outcome").and_then(Value::as_str) == Some(outcome))
+            .and_then(|r| r.get("n"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize
+    };
+    let left = |total: u32, outcome: &str| (total as usize).saturating_sub(had(outcome));
+    let (partial, blocked) = (left(partial, "partial"), left(blocked, "blocked"));
+    let total = (left(completed, "completed") + partial + blocked).min(count);
+    let mut out = vec![Some("completed"); total];
+    out.resize(count, None);
+    for (k, outcome, phase) in [(partial, "partial", 0.5), (blocked, "blocked", 0.3)] {
+        for j in 0..k {
+            let mut at = ((j as f64 + phase) * total as f64 / k as f64) as usize;
+            while at < total && out[at] != Some("completed") {
+                at += 1;
+            }
+            if let Some(slot) = out.get_mut(at) {
+                *slot = Some(outcome);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The audit log: each entry when the story has what it records.

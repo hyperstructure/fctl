@@ -374,9 +374,10 @@ impl<'a> World<'a> {
 
     // ─────────────────────────────── runners ───────────────────────────────
 
-    /// Registers the runners and starts a host for each one that is
-    /// online in the story.
-    pub fn runners(&mut self, children: &mut Children) -> Result<()> {
+    /// Registers the runners and starts a host for each: in `children`
+    /// those online in the story, in `offline` the others, which the seed
+    /// stops once their sessions have run.
+    pub fn runners(&mut self, children: &mut Children, offline: &mut Children) -> Result<()> {
         let replays = self.state.join("replays");
         let bin = crate::util::target_dir(&self.root).join("debug");
         for r in &self.cast.runners {
@@ -407,10 +408,6 @@ impl<'a> World<'a> {
                 )?;
             }
             self.runners.insert(r.name.clone(), id);
-            if r.seen.is_some() {
-                // Offline in the story: no host.
-                continue;
-            }
             let dir = self.state.join("hosts").join(&r.name);
             std::fs::create_dir_all(&dir)?;
             dev::write_private(&dir.join("host-token"), &token)?;
@@ -455,18 +452,23 @@ impl<'a> World<'a> {
             )
             .spawn()
             .with_context(|| format!("starting {}'s host", r.name))?;
-            children.0.push(("host", host));
+            if r.seen.is_some() {
+                offline.0.push(("an offline runner's host", host));
+            } else {
+                children.0.push(("host", host));
+            }
         }
-        self.until_hosts_online(children)
+        self.until_hosts_online(children, true)
     }
 
-    /// Waits until every runner the story has online is.
-    pub fn until_hosts_online(&self, children: &mut Children) -> Result<()> {
+    /// Waits until every runner the story has online is, and, with `all`,
+    /// the others too.
+    pub fn until_hosts_online(&self, children: &mut Children, all: bool) -> Result<()> {
         let online: Vec<&str> = self
             .cast
             .runners
             .iter()
-            .filter(|r| r.seen.is_none())
+            .filter(|r| all || r.seen.is_none())
             .map(|r| r.name.as_str())
             .collect();
         let deadline = Instant::now() + Duration::from_secs(60);
