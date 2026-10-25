@@ -1,5 +1,5 @@
 //! `fctl run`, `sessions`, `show`, `edit`, `logs`, `send`, `interrupt`, `stop`, `resume`,
-//! `follow`, `unfollow`, `open`.
+//! `follow`, `unfollow`, `share`, `unshare`, `archive`, `unarchive`, `open`.
 
 use crate::config;
 use crate::render::Renderer;
@@ -9,8 +9,10 @@ use clap::Args;
 use fctl_client::Api;
 use fctl_domain::{files, pulls};
 use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
-use fctl_proto::api::{CreateSessionRequest, UpdateSessionRequest};
-use fctl_proto::session::{GithubAccess, PullRequestRef, Session, SessionStats};
+use fctl_proto::api::{
+    CreateSessionRequest, CreateShareRequest, SessionShare, UpdateSessionRequest,
+};
+use fctl_proto::session::{GithubAccess, PullRequestRef, Session, SessionRole, SessionStats};
 use fctl_proto::{AttachmentId, SessionId};
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
@@ -91,9 +93,46 @@ pub struct ListArgs {
     /// Only active sessions.
     #[arg(short, long)]
     pub active: bool,
+    /// The archived sessions too, which lists leave out.
+    #[arg(long)]
+    pub archived: bool,
     /// How many to show.
     #[arg(long, default_value_t = 30)]
     pub limit: u32,
+}
+
+#[derive(Args)]
+pub struct ShareArgs {
+    /// A session: its id (ses_…), its URL, or project#number.
+    pub session: String,
+    /// The address they are in the session's workspace as. Without it,
+    /// lists who the session is shared with.
+    pub email: Option<String>,
+    /// What they may do in it. Sharing it again with them changes it.
+    #[arg(long, value_enum, default_value_t = ShareRole::Editor, requires = "email")]
+    pub role: ShareRole,
+}
+
+/// What someone may do in a session shared with them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum ShareRole {
+    /// Reads its transcript.
+    Viewer,
+    /// Also messages and interrupts its agent.
+    Editor,
+    /// Also stops, resumes, archives and shares it. Only who started it,
+    /// or an admin of its workspace, shares ownership.
+    Owner,
+}
+
+impl From<ShareRole> for SessionRole {
+    fn from(r: ShareRole) -> Self {
+        match r {
+            ShareRole::Viewer => Self::Viewer,
+            ShareRole::Editor => Self::Editor,
+            ShareRole::Owner => Self::Owner,
+        }
+    }
 }
 
 /// Resolves `ses_…`, a URL ending in it, or `project#12`.
@@ -259,6 +298,7 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
             args.workspace.as_deref(),
             project.as_deref(),
             status,
+            args.archived,
             args.limit,
         )
         .await?;
@@ -269,7 +309,10 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
         println!("No sessions. Start one with `fctl run`.");
     }
     for s in &list.sessions {
-        let when = style::ago(s.last_activity_at.unwrap_or(s.created_at));
+        let mut when = style::ago(s.last_activity_at.unwrap_or(s.created_at));
+        if s.archived {
+            when.push_str(" · archived");
+        }
         let reference = format!("{}#{}", s.project_slug, s.number);
         println!(
             "{:<20} {:<18} {:<44} {}",
@@ -446,6 +489,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     }
     if let Some(following) = s.following {
         println!("follow:   {}", if following { "yes" } else { "no" });
+    }
+    if s.archived {
+        println!("archived: yes, so lists leave it out");
     }
     let st = &s.stats;
     println!(
@@ -771,6 +817,140 @@ pub async fn follow(server: Option<&str>, reference: &str, follow: bool, json: b
     Ok(())
 }
 
+/// What someone a session is shared with may do, in a few words.
+fn may(role: SessionRole) -> &'static str {
+    match role {
+        SessionRole::Viewer => "can view",
+        SessionRole::Editor => "can message",
+        SessionRole::Owner => "owner",
+    }
+}
+
+/// The share of `who`: their address in the session's workspace, or
+/// their user id.
+fn shared_with<'a>(shares: &'a [SessionShare], who: &str) -> Option<&'a SessionShare> {
+    let who = who.trim();
+    shares
+        .iter()
+        .find(|sh| sh.user.id.as_str() == who || sh.email.eq_ignore_ascii_case(who))
+}
+
+/// `fctl share`: shares a session with someone, or lists who it is shared
+/// with.
+pub async fn share(server: Option<&str>, args: ShareArgs, json: bool) -> Result<()> {
+    let api = config::api(server)?;
+    let s = resolve(&api, &args.session).await?;
+    let name = format!("{}#{}", s.project_slug, s.number);
+    let Some(email) = args.email else {
+        let list = api.shares(&s.id.0).await?;
+        if json {
+            return style::print_json(&list);
+        }
+        if list.shares.is_empty() {
+            println!(
+                "{name} isn't shared with anyone outside its project. Share it with `fctl share {name} <email>`."
+            );
+        }
+        for sh in &list.shares {
+            println!(
+                "{:<28} {:<36} {}",
+                style::bold(&sh.user.name),
+                sh.email,
+                style::dim(may(sh.role))
+            );
+        }
+        return Ok(());
+    };
+    let role = SessionRole::from(args.role);
+    let list = api
+        .share(
+            &s.id.0,
+            &CreateShareRequest {
+                email: email.trim().to_owned(),
+                role,
+            },
+        )
+        .await?;
+    if json {
+        return style::print_json(&list);
+    }
+    let who = shared_with(&list.shares, &email).map_or(email.trim(), |sh| sh.user.name.as_str());
+    println!(
+        "{} Shared {name} with {who}: {}",
+        style::accent("✓"),
+        match role {
+            SessionRole::Viewer => "they can view it",
+            SessionRole::Editor => "they can view it and message its agent",
+            SessionRole::Owner => "they own it too",
+        }
+    );
+    Ok(())
+}
+
+/// `fctl unshare`.
+pub async fn unshare(server: Option<&str>, reference: &str, who: &str, json: bool) -> Result<()> {
+    let api = config::api(server)?;
+    let s = resolve(&api, reference).await?;
+    let name = format!("{}#{}", s.project_slug, s.number);
+    let shares = api.shares(&s.id.0).await?.shares;
+    let sh = shared_with(&shares, who).with_context(|| {
+        format!("{name} isn't shared with {who}. `fctl share {name}` lists who it is.")
+    })?;
+    let list = api.unshare(&s.id.0, sh.user.id.as_str()).await?;
+    if json {
+        return style::print_json(&list);
+    }
+    println!(
+        "{} Stopped sharing {name} with {}",
+        style::accent("✓"),
+        sh.user.name
+    );
+    Ok(())
+}
+
+/// `fctl archive` (`archived`) and `fctl unarchive`.
+pub async fn archive(
+    server: Option<&str>,
+    reference: &str,
+    archived: bool,
+    json: bool,
+) -> Result<()> {
+    let api = config::api(server)?;
+    let s = resolve(&api, reference).await?;
+    let s = api
+        .update_session(
+            &s.id.0,
+            &UpdateSessionRequest {
+                title: None,
+                description: None,
+                archived: Some(archived),
+            },
+        )
+        .await?;
+    if json {
+        return style::print_json(&s);
+    }
+    let name = format!("{}#{}", s.project_slug, s.number);
+    if archived {
+        println!(
+            "{} Archived {name}: lists leave it out, and nothing that happens to its pull requests reaches its agent",
+            style::accent("✓")
+        );
+        println!(
+            "{}",
+            style::dim(&format!(
+                "`fctl sessions --archived` lists it, and `fctl unarchive {name}` brings it back."
+            ))
+        );
+    } else {
+        println!(
+            "{} Unarchived {name}: lists show it again",
+            style::accent("✓")
+        );
+    }
+    Ok(())
+}
+
 pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> Result<()> {
     let api = config::api(server)?;
     let url = match target {
@@ -839,6 +1019,61 @@ mod tests {
             sandbox_session(Some("/s.sock".into()), Some(String::new()), None),
             None
         );
+    }
+
+    #[test]
+    fn sessions_are_shared_for_messages_unless_a_role_is_given() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Fctl {
+            #[command(flatten)]
+            share: ShareArgs,
+        }
+        let share = |args: &[&str]| {
+            Fctl::try_parse_from(std::iter::once("share").chain(args.iter().copied()))
+                .ok()
+                .map(|f| (f.share.email, SessionRole::from(f.share.role)))
+        };
+        // Without anyone, it lists the shares.
+        assert_eq!(share(&["my-app#12"]), Some((None, SessionRole::Editor)));
+        assert_eq!(
+            share(&["my-app#12", "grace@example.com"]),
+            Some((Some("grace@example.com".into()), SessionRole::Editor))
+        );
+        assert_eq!(
+            share(&["ses_01ABC", "grace@example.com", "--role", "viewer"]),
+            Some((Some("grace@example.com".into()), SessionRole::Viewer))
+        );
+        assert_eq!(
+            share(&["my-app#12", "grace@example.com", "--role", "owner"]),
+            Some((Some("grace@example.com".into()), SessionRole::Owner))
+        );
+        assert_eq!(
+            share(&["my-app#12", "grace@example.com", "--role", "admin"]),
+            None
+        );
+        assert_eq!(share(&[]), None);
+        // A role without anyone to give it to says so.
+        assert_eq!(share(&["my-app#12", "--role", "viewer"]), None);
+    }
+
+    #[test]
+    fn shares_are_found_by_address_or_id() -> Result<()> {
+        let shares: Vec<SessionShare> = serde_json::from_value(serde_json::json!([
+            { "user": { "id": "usr_1", "name": "Ada" }, "email": "ada@example.com",
+              "role": "viewer", "created_at": 1 },
+            { "user": { "id": "usr_2", "name": "Grace" }, "email": "grace@example.com",
+              "role": "owner", "created_at": 2 }
+        ]))?;
+        let name = |who: &str| shared_with(&shares, who).map(|sh| sh.user.name.as_str());
+        assert_eq!(name("GRACE@example.com "), Some("Grace"));
+        assert_eq!(name("usr_1"), Some("Ada"));
+        assert_eq!(name("Grace"), None);
+        assert_eq!(
+            [SessionRole::Viewer, SessionRole::Editor, SessionRole::Owner].map(may),
+            ["can view", "can message", "owner"]
+        );
+        Ok(())
     }
 
     #[test]

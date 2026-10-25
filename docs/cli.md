@@ -103,6 +103,12 @@ fctl stop my-app#12              # end the session (its sandbox is kept for resu
 fctl resume my-app#12 "Now add tests"   # also a failed one, on your Claude subscription
 fctl follow my-app#12            # get its notifications (see Notifications)
 fctl unfollow my-app#12
+fctl share my-app#12 grace@example.com   # they view it and message its agent (--role viewer, editor or owner)
+fctl share my-app#12             # who it is shared with
+fctl unshare my-app#12 grace@example.com
+fctl archive my-app#12           # out of the lists; its pull requests no longer bring its agent back
+fctl unarchive my-app#12
+fctl sessions --archived         # the archived ones too
 fctl open my-app#12              # in the browser
 fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 ```
@@ -146,6 +152,19 @@ fctl resolve --unresolve PRRT_kwDOABCD1234
 
 `fctl attach` also says when the session's runner goes away or can't reach
 the agent in its sandbox, and when it is back.
+
+A session's project's people see it already; `fctl share` shares it with
+someone else in its workspace, by the address they are in it as, and
+`--role` says what they may do: `viewer` reads it, `editor` (the default)
+also messages and interrupts its agent, and `owner` also stops, resumes,
+archives and shares it. Only who started it, or an admin of its
+workspace, shares ownership. Whoever can message a session's agent can
+have it hand over what its sandbox holds: the project's secrets, its
+GitHub tokens and the Claude token it runs on. `fctl archive` puts a
+session away: lists leave it out (`fctl sessions --archived` keeps it in),
+and nothing that happens to its pull requests reaches its agent any more,
+though messages still do. Sharing and archiving are for the session's
+owners.
 
 A session's title starts as the first line of its task. Agents rename it to
 what they work on, and say what the session is about, with the same
@@ -270,6 +289,11 @@ fctl projects create "My app" --repo my-org/my-app -w acme   # a workspace's adm
 fctl projects create "Docs" --repo my-org/docs --slug docs --description "The handbook"   # its URL name, and a sentence for people
 fctl projects create "New thing" --new-repo new-thing --owner my-org --public
 fctl projects create "Site" --repo my-org/site --connectors   # claude.ai connectors in its sessions (off by default)
+fctl projects set -p my-app --model opus --effort high   # its agents' model and effort ("default" for Claude's own)
+fctl projects set -p my-app --instructions-file agents.md   # what its agents are told in every session (--instructions "" for nothing)
+fctl projects set -p my-app --auto-pull-request off   # agents open pull requests when someone asks, not when they finish
+fctl projects set -p my-app --remote-control off  # its sessions stay out of the Claude apps
+fctl projects set -p my-app --connectors on       # agents use the claude.ai connectors of whoever starts a session
 fctl projects set -p my-app --credit-claude off   # no Claude trailer in its commits
 fctl projects set -p my-app --credit-people off   # no trailers for the people who start sessions
 fctl projects set -p my-app --idle-timeout 30     # idle sessions keep their sandbox 30 minutes (default 10)
@@ -293,13 +317,32 @@ fctl projects delete my-app --confirm my-app   # …or takes it, without a termi
 ```
 
 `--env` sets variables that aren't secret: the project's people see them in
-its settings and `fctl projects show`. Secrets, which sessions get as
-environment variables too, are set on the project's **Secrets** tab in the
-web app, or through [the HTTP API](api.md#projects), as are its members,
-the instructions its agents get, its model and effort, whether agents open
-a pull request when they finish, Remote Control, and claude.ai connectors
-once it exists. Anything an agent runs can read both variables and
+its settings and `fctl projects show`. Credentials go in its secrets, which
+sessions get as environment variables too, and whose values nobody reads
+back: `fctl projects secrets set` asks for the value without showing what
+you type, or reads it from stdin, never from an argument, which shell
+history would keep. Anything an agent runs can read both variables and
 secrets.
+
+```sh
+fctl projects secrets -p my-app                  # their names, and who set each when
+fctl projects secrets set STRIPE_KEY -p my-app   # asks for the value
+printenv STRIPE_KEY | fctl projects secrets set STRIPE_KEY -p my-app
+fctl projects secrets set DEPLOY_KEY -p my-app < deploy_key.pem
+fctl projects secrets remove STRIPE_KEY -p my-app
+
+fctl projects members -p my-app                  # its members and their roles
+fctl projects members add grace@example.com -p my-app   # an editor (--role viewer, editor, maintainer or owner)
+fctl projects members role grace@example.com maintainer -p my-app
+fctl projects members remove grace@example.com -p my-app   # your own address leaves it
+```
+
+Maintainers set its settings and secrets and manage its members; only
+owners make someone an owner or change an owner's role, and a project keeps
+at least one owner. Its members are people of its workspace, added by the
+address they are in it as, and besides them the workspace's admins own the
+project and every member of the workspace has the workspace's base role in
+it ([Workspaces](#workspaces)).
 
 Agents start in the project's repository and can use more of the same GitHub
 account. They clone them when they need them, into `~/repos/<owner>/<name>`;

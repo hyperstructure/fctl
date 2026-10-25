@@ -9,6 +9,8 @@ pub mod host_claude;
 pub mod memory;
 pub mod notifications;
 pub mod passkeys;
+pub mod project_members;
+pub mod project_secrets;
 pub mod projects;
 pub mod publish;
 pub mod resolve;
