@@ -706,6 +706,9 @@ impl Cast {
             let w = self
                 .workspace(&p.workspace)
                 .with_context(|| format!("project {}", p.slug))?;
+            if p.by != w.owner && !w.admins.contains(&p.by) {
+                bail!("{} creates {}, but only {}'s admins create its projects", p.by, p.slug, w.slug);
+            }
             for id in std::iter::once(&p.by)
                 .chain(&p.owners)
                 .chain(&p.maintainers)
