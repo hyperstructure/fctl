@@ -828,3 +828,129 @@ fn a_replay_hits_the_usage_limit_and_later_turns_answer_their_messages()
     assert_eq!(results[2], "Back at it.");
     Ok(())
 }
+
+/// A turn's calls (id, name, input), and what each printed by its id.
+type Played = (Vec<(Value, Value, Value)>, HashMap<Value, Value>);
+
+/// Plays one turn of `repo`'s replays for `message`.
+fn play_turn(repo: &std::path::Path, message: &str) -> Result<Played, Box<dyn Error>> {
+    let mut claude = replaying(repo)?;
+    let (Some(mut stdin), Some(stdout)) = (claude.stdin.take(), claude.stdout.take()) else {
+        return Err("fake-claude's stdin and stdout aren't piped".into());
+    };
+    let turn = json!({"type": "user", "message": {"role": "user", "content": message}});
+    stdin.write_all(format!("{turn}\n").as_bytes())?;
+    let (mut calls, mut outputs) = (Vec::new(), HashMap::new());
+    for line in BufReader::new(stdout).lines() {
+        let v: Value = serde_json::from_str(&line?)?;
+        let blocks = v["message"]["content"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        match v["type"].as_str() {
+            Some("assistant") => {
+                for b in blocks.iter().filter(|b| b["type"] == "tool_use") {
+                    calls.push((b["id"].clone(), b["name"].clone(), b["input"].clone()));
+                }
+            }
+            Some("user") => {
+                for b in blocks.iter().filter(|b| b["type"] == "tool_result") {
+                    outputs.insert(b["tool_use_id"].clone(), b["content"].clone());
+                }
+            }
+            Some("result") => break,
+            _ => {}
+        }
+    }
+    drop(stdin);
+    claude.wait()?;
+    Ok((calls, outputs))
+}
+
+/// The demo's git reaches a stand-in for GitHub (an `insteadOf`): pushes
+/// and pull requests go there, and show GitHub's repository all the same.
+#[test]
+fn a_replay_names_github_where_git_reaches_a_stand_in() -> Result<(), Box<dyn Error>> {
+    let (dir, repo) = replay_setup(
+        r#"
+match = "Add Danish"
+
+[[turn]]
+[[turn.step]]
+write = "messages/da.json"
+content = "{}\n"
+[[turn.step]]
+commit = "Add Danish"
+[[turn.step]]
+push = true
+[[turn.step]]
+write = "messages/da.json"
+content = "{ \"cart\": \"Kurv\" }\n"
+[[turn.step]]
+commit = "Translate the cart"
+[[turn.step]]
+push = true
+[[turn.step]]
+pr = "Add Danish"
+number = 7
+"#,
+    )?;
+    let github = dir.path().join("github");
+    let bare = github.join("romanescohq/shop.git");
+    std::fs::create_dir_all(&bare)?;
+    assert!(
+        Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .current_dir(&bare)
+            .status()?
+            .success()
+    );
+    std::fs::write(
+        dir.path().join("replays/env"),
+        format!(
+            "GIT_CONFIG_COUNT=1\nGIT_CONFIG_KEY_0=url.{}/.insteadOf\nGIT_CONFIG_VALUE_0=https://github.com/\n",
+            github.display()
+        ),
+    )?;
+    let (calls, outputs) = play_turn(&repo, "Add Danish to the shop")?;
+    let shown: Vec<String> = calls
+        .iter()
+        .filter(|(_, name, _)| name == "Bash")
+        .map(|(id, _, _)| outputs[id].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        shown
+            .iter()
+            .all(|o| !o.contains(&github.display().to_string())),
+        "{shown:?}"
+    );
+    let pushes: Vec<&String> = shown.iter().filter(|o| o.starts_with("To ")).collect();
+    assert_eq!(pushes.len(), 2, "{shown:?}");
+    assert!(
+        pushes[0].starts_with(
+            "To https://github.com/romanescohq/shop.git\n * [new branch]      fctl/231-add-danish -> fctl/231-add-danish\n"
+        ),
+        "{}",
+        pushes[0]
+    );
+    assert!(
+        pushes[1].starts_with("To https://github.com/romanescohq/shop.git\n   ")
+            && pushes[1].ends_with("  fctl/231-add-danish -> fctl/231-add-danish\n"),
+        "{}",
+        pushes[1]
+    );
+    assert_eq!(
+        shown.last().map(String::as_str),
+        Some("https://github.com/romanescohq/shop/pull/7\n")
+    );
+    // The pushes went to the stand-in.
+    let log = Command::new("git")
+        .args(["log", "--format=%s", "fctl/231-add-danish"])
+        .current_dir(&bare)
+        .output()?;
+    assert_eq!(
+        String::from_utf8(log.stdout)?,
+        "Translate the cart\nAdd Danish\nStart\n"
+    );
+    Ok(())
+}

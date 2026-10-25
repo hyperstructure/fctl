@@ -743,6 +743,13 @@ pub fn github_repo(origin: &str) -> Option<String> {
         .then(|| format!("{owner}/{name}"))
 }
 
+/// The GitHub repository of the working directory's `origin`, as cloned:
+/// the URL git keeps, before an `insteadOf` sends it elsewhere.
+fn origin_repo(env: &[(String, String)]) -> String {
+    let (url, _) = sh_with("git config --get remote.origin.url", env);
+    github_repo(&url).unwrap_or_else(|| "owner/repository".into())
+}
+
 /// What `sh -c command` printed in the working directory, with `env`
 /// added, and whether it failed.
 fn sh_with(command: &str, env: &[(String, String)]) -> (String, bool) {
@@ -952,29 +959,36 @@ impl crate::Session {
                 sh_with("git add -A && git commit -m \"$FAKE_CLAUDE_MESSAGE\"", &env)
             }
             Effect::Push => {
+                let (branch, _) = sh_with("git rev-parse --abbrev-ref HEAD", env);
+                let branch = branch.trim().to_owned();
+                let (before, new) = sh_with(
+                    &format!("git rev-parse --short 'refs/remotes/origin/{branch}'"),
+                    env,
+                );
                 let (output, failed) = sh_with("git push -u origin HEAD", env);
                 if failed {
-                    // As it would have printed, from GitHub.
                     warn(&format!("git push failed: {}", output.trim()));
-                    let (branch, _) = sh_with("git rev-parse --abbrev-ref HEAD", env);
-                    let (origin, _) = sh_with("git remote get-url origin", env);
-                    let branch = branch.trim();
-                    let repo = github_repo(&origin).unwrap_or_else(|| "owner/repository".into());
-                    (
-                        format!(
-                            "To https://github.com/{repo}.git\n * [new branch]      {branch} -> {branch}\nbranch '{branch}' set up to track 'origin/{branch}'.\n"
-                        ),
-                        false,
+                }
+                // As it prints pushing to GitHub, wherever the push went.
+                let (head, _) = sh_with("git rev-parse --short HEAD", env);
+                let repo = origin_repo(env);
+                let output = if new {
+                    format!(
+                        "To https://github.com/{repo}.git\n * [new branch]      {branch} -> {branch}\nbranch '{branch}' set up to track 'origin/{branch}'.\n"
                     )
                 } else {
-                    (output, false)
-                }
+                    format!(
+                        "To https://github.com/{repo}.git\n   {}..{}  {branch} -> {branch}\n",
+                        before.trim(),
+                        head.trim()
+                    )
+                };
+                (output, false)
             }
-            Effect::PullRequest { number } => {
-                let (origin, _) = sh_with("git remote get-url origin", env);
-                let repo = github_repo(&origin).unwrap_or_else(|| "owner/repository".into());
-                (format!("https://github.com/{repo}/pull/{number}\n"), false)
-            }
+            Effect::PullRequest { number } => (
+                format!("https://github.com/{}/pull/{number}\n", origin_repo(env)),
+                false,
+            ),
         };
         match &c.output {
             Some(written) => (written.clone(), c.error),

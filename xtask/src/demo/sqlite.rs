@@ -110,7 +110,12 @@ fn run(path: &Path, ops: &[Value]) -> Result<Vec<Value>> {
             .spawn()
             .context("starting node, which edits the stopped stack's SQLite files")?;
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(serde_json::to_string(ops)?.as_bytes())?;
+            // Node that can't load node:sqlite exits before it reads: what
+            // it said decides, below.
+            match stdin.write_all(serde_json::to_string(ops)?.as_bytes()) {
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                written => written?,
+            }
         }
         Ok(child.wait_with_output()?)
     };

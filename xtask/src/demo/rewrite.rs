@@ -1457,7 +1457,8 @@ fn audit(ctx: &Ctx, clocks: &BTreeMap<String, Clock>, d1: &mut Db) -> Result<()>
             .get(target)
             .map(|c| c.map(ts))
             .or_else(|| when.get(target).copied())
-            .unwrap_or(ctx.anchor - 30 * 86_400_000 + (ts - w.started).max(0) * 1000);
+            // The rest a month back, in their order.
+            .unwrap_or(ctx.anchor - 30 * 86_400_000 + (ts - w.started).max(0));
         d1.exec(
             "UPDATE audit_log SET ts = ? WHERE id = ?",
             vec![json!(new), json!(id)],
