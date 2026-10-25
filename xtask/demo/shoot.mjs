@@ -14,7 +14,8 @@
 // the GitHub App the instance lacks), and holds the browser's clock at the
 // moment of the shots, 09:10 in the zone `cargo xtask demo` picked
 // (.fctl-demo/shots.json), so that the app shows the story's times. Each shot
-// is taken in both themes; the phone ones at 390 × 844.
+// is taken in both themes; the phone ones at 390 × 844, or with --features at
+// 390 × 788, below the status bar that fctl.sh's phone frames draw.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -309,7 +310,9 @@ async function noor(browser, { theme, phone, flowing, signedOut }) {
     reducedMotion: "reduce",
     timezoneId: manifest.zone ?? "Europe/Stockholm",
     locale: "en-GB",
-    viewport: phone ? { width: 390, height: 844 } : open ? null : { width, height },
+    // fctl.sh's phones draw iOS's status bar above the screenshot (58 of 390):
+    // the app gets the rest of an iPhone 15's screen, 852 × 393 as 846 × 390.
+    viewport: phone ? { width: 390, height: features ? 788 : 844 } : open ? null : { width, height },
     deviceScaleFactor: open ? undefined : 2,
     isMobile: phone,
     hasTouch: phone,
