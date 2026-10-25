@@ -242,7 +242,9 @@ people, workspaces, runners, projects, schedules, memory and sessions in
 `xtask/demo/cast.toml`. Its people make it through the API, with a host for
 each runner and a stand-in GitHub (bare repositories in `.fctl-demo/github`
 that git reaches in place of github.com, holding the files in
-`xtask/demo/repos`); each session plays its transcript in
+`xtask/demo/repos`, where dependency manifests are kept as
+`<name>.stand-in` so that GitHub doesn't count them as fctl's); each
+session plays its transcript in
 `xtask/demo/transcripts`, forty times faster than written. Then, with the
 control plane stopped, it moves everything to the story's times in D1 and
 the Durable Objects' SQLite, and fills in what a dev instance has no GitHub

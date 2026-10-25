@@ -9,6 +9,54 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// What this repository calls a stand-in's file that GitHub reads as a
+/// dependency manifest (`package.json`, `Cargo.toml`, `requirements.txt`):
+/// its name and this. Under its own name, GitHub would count the made-up
+/// projects' dependencies as fctl's, and Dependabot would raise alerts for
+/// them. The stand-ins get their names back as the seed makes them.
+pub const KEPT_AS: &str = ".stand-in";
+
+/// Whether GitHub's dependency graph reads a file of this name as a
+/// manifest: those a stand-in's files must not be called here.
+pub fn manifest(name: &str) -> bool {
+    const NAMES: &[&str] = &[
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "Cargo.toml",
+        "Cargo.lock",
+        "pyproject.toml",
+        "poetry.lock",
+        "uv.lock",
+        "setup.py",
+        "Pipfile",
+        "Pipfile.lock",
+        "go.mod",
+        "go.sum",
+        "Gemfile",
+        "Gemfile.lock",
+        "composer.json",
+        "composer.lock",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "packages.config",
+        "Package.swift",
+        "Package.resolved",
+        "pubspec.yaml",
+        "pubspec.lock",
+        "mix.exs",
+        "mix.lock",
+    ];
+    NAMES.contains(&name)
+        || (name.starts_with("requirements") && name.ends_with(".txt"))
+        || [".gemspec", ".csproj", ".vbproj", ".fsproj", ".nuspec"]
+            .iter()
+            .any(|ext| name.ends_with(ext))
+}
+
 pub struct Github {
     /// The bare repositories, as `<owner>/<name>.git`, and `pulls/`.
     pub dir: PathBuf,
@@ -196,12 +244,15 @@ fn tempdir(parent: &Path, repo: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Copies a stand-in's files, giving those kept as `<name>.stand-in` their
+/// names back.
 fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     for e in std::fs::read_dir(src)
         .with_context(|| format!("reading {}", src.display()))?
         .flatten()
     {
-        let to = dst.join(e.file_name());
+        let name = e.file_name().to_string_lossy().into_owned();
+        let to = dst.join(name.strip_suffix(KEPT_AS).unwrap_or(&name));
         if e.file_type()?.is_dir() {
             std::fs::create_dir_all(&to)?;
             copy_dir(&e.path(), &to)?;
@@ -214,7 +265,50 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitized;
+    use super::{KEPT_AS, copy_dir, manifest, sanitized};
+    use std::path::Path;
+
+    /// No file of the stand-ins is called as GitHub's dependency graph reads
+    /// manifests: it would take the made-up projects' dependencies for
+    /// fctl's, and Dependabot would raise alerts for them.
+    #[test]
+    fn stand_ins_keep_their_manifests_under_other_names() {
+        fn walk(dir: &Path, found: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    walk(&path, found);
+                } else if manifest(&e.file_name().to_string_lossy()) {
+                    found.push(path.display().to_string());
+                }
+            }
+        }
+        let repos = Path::new(env!("CARGO_MANIFEST_DIR")).join("demo/repos");
+        let mut found = Vec::new();
+        walk(&repos, &mut found);
+        assert!(
+            found.is_empty(),
+            "name these with {KEPT_AS} after their names, as the others are: {found:?}"
+        );
+        assert!(manifest("package.json") && manifest("requirements-dev.txt"));
+        assert!(!manifest(&format!("package.json{KEPT_AS}")));
+    }
+
+    #[test]
+    fn stand_ins_get_their_manifests_names_back() -> anyhow::Result<()> {
+        let tmp = std::env::temp_dir().join(format!("fctl-stand-in-{}", std::process::id()));
+        let (src, dst) = (tmp.join("src"), tmp.join("dst"));
+        std::fs::create_dir_all(src.join("app"))?;
+        std::fs::create_dir_all(&dst)?;
+        std::fs::write(src.join(format!("package.json{KEPT_AS}")), "{}")?;
+        std::fs::write(src.join("app/main.ts"), "")?;
+        copy_dir(&src, &dst)?;
+        assert!(dst.join("package.json").is_file());
+        assert!(dst.join("app/main.ts").is_file());
+        assert!(!dst.join(format!("package.json{KEPT_AS}")).exists());
+        std::fs::remove_dir_all(&tmp)?;
+        Ok(())
+    }
 
     #[test]
     fn selectors_name_files_as_the_stand_in_reads_them() {

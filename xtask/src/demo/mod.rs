@@ -270,10 +270,12 @@ struct Files {
 
 impl Files {
     fn content(&self, path: &str) -> Option<String> {
-        self.changed
-            .get(path)
-            .cloned()
-            .or_else(|| std::fs::read_to_string(self.base.join(path)).ok())
+        let kept = format!("{path}{}", github::KEPT_AS);
+        self.changed.get(path).cloned().or_else(|| {
+            std::fs::read_to_string(self.base.join(path))
+                .or_else(|_| std::fs::read_to_string(self.base.join(kept)))
+                .ok()
+        })
     }
 
     fn step(&mut self, step: &toml::Value, name: &str, wrong: &mut Vec<String>) {
