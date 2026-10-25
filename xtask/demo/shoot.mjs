@@ -413,7 +413,6 @@ if (open) {
   mkdirSync(out, { recursive: true });
   const browser = await chromium.launch();
   const converter = features ? await browser.newPage() : null;
-  const sizes = {};
   for (const theme of themes) {
     for (const phone of [false, true]) {
       for (const signedOut of [false, true]) {
@@ -443,7 +442,6 @@ if (open) {
             mkdirSync(path.dirname(file), { recursive: true });
             const w = await webp(converter, png, phone ? 780 : 2200);
             writeFileSync(file, w.bytes);
-            sizes[`${shot.name}-${theme}`] = [w.width, w.height];
             console.log(`${file} ${w.width}×${w.height}`);
             // The features page's card for it: the app's content, without
             // the sidebar where it has one, small.
