@@ -524,6 +524,9 @@ impl<'a> World<'a> {
             if let Some(t) = p.idle_timeout {
                 settings["idle_timeout_minutes"] = json!(t);
             }
+            if let Some(i) = &p.instructions {
+                settings["instructions"] = json!(i);
+            }
             let made = self.api(
                 &p.by,
                 "POST",

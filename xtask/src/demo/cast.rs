@@ -259,6 +259,8 @@ pub struct Project {
     pub maintainers: Vec<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// What every session's agent is told, after fctl's own instructions.
+    pub instructions: Option<String>,
     /// Minutes an idle session waits before it stops.
     pub idle_timeout: Option<u32>,
     pub reviews: Option<Reviews>,

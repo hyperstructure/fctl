@@ -282,14 +282,21 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         .runner
         .as_ref()
         .and_then(|r| w.cast.runners.iter().find(|x| &x.name == r));
-    let home = runner.map(|r| {
-        format!(
-            "{}/hosts/{}/data/sandboxes/fctl-{}/home",
-            w.state.display(),
-            r.name,
-            made.id.to_lowercase().replace('_', "-")
-        )
-    });
+    // The fleet may have run it on another of the story's runners than the
+    // cast's: any of theirs.
+    let homes: Vec<String> = w
+        .cast
+        .runners
+        .iter()
+        .map(|r| {
+            format!(
+                "{}/hosts/{}/data/sandboxes/fctl-{}/home",
+                w.state.display(),
+                r.name,
+                made.id.to_lowercase().replace('_', "-")
+            )
+        })
+        .collect();
     let container_pid = runner
         .filter(|r| matches!(r.driver.as_str(), "apple" | "docker"))
         .map(|_| 41 + spin % 60);
@@ -307,8 +314,16 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
             .and_then(|d| serde_json::from_str(d).ok())
             .unwrap_or(Value::Null);
         remap(&mut data, &clock, ctx.window);
-        if let Some(home) = &home {
+        for home in &homes {
             rehome(&mut data, home);
+        }
+        // Its setup's steps name the runner the story has.
+        if let (Some(r), Some(reason)) = (runner, data["reason"].as_str())
+            && k == "status"
+            && let Some((what, on)) = reason.rsplit_once(" on ")
+            && w.cast.runners.iter().any(|x| x.name == on)
+        {
+            data["reason"] = json!(format!("{what} on {}", r.name));
         }
         if let (Some(pid), Some(t)) = (container_pid, data["text"].as_str())
             && k == "log"

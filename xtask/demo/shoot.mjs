@@ -415,7 +415,12 @@ if (open) {
           // A page of its own for each shot that changes what it shows.
           const tab = shot.act ? await context.newPage() : page;
           if (tab !== page) await ready(context, tab);
-          await tab.goto(new URL(shot.path, manifest.app).href, { waitUntil: "networkidle" });
+          // A page whose requests never go quiet still gets its shot, after a while.
+          const url = new URL(shot.path, manifest.app).href;
+          await tab.goto(url, { waitUntil: "networkidle", timeout: 20_000 }).catch(async () => {
+            console.error(`${shot.name} (${theme}): still loading after 20 s, shooting it anyway`);
+            await tab.goto(url, { waitUntil: "load" });
+          });
           await tab.waitForTimeout(shot.settle ?? 1500);
           try {
             if (shot.act) await shot.act(tab);

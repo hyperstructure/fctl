@@ -347,6 +347,7 @@ owners = ["tomas"]
 maintainers = ["lucia"]
 model = "opus"
 effort = "high"
+instructions = "Run `npm run lint` and `npm test` before you push. Copy lives in `messages/`: add new strings there for every locale, never in components. A pull request that changes a page shows it in screenshots, in both themes and at a phone's width."
 idle_timeout = 240
 reviews = { operator = "tomas", model = "sonnet", effort = "high", bots = ["dependabot[bot]"], since = "-4mo" }
 tickets = "SHOP"
@@ -428,12 +429,15 @@ grant = [{ repo = "romanescohq/infra", access = "read", by = "kofi", at = "-3mo"
 owners = ["asha"]
 model = "opus"
 effort = "high"
+instructions = "Money is an integer in the currency's minor unit (`Amount`), never a float. Migrations run on a database with data: no `NOT NULL` column without a default."
 idle_timeout = 240
 reviews = { operator = "asha", model = "sonnet", effort = "high", bots = ["dependabot[bot]"], since = "-4mo" }
 tickets = "PLAT"
 secrets = ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "MAPBOX_TOKEN", "SENTRY_AUTH_TOKEN"]
 counted = 287
-sandbox = { setup = "cargo fetch --locked", caches = true, cpus = 8, memory_gb = 16 }
+sandbox = { setup = "sudo apt-get install -y -qq postgresql >/dev/null\nsudo service postgresql start\ncargo fetch --locked", caches = true, cpus = 8, memory_gb = 16, output = [
+  "Starting PostgreSQL 17 database server: main.",
+] }
 retros = [229, 31, 9]
 history = [
   "Move the farms API to axum 0.8",
