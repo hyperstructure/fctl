@@ -36,18 +36,16 @@ output = """     1\timport type { Slot } from "./slots";
 think = "The loop stops at the slots' ends on both sides, and the tests cover a free next day, a free earlier day, a full week and a day that isn't there. Full days are `aria-disabled` rather than `disabled`, so they stay focusable and screen readers still say they're unavailable, and the explanation is a `role=\"status\"`, which they read out when it appears. That's the right trade for something people tap to ask why."
 
 [[turn.step]]
-bash = "grep -n 'delivery\\.' messages/sv.json messages/en.json"
+bash = "grep -n 'delivery\\.\\(full\\|nearest\\)' messages/sv.json messages/en.json"
 description = "Check both locales have the new keys"
-output = """messages/sv.json:5:  "delivery.pick": "Välj leveransdag",
-messages/sv.json:6:  "delivery.full": "Den här dagen är full",
-messages/sv.json:7:  "delivery.full.van": "Fullt: bilen är fullpackad den dagen.",
-messages/sv.json:8:  "delivery.full.farm": "Fullt: {farm} plockar inte den dagen.",
-messages/sv.json:9:  "delivery.nearest": "Ta {day} i stället",
-messages/en.json:5:  "delivery.pick": "Pick a delivery day",
-messages/en.json:6:  "delivery.full": "This day is full",
-messages/en.json:7:  "delivery.full.van": "Full: the van is packed that day.",
-messages/en.json:8:  "delivery.full.farm": "Full: {farm} doesn't pick that day.",
-messages/en.json:9:  "delivery.nearest": "Take {day} instead","""
+output = """messages/sv.json:55:  "delivery.full": "Den här dagen är full",
+messages/sv.json:56:  "delivery.full.van": "Fullt: bilen är fullpackad den dagen.",
+messages/sv.json:57:  "delivery.full.farm": "Fullt: {farm} plockar inte den dagen.",
+messages/sv.json:58:  "delivery.nearest": "Ta {day} i stället",
+messages/en.json:55:  "delivery.full": "This day is full",
+messages/en.json:56:  "delivery.full.van": "Full: the van is packed that day.",
+messages/en.json:57:  "delivery.full.farm": "Full: {farm} doesn't pick that day.",
+messages/en.json:58:  "delivery.nearest": "Take {day} instead","""
 
 [[turn.step]]
 bash = "fctl review submit /tmp/review.json"

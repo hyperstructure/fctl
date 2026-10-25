@@ -144,7 +144,7 @@ todo = [["Find where both pages draw a box's items", "completed"], ["Get each it
 
 [[turn.step]]
 tools = [
-  { bash = "npm run i18n:check", description = "Check every locale has every key", output = "✓ 412 keys in en, sv" },
+  { bash = "npm run i18n:check", description = "Check every locale has every key", output = "✓ 121 keys in en, sv" },
   { bash = "npm test", description = "Run the unit tests", seconds = 6, output = """
 > shop@3.18.0 test
 > vitest run

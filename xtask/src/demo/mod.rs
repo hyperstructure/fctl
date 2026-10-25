@@ -45,6 +45,24 @@ pub struct DemoOpts {
 /// while the seed runs them.
 const SEEDING_SPEED: &str = "40";
 
+/// The Claude Code version the cast's agents say they run: the one
+/// installed here, else one that was current when the cast was made.
+fn claude_code_version() -> String {
+    Command::new("claude")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .next()
+                .filter(|v| v.split('.').count() == 3)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "2.1.310".to_owned())
+}
+
 /// Milliseconds since the epoch.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -369,6 +387,11 @@ fn shots(
             .teams
             .iter()
             .map(|t| {
+                let mut projects =
+                    vec![serde_json::json!({ "id": "lin-project-copenhagen", "name": "Copenhagen launch" })];
+                if t.key == "SHOP" {
+                    projects.push(serde_json::json!({ "id": "lin-project-christmas", "name": "Christmas boxes" }));
+                }
                 let state = |name: &str, kind: &str| {
                     serde_json::json!({ "name": name, "kind": kind, "id": format!("lin-state-{}-{}", t.key.to_lowercase(), kind) })
                 };
@@ -379,8 +402,9 @@ fn shots(
                     "color": t.color,
                     "states": [state("Backlog", "backlog"), state("Todo", "unstarted"), state("In Progress", "started"),
                                state("In Review", "started"), state("Done", "completed"), state("Canceled", "canceled")],
-                    "start_state": format!("lin-state-{}-started", t.key.to_lowercase()),
-                    "projects": [{ "id": "lin-project-copenhagen", "name": "Copenhagen launch" }],
+                    // Its name, as the app shows it.
+                    "start_state": "In Progress",
+                    "projects": projects,
                 })
             })
             .collect();
@@ -474,6 +498,7 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
         )?;
     }
     std::fs::write(replays.join("speed"), SEEDING_SPEED)?;
+    std::fs::write(replays.join("version"), claude_code_version())?;
     let env: String = github
         .git_env()
         .iter()

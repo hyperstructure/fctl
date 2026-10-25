@@ -104,6 +104,19 @@ async function noor(browser, { theme, phone, flowing }) {
     delete body.problem;
     await route.fulfill({ response, json: body });
   });
+  // Runners' hosts say they're alive every 15 seconds, at the real time:
+  // the online ones were seen just before the moment of the shots.
+  if (manifest.anchor) {
+    await context.route(/\/api\/v1\/(workspaces\/[^/]+\/)?runners$/, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      const response = await route.fetch();
+      const body = await response.json();
+      for (const [i, r] of (body.runners ?? []).entries()) {
+        if (r.last_seen_at > manifest.anchor) r.last_seen_at = manifest.anchor - 4000 - i * 3000;
+      }
+      await route.fulfill({ response, json: body });
+    });
+  }
   // Linear's teams, which the stack can't ask Linear for.
   await context.route("**/api/v1/workspaces/*/linear/*/teams", (route) => {
     const [, , , , id] = new URL(route.request().url()).pathname.split("/");

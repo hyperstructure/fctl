@@ -158,6 +158,9 @@ struct Session {
     cached: u64,
     /// The usage of its latest call, for `get_context_usage`.
     last_usage: Value,
+    /// Tokens its next call reads that no call has yet: the messages and
+    /// tool results since the last one (replays count them).
+    unread: u64,
     delay: Duration,
     /// Shell commands and subagents working in the background, in the
     /// order they end.
@@ -250,8 +253,17 @@ impl Session {
     fn turn_starts(&mut self) {
         self.report_turn(true);
         out(
-            &json!({"type": "system", "subtype": "init", "apiKeySource": self.api_key_source, "claude_code_version": "2.1.999", "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": self.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": self.mcp_servers, "model": self.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
+            &json!({"type": "system", "subtype": "init", "apiKeySource": self.api_key_source, "claude_code_version": self.version(), "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": self.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": self.mcp_servers, "model": self.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
         );
+    }
+
+    /// The Claude Code version it says it is: a replay library's, or one
+    /// that marks it as fake-claude.
+    fn version(&self) -> String {
+        self.library
+            .as_ref()
+            .and_then(replay::Library::version)
+            .unwrap_or_else(|| "2.1.999".into())
     }
 
     /// A turn has ended. With no message waiting, Claude Code says it is
@@ -371,7 +383,7 @@ impl Session {
     /// A call that reads `context` tokens, `cached` of them from the
     /// cache, counted in the totals.
     fn call_usage(&mut self, context: u64, cached: u64) -> Value {
-        let fresh = 3;
+        let fresh = 3 + std::mem::take(&mut self.unread);
         let written = context.saturating_sub(cached + fresh);
         self.input_tokens += fresh;
         self.cache_read_tokens += cached;
@@ -1062,6 +1074,8 @@ impl Session {
         INTERRUPTED.store(false, Ordering::SeqCst);
         let started = Instant::now();
         if let Some(turn) = self.replay_turn(text) {
+            // The message is what its first call reads anew.
+            self.unread += text.len() as u64 / 4;
             self.play(turn, started);
             return;
         }
@@ -1708,6 +1722,7 @@ fn main() {
         context: CONTEXT_START,
         cached: 0,
         last_usage: Value::Null,
+        unread: 0,
         delay: Duration::from_millis(
             std::env::var("FAKE_CLAUDE_DELAY_MS")
                 .ok()

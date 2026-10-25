@@ -5,7 +5,7 @@ match = "Review romanescohq/shop#1291"
 [[turn.step]]
 tools = [
   { bash = "git log --oneline origin/main..HEAD", description = "List the pull request's commits", output = "Add Danish translations and DKK prices" },
-  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " messages/da.json            | 412 +++++++++++++++++++++++++++\n src/i18n/config.ts          |   4 +-\n src/lib/money.ts            |  12 +-\n src/middleware.ts           |   6 +-\n 4 files changed, 428 insertions(+), 6 deletions(-)" },
+  { bash = "git diff --stat origin/main...HEAD", description = "See what it changes", output = " messages/da.json         | 123 +++++++++++++++++++++++++\n src/app/delivery/days.ts |   2 +-\n src/i18n/config.ts       |   2 +-\n src/lib/money.ts         |   4 +-\n 4 files changed, 127 insertions(+), 4 deletions(-)" },
   { bash = "fctl review threads --json", description = "Read fctl's earlier findings", output = "[]" },
 ]
 

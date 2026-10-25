@@ -208,21 +208,57 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         .map(ts)
         .next();
     let last = events.iter().map(ts).max().unwrap_or(created);
+    let spin = spin(&s.id);
     let end_story = match (s.took, s.state) {
         (Some(took), _) => ctx.at(&s.start) + took.0 * 1000,
-        // Still at work: what it stored last is from a few minutes before
-        // the shots.
-        _ => ctx.anchor - 3 * 60_000,
+        // Still at work: what it stored last is from a minute or few
+        // before the shots.
+        _ => ctx.anchor - 40_000 - (spin % 200_000) as i64,
     };
+    // Its sandbox was ready in the half minute or so a host takes, however
+    // long the seed's took.
+    let status_of = |r: &sqlite::Row| {
+        r.get("data")
+            .and_then(Value::as_str)
+            .and_then(|d| serde_json::from_str::<Value>(d).ok())
+            .and_then(|v| v["status"].as_str().map(str::to_owned))
+    };
+    if let Some(ready) = events
+        .iter()
+        .find(|r| kind(r) == "status" && status_of(r).as_deref() == Some("running"))
+        .map(ts)
+    {
+        let span = (end_story - ctx.at(&s.start)).max(0);
+        let took = (18_000 + (spin % 22_000) as i64).min(span / 4);
+        points.push((ready, ctx.at(&s.start) + took));
+    }
     let end_real = match s.state {
         State::Stopped => last_result.unwrap_or(last),
         _ => last,
     };
     points.push((end_real, end_story));
     let clock = Clock::new(points);
+    // A session the story has stopped stopped once it had been idle for its
+    // project's idle timeout, as sessions do; fctl stops its reviews itself.
+    let idle_stop = (s.state == State::Stopped && s.review.is_none()).then(|| {
+        let idle = i64::from(p.idle_timeout.unwrap_or(10)) * 60_000;
+        (end_story + idle).min(ctx.anchor - 60_000)
+    });
+    let last_result_seq = events
+        .iter()
+        .filter(|r| {
+            kind(r) == "claude"
+                && r.get("data")
+                    .and_then(Value::as_str)
+                    .is_some_and(|d| d.contains("\"type\":\"result\""))
+        })
+        .filter_map(|r| r.get("seq").and_then(Value::as_i64))
+        .max()
+        .unwrap_or(i64::MAX);
 
     // Its events.
     let mut first_message = true;
+    let mut stopping = 0;
     let mut message_index = 0usize;
     for r in &events {
         let seq = r.get("seq").and_then(Value::as_i64).unwrap_or_default();
@@ -247,14 +283,32 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
             serde_json::from_value::<fctl_proto::event::UserMessage>(data.clone())
                 .with_context(|| format!("a message of {} no longer reads as one", s.id))?;
         }
+        let mut at = clock.map(ts(r));
+        if let Some(stop) = idle_stop
+            && k == "status"
+            && seq > last_result_seq
+            && matches!(data["status"].as_str(), Some("stopping" | "stopped"))
+        {
+            data["reason"] = json!(if data["status"] == "stopped" {
+                "Stopped after being idle"
+            } else {
+                "Stopping after being idle"
+            });
+            at = stop + stopping;
+            stopping += 40;
+        }
         obj.exec(
             "UPDATE events SET ts = ?, data = ? WHERE seq = ?",
-            vec![json!(clock.map(ts(r))), json!(data.to_string()), json!(seq)],
+            vec![json!(at), json!(data.to_string()), json!(seq)],
         );
     }
 
     // Its summary.
     remap(&mut summary, &clock, ctx.window);
+    if let Some(stop) = idle_stop {
+        summary["status_reason"] = json!("Stopped after being idle");
+        summary["ended_at"] = json!(stop + stopping);
+    }
     if let Some(r) = &s.runner {
         summary["runner"] = json!({ "id": w.runners[r], "name": r });
     }
@@ -991,6 +1045,15 @@ fn runners(ctx: &Ctx, state: &std::path::Path, d1: &mut Db) -> Result<()> {
         .next()
         .context("no fleet object")?;
     let mut fleet = Db::open(&fleet_path);
+    // A session the seed stopped just before it stopped the control plane
+    // may still be assigned to its runner, which no longer has it: back,
+    // the fleet would take it for lost.
+    for s in w.cast.sessions.iter().filter(|s| s.state == State::Stopped) {
+        fleet.exec(
+            "DELETE FROM assignments WHERE session_id = ?",
+            vec![json!(w.sessions[&s.id].id)],
+        );
+    }
     for r in &w.cast.runners {
         let id = &w.runners[&r.name];
         let info = d1
@@ -1110,6 +1173,14 @@ fn session_id(at: i64, seed: &str) -> String {
         value >>= 5;
     }
     format!("ses_{}", String::from_utf8_lossy(&out))
+}
+
+/// A number from `seed`, the same each time: what varies between sessions
+/// that the story leaves alone.
+fn spin(seed: &str) -> u64 {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(seed.as_bytes());
+    u64::from_be_bytes([h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]])
 }
 
 /// The sessions before the cast's, which a project's header counts and its

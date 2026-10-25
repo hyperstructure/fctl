@@ -48,10 +48,134 @@ old = """export const locales = ["sv", "en"] as const;"""
 new = """export const locales = ["sv", "en", "da"] as const;"""
 
 [[turn.step]]
-run = "node scripts/copy-to-messages.mjs ~/attachments/copy-da.csv > messages/da.json 2>/dev/null || cp messages/sv.json messages/da.json"
+run = '''cat > messages/da.json <<'LUCIAS_COPY'
+{
+  "nav.boxes": "Kasser",
+  "nav.account": "Konto",
+  "nav.farms": "Gårdene",
+  "nav.howItWorks": "Sådan virker det",
+  "nav.gift": "Giv en kasse",
+  "nav.basket": "Kurven",
+  "nav.signIn": "Log ind",
+  "nav.signOut": "Log ud",
+  "box.add": "Læg i kurven",
+  "box.grownAt": "Dyrket på {farm}",
+  "box.remove": "Fjern",
+  "box.swap": "Byt",
+  "box.size.small": "Lille kasse, 1–2 personer",
+  "box.size.medium": "Mellemkasse, 3–4 personer",
+  "box.size.large": "Stor kasse, 5–6 personer",
+  "box.builder.title": "Byg din kasse",
+  "box.builder.intro": "Vælg det, du vil have, så pakker gårdene resten.",
+  "box.builder.full": "Kassen er fuld",
+  "box.builder.room": "Plads til {count} mere",
+  "box.builder.weight": "{kg} kg i alt",
+  "box.builder.season": "I sæson nu",
+  "box.builder.soldOut": "Udsolgt i denne uge",
+  "box.price": "{price} pr. levering",
+  "box.portion": "{price} pr. portion",
+  "box.extras": "Tilføj æg og brød",
+  "box.organic": "Økologisk",
+  "box.allergens": "Allergener",
+  "items.carrot": "Gulerødder",
+  "items.potato": "Kartofler",
+  "items.beetroot": "Rødbeder",
+  "items.kale": "Grønkål",
+  "items.leek": "Porrer",
+  "items.onion": "Løg",
+  "items.cabbage": "Hvidkål",
+  "items.romanesco": "Romanesco",
+  "items.parsnip": "Pastinak",
+  "items.celeriac": "Knoldselleri",
+  "items.kohlrabi": "Kålrabi",
+  "items.turnip": "Majroer",
+  "items.apples": "Æbler",
+  "items.pears": "Pærer",
+  "items.eggs": "Æg, 12 stk.",
+  "items.bread": "Surdejsbrød",
+  "items.flowers": "Sæsonens blomster",
+  "items.herbs": "Friske krydderurter",
+  "items.mushrooms": "Svampe",
+  "items.squash": "Græskar",
+  "farms.title": "Gårdene",
+  "farms.intro": "Alt i kassen kommer fra gårde inden for 150 km.",
+  "farms.distance": "{km} km væk",
+  "farms.picks": "Plukker {days}",
+  "farms.since": "Med siden {year}",
+  "farms.visit": "Besøg gården",
+  "delivery.pick": "Vælg leveringsdag",
+  "delivery.full": "Denne dag er fuld",
+  "delivery.full.van": "Fuldt: bilen er fyldt den dag.",
+  "delivery.full.farm": "Fuldt: {farm} plukker ikke den dag.",
+  "delivery.nearest": "Tag {day} i stedet",
+  "delivery.window": "Mellem {from} og {to}",
+  "delivery.cutoff": "Bestil senest kl. {time} dagen før",
+  "delivery.postcode": "Postnummer",
+  "delivery.postcode.check": "Tjek, om vi leverer til dig",
+  "delivery.postcode.yes": "Vi leverer til {postcode} {days}",
+  "delivery.postcode.no": "Vi leverer ikke til {postcode} endnu",
+  "delivery.postcode.waitlist": "Giv mig besked, når I kommer hertil",
+  "delivery.door": "Stil ved døren",
+  "delivery.doorCode": "Dørkode",
+  "delivery.notes": "Noget, chaufføren skal vide?",
+  "delivery.next": "Næste levering",
+  "delivery.on": "{weekday} d. {date}",
+  "checkout.title": "Kassen",
+  "checkout.summary": "Din bestilling",
+  "checkout.subtotal": "Subtotal",
+  "checkout.deliveryFee": "Levering",
+  "checkout.free": "Gratis",
+  "checkout.vat": "Heraf moms",
+  "checkout.total": "At betale",
+  "checkout.pay": "Betal {amount}",
+  "checkout.card": "Kort",
+  "checkout.giftCard": "Gavekort",
+  "checkout.code": "Rabatkode",
+  "checkout.terms": "Jeg accepterer betingelserne",
+  "checkout.every": "Hver {interval}",
+  "checkout.week": "uge",
+  "checkout.twoWeeks": "anden uge",
+  "checkout.thanks": "Tak! Din første kasse kommer {date}.",
+  "account.title": "Din konto",
+  "account.subscription": "Abonnement",
+  "account.pause": "Sæt på pause",
+  "account.resume": "Genoptag",
+  "account.cancel": "Opsig abonnementet",
+  "account.address": "Leveringsadresse",
+  "account.payment": "Betaling",
+  "account.receipts": "Kvitteringer",
+  "account.deliveries": "Leveringer",
+  "account.skipped": "Sprunget over",
+  "account.save": "Gem",
+  "account.saved": "Gemt",
+  "skip.week": "Spring en uge over",
+  "skip.done": "Leveringen d. {date} er sprunget over.",
+  "skip.undo": "Fortryd",
+  "skip.expired": "Linket virker ikke længere.",
+  "reminder.comes": "Din kasse kommer",
+  "reminder.change": "Ret din kasse",
+  "reminder.skip": "Spring næste uge over",
+  "emails.welcome.subject": "Velkommen til Romanesco",
+  "emails.receipt.subject": "Kvittering for {date}",
+  "emails.photo.subject": "Din kasse står ved døren",
+  "emails.photo.body": "Ingen åbnede, så chaufføren stillede kassen ved døren.",
+  "emails.footer": "Spørgsmål? Svar på denne mail.",
+  "errors.generic": "Noget gik galt. Prøv igen.",
+  "errors.network": "Ingen forbindelse",
+  "errors.card": "Kortet blev afvist",
+  "errors.postcode": "Det postnummer findes ikke",
+  "errors.required": "Udfyld dette",
+  "errors.email": "Det ligner ikke en e-mailadresse",
+  "footer.about": "Om os",
+  "footer.jobs": "Job hos os",
+  "footer.contact": "Kontakt",
+  "footer.privacy": "Privatliv",
+  "footer.terms": "Betingelser"
+}
+LUCIAS_COPY'''
 show = "node scripts/copy-to-messages.mjs copy-da.csv > messages/da.json"
 description = "Turn Lucía's sheet into messages/da.json"
-output = "Wrote 412 messages to stdout (412 keys, 0 missing)"
+output = "Wrote 121 messages to stdout (121 keys, 0 missing)"
 
 [[turn.step]]
 edit = "src/lib/money.ts"
@@ -70,7 +194,7 @@ new = """const DEPOTS: Record<Locale, string> = { sv: "sto-1", en: "sto-1", da: 
 
 [[turn.step]]
 tools = [
-  { bash = "npm run i18n:check", description = "Check every locale has every key", output = "✓ 412 keys in sv, en and da" },
+  { bash = "npm run i18n:check", description = "Check every locale has every key", output = "✓ 121 keys in sv, en and da" },
   { bash = "npm test", description = "Run the unit tests", seconds = 6, output = " Test Files  65 passed (65)\n      Tests  418 passed (418)\n   Duration  9.42s" },
 ]
 
@@ -104,7 +228,7 @@ pr = "Add Danish to the shop"
 number = 1291
 body = """The shop in Danish for the Copenhagen launch (SHOP-419).
 
-- `messages/da.json` from Lucía's copy: 412 keys, none missing.
+- `messages/da.json` from Lucía's copy: 121 keys, none missing.
 - `formatPrice` knows DKK; prices stay integers in øre.
 - Delivery days come from the depot of the locale: `cph-1` for Danish.
 

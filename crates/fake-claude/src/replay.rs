@@ -240,6 +240,14 @@ impl Library {
             .unwrap_or(1.0)
     }
 
+    /// The Claude Code version to say it is: `version` beside the files.
+    pub fn version(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join("version"))
+            .ok()
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    }
+
     /// What `env` beside the files adds to the commands steps run.
     pub fn env(&self) -> Vec<(String, String)> {
         std::fs::read_to_string(self.dir.join("env"))
@@ -989,7 +997,12 @@ impl crate::Session {
                 &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": id, "name": c.name, "input": Self::shown_input(c)}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": crate::uuid()}),
             );
         }
-        self.call_ended(&msg_id, "tool_use", 40 * calls.len() as u64);
+        // What it wrote, and what it thought before each call.
+        let written: u64 = calls
+            .iter()
+            .map(|c| Self::shown_input(c).to_string().len() as u64 / 4 + 160)
+            .sum();
+        self.call_ended(&msg_id, "tool_use", written);
         for (c, id) in calls.iter().zip(&ids) {
             if c.hold {
                 self.hold(id, &c.name);
@@ -999,6 +1012,7 @@ impl crate::Session {
                 return false;
             }
             let (output, error) = Self::perform(c, env);
+            self.unread += output.len() as u64 / 4;
             self.tick(id, &c.name, c.seconds.map(|d| paced(d, speed)), None);
             crate::out(
                 &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": output, "is_error": error}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": crate::uuid()}),

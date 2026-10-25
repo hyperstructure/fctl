@@ -258,11 +258,13 @@ impl<'a> World<'a> {
                     .and_then(|list| list.iter().find(|x| x["label"] == json!(c.label)))
                     .and_then(|x| x["id"].as_str())
                     .context("no id for a Claude connection")?;
-                if i == 0 {
-                    self.api(&p.id, "POST", &format!("/me/claude/{cred}/default"), None)?;
-                }
                 self.credentials
                     .insert((p.id.clone(), c.label.clone()), cred.to_owned());
+            }
+            // The first is their default: each one added is, until another is.
+            if let Some(first) = p.claude.first() {
+                let cred = self.credentials[&(p.id.clone(), first.label.clone())].clone();
+                self.api(&p.id, "POST", &format!("/me/claude/{cred}/default"), None)?;
             }
         }
         Ok(())
