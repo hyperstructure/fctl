@@ -21,7 +21,17 @@ use clap::{Parser, Subcommand};
     about = "A software factory: start Claude agents, follow them, run a host",
     long_about = "fctl starts Claude Code agents on your projects, streams what they do, and lets you message them. \
                   `fctl host` turns this machine into a runner that executes sessions in sandboxes.",
-    after_help = "Examples:\n  fctl login https://app.fctl.sh\n  fctl run -p my-app \"Add a dark mode toggle\"\n  fctl sessions --active\n  fctl attach my-app#12\n  fctl host install"
+    after_help = "Examples:
+  fctl login https://app.fctl.sh
+  fctl run -p my-app \"Add a dark mode toggle\"
+  fctl sessions --active
+  fctl attach my-app#12
+  fctl host install
+
+Agents: read https://fctl.sh/llms.txt to learn fctl and this CLI: what fctl is, the words it \
+uses, how to drive it from a script or a tool call (access tokens, --json, exit codes, waiting \
+for a session), what to avoid, recipes, and links to every doc page as Markdown, all of them in \
+one file at https://fctl.sh/llms-full.txt."
 )]
 struct Cli {
     /// The fctl instance (default: the one you signed in to).
@@ -442,6 +452,23 @@ mod tests {
         // Clap's own checks: no flag defined twice in a command, groups of
         // flags that exist, and the like.
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn the_help_points_agents_to_llms_txt() {
+        // `fctl` alone prints the short help, as `-h` does; `--help` and
+        // `fctl help` the long one. Wrapped to the terminal's width.
+        for line in ["fctl", "fctl -h", "fctl --help", "fctl help"] {
+            let Err(e) = Cli::try_parse_from(line.split(' ')) else {
+                panic!("`{line}` ran a command");
+            };
+            let help = e.render().to_string();
+            let words = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                words.contains("Agents: read https://fctl.sh/llms.txt to learn fctl"),
+                "`{line}` printed {help}"
+            );
+        }
     }
 
     #[test]
