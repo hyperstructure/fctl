@@ -144,7 +144,7 @@ function Profile({ me }: { me: G.Me }) {
   return (
     <Section title="Profile" description="How you appear in sessions, in commits and to your team.">
       <div className="flex flex-col gap-5">
-        {/* Beside the picture where the column has room for it and a button, under it where it hasn't (from 768 px, the sidebar takes 244 of them). */}
+        {/* Beside the picture where the column has room, under it where it hasn't (from 768 px, beside the sidebar). */}
         <div className="@container">
           <div className="flex flex-col items-start gap-4 @2xs:flex-row @2xs:items-center">
             <Avatar user={me.user} size={64} />
