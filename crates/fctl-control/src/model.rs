@@ -37,6 +37,9 @@ pub struct UserRow {
     pub created_at: i64,
     #[serde(deserialize_with = "opt_int", default)]
     pub last_login_at: Option<i64>,
+    /// When they last signed in or started a session themselves.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub last_active_at: Option<i64>,
     /// Google sign-ins ask them for the second factor too (their choice).
     #[serde(deserialize_with = "int_bool", default)]
     pub two_factor_google: bool,
@@ -142,6 +145,7 @@ impl UserRow {
             passkeys: self.passkeys.max(0) as u32,
             created_at: self.created_at,
             last_login_at: self.last_login_at,
+            last_active_at: self.last_active_at,
             emails: self.other_emails(),
             workspaces: self.workspace_count.max(0) as u32,
         }
@@ -171,6 +175,7 @@ pub fn user_columns(alias: &str) -> String {
         "default_credential_id",
         "created_at",
         "last_login_at",
+        "last_active_at",
         "two_factor_google",
     ]
     .iter()

@@ -851,7 +851,7 @@ workspace is and who runs it, but not inside the ones they aren't members
 of.
 
 ```sh
-fctl admin users                           # with their other addresses and how many workspaces
+fctl admin users                           # with their other addresses, how many workspaces, when last active
 fctl admin invite ada@private.example      # an invitation link (and an email, when set up)
 fctl admin invite grace@example.com -w side-project -w acme:admin   # and to your workspaces
 fctl admin role grace@example.com admin    # an instance admin, or member again (the primary instance owner)
@@ -882,10 +882,15 @@ fctl admin set --verify-sensitive-actions on   # sensitive actions take a passke
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 ```
 
-`fctl admin users` says who has two-factor sign-in. With it required, the
-command that requires it lists who hasn't set it up yet: until they do,
-they can only set it up, in the browser or with `fctl account two-factor
-enable`, and their other requests fail.
+`fctl admin users` says when each person was last active: when they last
+signed in in a browser or started a session themselves, on the web, with
+the CLI or by handing fctl a Linear ticket (the sessions review agents,
+schedules and limited access tokens start don't count).
+
+It also says who has two-factor sign-in. With it required, the command
+that requires it lists who hasn't set it up yet: until they do, they can
+only set it up, in the browser or with `fctl account two-factor enable`,
+and their other requests fail.
 
 Where the instance takes requests for early access (as app.fctl.sh does),
 `fctl admin early-access` lists the people who asked on the sign-in page
