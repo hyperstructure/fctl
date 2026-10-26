@@ -639,7 +639,7 @@ function Users() {
                   {u.workspaces === 0
                     ? "in no workspace"
                     : `in ${u.workspaces} ${u.workspaces === 1 ? "workspace" : "workspaces"}`}{" "}
-                  · {u.last_login_at ? `active ${ago(u.last_login_at)}` : "never signed in"}
+                  · {u.last_active_at ? `active ${ago(u.last_active_at)}` : "never signed in"}
                   {lacksTwoFactor(u, settings.data) && (
                     <span className="text-amber"> · sets up two-factor before anything else</span>
                   )}

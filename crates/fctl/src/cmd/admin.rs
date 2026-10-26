@@ -758,6 +758,10 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     1 => "in 1 workspace".to_owned(),
                     n => format!("in {n} workspaces"),
                 });
+                more.push(match u.last_active_at {
+                    Some(t) => format!("active {}", style::ago(t)),
+                    None => "never signed in".to_owned(),
+                });
                 println!("  {}", style::dim(&more.join(" · ")));
             }
         }

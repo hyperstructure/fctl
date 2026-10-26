@@ -202,6 +202,16 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     {
         worker::console_error!("remembering a session's model failed: {}", e.0.message);
     }
+    // Nor is noting when its person was last active, which sessions a
+    // limited token starts don't count as.
+    if ctx.limits().is_none()
+        && let Err(e) = crate::auth::mark_active(&ctx.db, &user.id, ctx.now).await
+    {
+        worker::console_error!(
+            "noting when a person was last active failed: {}",
+            e.0.message
+        );
+    }
     let created = access::session(ctx, id.as_str()).await?;
     let session = created.row.to_session(Some(created.role));
     let stub = internal::session_stub(&ctx.env, id.as_str())?;

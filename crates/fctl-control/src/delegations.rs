@@ -764,6 +764,10 @@ async fn take_up(
     )
     .await?;
     set_state(db, id, "started", Some(session_id.as_str()), now).await?;
+    // Handing fctl a ticket is starting a session themselves.
+    if let Err(e) = crate::auth::mark_active(db, &user.id, now).await {
+        worker::console_error!("noting when a person was last active: {}", e.0.message);
+    }
     audit(
         db,
         project.workspace_id(),

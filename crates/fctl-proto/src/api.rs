@@ -136,6 +136,10 @@ pub struct User {
     pub passkeys: u32,
     pub created_at: Millis,
     pub last_login_at: Option<Millis>,
+    /// When they last signed in in a browser or started a session
+    /// themselves (not one a review agent, a schedule or a limited token
+    /// started for them).
+    pub last_active_at: Option<Millis>,
     /// Its other email addresses, which also sign in to it (for instance
     /// admins; empty elsewhere).
     #[serde(default)]

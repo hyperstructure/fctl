@@ -344,6 +344,7 @@ pub fn limited_me(user: &crate::model::UserRow, token: Option<TokenInfo>) -> Me 
             two_factor: false,
             passkeys: 0,
             last_login_at: None,
+            last_active_at: None,
             workspaces: 0,
             ..user.to_user()
         },

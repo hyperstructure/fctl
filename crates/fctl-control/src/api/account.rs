@@ -317,7 +317,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
     statements.push(q(
         db,
         "UPDATE users SET email = ?, name = ?, given_name = NULL, family_name = NULL, avatar_url = NULL, commit_email = NULL, password_hash = NULL, role = 'member', \
-         status = 'disabled', default_credential_id = NULL, last_login_at = NULL, two_factor_google = 0, updated_at = ? \
+         status = 'disabled', default_credential_id = NULL, last_login_at = NULL, last_active_at = NULL, two_factor_google = 0, updated_at = ? \
          WHERE id = ? AND (EXISTS (SELECT 1 FROM sessions WHERE created_by = ?) OR EXISTS (SELECT 1 FROM projects WHERE created_by = ?))",
         &[
             s(&acct::tombstone_email(id)),
@@ -584,6 +584,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             "has_password": user.password_hash.is_some(),
             "created_at": user.created_at,
             "last_login_at": user.last_login_at,
+            "last_active_at": user.last_active_at,
         })),
     );
     doc.insert(

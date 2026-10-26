@@ -114,10 +114,10 @@ pub async fn issue_token(
     Ok((id.0, secret))
 }
 
-/// Signs in `user` in the browser: a new web session, and `last_login_at`.
-/// The request then counts as theirs (for the audit log). `confirmed`: the
-/// sign-in took a passkey or a second factor, so the browser counts as
-/// having confirmed it's them before sensitive actions
+/// Signs in `user` in the browser: a new web session, and `last_login_at`
+/// and `last_active_at`. The request then counts as theirs (for the audit
+/// log). `confirmed`: the sign-in took a passkey or a second factor, so the
+/// browser counts as having confirmed it's them before sensitive actions
 /// (`fctl_domain::verify`) for the next 15 minutes.
 pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow, confirmed: bool) -> AppResult<()> {
     let verified_at = confirmed.then_some(ctx.now);
@@ -125,7 +125,7 @@ pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow, confirmed: bool) -
         issue_token(ctx, &user.id, TokenKind::Web, None, None, None, verified_at).await?;
     q(
         &ctx.db,
-        "UPDATE users SET last_login_at = ? WHERE id = ?",
+        "UPDATE users SET last_login_at = ?1, last_active_at = ?1 WHERE id = ?2",
         &[n(ctx.now), s(&user.id)],
     )?
     .run()
@@ -138,6 +138,21 @@ pub async fn start_web_session(ctx: &mut Ctx, user: &UserRow, confirmed: bool) -
         settings,
         verified_at,
     ));
+    Ok(())
+}
+
+/// Records that `user_id` started a session themselves, at `now`, as when
+/// they were last active (`users.last_active_at`, which the instance
+/// admins' list of people shows). Sessions that review agents, schedules
+/// and limited tokens start for them don't count.
+pub async fn mark_active(db: &D1Database, user_id: &str, now: i64) -> AppResult<()> {
+    q(
+        db,
+        "UPDATE users SET last_active_at = ?1 WHERE id = ?2 AND (last_active_at IS NULL OR last_active_at < ?1)",
+        &[n(now), s(user_id)],
+    )?
+    .run()
+    .await?;
     Ok(())
 }
 

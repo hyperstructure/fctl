@@ -25,6 +25,12 @@ two_factor: boolean,
  */
 passkeys: number, created_at: number, last_login_at?: number, 
 /**
+ * When they last signed in in a browser or started a session
+ * themselves (not one a review agent, a schedule or a limited token
+ * started for them).
+ */
+last_active_at?: number, 
+/**
  * Its other email addresses, which also sign in to it (for instance
  * admins; empty elsewhere).
  */
