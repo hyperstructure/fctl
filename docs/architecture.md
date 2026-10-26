@@ -701,7 +701,8 @@ Push key, and the audit log.
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
 deliveries, and the in-progress streaming message. It writes summary changes
-through to D1.
+through to D1. It also keeps the images its agent read for a week (see
+[Images agents read](#images-agents-read)).
 
 **FleetDO** (one per instance) holds runner control connections, assigns
 sessions to runners, and fans out session summaries to dashboard viewers.
@@ -727,8 +728,8 @@ agents' replies, with a full-text index of them (see [Search](#search)).
 shares, its memory, its schedules and its sessions' retrospectives cascade) and, in the
 same batch, queues its sessions in
 `session_purges` and the project in `file_purges`; their Durable Object
-storage, the event logs and the attached files and published screenshots,
-is deleted right after, and each session's documents in the search index
+storage, the event logs with the images agents read and the attached files
+and published screenshots, is deleted right after, and each session's documents in the search index
 before its event log. An hourly cron trigger (`src/housekeeping.rs`; the
 standalone server runs it outside Cloudflare) retries what failed and
 deletes expired tokens, password resets, sign-ins waiting for a code,
@@ -2117,6 +2118,35 @@ allows it too, and through hosts that know it: an older host leaves it out
 of the agent's configuration, so its agents never offer `fctl publish`.
 When it is on, and the sandbox's fctl has the command, `~/AGENTS.md` tells
 Claude to try `--attach` and publish when GitHub refuses.
+
+### Images agents read
+
+Agents look at images too: Claude Code's `Read` of a screenshot they took,
+a browser tool's screenshot. The tool's result carries the image, in
+base64, which the transcript shows small under the call that read it, as
+Claude's apps do.
+
+1. Claude Code's messages reach SessionDO with the image in the result's
+   content (and Claude Code's own copy of it, `tool_use_result.file`).
+   Before it stores the event, SessionDO keeps each image that a tool
+   returned and that its bytes say is a PNG, JPEG, GIF or WebP of at most
+   5 MB, in its own storage in 1 MiB chunks, for 7 days
+   (`fctl_domain::kept_images`). Images people send are attachments, kept
+   as such.
+2. The stored event goes without the image's bytes, as events always did
+   (`omitted_bytes`), and with a `KeptImage` in the image's `source`, as
+   `kept`: its id (`img_…`), type, size, pixel size and when it expires.
+   What runs in the sandbox may pose as the agent, so a `kept` that comes
+   with an event goes: only SessionDO says what it kept.
+3. Anyone who can see the session gets the image
+   (`GET /api/v1/sessions/{id}/images/{image}`), with `nosniff`, a
+   sandboxing Content-Security-Policy and `Cache-Control: private` until
+   it expires. The web app shows it under the call's line, or under a
+   folded run's line among the images its calls read, and opens it in the
+   transcript's lightbox; `fctl logs` says what each image was.
+4. SessionDO's alarm deletes each image when it expires. A session keeps
+   at most 1,000 images and 200 MB at once: past either, its oldest go
+   first. The transcript then says what the call read, without the image.
 
 ### Project memory
 

@@ -26,7 +26,7 @@
 //! | `watch <seconds>` | watches the pull request's checks in one tool call that lasts that many seconds (at most ten minutes), as agents wait for CI before they end their turn |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `screenshot` | draws a small PNG and publishes it with `fctl publish`, as agents do for pull requests |
-//! | `look` | reads an image with `Read`, as agents look at a screenshot of what they changed: a small PNG it draws, or the image at the path after the word (`look /tmp/after.png`); the result holds the image, as Claude Code's does |
+//! | `look` | reads an image with `Read`, as agents look at a screenshot of what they changed: a small PNG it draws, or each image at the paths after the word (`look /tmp/before.png /tmp/after.png`), one call after another; the result holds the image, as Claude Code's does |
 //! | `remember <text>` | adds `<text>` (to the end of its line) to the project's memory with `fctl memory add`, as agents do |
 //! | `recall` | lists the project's memory with `fctl memory` |
 //! | a line that starts with `fctl ticket` | runs it, as agents read and write their project's tickets (`fctl ticket view ENG-1`, `fctl ticket comment ENG-1 "On it"`) |
@@ -1344,7 +1344,14 @@ impl Session {
             );
         }
         if says(&lower, "look") {
-            self.look(after_word(text, "look ").flatten());
+            let paths = after_word(text, "look ").flatten().unwrap_or_default();
+            let mut paths = paths.split_whitespace().map(str::to_owned).peekable();
+            if paths.peek().is_none() {
+                self.look(None);
+            }
+            for path in paths {
+                self.look(Some(path));
+            }
         }
         if let Some(note) = after_word(text, "remember ") {
             let note =

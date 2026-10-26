@@ -30,8 +30,8 @@ curl -sS -H "Authorization: Bearer $FCTL_TOKEN" "$FCTL_SERVER/api/v1/sessions?st
   uploads, which are `application/octet-stream`.
 - **Ids** have a type prefix: `ses_` sessions, `prj_` projects, `wsp_`
   workspaces, `sch_` schedules, `srn_` schedule runs, `mem_` memories,
-  `rtr_` retrospectives, `att_` attachments, `dlv_` messages, `usr_`
-  people, `rnr_` runners. Paths take a project's or workspace's slug or id,
+  `rtr_` retrospectives, `att_` attachments, `img_` images agents read,
+  `dlv_` messages, `usr_` people, `rnr_` runners. Paths take a project's or workspace's slug or id,
   and a session's id (`project#number` is the CLI's; it looks the number up
   in `GET /sessions?project=…`).
 - **Times** are milliseconds since the Unix epoch.
@@ -148,6 +148,14 @@ them: `assistant`, `user`, `system`, `result`, `rate_limit_event`),
 [fctl for agents](agents.md#reading-a-transcript) says what each holds. A
 turn ends with a `claude` event whose `data.type` is `result`, whose
 `data.result` is the agent's last message.
+
+Images in `claude` events come without their bytes (`omitted_bytes` in
+the image's `source` says how many there were). The session keeps a copy
+of each image the agent's tools returned, such as Claude Code's `Read` of
+a screenshot: a PNG, JPEG, GIF or WebP of up to 5 MB, for 7 days. Its
+`source.kept` says which (`id`, `media_type`, `size`, `width`, `height`,
+`expires_at`), and `GET /api/v1/sessions/{id}/images/{image}` returns it to
+anyone who can see the session until it expires, `404` after.
 
 To wait for the agent's reply to a message, note the newest `seq` before
 sending it, then read the events after it, page by page, until one is a

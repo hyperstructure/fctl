@@ -382,7 +382,7 @@ function ImageThumb({ kept, name, session }: { kept: G.KeptImage; name: string; 
           loading="lazy"
           decoding="async"
           onError={() => setFailed(true)}
-          className="h-20 w-auto max-w-[min(100%,16rem)] object-cover"
+          className="h-24 w-auto max-w-[min(100%,18rem)] object-cover"
         />
       </a>
       {lightbox}

@@ -82,6 +82,10 @@ session with `fctl edit` (the host's own fctl comes first on its agents'
 PATH), `screenshot` draws a small PNG and publishes it with `fctl publish`
 (allow that first: `cargo run -p fctl -- admin set --publish-screenshots
 on`, then `cargo run -p fctl -- projects set --publish-screenshots on`),
+`look` reads an image with `Read`, as agents look at their screenshots (a
+small PNG it draws, or each image at the paths after the word, one call
+after another: `look /tmp/before.png /tmp/after.png`), which the session
+keeps and its page shows under the calls,
 `remember <text>` adds the rest of its line to the project's memory with
 `fctl memory add`, `recall` lists the memory with `fctl memory`, a line
 that starts with `fctl ticket` runs as it is (`fctl ticket view ENG-1`), as

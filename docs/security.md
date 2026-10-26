@@ -18,6 +18,7 @@ trusts.
 | Profile pictures | images in D1 | anyone signed in to the instance, at an address with the person's user ID |
 | Workspace avatars | images in D1 | the workspace's members, people it invited, instance admins |
 | Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
+| Images agents read | the session's Durable Object, for 7 days | people who can see the session |
 | Published screenshots | the project's Durable Object, found by the SHA-256 of their links' tokens in D1 | anyone with a link, until it expires |
 | GitHub App key | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to mint short-lived tokens |
 | GitHub webhook secret | a Worker secret (outside Cloudflare, the server's environment) | the control plane, to check that deliveries come from GitHub |
@@ -152,6 +153,11 @@ owner and purpose), so a value copied between rows does not decrypt.
   everything else downloads, and only those and the videos the app plays
   keep their type, the rest being `application/octet-stream`, so an
   uploaded HTML, SVG or JavaScript file never runs as part of the app.
+  Images agents read come from the sandbox, where anything may pose as
+  the agent: the control plane keeps only PNG, JPEG, GIF and WebP images,
+  as their bytes say, serves them the same way, and drops any `kept`
+  reference an event comes with, so that a transcript names only images
+  its own session keeps.
 - GitHub's webhook (`POST /api/v1/github/webhook`) takes only deliveries
   signed with the webhook's secret (HMAC-SHA256, checked in constant time),
   and none without the secret. It takes from them only which pull requests
@@ -566,6 +572,9 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   logs in their Durable Objects) and the files attached to their messages
   right away; an hourly job retries any that fail. Uploaded files that no
   message sent are deleted after a day.
+- The images agents read are deleted 7 days after they read them, and
+  sooner when their session keeps more than 1,000 of them or 200 MB: its
+  oldest first. Deleting the project deletes them with the transcripts.
 - Expired browser sessions and tokens, password resets, sign-ins waiting
   for a second factor (ten minutes), device codes and invitations are
   deleted within the hour, and audit log entries after a year, as are
