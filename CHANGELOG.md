@@ -2,6 +2,30 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.24.1 (2026-10-26)
+
+### Breaking changes
+
+- Upload profile pictures instead of linking to them ([#288](https://github.com/hyperstructure/fctl/pull/288))
+
+### Features
+
+- **web:** Calm the sign-in sky and make early access easier to spot ([#285](https://github.com/hyperstructure/fctl/pull/285))
+- **control:** Let an instance redirect plain HTTP to HTTPS ([#286](https://github.com/hyperstructure/fctl/pull/286))
+- **control:** Allow crawlers to read the favicon and touch icon ([#287](https://github.com/hyperstructure/fctl/pull/287))
+
+### Fixes
+
+- **web:** Keep Start on the home composer's row while it starts ([#284](https://github.com/hyperstructure/fctl/pull/284))
+
+### Documentation
+
+- Update the README's screenshot ([#283](https://github.com/hyperstructure/fctl/pull/283))
+
+### Other changes
+
+- **deps:** Bump undici and wrangler ([#289](https://github.com/hyperstructure/fctl/pull/289))
+
 ## 0.24.0 (2026-10-25)
 
 ### Features
