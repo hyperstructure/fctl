@@ -49,6 +49,7 @@ id_ctor!(delivery_id, DeliveryId);
 id_ctor!(login_job_id, LoginJobId);
 id_ctor!(identity_id, IdentityId);
 id_ctor!(attachment_id, AttachmentId);
+id_ctor!(kept_image_id, KeptImageId);
 id_ctor!(push_device_id, PushDeviceId);
 id_ctor!(passkey_id, PasskeyId);
 id_ctor!(workspace_id, WorkspaceId);

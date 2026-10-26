@@ -24,6 +24,7 @@ import {
 import {
   type CSSProperties,
   createContext,
+  type MouseEvent,
   memo,
   type ReactNode,
   useCallback,
@@ -34,11 +35,13 @@ import {
   useState,
 } from "react";
 import { CodeBlock, Markdown } from "@/components/markdown";
-import { Spinner, ThoughtIcon } from "@/components/ui";
+import { plainClick, Spinner, ThoughtIcon, useLightbox } from "@/components/ui";
+import type * as G from "@/gen";
 import type { Json } from "@/lib/claude-types";
 import { cn } from "@/lib/cn";
-import { duration } from "@/lib/format";
+import { bytes, duration } from "@/lib/format";
 import { langOf } from "@/lib/highlight";
+import { formatOf, imageName, KEPT_DAYS, keptImageUrl, keptNow, type ToolImage } from "@/lib/kept-images";
 import {
   callsIn,
   changed,
@@ -87,6 +90,9 @@ const toolIcon = (name: string) => ICONS[name] ?? (name.startsWith("mcp__") ? <P
 
 /** The directory Claude Code works in, which paths in the transcript start from. */
 export const WorkDir = createContext<string | undefined>(undefined);
+
+/** The session whose transcript this is, which keeps the images its agent read. */
+export const SessionImages = createContext<string | undefined>(undefined);
 
 const str = (v: Json | undefined) => (typeof v === "string" ? v : "");
 
@@ -285,6 +291,8 @@ function Details({ t }: { t: Tool }) {
         <div className="text-[12.5px] text-ink-3">
           {result.isError ? (
             <Output text={result.text} error />
+          ) : result.images?.length ? (
+            <ImageFacts images={result.images} />
           ) : (
             `${result.text.split("\n").length} lines read`
           )}
@@ -294,10 +302,112 @@ function Details({ t }: { t: Tool }) {
       return (
         <div className="flex flex-col gap-2">
           <CodeBlock code={JSON.stringify(input, null, 2)} lang="json" />
-          {result && <Output text={result.text} error={result.isError} />}
+          {result && (result.text.trim() || !result.images?.length) && (
+            <Output text={result.text} error={result.isError} />
+          )}
+          {result?.images?.length ? (
+            <div className="text-[12.5px] text-ink-3">
+              <ImageFacts images={result.images} />
+            </div>
+          ) : null}
         </div>
       );
   }
+}
+
+/** What the images a call read are, a line each, and those the session no longer keeps say so. */
+function ImageFacts({ images }: { images: ToolImage[] }) {
+  return images.map((image, i) => {
+    const k = image.kept;
+    const facts = [
+      `${formatOf(image.mediaType) ?? "An"} image`,
+      k && `${k.width}×${k.height}`,
+      image.size !== undefined && bytes(image.size),
+    ].filter(Boolean);
+    return (
+      <div key={k?.id ?? i}>
+        {facts.join(", ")}
+        {k && !keptNow(image) && <span className="text-ink-4"> · deleted after {KEPT_DAYS} days</span>}
+      </div>
+    );
+  });
+}
+
+/**
+ * An image a call read, small, which a click shows at full size over the page among the transcript's other pictures;
+ * with a modifier key, the browser opens it in a new tab.
+ */
+function ImageThumb({ kept, name, session }: { kept: G.KeptImage; name: string; session: string }) {
+  const [failed, setFailed] = useState(false);
+  const src = keptImageUrl(session, kept.id);
+  const { ref, open, lightbox } = useLightbox<HTMLAnchorElement>(
+    failed
+      ? undefined
+      : {
+          file: {
+            name,
+            media_type: kept.media_type,
+            size: kept.size,
+            width: kept.width,
+            height: kept.height,
+          },
+          src,
+          download: true,
+        },
+  );
+  // Deleted sooner: the session had more than it keeps.
+  if (failed) return null;
+  const view = (e: MouseEvent) => {
+    if (!plainClick(e)) return;
+    e.preventDefault();
+    open();
+  };
+  return (
+    <>
+      <a
+        ref={ref}
+        href={src}
+        target="_blank"
+        rel="noreferrer"
+        onClick={view}
+        aria-label={`View ${name}`}
+        title={name}
+        className="block cursor-zoom-in overflow-hidden rounded-md border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
+      >
+        <img
+          src={src}
+          alt={name}
+          width={kept.width}
+          height={kept.height}
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailed(true)}
+          className="h-24 w-auto max-w-[min(100%,18rem)] object-cover"
+        />
+      </a>
+      {lightbox}
+    </>
+  );
+}
+
+/** The images calls read, while the session keeps them: under a call's line, or under a run's while it is folded. */
+function ReadImages({ calls, nested }: { calls: Tool[]; nested?: boolean }) {
+  const session = useContext(SessionImages);
+  const now = Date.now();
+  const shown = calls.flatMap((t) =>
+    (t.result?.images ?? []).flatMap((image, i) => {
+      const kept = keptNow(image, now);
+      return kept ? [{ kept, name: imageName(t.input, kept.media_type, i) }] : [];
+    }),
+  );
+  if (!session || !shown.length) return null;
+  return (
+    <div className={cn("mt-0.5 mb-1.5 flex flex-wrap items-start gap-2", nested ? "ml-[22px]" : "ml-[34px]")}>
+      {shown.map((s) => (
+        <ImageThumb key={s.kept.id} kept={s.kept} name={s.name} session={session} />
+      ))}
+    </div>
+  );
 }
 
 /** What the agent asked of a subagent: a line that opens into it. `call`: the key of the call that started it. */
@@ -519,6 +629,7 @@ export const ToolRow = memo(function ToolRow({
         </span>
         {target && <TargetText target={target} find={`line:${t.key}`} />}
       </OpenLine>
+      {!agent && <ReadImages calls={[t]} nested={nested} />}
       {open &&
         (agent ? (
           <Thread id={id} nested={nested} className="mt-0.5 mb-2 animate-rise">
@@ -669,6 +780,8 @@ export const Run = memo(
             className: cn(active && "text-shimmer"),
           }}
         />
+        {/* Folded, it shows the images its calls read: those of the steps it shows are under them. */}
+        {!open && <ReadImages calls={calls.filter((t) => !visible.includes(t))} />}
         {(visible.length > 0 || coming.length > 0) && (
           <Thread id={id} className="mb-1">
             {visible.map((s, i) => (

@@ -590,6 +590,93 @@ describe("a published screenshot", () => {
   });
 });
 
+describe("images the agent read", () => {
+  /** A `Read` of an image, which the session keeps until `expires`. */
+  const read = (file: string, expires = Date.now() + 86_400_000): Item => {
+    const kept: G.KeptImage = {
+      id: `img_${++seq}`,
+      media_type: "image/png",
+      size: 125_879,
+      width: 1526,
+      height: 702,
+      expires_at: expires,
+    };
+    return {
+      kind: "tool",
+      key: `read-${seq}`,
+      seq,
+      ts: seq * 1000,
+      id: `toolu_${seq}`,
+      name: "Read",
+      input: { file_path: `/home/agent/screenshots/${file}` },
+      result: { text: "", isError: false, images: [{ mediaType: "image/png", size: 125_879, kept }] },
+      children: 0,
+    };
+  };
+  const bash = (): Item => {
+    const t = tool("ok");
+    return t.kind === "tool"
+      ? { ...t, input: { command: "true", description: "Retake the screenshots" } }
+      : t;
+  };
+  const views = (c: HTMLElement) =>
+    [...c.querySelectorAll<HTMLAnchorElement>('a[aria-label^="View "]')].map((a) =>
+      a.getAttribute("aria-label"),
+    );
+  const lineOf = (c: HTMLElement, text: string) =>
+    [...c.querySelectorAll("button")].find((b) => b.textContent?.startsWith(text));
+
+  it("shows each under the call that read it, from the session, and opens it over the page", () => {
+    const c = transcript([prose("Looking."), read("after.png"), prose("It looks right.")], "idle");
+    const view = c.querySelector<HTMLAnchorElement>('a[aria-label="View after.png"]');
+    expect(view?.getAttribute("href")).toMatch(/^\/api\/v1\/sessions\/ses_1\/images\/img_\d+$/);
+    expect(view?.querySelector("img")?.getAttribute("src")).toBe(view?.getAttribute("href"));
+    expect(view?.querySelector("img")?.getAttribute("width")).toBe("1526");
+    act(() => view?.click());
+    expect(document.querySelector("dialog")?.getAttribute("aria-label")).toBe("after.png");
+  });
+
+  it("shows those of a folded run under its line, and under their calls once it opens", () => {
+    const c = transcript(
+      [
+        prose("Retaking them."),
+        bash(),
+        read("after-800.png"),
+        read("after-light.png"),
+        prose("Both look right."),
+      ],
+      "idle",
+    );
+    const run = lineOf(c, "Ran 1 command, read 2 files");
+    expect(run?.getAttribute("aria-expanded")).toBe("false");
+    expect(views(c)).toEqual(["View after-800.png", "View after-light.png"]);
+    act(() => run?.click());
+    // Once each, under its call.
+    expect(views(c)).toEqual(["View after-800.png", "View after-light.png"]);
+    expect(
+      lineOf(c, "Read~/screenshots/after-800.png")
+        ?.parentElement?.nextElementSibling?.querySelector("a")
+        ?.getAttribute("aria-label"),
+    ).toBe("View after-800.png");
+  });
+
+  it("says what a call read, and leaves out an image the session no longer keeps", () => {
+    const c = transcript(
+      [prose("Looking."), read("before.png", Date.now() - 1), read("after.png"), prose("Done.")],
+      "idle",
+    );
+    expect(views(c)).toEqual(["View after.png"]);
+    const run = lineOf(c, "Read 2 files");
+    act(() => run?.click());
+    act(() => lineOf(c, "Read~/screenshots/before.png")?.click());
+    act(() => lineOf(c, "Read~/screenshots/after.png")?.click());
+    const text = c.textContent ?? "";
+    expect(text).toContain("PNG image, 1526×702, 126 KB · deleted after 7 days");
+    expect(text).toContain("PNG image, 1526×702, 126 KB");
+    expect(text).not.toContain("lines read");
+  });
+});
+
 const memory = (over: Partial<G.Memory> = {}): G.Memory => ({
   id: "mem_1",
   project_id: "prj_1",

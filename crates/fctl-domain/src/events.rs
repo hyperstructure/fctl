@@ -449,6 +449,7 @@ pub fn activity(v: &Value) -> Option<(&'static str, u32)> {
 /// Returns whether anything was removed.
 pub fn shape_for_storage(v: &mut Value) -> bool {
     let mut changed = omit_base64(v);
+    changed |= omit_read_copy(v);
     changed |= truncate_strings(v, MAX_STORED_STRING_BYTES);
     if serialized_len(v) > MAX_STORED_EVENT_BYTES
         && let Some(obj) = v.as_object_mut()
@@ -465,8 +466,8 @@ pub fn shape_for_storage(v: &mut Value) -> bool {
 }
 
 /// Empties the data of base64 sources (images and documents Claude read):
-/// nothing shows them, and truncated they are useless. `omitted_bytes` says
-/// how much there was.
+/// the session keeps the images apart (`kept_images`), and truncated they
+/// are useless. `omitted_bytes` says how much there was.
 fn omit_base64(v: &mut Value) -> bool {
     match v {
         Value::Object(map) => {
@@ -482,6 +483,27 @@ fn omit_base64(v: &mut Value) -> bool {
             }
         }
         Value::Array(items) => items.iter_mut().fold(false, |acc, x| omit_base64(x) | acc),
+        _ => false,
+    }
+}
+
+/// Empties Claude Code's own copy of an image or a document its `Read`
+/// read (`tool_use_result.file.base64`), as [`omit_base64`] does the copy
+/// Claude got. Other fields named `base64` stay, within the usual limits.
+fn omit_read_copy(v: &mut Value) -> bool {
+    let Some(file) = v
+        .pointer_mut("/tool_use_result/file")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    match file.get_mut("base64") {
+        Some(Value::String(data)) if data.len() > 1024 => {
+            let n = data.len();
+            data.clear();
+            file.insert("omitted_bytes".into(), Value::from(n));
+            true
+        }
         _ => false,
     }
 }
@@ -919,12 +941,27 @@ mod tests {
         let mut v = json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
             {"type": "text", "text": "x".repeat(2000)}
-        ]}]}});
+        ]}]}, "tool_use_result": {"type": "image", "file": {"base64": data, "type": "image/png", "originalSize": 8250}}});
         assert!(shape_for_storage(&mut v));
         let source = &v["message"]["content"][0]["content"][0]["source"];
         assert_eq!(source["data"], "");
         assert_eq!(source["omitted_bytes"], 11_000);
         assert_eq!(source["media_type"], "image/png");
+        // Claude Code's own copy of what it read, too.
+        let file = &v["tool_use_result"]["file"];
+        assert_eq!(file["base64"], "");
+        assert_eq!(file["omitted_bytes"], 11_000);
+        assert_eq!(file["originalSize"], 8250);
+        // Other fields named so stay: a tool's input, an MCP tool's result.
+        let mut input = json!({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "mcp__files__upload", "input": {"name": "a.png", "base64": data}}
+        ]}});
+        assert!(!shape_for_storage(&mut input));
+        assert_eq!(input["message"]["content"][0]["input"]["base64"], data);
+        let mut result = json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]},
+            "tool_use_result": {"base64": data, "file": {"name": "a.png"}}});
+        assert!(!shape_for_storage(&mut result));
+        assert_eq!(result["tool_use_result"]["base64"], data);
         // Other long strings stay (within the usual limits).
         assert_eq!(
             v["message"]["content"][0]["content"][1]["text"]

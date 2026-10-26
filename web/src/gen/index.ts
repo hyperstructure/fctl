@@ -110,6 +110,8 @@ export type { InviteId } from "./InviteId";
 export type { InvitePreview } from "./InvitePreview";
 export type { InviteToWorkspaceRequest } from "./InviteToWorkspaceRequest";
 export type { InviteWorkspace } from "./InviteWorkspace";
+export type { KeptImage } from "./KeptImage";
+export type { KeptImageId } from "./KeptImageId";
 export type { LimitStatus } from "./LimitStatus";
 export type { LinearAccount } from "./LinearAccount";
 export type { LinearConnection } from "./LinearConnection";

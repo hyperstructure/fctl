@@ -26,6 +26,7 @@
 //! | `watch <seconds>` | watches the pull request's checks in one tool call that lasts that many seconds (at most ten minutes), as agents wait for CI before they end their turn |
 //! | `rename <title>` | names the session `<title>` with `fctl edit`, as agents do |
 //! | `screenshot` | draws a small PNG and publishes it with `fctl publish`, as agents do for pull requests |
+//! | `look` | reads an image with `Read`, as agents look at a screenshot of what they changed: a small PNG it draws, or each image at the paths after the word (`look /tmp/before.png /tmp/after.png`), one call after another; the result holds the image, as Claude Code's does |
 //! | `remember <text>` | adds `<text>` (to the end of its line) to the project's memory with `fctl memory add`, as agents do |
 //! | `recall` | lists the project's memory with `fctl memory` |
 //! | a line that starts with `fctl ticket` | runs it, as agents read and write their project's tickets (`fctl ticket view ENG-1`, `fctl ticket comment ENG-1 "On it"`) |
@@ -80,6 +81,8 @@
 
 mod replay;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -528,28 +531,43 @@ impl Session {
     /// several: each call in an assistant message of its own, then their
     /// results, in order.
     fn tools(&mut self, calls: Vec<(&str, Value, String, bool)>) {
+        let calls = calls
+            .into_iter()
+            .map(|(name, input, output, is_error)| {
+                (name, input, Value::String(output), None, is_error)
+            })
+            .collect();
+        self.tools_with(calls);
+    }
+
+    /// The same, with each result's content as Claude Code sends it (text,
+    /// or blocks such as images) and its own copy of the result
+    /// (`tool_use_result`), when it has one.
+    fn tools_with(&mut self, calls: Vec<(&str, Value, Value, Option<Value>, bool)>) {
         let msg_id = format!("msg_{}", short_id(8));
         let usage = self.call_started();
         let ids: Vec<String> = calls
             .iter()
             .map(|_| format!("toolu_{}", short_id(12)))
             .collect();
-        for ((name, input, _, _), tool_id) in calls.iter().zip(&ids) {
+        for ((name, input, _, _, _), tool_id) in calls.iter().zip(&ids) {
             out(
                 &json!({"type": "assistant", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": self.model, "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": input}], "stop_reason": "tool_use", "usage": usage}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
             );
         }
         self.call_ended(&msg_id, "tool_use", 30 * calls.len() as u64);
-        for ((name, _, output, is_error), tool_id) in calls.iter().zip(&ids) {
+        for ((name, _, output, structured, is_error), tool_id) in calls.iter().zip(&ids) {
             for i in 0..2 {
                 out(
                     &json!({"type": "tool_progress", "tool_use_id": tool_id, "tool_name": name, "parent_tool_use_id": null, "elapsed_time_seconds": i, "session_id": self.id, "uuid": uuid()}),
                 );
                 self.sleep();
             }
-            out(
-                &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": output, "is_error": is_error}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()}),
-            );
+            let mut result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": output, "is_error": is_error}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": uuid()});
+            if let (Some(structured), Some(m)) = (structured, result.as_object_mut()) {
+                m.insert("tool_use_result".into(), structured.clone());
+            }
+            out(&result);
         }
     }
 
@@ -562,6 +580,52 @@ impl Session {
             &output,
             failed,
         );
+    }
+
+    /// Reads an image with `Read`, as agents look at a screenshot of what
+    /// they changed: the one at `path`, or else a small PNG it draws. Its
+    /// result holds the image, and Claude Code's own copy of the result
+    /// too, as Claude Code's does.
+    fn look(&mut self, path: Option<String>) {
+        let path = path.map(std::path::PathBuf::from).unwrap_or_else(|| {
+            let dir = std::env::temp_dir().join(format!("fake-claude-{}", std::process::id()));
+            let path = dir.join("screenshot.png");
+            if let Err(e) =
+                std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, screenshot_png()))
+            {
+                eprintln!("fake-claude: drawing a screenshot: {e}");
+            }
+            path
+        });
+        let input = json!({"file_path": path.display().to_string()});
+        let (content, structured, is_error) = match std::fs::read(&path) {
+            Ok(bytes) => match image_type(&bytes) {
+                Some(media_type) => {
+                    let data = STANDARD.encode(&bytes);
+                    (
+                        json!([{"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}]),
+                        Some(
+                            json!({"type": "image", "file": {"base64": data, "type": media_type, "originalSize": bytes.len()}}),
+                        ),
+                        false,
+                    )
+                }
+                None => (
+                    json!(format!(
+                        "{} is not an image fake-claude reads",
+                        path.display()
+                    )),
+                    None,
+                    true,
+                ),
+            },
+            Err(e) => (
+                json!(format!("<tool_use_error>{e}</tool_use_error>")),
+                None,
+                true,
+            ),
+        };
+        self.tools_with(vec![("Read", input, content, structured, is_error)]);
     }
 
     /// Looks around the working directory before it changes anything, as
@@ -1279,6 +1343,16 @@ impl Session {
                 failed,
             );
         }
+        if says(&lower, "look") {
+            let paths = after_word(text, "look ").flatten().unwrap_or_default();
+            let mut paths = paths.split_whitespace().map(str::to_owned).peekable();
+            if paths.peek().is_none() {
+                self.look(None);
+            }
+            for path in paths {
+                self.look(Some(path));
+            }
+        }
         if let Some(note) = after_word(text, "remember ") {
             let note =
                 note.unwrap_or_else(|| "fake-claude remembers this for later sessions.".into());
@@ -1570,6 +1644,22 @@ fn describe_files(text: &str, images: usize) -> Option<String> {
         }
     }
     Some(s)
+}
+
+/// The type of a PNG, JPEG, GIF or WebP image, as its first bytes say: the
+/// images Claude Code's `Read` passes to Claude as images.
+fn image_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF8") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 /// A 160×90 PNG in fctl's colors (stripes of yellow over pink and blue),

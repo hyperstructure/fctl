@@ -18,7 +18,7 @@
 use crate::util::{self, run};
 use anyhow::{Context, Result, bail};
 use fctl_proto::api::{EventPage, MemoryList, RetrospectiveList};
-use fctl_proto::event::{CommitInfo, EventBody, SessionEvent, StatusChange};
+use fctl_proto::event::{CommitInfo, EventBody, KeptImage, SessionEvent, StatusChange};
 use fctl_proto::session::{Project, RetrospectiveOutcome, Session, SessionStatus};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -275,7 +275,8 @@ pub(crate) fn wrangler_dev(
 /// `--smoke`: starts a session with the CLI as a person would, on Haiku,
 /// and fails unless the agent commits and pushes a file and the session
 /// shows both while the turn still runs (the agent watches its checks
-/// meanwhile), keeps a note in the project's memory, records a
+/// meanwhile), the session keeps the image the agent reads (`look`) and
+/// gives it back, the agent keeps a note in the project's memory, records a
 /// retrospective and updates it (`fctl memory add`, `fctl retro`, `fctl
 /// retro update`), the agent finishes its
 /// turn, the session waits for the command and the subagent the agent left
@@ -298,7 +299,7 @@ fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
         "haiku",
         "--detach",
         &format!(
-            "write notes.md, push it, watch 12 seconds of checks, record a partial retro and revise it, then run the checks in the background 3 and delegate a review in the background\nremember {SMOKE_NOTE}"
+            "write notes.md, push it, watch 12 seconds of checks, record a partial retro and revise it, then run the checks in the background 3 and delegate a review in the background\nlook\nremember {SMOKE_NOTE}"
         ),
     ]))?;
     let session: Session =
@@ -323,11 +324,12 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
         &auth,
         children,
         Duration::from_secs(60),
-        "show its commit and push, keep a note, record a retrospective and update it, finish its turn and wait for its background tasks",
+        "show its commit and push, keep the image its agent read, keep a note, record a retrospective and update it, finish its turn and wait for its background tasks",
         |s| match s.status() {
             Some(SessionStatus::Stopped) => bail!("the session stopped before its turn ended"),
             Some(SessionStatus::Idle) => Ok(s.turn_ok
                 && s.commit.is_some()
+                && s.kept_image.is_some()
                 && s.waited_for_background
                 && s.remembered
                 && s.retrospective
@@ -335,6 +337,21 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
             _ => Ok(false),
         },
     )?;
+    // Its people get the image the agent read, as it was.
+    if let Some(image) = &seen.kept_image {
+        let (status, media_type, bytes) =
+            get_bytes(&format!("/sessions/{id}/images/{}", image.id), &auth)?;
+        if status != 200
+            || media_type.as_deref() != Some(image.media_type.as_str())
+            || bytes.len() as u64 != image.size
+            || !bytes.starts_with(b"\x89PNG")
+        {
+            bail!(
+                "the session gave back {} bytes of {media_type:?} (HTTP {status}) for the image its agent read, {image:?}",
+                bytes.len()
+            );
+        }
+    }
     // The control plane keeps them for the people and the agents after it.
     let read = call("GET", "/projects/playground/memories", Some(&auth), None)?;
     ok("reading the project's memory", &read)?;
@@ -431,7 +448,8 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
     let subject = seen.commit.map(|c| c.subject).unwrap_or_default();
     eprintln!(
         "\n\x1b[1msmoke test passed\x1b[0m: the agent committed \"{subject}\" and \
-         pushed it, the session showed both before the turn ended, the agent \
+         pushed it, the session showed both before the turn ended, it kept \
+         the image the agent read and gave it back, the agent \
          kept a note in the project's memory, recorded a retrospective and \
          updated it, \
          finished its turn, the session waited for its background command \
@@ -462,6 +480,8 @@ struct Seen {
     remembered: bool,
     retrospective: bool,
     retrospective_updated: bool,
+    /// An image the agent read, which the session keeps.
+    kept_image: Option<KeptImage>,
 }
 
 impl Seen {
@@ -540,6 +560,19 @@ impl Seen {
                 }
                 self.turn_ok = true;
                 self.results += 1;
+            }
+            EventBody::Claude(v) if e.body.claude_type() == Some("user") => {
+                let images = v.pointer("/message/content").and_then(Value::as_array);
+                let kept = images
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|b| b.get("content").and_then(Value::as_array))
+                    .flatten()
+                    .filter_map(|c| c.pointer("/source/kept"))
+                    .find_map(|k| serde_json::from_value::<KeptImage>(k.clone()).ok());
+                if self.kept_image.is_none() {
+                    self.kept_image = kept;
+                }
             }
             EventBody::Git(g) if g.ahead > 0 => {
                 self.commit = g.last_commit.clone();
@@ -627,6 +660,25 @@ pub(crate) fn call(
     let text = res.body_mut().read_to_string().unwrap_or_default();
     let json = serde_json::from_str(&text).unwrap_or(Value::Null);
     Ok((status, json, cookie))
+}
+
+/// GETs a file from the API: its status, type and bytes.
+fn get_bytes(path: &str, auth: &Auth) -> Result<(u16, Option<String>, Vec<u8>)> {
+    let mut req = ureq::http::Request::builder()
+        .method("GET")
+        .uri(format!("{}/api/v1{path}", api()));
+    match auth {
+        Auth::Bearer(t) => req = req.header("Authorization", format!("Bearer {t}")),
+        Auth::Cookie(c) => req = req.header("Cookie", c.as_str()),
+    }
+    let mut res = agent().run(req.body(())?)?;
+    let media_type = res
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let bytes = res.body_mut().read_to_vec()?;
+    Ok((res.status().as_u16(), media_type, bytes))
 }
 
 pub(crate) enum Auth {

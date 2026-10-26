@@ -82,6 +82,10 @@ session with `fctl edit` (the host's own fctl comes first on its agents'
 PATH), `screenshot` draws a small PNG and publishes it with `fctl publish`
 (allow that first: `cargo run -p fctl -- admin set --publish-screenshots
 on`, then `cargo run -p fctl -- projects set --publish-screenshots on`),
+`look` reads an image with `Read`, as agents look at their screenshots (a
+small PNG it draws, or each image at the paths after the word, one call
+after another: `look /tmp/before.png /tmp/after.png`), which the session
+keeps and its page shows under the calls,
 `remember <text>` adds the rest of its line to the project's memory with
 `fctl memory add`, `recall` lists the memory with `fctl memory`, a line
 that starts with `fctl ticket` runs as it is (`fctl ticket view ENG-1`), as
@@ -330,11 +334,13 @@ fails there fails the same way locally with `cargo xtask check <part>`.
 `cargo xtask dev --smoke` starts the local stack as `cargo xtask dev` does
 and runs `fctl run -p playground --model haiku` with a task that has
 fake-claude commit `notes.md`, push it, watch its checks for 12 seconds,
-keep a note in the project's memory, record a partial retrospective and
-update it, and leave a command and a subagent working in the background.
-It waits until the session has shown the commit pushed before the turn
-ended, the transcript has shown the note and the retrospective recorded
-and updated, the turn has ended, the session has waited for the command
+read an image (`look`), keep a note in the project's memory, record a
+partial retrospective and update it, and leave a command and a subagent
+working in the background. It waits until the session has shown the
+commit pushed before the turn ended, the transcript has named the image
+the session kept, which the session then gives back as it was, the
+transcript has shown the note and the retrospective recorded and
+updated, the turn has ended, the session has waited for the command
 and the subagent and has run again while the agent took each one's result
 in a turn of its own, checks that the project's
 memory has the note and the session its one retrospective, completed and

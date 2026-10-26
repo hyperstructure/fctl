@@ -189,6 +189,17 @@ fctl logs "$id" --json | jq -c 'select(.kind == "claude" and .data.type == "assi
 fctl logs "$id" --json | jq -s 'map(select(.kind == "git")) | last | .data'
 ```
 
+Images come without their bytes. The session keeps a copy of each image
+its agent's tools returned (a `Read` of a screenshot) for 7 days, which
+`kept` in the image's `source` describes and the API returns
+([Events](api.md#events)):
+
+```sh
+fctl logs "$id" --json | jq -r 'select(.kind == "claude" and .data.type == "user") | .data.message.content | arrays | .[]
+  | select(.type == "tool_result") | .content | arrays | .[] | .source.kept.id // empty'
+curl -sS -H "Authorization: Bearer $FCTL_TOKEN" -o after.png "$FCTL_SERVER/api/v1/sessions/$id/images/img_01J…"
+```
+
 `fctl logs SESSION` without `--json` prints the transcript as people read
 it, and `fctl search WORDS --json` finds sessions by what people and agents
 wrote.

@@ -11,7 +11,7 @@ use crate::session::{
     Memory, PullRequestRef, RemoteControlState, RepoAccess, RepoRef, Retrospective, SessionStatus,
     UserRef,
 };
-use crate::{AttachmentId, DeliveryId, Millis, SessionId};
+use crate::{AttachmentId, DeliveryId, KeptImageId, Millis, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -520,6 +520,27 @@ pub struct PublishedFile {
     pub width: Option<u32>,
     pub height: Option<u32>,
     /// When the link stops working and the file is deleted.
+    pub expires_at: Millis,
+}
+
+/// An image the agent read (a tool's result, such as Claude Code's `Read`
+/// of a PNG or a browser tool's screenshot), which the session keeps for
+/// the people who can see it until it expires
+/// (`GET /api/v1/sessions/{id}/images/{image}`). The control plane stores
+/// Claude's messages without the images in them (`omitted_bytes`); in the
+/// image's `source`, `kept` says where its copy is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct KeptImage {
+    pub id: KeptImageId,
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`, as its bytes
+    /// say.
+    pub media_type: String,
+    /// Bytes.
+    pub size: u64,
+    pub width: u32,
+    pub height: u32,
+    /// When it is deleted.
     pub expires_at: Millis,
 }
 

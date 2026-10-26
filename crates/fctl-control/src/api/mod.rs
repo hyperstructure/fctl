@@ -9,6 +9,7 @@ pub mod early_access;
 pub mod emails;
 pub mod github;
 pub mod google;
+pub mod kept_images;
 pub mod linear;
 pub mod memories;
 pub mod notifications;

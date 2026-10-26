@@ -22,6 +22,7 @@ pub mod ids;
 pub mod image;
 pub mod issues;
 pub mod journal;
+pub mod kept_images;
 pub mod limits;
 pub mod linear;
 pub mod memory;
