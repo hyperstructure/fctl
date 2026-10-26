@@ -1297,8 +1297,9 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         .unwrap_or(ctx.anchor)
         - 86_400_000;
     d1.exec(
-        "UPDATE users SET created_at = ?, updated_at = ?, last_login_at = ? WHERE email = ?",
+        "UPDATE users SET created_at = ?, updated_at = ?, last_login_at = ?, last_active_at = ? WHERE email = ?",
         vec![
+            json!(earliest),
             json!(earliest),
             json!(earliest),
             json!(earliest),
@@ -1320,8 +1321,8 @@ fn people_and_places(ctx: &Ctx, d1: &mut Db) -> Result<()> {
             .copied()
             .unwrap_or(ctx.anchor - 26 * 3_600_000);
         d1.exec(
-            "UPDATE users SET created_at = ?, updated_at = ?, last_login_at = ? WHERE id = ?",
-            vec![json!(joined), json!(joined), json!(seen), json!(uid)],
+            "UPDATE users SET created_at = ?, updated_at = ?, last_login_at = ?, last_active_at = ? WHERE id = ?",
+            vec![json!(joined), json!(joined), json!(seen), json!(seen), json!(uid)],
         );
         d1.exec(
             "UPDATE user_emails SET created_at = ? WHERE user_id = ?",
