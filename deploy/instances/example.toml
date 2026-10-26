@@ -17,6 +17,10 @@ public_url = "https://fctl.example.com"
 # /sitemap.xml lists it). Without it, /robots.txt disallows everything
 # but /llms.txt.
 # search_engines = true
+# Optional: redirect plain HTTP to HTTPS, for every page, asset and API call.
+# The Worker then runs for every request, the app's files included, and
+# Cloudflare counts each as a Worker request. Without it, plain HTTP works too.
+# https_only = true
 
 [d1]
 database_name = "fctl"

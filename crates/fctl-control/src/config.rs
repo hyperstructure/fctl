@@ -7,6 +7,7 @@
 //! | `FCTL_DEV` | var | `1` in local development (relaxed origin checks, dev endpoints) |
 //! | `FCTL_EARLY_ACCESS` | var | `1` where people without an account ask for early access (app.fctl.sh) |
 //! | `FCTL_SEARCH_ENGINES` | var | `1` where search engines may index the public pages (app.fctl.sh) |
+//! | `FCTL_HTTPS_ONLY` | var | `1` where plain HTTP redirects to HTTPS (app.fctl.sh; `fctl_domain::https`) |
 //! | `FCTL_MASTER_KEY` | secret | 32 random bytes, base64; encrypts credentials and signs state |
 //! | `FCTL_SETUP_TOKEN` | secret | One-time token for creating the owner account |
 //! | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID` | var | The GitHub App |
@@ -107,6 +108,12 @@ fn var(env: &Env, name: &str) -> Option<String> {
         .or_else(|| env.secret(name).ok().map(|v| v.to_string()))
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
+}
+
+/// Plain HTTP redirects to HTTPS (`fctl_domain::https`). Read apart from
+/// [`Config`], since every request asks, for an asset as much as the API.
+pub fn https_only(env: &Env) -> bool {
+    var(env, "FCTL_HTTPS_ONLY").is_some_and(|v| v == "1" || v == "true")
 }
 
 impl Config {
