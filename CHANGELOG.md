@@ -2,6 +2,13 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.24.2 (2026-10-26)
+
+### Features
+
+- Count starting a session as being active in the admin list ([#290](https://github.com/hyperstructure/fctl/pull/290))
+- Show thumbnails of the images agents read, kept for a week ([#291](https://github.com/hyperstructure/fctl/pull/291))
+
 ## 0.24.1 (2026-10-26)
 
 ### Breaking changes
