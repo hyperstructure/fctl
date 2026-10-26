@@ -19,6 +19,7 @@ import {
   type ToolResultBlock,
 } from "./claude-types";
 import { branchChanges } from "./git";
+import { resultImages, type ToolImage } from "./kept-images";
 
 interface Base {
   key: string;
@@ -50,8 +51,8 @@ export type Item =
       id: string;
       name: string;
       input: Record<string, Json>;
-      /** What the call returned, and when (`ts`). */
-      result?: { text: string; isError: boolean; structured?: unknown; ts?: number };
+      /** What the call returned, and when (`ts`): its text, and the images in it. */
+      result?: { text: string; isError: boolean; structured?: unknown; ts?: number; images?: ToolImage[] };
       /** Tool calls a subagent made inside this one. */
       children: number;
       childLast?: string;
@@ -415,6 +416,7 @@ export class TranscriptBuilder {
       for (const b of content) {
         if (b.type !== "tool_result") continue;
         const r = b as ToolResultBlock;
+        const images = resultImages(r.content);
         this.updateTool(items, r.tool_use_id, (t) => ({
           ...t,
           result: {
@@ -422,6 +424,7 @@ export class TranscriptBuilder {
             isError: !!r.is_error,
             structured: m.tool_use_result,
             ts: ev.ts,
+            ...(images.length ? { images } : {}),
           },
         }));
         // A subagent whose call returned has ended, unless it works in the background.

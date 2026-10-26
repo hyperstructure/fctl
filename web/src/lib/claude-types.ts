@@ -2,6 +2,8 @@
 // stored verbatim, so these types are deliberately open; narrow with the
 // guards below.
 
+import type * as G from "@/gen";
+
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
 export interface TextBlock {
@@ -21,8 +23,21 @@ export interface ToolUseBlock {
 export interface ToolResultBlock {
   type: "tool_result";
   tool_use_id: string;
-  content?: string | Array<{ type: string; text?: string }>;
+  content?: string | Array<{ type: string; text?: string; source?: ImageSource }>;
   is_error?: boolean;
+}
+
+/**
+ * Where an image in a message came from: its bytes in base64, which the control plane stores the message without
+ * (`omitted_bytes` says how many there were), and for an image a tool returned, the session's copy of it until it
+ * expires (`kept`).
+ */
+export interface ImageSource {
+  type?: string;
+  media_type?: string;
+  data?: string;
+  omitted_bytes?: number;
+  kept?: G.KeptImage;
 }
 export type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | { type: string };
 

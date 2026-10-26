@@ -111,6 +111,55 @@ describe("TranscriptBuilder", () => {
     });
   });
 
+  it("keeps the images a call read with its result", () => {
+    const b = new TranscriptBuilder();
+    const kept = {
+      id: "img_01",
+      media_type: "image/png",
+      size: 125_879,
+      width: 1526,
+      height: 702,
+      expires_at: 2_000,
+    };
+    const items = b.add([
+      assistant("m1", [
+        { type: "tool_use", id: "t1", name: "Read", input: { file_path: "/home/agent/after.png" } },
+      ]),
+      claude({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: [
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: "", omitted_bytes: 167_840, kept },
+                },
+              ],
+            },
+          ],
+        },
+        parent_tool_use_id: null,
+        tool_use_result: { type: "image", file: { base64: "", type: "image/png", originalSize: 125_879 } },
+      }),
+    ]);
+    const tool = items[0];
+    expect(tool?.kind === "tool" && tool.result?.text).toBe("");
+    expect(tool?.kind === "tool" && tool.result?.images).toEqual([
+      { mediaType: "image/png", size: 125_879, kept },
+    ]);
+    // Results without images have none.
+    const more = b.add([
+      assistant("m2", [{ type: "tool_use", id: "t2", name: "Bash", input: { command: "ls" } }]),
+      toolResult("t2", "README.md"),
+    ]);
+    const bash = more[1];
+    expect(bash?.kind === "tool" && bash.result && "images" in bash.result).toBe(false);
+  });
+
   it("merges consecutive text blocks of one message", () => {
     const b = new TranscriptBuilder();
     const items = b.add([

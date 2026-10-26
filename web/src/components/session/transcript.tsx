@@ -58,7 +58,7 @@ import { FollowUpMessage, HeldFollowUp } from "./follow-up";
 import { Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { thinkingNow } from "./thinking";
 import { TicketMessageView, TicketNoticeView } from "./ticket";
-import { Run, ToolRow, WorkDir } from "./tool";
+import { Run, SessionImages, ToolRow, WorkDir } from "./tool";
 
 const UserMessage = memo(function UserMessage({
   item,
@@ -813,42 +813,44 @@ export const Transcript = memo(function Transcript({
             />
           )}
           <WorkDir value={cwd}>
-            {ps.map((p) => (
-              <div key={p.key} data-item data-part={p.key}>
-                <Unreadable>
-                  {p.kind === "run" ? (
-                    <Run
-                      steps={p.steps}
-                      running={running && p.index > turnStart}
-                      active={p === tail}
-                      up={up}
-                      progress={
-                        progress && p.steps.some((s) => s.kind === "tool" && s.id === progress.id)
-                          ? progress
-                          : undefined
-                      }
-                      coming={p === tail ? coming : undefined}
-                    />
-                  ) : (
-                    <ItemView
-                      item={p.item}
-                      seconds={
-                        p.item.kind === "tool" && progress?.id === p.item.id ? progress.seconds : undefined
-                      }
-                      sessionId={sessionId}
-                      running={p.item.kind === "tool" ? running && p.index > turnStart : undefined}
-                      up={p.item.kind === "tool" && p.item.agent ? up : undefined}
-                      stalled={p.item.kind === "setup" ? !!stall : undefined}
-                      canManage={canManage}
-                      claudeUrl={
-                        p.item.kind === "remote" ? remoteControlUrl(p.item.rc, startedBy, me) : undefined
-                      }
-                      projectSlug={projectSlug}
-                    />
-                  )}
-                </Unreadable>
-              </div>
-            ))}
+            <SessionImages value={sessionId}>
+              {ps.map((p) => (
+                <div key={p.key} data-item data-part={p.key}>
+                  <Unreadable>
+                    {p.kind === "run" ? (
+                      <Run
+                        steps={p.steps}
+                        running={running && p.index > turnStart}
+                        active={p === tail}
+                        up={up}
+                        progress={
+                          progress && p.steps.some((s) => s.kind === "tool" && s.id === progress.id)
+                            ? progress
+                            : undefined
+                        }
+                        coming={p === tail ? coming : undefined}
+                      />
+                    ) : (
+                      <ItemView
+                        item={p.item}
+                        seconds={
+                          p.item.kind === "tool" && progress?.id === p.item.id ? progress.seconds : undefined
+                        }
+                        sessionId={sessionId}
+                        running={p.item.kind === "tool" ? running && p.index > turnStart : undefined}
+                        up={p.item.kind === "tool" && p.item.agent ? up : undefined}
+                        stalled={p.item.kind === "setup" ? !!stall : undefined}
+                        canManage={canManage}
+                        claudeUrl={
+                          p.item.kind === "remote" ? remoteControlUrl(p.item.rc, startedBy, me) : undefined
+                        }
+                        projectSlug={projectSlug}
+                      />
+                    )}
+                  </Unreadable>
+                </div>
+              ))}
+            </SessionImages>
           </WorkDir>
           <LiveTurnView live={live} status={status} stall={stall} inRun={folded} />
         </div>
