@@ -6,7 +6,7 @@
 //! (`search_engines` in deploy/instances, which sets `FCTL_SEARCH_ENGINES`;
 //! app.fctl.sh's does). An open instance lets them read its public pages
 //! (the sign-in page, the early access page where it has one, and
-//! `/llms.txt`), the icons crawlers and link previews ask for (`/favicon.ico`,
+//! `/llms.txt`), the icons crawlers and link previews ask for (`/favicon.ico`, `/favicon.svg`,
 //! `/apple-touch-icon.png`) and lists those in its sitemap, which crawlers may read
 //! too (Google honours robots.txt when it fetches a sitemap, and reports a
 //! disallowed one as "General HTTP error"); everything else stays
@@ -32,7 +32,7 @@ pub fn robots_txt(public_url: &str, open: bool, early_access: bool) -> String {
         out.push_str(&format!("Allow: {page}\n"));
     }
     out.push_str(&format!(
-        "Allow: /sitemap.xml\nAllow: /favicon.ico\nAllow: /apple-touch-icon.png\n\
+        "Allow: /sitemap.xml\nAllow: /favicon.ico\nAllow: /favicon.svg\nAllow: /apple-touch-icon.png\n\
          Disallow: /\n\nSitemap: {public_url}/sitemap.xml\n"
     ));
     out
@@ -85,6 +85,7 @@ mod tests {
              Allow: /llms.txt\n\
              Allow: /sitemap.xml\n\
              Allow: /favicon.ico\n\
+             Allow: /favicon.svg\n\
              Allow: /apple-touch-icon.png\n\
              Disallow: /\n\
              \n\
