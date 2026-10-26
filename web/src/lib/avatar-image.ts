@@ -1,5 +1,6 @@
-// Making an uploaded picture a workspace avatar: the centered square of it,
-// 256 px a side, as PNG, which the control plane takes (at most 256 KB).
+// Making an uploaded picture an avatar, a person's or a workspace's: the
+// centered square of it, 256 px a side, as PNG, which the control plane
+// takes (at most 256 KB).
 
 const SIDE = 256;
 

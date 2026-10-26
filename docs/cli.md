@@ -901,6 +901,7 @@ the ones before them.
 
 ```sh
 fctl account emails                        # your addresses, their commit emails and workspaces
+fctl account set --avatar me.png           # your picture (PNG, JPEG, GIF or WebP; --avatar none for your initials)
 fctl account set --commit-email 1234+ada@users.noreply.github.com      # your primary address's
 fctl account set --for ada.lovelace@acme.example --commit-email ada.lovelace@acme.example
 fctl account set --commit-email ""         # commits stop crediting you

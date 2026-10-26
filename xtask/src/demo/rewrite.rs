@@ -132,7 +132,7 @@ impl Ctx<'_, '_> {
         json!({
             "id": self.w.users.get(person).cloned().unwrap_or_default(),
             "name": p.map(cast::Person::name).unwrap_or_default(),
-            "avatar_url": p.filter(|p| p.avatar).and_then(|p| p.github.as_ref()).map(|g| format!("https://avatars.githubusercontent.com/{g}")),
+            "avatar_url": self.w.avatars.get(person),
         })
     }
 }

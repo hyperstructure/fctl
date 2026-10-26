@@ -276,6 +276,8 @@ pub struct UpdateMeRequest {
     pub family_name: Option<String>,
     /// The full name alone, from older clients: the parts become unknown.
     pub name: Option<String>,
+    /// `""` removes your picture. `PUT /api/v1/me/avatar` uploads one: an
+    /// address is refused, unless it is the one you have.
     pub avatar_url: Option<String>,
     /// The address commits credit you with (`Me.commit_email`); an empty
     /// one removes it.

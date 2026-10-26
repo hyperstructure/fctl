@@ -168,6 +168,24 @@ impl Api {
         self.patch("/auth/me", body).await
     }
 
+    /// Uploads your picture: a PNG, JPEG, GIF or WebP image.
+    pub async fn set_avatar(&self, bytes: Vec<u8>) -> Result<Me> {
+        let body = self
+            .raw(
+                Method::PUT,
+                "/me/avatar",
+                Some(bytes),
+                Some("application/octet-stream"),
+            )
+            .await?;
+        serde_json::from_slice(&body).map_err(|e| Error::Decode(e.to_string()))
+    }
+
+    /// Removes your picture: your initials show instead.
+    pub async fn remove_avatar(&self) -> Result<Me> {
+        self.delete("/me/avatar").await
+    }
+
     pub async fn device_start(&self, client_name: &str) -> Result<DeviceStartResponse> {
         self.post(
             "/auth/device",

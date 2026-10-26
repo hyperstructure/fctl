@@ -15,6 +15,7 @@ trusts.
 | Sessions and tokens | SHA-256 hashes in D1; the secret only with its holder | the holder |
 | Claude credentials | encrypted (AES-256-GCM) in D1, or, for tokens people keep on their runners, only in a file on those runners (mode 0600) | sessions their owner starts |
 | Project secrets | encrypted in D1 | that project's sessions, as environment variables |
+| Profile pictures | images in D1 | anyone signed in to the instance, at an address with the person's user ID |
 | Workspace avatars | images in D1 | the workspace's members, people it invited, instance admins |
 | Attached files | the project's Durable Object | people who can see the session they were sent in; its runner and agent |
 | Published screenshots | the project's Durable Object, found by the SHA-256 of their links' tokens in D1 | anyone with a link, until it expires |

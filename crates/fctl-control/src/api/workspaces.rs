@@ -11,7 +11,6 @@ use crate::model::{
     PROJECT_ORDER, PROJECT_VISIBLE, RUNNER_SELECT, RunnerRow, RunnerView, UserRow, WORKSPACE_ORDER,
 };
 use crate::workspaces::{self as ws, INVITATION_SELECT, InvitationRow, WorkspaceRow};
-use base64::Engine;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
 use fctl_domain::verify::{self, Sensitive};
@@ -20,7 +19,7 @@ use fctl_proto::api::*;
 use fctl_proto::session::{WorkspaceColor, WorkspaceRole};
 use fctl_proto::{ApiError, ErrorCode, UserId};
 use serde::Deserialize;
-use worker::{Headers, Request, Response};
+use worker::{Request, Response};
 
 const ACTIVE: &str = "('queued','provisioning','preparing','running','idle','paused','stopping')";
 
@@ -396,24 +395,7 @@ pub async fn delete(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
 pub async fn set_avatar(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let a = ws::load(ctx, id).await?;
     a.require_admin()?;
-    let ct = http::header(req, "Content-Type").unwrap_or_default();
-    if !ct
-        .to_ascii_lowercase()
-        .starts_with("application/octet-stream")
-    {
-        return Err(AppError(ApiError::bad_request(
-            "Send the image as application/octet-stream",
-        )));
-    }
-    if http::header(req, "Content-Length")
-        .and_then(|l| l.parse::<usize>().ok())
-        .is_some_and(|l| l > policy::MAX_AVATAR_BYTES)
-    {
-        return Err(validation("avatar", "Use a smaller image"));
-    }
-    let bytes = req.bytes().await?;
-    let media_type = policy::avatar(&bytes)?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let (encoded, media_type) = crate::api::avatars::read(req).await?;
     q(
         &ctx.db,
         "UPDATE workspaces SET avatar = ?, avatar_type = ?, avatar_updated_at = ?, updated_at = ? WHERE id = ?",
@@ -477,16 +459,7 @@ pub async fn avatar(ctx: &Ctx, id: &str) -> AppResult<Response> {
     else {
         return Err(not_found("Avatar"));
     };
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data.as_bytes())
-        .map_err(crate::error::internal)?;
-    let h = Headers::new();
-    h.set("Content-Type", &media_type)?;
-    h.set("Cache-Control", "private, max-age=31536000, immutable")?;
-    h.set("X-Content-Type-Options", "nosniff")?;
-    h.set("Content-Security-Policy", "default-src 'none'; sandbox")?;
-    h.set("Cross-Origin-Resource-Policy", "same-origin")?;
-    Ok(Response::from_bytes(bytes)?.with_headers(h))
+    crate::api::avatars::image(&data, &media_type)
 }
 
 // ───────────────────────────── members ─────────────────────────────

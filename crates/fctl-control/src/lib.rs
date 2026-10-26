@@ -449,6 +449,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         }
         (Delete, ["me", "emails", email]) => api::emails::remove(ctx, &http::decode(email)).await,
         (Put, ["me", "workspace-order"]) => api::workspaces::order(ctx, req).await,
+        (Put, ["me", "avatar"]) => api::avatars::set_mine(ctx, req).await,
+        (Delete, ["me", "avatar"]) => api::avatars::remove_mine(ctx).await,
+        (Get, ["users", id, "avatar"]) => api::avatars::user(ctx, req, id).await,
         (Get, ["me", "export"]) => api::account::export(ctx).await,
         (Get, ["me", "deletion"]) => api::account::deletion(ctx).await,
         (Post, ["me", "delete"]) => api::account::delete(ctx, req).await,

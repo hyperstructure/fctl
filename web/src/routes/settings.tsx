@@ -9,6 +9,7 @@ import {
   Bell,
   BellOff,
   Download,
+  ImageUp,
   KeyRound,
   Laptop,
   ListOrdered,
@@ -54,6 +55,7 @@ import {
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api, confirmFirst, emails, linearLinkUrl, workspaces as wsApi } from "@/lib/api";
+import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
@@ -115,65 +117,95 @@ export function SettingsPage() {
 function Profile({ me }: { me: G.Me }) {
   const [given, setGiven] = useState(() => nameParts(me.user).given);
   const [family, setFamily] = useState(() => nameParts(me.user).family);
-  const [avatar, setAvatar] = useState(me.user.avatar_url ?? "");
+  const file = useRef<HTMLInputElement>(null);
+  const saved = (m: G.Me) => queryClient.setQueryData(keys.me, m);
   const save = useMutation({
-    mutationFn: () =>
-      api.updateMe({
-        given_name: given,
-        family_name: family,
-        avatar_url: avatar,
-      }),
+    mutationFn: () => api.updateMe({ given_name: given, family_name: family }),
     onSuccess: (m) => {
-      queryClient.setQueryData(keys.me, m);
+      saved(m);
       toast("Profile saved");
     },
+  });
+  const upload = useMutation({
+    mutationFn: async (f: File) => api.setAvatar(await avatarImage(f)),
+    onSuccess: (m) => {
+      saved(m);
+      toast("New picture saved");
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const removePicture = useMutation({
+    mutationFn: () => api.removeAvatar(),
+    onSuccess: saved,
+    onError: (e) => toast(e.message, "error"),
   });
   const err = (f: string) =>
     (save.error as { field?: string } | null)?.field === f ? save.error?.message : undefined;
   return (
     <Section title="Profile" description="How you appear in sessions, in commits and to your team.">
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          save.mutate();
-        }}
-      >
+      <div className="flex flex-col gap-5">
         <div className="flex items-center gap-4">
-          <Avatar user={{ ...me.user, avatar_url: avatar || undefined }} size={48} />
-          <div className="text-[13px] text-ink-3">
-            {me.user.email}
-            <div className="text-[12px] text-ink-4">
-              {me.user.role === "owner"
-                ? "Primary instance owner · "
-                : me.user.role === "admin"
-                  ? "An instance admin · "
-                  : ""}
-              joined {ago(me.user.created_at)}
+          <Avatar user={me.user} size={64} />
+          <div className="flex min-w-0 flex-col gap-2.5">
+            <div className="text-[13px] text-ink-3">
+              <div className="truncate">{me.user.email}</div>
+              <div className="text-[12px] text-ink-4">
+                {me.user.role === "owner"
+                  ? "Primary instance owner · "
+                  : me.user.role === "admin"
+                    ? "An instance admin · "
+                    : ""}
+                joined {ago(me.user.created_at)}
+              </div>
             </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                icon={<ImageUp className="size-3.5" />}
+                loading={upload.isPending}
+                onClick={() => file.current?.click()}
+              >
+                Upload a picture
+              </Button>
+              {me.user.avatar_url && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  loading={removePicture.isPending}
+                  onClick={() => removePicture.mutate()}
+                >
+                  Use your initials
+                </Button>
+              )}
+            </div>
+            <input
+              ref={file}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) upload.mutate(f);
+                e.target.value = "";
+              }}
+            />
           </div>
         </div>
-        <NameFields given={given} family={family} onGiven={setGiven} onFamily={setFamily} error={err} />
-        <Field
-          label="Avatar URL"
-          hint="An https:// image. Linking Google fills this in."
-          error={err("avatar_url")}
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save.mutate();
+          }}
         >
-          {(id) => (
-            <Input
-              id={id}
-              value={avatar}
-              onChange={(e) => setAvatar(e.target.value)}
-              placeholder="https://…"
-            />
-          )}
-        </Field>
-        <div>
-          <Button type="submit" variant="primary" loading={save.isPending}>
-            Save
-          </Button>
-        </div>
-      </form>
+          <NameFields given={given} family={family} onGiven={setGiven} onFamily={setFamily} error={err} />
+          <div>
+            <Button type="submit" variant="primary" loading={save.isPending}>
+              Save
+            </Button>
+          </div>
+        </form>
+      </div>
     </Section>
   );
 }

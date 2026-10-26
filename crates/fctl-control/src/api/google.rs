@@ -251,14 +251,8 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
                 ctx.cfg.url("/settings")
             ),
         );
-        if let Some(pic) = claims.picture.as_deref() {
-            q(
-                &ctx.db,
-                "UPDATE users SET avatar_url = COALESCE(avatar_url, ?) WHERE id = ?",
-                &[s(pic), s(user_id)],
-            )?
-            .run()
-            .await?;
+        if user.avatar_url.is_none() {
+            adopt_picture(ctx, user_id, &claims).await;
         }
         ctx.audit(
             "identity.linked",
@@ -338,14 +332,13 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     .or_else(|_| fctl_domain::validate::person_name(None, None, Some("New user")))?;
     q(
         &ctx.db,
-        "INSERT INTO users (id, email, name, given_name, family_name, avatar_url, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+        "INSERT INTO users (id, email, name, given_name, family_name, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
         &[
             s(id.as_str()),
             s(&email),
             s(&person.full),
             os(person.given.as_deref()),
             os(person.family.as_deref()),
-            os(claims.picture.as_deref()),
             s(role),
             n(ctx.now),
             n(ctx.now),
@@ -361,6 +354,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     .run()
     .await?;
     insert_identity(ctx, id.as_str(), &claims, Some(&email)).await?;
+    adopt_picture(ctx, id.as_str(), &claims).await;
     let user = auth::user_by_id(ctx, id.as_str())
         .await?
         .ok_or_else(|| not_found("User"))?;
@@ -372,6 +366,17 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     );
     crate::api::workspaces::joined_after_sign_up(ctx, &user, &email).await?;
     http::redirect(&st.return_to)
+}
+
+/// The Google account's picture as the avatar of someone who has none: a
+/// copy (`api::avatars::adopt_google`). Without it, they keep their
+/// initials until they upload one.
+async fn adopt_picture(ctx: &Ctx, user_id: &str, c: &Claims) {
+    if let Some(picture) = c.picture.as_deref()
+        && let Err(e) = crate::api::avatars::adopt_google(ctx, user_id, picture).await
+    {
+        worker::console_log!("google picture not copied: {e}");
+    }
 }
 
 async fn insert_identity(

@@ -73,6 +73,21 @@ async function request<T>(method: string, path: string, body?: unknown, again = 
   return data as T;
 }
 
+/** Uploads an avatar: the image as `application/octet-stream`. */
+async function putAvatar<T>(path: string, image: Blob): Promise<T> {
+  const res = await fetch(`/api/v1${path}`, {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { Accept: "application/json", "Content-Type": "application/octet-stream" },
+    body: image,
+  }).catch(() => {
+    throw new ApiFailure(0, { code: "unavailable", message: "You appear to be offline." });
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiFailure(res.status, data);
+  return data as T;
+}
+
 /** Dispatched on `window` when a request was refused until two-factor sign-in is set up. */
 export const TWO_FACTOR_REQUIRED = "fctl:two-factor-required";
 
@@ -133,6 +148,10 @@ export const api = {
   logout: () => request<G.Ok>("POST", "/auth/logout", {}),
   me: () => request<G.Me>("GET", "/auth/me"),
   updateMe: (b: G.UpdateMeRequest) => request<G.Me>("PATCH", "/auth/me", b),
+  /** Your picture (`avatarImage` makes it): it replaces the one you had. */
+  setAvatar: (image: Blob) => putAvatar<G.Me>("/me/avatar", image),
+  /** Your initials instead of a picture. */
+  removeAvatar: () => request<G.Me>("DELETE", "/me/avatar"),
   changePassword: (b: G.ChangePasswordRequest) => request<G.Ok>("POST", "/auth/password", b),
   forgotPassword: (b: G.ForgotPasswordRequest) => request<G.Ok>("POST", "/auth/password/forgot", b),
   resetPassword: (b: G.ResetPasswordRequest) => request<G.AuthResponse>("POST", "/auth/password/reset", b),
@@ -403,17 +422,7 @@ export const workspaces = {
     request<G.Workspace>("PATCH", `/workspaces/${enc(id)}`, b),
   remove: (id: string, name: string) => request<G.Ok>("POST", `/workspaces/${enc(id)}/delete`, { name }),
   /** Uploads its avatar image (already made square and small by the caller). */
-  setAvatar: async (id: string, image: Blob): Promise<G.Workspace> => {
-    const res = await fetch(`/api/v1/workspaces/${enc(id)}/avatar`, {
-      method: "PUT",
-      credentials: "same-origin",
-      headers: { Accept: "application/json", "Content-Type": "application/octet-stream" },
-      body: image,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new ApiFailure(res.status, data);
-    return data as G.Workspace;
-  },
+  setAvatar: (id: string, image: Blob) => putAvatar<G.Workspace>(`/workspaces/${enc(id)}/avatar`, image),
   removeAvatar: (id: string) => request<G.Workspace>("DELETE", `/workspaces/${enc(id)}/avatar`),
   members: (id: string) => request<G.WorkspaceMemberList>("GET", `/workspaces/${enc(id)}/members`),
   setRole: (id: string, user: string, role: G.WorkspaceRole) =>

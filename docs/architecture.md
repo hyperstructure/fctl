@@ -126,6 +126,16 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   and the like ask the person to confirm it's them first, which then lasts
   15 minutes for the browser, CLI or token that confirmed
   ([Confirming it's you](#confirming-its-you)).
+- **People upload their pictures** (Settings → Profile, or `fctl account
+  set --avatar`), which the web app makes 256 px square: at most 256 KB,
+  kept in D1 (`user_avatars`) and served to anyone signed in at
+  `GET /api/v1/users/{id}/avatar?v=…`, a URL that changes with the
+  picture and that the person's `avatar_url` holds. Linking a Google
+  account, or signing up with one, copies its picture for someone who has
+  none (`api::avatars::adopt_google`), so viewers load it from the instance
+  rather than from Google. Addresses of images on other sites, which people
+  typed in before, show until they upload a picture; the control plane
+  takes no new ones.
 
 ### Early access
 

@@ -68,8 +68,8 @@ her sidebar.
 
 ## People
 
-The person signed in is Noor. Each person's avatar in fctl is their GitHub
-avatar ([Avatars](#avatars)).
+The person signed in is Noor. Each person uploaded their GitHub avatar as
+their picture in fctl ([Avatars](#avatars)).
 
 | Person | Email | GitHub | Who | Avatar |
 |---|---|---|---|---|
@@ -171,9 +171,9 @@ In [xtask/demo/avatars](../../../xtask/demo/avatars): 512 × 512 PNGs, in mixed 
 real people's are (photos, an illustration, pixel art). fctl draws people
 round, and workspaces and GitHub accounts as rounded squares, at up to 64
 px. Their palettes are reduced (`pngquant --quality=60-98`), which keeps
-each under the 256 KB a workspace avatar may be, so they upload as they
-are. A new one is square, with its face or logo clear of the corners, and
-goes through the same steps.
+each under the 256 KB an avatar may be, so they upload as they are. A new
+one is square, with its face or logo clear of the corners, and goes
+through the same steps.
 
 | File | Shows | Where |
 |---|---|---|
