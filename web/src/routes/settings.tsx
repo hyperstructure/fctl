@@ -144,51 +144,54 @@ function Profile({ me }: { me: G.Me }) {
   return (
     <Section title="Profile" description="How you appear in sessions, in commits and to your team.">
       <div className="flex flex-col gap-5">
-        <div className="flex items-center gap-4">
-          <Avatar user={me.user} size={64} />
-          <div className="flex min-w-0 flex-col gap-2.5">
-            <div className="text-[13px] text-ink-3">
-              <div className="truncate">{me.user.email}</div>
-              <div className="text-[12px] text-ink-4">
-                {me.user.role === "owner"
-                  ? "Primary instance owner · "
-                  : me.user.role === "admin"
-                    ? "An instance admin · "
-                    : ""}
-                joined {ago(me.user.created_at)}
+        {/* Beside the picture where the column has room for it and a button, under it where it hasn't (from 768 px, the sidebar takes 244 of them). */}
+        <div className="@container">
+          <div className="flex flex-col items-start gap-4 @2xs:flex-row @2xs:items-center">
+            <Avatar user={me.user} size={64} />
+            <div className="flex w-full min-w-0 flex-col gap-2.5 @2xs:flex-1">
+              <div className="text-[13px] text-ink-3">
+                <div className="truncate">{me.user.email}</div>
+                <div className="text-[12px] text-ink-4">
+                  {me.user.role === "owner"
+                    ? "Primary instance owner · "
+                    : me.user.role === "admin"
+                      ? "An instance admin · "
+                      : ""}
+                  joined {ago(me.user.created_at)}
+                </div>
               </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                icon={<ImageUp className="size-3.5" />}
-                loading={upload.isPending}
-                onClick={() => file.current?.click()}
-              >
-                Upload a picture
-              </Button>
-              {me.user.avatar_url && (
+              <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
-                  variant="ghost"
-                  loading={removePicture.isPending}
-                  onClick={() => removePicture.mutate()}
+                  icon={<ImageUp className="size-3.5" />}
+                  loading={upload.isPending}
+                  onClick={() => file.current?.click()}
                 >
-                  Use your initials
+                  Upload a picture
                 </Button>
-              )}
+                {me.user.avatar_url && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    loading={removePicture.isPending}
+                    onClick={() => removePicture.mutate()}
+                  >
+                    Use your initials
+                  </Button>
+                )}
+              </div>
+              <input
+                ref={file}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) upload.mutate(f);
+                  e.target.value = "";
+                }}
+              />
             </div>
-            <input
-              ref={file}
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) upload.mutate(f);
-                e.target.value = "";
-              }}
-            />
           </div>
         </div>
         <form
