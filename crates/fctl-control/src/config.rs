@@ -200,15 +200,6 @@ impl Config {
         format!("{}{}", self.public_url, path)
     }
 
-    /// The app's host name, without its scheme and port (`app.fctl.sh`).
-    pub fn host(&self) -> &str {
-        let rest = self
-            .public_url
-            .split_once("://")
-            .map_or(self.public_url.as_str(), |(_, rest)| rest);
-        rest.split([':', '/']).next().unwrap_or_default()
-    }
-
     /// Whether cookies can carry the `Secure` attribute (always, except plain
     /// http outside localhost).
     pub fn secure_cookies(&self) -> bool {

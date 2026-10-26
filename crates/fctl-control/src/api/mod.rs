@@ -2,6 +2,7 @@ pub mod account;
 pub mod admin;
 pub mod attachments;
 pub mod auth;
+pub mod avatars;
 pub mod calls;
 pub mod claude;
 pub mod early_access;

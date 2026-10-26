@@ -3,7 +3,6 @@
 //! in. Who may do what in one, how many one person joins, and what a
 //! workspace's settings mean for the roles people have in its projects.
 
-use crate::files;
 use crate::naming;
 use crate::validate::{self, Result};
 use fctl_proto::ApiError;
@@ -15,10 +14,6 @@ use fctl_proto::session::{InstanceRole, ProjectRole, WorkspaceRole};
 pub const MAX_WORKSPACES: usize = 5;
 /// How long an invitation to a workspace waits for an answer.
 pub const INVITATION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
-/// The largest avatar image, in bytes. The web app makes them 256 px square.
-pub const MAX_AVATAR_BYTES: usize = 256 * 1000;
-/// The widest and tallest avatar image, in pixels.
-pub const MAX_AVATAR_SIDE: u32 = 1024;
 
 /// Someone's membership of a workspace, as access checks need it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,29 +200,6 @@ pub fn slug_from_name(name: &str) -> String {
     } else {
         s
     }
-}
-
-/// Checks an avatar image and returns its media type: a PNG, JPEG, GIF or
-/// WebP of at most [`MAX_AVATAR_BYTES`] and [`MAX_AVATAR_SIDE`] a side.
-pub fn avatar(bytes: &[u8]) -> Result<&'static str> {
-    if bytes.len() > MAX_AVATAR_BYTES {
-        return Err(ApiError::validation(
-            "avatar",
-            format!(
-                "Use an image of at most {}",
-                files::human_size(MAX_AVATAR_BYTES as u64)
-            ),
-        ));
-    }
-    let info = files::sniff_image(bytes)
-        .ok_or_else(|| ApiError::validation("avatar", "Use a PNG, JPEG, GIF or WebP image"))?;
-    if info.width > MAX_AVATAR_SIDE || info.height > MAX_AVATAR_SIDE {
-        return Err(ApiError::validation(
-            "avatar",
-            format!("Use an image of at most {MAX_AVATAR_SIDE}×{MAX_AVATAR_SIDE} pixels"),
-        ));
-    }
-    Ok(info.media_type)
 }
 
 /// Whether someone whose role in a workspace is `role` may create a project
@@ -439,22 +411,6 @@ mod tests {
         assert_eq!(slug_from_name("Ada\u{2019}s lab"), "adas-lab");
         assert_eq!(slug_from_name("X"), "workspace-x");
         assert_eq!(slug_from_name("✨"), "workspace");
-    }
-
-    #[test]
-    fn avatars_are_small_images() {
-        // A 1×1 PNG.
-        let png =
-            b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89";
-        assert_eq!(avatar(png).ok(), Some("image/png"));
-        assert!(avatar(b"<svg xmlns='http://www.w3.org/2000/svg'/>").is_err());
-        let mut big = png.to_vec();
-        big.resize(MAX_AVATAR_BYTES + 1, 0);
-        assert!(avatar(&big).is_err());
-        // 2000 px wide.
-        let wide =
-            b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\x07\xd0\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89";
-        assert!(avatar(wide).is_err());
     }
 
     #[test]

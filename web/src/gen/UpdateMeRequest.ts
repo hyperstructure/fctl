@@ -8,7 +8,12 @@ given_name?: string, family_name?: string,
 /**
  * The full name alone, from older clients: the parts become unknown.
  */
-name?: string, avatar_url?: string, 
+name?: string, 
+/**
+ * `""` removes your picture. `PUT /api/v1/me/avatar` uploads one: an
+ * address is refused, unless it is the one you have.
+ */
+avatar_url?: string, 
 /**
  * The address commits credit you with (`Me.commit_email`); an empty
  * one removes it.

@@ -26,6 +26,8 @@ pub struct World<'a> {
     /// Each person's sign-in, which makes their other tokens.
     pub cookies: BTreeMap<String, String>,
     pub users: BTreeMap<String, String>,
+    /// The address of each person's uploaded picture.
+    pub avatars: BTreeMap<String, String>,
     /// (person, connection label) → credential id.
     pub credentials: BTreeMap<(String, String), String>,
     pub workspaces: BTreeMap<String, String>,
@@ -158,6 +160,7 @@ impl<'a> World<'a> {
             tokens: BTreeMap::new(),
             cookies: BTreeMap::new(),
             users: BTreeMap::new(),
+            avatars: BTreeMap::new(),
             credentials: BTreeMap::new(),
             workspaces: BTreeMap::new(),
             projects: BTreeMap::new(),
@@ -192,8 +195,9 @@ impl<'a> World<'a> {
 
     // ─────────────────────────────── people ───────────────────────────────
 
-    /// The instance's owner, who invites everyone, then the people.
-    pub fn accounts(&mut self) -> Result<()> {
+    /// The instance's owner, who invites everyone, then the people, with
+    /// the pictures they upload (from `demo`'s avatars).
+    pub fn accounts(&mut self, demo: &Path) -> Result<()> {
         let o = &self.cast.instance.owner;
         let res = dev::call(
             "POST",
@@ -244,12 +248,19 @@ impl<'a> World<'a> {
             if p.avatar
                 && let Some(login) = &p.github
             {
-                self.api(
-                    &p.id,
-                    "PATCH",
-                    "/auth/me",
-                    Some(json!({ "avatar_url": format!("https://avatars.githubusercontent.com/{login}") })),
+                let file = format!("{login}.png");
+                let bytes = std::fs::read(demo.join("avatars").join(&file))
+                    .with_context(|| format!("reading avatar {file}"))?;
+                let me = put_bytes(
+                    "/me/avatar",
+                    &self.tokens[&p.id],
+                    "application/octet-stream",
+                    bytes,
                 )?;
+                let url = me["user"]["avatar_url"]
+                    .as_str()
+                    .context("no avatar after uploading one")?;
+                self.avatars.insert(p.id.clone(), url.to_owned());
             }
             for (i, c) in p.claude.iter().enumerate() {
                 let made = self.api(
@@ -1497,7 +1508,7 @@ fn token_for(cookie: &str, name: &str) -> Result<String> {
 }
 
 /// `PUT`s raw bytes, as the app uploads a workspace's avatar.
-fn put_bytes(path: &str, token: &str, kind: &str, bytes: Vec<u8>) -> Result<()> {
+fn put_bytes(path: &str, token: &str, kind: &str, bytes: Vec<u8>) -> Result<Value> {
     let url = format!("{}/api/v1{path}", dev::LOCAL_API);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -1512,13 +1523,11 @@ fn put_bytes(path: &str, token: &str, kind: &str, bytes: Vec<u8>) -> Result<()> 
         .body(bytes)?;
     let mut res = agent.run(req)?;
     let status = res.status().as_u16();
+    let body = res.body_mut().read_to_string().unwrap_or_default();
     if !(200..300).contains(&status) {
-        bail!(
-            "PUT {path}: HTTP {status}: {}",
-            res.body_mut().read_to_string().unwrap_or_default()
-        );
+        bail!("PUT {path}: HTTP {status}: {body}");
     }
-    Ok(())
+    Ok(serde_json::from_str(&body).unwrap_or(Value::Null))
 }
 
 /// A name without accents, as hostnames have them.

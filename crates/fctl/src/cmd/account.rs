@@ -4,8 +4,8 @@
 
 use crate::config::{self, Credentials};
 use crate::style;
-use anyhow::{Result, bail};
-use clap::Subcommand;
+use anyhow::{Context, Result, bail};
+use clap::{ArgGroup, Subcommand};
 use fctl_proto::api::{EmailAddress, UpdateEmailRequest, UpdateMeRequest};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
@@ -34,9 +34,11 @@ pub enum LinearAccountCmd {
 
 #[derive(Subcommand)]
 pub enum AccountCmd {
-    /// Change your profile: the address commits credit you with.
+    /// Change your profile: your picture, and the address commits credit
+    /// you with.
     #[command(
-        after_help = "Examples:\n  fctl account set --commit-email 1234+ada@users.noreply.github.com\n  fctl account set --commit-email \"\"   # commits don't credit you\n  fctl account set --for ada.lovelace@company.example --commit-email ada.lovelace@company.example"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["commit_email", "avatar"])),
+        after_help = "Examples:\n  fctl account set --avatar me.png\n  fctl account set --avatar none   # your initials\n  fctl account set --commit-email 1234+ada@users.noreply.github.com\n  fctl account set --commit-email \"\"   # commits don't credit you\n  fctl account set --for ada.lovelace@company.example --commit-email ada.lovelace@company.example"
     )]
     Set {
         /// Commits in the sessions you start credit you with this address, in
@@ -44,11 +46,16 @@ pub enum AccountCmd {
         /// Use one your GitHub account has (its noreply address works), so
         /// GitHub links the commits to you. "" removes it.
         #[arg(long, value_name = "EMAIL")]
-        commit_email: String,
+        commit_email: Option<String>,
         /// For the workspaces you are a member of as this address of yours
         /// (default: your primary address).
-        #[arg(long = "for", value_name = "ADDRESS")]
+        #[arg(long = "for", value_name = "ADDRESS", requires = "commit_email")]
         address: Option<String>,
+        /// Your picture, where people see your name: a PNG, JPEG, GIF or
+        /// WebP image of at most 256 KB and 1024 pixels a side (square works
+        /// best), or `none` for your initials.
+        #[arg(long, value_name = "FILE|none")]
+        avatar: Option<String>,
     },
     /// Your email addresses: each signs in to your account, has its own
     /// commit email, and is how the workspaces you joined as it know you.
@@ -115,6 +122,80 @@ pub enum AccountCmd {
     },
 }
 
+/// `fctl account set`: the commit email first, then the picture.
+async fn set(
+    api: &fctl_client::Api,
+    commit_email: Option<String>,
+    address: Option<String>,
+    avatar: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let committing = commit_email.is_some();
+    let mut said = Vec::new();
+    let mut me = None;
+    if let Some(commit_email) = commit_email {
+        let m = match &address {
+            Some(address) => {
+                api.update_email(
+                    address,
+                    &UpdateEmailRequest {
+                        commit_email: Some(commit_email),
+                        primary: None,
+                    },
+                )
+                .await?
+            }
+            None => {
+                api.update_me(&UpdateMeRequest {
+                    commit_email: Some(commit_email),
+                    ..Default::default()
+                })
+                .await?
+            }
+        };
+        if address.is_none() {
+            said.push(match &m.commit_email {
+                Some(email) => format!(
+                    "Commits in the sessions you start credit you as {} <{email}>",
+                    m.user.name
+                ),
+                None => "Commits in the sessions you start don't credit you".to_owned(),
+            });
+        }
+        me = Some(m);
+    }
+    if let Some(a) = avatar {
+        let m = if a.eq_ignore_ascii_case("none") {
+            said.push("Your initials show where people see your name".to_owned());
+            api.remove_avatar().await?
+        } else {
+            let bytes = std::fs::read(&a).with_context(|| format!("reading {a}"))?;
+            said.push("Your picture shows where people see your name".to_owned());
+            api.set_avatar(bytes).await?
+        };
+        me = Some(m);
+    }
+    let Some(me) = me else {
+        bail!("Say what to change: --avatar or --commit-email");
+    };
+    if json {
+        return style::print_json(&me);
+    }
+    if address.is_some() {
+        print_emails(&me.emails);
+    }
+    for line in &said {
+        println!("{} {line}", style::accent("✓"));
+    }
+    if committing {
+        println!(
+            "{}",
+            style::dim("Sessions take the change when they next start or resume.")
+        );
+    }
+    Ok(())
+}
+
 pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()> {
     let api = config::api(server)?;
     match cmd {
@@ -125,27 +206,9 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
         AccountCmd::Passkeys(cmd) => super::passkeys::run(&api, cmd, json).await,
         AccountCmd::Set {
             commit_email,
-            address: Some(address),
-        } => {
-            let me = api
-                .update_email(
-                    &address,
-                    &UpdateEmailRequest {
-                        commit_email: Some(commit_email),
-                        primary: None,
-                    },
-                )
-                .await?;
-            if json {
-                return style::print_json(&me);
-            }
-            print_emails(&me.emails);
-            println!(
-                "{}",
-                style::dim("Sessions take the change when they next start or resume.")
-            );
-            Ok(())
-        }
+            address,
+            avatar,
+        } => set(&api, commit_email, address, avatar, json).await,
         AccountCmd::Emails => {
             let me = super::auth::account(&api).await?;
             if json {
@@ -180,36 +243,6 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
                 return style::print_json(&me);
             }
             println!("{} Disconnected {address}", style::accent("✓"));
-            Ok(())
-        }
-        AccountCmd::Set {
-            commit_email,
-            address: None,
-        } => {
-            let me = api
-                .update_me(&UpdateMeRequest {
-                    commit_email: Some(commit_email),
-                    ..Default::default()
-                })
-                .await?;
-            if json {
-                return style::print_json(&me);
-            }
-            match &me.commit_email {
-                Some(email) => println!(
-                    "{} Commits in the sessions you start credit you as {} <{email}>",
-                    style::accent("✓"),
-                    me.user.name
-                ),
-                None => println!(
-                    "{} Commits in the sessions you start don't credit you",
-                    style::accent("✓")
-                ),
-            }
-            println!(
-                "{}",
-                style::dim("Sessions take the change when they next start or resume.")
-            );
             Ok(())
         }
         AccountCmd::Verify { code } => {

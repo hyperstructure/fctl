@@ -296,6 +296,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "workspace_members",
         "linear_accounts",
         "user_emails",
+        "user_avatars",
     ] {
         statements.push(q(
             db,

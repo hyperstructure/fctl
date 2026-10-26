@@ -44,10 +44,10 @@ import {
   toast,
 } from "@/components/ui";
 import { WORKSPACE_COLORS, WorkspaceAvatar } from "@/components/workspace/avatar";
-import { avatarImage } from "@/components/workspace/avatar-image";
 import { LinearTab } from "@/components/workspace/linear";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
+import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { ago, agoShort } from "@/lib/format";

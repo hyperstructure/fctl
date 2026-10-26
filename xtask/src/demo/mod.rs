@@ -530,7 +530,7 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     let mut world = world::World::new(&cast, root, state, &github, transcripts);
     let step = |what: &str| eprintln!("\x1b[1mdemo\x1b[0m {what}");
     step("people");
-    world.accounts()?;
+    world.accounts(&data)?;
     step("workspaces");
     world.workspaces(&data)?;
     step("runners and their hosts");

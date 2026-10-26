@@ -542,43 +542,6 @@ pub fn device_name(input: &str) -> Result<Option<String>> {
     Ok((!s.is_empty()).then_some(s))
 }
 
-/// A person's avatar: an `https://` image address, at most 500 characters,
-/// on another host than the app's (`app_host`, its host name). Everyone who
-/// sees the person's name loads it, and the browser sends its cookies to
-/// the app's own addresses, so an avatar there would act for each of them
-/// as they look: run their export, say.
-pub fn avatar_url(input: &str, app_host: &str) -> Result<String> {
-    let s = input.trim();
-    let bad = |m: &str| ApiError::validation("avatar_url", m);
-    let Some(rest) = s.strip_prefix("https://") else {
-        return Err(bad("Use an https:// image URL"));
-    };
-    if s.len() > 500
-        || s.chars()
-            .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
-    {
-        return Err(bad("Use an https:// image URL"));
-    }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host_port = authority.rsplit('@').next().unwrap_or_default();
-    let host = match host_port.rsplit_once(':') {
-        Some((host, port)) if port.bytes().all(|b| b.is_ascii_digit()) => host,
-        _ => host_port,
-    };
-    let host = host.trim_end_matches('.');
-    if host.is_empty()
-        || !host
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
-    {
-        return Err(bad("Use an https:// image URL"));
-    }
-    if host.eq_ignore_ascii_case(app_host.trim_end_matches('.')) {
-        return Err(bad("Use an image from another site"));
-    }
-    Ok(s.to_owned())
-}
-
 /// Whether `path` is a path of the app, for redirects after a sign-in: it
 /// starts with one `/`. Browsers read `\` as `/` and drop tabs and
 /// newlines, so `/\evil.example` and `/<tab>/evil.example` would leave the
@@ -594,45 +557,6 @@ pub fn is_app_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn avatars_come_from_other_sites() {
-        for ok in [
-            "https://lh3.googleusercontent.com/a/ACg8oc=s96-c",
-            "https://avatars.githubusercontent.com/u/1?v=4",
-            " https://example.com:8443/me.png ",
-            "https://app.fctl.sh.example.com/me.png",
-        ] {
-            assert_eq!(
-                avatar_url(ok, "app.fctl.sh").as_deref(),
-                Ok(ok.trim()),
-                "{ok}"
-            );
-        }
-        for bad in [
-            "http://example.com/me.png",
-            "https://app.fctl.sh/api/v1/me/export",
-            "https://APP.fctl.sh/api/v1/me/export",
-            "https://app.fctl.sh./api/v1/me/export",
-            "https://app.fctl.sh:443/api/v1/me/export",
-            "https://someone@app.fctl.sh/api/v1/me/export",
-            "https://app%2Efctl.sh/api/v1/me/export",
-            "https://app\u{3002}fctl.sh/api/v1/me/export",
-            "https://app.fctl.sh\\@example.com/x",
-            "https:///x",
-            "https://example.com/a b.png",
-            "javascript:alert(1)",
-        ] {
-            assert!(avatar_url(bad, "app.fctl.sh").is_err(), "{bad}");
-        }
-        assert!(
-            avatar_url(
-                &format!("https://x.example/{}", "a".repeat(500)),
-                "app.fctl.sh"
-            )
-            .is_err()
-        );
-    }
 
     #[test]
     fn app_paths() {

@@ -386,14 +386,19 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
             family: user.family_name.clone(),
         }
     };
-    let avatar = match body.avatar_url.as_deref().map(str::trim) {
-        Some("") => None,
-        // The settings form sends it with every save: one kept from before
-        // avatars had to come from another host stays as it is (the web app
-        // doesn't load those), rather than refuse the rest of the change.
-        Some(url) if user.avatar_url.as_deref() == Some(url) => Some(url.to_owned()),
-        Some(url) => Some(validate::avatar_url(url, ctx.cfg.host())?),
-        None => user.avatar_url.clone(),
+    // Pictures are uploaded (`PUT /me/avatar`): an address only removes one
+    // (""), or stays as it is, as older settings forms send it with every
+    // save.
+    let remove_avatar = match body.avatar_url.as_deref().map(str::trim) {
+        None => false,
+        Some(url) if user.avatar_url.as_deref() == Some(url) => false,
+        Some("") => true,
+        Some(_) => {
+            return Err(validation(
+                "avatar_url",
+                "Upload the picture instead (fctl account set --avatar, or PUT /api/v1/me/avatar)",
+            ));
+        }
     };
     // The primary address's commit email (Settings → Email addresses sets
     // the others').
@@ -402,20 +407,21 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         crate::api::emails::set_commit_email(ctx, &user, &user.email, commit_email.as_deref())
             .await?;
     }
-    q(
+    let mut statements = vec![q(
         &ctx.db,
-        "UPDATE users SET name = ?, given_name = ?, family_name = ?, avatar_url = ?, updated_at = ? WHERE id = ?",
+        "UPDATE users SET name = ?, given_name = ?, family_name = ?, updated_at = ? WHERE id = ?",
         &[
             s(&person.full),
             os(person.given.as_deref()),
             os(person.family.as_deref()),
-            os(avatar.as_deref()),
             n(ctx.now),
             s(&user.id),
         ],
-    )?
-    .run()
-    .await?;
+    )?];
+    if remove_avatar {
+        statements.extend(crate::api::avatars::remove(ctx, &user.id)?);
+    }
+    batch(&ctx.db, statements).await?;
     let user = auth::user_by_id(ctx, &user.id)
         .await?
         .ok_or_else(|| not_found("User"))?;

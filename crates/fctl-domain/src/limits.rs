@@ -528,6 +528,8 @@ mod tests {
                 ("PATCH", "workspaces/wsp_1"),
                 ("GET", "admin/users"),
                 ("GET", "workspaces/wsp_1/avatar"),
+                ("GET", "users/usr_1/avatar"),
+                ("PUT", "me/avatar"),
                 ("POST", "auth/device/KFTW-QXPL"),
                 ("GET", "runners"),
                 ("GET", "feed/ws"),

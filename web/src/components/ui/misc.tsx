@@ -42,12 +42,16 @@ export function Logo({
   );
 }
 
+/** Where the control plane keeps a picture someone uploaded (`fctl_domain::avatar::user_path`). */
+const UPLOADED = /^\/api\/v1\/users\/[A-Za-z0-9_]+\/avatar\?v=\d+$/;
+
 /**
- * Whether an avatar loads from another site than the app's: the browser sends the reader's cookies to the app's own
- * addresses, so an avatar there would act for everyone who sees it. The control plane takes no such avatars any more;
- * these are ones it kept from before.
+ * Whether to show an avatar: one the person uploaded, or an address from before people uploaded them, on another site
+ * than the app's. The browser sends the reader's cookies to the app's own addresses, so an address there would act for
+ * everyone who sees it.
  */
-function offSite(url: string): boolean {
+function shown(url: string): boolean {
+  if (UPLOADED.test(url)) return true;
   try {
     return new URL(url, globalThis.location?.href).origin !== globalThis.location?.origin;
   } catch {
@@ -64,22 +68,22 @@ export function Avatar({
   size?: number;
   ring?: boolean;
 }) {
-  const [broken, setBroken] = useState(false);
+  const [broken, setBroken] = useState<string>();
   const h = hue(user.id);
   const style = { width: size, height: size, fontSize: Math.max(9, size * 0.4) };
   const cls = cn(
     "inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full font-semibold select-none",
     ring && "ring-2 ring-canvas",
   );
-  if (user.avatar_url && !broken && offSite(user.avatar_url)) {
+  if (user.avatar_url && broken !== user.avatar_url && shown(user.avatar_url)) {
     return (
       <img
         src={user.avatar_url}
         alt={user.name}
         title={user.name}
-        className={cls}
+        className={cn(cls, "object-cover")}
         style={style}
-        onError={() => setBroken(true)}
+        onError={() => setBroken(user.avatar_url)}
         referrerPolicy="no-referrer"
       />
     );
