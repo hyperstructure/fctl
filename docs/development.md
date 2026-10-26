@@ -334,11 +334,13 @@ fails there fails the same way locally with `cargo xtask check <part>`.
 `cargo xtask dev --smoke` starts the local stack as `cargo xtask dev` does
 and runs `fctl run -p playground --model haiku` with a task that has
 fake-claude commit `notes.md`, push it, watch its checks for 12 seconds,
-keep a note in the project's memory, record a partial retrospective and
-update it, and leave a command and a subagent working in the background.
-It waits until the session has shown the commit pushed before the turn
-ended, the transcript has shown the note and the retrospective recorded
-and updated, the turn has ended, the session has waited for the command
+read an image (`look`), keep a note in the project's memory, record a
+partial retrospective and update it, and leave a command and a subagent
+working in the background. It waits until the session has shown the
+commit pushed before the turn ended, the transcript has named the image
+the session kept, which the session then gives back as it was, the
+transcript has shown the note and the retrospective recorded and
+updated, the turn has ended, the session has waited for the command
 and the subagent and has run again while the agent took each one's result
 in a turn of its own, checks that the project's
 memory has the note and the session its one retrospective, completed and
