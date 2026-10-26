@@ -172,6 +172,18 @@ disallows everything but `/llms.txt` and there is no sitemap. Open, `/robots.txt
 sitemap), disallows the rest and names `/sitemap.xml`, which lists those
 pages at `FCTL_PUBLIC_URL`. Published screenshots carry `noindex` either way.
 
+### Plain HTTP
+
+Cloudflare answers an instance's custom domain over plain http as well as
+https. An instance whose deployment takes only https (`https_only` in
+`deploy/instances`, which sets `FCTL_HTTPS_ONLY`; app.fctl.sh's does)
+redirects every plain-http request to the same address over https,
+permanently (`fctl_domain::https`): 301 for reads, 308 for the rest, which
+keeps their method and body. So that its pages and files redirect too, its
+`run_worker_first` sends every request to the Worker, which hands the rest
+to the web app's assets. The standalone server never takes the setting: its
+https comes from a proxy in front, and the Worker behind it sees only http.
+
 ### Two-factor sign-in
 
 People turn it on in Settings, or with `fctl account two-factor enable`,

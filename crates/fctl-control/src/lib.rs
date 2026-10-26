@@ -49,13 +49,20 @@ use worker::{Context, Env, Method, Request, Response, ScheduleContext, Scheduled
 
 #[event(fetch)]
 pub async fn fetch(mut req: Request, env: Env, wctx: Context) -> worker::Result<Response> {
+    if config::https_only(&env)
+        && let Some((to, status)) =
+            fctl_domain::https::redirect(req.url()?.as_str(), req.method().as_ref())
+    {
+        return Response::redirect_with_status(to.parse()?, status);
+    }
     let path = req.path();
     if path == "/robots.txt" || path == "/sitemap.xml" {
         return crawlers(&env, &path);
     }
     if !path.starts_with("/api/") {
-        // Static assets are served before the Worker runs; anything that
-        // reaches us here is the SPA fallback.
+        // Static assets are served before the Worker runs, unless the
+        // instance takes only HTTPS (`run_worker_first` in its wrangler
+        // config); otherwise what reaches us here is the SPA fallback.
         return match env.assets("ASSETS") {
             Ok(assets) => assets.fetch_request(req).await,
             Err(_) => Response::error("Not found", 404),

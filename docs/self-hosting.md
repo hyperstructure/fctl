@@ -223,6 +223,11 @@ Nothing in this file is secret; commit it to your fork if you like.
 To let search engines index the sign-in page, add `search_engines = true`
 ([search engines](#search-engines)).
 
+Cloudflare serves the instance over https, and over plain http too. To
+redirect every plain-http request to https, for a page, a file or the API,
+add `https_only = true`. The Worker then runs for every request, the web
+app's files included, and Cloudflare counts each as a Worker request.
+
 ### 2. Deploy
 
 ```sh

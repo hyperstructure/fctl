@@ -16,6 +16,7 @@ pub mod events;
 pub mod files;
 pub mod follow_ups;
 pub mod github;
+pub mod https;
 pub mod ids;
 pub mod image;
 pub mod issues;

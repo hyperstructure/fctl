@@ -32,6 +32,11 @@ pub struct Instance {
     /// (app.fctl.sh).
     #[serde(default)]
     pub search_engines: bool,
+    /// Plain HTTP redirects to HTTPS, for every page, asset and API call
+    /// (app.fctl.sh): the Worker runs first for every request and answers
+    /// one over http with the redirect (`fctl_domain::https`).
+    #[serde(default)]
+    pub https_only: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,6 +142,16 @@ impl Instance {
         if self.search_engines {
             vars.push(("FCTL_SEARCH_ENGINES", "1".to_owned()));
         }
+        if self.https_only {
+            vars.push(("FCTL_HTTPS_ONLY", "1".to_owned()));
+        }
+        // The Worker runs first for the app's files too, to redirect them;
+        // otherwise Cloudflare serves them itself, over http as well.
+        let worker_first = if self.https_only {
+            "true"
+        } else {
+            r#"["/api/*", "/robots.txt", "/sitemap.xml"]"#
+        };
         let q = |s: &str| toml::Value::String(s.to_owned()).to_string();
         let vars = vars
             .iter()
@@ -159,7 +174,7 @@ custom_domain = true
 directory = "../../web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/robots.txt", "/sitemap.xml"]
+run_worker_first = {worker_first}
 
 [[d1_databases]]
 binding = "DB"
@@ -483,6 +498,7 @@ client_id = "lin_client"
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
         assert!(doc["vars"].get("FCTL_EARLY_ACCESS").is_none());
         assert!(doc["vars"].get("FCTL_SEARCH_ENGINES").is_none());
+        assert!(doc["vars"].get("FCTL_HTTPS_ONLY").is_none());
         assert_eq!(
             doc["assets"]["run_worker_first"]
                 .as_array()
@@ -514,5 +530,18 @@ client_id = "lin_client"
         let example: toml::Table =
             toml::from_str(&load(&root, "example").unwrap().wrangler_toml()).unwrap();
         assert!(example["vars"].get("FCTL_SEARCH_ENGINES").is_none());
+    }
+
+    #[test]
+    fn app_fctl_sh_redirects_plain_http_to_https() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let doc: toml::Table =
+            toml::from_str(&load(&root, "fctl-sh").unwrap().wrangler_toml()).unwrap();
+        assert_eq!(doc["vars"]["FCTL_HTTPS_ONLY"].as_str(), Some("1"));
+        assert_eq!(doc["assets"]["run_worker_first"].as_bool(), Some(true));
+        let example: toml::Table =
+            toml::from_str(&load(&root, "example").unwrap().wrangler_toml()).unwrap();
+        assert!(example["vars"].get("FCTL_HTTPS_ONLY").is_none());
+        assert!(example["assets"]["run_worker_first"].is_array());
     }
 }
