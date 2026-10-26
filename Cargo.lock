@@ -486,6 +486,7 @@ dependencies = [
 name = "fake-claude"
 version = "0.24.1"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
  "tempfile",

@@ -13,13 +13,17 @@ use crate::internal::{
     Indexed, InitSession, PutDocs, ViewerIdentity,
 };
 use fctl_domain::events::{self as ev, ClaudeKind};
+use fctl_domain::files;
 use fctl_domain::follow_ups;
 use fctl_domain::journal::{self, Take};
+use fctl_domain::kept_images;
 use fctl_domain::notify;
 use fctl_domain::search;
 use fctl_domain::usage as plan;
 use fctl_proto::api::{EventPage, PlanLimit};
-use fctl_proto::event::{EventBody, FollowUp, FollowUpEvent, GitState, StatusChange, UserMessage};
+use fctl_proto::event::{
+    EventBody, FollowUp, FollowUpEvent, GitState, KeptImage, StatusChange, UserMessage,
+};
 use fctl_proto::session::{PullRequestRef, RepoRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{
     AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown,
@@ -30,8 +34,8 @@ use fctl_proto::{ApiError, AttachmentId, ErrorCode};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use worker::{
-    DurableObject, Env, Request, Response, Result, SqlStorage, SqlStorageValue, State, WebSocket,
-    WebSocketIncomingMessage, WebSocketPair, durable_object,
+    DurableObject, Env, Headers, Request, Response, Result, SqlStorage, SqlStorageValue, State,
+    WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object,
 };
 
 const TAG_VIEWER: &str = "viewer";
@@ -234,6 +238,12 @@ fn create_schema(sql: &SqlStorage) {
         // whether they conflict with their base branch: asked `asked` times,
         // asked again at `due` (`fctl_domain::follow_ups::Ask`).
         "CREATE TABLE IF NOT EXISTS asks (url TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, asked INTEGER NOT NULL, due INTEGER NOT NULL)",
+        // Images its agent read, kept for its viewers until `expires_at`
+        // (`fctl_domain::kept_images`), in chunks (SQLite rows hold at most
+        // 2 MB).
+        "CREATE TABLE IF NOT EXISTS kept_images (id TEXT PRIMARY KEY, media_type TEXT NOT NULL, size INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS kept_images_expiry ON kept_images (expires_at)",
+        "CREATE TABLE IF NOT EXISTS kept_image_chunks (image_id TEXT NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (image_id, n))",
     ] {
         if let Err(e) = sql.exec(stmt, None) {
             worker::console_error!("session schema: {e}");
@@ -302,6 +312,7 @@ impl DurableObject for SessionObject {
                 None => Err(api_err(ErrorCode::NotFound, "Session not initialized")),
             },
             (worker::Method::Get, "/events") => return self.events_page(&req),
+            (worker::Method::Get, "/image") => return self.kept_image(&req),
             (worker::Method::Get, "/viewer") => return self.accept_viewer(&req),
             (worker::Method::Get, "/uplink") => return self.accept_uplink(&req),
             (worker::Method::Post, "/purge") => self.purge().await,
@@ -371,6 +382,7 @@ impl DurableObject for SessionObject {
         self.flush_follow_ups(now_ms()).await;
         self.ask_again(now_ms()).await;
         self.index_now(now_ms()).await;
+        self.expire_images(now_ms()).await;
         Response::ok("ok")
     }
 }
@@ -1932,6 +1944,8 @@ impl SessionObject {
                 let mut found = Vec::new();
                 let mut turn_ended = false;
                 let mut usage = Vec::new();
+                // Images from the results of the agent's tools were kept.
+                let mut kept_some = false;
                 let counted_before = self.counted();
                 let mut counted = counted_before.clone();
                 // Newer events that came before older ones wait for them
@@ -1987,6 +2001,7 @@ impl SessionObject {
                         turn_ended |= self.remember_reply(v, e.agent_seq);
                         self.mirror_to_linear(s, v, now);
                         plan::merge(&mut usage, plan::readings(v, now));
+                        kept_some |= self.keep_images(v, now);
                         ev::shape_for_storage(v);
                     }
                     // What runs in the sandbox may pose as the agent, and
@@ -2054,6 +2069,9 @@ impl SessionObject {
                 self.broadcast_events(&out);
                 self.send_uplink(&UplinkDown::Ack { agent_seq: acked });
                 self.record_usage(usage);
+                if kept_some {
+                    self.arm(kept_images::expires_at(now)).await;
+                }
                 if let Some(mut s) = summary {
                     s.last_activity_at = Some(now);
                     s.updated_at = now;
@@ -2833,6 +2851,204 @@ impl SessionObject {
             }
         }
         changed
+    }
+
+    // ───────────────────────────── kept images ─────────────────────────────
+
+    /// Keeps the images in the results of the agent's tools (`v`, a Claude
+    /// message) for the session's viewers until they expire, and makes room
+    /// for them by deleting its oldest (`fctl_domain::kept_images`). Returns
+    /// whether it kept any.
+    fn keep_images(&self, v: &mut serde_json::Value, now: i64) -> bool {
+        let kept = kept_images::keep_images(v, |bytes, info| {
+            let image = KeptImage {
+                id: fctl_domain::ids::kept_image_id(now),
+                media_type: info.media_type.to_owned(),
+                size: bytes.len() as u64,
+                width: info.width,
+                height: info.height,
+                expires_at: kept_images::expires_at(now),
+            };
+            match self.store_image(&image, bytes, now) {
+                Ok(()) => Some(image),
+                Err(e) => {
+                    worker::console_error!("keeping an image: {e}");
+                    self.delete_image(image.id.as_str());
+                    None
+                }
+            }
+        });
+        if kept > 0 {
+            self.trim_images();
+        }
+        kept > 0
+    }
+
+    fn store_image(&self, image: &KeptImage, bytes: &[u8], now: i64) -> Result<()> {
+        self.sql.exec(
+            "INSERT INTO kept_images (id, media_type, size, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+            Some(vec![
+                sv(image.id.as_str()),
+                sv(&image.media_type),
+                iv(image.size as i64),
+                iv(now),
+                iv(image.expires_at),
+            ]),
+        )?;
+        for (n, chunk) in bytes.chunks(files::CHUNK_BYTES).enumerate() {
+            self.sql.exec(
+                "INSERT INTO kept_image_chunks (image_id, n, data) VALUES (?, ?, ?)",
+                Some(vec![
+                    sv(image.id.as_str()),
+                    iv(n as i64),
+                    SqlStorageValue::Blob(chunk.to_vec()),
+                ]),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn delete_image(&self, id: &str) {
+        for stmt in [
+            "DELETE FROM kept_image_chunks WHERE image_id = ?",
+            "DELETE FROM kept_images WHERE id = ?",
+        ] {
+            if let Err(e) = self.sql.exec(stmt, Some(vec![sv(id)])) {
+                worker::console_error!("deleting image {id}: {e}");
+            }
+        }
+    }
+
+    /// Deletes the oldest images while the session keeps more of them, or
+    /// more bytes, than `fctl_domain::kept_images` allows.
+    fn trim_images(&self) {
+        #[derive(Deserialize)]
+        struct Kept {
+            n: f64,
+            total: Option<f64>,
+        }
+        #[derive(Deserialize)]
+        struct Id {
+            id: String,
+        }
+        let (most, most_bytes) = (
+            kept_images::MAX_SESSION_IMAGES as i64,
+            kept_images::MAX_SESSION_BYTES as i64,
+        );
+        let kept = self
+            .sql
+            .exec(
+                "SELECT COUNT(*) AS n, SUM(size) AS total FROM kept_images",
+                None,
+            )
+            .and_then(|c| c.to_array::<Kept>())
+            .ok()
+            .and_then(|r| r.into_iter().next());
+        let Some(kept) = kept else { return };
+        if kept.n as i64 <= most && (kept.total.unwrap_or(0.0) as i64) <= most_bytes {
+            return;
+        }
+        // Newest first: those past the newest that fit.
+        let over: Vec<Id> = self
+            .sql
+            .exec(
+                "SELECT id FROM (SELECT id, ROW_NUMBER() OVER newest AS k, SUM(size) OVER newest AS total FROM kept_images \
+                 WINDOW newest AS (ORDER BY created_at DESC, id DESC)) WHERE k > ? OR total > ?",
+                Some(vec![iv(most), iv(most_bytes)]),
+            )
+            .and_then(|c| c.to_array())
+            .unwrap_or_else(|e| {
+                worker::console_error!("finding the oldest images: {e}");
+                Vec::new()
+            });
+        for o in over {
+            self.delete_image(&o.id);
+        }
+    }
+
+    /// An image the agent read (`?id=`), until it expires. The Worker
+    /// checks that the caller can see the session.
+    fn kept_image(&self, req: &Request) -> Result<Response> {
+        #[derive(Deserialize)]
+        struct Row {
+            media_type: String,
+            size: f64,
+            expires_at: f64,
+        }
+        let id = crate::http::query(req, "id").unwrap_or_default();
+        let now = now_ms();
+        let row = self
+            .sql
+            .exec(
+                "SELECT media_type, size, expires_at FROM kept_images WHERE id = ? AND expires_at > ?",
+                Some(vec![sv(&id), iv(now)]),
+            )
+            .and_then(|c| c.to_array::<Row>())
+            .ok()
+            .and_then(|r| r.into_iter().next());
+        let Some(row) = row else {
+            return internal::do_error(&ApiError::not_found("Image"));
+        };
+        let mut bytes = Vec::with_capacity(row.size as usize);
+        let cursor = self.sql.exec(
+            "SELECT data FROM kept_image_chunks WHERE image_id = ? ORDER BY n",
+            Some(vec![sv(&id)]),
+        )?;
+        for r in cursor.raw() {
+            if let Some(SqlStorageValue::Blob(chunk)) = r?.into_iter().next() {
+                bytes.extend_from_slice(&chunk);
+            }
+        }
+        if bytes.len() as u64 != row.size as u64 {
+            worker::console_error!("image {id} has {} of {} bytes", bytes.len(), row.size);
+            return internal::do_error(&api_err(ErrorCode::Internal, "The image is incomplete"));
+        }
+        let h = Headers::new();
+        h.set("Content-Type", files::served_type(&row.media_type))?;
+        h.set("Content-Length", &bytes.len().to_string())?;
+        h.set("Content-Disposition", "inline")?;
+        // It never changes, and only people who can see the session get
+        // it, until it expires.
+        let left = ((row.expires_at as i64 - now) / 1000).max(0);
+        h.set(
+            "Cache-Control",
+            &format!("private, max-age={left}, immutable"),
+        )?;
+        h.set("X-Content-Type-Options", "nosniff")?;
+        h.set(
+            "Content-Security-Policy",
+            "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+        )?;
+        h.set("Cross-Origin-Resource-Policy", "same-origin")?;
+        h.set("Referrer-Policy", "same-origin")?;
+        Ok(Response::from_bytes(bytes)?.with_headers(h))
+    }
+
+    /// Deletes the images that expired, and has the alarm go off when the
+    /// next one does.
+    async fn expire_images(&self, now: i64) {
+        for stmt in [
+            "DELETE FROM kept_image_chunks WHERE image_id IN (SELECT id FROM kept_images WHERE expires_at <= ?)",
+            "DELETE FROM kept_images WHERE expires_at <= ?",
+        ] {
+            if let Err(e) = self.sql.exec(stmt, Some(vec![iv(now)])) {
+                worker::console_error!("expiring images: {e}");
+            }
+        }
+        #[derive(Deserialize)]
+        struct Next {
+            at: Option<f64>,
+        }
+        let next = self
+            .sql
+            .exec("SELECT MIN(expires_at) AS at FROM kept_images", None)
+            .and_then(|c| c.to_array::<Next>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .and_then(|n| n.at);
+        if let Some(at) = next {
+            self.arm(at as i64).await;
+        }
     }
 
     // ───────────────────────────── search ─────────────────────────────

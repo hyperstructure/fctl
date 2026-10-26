@@ -389,6 +389,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["sessions", id, "attachments", file]) => {
             api::attachments::download(ctx, req, id, file).await
         }
+        (Get, ["sessions", id, "images", image]) => {
+            api::kept_images::download(ctx, id, image).await
+        }
         // Published screenshots: anyone with a link reads it.
         (Get | Head, ["published", token, ..]) => api::published::serve(ctx, req, token).await,
         (Delete, ["published", token, ..]) => api::published::delete(ctx, token).await,

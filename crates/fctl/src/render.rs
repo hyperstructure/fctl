@@ -2,8 +2,9 @@
 
 use crate::style;
 use fctl_domain::{branches, usage};
-use fctl_proto::event::{EventBody, FileChange, GitState, NoticeLevel, SessionEvent};
+use fctl_proto::event::{EventBody, FileChange, GitState, KeptImage, NoticeLevel, SessionEvent};
 use fctl_proto::session::PullRequestRef;
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::Write;
@@ -90,6 +91,29 @@ fn git_line(
         line.push_str(&format!(" · PR #{} {}", pr.number, pr.url));
     }
     line
+}
+
+/// The images in a tool's result, a line each: those the session keeps
+/// with their size, others as images.
+fn result_images(content: &Value) -> Vec<String> {
+    let images = content.as_array().into_iter().flatten();
+    images
+        .filter(|p| p.get("type").and_then(Value::as_str) == Some("image"))
+        .map(|p| {
+            let kept = p
+                .pointer("/source/kept")
+                .and_then(|k| KeptImage::deserialize(k).ok());
+            match kept {
+                Some(k) => format!(
+                    "Image, {}×{}, {}",
+                    k.width,
+                    k.height,
+                    fctl_domain::files::human_size(k.size)
+                ),
+                None => "Image".into(),
+            }
+        })
+        .collect()
 }
 
 fn result_text(content: &Value) -> String {
@@ -340,6 +364,17 @@ impl Renderer {
                             style::dim(&format!("    … {} more lines", lines.len() - 3))
                         ));
                     }
+                    for (i, image) in result_images(b.get("content").unwrap_or(&Value::Null))
+                        .iter()
+                        .enumerate()
+                    {
+                        let prefix = if i == 0 && lines.is_empty() {
+                            "  ⎿ "
+                        } else {
+                            "    "
+                        };
+                        out(&format!("{}\n", style::dim(&format!("{prefix}{image}"))));
+                    }
                 }
             }
             Some("result") => {
@@ -407,5 +442,26 @@ impl Renderer {
             Some("content_block_stop") => self.end_text(),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_results_say_what_images_they_had() {
+        let kept = json!({"id": "img_1", "media_type": "image/png", "size": 125_879, "width": 1526, "height": 702, "expires_at": 5});
+        let content = json!([
+            {"type": "text", "text": "Took a screenshot"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "", "omitted_bytes": 167_840, "kept": kept}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "", "omitted_bytes": 1_000}}
+        ]);
+        assert_eq!(
+            result_images(&content),
+            ["Image, 1526×702, 126 KB", "Image"]
+        );
+        assert!(result_images(&json!("12 lines")).is_empty());
     }
 }

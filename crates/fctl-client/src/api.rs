@@ -746,6 +746,13 @@ impl Api {
         Ok(self.raw(Method::GET, &path, None, None).await?.to_vec())
     }
 
+    /// An image a session's agent read, which the session keeps for a week
+    /// (`kept` in the image's `source`, in the transcript).
+    pub async fn kept_image(&self, session: &str, image: &str) -> Result<Vec<u8>> {
+        let path = format!("/sessions/{}/images/{}", enc(session), enc(image));
+        Ok(self.raw(Method::GET, &path, None, None).await?.to_vec())
+    }
+
     // ── published screenshots ──
 
     /// Publishes a screenshot for a session this runner runs (with the

@@ -111,6 +111,11 @@ id_type!(
     "att"
 );
 id_type!(
+    /// An image the agent read, which its session keeps for a while.
+    KeptImageId,
+    "img"
+);
+id_type!(
     /// A browser that shows someone's notifications (a Web Push subscription).
     PushDeviceId,
     "psh"

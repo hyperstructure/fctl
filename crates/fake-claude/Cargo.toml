@@ -12,6 +12,7 @@ name = "fake-claude"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

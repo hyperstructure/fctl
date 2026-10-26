@@ -464,15 +464,16 @@ pub fn shape_for_storage(v: &mut Value) -> bool {
     changed
 }
 
-/// Empties the data of base64 sources (images and documents Claude read):
-/// nothing shows them, and truncated they are useless. `omitted_bytes` says
-/// how much there was.
+/// Empties the data of base64 sources (images and documents Claude read),
+/// and Claude Code's own copy of a file it read (`tool_use_result.file.base64`):
+/// the session keeps the images apart (`kept_images`), and truncated they
+/// are useless. `omitted_bytes` says how much there was.
 fn omit_base64(v: &mut Value) -> bool {
     match v {
         Value::Object(map) => {
             let source = map.get("type").and_then(Value::as_str) == Some("base64");
-            match map.get_mut("data") {
-                Some(Value::String(data)) if source && data.len() > 1024 => {
+            match map.get_mut(if source { "data" } else { "base64" }) {
+                Some(Value::String(data)) if data.len() > 1024 => {
                     let n = data.len();
                     data.clear();
                     map.insert("omitted_bytes".into(), Value::from(n));
@@ -919,12 +920,17 @@ mod tests {
         let mut v = json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
             {"type": "text", "text": "x".repeat(2000)}
-        ]}]}});
+        ]}]}, "tool_use_result": {"type": "image", "file": {"base64": data, "type": "image/png", "originalSize": 8250}}});
         assert!(shape_for_storage(&mut v));
         let source = &v["message"]["content"][0]["content"][0]["source"];
         assert_eq!(source["data"], "");
         assert_eq!(source["omitted_bytes"], 11_000);
         assert_eq!(source["media_type"], "image/png");
+        // Claude Code's own copy of what it read, too.
+        let file = &v["tool_use_result"]["file"];
+        assert_eq!(file["base64"], "");
+        assert_eq!(file["omitted_bytes"], 11_000);
+        assert_eq!(file["originalSize"], 8250);
         // Other long strings stay (within the usual limits).
         assert_eq!(
             v["message"]["content"][0]["content"][1]["text"]

@@ -17,6 +17,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         crate::ErrorCode,
         event::SessionEvent,
         event::EventBody,
+        event::KeptImage,
         session::Session,
         session::Project,
         session::ProjectSettings,
