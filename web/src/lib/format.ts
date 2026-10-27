@@ -1,6 +1,7 @@
 // Formatting helpers: relative times, durations, numbers, sizes.
 
 import type * as G from "@/gen";
+import { dateTimeFormat, timeOptions } from "./hour-cycle";
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 
@@ -26,9 +27,9 @@ export function agoShort(ms: number | undefined | null, now = Date.now()): strin
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** A full timestamp for tooltips. */
+/** A full timestamp for tooltips: "Oct 27, 2026, 7:40 PM", "27 Oct 2026, 19:40". */
 export function stamp(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return dateTimeFormat({ year: "numeric", month: "short", day: "numeric", ...timeOptions() }).format(ms);
 }
 
 export function duration(ms: number): string {
@@ -86,8 +87,9 @@ export function day(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** A time of day in the browser's language, on the clock picked in Settings: "7:40 PM", "19:40". */
 export function clock(ms: number): string {
-  return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return dateTimeFormat(timeOptions()).format(ms);
 }
 
 export function until(ms: number, now = Date.now()): string {
