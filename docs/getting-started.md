@@ -1,8 +1,10 @@
 # Getting started
 
 This guide takes you from nothing to an agent working on your code. It
-assumes an instance exists (if you are setting one up, start with
-[self-hosting](self-hosting.md) and come back).
+assumes an instance exists: [app.fctl.sh](https://app.fctl.sh), the managed
+control plane that hyperstructure runs, or one you host yourself (if you
+are setting one up, start with [self-hosting](self-hosting.md) and come
+back).
 
 ## 1. Sign in
 

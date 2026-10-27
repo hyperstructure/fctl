@@ -1,9 +1,18 @@
 # fctl documentation
 
-fctl is a software factory for Claude Code. You describe work; Claude agents
-do it in sandboxes on machines you own, around the clock, on your Claude
-subscription. You follow along live from the web app, your terminal or the
-Claude apps, and anyone you share a project with can steer the agents too.
+fctl is an open source software factory for Claude Code: agents work in
+sandboxes on machines you own, around the clock, on your Claude
+subscription. You describe the work and follow along live from the web app,
+your terminal or the Claude apps, and anyone you share a project with can
+steer the agents too.
+
+fctl's code is on GitHub, MIT licensed:
+[hyperstructure/fctl](https://github.com/hyperstructure/fctl) has all of
+it, from the control plane to the CLI. [app.fctl.sh](https://app.fctl.sh)
+is a managed control plane that hyperstructure runs, by invitation or early
+access; you can also host every part of fctl yourself, on a machine of
+yours or on Cloudflare ([self-hosting](self-hosting.md)). Either way, the
+agents run on your machines.
 
 Three pieces make up a factory:
 

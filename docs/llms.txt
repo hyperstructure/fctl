@@ -1,10 +1,10 @@
 # fctl
 
-> fctl is a software factory for Claude Code. People, scripts and other agents describe work; fctl runs Claude Code agents on it in isolated Linux sandboxes on machines the team owns, around the clock, on the Claude subscriptions of the people who start them, never on API billing. Each piece of work is a session: one Claude conversation in its own sandbox, on its own git branch, usually ending in a pull request that the agent comes back to for review comments, failed checks and conflicts. Everything is reachable from the web app, the `fctl` CLI (every command takes `--json`) and an HTTP API.
+> fctl is an open source software factory for Claude Code. People, scripts and other agents describe work; fctl runs Claude Code agents on it in isolated Linux sandboxes on machines the team owns, around the clock, on the Claude subscriptions of the people who start them, never on API billing. Each piece of work is a session: one Claude conversation in its own sandbox, on its own git branch, usually ending in a pull request that the agent comes back to for review comments, failed checks and conflicts. Everything is reachable from the web app, the `fctl` CLI (every command takes `--json`) and an HTTP API.
 
 This file is for agents and the people who set them up: what fctl is, the words it uses, how to drive it safely from a terminal or another program, recipes for common flows, what to avoid, and where the details are. It is served at https://fctl.sh/llms.txt, at `/llms.txt` of every fctl instance (such as https://app.fctl.sh/llms.txt), and kept in the repository as `docs/llms.txt`. Every doc page is also served as Markdown (`https://fctl.sh/docs/<page>.md`), and https://fctl.sh/llms-full.txt is this file followed by all the docs in one file. For flags, `fctl <command> --help` has the final word.
 
-fctl is MIT licensed and open source: https://github.com/hyperstructure/fctl. The hosted instance is https://app.fctl.sh (by invitation or early access); anyone can run their own instance on Cloudflare or in one container.
+fctl is open source under the MIT license: https://github.com/hyperstructure/fctl. https://app.fctl.sh is a managed control plane that hyperstructure runs (by invitation or early access); anyone can host all of fctl themselves, on Cloudflare or in one container ([Self-hosting](https://fctl.sh/docs/self-hosting.md)).
 
 ## What fctl gives you
 
