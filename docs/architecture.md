@@ -1,8 +1,9 @@
 # Architecture
 
-fctl is a software factory: you describe work, and Claude agents do it in
-isolated sandboxes on machines you own. This document is the map. Read it
-before changing anything that crosses a component boundary.
+fctl is an open source software factory: you describe work, and Claude
+agents do it in isolated sandboxes on machines you own. This document is
+the map. Read it before changing anything that crosses a component
+boundary.
 
 ```
                          ┌──────── Cloudflare, or a container ────────┐

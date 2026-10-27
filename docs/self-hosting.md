@@ -1,5 +1,9 @@
 # Self-hosting
 
+fctl is open source, so you can host all of it yourself.
+[app.fctl.sh](https://app.fctl.sh) is a managed control plane; this page
+sets up your own, on your machines or on Cloudflare.
+
 An fctl instance is a control plane (the API and the web app, with the
 Durable Objects and the D1 database that hold its state) and the hosts on
 your machines that connect to it. Nothing in the code is tied to fctl.sh:

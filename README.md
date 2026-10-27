@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Agents that build while you sleep.</strong><br>
-  A software factory for Claude Code, on machines you own.
+  An open source software factory for Claude Code, on machines you own.
 </p>
 
 <p align="center">
@@ -69,10 +69,12 @@ https://fctl.sh/llms.txt, tells it what fctl is and how to drive it.
   tickets: GitHub Issues, Linear, or none at all.
 - **Follow along anywhere.** With a full Claude login, sessions join Remote
   Control and show up in the Claude apps.
-- **Yours.** Deploy your own instance to your Cloudflare account with
-  `cargo xtask deploy`, or run it without one, on a spare machine or a
-  Kubernetes cluster: `docker run ghcr.io/hyperstructure/fctl-control`
-  ([self-hosting](docs/self-hosting.md)). MIT licensed.
+- **Open source and yours to run.** All of fctl is MIT licensed. Use the
+  managed control plane at app.fctl.sh, or host your own: on your
+  Cloudflare account with `cargo xtask deploy`, or without one, on a spare
+  machine or a Kubernetes cluster, with
+  `docker run ghcr.io/hyperstructure/fctl-control`
+  ([self-hosting](docs/self-hosting.md)).
 
 ## Developing
 
