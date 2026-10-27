@@ -2,6 +2,16 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.24.3 (2026-10-27)
+
+### Features
+
+- **web:** Show times on the browser's clock, or a 24-hour one ([#293](https://github.com/hyperstructure/fctl/pull/293))
+
+### Documentation
+
+- Say fctl is open source and app.fctl.sh a managed control plane ([#292](https://github.com/hyperstructure/fctl/pull/292))
+
 ## 0.24.2 (2026-10-26)
 
 ### Features
