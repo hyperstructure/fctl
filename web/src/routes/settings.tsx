@@ -60,6 +60,7 @@ import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { ago, browserName } from "@/lib/format";
+import { sampleTime, useHourCycle } from "@/lib/hour-cycle";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
 import { forgetSidebar } from "@/lib/sidebar";
@@ -1474,25 +1475,36 @@ function Devices() {
 
 function Appearance() {
   const [theme, setTheme] = useTheme();
+  const [hours, setHours] = useHourCycle();
   return (
     <Section title="Appearance">
-      <div className="flex gap-2">
-        {(["dark", "light"] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTheme(t)}
-            className={cn(
-              "flex items-center gap-2 rounded-lg border px-4 py-2.5 text-[13px] capitalize transition-colors",
-              theme === t
-                ? "border-accent/50 bg-accent-soft text-ink"
-                : "border-line-strong text-ink-3 hover:text-ink",
-            )}
-          >
-            {t === "dark" ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
-            {t}
-          </button>
-        ))}
+      <div className="flex flex-col gap-6">
+        <div className="flex gap-2">
+          {(["dark", "light"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTheme(t)}
+              className={cn(
+                "flex items-center gap-2 rounded-lg border px-4 py-2.5 text-[13px] capitalize transition-colors",
+                theme === t
+                  ? "border-accent/50 bg-accent-soft text-ink"
+                  : "border-line-strong text-ink-3 hover:text-ink",
+              )}
+            >
+              {t === "dark" ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
+              {t}
+            </button>
+          ))}
+        </div>
+        <ul className="divide-y divide-line border-y border-line">
+          <SwitchRow
+            label="24-hour clock"
+            hint={`Times read ${sampleTime(24)} rather than ${sampleTime(12)}. Until you change it here, it follows this browser's language.`}
+            checked={hours === 24}
+            onChange={(on) => setHours(on ? 24 : 12)}
+          />
+        </ul>
       </div>
     </Section>
   );

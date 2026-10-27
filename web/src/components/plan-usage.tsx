@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { ago } from "@/lib/format";
+import { useHourCycle } from "@/lib/hour-cycle";
 import {
   inSentence,
   limitLabel,
@@ -28,8 +29,10 @@ const TONE: Record<Standing, { bar: string; text: string }> = {
   reset: { bar: "bg-ink-4", text: "text-ink-4" },
 };
 
-/** The time, again every minute: a limit that resets meanwhile shows it. */
+/** The time, again every minute, so that a limit that resets meanwhile shows it, and again when
+ * someone picks a clock in Settings, which lists the limits too. */
 function useNow(): number {
+  useHourCycle();
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 60_000);

@@ -7,6 +7,7 @@
 // (02:30 runs at 03:30), and one the clock goes through twice runs once, the first time, as there.
 
 import type * as G from "@/gen";
+import { dateTimeFormat, timeOptions } from "./hour-cycle";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -310,13 +311,9 @@ export type ClockText = (hour: number, minute: number) => string;
 
 export const clock24: ClockText = (h, m) => `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 
-const localClock = new Intl.DateTimeFormat(undefined, {
-  hour: "2-digit",
-  minute: "2-digit",
-  timeZone: "UTC",
-});
-/** A time of day as the browser's locale writes it, as `clock` does in the app: "09:00 AM", "09:00". */
-export const clockOf: ClockText = (h, m) => localClock.format(Date.UTC(2000, 0, 1, h, m));
+/** A time of day as `clock` writes it in the app: "9:00 AM", "09:00". */
+export const clockOf: ClockText = (h, m) =>
+  dateTimeFormat({ ...timeOptions(), timeZone: "UTC" }).format(Date.UTC(2000, 0, 1, h, m));
 
 /** "a", "a and b", "a, b and c". */
 export function list(items: string[]): string {
@@ -498,15 +495,14 @@ export function scheduleWhen(s: Pick<G.Schedule, "cron" | "at" | "timezone">, cl
 /** A time in a zone for lists: "Mon 26 Oct, 09:00", with the year when it isn't this year's. */
 export function moment(at: number, zone: string, now = Date.now()): string {
   const year = new Date(at).getUTCFullYear() !== new Date(now).getUTCFullYear();
-  return new Date(at).toLocaleString(undefined, {
+  return dateTimeFormat({
     timeZone: zone,
     weekday: "short",
     day: "numeric",
     month: "short",
     year: year ? "numeric" : undefined,
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+    ...timeOptions(),
+  }).format(at);
 }
 
 /** What someone may do with a schedule (fctl_domain::schedules::rights). */
