@@ -297,8 +297,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .map(|b| validate::branch("default_branch", b))
         .transpose()?;
     if let Some(create) = &body.create_repo {
-        // GitHub makes the repository with one branch, which the project
-        // takes: it would have no other.
+        // GitHub makes the repository with one branch, which becomes the
+        // project's default branch: one named here wouldn't be in it.
         if default_branch.is_some() {
             return Err(validation(
                 "default_branch",
@@ -484,14 +484,25 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             owner: o.clone(),
             name: n.clone(),
         };
-        let inst = match inst {
-            Some(i) => i,
-            None => {
-                let connections = ws::connections(&ctx.db, p.workspace_id()).await?;
-                check_repo(ctx, &gh, &connections, &repo).await?
+        let checked = async {
+            let inst = match inst {
+                Some(i) => i,
+                None => {
+                    let connections = ws::connections(&ctx.db, p.workspace_id()).await?;
+                    check_repo(ctx, &gh, &connections, &repo).await?
+                }
+            };
+            check_default_branch(&gh, inst, &repo, &default_branch).await
+        }
+        .await;
+        if let Err(AppError(mut e)) = checked {
+            // What's wrong with a repository the update keeps shows under
+            // the branch it changes: the web app's form has no repository.
+            if inst.is_none() && e.field.as_deref() == Some("repo") {
+                e.field = Some("default_branch".into());
             }
-        };
-        check_default_branch(&gh, inst, &repo, &default_branch).await?;
+            return Err(AppError(e));
+        }
     }
     let settings = match body.settings {
         Some(st) => {

@@ -414,7 +414,12 @@ pub async fn prepare(p: &Paths, spec: &SessionSpec, log: &LogSink) -> Result<()>
         // start from. Without the clone, which held nothing before it, a
         // resume in this sandbox clones again rather than reuse a checkout
         // that isn't on the session's branch.
-        empty(&p.workdir)?;
+        if let Err(e) = empty(&p.workdir) {
+            let _ = log.send((
+                LogLevel::Warn,
+                format!("Removing the clone of {}: {e:#}", repo.full_name()),
+            ));
+        }
         let default = spec.base_branch == spec.project.default_branch;
         bail!(
             "{}",
