@@ -111,7 +111,8 @@ checks every build for it:
   through rustup with rustfmt and Clippy, Node.js 26 with npm and corepack,
   TypeScript (`tsc`), Bun, build-essential, cmake, pkg-config, OpenSSL's
   headers, ripgrep, fd, jq, ShellCheck, sqlite3, curl, wget, rsync, zip,
-  tree, ffmpeg, ImageMagick (`magick`), pngquant and Xvfb (`xvfb-run`).
+  tree, ffmpeg, ImageMagick (`convert`, `identify`, `compare`, `montage`),
+  pngquant and Xvfb (`xvfb-run`).
 - **Browsers**: Playwright (`playwright`), with its headless Chromium and
   its WebKit, and the system libraries and fonts that its Chromium,
   Firefox and WebKit need. A script gets Playwright from a `node_modules`
