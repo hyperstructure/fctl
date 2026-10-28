@@ -7,10 +7,10 @@ use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use fctl_client::Api;
-use fctl_domain::{files, pulls};
+use fctl_domain::{files, pulls, reviews};
 use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
 use fctl_proto::api::{
-    CreateSessionRequest, CreateShareRequest, SessionShare, UpdateSessionRequest,
+    CreateSessionRequest, CreateShareRequest, ReviewState, SessionShare, UpdateSessionRequest,
 };
 use fctl_proto::session::{GithubAccess, PullRequestRef, Session, SessionRole, SessionStats};
 use fctl_proto::{AttachmentId, SessionId};
@@ -364,8 +364,9 @@ fn pull_request_lines(s: &Session, now: i64) -> Vec<String> {
 }
 
 /// A pull request's state as `fctl show` says it: `merged 2h ago`, `open,
-/// checks passed`, `draft, 1 of 4 checks failed`. Nothing while nobody
-/// looked it up.
+/// checks passed`, `draft, 1 of 4 checks failed`, and how fctl's review
+/// of it went: `open, checks passed, fctl's review agent found 2 issues`.
+/// Nothing while nobody looked it up.
 fn pull_request_state(pr: &PullRequestRef, now: i64) -> Option<String> {
     let state = style::terminal_safe(pr.state.as_deref()?);
     if matches!(state.as_ref(), "merged" | "closed") {
@@ -374,30 +375,34 @@ fn pull_request_state(pr: &PullRequestRef, now: i64) -> Option<String> {
             .map(|t| format!(" {}", style::ago_from(t, now)));
         return Some(style::dim(&format!("{state}{}", when.unwrap_or_default())));
     }
-    let Some(c) = pr
+    let mut said = vec![style::dim(&state)];
+    if let Some(c) = pr
         .checks
         .as_ref()
         .filter(|c| c.passed + c.failed + c.pending > 0)
-    else {
-        return Some(style::dim(&state));
-    };
-    let total = c.passed + c.failed + c.pending;
-    let some = |n: u32, what: &str| match n == total {
-        true => style::count(n, &format!("check {what}"), &format!("checks {what}")),
-        false => format!("{n} of {total} checks {what}"),
-    };
-    let checks = if c.failed > 0 {
-        style::red(&some(c.failed, "failed"))
-    } else if c.pending > 0 {
-        style::amber(&some(c.pending, "pending"))
-    } else {
-        style::accent("checks passed")
-    };
-    Some(format!(
-        "{}{} {checks}",
-        style::dim(&state),
-        style::dim(",")
-    ))
+    {
+        let total = c.passed + c.failed + c.pending;
+        let some = |n: u32, what: &str| match n == total {
+            true => style::count(n, &format!("check {what}"), &format!("checks {what}")),
+            false => format!("{n} of {total} checks {what}"),
+        };
+        said.push(if c.failed > 0 {
+            style::red(&some(c.failed, "failed"))
+        } else if c.pending > 0 {
+            style::amber(&some(c.pending, "pending"))
+        } else {
+            style::accent("checks passed")
+        });
+    }
+    if let Some(r) = pr.checks.as_ref().and_then(|c| c.review.as_ref()) {
+        let text = reviews::said(r);
+        said.push(match r.state {
+            ReviewState::Commented => style::blue(&text),
+            ReviewState::Running | ReviewState::Passed => style::accent(&text),
+            _ => style::dim(&text),
+        });
+    }
+    Some(said.join(&format!("{} ", style::dim(","))))
 }
 
 pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<()> {
@@ -1150,7 +1155,13 @@ mod tests {
               "checks": { "passed": 0, "failed": 0, "pending": 1, "at": 1 } },
             { "number": 6, "url": "u6", "state": "open",
               "checks": { "passed": 0, "failed": 0, "pending": 0, "at": 1 } },
-            { "number": 7, "url": "u7" }
+            { "number": 7, "url": "u7" },
+            { "number": 8, "url": "u8", "state": "open",
+              "checks": { "passed": 9, "failed": 0, "pending": 0, "at": 1,
+                "review": { "state": "commented", "findings": 2, "still_open": 0 } } },
+            { "number": 9, "url": "u9", "state": "draft",
+              "checks": { "passed": 0, "failed": 0, "pending": 0, "at": 1,
+                "review": { "state": "running", "findings": 0, "still_open": 0 } } }
         ]))?;
         let said: Vec<_> = prs
             .iter()
@@ -1166,7 +1177,9 @@ mod tests {
                 at("draft, 1 of 4 checks failed"),
                 at("queued, 1 check pending"),
                 at("open"),
-                None
+                None,
+                at("open, checks passed, fctl's review agent found 2 issues"),
+                at("draft, fctl's review agent is reviewing it"),
             ]
         );
         Ok(())

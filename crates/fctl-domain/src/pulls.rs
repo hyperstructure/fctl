@@ -844,6 +844,7 @@ mod tests {
             pending,
             sha: Some("abc".into()),
             at,
+            review: None,
         };
         let mut known = vec![pr("acme/app", 12)];
         let with = |c: PullRequestChecks| PullRequestRef {

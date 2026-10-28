@@ -1008,7 +1008,9 @@ pub struct PullRequestRef {
 
 /// The checks of a pull request's head commit, check runs and commit
 /// statuses, counted as the pull request on GitHub shows them: each check
-/// once, by its latest run.
+/// once, by its latest run. The instance's own review agent's check
+/// (`fctl review`) is left out of the counts: `review` says how its
+/// review went, which a count of neutral checks as passed would hide.
 #[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -1025,6 +1027,35 @@ pub struct PullRequestChecks {
     /// When the control plane asked GitHub: a later answer replaces an
     /// earlier one.
     pub at: Millis,
+    /// The instance's review of the commit, where its review agents
+    /// review the pull request. Absent without one, and from control
+    /// planes before it, whose counts include its check.
+    pub review: Option<ReviewCheck>,
+}
+
+/// A review agent's review of a pull request's head commit, as its check
+/// there shows it and the control plane keeps it (`GET
+/// /api/v1/projects/{id}/reviews` has the rest).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ReviewCheck {
+    /// How it went, or `running` while it waits for a runner or reviews.
+    pub state: crate::api::ReviewState,
+    /// While it runs: no runner has taken its session yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub waiting: bool,
+    /// Findings it posted.
+    #[serde(default)]
+    pub findings: u32,
+    /// Findings of earlier reviews still open after it.
+    #[serde(default)]
+    pub still_open: u32,
+    /// Its session, whose page shows the agent's work.
+    pub session_id: Option<SessionId>,
+    /// What it posted on GitHub: its summary, above its findings.
+    pub url: Option<String>,
 }
 
 #[skip_serializing_none]

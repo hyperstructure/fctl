@@ -1825,6 +1825,7 @@ mod tests {
                     pending: 1,
                     sha: Some("abc".into()),
                     at: 1,
+                    review: None,
                 }),
                 ..Default::default()
             },
