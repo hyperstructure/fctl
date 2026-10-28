@@ -28,7 +28,19 @@ const project: G.ProjectRepo[] = [
 ];
 
 /** The field as the Repositories tab has it, in a form whose submit adds what's chosen. */
-function Tab({ onChange, onSubmit }: { onChange?: (c: string[]) => void; onSubmit?: (c: string[]) => void }) {
+function Tab({
+  listed = project,
+  repos = available,
+  accounts = ["hyperstructure"],
+  onChange,
+  onSubmit,
+}: {
+  listed?: G.ProjectRepo[];
+  repos?: G.GithubRepo[];
+  accounts?: string[];
+  onChange?: (c: string[]) => void;
+  onSubmit?: (c: string[]) => void;
+}) {
   const [chosen, setChosen] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   return (
@@ -40,7 +52,7 @@ function Tab({ onChange, onSubmit }: { onChange?: (c: string[]) => void; onSubmi
     >
       <RepoPicker
         id="repos"
-        choices={repoChoices({ listed: project, available, accounts: ["hyperstructure"], chosen, query })}
+        choices={repoChoices({ listed, available: repos, accounts, chosen, query })}
         chosen={chosen}
         onChange={(c) => {
           setChosen(c);
@@ -231,5 +243,26 @@ describe("the field that adds repositories to a project", () => {
     expect(press(c, "Backspace")).toBe(true);
     expect(chips(c)).toEqual(["hyperstructure/fctl-site"]);
     expect(c.textContent).toContain("hyperstructure/* no longer chosen");
+  });
+
+  it("heads each account's choices for a project without repositories, and keeps to the one chosen", () => {
+    const shop = { ...repo("shop", { private: true }), owner: "romanescohq", full_name: "romanescohq/shop" };
+    const c = render(
+      <Tab listed={[]} repos={[...available, shop]} accounts={["hyperstructure", "romanescohq"]} />,
+    );
+    open(c);
+    const headings = () =>
+      [...c.querySelectorAll('[role="listbox"] > [role="presentation"]')].map((h) => h.textContent);
+    expect(headings()).toEqual(["hyperstructure", "romanescohq"]);
+    act(() => option(c, "romanescohq/shop").click());
+    expect(chips(c)).toEqual(["romanescohq/shop"]);
+    const fctl = option(c, "hyperstructure/fctl");
+    expect(fctl.getAttribute("aria-disabled")).toBe("true");
+    expect(fctl.textContent).toContain("Another account");
+    expect(option(c, "hyperstructure/*").textContent).not.toContain("Every repository");
+    expect(option(c, "romanescohq/*").getAttribute("aria-disabled")).toBeNull();
+    // Typing finds them across accounts, without the headings.
+    type(c, "fctl");
+    expect(headings()).toEqual([]);
   });
 });

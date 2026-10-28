@@ -250,12 +250,12 @@ export function RepoPicker({
       <div
         ref={box}
         className={cn(
-          "group/select flex min-h-9.5 w-full min-w-0 cursor-text flex-wrap items-center gap-1 rounded-md border border-line-strong bg-sunken/60 py-[5px] pr-2.5 pl-1.5",
+          "group/select relative flex min-h-9.5 w-full min-w-0 cursor-text flex-wrap items-center gap-1 rounded-md border border-line-strong bg-sunken/60 py-[5px] pr-8 pl-1.5",
           "transition-[border-color,box-shadow,background-color] duration-150",
           "hover:border-ink-4/60 focus-within:border-accent/70 focus-within:bg-sunken focus-within:shadow-[0_0_0_3px_var(--c-accent-soft)]",
-          invalid &&
-            "border-danger/60 hover:border-danger/60 focus-within:border-danger/60 focus-within:shadow-[0_0_0_3px_var(--c-danger-soft)]",
+          "data-invalid:border-danger/60 data-invalid:focus-within:shadow-[0_0_0_3px_var(--c-danger-soft)]",
         )}
+        data-invalid={invalid || undefined}
         // Focus stays in the text field.
         onMouseDown={(e) => {
           if (e.target !== input.current) e.preventDefault();
@@ -311,9 +311,10 @@ export function RepoPicker({
           autoCapitalize="off"
           autoCorrect="off"
           spellCheck={false}
-          className="h-6.5 min-w-[12ch] flex-1 bg-transparent px-1.5 font-mono text-[13px] text-ink outline-none placeholder:truncate placeholder:font-sans placeholder:text-[14px] placeholder:text-ink-4"
+          className="h-6.5 min-w-[8ch] flex-1 bg-transparent px-1.5 font-mono text-[13px] text-ellipsis text-ink outline-none placeholder:font-sans placeholder:text-[14px] placeholder:text-ink-4"
         />
-        <SelectChevron open={open} className="ml-0" />
+        {/* By the first line, as what's chosen fills more. */}
+        <SelectChevron open={open} className="absolute top-[11px] right-2.5" />
       </div>
       {mounted && (
         // biome-ignore lint/a11y/noStaticElementInteractions: it keeps focus in the text field
@@ -398,7 +399,7 @@ export function RepoPicker({
                           </span>
                         )}
                       </span>
-                      {!c.name && !c.on ? (
+                      {!c.name && !off ? (
                         <span className="block pb-0.5 text-[12px] leading-[1.45] text-ink-3">
                           Every repository of {c.owner} the GitHub App can reach, read only
                         </span>

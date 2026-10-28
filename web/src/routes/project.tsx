@@ -505,11 +505,15 @@ function Repositories({ project }: { project: G.Project }) {
   const adding =
     typed && !chosen.some((v) => same(v, repoValue(typed))) ? [...chosen, repoValue(typed)] : chosen;
   const wide = adding.length > 0 && adding.every((v) => v.endsWith("/*"));
-  const save = (r: G.ProjectRepoList) => {
-    queryClient.setQueryData(keys.projectRepos(project.id), r);
-    // The project's header and the lists of projects count them.
+  const show = (r: G.ProjectRepoList) => queryClient.setQueryData(keys.projectRepos(project.id), r);
+  // The project's header and the lists of projects count them.
+  const recount = () => {
     for (const k of [keys.project(project.slug), keys.project(project.id), keys.projects])
       void queryClient.invalidateQueries({ queryKey: k });
+  };
+  const save = (r: G.ProjectRepoList) => {
+    show(r);
+    recount();
   };
   // One by one, in the order they were chosen: those added leave the field, and the first one the
   // control plane refuses stays in it with the ones after it, under its reason.
@@ -525,12 +529,16 @@ function Repositories({ project }: { project: G.Project }) {
             message.toLowerCase().includes(repo.toLowerCase()) ? message : `${repo}: ${message}`,
           );
         }
-        save(r);
+        show(r);
         setChosen((c) => c.filter((v) => !same(v, repo)));
-        if (typed && same(repoValue(typed), repo)) setQuery("");
+        setQuery((q) => {
+          const t = parseRepo(q);
+          return t && same(repoValue(t), repo) ? "" : q;
+        });
       }
     },
     onSuccess: () => setAccess("read"),
+    onSettled: recount,
   });
   const change = useMutation({
     mutationFn: (b: G.AddProjectRepoRequest) => api.addProjectRepo(project.id, b),
