@@ -163,3 +163,19 @@ export function repoChoices({
   const extra = byHand([typed]).filter((t) => !pool.some((c) => same(c.value, t.value)));
   return [...found, ...extra].map(mark);
 }
+
+/**
+ * What the field adds to a project: the repositories chosen, and one typed whole besides, unless
+ * the project has it already, where adding it again would only change its access.
+ */
+export function repoAdditions(
+  chosen: readonly string[],
+  query: string,
+  listed: readonly G.ProjectRepo[],
+): string[] {
+  const typed = parseRepo(query);
+  if (!typed) return [...chosen];
+  const value = repoValue(typed);
+  const known = [...chosen, ...listed.map(repoValue)].some((v) => same(v, value));
+  return known ? [...chosen] : [...chosen, value];
+}

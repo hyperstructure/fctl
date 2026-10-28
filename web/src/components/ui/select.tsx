@@ -586,15 +586,18 @@ function Check({ draw, className }: { draw: boolean; className?: string }) {
   );
 }
 
-/** Puts a list under its trigger, or over it when there is more room above. */
-export function placeList(trigger: HTMLElement, list: HTMLElement) {
+/**
+ * Puts a list under its trigger, or over it when there is more room above. `height` is how tall
+ * the list would be with room for everything, for one that scrolls inside rather than itself.
+ */
+export function placeList(trigger: HTMLElement, list: HTMLElement, height?: number) {
   const r = trigger.getBoundingClientRect();
   const { clientWidth: vw, clientHeight: vh } = document.documentElement;
   list.style.minWidth = `${Math.min(r.width, vw - 2 * MARGIN)}px`;
-  const height = list.scrollHeight + list.offsetHeight - list.clientHeight;
+  const tall = height ?? list.scrollHeight + list.offsetHeight - list.clientHeight;
   const below = vh - r.bottom - GAP - MARGIN;
   const above = r.top - GAP - MARGIN;
-  const down = height <= below || below >= above;
+  const down = tall <= below || below >= above;
   list.style.maxHeight = `${Math.max(0, Math.min(down ? below : above, MAX_HEIGHT))}px`;
   list.style.top = down ? `${r.bottom + GAP}px` : "auto";
   list.style.bottom = down ? "auto" : `${vh - r.top + GAP}px`;

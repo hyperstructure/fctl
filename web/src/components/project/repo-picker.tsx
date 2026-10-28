@@ -167,10 +167,12 @@ export function RepoPicker({
   const put = () => {
     const el = popup.current;
     const b = box.current;
+    const list = listbox.current;
     if (!el || !b) return;
     el.style.width = `${Math.min(b.offsetWidth, document.documentElement.clientWidth - 16)}px`;
-    el.style.maxHeight = "";
-    placeList(b, el);
+    // As tall as it would be with every choice in sight: the list scrolls inside it, and clearing
+    // its max-height to measure that would scroll the list back to its top.
+    placeList(b, el, el.offsetHeight + (list ? list.scrollHeight - list.clientHeight : 0));
   };
   // biome-ignore lint/correctness/useExhaustiveDependencies: listens while the list is mounted
   useLayoutEffect(() => {

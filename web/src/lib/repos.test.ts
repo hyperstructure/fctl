@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { parseRepo, repoChoices, repoLabel, repoSummary } from "./repos";
+import { parseRepo, repoAdditions, repoChoices, repoLabel, repoSummary } from "./repos";
 
 const fctl = { owner: "hyperstructure", name: "fctl" };
 
@@ -189,5 +189,30 @@ describe("the repositories to add to a project", () => {
       "hyperstructure/*",
     ]);
     expect(values(find("sand", ["hyperstructure/sandbox"]))).toEqual(["hyperstructure/sandbox"]);
+  });
+});
+
+describe("what the field adds to a project", () => {
+  const chosen = ["hyperstructure/homebrew-tap"];
+
+  it("adds what's chosen, and a repository typed whole besides", () => {
+    expect(repoAdditions(chosen, "", project)).toEqual(chosen);
+    expect(repoAdditions(chosen, "hyperstructure/sandbox", project)).toEqual([
+      "hyperstructure/homebrew-tap",
+      "hyperstructure/sandbox",
+    ]);
+    expect(repoAdditions([], "https://github.com/hyperstructure/sandbox/pulls", project)).toEqual([
+      "hyperstructure/sandbox",
+    ]);
+    // What narrows the list down isn't a repository.
+    expect(repoAdditions(chosen, "tap", project)).toEqual(chosen);
+    expect(repoAdditions(chosen, "Hyperstructure/Homebrew-Tap", project)).toEqual(chosen);
+  });
+
+  it("leaves out one typed that the project has, which would only change its access", () => {
+    expect(repoAdditions(chosen, "hyperstructure/design", project)).toEqual(chosen);
+    expect(repoAdditions([], "HYPERSTRUCTURE/fctl", project)).toEqual([]);
+    expect(repoAdditions([], "hyperstructure/*", [...project, listed("hyperstructure")])).toEqual([]);
+    expect(repoAdditions([], "hyperstructure/*", project)).toEqual(["hyperstructure/*"]);
   });
 });

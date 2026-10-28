@@ -77,7 +77,7 @@ import {
   useRunners,
   useSessions,
 } from "@/lib/queries";
-import { parseRepo, repoChoices, repoLabel, repoSummary, repoValue } from "@/lib/repos";
+import { parseRepo, repoAdditions, repoChoices, repoLabel, repoSummary, repoValue } from "@/lib/repos";
 import { lastMoved, sections } from "@/lib/sessions";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
@@ -500,10 +500,7 @@ function Repositories({ project }: { project: G.Project }) {
   const list = repos.data?.repos ?? [];
   const owner = list[0]?.owner;
   const choices = repoChoices({ listed: list, available: github.data?.repos ?? [], accounts, chosen, query });
-  // What's chosen, and a repository typed whole besides.
-  const typed = parseRepo(query);
-  const adding =
-    typed && !chosen.some((v) => same(v, repoValue(typed))) ? [...chosen, repoValue(typed)] : chosen;
+  const adding = repoAdditions(chosen, query, list);
   const wide = adding.length > 0 && adding.every((v) => v.endsWith("/*"));
   const show = (r: G.ProjectRepoList) => queryClient.setQueryData(keys.projectRepos(project.id), r);
   // The project's header and the lists of projects count them.
