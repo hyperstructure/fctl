@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { draftId, saveText } from "@/lib/draft";
+import { arrangeIn } from "@/lib/order";
 import { keys } from "@/lib/queries";
 import { Home } from "./home";
 
@@ -104,6 +105,22 @@ function open() {
       if (!chip) throw new Error(`no ${name}`);
       act(() => chip.click());
     },
+    /** Puts a workspace's projects in another order (slugs), as dragging them in the sidebar does. */
+    reorder: (w: G.Workspace, order: string[]) =>
+      act(() => {
+        client.setQueryData<G.ProjectList>(
+          keys.projects,
+          (old) =>
+            old && {
+              ...old,
+              projects: arrangeIn(
+                old.projects,
+                w.id,
+                order.map((slug) => `prj_${slug}`),
+              ),
+            },
+        );
+      }),
     /** Picks a project in the composer, and lets its list close (on fake timers). */
     pick: (slug: string) => {
       act(() => picker()?.click());
@@ -121,36 +138,40 @@ function open() {
   };
 }
 
-const lastTargets = () => JSON.parse(localStorage.getItem("fctl:last-targets") ?? "{}");
-
 describe("the Agent Floor's composer", () => {
   it("starts in the project picked there last", () => {
     localStorage.setItem("fctl:last-target", "frog-api");
     expect(open().project()).toBe("Frog / frog-api");
   });
 
-  it("goes to the workspace whose work the page shows, to the project it had there last", () => {
+  it("goes to the first project of the workspace whose work the page shows, even from another of its own", () => {
     localStorage.setItem("fctl:last-target", "frog-api");
-    localStorage.setItem("fctl:last-targets", JSON.stringify({ ws_kind: "kind-app" }));
     const floor = open();
     expect(floor.project()).toBe("Frog / frog-api");
-    floor.show("Kind Machine");
-    expect(floor.showing()).toContain("Kind Machine");
-    expect(floor.project()).toBe("Kind Machine / kind-app");
     floor.show("Frog");
-    expect(floor.project()).toBe("Frog / frog-api");
+    expect(floor.showing()).toContain("Frog");
+    expect(floor.project()).toBe("Frog / cook-it");
     // The next page starts where this one is.
-    expect(localStorage.getItem("fctl:last-target")).toBe("frog-api");
-    expect(lastTargets()).toEqual({ ws_frog: "frog-api", ws_kind: "kind-app" });
+    expect(localStorage.getItem("fctl:last-target")).toBe("cook-it");
   });
 
-  it("goes to a workspace's first project you start sessions in, when it had none there", () => {
+  it("goes to a workspace's first project you start sessions in", () => {
     const floor = open();
     expect(floor.project()).toBe("Frog / cook-it");
     // Ada only watches kind-docs.
     floor.show("Kind Machine");
     expect(floor.project()).toBe("Kind Machine / kind-web");
     expect(localStorage.getItem("fctl:last-target")).toBe("kind-web");
+  });
+
+  it("goes to a workspace's first project in the order you put them in", () => {
+    const floor = open();
+    floor.reorder(frog, ["frog-api", "cook-it"]);
+    floor.show("Frog");
+    expect(floor.project()).toBe("Frog / frog-api");
+    floor.reorder(kind, ["kind-app", "kind-web"]);
+    floor.show("Kind Machine");
+    expect(floor.project()).toBe("Kind Machine / kind-app");
   });
 
   it("stays where it is when the page shows every workspace, or one where it can't start sessions", () => {
@@ -162,17 +183,20 @@ describe("the Agent Floor's composer", () => {
     expect(floor.project()).toBe("Kind Machine / kind-web");
   });
 
-  it("keeps a project picked in another workspace, and goes back to it in its workspace", () => {
+  it("keeps a project picked afterwards, in any workspace, until it shows another", () => {
     vi.useFakeTimers();
     const floor = open();
     floor.show("Kind Machine");
     floor.pick("kind-app");
+    expect(floor.project()).toBe("Kind Machine / kind-app");
     floor.pick("cook-it");
     expect(floor.project()).toBe("Frog / cook-it");
     expect(floor.showing()).toContain("Kind Machine");
     floor.show("All workspaces");
+    expect(floor.project()).toBe("Frog / cook-it");
+    // Not back to the one picked there last.
     floor.show("Kind Machine");
-    expect(floor.project()).toBe("Kind Machine / kind-app");
+    expect(floor.project()).toBe("Kind Machine / kind-web");
   });
 
   it("stays in the project a session is starting in", async () => {

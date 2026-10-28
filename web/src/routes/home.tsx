@@ -150,17 +150,6 @@ function RepoText({ project }: { project: G.Project }) {
 
 /** The project a new session goes to: picked here last time, while it is still there. */
 const LAST_TARGET = "fctl:last-target";
-/** The project each workspace had here last, by the workspace's id. */
-const LAST_TARGETS = "fctl:last-targets";
-
-function lastTargets(): Record<string, string> {
-  try {
-    const kept: unknown = JSON.parse(localStorage.getItem(LAST_TARGETS) ?? "{}");
-    return kept && typeof kept === "object" ? (kept as Record<string, string>) : {};
-  } catch {
-    return {};
-  }
-}
 
 function QuickStart({
   user,
@@ -208,13 +197,6 @@ function QuickStart({
       localStorage.setItem(LAST_TARGET, slug);
     } catch {}
   };
-  const at = target?.workspace?.id;
-  useEffect(() => {
-    if (!at) return;
-    try {
-      localStorage.setItem(LAST_TARGETS, JSON.stringify({ ...lastTargets(), [at]: project }));
-    } catch {}
-  }, [at, project]);
   const files = useAttachments(editable.length && project ? { project } : undefined, { keep });
   const draft = useKeepDraft(keep, {
     kept,
@@ -224,13 +206,12 @@ function QuickStart({
   });
   // Once a session starts with the draft, it is forgotten.
   const { start, starting } = useStartSession(draft.forget);
-  // When the page shows one workspace's work, the project goes there too, unless it is there
-  // already: to the one it had there last, else its first. One picked here afterwards stays.
+  // When the page shows one workspace's work, the project goes to its first in your order, even
+  // from another of its projects. One picked here afterwards stays.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only showing another workspace moves it
   useEffect(() => {
-    if (!workspace || starting || target?.workspace?.id === workspace) return;
-    const there = editable.filter((p) => p.workspace?.id === workspace);
-    const next = there.find((p) => p.slug === lastTargets()[workspace]) ?? there[0];
+    if (!workspace || starting) return;
+    const next = editable.find((p) => p.workspace?.id === workspace);
     if (next) pick(next.slug);
   }, [workspace]);
   const attach = (f: File[], pasted?: boolean) => {
