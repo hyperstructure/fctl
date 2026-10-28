@@ -17,6 +17,7 @@ use fctl_proto::api::{
 };
 use fctl_proto::session::RepoRef;
 use serde_json::json;
+use std::collections::BTreeMap;
 use worker::{Request, Response};
 
 /// `GET /api/v1/projects/{id}/review-agents`: for everyone who sees the
@@ -223,7 +224,7 @@ pub async fn list(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
             .filter(|r| r.project_id == p.row.id)
             .collect();
         return http::ok(&ReviewList {
-            reviews: to_reviews(ctx, &rows).await?,
+            reviews: to_reviews(ctx, &rows).await,
             next_before: None,
         });
     }
@@ -241,23 +242,32 @@ pub async fn list(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
         } else {
             None
         },
-        reviews: to_reviews(ctx, &rows).await?,
+        reviews: to_reviews(ctx, &rows).await,
     })
 }
 
 /// Reviews as the API shows them, each with the session in its project
 /// that opened its pull request, which callers who see the project see.
-async fn to_reviews(ctx: &Ctx, rows: &[reviews::ReviewRow]) -> AppResult<Vec<Review>> {
-    let mut openers = reviews::openers(&ctx.db, &ctx.cfg, rows).await?;
-    Ok(rows
-        .iter()
+/// That is only a link: without it when it can't be looked up.
+async fn to_reviews(ctx: &Ctx, rows: &[reviews::ReviewRow]) -> Vec<Review> {
+    let mut openers = match reviews::openers(&ctx.db, &ctx.cfg, rows).await {
+        Ok(openers) => openers,
+        Err(e) => {
+            worker::console_error!(
+                "looking up the sessions that opened reviewed pull requests: {}",
+                e.0.message
+            );
+            BTreeMap::new()
+        }
+    };
+    rows.iter()
         .filter_map(|r| {
             Some(Review {
                 opened_by: openers.remove(&r.session_id),
                 ..r.to_review()?
             })
         })
-        .collect())
+        .collect()
 }
 
 /// `POST /api/v1/projects/{id}/reviews`: people who start sessions in the
@@ -312,7 +322,7 @@ pub async fn start(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Resp
         .await?
         .ok_or_else(|| crate::error::internal("the review vanished"))?;
     let review = to_reviews(ctx, &[row])
-        .await?
+        .await
         .pop()
         .ok_or_else(|| crate::error::internal("the review vanished"))?;
     http::created(&review)
