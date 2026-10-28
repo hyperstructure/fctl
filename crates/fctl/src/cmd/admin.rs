@@ -928,6 +928,9 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             }
         }
         AdminCmd::Unreserve { slugs } => {
+            // A control plane from before reserved slugs fails here, rather
+            // than answering each one as not reserved.
+            api.reserved_slugs().await?;
             let mut failed = Vec::new();
             for slug in &slugs {
                 match api.unreserve_slug(slug).await {
