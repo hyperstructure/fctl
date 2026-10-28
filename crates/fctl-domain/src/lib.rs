@@ -43,6 +43,7 @@ pub mod schedules;
 pub mod search;
 pub mod settings;
 pub mod size;
+pub mod slugs;
 pub mod threads;
 pub mod throttle;
 pub mod tickets;
