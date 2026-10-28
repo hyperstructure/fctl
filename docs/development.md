@@ -506,7 +506,7 @@ at 768 px.
 | Repository | What | How it connects |
 |---|---|---|
 | [hyperstructure/design](https://github.com/hyperstructure/design) | Tokens, fonts, WebGL scenes, the marks | `web/` depends on a tag; bumps arrive as pull requests |
-| [hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site) | fctl.sh: landing page, these docs, `/install`, `/releases` | renders `docs/` at the commit in its `fctl-docs.ref`, which this repository's CI updates when `docs/` changes on `main`; serves the releases `cargo xtask publish` writes to the KV namespace in `deploy/releases.toml` |
+| [hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site) | fctl.sh: landing page, these docs, `/install`, `/releases` | renders `docs/` at the commit in its `fctl-docs.ref`, which this repository's CI moves on to a newer commit of `main` once that commit passes its checks, if its `docs/` differ; serves the releases `cargo xtask publish` writes to the KV namespace in `deploy/releases.toml` |
 | [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox) | The default sandbox image, `ghcr.io/hyperstructure/sandbox` | its Image workflow publishes an image for each fctl release it finds on fctl.sh; hosts pull it, and `fctl host image build` builds its `main` ([Sandbox images](sandbox-images.md)) |
 
 ## Releasing

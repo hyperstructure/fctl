@@ -1,9 +1,9 @@
 # Checks every pull request and push, and runs a session through the local
-# stack; deploys app.fctl.sh from main (also when started by hand, as the
-# Release workflow does after its release commit), and pins fctl.sh
-# (hyperstructure/fctl-site) to the new docs when docs/ changed. Pull request
-# titles are checked in commits.yml; the standalone control plane's image in
-# standalone-image.yml, on pull requests that change it and for each release.
+# stack; on main (also when started by hand), deploys app.fctl.sh and pins
+# fctl.sh (hyperstructure/fctl-site) to main's docs when they differ from the
+# ones it shows. Pull request titles are checked in commits.yml; the
+# standalone control plane's image in standalone-image.yml, on pull requests
+# that change it and for each release.
 #
 # The parts of `cargo xtask check` run at once, each in a job of its own, and
 # "cargo xtask check" passes once they all have: that check and "cargo xtask
@@ -186,10 +186,18 @@ jobs:
           curl -fsS https://app.fctl.sh/api/v1/health
           curl -fsS -o /dev/null https://app.fctl.sh/login
 
+  # fctl.sh shows the docs at the commit in fctl-site's fctl-docs.ref. Once
+  # the checks pass, this pins main's commit there if its docs/ differ from
+  # that commit's. It compares with the pin, not with the commit before the
+  # push, so that the docs of a push whose checks failed reach fctl.sh with
+  # the next run that passes, not with the next push that changes docs/. And
+  # it never pins a commit older than the pinned one, for runs that finish
+  # out of order: an old commit's run started again, or checks that took
+  # longer than a newer push's.
   site-docs:
     name: Pin fctl.sh to these docs
     needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # SITE_DEPLOY_KEY pushes to fctl-site's main, which deploys fctl.sh, so it
@@ -202,31 +210,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Did docs/ change?
+      # fctl-site is public: reading its pin takes no key, only pushing one
+      # does. A new pin is committed on this clone, over the pin it was
+      # compared with.
+      - name: Are fctl.sh's docs behind these?
         id: docs
-        env:
-          BEFORE: ${{ github.event.before }}
         run: |
-          if [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            echo "changed=yes" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "$BEFORE" HEAD -- docs; then
-            echo "changed=no" >> "$GITHUB_OUTPUT"
+          git clone --quiet --depth 1 https://github.com/hyperstructure/fctl-site.git "$RUNNER_TEMP/site"
+          pinned=$(tr -d '[:space:]' < "$RUNNER_TEMP/site/fctl-docs.ref")
+          if ! [[ $pinned =~ ^[0-9a-f]{40}$ ]] || ! git cat-file -e "$pinned^{commit}" 2>/dev/null; then
+            echo "fctl-docs.ref says '$pinned', not the full hash of a commit of this repository: pinning ${GITHUB_SHA::12}"
+            echo "pin=yes" >> "$GITHUB_OUTPUT"
+          elif git merge-base --is-ancestor HEAD "$pinned"; then
+            echo "fctl.sh shows the docs at ${pinned::12}, this commit or a newer one"
+            echo "pin=no" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$pinned" HEAD -- docs; then
+            echo "fctl.sh shows the docs at ${pinned::12}, which are the same as these"
+            echo "pin=no" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=yes" >> "$GITHUB_OUTPUT"
+            echo "fctl.sh shows the docs at ${pinned::12}, which differ from these: pinning ${GITHUB_SHA::12}"
+            echo "pin=yes" >> "$GITHUB_OUTPUT"
           fi
-      - if: steps.docs.outputs.changed == 'yes'
+      - if: steps.docs.outputs.pin == 'yes'
         uses: ./.github/actions/repo-access
         with:
           repo: fctl-site
           key: ${{ secrets.SITE_DEPLOY_KEY }}
       - name: Pin fctl-docs.ref (fctl-site deploys on the push)
-        if: steps.docs.outputs.changed == 'yes'
+        if: steps.docs.outputs.pin == 'yes'
         run: |
-          git clone --quiet --depth 1 git@github-fctl-site:hyperstructure/fctl-site.git "$RUNNER_TEMP/site"
           cd "$RUNNER_TEMP/site"
+          git remote set-url origin git@github-fctl-site:hyperstructure/fctl-site.git
           echo "$GITHUB_SHA" > fctl-docs.ref
           git add fctl-docs.ref
-          git diff --cached --quiet && { echo "already at $GITHUB_SHA"; exit 0; }
           git -c user.name="fctl-sh[bot]" -c user.email="343971779+fctl-sh[bot]@users.noreply.github.com" \
             commit --quiet -m "docs: pin hyperstructure/fctl@${GITHUB_SHA::12}"
           git push --quiet origin HEAD:main || { git pull --quiet --rebase origin main && git push --quiet origin HEAD:main; }
