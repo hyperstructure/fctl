@@ -539,6 +539,11 @@ Where a project's review agents are on, each new commit of a pull request
 in the repositories its agents may write to gets a review: an agent reads
 it, on the Claude subscription of the owner who turned them on, and fctl
 posts what it found on the pull request, with a check on the commit.
+The owners skip repositories that another project's review agents review
+already, so that their pull requests get one review: a skipped
+repository's pull requests get none in the project, not even when someone
+asks, and repositories linked later are reviewed until the owners skip
+them.
 A pull request from someone who can't write to the repository gets one
 only when someone asks for it (`fctl review start`), since what it says
 reaches an agent with the owner's Claude token. So does an app's, unless
@@ -556,6 +561,7 @@ fctl review settings -p my-app                 # on or off, on whose subscriptio
 fctl review settings -p my-app --on --model opus --effort high
 fctl review settings -p my-app --instructions-file review.md   # what they're told besides fctl's own
 fctl review settings -p my-app --bots dependabot,renovate      # the apps whose pull requests start reviews (or none)
+fctl review settings -p my-app --skip-repos acme/shared-lib    # repositories whose pull requests get no review here (or none)
 fctl review bots -p my-app                     # the apps that opened the newest pull requests, and which start reviews
 fctl review bots -p my-app my-app-bot          # an app as GitHub shows it: its name and who makes it
 fctl review settings -p my-app --mine          # run them on your subscription from now on

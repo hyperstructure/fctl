@@ -147,6 +147,79 @@ pub fn trusted(pr: &PullRequest, app_login: Option<&str>) -> bool {
         || by_app(pr.author.as_deref(), app_login)
 }
 
+// ───────────────────────────── the repositories they review ─────────────────────────────
+
+/// The repositories a project's review agents skip, as D1 keeps them
+/// (`project_reviews.skipped_repos`, JSON): `owner/name`. None where it
+/// keeps none, or what it keeps doesn't read.
+pub fn stored_skipped(json: Option<&str>) -> Vec<String> {
+    json.and_then(|j| serde_json::from_str::<Vec<String>>(j).ok())
+        .unwrap_or_default()
+}
+
+/// Whether `skipped`, as [`stored_skipped`] reads it, names `repo` (GitHub
+/// ignores case).
+pub fn skips(skipped: &[String], repo: &RepoRef) -> bool {
+    skipped
+        .iter()
+        .any(|s| RepoRef::parse(s).is_some_and(|r| r.same(repo)))
+}
+
+/// The repositories a project's agents may write to (`writable`), split
+/// into those its review agents review and those they skip (`skipped`, as
+/// [`stored_skipped`] reads it), each in `writable`'s order. What `skipped`
+/// names besides is left out: a repository linked again is reviewed, as a
+/// new one is.
+pub fn split_repos(writable: &[RepoRef], skipped: &[String]) -> (Vec<RepoRef>, Vec<RepoRef>) {
+    writable.iter().cloned().partition(|r| !skips(skipped, r))
+}
+
+/// The repositories a project's owners want its review agents to skip, as
+/// they name them: each one of those its agents may write to (`writable`),
+/// as `owner/name`, its name alone (they all belong to one account) or its
+/// page on GitHub. Returns them as `writable` spells them, once each, in its
+/// order.
+pub fn skipped_repos(input: &[String], writable: &[RepoRef]) -> Result<Vec<RepoRef>> {
+    let mut chosen: Vec<&RepoRef> = Vec::new();
+    for given in input.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let repo = named_repo(given, writable).ok_or_else(|| {
+            let names: Vec<String> = writable.iter().map(RepoRef::full_name).collect();
+            ApiError::validation(
+                "skipped_repos",
+                if names.is_empty() {
+                    format!(
+                        "“{}” isn't a repository this project's agents may write to: they may write to none, so review agents review none.",
+                        truncate(given, 100)
+                    )
+                } else {
+                    format!(
+                        "“{}” isn't a repository this project's agents may write to, whose pull requests review agents review: {}.",
+                        truncate(given, 100),
+                        names.join(", ")
+                    )
+                },
+            )
+        })?;
+        chosen.push(repo);
+    }
+    Ok(writable
+        .iter()
+        .filter(|r| chosen.iter().any(|c| c.same(r)))
+        .cloned()
+        .collect())
+}
+
+/// The one of `writable` that someone names (`acme/web`, `web`,
+/// `https://github.com/acme/web`).
+fn named_repo<'a>(given: &str, writable: &'a [RepoRef]) -> Option<&'a RepoRef> {
+    if !given.contains('/') {
+        return writable.iter().find(|r| r.name.eq_ignore_ascii_case(given));
+    }
+    let (owner, name) = crate::repos::parse(given).ok()?;
+    let repo = RepoRef { owner, name: name? };
+    writable.iter().find(|r| r.same(&repo))
+}
+
 // ───────────────────────────── apps that start reviews ─────────────────────────────
 
 /// Dependabot, as pull requests name their author: GitHub's app that
@@ -2329,6 +2402,82 @@ mod tests {
             stored_bots(Some(r#"["dependabot[bot]","a b"]"#)),
             vec![DEPENDABOT.to_owned()]
         );
+    }
+
+    fn repo(full_name: &str) -> RepoRef {
+        RepoRef::parse(full_name).unwrap_or_else(|| panic!("{full_name}"))
+    }
+
+    #[test]
+    fn owners_skip_repositories_their_agents_may_write_to() {
+        let writable = [repo("acme/web"), repo("acme/Shared-Lib"), repo("acme/api")];
+        let given = |names: &[&str]| {
+            skipped_repos(
+                &names.iter().map(|n| n.to_string()).collect::<Vec<_>>(),
+                &writable,
+            )
+        };
+        // Named several ways, kept once each, in the project's order and
+        // GitHub's spelling.
+        assert_eq!(
+            given(&[
+                "api",
+                " acme/shared-lib ",
+                "https://github.com/ACME/api/",
+                ""
+            ]),
+            Ok(vec![repo("acme/Shared-Lib"), repo("acme/api")])
+        );
+        assert_eq!(
+            given(&["github.com/acme/web.git"]),
+            Ok(vec![repo("acme/web")])
+        );
+        assert_eq!(given(&[]), Ok(vec![]));
+        // Only those the project's agents may write to, whose pull requests
+        // review agents review.
+        for bad in [
+            "acme/docs",
+            "docs",
+            "other/web",
+            "acme/*",
+            "acme/web/pull/12",
+            "acme",
+        ] {
+            let err = given(&["web", bad]).err();
+            assert_eq!(
+                err.as_ref().and_then(|e| e.field.as_deref()),
+                Some("skipped_repos"),
+                "{bad}"
+            );
+            assert!(
+                err.is_some_and(|e| e.message.contains(&format!("“{bad}”"))
+                    && e.message.contains("acme/web, acme/Shared-Lib, acme/api")),
+                "{bad}"
+            );
+        }
+        let none = skipped_repos(&["web".to_owned()], &[]).err();
+        assert!(none.is_some_and(|e| e.message.contains("may write to none")));
+    }
+
+    #[test]
+    fn skipped_repositories_are_kept_by_name_and_split_off() {
+        assert_eq!(stored_skipped(None), Vec::<String>::new());
+        assert_eq!(stored_skipped(Some("[]")), Vec::<String>::new());
+        assert_eq!(stored_skipped(Some("acme/web")), Vec::<String>::new());
+        let skipped = stored_skipped(Some(r#"["acme/shared-lib","acme/gone"]"#));
+        assert_eq!(skipped, vec!["acme/shared-lib", "acme/gone"]);
+        assert!(skips(&skipped, &repo("ACME/Shared-Lib")));
+        assert!(!skips(&skipped, &repo("acme/web")));
+        // Those the project's agents may no longer write to are left out.
+        let writable = [repo("acme/web"), repo("acme/Shared-Lib"), repo("acme/api")];
+        assert_eq!(
+            split_repos(&writable, &skipped),
+            (
+                vec![repo("acme/web"), repo("acme/api")],
+                vec![repo("acme/Shared-Lib")]
+            )
+        );
+        assert_eq!(split_repos(&writable, &[]), (writable.to_vec(), Vec::new()));
     }
 
     #[test]

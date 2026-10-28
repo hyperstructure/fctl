@@ -2443,8 +2443,15 @@ pub struct ReviewAgents {
     #[serde(default)]
     pub bots: Vec<String>,
     /// The repositories whose pull requests they review: those the
-    /// project's agents may write to.
+    /// project's agents may write to, but those in `skipped_repos`.
     pub repos: Vec<RepoRef>,
+    /// The repositories the project's agents may write to whose pull
+    /// requests they don't review, as the project's owners chose: another
+    /// project's review agents review them, say. Neither new commits nor
+    /// people asking start a review of them in this project. Absent from
+    /// control planes before it.
+    #[serde(default)]
+    pub skipped_repos: Vec<RepoRef>,
     /// Why no review starts now (they are on), or would start once they
     /// are on: no GitHub webhook, their person's Claude connection is gone…
     pub problem: Option<String>,
@@ -2473,6 +2480,12 @@ pub struct UpdateReviewAgentsRequest {
     /// place of those that do: each as `renovate`, `renovate[bot]` or
     /// `https://github.com/apps/renovate`; `[]` for none.
     pub bots: Option<Vec<String>>,
+    /// The repositories whose pull requests they don't review, in place of
+    /// those they skip: each one the project's agents may write to, as
+    /// `owner/name`, its name, or its page on GitHub; `[]` to review all of
+    /// them. Repositories linked later are reviewed until the owners skip
+    /// them.
+    pub skipped_repos: Option<Vec<String>>,
 }
 
 /// A GitHub App that opens pull requests, as the project's owners see it

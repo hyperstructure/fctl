@@ -1185,8 +1185,8 @@ colors (the design system's `pr-*` and `checks-*` tokens).
 
 Where a project turns them on, an agent reviews each new commit of the
 pull requests in the repositories its agents may write to (its primary
-repository and those it lists as read and write), drafts too, and fctl
-posts what it found on GitHub
+repository and those it lists as read and write), but those its owners
+skip, drafts too, and fctl posts what it found on GitHub
 ([ADR 0040](adr/0040-review-agents-review-pull-requests-on-an-owners-subscription.md)):
 
 1. **Settings** (`project_reviews`, the project's **Reviews** tab, `fctl
@@ -1197,16 +1197,28 @@ posts what it found on GitHub
    Another owner takes them over (`run_as_me`), and nobody puts them on
    someone else's subscription; the operator may always turn them off.
    Owners also choose their model and effort level (else the project's),
-   instructions that follow fctl's own, and the GitHub Apps whose pull
-   requests start reviews by themselves (`bots`, below). The settings say
-   why no review starts, where none would (`problem`): no GitHub App or
-   webhook, no repository to review, or an operator who left, can no
-   longer start sessions in the project, or has no Claude connection.
+   instructions that follow fctl's own, the GitHub Apps whose pull
+   requests start reviews by themselves (`bots`, below), and the
+   repositories they skip (`project_reviews.skipped_repos`,
+   `ReviewAgents.skipped_repos`, `fctl review settings --skip-repos`),
+   where another project's review agents review them, say: those the
+   project's agents may write to are reviewed until the owners skip them,
+   those linked later too. A skipped repository's pull requests get no
+   review in the project, neither from deliveries nor when someone asks,
+   and one that stops being writable (removed from the project, made read
+   only, or no longer its primary repository) leaves the list
+   (`crate::reviews::unskip`), so that linked again it is reviewed
+   ([ADR 0062](adr/0062-projects-choose-which-of-their-repositories-review-agents-review.md)).
+   The settings say why no review starts, where none would (`problem`):
+   no GitHub App or webhook, no repository to review or every one
+   skipped, or an operator who left, can no longer start sessions in the
+   project, or has no Claude connection.
 2. **What starts one.** A `pull_request` delivery of GitHub's webhook
    (`opened`, `reopened`, `synchronize`, `ready_for_review`) about an
    open pull request starts a review of its head in each project whose
-   review agents are on and that may write to its repository, through the
-   installation its workspace connected (`crate::reviews::on_delivery`,
+   review agents are on and that may write to its repository and doesn't
+   skip it, through the installation its workspace connected
+   (`crate::reviews::on_delivery`,
    `fctl_domain::reviews::starts_review`), when its author may write to
    the repository or it is fctl's own app (`trusted`, below), or one of
    the apps the project's owners chose opened it from a branch of the

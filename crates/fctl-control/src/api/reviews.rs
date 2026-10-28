@@ -15,6 +15,7 @@ use fctl_proto::ApiError;
 use fctl_proto::api::{
     ReviewAgents, ReviewBotList, ReviewList, StartReviewRequest, UpdateReviewAgentsRequest,
 };
+use fctl_proto::session::RepoRef;
 use serde_json::json;
 use worker::{Request, Response};
 
@@ -28,7 +29,7 @@ pub async fn get_settings(ctx: &Ctx, id: &str) -> AppResult<Response> {
 async fn agents(ctx: &Ctx, project: &crate::model::ProjectRow) -> AppResult<ReviewAgents> {
     let conf = reviews::settings(&ctx.db, &project.id).await?;
     let problem = reviews::problem(&ctx.cfg, &ctx.db, project, conf.as_ref()).await?;
-    let repos = reviews::repos(&ctx.db, project).await?;
+    let repos = reviews::repos(&ctx.db, project, conf.as_ref()).await?;
     Ok(ReviewAgents {
         enabled: conf.as_ref().is_some_and(|c| c.enabled),
         operator: conf.as_ref().and_then(reviews::SettingsRow::operator),
@@ -36,7 +37,8 @@ async fn agents(ctx: &Ctx, project: &crate::model::ProjectRow) -> AppResult<Revi
         effort: conf.as_ref().and_then(|c| c.effort.clone()),
         instructions: conf.as_ref().and_then(|c| c.instructions.clone()),
         bots: reviews::bots(conf.as_ref()),
-        repos,
+        repos: repos.reviewed,
+        skipped_repos: repos.skipped,
         problem,
         updated_by: conf.as_ref().and_then(reviews::SettingsRow::updater),
         updated_at: conf.as_ref().map(|c| c.updated_at),
@@ -60,7 +62,8 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         && body.model.is_none()
         && body.effort.is_none()
         && body.instructions.is_none()
-        && body.bots.is_none();
+        && body.bots.is_none()
+        && body.skipped_repos.is_none();
     if !fctl_domain::perm::can_own_project(p.role) && !(mine && only_off) {
         return Err(forbidden(
             "Only the project's owners and its workspace's admins change its review agents. They run on your Claude subscription: you can turn them off.",
@@ -86,6 +89,16 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         Some(list) => rv::bots(list)?,
         None => reviews::bots(conf.as_ref()),
     };
+    let writable = reviews::writable(&ctx.db, &p.row).await?;
+    // Those the project's agents may write to, by GitHub's names; the
+    // others are reviewed, as those linked later will be.
+    let skipped: Vec<String> = match body.skipped_repos.as_deref() {
+        Some(list) => rv::skipped_repos(list, &writable)?
+            .iter()
+            .map(RepoRef::full_name)
+            .collect(),
+        None => rv::stored_skipped(conf.as_ref().and_then(|c| c.skipped_repos.as_deref())),
+    };
     let was_on = conf.as_ref().is_some_and(|c| c.enabled);
     let enabled = body.enabled.unwrap_or(was_on);
     // Turning them on, or taking them over, runs them on the caller's
@@ -97,7 +110,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
                 "This instance has no GitHub App, so nothing reviews pull requests. Its admins set one up first.",
             ));
         }
-        if reviews::repos(&ctx.db, &p.row).await?.is_empty() {
+        if writable.is_empty() {
             return Err(validation(
                 "enabled",
                 "This project has no repository its agents may write to: link one under Repositories first.",
@@ -131,11 +144,11 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
     );
     q(
         &ctx.db,
-        "INSERT INTO project_reviews (project_id, enabled, operator_id, model, effort, instructions, bots, updated_by, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT (project_id) DO UPDATE SET enabled = excluded.enabled, \
-         operator_id = excluded.operator_id, model = excluded.model, effort = excluded.effort, \
-         instructions = excluded.instructions, bots = excluded.bots, updated_by = excluded.updated_by, \
-         updated_at = excluded.updated_at",
+        "INSERT INTO project_reviews (project_id, enabled, operator_id, model, effort, instructions, bots, skipped_repos, \
+         updated_by, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT (project_id) DO UPDATE SET \
+         enabled = excluded.enabled, operator_id = excluded.operator_id, model = excluded.model, effort = excluded.effort, \
+         instructions = excluded.instructions, bots = excluded.bots, skipped_repos = excluded.skipped_repos, \
+         updated_by = excluded.updated_by, updated_at = excluded.updated_at",
         &[
             s(&p.row.id),
             crate::db::b(enabled),
@@ -144,6 +157,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             os(effort.as_deref()),
             os(instructions.as_deref()),
             s(&serde_json::to_string(&bots)?),
+            s(&serde_json::to_string(&skipped)?),
             s(&me.id),
             n(ctx.now),
         ],
@@ -166,6 +180,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             "model": model,
             "effort": effort,
             "bots": bots,
+            "skipped_repos": skipped,
         })),
     );
     http::ok(&agents(ctx, &p.row).await?)

@@ -516,37 +516,42 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         Some(false) => None,
         None => row.archived_at,
     };
-    batch(
-        &ctx.db,
-        vec![
-            q(
-                &ctx.db,
-                "UPDATE projects SET name = ?, description = ?, repo_owner = ?, repo_name = ?, default_branch = ?, settings = ?, archived_at = ?, updated_at = ? WHERE id = ?",
-                &[
-                    s(&name),
-                    os(description.as_deref()),
-                    os(owner.as_deref()),
-                    os(repo_name.as_deref()),
-                    s(&default_branch),
-                    s(&serde_json::to_string(&settings)?),
-                    crate::db::on(archived_at),
-                    n(ctx.now),
-                    s(&row.id),
-                ],
-            )?,
-            // The primary repository is not listed again among the others.
-            q(
-                &ctx.db,
-                "DELETE FROM project_repos WHERE project_id = ? AND owner = ? AND name = ?",
-                &[
-                    s(&row.id),
-                    os(owner.as_deref()),
-                    os(repo_name.as_deref()),
-                ],
-            )?,
-        ],
-    )
-    .await?;
+    let mut statements = vec![
+        q(
+            &ctx.db,
+            "UPDATE projects SET name = ?, description = ?, repo_owner = ?, repo_name = ?, default_branch = ?, settings = ?, archived_at = ?, updated_at = ? WHERE id = ?",
+            &[
+                s(&name),
+                os(description.as_deref()),
+                os(owner.as_deref()),
+                os(repo_name.as_deref()),
+                s(&default_branch),
+                s(&serde_json::to_string(&settings)?),
+                crate::db::on(archived_at),
+                n(ctx.now),
+                s(&row.id),
+            ],
+        )?,
+        // The primary repository is not listed again among the others.
+        q(
+            &ctx.db,
+            "DELETE FROM project_repos WHERE project_id = ? AND owner = ? AND name = ?",
+            &[s(&row.id), os(owner.as_deref()), os(repo_name.as_deref())],
+        )?,
+    ];
+    // The primary repository it leaves gets no review: linked again, it is
+    // reviewed, as a new one is.
+    let kept = |old: &RepoRef| match (&owner, &repo_name) {
+        (Some(o), Some(n)) => old.same(&RepoRef {
+            owner: o.clone(),
+            name: n.clone(),
+        }),
+        _ => false,
+    };
+    if let Some(old) = row.repo().filter(|old| !kept(old)) {
+        statements.push(crate::reviews::unskip(&ctx.db, &row.id, &old)?);
+    }
+    batch(&ctx.db, statements).await?;
     ctx.audit_in(
         Some(p.workspace_id()),
         "project.updated",

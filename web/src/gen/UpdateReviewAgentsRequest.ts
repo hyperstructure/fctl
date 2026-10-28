@@ -31,4 +31,12 @@ instructions?: string,
  * place of those that do: each as `renovate`, `renovate[bot]` or
  * `https://github.com/apps/renovate`; `[]` for none.
  */
-bots?: Array<string>, };
+bots?: Array<string>, 
+/**
+ * The repositories whose pull requests they don't review, in place of
+ * those they skip: each one the project's agents may write to, as
+ * `owner/name`, its name, or its page on GitHub; `[]` to review all of
+ * them. Repositories linked later are reviewed until the owners skip
+ * them.
+ */
+skipped_repos?: Array<string>, };
