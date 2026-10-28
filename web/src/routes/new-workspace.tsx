@@ -37,10 +37,15 @@ const RESERVED = new Set([
 ]);
 
 /**
- * What the server makes of the name, for the preview
- * (fctl_domain::workspace::slug_from_name; it settles clashes itself).
+ * What the server makes of the name, for the preview (fctl_domain::workspace::slug_from_name):
+ * its slug, and why that one gets a random ending, where the page knows: fctl reserves it, or
+ * `taken` has it. The server settles the rest, the addresses of other people's workspaces and those
+ * admins reserve.
  */
-export function slugOf(name: string): string {
+export function slugOf(
+  name: string,
+  taken: ReadonlySet<string> = new Set(),
+): { slug: string; ending?: "reserved" | "taken" } {
   let s = name
     .replace(/['’]/g, "")
     .toLowerCase()
@@ -51,8 +56,14 @@ export function slugOf(name: string): string {
     .slice(0, 48)
     .replace(/-+$/, "");
   if (s.length < 2) s = s ? `workspace-${s}` : "workspace";
-  if (RESERVED.has(s)) s = `${s}-workspace`;
-  return s;
+  if (RESERVED.has(s)) return { slug: s, ending: "reserved" };
+  if (taken.has(s)) return { slug: s, ending: "taken" };
+  return { slug: s };
+}
+
+/** A slug cut to leave room for its random ending of a dash and six hex digits (fctl_domain::slugs). */
+export function beforeEnding(slug: string): string {
+  return slug.slice(0, 41).replace(/-+$/, "");
 }
 
 export function NewWorkspace() {
@@ -61,6 +72,7 @@ export function NewWorkspace() {
   const list = useWorkspaces();
   const taken = new Set(list.data?.workspaces.map((w) => w.color));
   const [name, setName] = useState("");
+  const address = slugOf(name, new Set(list.data?.workspaces.map((w) => w.slug)));
   const [color, setColor] = useState<G.WorkspaceColor>();
   const [email, setEmail] = useState<string>();
   // A color the person's other workspaces don't have, until they pick one.
@@ -107,9 +119,18 @@ export function NewWorkspace() {
             className="flex-1"
             error={field === "name" || field === "slug" ? create.error?.message : undefined}
             hint={
-              <span className="font-mono text-[11.5px]">
-                {location.host}/w/{slugOf(name)}
-              </span>
+              address.ending ? (
+                <>
+                  <span className="font-mono text-[11.5px]">
+                    {location.host}/w/{beforeEnding(address.slug)}-<span className="text-ink-4">······</span>
+                  </span>{" "}
+                  · {address.slug} is {address.ending}, so it gets a random ending
+                </>
+              ) : (
+                <span className="font-mono text-[11.5px]">
+                  {location.host}/w/{address.slug}
+                </span>
+              )
             }
           >
             {(id) => (

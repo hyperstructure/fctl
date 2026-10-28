@@ -181,3 +181,108 @@ describe("the admin's early access list", () => {
     expect(mail?.getAttribute("href")).toMatch(/^mailto:old@example\.com\?subject=/);
   });
 });
+
+/** The Settings tab, with these reserved addresses in the cache. */
+function settingsTab(slugs: G.ReservedSlug[]) {
+  search.tab = "settings";
+  const client = new QueryClient();
+  client.setQueryData<G.ReservedSlugList>(keys.reservedSlugs, { slugs });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  act(() =>
+    root.render(
+      <QueryClientProvider client={client}>
+        <Admin />
+      </QueryClientProvider>,
+    ),
+  );
+  roots.push(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+  const section = () =>
+    [...container.querySelectorAll("section")].find(
+      (s) => s.querySelector("h2")?.textContent === "Reserved addresses",
+    );
+  const rows = () => [...(section()?.querySelectorAll("li") ?? [])].map((li) => li.textContent ?? "");
+  const input = () => section()?.querySelector("input") as HTMLInputElement;
+  const type = (text: string) =>
+    act(() => {
+      // React listens for the native setter's input event.
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input(), text);
+      input().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  return { section, rows, input, type };
+}
+
+const maya: G.UserRef = { id: "usr_maya", name: "Maya" };
+
+/** Lets a mutation's answer show: React Query tells its observers a task later. */
+const settle = () => act(() => new Promise((r) => setTimeout(r, 0)));
+
+describe("the admin's reserved addresses", () => {
+  it("lists them with who reserved each", () => {
+    const page = settingsTab([
+      { slug: "home", created_at: NOW - 2 * DAY, created_by: maya },
+      { slug: "me", created_at: NOW - DAY },
+    ]);
+    const [home, me] = page.rows();
+    expect(home).toContain("home");
+    expect(home).toContain("by Maya");
+    expect(me).toContain("me");
+    expect(me).not.toContain(" by ");
+    expect(page.section()?.textContent).toContain("/p/…");
+  });
+
+  it("reserves one and keeps the list in order", async () => {
+    let asked: G.ReserveSlugRequest | undefined;
+    answers.reserveSlug = async (b: G.ReserveSlugRequest) => {
+      asked = b;
+      return { slug: b.slug.toLowerCase(), created_at: NOW, created_by: maya } satisfies G.ReservedSlug;
+    };
+    const page = settingsTab([
+      { slug: "home", created_at: NOW - 2 * DAY },
+      { slug: "users", created_at: NOW - DAY },
+    ]);
+    page.type(" Me ");
+    expect(page.section()?.textContent).toContain("/w/me and /p/me");
+    await act(async () => page.section()?.querySelector("form")?.requestSubmit());
+    await settle();
+    delete answers.reserveSlug;
+    expect(asked).toEqual({ slug: "Me" });
+    expect(page.rows().map((r) => r.split("reserved")[0])).toEqual(["home", "me", "users"]);
+    expect(page.input().value).toBe("");
+  });
+
+  it("says why one can't be reserved", async () => {
+    answers.reserveSlug = async () => {
+      throw new Error("fctl reserves settings itself");
+    };
+    const page = settingsTab([]);
+    page.type("settings");
+    await act(async () => page.section()?.querySelector("form")?.requestSubmit());
+    await settle();
+    delete answers.reserveSlug;
+    expect(page.section()?.querySelector("[role=alert]")?.textContent).toBe("fctl reserves settings itself");
+    expect(page.rows()).toEqual([]);
+  });
+
+  it("stops reserving one", async () => {
+    let removed: string | undefined;
+    answers.unreserveSlug = async (slug: string) => {
+      removed = slug;
+      return { ok: true } satisfies G.Ok;
+    };
+    const page = settingsTab([
+      { slug: "home", created_at: NOW - 2 * DAY },
+      { slug: "me", created_at: NOW - DAY },
+    ]);
+    const stop = page.section()?.querySelector<HTMLButtonElement>("button[aria-label='Stop reserving home']");
+    await act(async () => stop?.click());
+    await settle();
+    delete answers.unreserveSlug;
+    expect(removed).toBe("home");
+    expect(page.rows().map((r) => r.split("reserved")[0])).toEqual(["me"]);
+  });
+});
