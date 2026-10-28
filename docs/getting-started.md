@@ -245,10 +245,11 @@ fctl projects secrets set STRIPE_KEY       # asks for the value
 fctl projects members add grace@example.com
 ```
 
-Agents can use more repositories of the same account: add them under the
-project's **Repositories** tab, each read only (a private dependency, say)
-or read and write, or let agents read every repository the GitHub App can
-reach. From the terminal: `fctl projects repos add my-org/my-lib --write`.
+Agents can use more repositories of the same account: under the project's
+**Repositories** tab, choose any number of the repositories the workspace
+may use, read only (a private dependency, say) or read and write, or
+`my-org/*` to let agents read every repository the GitHub App can reach.
+From the terminal: `fctl projects repos add my-org/my-lib --write`.
 
 ## 7. Start a session
 
